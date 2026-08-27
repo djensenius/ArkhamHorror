@@ -90,19 +90,19 @@ clientAnswerFixtures =
 
 answerConstructor :: Answer -> Text
 answerConstructor = \case
-  Answer {} -> "Answer"
-  Raw {} -> "Raw"
-  PaymentAmountsAnswer {} -> "PaymentAmountsAnswer"
-  AmountsAnswer {} -> "AmountsAnswer"
-  StandaloneSettingsAnswer {} -> "StandaloneSettingsAnswer"
-  CampaignSettingsAnswer {} -> "CampaignSettingsAnswer"
-  DeckAnswer {} -> "DeckAnswer"
-  DeckListAnswer {} -> "DeckListAnswer"
-  PickDestinyAnswer {} -> "PickDestinyAnswer"
-  CampaignSpecificAnswer {} -> "CampaignSpecificAnswer"
-  ScenarioSpecificAnswer {} -> "ScenarioSpecificAnswer"
-  ExchangeAmountsAnswer {} -> "ExchangeAmountsAnswer"
-  CampaignStepAnswer {} -> "CampaignStepAnswer"
+  Answer _ -> "Answer"
+  Raw _ -> "Raw"
+  PaymentAmountsAnswer _ -> "PaymentAmountsAnswer"
+  AmountsAnswer _ -> "AmountsAnswer"
+  StandaloneSettingsAnswer _ -> "StandaloneSettingsAnswer"
+  CampaignSettingsAnswer _ -> "CampaignSettingsAnswer"
+  DeckAnswer _ _ -> "DeckAnswer"
+  DeckListAnswer _ _ -> "DeckListAnswer"
+  PickDestinyAnswer _ -> "PickDestinyAnswer"
+  CampaignSpecificAnswer _ _ -> "CampaignSpecificAnswer"
+  ScenarioSpecificAnswer _ _ -> "ScenarioSpecificAnswer"
+  ExchangeAmountsAnswer _ _ _ _ _ -> "ExchangeAmountsAnswer"
+  CampaignStepAnswer _ -> "CampaignStepAnswer"
 
 spec :: Spec
 spec = describe "Native client contract fixtures" do
