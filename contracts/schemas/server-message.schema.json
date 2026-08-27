@@ -5,6 +5,7 @@
   "oneOf": [
     {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "tag",
         "contents"
@@ -20,6 +21,7 @@
     },
     {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "tag",
         "contents"
@@ -40,6 +42,7 @@
     },
     {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "tag"
       ],
@@ -51,6 +54,7 @@
     },
     {
       "type": "object",
+      "additionalProperties": false,
       "required": [
         "tag",
         "contents"

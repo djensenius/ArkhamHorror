@@ -48,7 +48,10 @@ for fixture in fixtures:
     validator_class = validator_for(schema)
     validator_class.check_schema(schema)
     validator = validator_class(schema, format_checker=FormatChecker())
-    errors = sorted(validator.iter_errors(instance), key=lambda error: list(error.absolute_path))
+    errors = sorted(
+        validator.iter_errors(instance),
+        key=lambda error: tuple(map(str, error.absolute_path)),
+    )
 
     if errors:
         details = "; ".join(
