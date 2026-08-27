@@ -1,0 +1,25 @@
+{
+  "schemaRevision": "0.1.0",
+  "status": "baseline-incomplete",
+  "apiBasePath": "/api/v1",
+  "documents": [
+    "contracts/openapi.yaml",
+    "contracts/asyncapi.yaml",
+    "contracts/schemas/game-step.schema.json",
+    "contracts/schemas/server-message.schema.json"
+  ],
+  "fixtures": [
+    {
+      "path": "contracts/fixtures/game-step.json",
+      "schema": "contracts/schemas/game-step.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-error.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    }
+  ],
+  "compatibility": {
+    "webClient": "unchanged",
+    "nativeClientMinimumRevision": "0.1.0"
+  }
+}

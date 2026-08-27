@@ -1,0 +1,61 @@
+name: Contract CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/contracts.yml"
+      - "redocly.yaml"
+      - "contracts/**"
+      - "mise.toml"
+      - "scripts/validate-contract-fixtures.py"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/contracts.yml"
+      - "redocly.yaml"
+      - "contracts/**"
+      - "mise.toml"
+      - "scripts/validate-contract-fixtures.py"
+  workflow_dispatch:
+
+concurrency:
+  group: contract-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    name: Golden fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+      - run: mise run contracts:fixtures
+
+  openapi:
+    name: OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+      - run: mise run contracts:openapi
+
+  asyncapi:
+    name: AsyncAPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+      - run: mise run contracts:asyncapi

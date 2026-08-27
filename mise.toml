@@ -1,0 +1,24 @@
+[tools]
+node = "26.7.0"
+python = "3.14.7"
+uv = "0.12.6"
+
+[tasks."contracts:fixtures"]
+description = "Validate contract manifests and golden JSON fixtures"
+run = "uv run scripts/validate-contract-fixtures.py"
+
+[tasks."contracts:openapi"]
+description = "Lint the REST OpenAPI document"
+run = "npx --yes @redocly/cli@2.49.0 lint contracts/openapi.yaml"
+
+[tasks."contracts:asyncapi"]
+description = "Validate the WebSocket AsyncAPI document"
+run = "npx --yes @asyncapi/cli@6.0.2 validate contracts/asyncapi.yaml"
+
+[tasks."contracts:validate"]
+description = "Run every native-client contract check"
+depends = [
+  "contracts:fixtures",
+  "contracts:openapi",
+  "contracts:asyncapi",
+]
