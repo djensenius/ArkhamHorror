@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/server-message.schema.json",
+  "title": "ServerMessage",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "GameUpdate"
+        },
+        "contents": {
+          "type": "object"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "enum": [
+            "GameMessage",
+            "GameError",
+            "GameUI",
+            "GameAudio"
+          ]
+        },
+        "contents": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EventChanged"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "SharedStateUpdate"
+        },
+        "contents": {
+          "type": "object",
+          "required": [
+            "sharedVersion"
+          ],
+          "properties": {
+            "sharedVersion": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+asyncapi: 3.1.0
+info:
+  title: Arkham Horror WebSocket API
+  version: 0.1.0
+  description: |
+    Initial envelope-level contract for game and Epic Multiplayer sockets.
+    A reconnect must refetch the authoritative snapshot because disconnected
+    subscribers do not receive buffered updates.
+servers:
+  production:
+    host: arkhamhorror.app
+    protocol: wss
+    pathname: /api/v1
+channels:
+  game:
+    address: /arkham/games/{gameId}
+    parameters:
+      gameId:
+        description: Arkham game UUID
+    messages:
+      serverMessage:
+        $ref: "#/components/messages/ServerMessage"
+      clientAnswer:
+        $ref: "#/components/messages/ClientAnswer"
+  event:
+    address: /arkham/events/{eventId}
+    parameters:
+      eventId:
+        description: Epic Multiplayer event UUID
+    messages:
+      serverMessage:
+        $ref: "#/components/messages/ServerMessage"
+operations:
+  receiveGameMessages:
+    action: receive
+    channel:
+      $ref: "#/channels/game"
+    messages:
+      - $ref: "#/channels/game/messages/serverMessage"
+  sendGameAnswers:
+    action: send
+    channel:
+      $ref: "#/channels/game"
+    messages:
+      - $ref: "#/channels/game/messages/clientAnswer"
+  receiveEventMessages:
+    action: receive
+    channel:
+      $ref: "#/channels/event"
+    messages:
+      - $ref: "#/channels/event/messages/serverMessage"
+components:
+  messages:
+    ServerMessage:
+      payload:
+        $ref: "./schemas/server-message.schema.json"
+    ClientAnswer:
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - tag
+          - contents
+        properties:
+          tag:
+            const: Answer
+          contents:
+            type: object
+            additionalProperties: false
+            required:
+              - choice
+            properties:
+              choice:
+                type: integer
+                minimum: 0
+              playerId:
+                type: string
+                format: uuid
+                description: Optional; defaults to the active player when omitted.
+              questionVersion:
+                type: integer
+                minimum: 0

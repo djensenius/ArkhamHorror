@@ -1,0 +1,174 @@
+openapi: 3.1.0
+info:
+  title: Arkham Horror API
+  version: 0.1.0
+  description: |
+    Initial native-client contract baseline. Only documented operations are
+    covered; undocumented /api/v1 routes retain their existing behavior.
+servers:
+  - url: /api/v1
+paths:
+  /authenticate:
+    post:
+      operationId: authenticate
+      summary: Exchange email and password for an API token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Authentication"
+      responses:
+        "200":
+          description: Authentication succeeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+        "401":
+          description: Authentication failed
+  /register:
+    post:
+      operationId: register
+      summary: Create an account and return an API token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Registration"
+      responses:
+        "200":
+          description: Registration succeeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Token"
+  /whoami:
+    get:
+      operationId: getCurrentUser
+      summary: Return the authenticated account
+      responses:
+        "200":
+          description: Current account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentUser"
+        "401":
+          description: Token is absent or invalid
+  /site-settings:
+    get:
+      operationId: getSiteSettings
+      summary: Return public deployment settings
+      security: []
+      responses:
+        "200":
+          description: Public deployment settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteSettings"
+  /arkham/games/{gameId}/step:
+    get:
+      operationId: getGameStep
+      summary: Read the inexpensive monotonic game step
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Current persisted game step
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameStep"
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Game does not exist
+components:
+  securitySchemes:
+    TokenAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: Send the value as `Token <token>`.
+  parameters:
+    GameId:
+      name: gameId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  schemas:
+    Authentication:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+    Registration:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - username
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        username:
+          type: string
+        password:
+          type: string
+    Token:
+      type: object
+      additionalProperties: false
+      required:
+        - token
+      properties:
+        token:
+          type: string
+    CurrentUser:
+      type: object
+      additionalProperties: false
+      required:
+        - username
+        - email
+        - beta
+        - admin
+      properties:
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        beta:
+          type: boolean
+        admin:
+          type: boolean
+    SiteSettings:
+      type: object
+      additionalProperties: false
+      required:
+        - assetHost
+      properties:
+        assetHost:
+          type:
+            - string
+            - "null"
+          format: uri
+    GameStep:
+      $ref: "./schemas/game-step.schema.json"
+security:
+  - TokenAuth: []
