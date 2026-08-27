@@ -2,21 +2,9 @@ name: Contract CI
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/contracts.yml"
-      - "redocly.yaml"
-      - "contracts/**"
-      - "mise.toml"
-      - "scripts/validate-contract-fixtures.py"
   push:
     branches:
       - main
-    paths:
-      - ".github/workflows/contracts.yml"
-      - "redocly.yaml"
-      - "contracts/**"
-      - "mise.toml"
-      - "scripts/validate-contract-fixtures.py"
   workflow_dispatch:
 
 concurrency:

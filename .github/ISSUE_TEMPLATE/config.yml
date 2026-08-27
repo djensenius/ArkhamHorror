@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/djensenius/ArkhamHorror/security/advisories/new
+    about: Report security issues privately. Do not include exploit details in a public issue.
+  - name: Native-client roadmap
+    url: https://github.com/djensenius/ArkhamHorror/issues/5
+    about: Review the backend, Apple, and Linux implementation plan.
+  - name: Upstream project
+    url: https://github.com/halogenandtoast/ArkhamHorror/issues
+    about: Report issues unrelated to this fork's native-client contract work upstream.
