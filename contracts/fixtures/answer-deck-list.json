@@ -1,0 +1,15 @@
+{
+  "tag": "DeckListAnswer",
+  "deckList": {
+    "slots": {},
+    "sideSlots": {},
+    "investigator_code": "c01001",
+    "investigator_name": "Contract investigator",
+    "meta": null,
+    "taboo_id": null,
+    "url": null,
+    "id": "fixture-deck",
+    "name": "Contract deck"
+  },
+  "playerId": "00000000-0000-0000-0000-000000000001"
+}

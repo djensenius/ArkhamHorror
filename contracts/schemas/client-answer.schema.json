@@ -1,0 +1,311 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/client-answer.schema.json",
+  "title": "ClientAnswer",
+  "description": "Every documented top-level answer envelope decoded by Entity.Answer.",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Answer"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "choice"
+          ],
+          "properties": {
+            "choice": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "playerId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Optional; defaults to the active player when omitted."
+            },
+            "questionVersion": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional optimistic-concurrency guard for the active question."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Raw"
+        },
+        "contents": {
+          "type": "object",
+          "description": "Arkham.Message; nested constructor coverage is pending."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "enum": [
+            "PaymentAmountsAnswer",
+            "AmountsAnswer"
+          ]
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "amounts"
+          ],
+          "properties": {
+            "amounts": {
+              "type": "object",
+              "propertyNames": {
+                "format": "uuid"
+              },
+              "additionalProperties": {
+                "type": "integer"
+              }
+            },
+            "questionVersion": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Optional optimistic-concurrency guard for the active question."
+            },
+            "playerId": {
+              "type": "string",
+              "format": "uuid",
+              "description": "Optional; defaults to the active player when omitted."
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "StandaloneSettingsAnswer"
+        },
+        "contents": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "description": "StandaloneSetting values; nested constructor coverage is pending."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "CampaignSettingsAnswer"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "keys",
+            "counts",
+            "sets",
+            "options"
+          ],
+          "properties": {
+            "keys": {
+              "type": "array"
+            },
+            "counts": {
+              "type": "array"
+            },
+            "sets": {
+              "type": "array"
+            },
+            "options": {
+              "type": "array"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "deckId",
+        "playerId"
+      ],
+      "properties": {
+        "tag": {
+          "const": "DeckAnswer"
+        },
+        "deckId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "playerId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "deckList",
+        "playerId"
+      ],
+      "properties": {
+        "tag": {
+          "const": "DeckListAnswer"
+        },
+        "deckList": {
+          "type": "object",
+          "description": "ArkhamDBDecklist; complete deck-list coverage is pending."
+        },
+        "playerId": {
+          "type": "string",
+          "format": "uuid"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "PickDestinyAnswer"
+        },
+        "contents": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "enum": [
+            "CampaignSpecificAnswer",
+            "ScenarioSpecificAnswer"
+          ]
+        },
+        "contents": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {}
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "source",
+        "fromInvestigator",
+        "toInvestigator",
+        "token",
+        "amount"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ExchangeAmountsAnswer"
+        },
+        "source": {
+          "type": "object",
+          "description": "Arkham.Source; nested constructor coverage is pending."
+        },
+        "fromInvestigator": {
+          "type": "string"
+        },
+        "toInvestigator": {
+          "type": "string"
+        },
+        "token": {
+          "type": "string"
+        },
+        "amount": {
+          "type": "integer"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "CampaignStepAnswer"
+        },
+        "contents": {
+          "type": "object",
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "type": "string"
+            }
+          },
+          "description": "CampaignStep; nested constructor coverage is pending."
+        }
+      }
+    }
+  ]
+}

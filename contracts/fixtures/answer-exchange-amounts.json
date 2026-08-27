@@ -1,0 +1,10 @@
+{
+  "tag": "ExchangeAmountsAnswer",
+  "source": {
+    "tag": "GameSource"
+  },
+  "fromInvestigator": "c01001",
+  "toInvestigator": "c02002",
+  "token": "Resource",
+  "amount": 2
+}
