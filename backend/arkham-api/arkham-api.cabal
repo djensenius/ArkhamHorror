@@ -25,6 +25,7 @@ library
       Api.Arkham.Epic
       Api.Arkham.Export
       Api.Arkham.Helpers
+      Api.Arkham.Types.GameStep
       Api.Arkham.Types.MultiplayerVariant
       Api.Handler.Arkham.Achievements
       Api.Handler.Arkham.Admin.Metrics
@@ -8367,6 +8368,7 @@ test-suite spec
       Arkham.Act.Cards.TheForgottenAge.HeartOfTheElders.AFamiliarPatternSpec
       Arkham.Act.Cards.TheScarletKeys.DancingMad.FalseStepV2Spec
       Arkham.ActionSpec
+      Arkham.Api.JsonContractsSpec
       Arkham.Agenda.Cards.MurderAtTheExcelsiorHotel.TheTrueCulpritV10Spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.RestrictedAccessSpec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec

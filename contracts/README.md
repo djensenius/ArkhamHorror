@@ -16,6 +16,11 @@ do not infer wire shapes independently in each client.
 - `fixtures/`: sanitized examples validated by every client.
 - `manifest.json`: schema revision and compatibility metadata.
 
+Committed fixtures must be backed by deterministic backend values, not
+hand-authored independently of the server. The Haskell assertions live in
+`backend/arkham-api/tests/Arkham/Api/JsonContractsSpec.hs` and compare decoded
+fixture JSON with the real Aeson encoders.
+
 ## Validation
 
 ```sh
