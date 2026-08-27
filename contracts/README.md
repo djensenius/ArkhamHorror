@@ -3,6 +3,11 @@
 This directory is the versioned compatibility boundary between the Arkham
 Horror backend and non-web clients.
 
+Clients pin `manifest.json`'s `schemaRevision`, which versions the complete
+contract bundle. OpenAPI and AsyncAPI `info.version` values version those
+documents independently and advance only when their respective document
+changes, so they do not need to equal the bundle revision.
+
 The first revision intentionally covers only the walking-skeleton endpoints and
 WebSocket envelopes. It does not claim full player-facing API coverage yet.
 Expand the schemas alongside golden fixtures captured from the Haskell encoders;
