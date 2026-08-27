@@ -4,6 +4,7 @@
 {-# LANGUAGE NoFieldSelectors #-}
 
 module Api.Handler.Arkham.Games (
+  GameStepJson (..),
   getApiV1ArkhamGameR,
   getApiV1ArkhamGameSpectateR,
   getApiV1ArkhamGameStepR,
