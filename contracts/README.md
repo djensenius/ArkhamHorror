@@ -25,6 +25,26 @@ are compared semantically with real Aeson encoder output, while inbound
 fixtures must decode through the real `FromJSON` instance to the expected
 constructor.
 
+## Game discovery
+
+- `GET /arkham/games` requires authentication, is ordered by most recently
+  updated, and omits Epic Multiplayer group games because the event list owns
+  those entries. A legacy row that cannot decode remains visible as an
+  `{"error": "..."}` entry.
+- `GET /arkham/games/{gameId}` requires both authentication and game
+  membership. Its response includes the acting player, multiplayer mode,
+  authoritative `PublicGame`, and optional Epic event ID.
+- `GET /arkham/games/{gameId}/spectate` intentionally requires neither an
+  account nor membership. Possession of the game UUID grants snapshot access,
+  and the response identifies the current active player for rendering. Native
+  spectator clients must not send answer frames: the current WebSocket upgrade
+  reuses the bidirectional game stream even though the spectator experience is
+  read-only.
+- The `PublicGame` schema governs all 58 top-level snapshot fields shared by
+  REST game reads and WebSocket `GameUpdate`. Deep entity, question, target,
+  source, and campaign unions remain intentionally broad until their dedicated
+  schema slices land.
+
 ## WebSocket behavior
 
 - Game sockets are bidirectional: servers emit `ServerMessage` envelopes and
@@ -59,6 +79,9 @@ The route inventory expands every HTTP method in
 `backend/arkham-api/config/routes` and identifies it by exact method, normalized
 path, and Yesod resource. Validation fails on any addition, removal, rename,
 method change, or reorder; it does not tolerate count drift.
+The same check also requires the normalized method/path set marked
+`documented` to match OpenAPI exactly, so coverage metadata cannot move ahead
+of (or fall behind) the published REST contract.
 
 Coverage is classified manually:
 
@@ -68,11 +91,11 @@ Coverage is classified manually:
 - `excluded`: an administrator, operator-maintenance, or diagnostic surface
   that is outside native-client parity.
 
-Epic Multiplayer organizer routes, spectating, replay, player game import,
-standard/scenario export, and bug filing remain required player-facing
-coverage. The administrator-only full export and repair/migration routes remain
-excluded. Classification is product metadata and must not be inferred from
-route naming alone.
+Epic Multiplayer organizer routes, replay, player game import,
+standard/scenario export, and bug filing remain required player-facing coverage.
+The administrator-only full export and repair/migration routes remain excluded.
+Classification is product metadata and must not be inferred from route naming
+alone.
 
 ## Validation
 

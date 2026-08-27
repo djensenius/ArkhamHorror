@@ -17,6 +17,7 @@ module Api.Handler.Arkham.Games (
 
 import Api.Arkham.Epic (lookupGameEvent)
 import Api.Arkham.Helpers
+import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.Games.Shared

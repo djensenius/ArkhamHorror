@@ -1,9 +1,15 @@
 module Arkham.Api.JsonContractsSpec (spec) where
 
 import Api.Arkham.Helpers (ApiResponse (..))
+import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep (GameStepJson (..))
+import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo, WithFriends))
+import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
+import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
 import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Epic.Types (SharedEventState (..))
+import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
+import Arkham.Name (mkName)
 import Data.Aeson qualified as Aeson
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -37,15 +43,39 @@ loadFixture fileName = findFixture fixturePaths
         fail $ "Could not decode contract fixture " <> fileName <> " at " <> path <> ": " <> err
       Right (Right fixture) -> pure fixture
 
+fixtureGameId :: ArkhamGame.ArkhamGameId
+fixtureGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 3
+
+fixtureCampaignGameId :: ArkhamGame.ArkhamGameId
+fixtureCampaignGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 4
+
+fixtureActiveGameId :: ArkhamGame.ArkhamGameId
+fixtureActiveGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 5
+
+fixtureCompletedGameId :: ArkhamGame.ArkhamGameId
+fixtureCompletedGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 6
+
+fixturePlayerId :: PlayerId
+fixturePlayerId = PlayerId $ UUID.fromWords 0 0 0 1
+
+fixtureGame :: Game
+fixtureGame =
+  (newScenario "01104" 1729 1 Easy False)
+    { gameGitRevision = "contract-fixture"
+    }
+
+fixturePublicGame :: PublicGame ArkhamGame.ArkhamGameId
+fixturePublicGame =
+  PublicGame
+    fixtureGameId
+    "Contract fixture game"
+    ["Contract fixture log entry."]
+    fixtureGame
+
 serverMessageFixtures :: [(FilePath, ApiResponse)]
 serverMessageFixtures =
   [ ( "game-update.json"
-    , GameUpdate
-        $ PublicGame
-          (ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 3)
-          "Contract fixture game"
-          ["Contract fixture log entry."]
-          fixtureGame
+    , GameUpdate fixturePublicGame
     )
   , ("game-message.json", GameMessage "A contract fixture message.")
   , ("game-error.json", GameError "The question changed before this answer arrived.")
@@ -53,10 +83,7 @@ serverMessageFixtures =
   , ("game-audio.json", GameAudio "contract.ogg")
   , ("game-card.json", GameCard "Contract card" fixtureCard)
   , ( "game-card-only.json"
-    , GameCardOnly
-        (PlayerId $ UUID.fromWords 0 0 0 1)
-        "Private contract card"
-        fixtureCard
+    , GameCardOnly fixturePlayerId "Private contract card" fixtureCard
     )
   , ("game-tarot.json", GameTarot $ Aeson.object ["spread" .= ("fixture" :: Text)])
   , ("game-show-discard.json", GameShowDiscard "01001")
@@ -79,11 +106,64 @@ serverMessageFixtures =
   , ("event-changed.json", EventChanged)
   ]
  where
-  fixtureGame =
-    (newScenario "01104" 1729 1 Easy False)
-      { gameGitRevision = "contract-fixture"
-      }
   fixtureCard = Aeson.object ["code" .= ("fixture-card" :: Text)]
+
+fixtureGetGame :: GetGameJson
+fixtureGetGame =
+  GetGameJson
+    (Just fixturePlayerId)
+    Solo
+    fixturePublicGame
+    Nothing
+
+fixtureGameList :: [GameDetailsEntry]
+fixtureGameList =
+  [ SuccessGameDetails
+      $ GameDetails
+        fixtureGameId
+        (Just $ ScenarioDetails "01104" Easy (mkName "The Gathering") Nothing)
+        Nothing
+        (IsPending [])
+        "Contract fixture game"
+        []
+        []
+        Solo
+        False
+  , SuccessGameDetails
+      $ GameDetails
+        fixtureCampaignGameId
+        Nothing
+        (Just $ CampaignDetails "06" Easy (Just TheDreamQuest))
+        (IsChooseDecks [fixturePlayerId])
+        "Campaign contract fixture"
+        [InvestigatorDetails "06001" Guardian, InvestigatorDetails "06002" Seeker]
+        [InvestigatorDetails "06003" Rogue]
+        WithFriends
+        True
+  , SuccessGameDetails
+      $ GameDetails
+        fixtureActiveGameId
+        (Just $ ScenarioDetails "01104" Easy (mkName "The Gathering") Nothing)
+        Nothing
+        IsActive
+        "Active contract fixture"
+        []
+        []
+        Solo
+        False
+  , SuccessGameDetails
+      $ GameDetails
+        fixtureCompletedGameId
+        (Just $ ScenarioDetails "01104" Easy (mkName "The Gathering") Nothing)
+        Nothing
+        IsOver
+        "Completed contract fixture"
+        []
+        []
+        Solo
+        False
+  , FailedGameDetails "Contract fixture failed to load."
+  ]
 
 clientAnswerFixtures :: [(FilePath, Text)]
 clientAnswerFixtures =
@@ -130,6 +210,16 @@ spec = describe "Native client contract fixtures" do
       fixture <- loadFixture fileName
 
       Aeson.toJSON response `shouldBe` fixture
+
+  it "matches the real game-list encoder" do
+    fixture <- loadFixture "game-list.json"
+
+    Aeson.toJSON fixtureGameList `shouldBe` fixture
+
+  it "matches the real get-game encoder" do
+    fixture <- loadFixture "get-game.json"
+
+    Aeson.toJSON fixtureGetGame `shouldBe` fixture
 
   for_ clientAnswerFixtures \(fileName, expectedConstructor) ->
     it ("decodes the real client answer for " <> fileName) do

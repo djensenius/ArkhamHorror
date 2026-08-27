@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.0
+  version: 0.1.1
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -71,6 +71,63 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SiteSettings"
+  /arkham/games:
+    get:
+      operationId: listGames
+      summary: List games visible to the authenticated account
+      description: |
+        Returns games ordered by most recently updated. Epic Multiplayer group
+        games are omitted because they are surfaced through their event.
+        Corrupt legacy game rows remain visible as entries containing `error`.
+      responses:
+        "200":
+          description: Visible games
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GameList"
+        "401":
+          description: Token is absent or invalid
+  /arkham/games/{gameId}:
+    get:
+      operationId: getGame
+      summary: Fetch the authoritative participant view of a game
+      description: |
+        Requires membership in the game. A WebSocket upgrade on this same path
+        opens the bidirectional game stream documented by AsyncAPI.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Participant identity, multiplayer mode, event link, and game snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetGame"
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Game or participant membership does not exist
+  /arkham/games/{gameId}/spectate:
+    get:
+      operationId: spectateGame
+      summary: Fetch the public spectator view of a game
+      description: |
+        This route does not require an account or game membership. A WebSocket
+        upgrade currently reuses the bidirectional game stream; spectator
+        clients must not send answer frames.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Active-player rendering ID, multiplayer mode, event link, and game snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetGame"
+        "404":
+          description: Game does not exist
   /arkham/games/{gameId}/step:
     get:
       operationId: getGameStep
@@ -170,5 +227,9 @@ components:
           format: uri
     GameStep:
       $ref: "./schemas/game-step.schema.json"
+    GameList:
+      $ref: "./schemas/game-list.schema.json"
+    GetGame:
+      $ref: "./schemas/get-game.schema.json"
 security:
   - TokenAuth: []

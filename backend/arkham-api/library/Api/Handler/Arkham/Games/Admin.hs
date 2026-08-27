@@ -18,6 +18,7 @@ module Api.Handler.Arkham.Games.Admin (
 
 import Api.Arkham.Epic (lookupGameEvent)
 import Api.Arkham.Helpers
+import Api.Arkham.Types.Game
 import Api.Handler.Arkham.Games.Shared
 import Arkham.Game
 import Conduit

@@ -16,7 +16,7 @@
           "const": "GameUpdate"
         },
         "contents": {
-          "type": "object"
+          "$ref": "./public-game.schema.json"
         }
       }
     },

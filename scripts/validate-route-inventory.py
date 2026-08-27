@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.14"
+# dependencies = [
+#   "pyyaml==6.0.3",
+# ]
 # ///
 
 import json
@@ -8,13 +11,17 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
+
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
 INVENTORY_PATH = ROOT / "contracts" / "route-inventory.json"
+OPENAPI_PATH = ROOT / "contracts" / "openapi.yaml"
 CANONICAL_ROUTE_SOURCE = "backend/arkham-api/config/routes"
 HTTP_METHODS = frozenset(
-    {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
+    {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "TRACE"}
 )
 SURFACES = frozenset(
     {
@@ -235,12 +242,91 @@ def compare_routes(actual: list[Route], inventoried: list[Route]) -> None:
     raise SystemExit("\n".join(details))
 
 
+def route_shape(path: str) -> str:
+    return re.sub(r"\{[^}/]+\}", "{}", path)
+
+
+def load_openapi_operations() -> set[tuple[str, str]]:
+    with OPENAPI_PATH.open(encoding="utf-8") as handle:
+        document = yaml.safe_load(handle)
+
+    require(isinstance(document, dict), "openapi.yaml must be an object")
+    servers = document.get("servers")
+    require(
+        isinstance(servers, list) and servers,
+        "openapi.yaml must declare at least one server",
+    )
+    server = servers[0]
+    require(
+        isinstance(server, dict) and isinstance(server.get("url"), str),
+        "openapi.yaml first server must declare a URL",
+    )
+    base_path = urlparse(server["url"]).path.rstrip("/")
+    paths = document.get("paths")
+    require(isinstance(paths, dict), "openapi.yaml paths must be an object")
+
+    operations: set[tuple[str, str]] = set()
+    for path, path_item in paths.items():
+        require(
+            isinstance(path, str) and path.startswith("/"),
+            f"OpenAPI path is not absolute: {path}",
+        )
+        require(
+            isinstance(path_item, dict),
+            f"OpenAPI path item must be an object: {path}",
+        )
+        for method in HTTP_METHODS:
+            if method.lower() not in path_item:
+                continue
+            operation = (method, route_shape(base_path + path))
+            require(
+                operation not in operations,
+                f"Duplicate OpenAPI operation: {method} {path}",
+            )
+            operations.add(operation)
+    return operations
+
+
+def compare_documented_operations(operations: list[dict[str, str]]) -> None:
+    documented_operations = [
+        (operation["method"], route_shape(operation["path"]))
+        for operation in operations
+        if operation["coverage"] == "documented"
+    ]
+    duplicates = [
+        operation
+        for operation, count in Counter(documented_operations).items()
+        if count > 1
+    ]
+    require(
+        not duplicates,
+        "Documented inventory routes have duplicate normalized shapes: "
+        + ", ".join(f"{method} {path}" for method, path in duplicates),
+    )
+    documented = set(documented_operations)
+    openapi = load_openapi_operations()
+    if documented == openapi:
+        return
+
+    missing = sorted(documented - openapi)
+    stale = sorted(openapi - documented)
+    details = ["OpenAPI operations do not match documented route inventory coverage."]
+    if missing:
+        details.append("Documented but missing from OpenAPI:")
+        details.extend(f"  + {method} {path}" for method, path in missing)
+    if stale:
+        details.append("Present in OpenAPI but not classified as documented:")
+        details.extend(f"  - {method} {path}" for method, path in stale)
+    raise SystemExit("\n".join(details))
+
+
 def main() -> None:
     operations, inventoried = load_inventory()
     route_source = ROOT / CANONICAL_ROUTE_SOURCE
     require(route_source.is_file(), f"Missing route source: {route_source}")
     actual = parse_routes(route_source)
     compare_routes(actual, inventoried)
+    compare_documented_operations(operations)
 
     api_count = sum(route.path.startswith("/api/v1") for route in actual)
     coverage = Counter(operation["coverage"] for operation in operations)
