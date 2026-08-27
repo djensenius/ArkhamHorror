@@ -65,7 +65,9 @@ def parse_routes(path: Path) -> list[Route]:
     parent_segments: list[str] = []
     routes: list[Route] = []
 
-    for line_number, raw_line in enumerate(path.read_text().splitlines(), start=1):
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         if not raw_line.strip() or raw_line.lstrip().startswith("--"):
             continue
 
