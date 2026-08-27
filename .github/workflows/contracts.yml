@@ -47,3 +47,14 @@ jobs:
           version: 2026.8.14
           cache: true
       - run: mise run contracts:asyncapi
+
+  routes:
+    name: Route inventory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+      - run: mise run contracts:routes

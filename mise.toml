@@ -15,10 +15,15 @@ run = "npx --yes @redocly/cli@2.49.0 lint contracts/openapi.yaml"
 description = "Validate the WebSocket AsyncAPI document"
 run = "npx --yes @asyncapi/cli@6.0.2 validate contracts/asyncapi.yaml"
 
+[tasks."contracts:routes"]
+description = "Validate the exact backend route inventory"
+run = "uv run scripts/validate-route-inventory.py"
+
 [tasks."contracts:validate"]
 description = "Run every native-client contract check"
 depends = [
   "contracts:fixtures",
   "contracts:openapi",
   "contracts:asyncapi",
+  "contracts:routes",
 ]

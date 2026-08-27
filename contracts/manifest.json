@@ -1,10 +1,11 @@
 {
-  "schemaRevision": "0.1.0",
+  "schemaRevision": "0.1.1",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
     "contracts/openapi.yaml",
     "contracts/asyncapi.yaml",
+    "contracts/route-inventory.json",
     "contracts/schemas/game-step.schema.json",
     "contracts/schemas/server-message.schema.json"
   ],
