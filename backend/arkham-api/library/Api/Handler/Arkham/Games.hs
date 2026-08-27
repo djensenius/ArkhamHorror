@@ -4,7 +4,6 @@
 {-# LANGUAGE NoFieldSelectors #-}
 
 module Api.Handler.Arkham.Games (
-  GameStepJson (..),
   getApiV1ArkhamGameR,
   getApiV1ArkhamGameSpectateR,
   getApiV1ArkhamGameStepR,
@@ -18,6 +17,7 @@ module Api.Handler.Arkham.Games (
 
 import Api.Arkham.Epic (lookupGameEvent)
 import Api.Arkham.Helpers
+import Api.Arkham.Types.GameStep
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.Games.Shared
 import Arkham.Campaign.Option
@@ -73,12 +73,6 @@ getApiV1ArkhamGameStepR gameId = do
   case steps of
     Value step : _ -> pure $ GameStepJson step
     [] -> notFound
-
-newtype GameStepJson = GameStepJson
-  { step :: Int
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass ToJSON
 
 getApiV1ArkhamGameR :: ArkhamGameId -> Handler GetGameJson
 getApiV1ArkhamGameR gameId = do
