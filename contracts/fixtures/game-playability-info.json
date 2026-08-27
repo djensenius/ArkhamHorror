@@ -1,0 +1,15 @@
+{
+  "tag": "GamePlayabilityInfo",
+  "cardId": "00000000-0000-0000-0000-000000000000",
+  "cardCode": "fixture-card",
+  "checks": [
+    [
+      "play",
+      null
+    ],
+    [
+      "fast",
+      "Needs an action window"
+    ]
+  ]
+}

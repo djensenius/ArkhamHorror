@@ -23,6 +23,25 @@ hand-authored independently of the server. The Haskell assertions live in
 `backend/arkham-api/tests/Arkham/Api/JsonContractsSpec.hs` and compare decoded
 fixture JSON with the real Aeson encoders.
 
+## WebSocket behavior
+
+- Game sockets are bidirectional: servers emit `ServerMessage` envelopes and
+  clients send answer payloads. Epic Multiplayer event sockets are read-only;
+  inbound frames are ignored.
+- Send `Authorization: Token <token>` when upgrade headers are available. The
+  `token` query parameter remains a compatibility fallback, and the header
+  takes precedence when both are present.
+- The server sends an RFC 6455 ping every 15 seconds. It may negotiate
+  permessage-deflate, but clients must also work without compression.
+- Messages are not buffered for disconnected subscribers. After reconnecting,
+  refetch the authoritative game or event state before applying new messages.
+- `EventChanged` carries no payload and instructs clients to refetch event
+  details. `SharedStateUpdate` is a complete versioned shared-state value.
+
+The server-message schema covers every `ApiResponse` constructor. All
+deterministic variants have backend-asserted fixtures; `GameUpdate` remains
+schema-only until the full public-game fixture harness lands.
+
 ## Route inventory
 
 The route inventory expands every HTTP method in

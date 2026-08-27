@@ -1,0 +1,8 @@
+{
+  "tag": "GameCardOnly",
+  "player": "00000000-0000-0000-0000-000000000001",
+  "title": "Private contract card",
+  "card": {
+    "code": "fixture-card"
+  }
+}
