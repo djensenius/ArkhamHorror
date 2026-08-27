@@ -2,12 +2,14 @@ module Arkham.Api.JsonContractsSpec (spec) where
 
 import Api.Arkham.Helpers (ApiResponse (..))
 import Api.Arkham.Types.GameStep (GameStepJson (..))
+import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Epic.Types (SharedEventState (..))
 import Data.Aeson qualified as Aeson
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.UUID qualified as UUID
 import Entity.Answer (Answer (..))
+import Entity.Arkham.Game qualified as ArkhamGame
 import System.IO.Error qualified as IOError
 import TestImport
 
@@ -37,7 +39,15 @@ loadFixture fileName = findFixture fixturePaths
 
 serverMessageFixtures :: [(FilePath, ApiResponse)]
 serverMessageFixtures =
-  [ ("game-message.json", GameMessage "A contract fixture message.")
+  [ ( "game-update.json"
+    , GameUpdate
+        $ PublicGame
+          (ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 3)
+          "Contract fixture game"
+          ["Contract fixture log entry."]
+          fixtureGame
+    )
+  , ("game-message.json", GameMessage "A contract fixture message.")
   , ("game-error.json", GameError "The question changed before this answer arrived.")
   , ("game-ui.json", GameUI "contract:ui")
   , ("game-audio.json", GameAudio "contract.ogg")
@@ -69,6 +79,10 @@ serverMessageFixtures =
   , ("event-changed.json", EventChanged)
   ]
  where
+  fixtureGame =
+    (newScenario "01104" 1729 1 Easy False)
+      { gameGitRevision = "contract-fixture"
+      }
   fixtureCard = Aeson.object ["code" .= ("fixture-card" :: Text)]
 
 clientAnswerFixtures :: [(FilePath, Text)]

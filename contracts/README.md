@@ -40,9 +40,11 @@ constructor.
 - `EventChanged` carries no payload and instructs clients to refetch event
   details. `SharedStateUpdate` is a complete versioned shared-state value.
 
-The server-message schema covers every `ApiResponse` constructor. All
-deterministic variants have backend-asserted fixtures; `GameUpdate` remains
-schema-only until the full public-game fixture harness lands.
+The server-message schema and backend assertions cover every `ApiResponse`
+constructor. The `GameUpdate` fixture comes from a deterministic pending
+scenario built by the production `newScenario`, `PublicGame`, and `ApiResponse`
+encoders. It pins generated identifiers and revision metadata without relying
+on database state or private game data.
 
 The client-answer schema covers every top-level `Answer` constructor.
 Question responses include optional `playerId` and `questionVersion` fields.
