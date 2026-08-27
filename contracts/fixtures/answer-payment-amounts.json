@@ -1,0 +1,10 @@
+{
+  "tag": "PaymentAmountsAnswer",
+  "contents": {
+    "amounts": {
+      "00000000-0000-0000-0000-000000000010": 2
+    },
+    "questionVersion": 42,
+    "playerId": "00000000-0000-0000-0000-000000000001"
+  }
+}

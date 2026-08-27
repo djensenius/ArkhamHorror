@@ -1,11 +1,12 @@
 {
-  "schemaRevision": "0.1.2",
+  "schemaRevision": "0.1.3",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
     "contracts/openapi.yaml",
     "contracts/asyncapi.yaml",
     "contracts/route-inventory.json",
+    "contracts/schemas/client-answer.schema.json",
     "contracts/schemas/game-step.schema.json",
     "contracts/schemas/server-message.schema.json"
   ],
@@ -65,6 +66,58 @@
     {
       "path": "contracts/fixtures/event-changed.json",
       "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-question.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-raw.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-payment-amounts.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-amounts.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-standalone-settings.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-campaign-settings.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-deck.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-deck-list.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-pick-destiny.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-campaign-specific.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-scenario-specific.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-exchange-amounts.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-campaign-step.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
     }
   ],
   "compatibility": {

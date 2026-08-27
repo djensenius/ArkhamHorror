@@ -7,6 +7,7 @@ import Data.Aeson qualified as Aeson
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.UUID qualified as UUID
+import Entity.Answer (Answer (..))
 import System.IO.Error qualified as IOError
 import TestImport
 
@@ -70,6 +71,39 @@ serverMessageFixtures =
  where
   fixtureCard = Aeson.object ["code" .= ("fixture-card" :: Text)]
 
+clientAnswerFixtures :: [(FilePath, Text)]
+clientAnswerFixtures =
+  [ ("answer-question.json", "Answer")
+  , ("answer-raw.json", "Raw")
+  , ("answer-payment-amounts.json", "PaymentAmountsAnswer")
+  , ("answer-amounts.json", "AmountsAnswer")
+  , ("answer-standalone-settings.json", "StandaloneSettingsAnswer")
+  , ("answer-campaign-settings.json", "CampaignSettingsAnswer")
+  , ("answer-deck.json", "DeckAnswer")
+  , ("answer-deck-list.json", "DeckListAnswer")
+  , ("answer-pick-destiny.json", "PickDestinyAnswer")
+  , ("answer-campaign-specific.json", "CampaignSpecificAnswer")
+  , ("answer-scenario-specific.json", "ScenarioSpecificAnswer")
+  , ("answer-exchange-amounts.json", "ExchangeAmountsAnswer")
+  , ("answer-campaign-step.json", "CampaignStepAnswer")
+  ]
+
+answerConstructor :: Answer -> Text
+answerConstructor = \case
+  Answer {} -> "Answer"
+  Raw {} -> "Raw"
+  PaymentAmountsAnswer {} -> "PaymentAmountsAnswer"
+  AmountsAnswer {} -> "AmountsAnswer"
+  StandaloneSettingsAnswer {} -> "StandaloneSettingsAnswer"
+  CampaignSettingsAnswer {} -> "CampaignSettingsAnswer"
+  DeckAnswer {} -> "DeckAnswer"
+  DeckListAnswer {} -> "DeckListAnswer"
+  PickDestinyAnswer {} -> "PickDestinyAnswer"
+  CampaignSpecificAnswer {} -> "CampaignSpecificAnswer"
+  ScenarioSpecificAnswer {} -> "ScenarioSpecificAnswer"
+  ExchangeAmountsAnswer {} -> "ExchangeAmountsAnswer"
+  CampaignStepAnswer {} -> "CampaignStepAnswer"
+
 spec :: Spec
 spec = describe "Native client contract fixtures" do
   it "matches the real game-step encoder" do
@@ -82,3 +116,11 @@ spec = describe "Native client contract fixtures" do
       fixture <- loadFixture fileName
 
       Aeson.toJSON response `shouldBe` fixture
+
+  for_ clientAnswerFixtures \(fileName, expectedConstructor) ->
+    it ("decodes the real client answer for " <> fileName) do
+      fixture <- loadFixture fileName
+
+      case Aeson.fromJSON fixture of
+        Aeson.Error err -> expectationFailure $ "Could not decode " <> fileName <> ": " <> err
+        Aeson.Success answer -> answerConstructor answer `shouldBe` expectedConstructor

@@ -18,10 +18,12 @@ do not infer wire shapes independently in each client.
 - `fixtures/`: sanitized examples validated by every client.
 - `manifest.json`: schema revision and compatibility metadata.
 
-Committed fixtures must be backed by deterministic backend values, not
-hand-authored independently of the server. The Haskell assertions live in
-`backend/arkham-api/tests/Arkham/Api/JsonContractsSpec.hs` and compare decoded
-fixture JSON with the real Aeson encoders.
+Committed fixtures must be bound to the real backend codec, not maintained as
+unchecked examples. The Haskell assertions live in
+`backend/arkham-api/tests/Arkham/Api/JsonContractsSpec.hs`: outbound fixtures
+are compared semantically with real Aeson encoder output, while inbound
+fixtures must decode through the real `FromJSON` instance to the expected
+constructor.
 
 ## WebSocket behavior
 
@@ -41,6 +43,13 @@ fixture JSON with the real Aeson encoders.
 The server-message schema covers every `ApiResponse` constructor. All
 deterministic variants have backend-asserted fixtures; `GameUpdate` remains
 schema-only until the full public-game fixture harness lands.
+
+The client-answer schema covers every top-level `Answer` constructor.
+Question responses include optional `playerId` and `questionVersion` fields.
+Large nested unions such as raw engine messages, standalone/campaign settings,
+deck lists, destiny values, and campaign steps are intentionally broad in this
+revision; their representative fixtures are decoder-checked, and later slices
+will tighten each nested schema without changing the top-level envelope.
 
 ## Route inventory
 
