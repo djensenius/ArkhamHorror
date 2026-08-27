@@ -1,19 +1,35 @@
 asyncapi: 3.1.0
 info:
   title: Arkham Horror WebSocket API
-  version: 0.1.0
+  version: 0.1.2
   description: |
-    Initial envelope-level contract for game and Epic Multiplayer sockets.
-    A reconnect must refetch the authoritative snapshot because disconnected
-    subscribers do not receive buffered updates.
+    Envelope-level contract for game and Epic Multiplayer sockets. The server
+    sends an RFC 6455 ping every 15 seconds and may negotiate
+    permessage-deflate. Disconnected subscribers do not receive buffered
+    updates, so a reconnect must refetch the authoritative REST snapshot.
 servers:
   production:
     host: arkhamhorror.app
     protocol: wss
     pathname: /api/v1
+    description: |
+      Send `Authorization: Token <token>` when the client can set upgrade
+      headers. The `token` query parameter is a compatibility fallback used
+      only when the Authorization header is absent.
+    security:
+      - $ref: "#/components/securitySchemes/tokenHeader"
+      - $ref: "#/components/securitySchemes/tokenQuery"
+    x-authentication-precedence:
+      - tokenHeader
+      - tokenQuery
+    x-keepalive-ping-seconds: 15
+    x-message-compression: permessage-deflate-optional
 channels:
   game:
     address: /arkham/games/{gameId}
+    description: |
+      Bidirectional game stream. The server publishes complete game snapshots
+      and transient UI messages; the client sends answer payloads.
     parameters:
       gameId:
         description: Arkham game UUID
@@ -24,6 +40,9 @@ channels:
         $ref: "#/components/messages/ClientAnswer"
   event:
     address: /arkham/events/{eventId}
+    description: |
+      Read-only Epic Multiplayer event stream. Inbound client frames are
+      ignored. EventChanged requires a REST event-details refetch.
     parameters:
       eventId:
         description: Epic Multiplayer event UUID
@@ -33,23 +52,37 @@ channels:
 operations:
   receiveGameMessages:
     action: receive
+    description: Receive authoritative snapshots and transient game messages.
     channel:
       $ref: "#/channels/game"
     messages:
       - $ref: "#/channels/game/messages/serverMessage"
   sendGameAnswers:
     action: send
+    description: Send one answer to the authoritative game engine.
     channel:
       $ref: "#/channels/game"
     messages:
       - $ref: "#/channels/game/messages/clientAnswer"
   receiveEventMessages:
     action: receive
+    description: Receive shared event state or an event-details change signal.
     channel:
       $ref: "#/channels/event"
     messages:
       - $ref: "#/channels/event/messages/serverMessage"
 components:
+  securitySchemes:
+    tokenHeader:
+      type: httpApiKey
+      in: header
+      name: Authorization
+      description: Send the value as `Token <token>`.
+    tokenQuery:
+      type: httpApiKey
+      in: query
+      name: token
+      description: Compatibility fallback when an Authorization header is absent.
   messages:
     ServerMessage:
       payload:

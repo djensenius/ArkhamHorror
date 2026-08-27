@@ -1,0 +1,7 @@
+{
+  "tag": "GameCard",
+  "title": "Contract card",
+  "card": {
+    "code": "fixture-card"
+  }
+}

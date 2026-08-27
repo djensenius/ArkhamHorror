@@ -1,0 +1,15 @@
+{
+  "tag": "SharedStateUpdate",
+  "contents": {
+    "sharedVersion": 7,
+    "sharedCounters": {
+      "act-progress:1": 2,
+      "countermeasures": 4
+    },
+    "sharedTotalInvestigators": 4,
+    "sharedAppliedDeltas": [
+      "delta-a",
+      "delta-b"
+    ]
+  }
+}
