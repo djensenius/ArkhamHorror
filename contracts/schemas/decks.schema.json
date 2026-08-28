@@ -55,7 +55,7 @@
       "type": "object",
       "propertyNames": {
         "type": "string",
-        "pattern": "^c.+"
+        "pattern": "^c.+$"
       },
       "additionalProperties": {
         "type": "integer"
@@ -137,7 +137,7 @@
         },
         "investigator_code": {
           "type": "string",
-          "pattern": "^c.+"
+          "pattern": "^c.+$"
         },
         "investigator_name": {
           "type": "string"
@@ -267,7 +267,7 @@
         },
         "contents": {
           "type": "string",
-          "pattern": "^c.+"
+          "pattern": "^c.+$"
         }
       }
     },
