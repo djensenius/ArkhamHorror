@@ -4,9 +4,8 @@ module Api.Handler.Arkham.Achievements (
   getApiV1ArkhamGameAchievementsR,
 ) where
 
-import Arkham.Achievement.Types (Achievement, achievementCampaigns, allAchievements)
-import Data.Aeson (withObject)
-import Data.Aeson.Types (parseFail)
+import Arkham.Achievement.Types (achievementCampaigns, allAchievements)
+import Api.Arkham.Types.Achievement
 import Import hiding ((==.))
 import Import qualified as P
 
@@ -15,21 +14,6 @@ getApiV1ArkhamAchievementsR :: Handler [Entity ArkhamAchievement]
 getApiV1ArkhamAchievementsR = do
   userId <- getRequestUserId
   runDB $ P.selectList [ArkhamAchievementUserId P.==. userId] [P.Asc ArkhamAchievementEarnedAt]
-
--- | Which earned achievements to clear. Only earned rows are touched;
--- in-progress rows (earnedAt null) keep accruing.
-data ClearAchievements
-  = ClearAll
-  | ClearCampaign Text
-  | ClearAchievement Achievement
-
-instance FromJSON ClearAchievements where
-  parseJSON = withObject "ClearAchievements" \o ->
-    (o .: "scope") >>= \case
-      ("all" :: Text) -> pure ClearAll
-      "campaign" -> ClearCampaign <$> o .: "campaign"
-      "achievement" -> ClearAchievement <$> o .: "achievement"
-      other -> parseFail $ "Unknown clear scope: " <> show other
 
 deleteApiV1ArkhamAchievementsR :: Handler ()
 deleteApiV1ArkhamAchievementsR = do

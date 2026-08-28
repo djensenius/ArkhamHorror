@@ -25,6 +25,7 @@ library
       Api.Arkham.Epic
       Api.Arkham.Export
       Api.Arkham.Helpers
+      Api.Arkham.Types.Achievement
       Api.Arkham.Types.Game
       Api.Arkham.Types.GameStep
       Api.Arkham.Types.MultiplayerVariant
