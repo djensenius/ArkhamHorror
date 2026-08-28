@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.11",
+  "schemaRevision": "0.1.12",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -12,6 +12,7 @@
     "contracts/schemas/catalog.schema.json",
     "contracts/schemas/client-answer.schema.json",
     "contracts/schemas/decks.schema.json",
+    "contracts/schemas/game-lifecycle.schema.json",
     "contracts/schemas/game-list.schema.json",
     "contracts/schemas/game-state.schema.json",
     "contracts/schemas/game-step.schema.json",
@@ -39,6 +40,10 @@
     {
       "path": "contracts/fixtures/decks.json",
       "schema": "contracts/schemas/decks.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-lifecycle.json",
+      "schema": "contracts/schemas/game-lifecycle.schema.json"
     },
     {
       "path": "contracts/fixtures/game-step.json",

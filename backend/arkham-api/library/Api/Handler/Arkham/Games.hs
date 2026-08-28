@@ -21,14 +21,11 @@ import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.Games.Shared
-import Arkham.Campaign.Option
 import Arkham.Card
 import Arkham.Classes.HasQueue
 import Arkham.Cost.Status
-import Arkham.Difficulty
 import Arkham.Game
 import Arkham.Game.Settings (
-  AsIfRuling,
   asIfRulingFromStrictAsIfAt,
   defaultAsIfRulingForCampaign,
   settingsAchievementsEnabled,
@@ -41,13 +38,11 @@ import Arkham.Id
 import Arkham.Message (Message (HandleOption))
 import Arkham.Queue
 import Arkham.Source
-import Arkham.UltimatumsAndBoons.Types (UltimatumOrBoon)
 import Arkham.Window (mkWhen)
 import Arkham.Window qualified as Window
 import Conduit
 import Control.Monad.Random (mkStdGen)
 import Control.Monad.Random.Class (getRandom)
-import Data.Aeson (withObject, (.!=), (.:?))
 import Data.Coerce
 import Data.Map.Strict qualified as Map
 import Data.Time.Clock
@@ -142,43 +137,6 @@ getApiV1ArkhamGamesR = do
   let countMap = Map.fromList [(gid, n) | (Value gid, Value n) <- playerCounts]
   pure
     $ map (\g -> toGameDetailsEntry g (fromMaybe 0 $ Map.lookup (coerce $ entityKey g) countMap)) games
-
-data CreateGamePost = CreateGamePost
-  { deckIds :: [Maybe ArkhamDeckId]
-  , playerCount :: Int
-  , campaignId :: Maybe CampaignId
-  , scenarioId :: Maybe ScenarioId
-  , difficulty :: Difficulty
-  , campaignName :: Text
-  , multiplayerVariant :: MultiplayerVariant
-  , includeTarotReadings :: Bool
-  , options :: Set CampaignOption
-  , strictAsIfAt :: Maybe Bool
-  , asIfRuling :: Maybe AsIfRuling
-  , ultimatumsAndBoons :: Set UltimatumOrBoon
-  , achievementsEnabled :: Bool
-  }
-  deriving stock (Show, Generic)
-
-{- | Hand-written so 'Maybe' fields stay optional and everything else stays
-required.
--}
-instance FromJSON CreateGamePost where
-  parseJSON = withObject "CreateGamePost" \o -> do
-    deckIds <- o .: "deckIds"
-    playerCount <- o .: "playerCount"
-    campaignId <- o .:? "campaignId"
-    scenarioId <- o .:? "scenarioId"
-    difficulty <- o .: "difficulty"
-    campaignName <- o .: "campaignName"
-    multiplayerVariant <- o .: "multiplayerVariant"
-    includeTarotReadings <- o .: "includeTarotReadings"
-    options <- o .: "options"
-    strictAsIfAt <- o .:? "strictAsIfAt"
-    asIfRuling <- o .:? "asIfRuling"
-    ultimatumsAndBoons <- o .:? "ultimatumsAndBoons" .!= mempty
-    achievementsEnabled <- o .:? "achievementsEnabled" .!= True
-    pure CreateGamePost {..}
 
 -- | New Game
 postApiV1ArkhamGamesR :: Handler (PublicGame ArkhamGameId)
