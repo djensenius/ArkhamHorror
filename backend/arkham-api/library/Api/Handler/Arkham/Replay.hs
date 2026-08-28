@@ -1,9 +1,10 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module Api.Handler.Arkham.Replay (getApiV1ArkhamGameReplayR) where
 
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Game
-import Data.Text.IO qualified as TIO
 import Database.Esqueleto.Experimental
 import Entity.Arkham.Step
 import Import hiding (delete, on, (==.))
@@ -49,9 +50,11 @@ getApiV1ArkhamGameReplayR gameId step = do
         -- Stored patches failing to reconstruct is server-side data
         -- corruption/incompatibility, not malformed client input, so we
         -- respond 422 Unprocessable Entity rather than 400 or 500. The
-        -- detailed patch error is logged server-side only.
-        Left err -> do
-          liftIO $ TIO.putStrLn $ "replay reconstruction failed for game " <> toPathPiece gameId <> ": " <> err
+        -- underlying patch error is deliberately not logged: it can embed
+        -- fragments of stored game/user content, so only a static
+        -- diagnostic (with the game id) is recorded server-side.
+        Left _err -> do
+          $(logWarn) $ "replay reconstruction failed for game " <> toPathPiece gameId
           sendStatusJSON Status.status422 $ ReplayError "Unable to reconstruct replay from stored data"
         Right gameJson' ->
           pure

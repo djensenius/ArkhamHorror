@@ -1,3 +1,5 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module Api.Handler.Arkham.Game.Bug (
   postApiV1ArkhamGameBugR,
 
@@ -22,7 +24,6 @@ import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (encode)
 import Data.ByteString.Base16 qualified as B16
-import Data.Text.IO qualified as TIO
 import Import hiding ((==.))
 import Network.HTTP.Types.Status (statusCode)
 import Network.HTTP.Types.Status qualified as Status
@@ -138,6 +139,24 @@ classifyErrorDiagnostic = \case
   SerializeError SerializeError' {status = st} -> AwsSerializeFailure (statusCode st) (categorizeAwsStatus (statusCode st))
   ServiceError e -> let st = statusCode e.status in AwsServiceFailure st (categorizeAwsStatus st)
 
+{- | Which AWS request a captured 'AwsErrorDiagnostic' came from, so the
+eventual log line can distinguish a HeadObject failure from a PutObject
+failure. This (along with the diagnostic itself) is the only thing carried
+across the 'runResourceT IO' boundary back into 'Handler': it is built
+from 'classifyErrorDiagnostic', so it inherits the same guarantee of
+containing no raw exception, header, body, or free-form server text.
+-}
+data BugUploadDiagnostic
+  = HeadObjectDiagnostic AwsErrorDiagnostic
+  | PutObjectDiagnostic AwsErrorDiagnostic
+  deriving stock (Eq, Show)
+
+-- | Render a captured diagnostic for the application logger.
+describeBugUploadDiagnostic :: ArkhamGameId -> BugUploadDiagnostic -> Text
+describeBugUploadDiagnostic gameId = \case
+  HeadObjectDiagnostic diag -> "HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
+  PutObjectDiagnostic diag -> "PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
+
 {- | Non-secret, structured classification of an 'AuthError' raised by
 credential/config discovery, safe to log. Deliberately never shows the
 exception itself: 'RetrievalError' wraps an 'HttpException' with the same
@@ -197,9 +216,16 @@ postApiV1ArkhamGameBugR gameId = do
       eEnv <- liftIO $ try @_ @AuthError (newEnv discover)
       case eEnv of
         Left authErr -> do
-          liftIO $ TIO.putStrLn $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyAuthErrorDiagnostic authErr)
+          $(logWarn) $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyAuthErrorDiagnostic authErr)
           sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
         Right env -> do
+          -- The HeadObject/PutObject actions run inside 'runResourceT IO',
+          -- which has no application-logger access. Rather than logging
+          -- from inside that IO action (which would require an ad-hoc
+          -- stdout/file logger bypassing the normal Yesod logging path),
+          -- any sanitized diagnostic is stashed here and logged afterwards,
+          -- back in 'Handler', via the normal monad-logger path.
+          diagnosticRef <- liftIO $ newIORef Nothing
           outcome <-
             liftIO $ runResourceT do
               runBugUploadPolicy
@@ -211,8 +237,7 @@ postApiV1ArkhamGameBugR gameId = do
                         let classified = classifyHeadObjectError err
                         when (classified == HeadObjectFailed)
                           $ liftIO
-                          $ TIO.putStrLn
-                          $ "bug report upload: HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyErrorDiagnostic err)
+                          $ writeIORef diagnosticRef (Just $ HeadObjectDiagnostic (classifyErrorDiagnostic err))
                         pure classified
                 )
                 ( do
@@ -220,11 +245,12 @@ postApiV1ArkhamGameBugR gameId = do
                     case ePut of
                       Right _ -> pure True
                       Left err -> do
-                        liftIO
-                          $ TIO.putStrLn
-                          $ "bug report upload: PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyErrorDiagnostic err)
+                        liftIO $ writeIORef diagnosticRef (Just $ PutObjectDiagnostic (classifyErrorDiagnostic err))
                         pure False
                 )
+          mDiagnostic <- liftIO $ readIORef diagnosticRef
+          for_ mDiagnostic $ \diagnostic ->
+            $(logWarn) $ "bug report upload: " <> describeBugUploadDiagnostic gameId diagnostic
           case outcome of
             BugUploadSucceeded ->
               pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename
