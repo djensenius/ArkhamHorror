@@ -16,7 +16,12 @@ module Api.Handler.Arkham.Game.Bug (
   classifyAuthErrorDiagnostic,
   freezeAuth,
   runOnDisposableWorker,
+  runBoundedOnDisposableWorker,
   discoverFrozenEnv,
+  discoverFrozenEnvWithTimeout,
+  defaultDiscoverFrozenEnvTimeoutMicros,
+  runHeadObjectAction,
+  runPutObjectAction,
 ) where
 
 import Amazonka (AuthEnv (..), Env, Env' (..), Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
@@ -24,14 +29,16 @@ import Amazonka.Auth (Auth (..), AuthError (..))
 import Amazonka.S3
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
-import Control.Concurrent (forkIO, killThread)
-import Control.Exception (throwIO, uninterruptibleMask_)
+import Control.Concurrent (forkIOWithUnmask, killThread)
+import Control.Exception (catch, evaluate, mask, throwIO)
+import Control.Exception qualified as Exception
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (encode)
 import Data.ByteString.Base16 qualified as B16
 import Import hiding ((==.))
 import Network.HTTP.Types.Status (statusCode)
 import Network.HTTP.Types.Status qualified as Status
+import System.Timeout (timeout)
 import UnliftIO.Exception (try)
 
 {- | Result of attempting a HeadObject check for the export before upload.
@@ -100,6 +107,40 @@ never unlock the PUT.
 classifyHeadObjectError :: Error -> HeadObjectOutcome
 classifyHeadObjectError (ServiceError e) | statusCode e.status == 404 = ObjectAbsent
 classifyHeadObjectError err = HeadObjectFailed (classifyErrorDiagnostic err)
+
+{- | Run the HeadObject check, forcing the sanitized outcome to normal form
+with 'evaluate' *before* returning it -- unlike a bare @pure $ either ...@,
+which would only build an unforced thunk still closing over the raw
+Amazonka 'Error' (and, transitively, whatever it wraps: an 'HttpException'
+carrying request headers, or a raw response body) until something else
+happens to force it later. Forcing here, inside this action, guarantees
+that by the time it returns -- in particular, by the time 'runResourceT'
+built around it returns -- nothing reachable from the result can still
+retain the raw exception. A successful response is discarded in-scope
+(never inspected, never retained) since only presence\/absence\/failure is
+meaningful to callers. Polymorphic over 'MonadIO' \/ the response type so
+it is exactly the same code path production ('ResourceT IO', a real
+Amazonka response) and tests (plain 'IO', a fixture) both exercise.
+-}
+runHeadObjectAction :: MonadIO m => m (Either Error a) -> m HeadObjectOutcome
+runHeadObjectAction sendHeadObject =
+  sendHeadObject >>= \case
+    Right _response -> pure ObjectPresent
+    Left err -> liftIO (evaluate (classifyHeadObjectError err))
+
+{- | Run the PutObject upload, forcing the sanitized outcome to normal form
+with 'evaluate' *before* returning it. See 'runHeadObjectAction' for why
+this matters: without it, a failing PUT's result would be an unforced
+thunk over the raw 'Error' until something outside this action's scope
+happened to force it.
+-}
+runPutObjectAction :: MonadIO m => m (Either Error a) -> m (Either AwsErrorDiagnostic ())
+runPutObjectAction sendPutObject =
+  sendPutObject >>= \case
+    Right _response -> pure (Right ())
+    Left err -> do
+      diag <- liftIO (evaluate (classifyErrorDiagnostic err))
+      pure (Left diag)
 
 -- | Stable, non-secret envelope for an upload failure. Never includes AWS
 -- credentials, request/response bodies, or bucket internals.
@@ -187,6 +228,11 @@ data AwsAuthErrorDiagnostic
   | AwsAuthCredentialChainExhausted
   | AwsAuthServiceFailure {awsAuthErrorStatus :: Int, awsAuthErrorCategory :: AwsErrorCategory}
   | AwsAuthOtherFailure
+  | -- | Credential discovery plus freezing did not finish within
+    -- 'defaultDiscoverFrozenEnvTimeoutMicros' (or an injected test bound).
+    -- Deliberately nullary: there is no underlying exception to classify,
+    -- only the bare fact that the bound was exceeded.
+    AwsAuthDiscoveryTimedOut
   deriving stock (Eq, Show)
 
 classifyAuthErrorDiagnostic :: AuthError -> AwsAuthErrorDiagnostic
@@ -250,33 +296,125 @@ worker is the only thread that can ever be targeted, and (via
 before it returns, so there is nothing left to target by the time this
 function's caller resumes; the worker itself is not reused for anything
 else afterwards.
+
+If the calling thread is itself asynchronously interrupted (or
+cancelled -- e.g. Warp abandoning a request) while waiting for the
+worker, the worker is never left running past this call: it is killed
+and this function synchronously waits for its acknowledgement (the
+worker always @putMVar@s exactly once, even when killed) before letting
+the original interrupting exception propagate completely unchanged --
+never a false 502, never swallowed. That wait is only as protected as
+an ordinary 'Control.Exception.catch' handler already is: per its own
+Haddock, \"the handler is inside an implicit mask\" -- not
+'Control.Exception.uninterruptibleMask_'. So if the worker were ever
+somehow genuinely stuck (e.g. blocked in an uninterruptible foreign
+call), a further external exception could still interrupt this wait,
+rather than turning the calling thread into a permanent,
+uninterruptible orphan.
+
+The worker deliberately wraps @action@ in
+'Control.Exception.try' (the plain one from "Control.Exception", imported
+qualified here as @Exception@) rather than the otherwise-preferred
+"UnliftIO.Exception" 'try'. The latter only catches /synchronous/
+exceptions by design (it is meant to keep code from accidentally
+swallowing an unrelated asynchronous cancellation), which is exactly
+wrong here: this worker's own @putMVar resultVar@ acknowledgement must
+run even when it was the disposable worker itself that received an
+asynchronous exception -- namely the very 'killThread' issued by this
+function's own cancellation cleanup above. Using the sync-only 'try'
+would let that 'killThread' terminate the worker before it ever reaches
+@putMVar@, so the cleanup path's subsequent @takeMVar resultVar@ would
+block forever waiting for an acknowledgement that can never arrive.
 -}
 runOnDisposableWorker :: IO a -> IO a
 runOnDisposableWorker action = do
   resultVar <- newEmptyMVar
-  _workerThreadId <- forkIO (try @_ @SomeException action >>= putMVar resultVar)
-  either throwIO pure =<< takeMVar resultVar
+  workerThreadId <-
+    forkIOWithUnmask $ \unmask ->
+      unmask (Exception.try @SomeException action) >>= putMVar resultVar
+  result <-
+    takeMVar resultVar `catch` \(callerException :: SomeException) -> do
+      killThread workerThreadId
+      _ <- takeMVar resultVar
+      throwIO callerException
+  either throwIO pure result
+
+{- | As 'runOnDisposableWorker', but bounded to at most @timeoutMicros@
+microseconds; returns 'Nothing' if that bound is exceeded. The timeout is
+applied *inside* the disposable worker (i.e. it is the worker, never the
+caller, that 'System.Timeout.timeout' can interrupt), so a hung @action@
+is still cleaned up exactly as 'runOnDisposableWorker' always cleans up a
+cancelled worker -- nothing survives this call either way, whether it
+finishes, times out, or the caller is itself cancelled while waiting.
+
+'System.Timeout.timeout' only ever converts *its own* internal,
+uniquely-tagged timeout signal into 'Nothing'; any other exception raised
+by @action@ (including a genuine 'AuthError' from discovery) still
+propagates through unchanged -- this is not a broad, success-shaped catch.
+-}
+runBoundedOnDisposableWorker :: Int -> IO a -> IO (Maybe a)
+runBoundedOnDisposableWorker timeoutMicros action =
+  runOnDisposableWorker (timeout timeoutMicros action)
+
+{- | How long 'discoverFrozenEnv' allows AWS credential discovery plus
+freezing to run before giving up and reporting the sanitized
+'AwsAuthDiscoveryTimedOut' dependency failure, instead of ever blocking a
+request indefinitely. Real discovery (environment\/file\/IMDS\/ECS
+metadata lookups) normally completes in well under a second; this bound
+exists purely so a wedged or unreachable credential provider can never
+hang a request worker forever, and is kept comfortably below typical
+request-handling deadlines.
+-}
+defaultDiscoverFrozenEnvTimeoutMicros :: Int
+defaultDiscoverFrozenEnvTimeoutMicros = 8 * 1000 * 1000
 
 {- | Discover fresh AWS credentials for exactly one bounded upload, never
 leaving behind a background refresh thread that could survive this call
-(see 'runOnDisposableWorker' and 'freezeAuth'). The returned 'Env', if
-any, has entirely static credentials from this point forward: reusing or
-holding onto it for longer than the immediate HeadObject\/PutObject
-sequence would silently let its temporary credentials go stale (Amazonka's
-own refresh mechanism no longer exists for it), so a fresh
-'discoverFrozenEnv' is called for every request rather than caching the
-result -- this preserves IAM\/ECS\/IMDS-sourced temporary-credential
-support and freshness, it just never lets any single 'Env' outlive one
-request.
+(see 'runOnDisposableWorker' and 'freezeAuth'), and never blocking past
+'defaultDiscoverFrozenEnvTimeoutMicros'. The returned 'Env', if any, has
+entirely static credentials from this point forward: reusing or holding
+onto it for longer than the immediate HeadObject\/PutObject sequence
+would silently let its temporary credentials go stale (Amazonka's own
+refresh mechanism no longer exists for it), so a fresh 'discoverFrozenEnv'
+is called for every request rather than caching the result -- this
+preserves IAM\/ECS\/IMDS-sourced temporary-credential support and
+freshness, it just never lets any single 'Env' outlive one request.
 -}
-discoverFrozenEnv :: IO (Either AuthError Env)
-discoverFrozenEnv = try @_ @AuthError $ runOnDisposableWorker $ do
-  env <- newEnv discover
-  -- Uninterruptibly, to close the -- already vanishingly small, given
-  -- AWS-issued temporary credentials always have a lifetime of at least
-  -- several minutes before the earliest possible refresh attempt -- window
-  -- between discovery succeeding and the background thread being killed.
-  uninterruptibleMask_ do
+discoverFrozenEnv :: IO (Either AwsAuthErrorDiagnostic Env)
+discoverFrozenEnv = discoverFrozenEnvWithTimeout defaultDiscoverFrozenEnvTimeoutMicros
+
+{- | As 'discoverFrozenEnv', but with an explicit, injectable timeout (in
+microseconds) rather than the fixed production default -- this is the
+seam production code and deterministic tests share, so tests can exercise
+the discovery-hangs-forever case with a tiny bound instead of waiting on
+(or trying to fake) the real production duration. 'discoverFrozenEnv'
+itself is not directly unit-tested beyond this: real credential discovery
+genuinely talks to the environment\/filesystem\/IMDS\/ECS metadata
+endpoints, which is out of scope for a deterministic unit test, consistent
+with this codebase's existing practice of only unit-testing the pure
+classification\/sequencing seams around such calls.
+-}
+discoverFrozenEnvWithTimeout :: Int -> IO (Either AwsAuthErrorDiagnostic Env)
+discoverFrozenEnvWithTimeout timeoutMicros = do
+  eResult <- try @_ @AuthError (runBoundedOnDisposableWorker timeoutMicros discoverAndFreeze)
+  pure $ case eResult of
+    Left authErr -> Left (classifyAuthErrorDiagnostic authErr)
+    Right Nothing -> Left AwsAuthDiscoveryTimedOut
+    Right (Just env) -> Right env
+ where
+  -- 'mask'ed (not 'uninterruptibleMask_'ed) from the moment 'newEnv
+  -- discover' returns: 'restore' only re-admits interruption for the
+  -- discovery call itself (so a hung network request can still be timed
+  -- out or cancelled), never for the freeze step immediately after, so
+  -- there is no gap in which a background refresh thread could exist
+  -- without this worker having already committed to killing it before
+  -- anything else can interrupt it. If 'killThread' itself would need to
+  -- block (the refresh thread already masked), that specific call
+  -- remains an interruptible operation even under plain 'mask', so this
+  -- can still be interrupted rather than hang uninterruptibly.
+  discoverAndFreeze :: IO Env
+  discoverAndFreeze = mask $ \restore -> do
+    env <- restore (newEnv discover)
     frozen <- freezeAuth (runIdentity env.auth)
     pure env {auth = Identity (Auth frozen)}
 
@@ -301,36 +439,36 @@ postApiV1ArkhamGameBugR gameId = do
       -- 'discoverFrozenEnv') on a disposable worker thread, never this
       -- Warp request-handling thread, and immediately frozen: no
       -- background credential-refresh thread can survive past
-      -- 'discoverFrozenEnv' returning, so this thread can never be the
-      -- target of a delayed refresh-failure 'throwTo'.
+      -- 'discoverFrozenEnv' returning (whether it succeeds, times out,
+      -- fails, or this very request is cancelled while waiting on it),
+      -- so this thread can never be the target of a delayed
+      -- refresh-failure 'throwTo'. The returned diagnostic (including the
+      -- timeout case) is already fully classified/sanitized.
       eEnv <- liftIO discoverFrozenEnv
       case eEnv of
-        Left authErr -> do
-          $(logWarn) $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyAuthErrorDiagnostic authErr)
+        Left diag -> do
+          $(logWarn) $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow diag
           sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
         Right env -> do
           -- The HeadObject/PutObject actions run inside 'runResourceT IO',
           -- which has no application-logger access. Rather than logging
           -- from inside that IO action (which would require an ad-hoc
           -- stdout/file logger bypassing the normal Yesod logging path),
-          -- any failure is classified into an already-sanitized,
-          -- strict-by-default (this package's 'StrictData') field of the
-          -- 'BugUploadOutcome' returned by 'runBugUploadPolicy', and logged
-          -- afterwards back in 'Handler' via the normal monad-logger path.
-          -- There is no mutable cell crossing the 'runResourceT' boundary,
-          -- so there is nothing that could retain an unforced thunk over a
-          -- raw exception.
+          -- any failure is classified into an already-sanitized diagnostic
+          -- and *forced* ('runHeadObjectAction'/'runPutObjectAction' both
+          -- use 'evaluate', not a bare lazy 'pure') before it ever leaves
+          -- 'ResourceT'; the whole 'BugUploadOutcome' is forced again just
+          -- before 'runResourceT' returns, so nothing reachable from
+          -- 'outcome' can retain any part of a raw Amazonka 'Error'/
+          -- response by the time it is logged afterwards back in
+          -- 'Handler' via the normal monad-logger path.
           outcome <-
             liftIO $ runResourceT do
-              runBugUploadPolicy
-                ( do
-                    eHead <- try @_ @Error (send env (newHeadObject bucket key))
-                    pure $ either classifyHeadObjectError (const ObjectPresent) eHead
-                )
-                ( do
-                    ePut <- try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))
-                    pure $ either (Left . classifyErrorDiagnostic) (const $ Right ()) ePut
-                )
+              result <-
+                runBugUploadPolicy
+                  (runHeadObjectAction (try @_ @Error (send env (newHeadObject bucket key))))
+                  (runPutObjectAction (try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))))
+              liftIO (evaluate result)
           case outcome of
             BugUploadSucceeded ->
               pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename

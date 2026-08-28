@@ -14,15 +14,49 @@ import Api.Handler.Arkham.Game.Bug (
   classifyErrorDiagnostic,
   classifyHeadObjectError,
   freezeAuth,
+  runBoundedOnDisposableWorker,
   runBugUploadPolicy,
+  runHeadObjectAction,
   runOnDisposableWorker,
+  runPutObjectAction,
  )
 import Arkham.Prelude
 import Control.Concurrent (forkIO, myThreadId, threadDelay)
+import Control.Exception qualified as Exception
 import Data.Text qualified as T
+import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Network.HTTP.Client qualified as Client
 import Network.HTTP.Types.Status (Status, status403, status404, status429, status500)
+import System.IO.Unsafe (unsafePerformIO)
 import Test.Hspec
+
+-- | Deliberately distinct from any exception type used elsewhere in this
+-- suite (or thrown internally by the production code under test), so a
+-- test can prove a caught exception is *exactly* this one -- i.e. the
+-- caller's own cancellation -- and not, say, a worker's internal failure
+-- coincidentally caught by too broad a handler.
+data TestCancellation = TestCancellation
+  deriving stock (Eq, Show)
+  deriving anyclass Exception
+
+{- | Wraps a value so that the *first* time it is forced (to WHNF), it
+records that fact into @ref@ before returning the value unchanged. Used to
+prove that 'runHeadObjectAction'\/'runPutObjectAction' force their
+sanitized outcome *inside* the action, rather than returning an unforced
+thunk that only happens to be forced later by the test's own
+'shouldBe'\/'evaluate' call -- by checking @ref@'s flag *before* the test
+itself ever inspects the returned value.
+
+'NOINLINE' prevents GHC from floating/duplicating or eliminating the
+'unsafePerformIO' as dead code; ordering against the read of @ref@ is
+guaranteed by the data dependency (the read happens strictly after the
+action being tested has already returned, and the write only happens when
+something forces this thunk, which can only be the code under test if it
+happens before that read).
+-}
+markForcedOnceEvaluated :: IORef Bool -> a -> a
+markForcedOnceEvaluated ref x = unsafePerformIO (writeIORef ref True) `seq` x
+{-# NOINLINE markForcedOnceEvaluated #-}
 
 -- | A bare-bones S3 'ServiceError' carrying only the HTTP status that
 -- 'classifyHeadObjectError' inspects. HeadObject responses have no body, so
@@ -129,6 +163,46 @@ spec = describe "bug report upload" do
       forced <- evaluate outcome
       forced `shouldBe` BugUploadFailed (HeadCheckFailed (AwsServiceFailure 500 AwsCategoryServerError))
       T.isInfixOf secret (tshow forced) `shouldBe` False
+
+  {- | Regression for the PUT-result-laziness audit: a bare @pure $ either
+  ... / case ... of ...@ only builds a thunk, so a failing PUT's
+  classified diagnostic (and, transitively, whatever raw 'Error' it was
+  built from) could still be unforced when 'runResourceT' returns --
+  forced only incidentally, later, by whatever eventually pattern-matches
+  the outcome. 'runHeadObjectAction'\/'runPutObjectAction' instead
+  'evaluate' the classified outcome themselves, from inside the action,
+  before returning it. 'markForcedOnceEvaluated' proves this happens
+  *inside* the action under test: its "forced" flag is asserted 'True'
+  immediately after the action returns, strictly before the test itself
+  ever forces the returned value (e.g. via 'shouldBe').
+  -}
+  describe "runHeadObjectAction" do
+    it "reports the object present without inspecting/forcing anything from a successful response" do
+      runHeadObjectAction (pure (Right ("response" :: String))) `shouldReturn` ObjectPresent
+
+    it "forces the classified diagnostic to normal form before returning, not deferring it as a thunk" do
+      forcedRef <- newIORef False
+      let poisonedErr = markForcedOnceEvaluated forcedRef (serviceErrorWithStatus status403)
+      outcome <- runHeadObjectAction (pure (Left poisonedErr) :: IO (Either Error ()))
+      -- Asserted before 'shouldBe' below ever forces 'outcome' itself, so
+      -- this can only be 'True' already if 'runHeadObjectAction' forced
+      -- the diagnostic internally.
+      readIORef forcedRef `shouldReturn` True
+      outcome `shouldBe` HeadObjectFailed (AwsServiceFailure 403 AwsCategoryClientError)
+
+  describe "runPutObjectAction" do
+    it "succeeds without inspecting/forcing anything from a successful response" do
+      runPutObjectAction (pure (Right ("response" :: String))) `shouldReturn` Right ()
+
+    it "forces the classified diagnostic to normal form before returning, not deferring it as a thunk" do
+      forcedRef <- newIORef False
+      let poisonedErr = markForcedOnceEvaluated forcedRef (serviceErrorWithStatus status500)
+      outcome <- runPutObjectAction (pure (Left poisonedErr) :: IO (Either Error ()))
+      -- As above: proves the forcing happened inside the action, not
+      -- merely as a side effect of this test's own inspection of
+      -- 'outcome'.
+      readIORef forcedRef `shouldReturn` True
+      outcome `shouldBe` Left (AwsServiceFailure 500 AwsCategoryServerError)
 
   {- | Regression for the follow-up audit: the handler used to log
   'tshow err'/'tshow authErr' directly. 'TransportError'/'RetrievalError'
@@ -240,3 +314,188 @@ spec = describe "bug report upload" do
       case result of
         Left ioErr -> show ioErr `shouldContain` "boom"
         Right () -> expectationFailure "expected the worker's exception to propagate"
+
+    it "leaves no worker thread running after a normal return" do
+      workerTidRef <- newIORef Nothing
+      _ <- runOnDisposableWorker (myThreadId >>= writeIORef workerTidRef . Just)
+      mWorkerTid <- readIORef workerTidRef
+      case mWorkerTid of
+        Nothing -> expectationFailure "worker never recorded its own ThreadId"
+        Just workerTid -> do
+          status <- threadStatus workerTid
+          status `shouldNotBe` ThreadRunning
+
+    {- | Regression for the caller-cancellation/worker-lifetime audit: a
+    fire-and-forget @forkIO@ that merely discarded the worker's 'ThreadId'
+    could leave the worker running indefinitely past a cancelled caller.
+    'runOnDisposableWorker' now retains that 'ThreadId' and, on caller
+    cancellation, kills the worker and waits for its acknowledgement before
+    letting the caller's own exception propagate -- unchanged, never
+    swallowed, never turned into a false success.
+
+    Run via a "canary" thread (rather than 'throwTo'ing this test thread
+    itself) so the cancellation exception can be delivered with an ordinary
+    'throwTo' from outside, exactly as a real caller (e.g. Warp abandoning a
+    request) would be interrupted asynchronously.
+
+    Both the delivery ('Control.Exception.throwTo') and the observing
+    catch ('Control.Exception.try', qualified here as @Exception@) are
+    deliberately the plain ones from "Control.Exception", not this
+    module's ambient "UnliftIO.Exception" re-exports (via 'Arkham.Prelude'
+    \/ @classy-prelude@). 'UnliftIO.Exception.throwTo' marks the delivered
+    exception as asynchronous so that 'UnliftIO.Exception.try' -- which
+    only ever catches /synchronous/ exceptions by design -- correctly
+    refuses to catch it; using that pairing here would make this test's
+    own observation @try@ unable to see the very cancellation it just
+    delivered, which is a property of the sync-only wrapper, not evidence
+    of any bug in 'runOnDisposableWorker'. A real caller cancellation (e.g.
+    Warp's own thread-kill on an abandoned request) is delivered with
+    plain, unwrapped 'Control.Exception.throwTo' semantics, so using the
+    same plain functions here is also the more faithful simulation.
+    -}
+    it "propagates the caller's own asynchronous cancellation unchanged, terminating (not orphaning) the worker" do
+      workerStarted <- newEmptyMVar
+      workerFinishedNormally <- newIORef False
+      canaryResult <- newEmptyMVar
+      canaryTid <- forkIO do
+        result <-
+          Exception.try @SomeException $
+            runOnDisposableWorker do
+              putMVar workerStarted ()
+              threadDelay (2 * 1000 * 1000)
+              writeIORef workerFinishedNormally True
+        putMVar canaryResult result
+      takeMVar workerStarted
+      -- A tiny scheduler-settle delay: 'workerStarted' only proves the
+      -- *worker* thread has begun running (it alone can 'putMVar' it),
+      -- not that the *canary* thread calling 'runOnDisposableWorker' has
+      -- itself already reached its own blocking wait. This closes that
+      -- narrow scheduling gap so the cancellation below reliably lands
+      -- while canary is genuinely blocked waiting on the worker, exactly
+      -- as intended, rather than racing its own setup code.
+      threadDelay (20 * 1000)
+      Exception.throwTo canaryTid TestCancellation
+      mResult <- timeout (5 * 1000 * 1000) (takeMVar canaryResult)
+      case mResult of
+        Nothing -> expectationFailure "runOnDisposableWorker did not return after caller cancellation"
+        Just (Left ex) -> fromException ex `shouldBe` Just TestCancellation
+        Just (Right ()) -> expectationFailure "expected the caller's cancellation to propagate, got a normal result instead"
+      -- The worker's own action never reached its final line: it was
+      -- genuinely killed, not merely abandoned while still running.
+      readIORef workerFinishedNormally `shouldReturn` False
+
+    {- | Regression for the same audit: proves 'runOnDisposableWorker'
+    genuinely *waits* for the worker's cleanup to finish, rather than
+    firing 'killThread' and immediately letting the caller's cancellation
+    through regardless. The worker's own 'finally' cleanup (itself run
+    under an implicit mask while it handles its incoming 'ThreadKilled')
+    can only complete -- and only afterwards does the worker 'putMVar' its
+    result -- strictly before 'runOnDisposableWorker''s cleanup handler can
+    'takeMVar' that result and rethrow the caller's exception. So by the
+    time this test observes the caller's cancellation having propagated,
+    the flag below can only already be 'True': this is a structural
+    guarantee, not a timing race.
+    -}
+    it "waits for the worker's own cleanup to finish before letting a cancelled caller's exception through" do
+      workerStarted <- newEmptyMVar
+      ackFinished <- newIORef False
+      canaryResult <- newEmptyMVar
+      canaryTid <- forkIO do
+        result <-
+          Exception.try @SomeException $
+            runOnDisposableWorker $
+              (putMVar workerStarted () >> threadDelay (2 * 1000 * 1000))
+                `finally` writeIORef ackFinished True
+        putMVar canaryResult result
+      takeMVar workerStarted
+      -- A tiny scheduler-settle delay: 'workerStarted' only proves the
+      -- *worker* thread has begun running (it alone can 'putMVar' it),
+      -- not that the *canary* thread calling 'runOnDisposableWorker' has
+      -- itself already reached its own blocking wait. This closes that
+      -- narrow scheduling gap so the cancellation below reliably lands
+      -- while canary is genuinely blocked waiting on the worker, exactly
+      -- as intended, rather than racing its own setup code.
+      threadDelay (20 * 1000)
+      Exception.throwTo canaryTid TestCancellation
+      mResult <- timeout (5 * 1000 * 1000) (takeMVar canaryResult)
+      case mResult of
+        Nothing -> expectationFailure "runOnDisposableWorker did not return after caller cancellation"
+        Just _ -> pure ()
+      readIORef ackFinished `shouldReturn` True
+
+    it "leaves no worker thread running after the caller is cancelled and the worker is killed" do
+      workerStarted <- newEmptyMVar
+      workerTidRef <- newIORef Nothing
+      canaryResult <- newEmptyMVar
+      canaryTid <- forkIO do
+        result <-
+          Exception.try @SomeException $
+            runOnDisposableWorker do
+              tid <- myThreadId
+              writeIORef workerTidRef (Just tid)
+              putMVar workerStarted ()
+              threadDelay (2 * 1000 * 1000)
+        putMVar canaryResult result
+      takeMVar workerStarted
+      -- A tiny scheduler-settle delay: 'workerStarted' only proves the
+      -- *worker* thread has begun running (it alone can 'putMVar' it),
+      -- not that the *canary* thread calling 'runOnDisposableWorker' has
+      -- itself already reached its own blocking wait. This closes that
+      -- narrow scheduling gap so the cancellation below reliably lands
+      -- while canary is genuinely blocked waiting on the worker, exactly
+      -- as intended, rather than racing its own setup code.
+      threadDelay (20 * 1000)
+      Exception.throwTo canaryTid TestCancellation
+      _ <- timeout (5 * 1000 * 1000) (takeMVar canaryResult)
+      mWorkerTid <- readIORef workerTidRef
+      case mWorkerTid of
+        Nothing -> expectationFailure "worker never recorded its own ThreadId"
+        Just workerTid -> do
+          status <- threadStatus workerTid
+          status `shouldNotBe` ThreadRunning
+
+  describe "runBoundedOnDisposableWorker" do
+    it "returns the action's result when it completes within the bound" do
+      runBoundedOnDisposableWorker (2 * 1000 * 1000) (pure (7 :: Int)) `shouldReturn` Just 7
+
+    it "propagates an exception raised inside the action, never converting it into a Nothing timeout" do
+      result <- try @_ @IOException (runBoundedOnDisposableWorker (2 * 1000 * 1000) (throwIO (userError "boom")))
+      case result of
+        Left ioErr -> show ioErr `shouldContain` "boom"
+        Right _ -> expectationFailure "expected the action's exception to propagate, not become Nothing"
+
+    it "returns Nothing, without ever letting the action finish, when it does not complete within the bound" do
+      hangCompleted <- newIORef False
+      result <-
+        runBoundedOnDisposableWorker (50 * 1000) do
+          threadDelay (2 * 1000 * 1000)
+          writeIORef hangCompleted True
+      result `shouldBe` Nothing
+      -- Long enough that, had the hung action not actually been
+      -- terminated, it would certainly have flipped the flag by now.
+      threadDelay (300 * 1000)
+      readIORef hangCompleted `shouldReturn` False
+
+    {- | Regression for the refresh-thread-lifetime audit, composed at the
+    same level 'discoverFrozenEnvWithTimeout' itself uses: even when the
+    /overall/ bounded action goes on to time out doing unrelated work
+    /after/ 'freezeAuth', the background refresh thread it killed is
+    -- and stays -- dead. Termination of the refresh child is not
+    contingent on the outer bound being respected by the rest of the
+    action; 'freezeAuth' kills it immediately, synchronously, as soon as
+    it runs.
+    -}
+    it "still lets freezeAuth kill a background refresh thread even when the overall bounded action itself later times out" do
+      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
+      ref <- newIORef authEnv
+      reachedRefresh <- newIORef False
+      refreshThreadId <- forkIO do
+        threadDelay (400 * 1000)
+        writeIORef reachedRefresh True
+      result <-
+        runBoundedOnDisposableWorker (50 * 1000) do
+          _ <- freezeAuth (Ref refreshThreadId ref)
+          threadDelay (2 * 1000 * 1000)
+      result `shouldBe` Nothing
+      threadDelay (500 * 1000)
+      readIORef reachedRefresh `shouldReturn` False
