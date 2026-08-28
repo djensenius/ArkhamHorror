@@ -189,8 +189,21 @@ withKeepAlive inner = do
   conn <- ask
   withRunInIO \run -> withPingThread conn keepAlivePingSeconds (pure ()) (run inner)
 
+data GameStreamRole = ParticipantStream | SpectatorStream
+  deriving stock (Eq, Show)
+
+decodeGameStreamAnswer :: GameStreamRole -> ByteString -> Either String (Maybe Answer)
+decodeGameStreamAnswer ParticipantStream = fmap Just . eitherDecodeStrict
+decodeGameStreamAnswer SpectatorStream = const $ Right Nothing
+
 gameStream :: ArkhamGameId -> WebSocketsT Handler ()
-gameStream gameId = catchingConnectionException $ withKeepAlive do
+gameStream = gameStreamFor ParticipantStream
+
+spectatorGameStream :: ArkhamGameId -> WebSocketsT Handler ()
+spectatorGameStream = gameStreamFor SpectatorStream
+
+gameStreamFor :: GameStreamRole -> ArkhamGameId -> WebSocketsT Handler ()
+gameStreamFor role gameId = catchingConnectionException $ withKeepAlive do
   let cleanup room subId = do
         unsubscribeFromRoom room subId
         lift $ decrRoomMember gameId
@@ -225,12 +238,13 @@ gameStream gameId = catchingConnectionException $ withKeepAlive do
 
     race_
       sender
-      (runConduit $ sourceWS .| mapM_C (handleData room broadcast))
+      (runConduit $ sourceWS .| mapM_C (handleData role room broadcast))
  where
-  handleData room broadcast dataPacket = lift do
-    case eitherDecodeStrict dataPacket of
+  handleData streamRole room broadcast dataPacket = lift do
+    case decodeGameStreamAnswer streamRole dataPacket of
       Left err -> $(logWarn) $ tshow err
-      Right answer ->
+      Right Nothing -> pure ()
+      Right (Just answer) ->
         updateGame answer gameId (Just room) `catch` \(e :: SomeException) -> do
           liftIO $ broadcast $ encode $ GameError $ tshow e
 

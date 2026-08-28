@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.1
+  version: 0.1.2
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -113,9 +113,9 @@ paths:
       operationId: spectateGame
       summary: Fetch the public spectator view of a game
       description: |
-        This route does not require an account or game membership. A WebSocket
-        upgrade currently reuses the bidirectional game stream; spectator
-        clients must not send answer frames.
+        This route does not require an account or game membership. Its
+        WebSocket upgrade opens the server-enforced read-only spectator stream
+        documented by AsyncAPI; inbound frames are ignored.
       security: []
       parameters:
         - $ref: "#/components/parameters/GameId"

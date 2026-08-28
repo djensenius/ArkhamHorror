@@ -101,7 +101,7 @@ getApiV1ArkhamGameR gameId = do
 getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler GetGameJson
 getApiV1ArkhamGameSpectateR gameId = do
   wsOptions <- websocketConnectionOptions
-  webSocketsOptions wsOptions $ gameStream gameId
+  webSocketsOptions wsOptions $ spectatorGameStream gameId
   runDB do
     g <- get404 gameId
     let Game {..} = g.currentData
