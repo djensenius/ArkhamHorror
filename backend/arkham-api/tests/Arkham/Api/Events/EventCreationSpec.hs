@@ -5,17 +5,22 @@ A pure, in-memory 'MonadEpicPersistence' instance ('TestDB') runs the exact
 same production sequencing function and records every step it performs. This
 lets us assert:
 
-* every group's game is inserted, in ordinal order, before the event, member,
-  and group-link rows;
-* each group is built with its own distinct supplied seed and correct pure
-  metadata (never the shared event seed, never another group's seed);
-* a failure injected at any step -- including the late event/member/link steps
-  -- short-circuits the whole sequence with no successful (@Right@) result;
+* every group's game, immediately followed by its own initial step, is
+  inserted (in ordinal order) before the event, member, and group-link rows;
+* each group is built from its own independently supplied seed, in ordinal
+  order, with correct pure metadata -- the seed is not derived from, or
+  reused between, groups or the shared event story seed, though independently
+  drawn values may legitimately coincide;
+* a failure injected at any step -- a group's game, a group's initial step, or
+  the late event/member/link steps -- short-circuits the whole sequence with
+  no successful (@Right@) result;
 * a successful run returns every group link in ordinal order;
 * zero groups, and a zero @playerCount@, behave the same as they do today.
 
-'buildGroupGame' itself is also unit-tested directly to pin down the pure
-per-group metadata (seats, 'WithFriends', step 0, scenario meta, seed).
+'buildGroupGame' and 'preparePendingGroupGames' are also unit-tested directly
+to pin down the pure per-group metadata (seats, 'WithFriends', step 0,
+scenario meta, seed) and the seed-drawing contract (one call per group, in
+ordinal order, paired with that group in order).
 -}
 module Arkham.Api.Events.EventCreationSpec (spec) where
 
@@ -27,7 +32,7 @@ import Arkham.Game (gamePlayerCount, gameSeed)
 import Arkham.Id (ScenarioId)
 import Arkham.Prelude
 import Control.Monad.Except (ExceptT, MonadError, runExceptT, throwError)
-import Control.Monad.State.Strict (MonadState, State, modify, runState)
+import Control.Monad.State.Strict (MonadState, State, gets, modify, runState)
 import Data.Either (isLeft)
 import Data.Time.Clock (secondsToDiffTime)
 import Data.UUID qualified as UUID
@@ -86,6 +91,8 @@ mkPending ordx groupName playerCount seed =
 data Step
   = InsertedGame Int Int
   -- ^ ordinal, the seed that group's game was built with
+  | InsertedStep Int
+  -- ^ ordinal of the group whose initial 'ArkhamStep' was inserted
   | InsertedEvent
   | InsertedMember
   | InsertedLink Int
@@ -96,10 +103,23 @@ data Step
 data FailAt
   = FailNever
   | FailAtGame Int
+  | FailAtInitialStep Int
   | FailAtEvent
   | FailAtMember
   | FailAtLink Int
   deriving stock (Eq, Show)
+
+-- | Mutable state threaded through 'TestDB': the step log, plus a lookup from
+-- an inserted game's id back to its ordinal (so 'insertInitialStep', which
+-- only receives the game id, can still be checked against 'FailAtInitialStep'
+-- and logged with the right ordinal).
+data TestState = TestState
+  { steps :: [Step]
+  , gameOrdinals :: [(GameEntity.ArkhamGameId, Int)]
+  }
+
+emptyTestState :: TestState
+emptyTestState = TestState {steps = [], gameOrdinals = []}
 
 {- | A pure interpreter of 'MonadEpicPersistence': records every step it is
 asked to perform and short-circuits (via 'ExceptT') at the configured 'FailAt'
@@ -107,19 +127,20 @@ step, exactly the way an uncaught exception aborts a real 'runDB' transaction
 (see the rollback caveat documented on 'MonadEpicPersistence').
 -}
 newtype TestDB a = TestDB
-  {unTestDB :: ReaderT FailAt (ExceptT String (State [Step])) a}
+  {unTestDB :: ReaderT FailAt (ExceptT String (State TestState)) a}
   deriving newtype
     ( Functor
     , Applicative
     , Monad
     , MonadReader FailAt
     , MonadError String
-    , MonadState [Step]
+    , MonadState TestState
     )
 
 runTestDB :: FailAt -> TestDB a -> (Either String a, [Step])
 runTestDB failAt action =
-  runState (runExceptT (runReaderT (unTestDB action) failAt)) []
+  let (result, finalState) = runState (runExceptT (runReaderT (unTestDB action) failAt)) emptyTestState
+   in (result, finalState.steps)
 
 failIfConfigured :: FailAt -> TestDB ()
 failIfConfigured this = do
@@ -127,13 +148,21 @@ failIfConfigured this = do
   when (configured == this) $ throwError (show this)
 
 recordStep :: Step -> TestDB ()
-recordStep step = modify (++ [step])
+recordStep step = modify \s -> s {steps = s.steps ++ [step]}
 
 instance MonadEpicPersistence TestDB where
   insertGroupGame pg = do
     failIfConfigured (FailAtGame pg.ordinal)
     recordStep (InsertedGame pg.ordinal (gameSeed pg.game.currentData))
-    pure (fixtureGameId pg.ordinal)
+    let gid = fixtureGameId pg.ordinal
+    modify \s -> s {gameOrdinals = (gid, pg.ordinal) : s.gameOrdinals}
+    pure gid
+
+  insertInitialStep gid = do
+    ordinals <- gets (.gameOrdinals)
+    let ordx = fromMaybe (error "insertInitialStep: unknown game id") (lookup gid ordinals)
+    failIfConfigured (FailAtInitialStep ordx)
+    recordStep (InsertedStep ordx)
 
   insertEvent _event = do
     failIfConfigured FailAtEvent
@@ -185,25 +214,74 @@ spec = do
       gameScenarioMetaDefault "blobThatAteEverythingElse" False gameState `shouldBe` True
       gameScenarioMetaDefault "variant" ("" :: Text) gameState `shouldBe` "else"
 
-    it "gives each group its own independent seed, distinct from the shared event story seed" do
-      let storySeed = 999999 :: Int
-          pendingGroups = [mkPending 0 "A" 1 111, mkPending 1 "B" 2 222, mkPending 2 "C" 3 333]
+    it "uses whatever seed it is given, independent of any other value -- coincidental equality is not an error" do
+      -- 'buildGroupGame' itself does not draw or compare seeds; it just plants
+      -- whatever it's handed. A caller supplying the same seed twice (however
+      -- unlikely from an independent random draw) is not something this pure
+      -- function can or should reject.
+      let storySeed = 111 :: Int
+          pendingGroups = [mkPending 0 "A" 1 111, mkPending 1 "B" 2 111, mkPending 2 "C" 3 333]
           gotSeeds = [gameSeed pg.game.currentData | pg <- pendingGroups]
-      gotSeeds `shouldBe` [111, 222, 333]
-      nub gotSeeds `shouldBe` gotSeeds -- all distinct from one another
-      storySeed `notElem` gotSeeds `shouldBe` True
+      gotSeeds `shouldBe` [111, 111, 333]
+      case gotSeeds of
+        (firstSeed : _) -> storySeed `shouldBe` firstSeed -- coincidentally equal; still accepted
+        [] -> expectationFailure "expected at least one seed"
+
+  describe "preparePendingGroupGames (seed-drawing contract)" do
+    let groupSpecs = [("A", 1), ("B", 2), ("C", 3)] :: [(Text, Int)]
+
+    it "draws exactly one seed per group, in ordinal order, and pairs it with that group in order" do
+      -- Records every ordinal it was asked to draw a seed for, and returns a
+      -- distinguishable (but not necessarily distinct) value for each. Uses a
+      -- State-based recorder to keep this test pure.
+      let drawSeed :: Int -> State [Int] Int
+          drawSeed ordx = do
+            modify (++ [ordx])
+            pure (100 + ordx)
+          (pendingGroups, requestedOrdinals) =
+            runState
+              ( preparePendingGroupGames
+                  drawSeed
+                  fixtureScenarioId
+                  Easy
+                  False
+                  False
+                  fixtureNow
+                  groupSpecs
+              )
+              []
+      requestedOrdinals `shouldBe` [0, 1, 2]
+      [(pg.ordinal, pg.name, gameSeed pg.game.currentData) | pg <- pendingGroups]
+        `shouldBe` [(0, "A", 100), (1, "B", 101), (2, "C", 102)]
+
+    it "preserves/accepts equal independently returned seeds rather than requiring distinctness" do
+      -- An action that (perhaps coincidentally) returns the same seed for
+      -- every group must not be rejected or de-duplicated.
+      let constantSeed :: Int -> Identity Int
+          constantSeed _ordx = pure 777
+          pendingGroups = runIdentity (preparePendingGroupGames constantSeed fixtureScenarioId Easy False False fixtureNow groupSpecs)
+      [gameSeed pg.game.currentData | pg <- pendingGroups] `shouldBe` [777, 777, 777]
+
+    it "does not pass the group's playerCount or name into the seed action -- only its ordinal" do
+      let recordedOrdinal :: Int -> Identity Int
+          recordedOrdinal ordx = pure ordx -- echoes the ordinal back as the "seed"
+          pendingGroups = runIdentity (preparePendingGroupGames recordedOrdinal fixtureScenarioId Easy False False fixtureNow groupSpecs)
+      [gameSeed pg.game.currentData | pg <- pendingGroups] `shouldBe` [0, 1, 2]
 
   describe "createEpicEventAggregate (atomic sequencing)" do
     let pendingGroups = [mkPending 0 "A" 1 111, mkPending 1 "B" 2 222, mkPending 2 "C" 3 333]
         run failAt = runTestDB failAt (createEpicEventAggregate fixtureEventRecord fixtureOrganizerId pendingGroups)
 
-    it "inserts every group's game before the event/member/link rows, in ordinal order" do
+    it "inserts every group's game, immediately followed by its own initial step, before the event/member/link rows, in ordinal order" do
       let (result, log_) = run FailNever
       result `shouldBe` Right fixtureEventId
       log_
         `shouldBe` [ InsertedGame 0 111
+                   , InsertedStep 0
                    , InsertedGame 1 222
+                   , InsertedStep 1
                    , InsertedGame 2 333
+                   , InsertedStep 2
                    , InsertedEvent
                    , InsertedMember
                    , InsertedLink 0
@@ -219,26 +297,52 @@ spec = do
     it "a failure inserting a group's game cannot produce a success-shaped result" do
       let (result, log_) = run (FailAtGame 1)
       result `shouldSatisfy` isLeft
-      -- ordinal 0 was already (attemptedly) inserted before the failing group
-      log_ `shouldBe` [InsertedGame 0 111]
+      -- ordinal 0's game and initial step were already inserted before the
+      -- failing group's game insert
+      log_ `shouldBe` [InsertedGame 0 111, InsertedStep 0]
 
-    it "a failure inserting the event cannot produce a success-shaped result, even though all games were built" do
+    it "a failure inserting a group's initial step cannot produce a success-shaped result, and no event/member/link steps occur" do
+      let (result, log_) = run (FailAtInitialStep 1)
+      result `shouldSatisfy` isLeft
+      -- ordinal 0's game+step completed; ordinal 1's game was inserted, but its
+      -- initial step failed -- so the event/member/link rows never happen
+      log_ `shouldBe` [InsertedGame 0 111, InsertedStep 0, InsertedGame 1 222]
+
+    it "a failure inserting the event cannot produce a success-shaped result, even though all games/steps were built" do
       let (result, log_) = run FailAtEvent
       result `shouldSatisfy` isLeft
-      log_ `shouldBe` [InsertedGame 0 111, InsertedGame 1 222, InsertedGame 2 333]
+      log_
+        `shouldBe` [ InsertedGame 0 111
+                   , InsertedStep 0
+                   , InsertedGame 1 222
+                   , InsertedStep 1
+                   , InsertedGame 2 333
+                   , InsertedStep 2
+                   ]
 
     it "a failure inserting the organizer membership cannot produce a success-shaped result" do
       let (result, log_) = run FailAtMember
       result `shouldSatisfy` isLeft
-      log_ `shouldBe` [InsertedGame 0 111, InsertedGame 1 222, InsertedGame 2 333, InsertedEvent]
+      log_
+        `shouldBe` [ InsertedGame 0 111
+                   , InsertedStep 0
+                   , InsertedGame 1 222
+                   , InsertedStep 1
+                   , InsertedGame 2 333
+                   , InsertedStep 2
+                   , InsertedEvent
+                   ]
 
     it "a failure inserting a late group link cannot produce a success-shaped result" do
       let (result, log_) = run (FailAtLink 2)
       result `shouldSatisfy` isLeft
       log_
         `shouldBe` [ InsertedGame 0 111
+                   , InsertedStep 0
                    , InsertedGame 1 222
+                   , InsertedStep 1
                    , InsertedGame 2 333
+                   , InsertedStep 2
                    , InsertedEvent
                    , InsertedMember
                    , InsertedLink 0

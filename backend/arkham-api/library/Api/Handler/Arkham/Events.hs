@@ -25,6 +25,7 @@ module Api.Handler.Arkham.Events (
   withEventMember,
   PendingGroupGame (..),
   buildGroupGame,
+  preparePendingGroupGames,
   MonadEpicPersistence (..),
   createEpicEventAggregate,
   gameScenarioMetaDefault,
@@ -334,31 +335,25 @@ postApiV1ArkhamEventsR = do
         now
 
   -- Build every group's pending game up front, in ordinal order, each with its
-  -- own independently drawn seed (never the shared event 'storySeed' and never
-  -- another group's seed). This is pure aside from drawing the seed itself, so
-  -- no database access happens here.
-  pendingGroups <- for (zip [0 :: Int ..] groups) \(ordx, grp) -> do
-    groupSeed <- liftIO getRandom
-    pure
-      PendingGroupGame
-        { ordinal = ordx
-        , name = grp.name
-        , seatCount = grp.playerCount
-        , game =
-            buildGroupGame
-              grp.name
-              scenarioId
-              difficulty
-              includeTarotReadings
-              (fromMaybe False playWithBlobElse)
-              grp.playerCount
-              groupSeed
-              now
-        }
+  -- own independently drawn seed -- not derived from, or reused between,
+  -- the shared event 'storySeed' or another group's seed. Because each draw
+  -- is independent, two groups' returned seeds may legitimately coincide;
+  -- this is not treated as an error. This is pure aside from drawing the
+  -- seed itself, so no database access happens here.
+  pendingGroups <-
+    preparePendingGroupGames
+      (const (liftIO getRandom))
+      scenarioId
+      difficulty
+      includeTarotReadings
+      (fromMaybe False playWithBlobElse)
+      now
+      [(grp.name, grp.playerCount) | grp <- groups]
 
-  -- One transaction: every group's game + initial step, then the event,
-  -- organizer membership, and every group link. A failure at any step throws,
-  -- so 'runDB' rolls back the entire aggregate -- no orphan games or rows.
+  -- One transaction: every group's game + initial step (consecutively, per
+  -- group), then the event, organizer membership, and every group link. A
+  -- failure at any step throws, so 'runDB' rolls back the entire aggregate --
+  -- no orphan games or rows.
   eid <- runDB $ createEpicEventAggregate eventRecord userId pendingGroups
 
   buildEventDetails userId eid
@@ -772,19 +767,60 @@ buildGroupGame gameName scenarioId difficulty includeTarotReadings playWithBlobE
         $ newScenario scenarioId newGameSeed seats difficulty includeTarotReadings
    in ArkhamGame gameName game 0 WithFriends now now
 
+{- | Build every group's 'PendingGroupGame' up front, in ordinal order, via the
+supplied ordinal-aware seed action. Production calls this with
+@const (liftIO getRandom)@: each group's seed is drawn independently, not
+derived from the shared event story seed or from another group's seed.
+Because each draw is independent, two groups' returned seeds may legitimately
+coincide -- callers must not assume, or rely on, mutual distinctness. Aside
+from the supplied action itself, this performs no database access.
+-}
+preparePendingGroupGames
+  :: Monad m
+  => (Int -> m Int)
+  -- ^ given a group's ordinal, independently draw that group's game seed.
+  -> ScenarioId
+  -> Difficulty
+  -> Bool
+  -> Bool
+  -> UTCTime
+  -> [(Text, Int)]
+  -- ^ each group's (name, playerCount), in ordinal order
+  -> m [PendingGroupGame]
+preparePendingGroupGames drawSeed scenarioId difficulty includeTarotReadings playWithBlobElse now groupSpecs =
+  for (zip [0 :: Int ..] groupSpecs) \(ordx, (groupName, playerCount)) -> do
+    groupSeed <- drawSeed ordx
+    pure
+      PendingGroupGame
+        { ordinal = ordx
+        , name = groupName
+        , seatCount = playerCount
+        , game =
+            buildGroupGame
+              groupName
+              scenarioId
+              difficulty
+              includeTarotReadings
+              playWithBlobElse
+              playerCount
+              groupSeed
+              now
+        }
+
 {- | Abstract persistence steps needed to create one Epic event aggregate: N
-group games (with their initial steps), then the event row, the creator's
-organizer membership, and every group link.
+group games, each immediately followed by its own initial step, then the
+event row, the creator's organizer membership, and every group link.
 
 Production runs 'createEpicEventAggregate' inside a single 'runDB' call over
 'SqlPersistT Handler' (see the instance below), so an exception thrown by any
 'P.insert'/'P.insert_' call rolls back every earlier insert in the same
 database transaction. Tests exercise the exact same sequencing against a pure,
-in-memory instance (see "Arkham.Api.Events.EventCreationSpec") to prove group
-games are always inserted before the event/member/link rows, each group
-receives its own supplied seed in ordinal order, and a failure injected at any
-step -- including the late event/member/link steps -- short-circuits with no
-successful result.
+in-memory instance (see "Arkham.Api.Events.EventCreationSpec") to prove each
+group's game and initial step are always inserted (consecutively, in ordinal
+order) before the event/member/link rows, each group receives its own
+supplied seed in ordinal order, and a failure injected at any step --
+including a group's initial step, or the late event/member/link steps --
+short-circuits with no successful result.
 
 Do not write an instance that catches an insertion exception and converts it
 into an ordinary return value of this class: 'runDB' only rolls back on an
@@ -793,29 +829,32 @@ would defeat the rollback guarantee.
 -}
 class Monad m => MonadEpicPersistence m where
   insertGroupGame :: PendingGroupGame -> m ArkhamGameId
+  insertInitialStep :: ArkhamGameId -> m ()
   insertEvent :: ArkhamEpicEvent -> m ArkhamEpicEventId
   insertOrganizerMember :: ArkhamEpicEventId -> UserId -> m ()
   insertGroupLink :: ArkhamEpicEventId -> PendingGroupGame -> ArkhamGameId -> m ()
 
-{- | The sequencing plan itself: every group's game (in ordinal order), then
-the event, the organizer's membership, and every group link. This is the
-single seam production and tests both exercise directly.
+{- | The sequencing plan itself: every group's game immediately followed by
+its own initial step (in ordinal order), then the event, the organizer's
+membership, and every group link. This is the single seam production and
+tests both exercise directly.
 -}
 createEpicEventAggregate
   :: MonadEpicPersistence m
   => ArkhamEpicEvent -> UserId -> [PendingGroupGame] -> m ArkhamEpicEventId
 createEpicEventAggregate eventRecord organizerId pendingGroups = do
-  groupGameIds <- for pendingGroups \pg -> (,) pg <$> insertGroupGame pg
+  groupGameIds <- for pendingGroups \pg -> do
+    gid <- insertGroupGame pg
+    insertInitialStep gid
+    pure (pg, gid)
   eid <- insertEvent eventRecord
   insertOrganizerMember eid organizerId
   for_ groupGameIds \(pg, gid) -> insertGroupLink eid pg gid
   pure eid
 
 instance MonadEpicPersistence (SqlPersistT Handler) where
-  insertGroupGame pg = do
-    gid <- P.insert pg.game
-    P.insert_ $ ArkhamStep gid (Choice mempty []) 0 (ActionDiff [])
-    pure gid
+  insertGroupGame pg = P.insert pg.game
+  insertInitialStep gid = P.insert_ $ ArkhamStep gid (Choice mempty []) 0 (ActionDiff [])
   insertEvent = P.insert
   insertOrganizerMember eid uid = P.insert_ $ ArkhamEpicMember eid uid Organizer Nothing
   insertGroupLink eid pg gid =
