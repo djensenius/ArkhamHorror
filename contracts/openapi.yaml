@@ -171,6 +171,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ServerCapabilities"
+        "404":
+          description: |
+            The server predates capability negotiation; no response body shape
+            is guaranteed
   /notifications:
     get:
       operationId: listNotifications

@@ -32,7 +32,10 @@ def require(condition: bool, message: str) -> None:
 manifest = load_json(CONTRACTS / "manifest.json")
 documents = manifest["documents"]
 fixtures = manifest["fixtures"]
-capabilities = load_json(CONTRACTS / "fixtures" / "capabilities.json")
+capabilities_path = CONTRACTS / "fixtures" / "capabilities.json"
+
+require(capabilities_path.is_file(), "Missing fixture: contracts/fixtures/capabilities.json")
+capabilities = load_json(capabilities_path)
 
 require(isinstance(capabilities, dict), "capabilities.json must be an object")
 for field in ("schemaRevision", "status", "apiBasePath"):
