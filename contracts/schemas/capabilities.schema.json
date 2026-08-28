@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/capabilities.schema.json",
+  "title": "Server Capabilities",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaRevision",
+    "status",
+    "apiBasePath",
+    "nativeClientMinimumRevision",
+    "capabilities"
+  ],
+  "properties": {
+    "schemaRevision": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "baseline-incomplete",
+        "stable"
+      ]
+    },
+    "apiBasePath": {
+      "const": "/api/v1"
+    },
+    "nativeClientMinimumRevision": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "capabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9.-]+$"
+      }
+    }
+  }
+}

@@ -32,6 +32,31 @@ def require(condition: bool, message: str) -> None:
 manifest = load_json(CONTRACTS / "manifest.json")
 documents = manifest["documents"]
 fixtures = manifest["fixtures"]
+capabilities_fixtures = [
+    fixture
+    for fixture in fixtures
+    if fixture.get("schema") == "contracts/schemas/capabilities.schema.json"
+]
+
+require(
+    len(capabilities_fixtures) == 1,
+    "manifest.json must register exactly one capabilities fixture",
+)
+capabilities_path = ROOT / capabilities_fixtures[0]["path"]
+require(capabilities_path.is_file(), f"Missing fixture: {capabilities_fixtures[0]['path']}")
+capabilities = load_json(capabilities_path)
+
+require(isinstance(capabilities, dict), "capabilities.json must be an object")
+for field in ("schemaRevision", "status", "apiBasePath"):
+    require(
+        capabilities.get(field) == manifest.get(field),
+        f"capabilities.json {field} must match manifest.json",
+    )
+require(
+    capabilities.get("nativeClientMinimumRevision")
+    == manifest.get("compatibility", {}).get("nativeClientMinimumRevision"),
+    "capabilities.json nativeClientMinimumRevision must match manifest compatibility",
+)
 
 for relative_path in documents:
     require((ROOT / relative_path).is_file(), f"Missing contract file: {relative_path}")
