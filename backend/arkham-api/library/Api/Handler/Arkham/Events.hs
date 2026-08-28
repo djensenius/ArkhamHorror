@@ -899,10 +899,11 @@ data EventDeletionOutcome
   | -- | The event exists, but the caller holds no Organizer membership row
     -- for it. Maps to the existing static, nondisclosing permission-denied
     -- response. No linked group game is ever selected or locked for this
-    -- outcome, and nothing is deleted; the event row itself is briefly
-    -- locked ('FOR UPDATE') only to confirm ground truth that it is still
-    -- present (see 'lockEpicEvent'), never selected for reading its data or
-    -- written to.
+    -- outcome, and nothing is deleted; the event row itself is never locked
+    -- either -- only re-probed with a second plain, non-locking read (see
+    -- 'eventExists') to confirm it is still present, deliberately avoiding
+    -- any 'FOR UPDATE' contention with live gameplay for an
+    -- unauthorized/probing caller.
     EventDeletionForbidden
   | -- | The event and every one of its linked group games were deleted in
     -- this transaction. Carries the committed game ids, in ordinal order, so
@@ -925,7 +926,14 @@ deadlock against a concurrent action on one of those games: the action holds
 the game lock and waits on the event lock, while the deletion holds the event
 lock and waits on the game lock. Locking games first here closes off that
 cycle entirely -- both paths always acquire game locks before any event lock,
-so at most one of them can ever be waiting.
+so at most one of them can ever be waiting. The event's 'FOR UPDATE' lock
+('lockEpicEvent') is therefore taken from exactly ONE place in this whole
+class: after every linked game is already locked, for a caller who already
+passed the initial organizer check. An unauthorized/probing caller -- who
+never reaches that point -- never takes this lock at all (see
+'EventDeletionForbidden'), so it cannot contend with, or be blocked by, live
+gameplay's lock on the same row merely by calling delete on an event it does
+not organize.
 
 A per-game 'ArkhamGame' can also vanish concurrently, independent of any
 event: 'Api.Handler.Arkham.Games.deleteApiV1ArkhamGameR' lets any of its
@@ -940,9 +948,9 @@ delete rolls back every earlier delete in the same transaction. Tests
 exercise the exact same sequencing against a pure, in-memory instance (see
 "Arkham.Api.Events.EventDeletionSpec") to prove a missing event short-circuits
 before any organizer lookup, lock, or delete; an existing non-organizer
-short-circuits before any group game is selected or locked (the event row
-itself is briefly locked only to confirm it is still present, never selected
-or deleted); and a failure injected at any step -- including a late per-game
+short-circuits before any group game is selected or locked, and without ever
+locking the event row either (only a second, still non-locking, existence
+read); and a failure injected at any step -- including a late per-game
 delete -- cannot produce a successful ('EventDeletionDeleted') result.
 
 Do not write an instance that catches a delete exception and converts it into
@@ -951,23 +959,24 @@ uncaught exception, so silently turning one into a normal result here would
 defeat the rollback guarantee.
 -}
 class Monad m => MonadEpicEventDeletion m where
-  -- | Cheap, non-locking existence probe for the event row, used only to let
-  -- an already-missing event short-circuit before any organizer lookup or
-  -- any lock is taken. This does not by itself serialize anything -- the
-  -- authoritative existence decision is always a 'lockEpicEvent' call (see
-  -- below), taken either immediately after an unauthorized-looking
-  -- 'isEventOrganizer' read, or after every linked game is already locked.
+  -- | Cheap, non-locking existence probe for the event row. Called at least
+  -- once by 'deleteEpicEventAggregate' up front, letting an already-missing
+  -- event short-circuit before any organizer lookup or any lock is taken;
+  -- and called a second time if the initial 'isEventOrganizer' read looks
+  -- unauthorized, to narrow (without ever locking) the window in which a
+  -- concurrently-deleted event could otherwise be misreported as
+  -- 'EventDeletionForbidden' (see that constructor's Haddock). Deliberately
+  -- never a lock -- the only place this whole class locks the event row is
+  -- 'lockEpicEvent', reached only by an already-authorized-looking caller.
   eventExists :: ArkhamEpicEventId -> m Bool
   -- | Organizer membership check ('P.exists' in production; a plain read,
   -- never a lock). Called at least twice by 'deleteEpicEventAggregate':
   -- once up front, so an unauthorized-looking caller never pays for any
-  -- game lock; and once more as a safe-point revalidation for an
-  -- authorized-looking caller, after every lock this transaction will ever
-  -- take is already held, in case membership could change concurrently.
-  -- Neither call takes a lock, so neither changes the game-before-event
-  -- lock order above; and neither call's 'False' result is trusted on its
-  -- own without also confirming ground truth via 'lockEpicEvent', since the
-  -- event's membership rows cascade away with it (see 'lockEpicEvent').
+  -- game lock (or the event lock -- see 'eventExists'); and once more as a
+  -- safe-point revalidation for an authorized-looking caller, after every
+  -- lock this transaction will ever take is already held, in case
+  -- membership could change concurrently. Neither call takes a lock, so
+  -- neither changes the game-before-event lock order above.
   isEventOrganizer :: ArkhamEpicEventId -> UserId -> m Bool
   -- | Every linked, non-null group game id, in deterministic ordinal order.
   -- A plain read -- no lock is taken here; see 'lockLinkedGame'.
@@ -977,17 +986,13 @@ class Monad m => MonadEpicEventDeletion m where
   -- 'selectLinkedGameIds', in that same order, strictly before 'lockEpicEvent'.
   lockLinkedGame :: ArkhamGameId -> m Bool
   -- | Row-lock the event ('FOR UPDATE' in production) and report whether it
-  -- is still present. Called from two places: (1) immediately after an
-  -- unauthorized-looking 'isEventOrganizer' read, with no game lock held
-  -- yet, to distinguish a genuinely forbidden request from one that only
-  -- looks unauthorized because the event was deleted concurrently (its
-  -- membership rows cascade away with it) -- 'False' there means Missing,
-  -- 'True' means Forbidden; and (2) after every linked game is already
-  -- locked, in the authorized branch, where 'False' also means Missing (a
-  -- concurrent deletion committed first). Neither call site ever holds a
-  -- game lock and then requests a *different* game lock afterward, so
-  -- taking this lock in branch (1) -- before any game is even selected --
-  -- cannot invert the game-before-event order used by branch (2).
+  -- is still present. Called from exactly ONE place: after every linked
+  -- game is already locked, for a caller who already passed the initial
+  -- organizer check. 'False' here means a concurrent deletion committed
+  -- first (report 'EventDeletionMissing'). An unauthorized/probing caller
+  -- never reaches this call at all (see 'eventExists' and
+  -- 'EventDeletionForbidden'), so this lock can never be taken merely by
+  -- calling delete on an event the caller does not organize.
   lockEpicEvent :: ArkhamEpicEventId -> m Bool
   -- | Delete one still-present linked game. Never called for a game
   -- 'lockLinkedGame' reported as already gone.
@@ -1005,12 +1010,18 @@ class Monad m => MonadEpicEventDeletion m where
    read back as unauthorized here too -- reporting 'EventDeletionForbidden'
    in that case would be a wrong, disclosure-losing answer (it should be
    'EventDeletionMissing', same as any other already-gone event). So an
-   unauthorized-looking result here is not trusted on its own: 'lockEpicEvent'
-   is taken immediately to get a ground-truth answer -- if the event is
-   really gone, this reports 'EventDeletionMissing'; only if it is still
-   there does this report 'EventDeletionForbidden'. No game lock is held in
-   this branch, so taking the event lock here does not invert or conflict
-   with the game-before-event order used by the authorized branch below.
+   unauthorized-looking result here is not trusted on its own: a second,
+   still non-locking, 'eventExists' re-probe is taken immediately -- if the
+   event is really gone, this reports 'EventDeletionMissing'; only if it is
+   still there does this report 'EventDeletionForbidden'. Deliberately no
+   lock is taken in this branch: the event row is also locked ('FOR UPDATE')
+   by live gameplay (see 'lockEpicEvent' below), and taking that same lock
+   here for every unauthorized/probing caller -- including one with no
+   membership at all -- would let any authenticated user contend for it by
+   repeatedly calling delete on an event id they do not organize, a needless
+   lock-contention/DoS surface this path must not open up. A second
+   non-locking read narrows the disclosure window without ever blocking (or
+   being blocked by) a concurrent gameplay transaction.
 3. Every linked game id is selected (ordinal order), then locked
    ('FOR UPDATE') one at a time in that same order -- games are ALWAYS locked
    before the event, matching the lock order live gameplay uses, so a
@@ -1018,10 +1029,12 @@ class Monad m => MonadEpicEventDeletion m where
    games. A game that has vanished concurrently (see
    'Api.Handler.Arkham.Games.deleteApiV1ArkhamGameR') is simply excluded, not
    an error.
-4. Only once every present game is locked is the event itself locked. If it
-   vanished while we were waiting on game locks (a concurrent deletion won
-   the race), this reports 'EventDeletionMissing', never a stale
-   forbidden/success decision.
+4. Only once every present game is locked -- and only for an authorized
+   caller -- is the event itself locked. This is the ONLY branch that takes
+   the event's 'FOR UPDATE' lock, and only after already committing to
+   perform the deletion. If it vanished while we were waiting on game locks
+   (a concurrent deletion won the race), this reports 'EventDeletionMissing',
+   never a stale forbidden/success decision.
 5. Organizer membership is revalidated at this same safe point -- every lock
    the transaction will take is already held, so this plain re-read cannot
    introduce any new lock ordering -- before any delete is issued.
@@ -1045,13 +1058,16 @@ deleteEpicEventAggregate eid userId = do
           -- Do not trust an unauthorized-looking read on its own: the event
           -- may have been concurrently deleted since the probe above (its
           -- membership rows cascade away with it), which would make even a
-          -- genuine organizer read back as unauthorized here. Lock the event
-          -- to get a ground-truth answer -- Missing takes priority over
-          -- Forbidden. No game lock is held in this branch, so this cannot
-          -- invert the game-before-event order used below.
-          stillPresent <- lockEpicEvent eid
+          -- genuine organizer read back as unauthorized here. Re-probe
+          -- (still non-locking) to narrow that window -- Missing takes
+          -- priority over Forbidden. Deliberately NOT a lock: gameplay also
+          -- locks this same row 'FOR UPDATE' (see 'lockEpicEvent'), and
+          -- taking that lock for an unauthorized/probing caller would let
+          -- any authenticated user contend for it merely by calling delete
+          -- on an event id they do not organize.
+          stillExists <- eventExists eid
           pure $
-            if stillPresent then EventDeletionForbidden else EventDeletionMissing
+            if stillExists then EventDeletionForbidden else EventDeletionMissing
         else do
           gameIds <- selectLinkedGameIds eid
           -- Lock every still-present linked game, in order, BEFORE the

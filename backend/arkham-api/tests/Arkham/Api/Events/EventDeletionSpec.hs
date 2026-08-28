@@ -9,13 +9,16 @@ lets us assert:
   before any organizer lookup, lock, or delete is attempted;
 * an existing event whose caller holds no Organizer membership row
   short-circuits to 'EventDeletionForbidden' -- but only once confirmed
-  against a ground-truth 'lockEpicEvent' check taken immediately after the
-  unauthorized-looking read, before any game is selected or locked --
-  driven by actual @(event, user, role)@ membership rows, not a bare boolean,
-  so a 'GroupPlayer'-only membership is correctly rejected while a caller who
-  ALSO holds an 'Organizer' row for that same event is correctly authorized,
-  and a membership row for the wrong event id or wrong user id never grants
-  access;
+  against a second, still non-locking, 'eventExists' re-probe taken
+  immediately after the unauthorized-looking read, before any game is
+  selected or locked, and WITHOUT ever taking the event's own 'FOR UPDATE'
+  lock (that lock is reserved for an already-authorized caller, so an
+  unauthorized/probing caller can never contend with live gameplay's lock on
+  the same row) -- driven by actual @(event, user, role)@ membership rows,
+  not a bare boolean, so a 'GroupPlayer'-only membership is correctly
+  rejected while a caller who ALSO holds an 'Organizer' row for that same
+  event is correctly authorized, and a membership row for the wrong event id
+  or wrong user id never grants access;
 * an authorized deletion selects every linked group game id (in deterministic
   ordinal order), locks each one individually -- BEFORE the event, never
   after -- deletes each still-present game individually, then locks and
@@ -33,7 +36,8 @@ lets us assert:
   (unauthorized-looking) organizer check -- whose membership rows cascade
   away with the event itself, so even a genuine organizer reads back as
   unauthorized there -- is likewise reported as 'EventDeletionMissing', never
-  'EventDeletionForbidden', and without ever selecting or locking a game;
+  'EventDeletionForbidden', and without ever selecting or locking a game, or
+  locking the event row;
 * organizer membership is revalidated a second time, at the safe point after
   every lock is already held, and a caller who loses authorization between
   the two checks is rejected there too, before any delete;
@@ -161,15 +165,17 @@ data Step
   deriving stock (Eq, Show)
 
 {- | Which step (if any) should fail, for a given test run. The 'Int' on
-'FailAtOrganizerCheck', 'FailAtLockGame', and 'FailAtDeleteGame' selects WHICH
-occurrence of that repeated step should fail (1-based for the two organizer
-checks; 0-based, in ordinal order, for the per-game steps), so a test can
-target e.g. specifically the second game's delete without also matching the
-first.
+'FailAtEventExistsProbe', 'FailAtOrganizerCheck', 'FailAtLockGame', and
+'FailAtDeleteGame' selects WHICH occurrence of that repeated step should fail
+(1-based for the existence probe and the two organizer checks; 0-based, in
+ordinal order, for the per-game steps), so a test can target e.g.
+specifically the second game's delete, or specifically the SECOND
+'eventExists' call in the unauthorized-looking branch, without also matching
+the first.
 -}
 data FailAt
   = FailNever
-  | FailAtEventExistsProbe
+  | FailAtEventExistsProbe Int
   | FailAtOrganizerCheck Int
   | FailAtSelect
   | FailAtLockGame Int
@@ -182,11 +188,14 @@ data FailAt
 
 'eventExistsProbe' and 'eventExistsAtLock' are deliberately separate fields
 (both usually equal) so a test can model an event that is present for the
-cheap initial probe but has vanished by the time the authoritative
-post-game-lock check runs -- exactly what a concurrent deletion winning the
-race looks like from this request's point of view. 'deleteEpicEventRow'
-flips both to 'False', so a second call threaded through the same state (a
-sequential repeat) sees the row gone from its very first probe.
+first, cheap 'eventExists' call but has vanished by the time a SECOND
+existence check runs -- either the non-locking re-probe in the
+unauthorized-looking branch, or the authoritative 'lockEpicEvent' call in the
+authorized branch after every game is locked -- exactly what a concurrent
+deletion winning the race looks like from this request's point of view.
+'deleteEpicEventRow' flips both to 'False', so a second call threaded through
+the same state (a sequential repeat) sees the row gone from its very first
+probe.
 
 'gamePresence' models the same idea per linked game: a game absent from this
 map (or mapped to 'False') is treated as already vanished when locked,
@@ -198,6 +207,7 @@ data TestState = TestState
   { steps :: [Step]
   , eventExistsProbe :: Bool
   , eventExistsAtLock :: Bool
+  , eventExistsCallCount :: Int
   , membershipRows :: [MembershipRow]
   , organizerCheckCount :: Int
   , linkedGameIds :: [GameEntity.ArkhamGameId]
@@ -214,6 +224,7 @@ fixtureTestState eventPresent membership =
     { steps = []
     , eventExistsProbe = eventPresent
     , eventExistsAtLock = eventPresent
+    , eventExistsCallCount = 0
     , membershipRows = membership
     , organizerCheckCount = 0
     , linkedGameIds = fixtureLinkedGameIds
@@ -258,8 +269,15 @@ recordStep step = modify \s -> s {steps = s.steps ++ [step]}
 
 instance MonadEpicEventDeletion TestDB where
   eventExists _eid = do
-    failIfConfigured FailAtEventExistsProbe
-    exists <- gets (.eventExistsProbe)
+    occurrence <- gets ((+ 1) . (.eventExistsCallCount))
+    failIfConfigured (FailAtEventExistsProbe occurrence)
+    modify \s -> s {eventExistsCallCount = occurrence}
+    -- The first call reads the cheap initial probe field; any later call
+    -- (the unauthorized-looking branch's re-probe) reads the same
+    -- "ground truth as of now" field 'lockEpicEvent' also reads, so a test
+    -- can model the event vanishing in between via 'eventExistsAtLock'
+    -- regardless of which method observes that later state.
+    exists <- gets (if occurrence <= 1 then (.eventExistsProbe) else (.eventExistsAtLock))
     recordStep (ProbedEventExists exists)
     pure exists
 
@@ -375,11 +393,12 @@ spec = do
     it "forbids a caller who holds only a GroupPlayer row for the event" do
       let (result, log_) = run FailNever (fixtureTestState True groupPlayerOnlyMembership)
       result `shouldBe` Right EventDeletionForbidden
-      -- The event is still present, so the ground-truth 'lockEpicEvent' check
-      -- taken after the unauthorized-looking read confirms Forbidden (never
-      -- Missing) -- see the "vanishes ... looks forbidden" test below for the
-      -- opposite case.
-      log_ `shouldBe` [ProbedEventExists True, CheckedOrganizer False, LockedEvent True]
+      -- The event is still present, so the second, non-locking 'eventExists'
+      -- re-probe taken after the unauthorized-looking read confirms
+      -- Forbidden (never Missing) -- see the "vanishes ... looks forbidden"
+      -- test below for the opposite case. No lock is taken at all: neither
+      -- 'LockedGame' nor 'LockedEvent' ever appears in this log.
+      log_ `shouldBe` [ProbedEventExists True, CheckedOrganizer False, ProbedEventExists True]
 
     it "honors both the event id and the user id: an Organizer row for the wrong event, or for the wrong user, never authorizes this deletion" do
       let wrongEvent = run FailNever (fixtureTestState True [organizerRow otherEventId fixtureOrganizerId])
@@ -450,16 +469,17 @@ spec = do
       -- concurrently-deleted event makes ANY caller -- including a genuine
       -- organizer -- read back as unauthorized on the initial, non-locking
       -- 'isEventOrganizer' check. Reporting Forbidden there would wrongly
-      -- disclose that the event still exists; the ground-truth 'lockEpicEvent'
-      -- check this branch takes must correct that to Missing instead, and
-      -- must do so without ever selecting or locking a game.
+      -- disclose that the event still exists; the second, still non-locking,
+      -- 'eventExists' re-probe this branch takes must correct that to
+      -- Missing instead, and must do so without ever selecting/locking a
+      -- game or locking the event row.
       let racedAway = (fixtureTestState True []) {eventExistsAtLock = False}
           (result, log_) = run FailNever racedAway
       result `shouldBe` Right EventDeletionMissing
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer False
-                   , LockedEvent False
+                   , ProbedEventExists False
                    ]
 
     it "revalidates organizer membership at the safe point after every lock is held, rejecting a caller who lost authorization in between, before any delete" do
@@ -511,7 +531,7 @@ spec = do
       log_ `shouldBe` fullLog <> [ProbedEventExists False]
 
     it "a failure at the initial existence probe cannot produce a success-shaped result, and nothing else is attempted" do
-      let (result, log_) = run FailAtEventExistsProbe (fixtureTestState True organizerMembership)
+      let (result, log_) = run (FailAtEventExistsProbe 1) (fixtureTestState True organizerMembership)
       result `shouldSatisfy` isLeft
       log_ `shouldBe` []
 
@@ -520,8 +540,8 @@ spec = do
       result `shouldSatisfy` isLeft
       log_ `shouldBe` [ProbedEventExists True]
 
-    it "a failure locking the event in the unauthorized-looking ground-truth check cannot produce a success-shaped result, and no game is ever selected or locked" do
-      let (result, log_) = run FailAtLockEvent (fixtureTestState True groupPlayerOnlyMembership)
+    it "a failure at the second existence re-probe in the unauthorized-looking branch cannot produce a success-shaped result, and no game is ever selected or locked" do
+      let (result, log_) = run (FailAtEventExistsProbe 2) (fixtureTestState True groupPlayerOnlyMembership)
       result `shouldSatisfy` isLeft
       log_ `shouldBe` [ProbedEventExists True, CheckedOrganizer False]
 
