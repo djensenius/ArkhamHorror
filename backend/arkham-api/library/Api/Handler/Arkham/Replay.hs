@@ -1,6 +1,7 @@
 module Api.Handler.Arkham.Replay (getApiV1ArkhamGameReplayR) where
 
 import Api.Arkham.Helpers
+import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Game
 import Database.Esqueleto.Experimental
 import Entity.Arkham.Step
@@ -18,27 +19,33 @@ newtype ReplayId = ReplayId {id :: ArkhamGameId}
   deriving anyclass ToJSON
 
 getApiV1ArkhamGameReplayR :: ArkhamGameId -> Int -> Handler GetReplayJson
-getApiV1ArkhamGameReplayR gameId step = runDB do
-  ge <- get404 gameId
-  allChoices <- select do
-    steps <- from $ table @ArkhamStep
-    where_ $ steps.arkhamGameId ==. val gameId
-    orderBy [asc steps.step]
-    pure steps
-  let gameJson = arkhamGameCurrentData ge
-  let choices = map (arkhamStepChoice . entityVal) $ reverse $ drop step allChoices
-  let gameJson' = replayChoices gameJson [mconcat $ map choicePatchDown choices]
+getApiV1ArkhamGameReplayR gameId step = do
+  Entity userId user <- getRequestUser
+  withGameAccess
+    user.admin
+    (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
+    notFound
+    $ runDB do
+      ge <- get404 gameId
+      allChoices <- select do
+        steps <- from $ table @ArkhamStep
+        where_ $ steps.arkhamGameId ==. val gameId
+        orderBy [asc steps.step]
+        pure steps
+      let gameJson = arkhamGameCurrentData ge
+      let choices = map (arkhamStepChoice . entityVal) $ reverse $ drop step allChoices
+      let gameJson' = replayChoices gameJson [mconcat $ map choicePatchDown choices]
 
-  pure
-    $ GetReplayJson (length allChoices)
-    $ toPublicGame
-      ( Entity gameId
-          $ ArkhamGame
-            (arkhamGameName ge)
-            gameJson'
-            (arkhamGameStep ge)
-            (arkhamGameMultiplayerVariant ge)
-            (arkhamGameCreatedAt ge)
-            (arkhamGameUpdatedAt ge)
-      )
-      mempty
+      pure
+        $ GetReplayJson (length allChoices)
+        $ toPublicGame
+          ( Entity gameId
+              $ ArkhamGame
+                (arkhamGameName ge)
+                gameJson'
+                (arkhamGameStep ge)
+                (arkhamGameMultiplayerVariant ge)
+                (arkhamGameCreatedAt ge)
+                (arkhamGameUpdatedAt ge)
+          )
+          mempty

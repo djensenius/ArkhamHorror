@@ -101,6 +101,30 @@ import UnliftIO.Exception hiding (Handler)
 import UnliftIO.Timeout (timeout)
 import Yesod.WebSockets
 
+{- | Admit administrators without a membership query; otherwise require the
+caller's @ArkhamPlayer@ row. The rejection action is 'notFound' in production
+so game absence and missing membership remain indistinguishable.
+
+'Api.Handler.Arkham.Decks.requireGameDecksAccess' delegates to this so that
+all game-access predicates share a single implementation.
+-}
+requireGameAccess :: Monad m => Bool -> m Bool -> m () -> m ()
+requireGameAccess isAdmin lookupMembership reject =
+  withGameAccess isAdmin lookupMembership reject (pure ())
+
+{- | Run protected game work only for an administrator or game member.
+
+The rejection and protected actions share a result type, so denied access
+cannot fall through to protected work even when a test rejection action
+returns normally rather than aborting like Yesod's 'notFound'.
+-}
+withGameAccess :: Monad m => Bool -> m Bool -> m a -> m a -> m a
+withGameAccess isAdmin lookupMembership reject protected
+  | isAdmin = protected
+  | otherwise = do
+    isMember <- lookupMembership
+    if isMember then protected else reject
+
 {- | How often to ping an idle websocket. Must stay comfortably under Warp's
 'settingsTimeout' (30s by default) -- see 'withKeepAlive'.
 -}

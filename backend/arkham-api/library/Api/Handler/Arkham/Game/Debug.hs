@@ -14,6 +14,7 @@ import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game (ClaimSeatPost (..))
 import Api.Arkham.Types.MultiplayerVariant
+import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Card.CardCode
 import Arkham.Game
 import Arkham.Id
@@ -115,13 +116,21 @@ remapInvestigatorUUID gameId iCode newPlayerId = do
 
 getApiV1ArkhamGameExportR :: ArkhamGameId -> Handler ArkhamExport
 getApiV1ArkhamGameExportR gameId = do
-  _ <- getRequestUserId
-  generateExport gameId 30
+  Entity userId user <- getRequestUser
+  withGameAccess
+    user.admin
+    (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
+    notFound
+    (generateExport gameId 30)
 
 getApiV1ArkhamGameScenarioExportR :: ArkhamGameId -> Handler ArkhamExport
 getApiV1ArkhamGameScenarioExportR gameId = do
-  _ <- getRequestUserId
-  generateScenarioExport gameId
+  Entity userId user <- getRequestUser
+  withGameAccess
+    user.admin
+    (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
+    notFound
+    (generateScenarioExport gameId)
 
 getApiV1ArkhamGameFullExportR :: ArkhamGameId -> Handler TypedContent
 getApiV1ArkhamGameFullExportR gameId = do

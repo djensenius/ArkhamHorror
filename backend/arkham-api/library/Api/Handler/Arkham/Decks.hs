@@ -15,7 +15,7 @@ import Import hiding (delete, on, update, (=.), (==.))
 import Api.Arkham.Deck (deckFromCreateRequest)
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Deck
-import Api.Handler.Arkham.Games.Shared (publishToRoom)
+import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Card.CardCode
 import Arkham.Classes.Entity (attr)
 import Arkham.Classes.HasQueue
@@ -54,14 +54,10 @@ import Network.HTTP.Types
 import Network.HTTP.Types.Status qualified as Status
 import UnliftIO.Exception (try)
 
--- | Admit administrators without a membership query; otherwise require the
--- caller's @ArkhamPlayer@ row. The rejection action is 'notFound' in production
--- so game absence and missing membership remain indistinguishable.
+-- | Delegates to 'Api.Handler.Arkham.Games.Shared.requireGameAccess'.
+-- Preserved for callers and tests already targeting this name.
 requireGameDecksAccess :: Monad m => Bool -> m Bool -> m () -> m ()
-requireGameDecksAccess isAdmin lookupMembership reject =
-  unless isAdmin do
-    isMember <- lookupMembership
-    unless isMember reject
+requireGameDecksAccess = requireGameAccess
 
 getApiV1ArkhamDecksR :: Handler [Entity ArkhamDeck]
 getApiV1ArkhamDecksR = do
