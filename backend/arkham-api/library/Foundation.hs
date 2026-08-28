@@ -398,10 +398,14 @@ userIdToToken userId = do
 tokenToUserId :: Text -> Handler (Maybe UserId)
 tokenToUserId token = do
   jwtSecret <- getJwtSecret
-  mUserId <- liftIO $ fmap fromJSON <$> JWT.tokenToJson jwtSecret token
-  case mUserId of
-    Just (Success userId) -> pure $ Just userId
-    _ -> pure Nothing
+  tokenResult <- liftIO $ JWT.tokenToJson jwtSecret token
+  case tokenResult of
+    Left err -> do
+      $(logDebug) $ "JWT verification failed: " <> tshow err
+      pure Nothing
+    Right value -> case fromJSON value of
+      Success userId -> pure $ Just userId
+      _ -> pure Nothing
 
 getJwtSecret :: HandlerFor App Text
 getJwtSecret = getsYesod $ appJwtSecret . appSettings

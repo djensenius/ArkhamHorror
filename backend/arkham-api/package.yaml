@@ -187,17 +187,22 @@ tests:
     source-dirs: tests
     ghc-options: -threaded -rtsopts -O0 "-with-rtsopts=-N"
     dependencies:
+      - MonadRandom
       - arkham-api
       - aeson
       - aeson-diff
+      - bytestring
       - exceptions
       - hspec
       - hspec-expectations-lifted
+      - jose
       - lens
+      - monad-time
       - uuid
       - mtl
       - persistent
       - random
+      - relude
       - containers
       - text
       - time
