@@ -5,6 +5,7 @@ import Amazonka.Auth (AuthError (..))
 import Amazonka.Error (serviceError)
 import Api.Handler.Arkham.Game.Bug (
   AwsAuthErrorDiagnostic (..),
+  AwsErrorCategory (..),
   AwsErrorDiagnostic (..),
   BugUploadFailure (..),
   BugUploadOutcome (..),
@@ -109,17 +110,19 @@ spec = describe "bug report upload" do
   wrap an 'HttpException' whose embedded 'Request' leaves the
   @X-Amz-Security-Token@ header (used for temporary/STS session
   credentials) unredacted, and 'SerializeError' carries the raw response
-  body. 'classifyErrorDiagnostic'/'classifyAuthErrorDiagnostic' are the
-  exact functions the handler now logs instead: these tests prove the
-  diagnostic for every secret-bearing case is a bare, structurally
-  secret-free category (no wrapped exception, request, or body reaches the
-  diagnostic type at all), while a genuine service response still yields
-  the non-secret status/code/request-id fields.
+  body. Even 'ServiceError''s own symbolic error code and request id are
+  server-provided free-form text, so they are excluded too.
+  'classifyErrorDiagnostic'/'classifyAuthErrorDiagnostic' are the exact
+  functions the handler now logs instead: these tests prove the diagnostic
+  for every secret-bearing case is a bare, structurally secret-free
+  category (no wrapped exception, request, body, error code, or request id
+  reaches the diagnostic type at all), while a genuine service response
+  still yields the sanitized status and a status-derived-only category.
   -}
   describe "classifyErrorDiagnostic" do
-    it "extracts only status/code/request-id from a genuine service error" do
+    it "extracts only a sanitized status and status-derived category from a genuine service error" do
       let err = ServiceError $ serviceError "S3" status404 [] (Just "NoSuchKey") (Just "computer says no") (Just "req-123")
-      classifyErrorDiagnostic err `shouldBe` AwsServiceFailure 404 "NoSuchKey" (Just "req-123")
+      classifyErrorDiagnostic err `shouldBe` AwsServiceFailure 404 AwsCategoryNotFound
 
     it "never carries the underlying exception for a transport failure" do
       -- 'AwsTransportFailure' is nullary: this is a type-level guarantee,
@@ -127,9 +130,9 @@ spec = describe "bug report upload" do
       -- unredacted request header) can reach the diagnostic.
       classifyErrorDiagnostic transportFailure `shouldBe` AwsTransportFailure
 
-    it "drops the raw response body from a serialize error, keeping only the status" do
+    it "drops the raw response body from a serialize error, keeping only the sanitized status/category" do
       let err = SerializeError $ SerializeError' "S3" status500 (Just "<sensitive-looking-body>") "unexpected token"
-      classifyErrorDiagnostic err `shouldBe` AwsSerializeFailure 500
+      classifyErrorDiagnostic err `shouldBe` AwsSerializeFailure 500 AwsCategoryServerError
 
   describe "classifyAuthErrorDiagnostic" do
     it "never carries the underlying exception for a credential retrieval failure" do
@@ -151,9 +154,9 @@ spec = describe "bug report upload" do
     it "reports credential chain exhaustion" do
       classifyAuthErrorDiagnostic CredentialChainExhausted `shouldBe` AwsAuthCredentialChainExhausted
 
-    it "extracts only status/code/request-id from an auth-layer service error" do
+    it "extracts only a sanitized status and status-derived category from an auth-layer service error" do
       let err = serviceError "S3" status403 [] (Just "AccessDenied") Nothing Nothing
-      classifyAuthErrorDiagnostic (AuthServiceError err) `shouldBe` AwsAuthServiceFailure 403 "AccessDenied" Nothing
+      classifyAuthErrorDiagnostic (AuthServiceError err) `shouldBe` AwsAuthServiceFailure 403 AwsCategoryClientError
 
     it "never carries the underlying arbitrary exception for an uncategorized auth failure" do
       -- 'AwsAuthOtherFailure' is nullary: 'OtherAuthError' wraps an

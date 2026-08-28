@@ -8,12 +8,13 @@ module Api.Handler.Arkham.Game.Bug (
   classifyHeadObjectError,
   runBugUploadPolicy,
   AwsErrorDiagnostic (..),
+  AwsErrorCategory (..),
   classifyErrorDiagnostic,
   AwsAuthErrorDiagnostic (..),
   classifyAuthErrorDiagnostic,
 ) where
 
-import Amazonka (Error (..), ErrorCode (..), RequestId (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
+import Amazonka (Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
 import Amazonka.Auth (AuthError (..))
 import Amazonka.S3
 import Api.Arkham.Export
@@ -90,31 +91,42 @@ newtype BugUploadError = BugUploadError {message :: Text}
   deriving anyclass ToJSON
 
 {- | Non-secret, structured classification of a per-request 'Error', safe to
-log. Deliberately extracts only the HTTP status (and, for a genuine service
-response, its symbolic error code and opaque request id) rather than
-showing the exception itself: 'TransportError' wraps an 'HttpException'
-whose embedded 'Request' includes the raw @X-Amz-Security-Token@ header
-verbatim when temporary/session credentials are in use (http-client's
-default 'Show' instance only redacts @Authorization@, not that header),
-and 'SerializeError' carries the raw, unredacted response body. Neither is
-safe to log or report.
+log. Deliberately extracts only the numeric HTTP status, plus a category
+derived purely from that status number, rather than showing the exception
+itself or any text originating in the response: 'TransportError' wraps an
+'HttpException' whose embedded 'Request' includes the raw
+@X-Amz-Security-Token@ header verbatim when temporary/session credentials
+are in use (http-client's default 'Show' instance only redacts
+@Authorization@, not that header), 'SerializeError' carries the raw,
+unredacted response body, and 'ServiceError''s symbolic error code and
+request id are themselves server-provided free-form text -- so neither is
+included here, only the status code they were reported with.
 -}
 data AwsErrorDiagnostic
   = AwsTransportFailure
-  | AwsSerializeFailure {awsErrorStatus :: Int}
-  | AwsServiceFailure {awsErrorStatus :: Int, awsErrorCode :: Text, awsErrorRequestId :: Maybe Text}
+  | AwsSerializeFailure {awsErrorStatus :: Int, awsErrorCategory :: AwsErrorCategory}
+  | AwsServiceFailure {awsErrorStatus :: Int, awsErrorCategory :: AwsErrorCategory}
   deriving stock (Eq, Show)
 
--- | Extract only the non-secret, structured fields of a 'ServiceError':
--- HTTP status, symbolic error code, and opaque request id. Never the
--- 'headers' (a full response header list) or 'message' (server-provided
--- free text).
-serviceErrorDiagnosticFields :: ServiceError -> (Int, Text, Maybe Text)
-serviceErrorDiagnosticFields e =
-  ( statusCode e.status
-  , let ErrorCode code = e.code in code
-  , e.requestId <&> \(RequestId rid) -> rid
-  )
+{- | A coarse category derived purely from the numeric HTTP status code --
+never from response body, headers, message text, symbolic error code, or
+request id -- so it can never echo server-provided content.
+-}
+data AwsErrorCategory
+  = AwsCategoryNotFound
+  | AwsCategoryClientError
+  | AwsCategoryThrottled
+  | AwsCategoryServerError
+  | AwsCategoryUnknownStatus
+  deriving stock (Eq, Show)
+
+categorizeAwsStatus :: Int -> AwsErrorCategory
+categorizeAwsStatus 404 = AwsCategoryNotFound
+categorizeAwsStatus 429 = AwsCategoryThrottled
+categorizeAwsStatus s
+  | s >= 500 && s < 600 = AwsCategoryServerError
+  | s >= 400 && s < 500 = AwsCategoryClientError
+  | otherwise = AwsCategoryUnknownStatus
 
 classifyErrorDiagnostic :: Error -> AwsErrorDiagnostic
 classifyErrorDiagnostic = \case
@@ -123,8 +135,8 @@ classifyErrorDiagnostic = \case
   -- because 'SerializeError' and 'ServiceError' share field names within
   -- Amazonka.Types, and only 'ServiceError' picks up an automatic
   -- 'HasField' instance for '.status' in this GHC/amazonka-core version.
-  SerializeError SerializeError' {status = st} -> AwsSerializeFailure (statusCode st)
-  ServiceError e -> let (status, code, requestId) = serviceErrorDiagnosticFields e in AwsServiceFailure status code requestId
+  SerializeError SerializeError' {status = st} -> AwsSerializeFailure (statusCode st) (categorizeAwsStatus (statusCode st))
+  ServiceError e -> let st = statusCode e.status in AwsServiceFailure st (categorizeAwsStatus st)
 
 {- | Non-secret, structured classification of an 'AuthError' raised by
 credential/config discovery, safe to log. Deliberately never shows the
@@ -135,8 +147,9 @@ to text derived from the (potentially credential-bearing) container
 credentials response body (which Aeson's error messages can echo
 fragments of), and 'OtherAuthError' wraps an arbitrary 'SomeException'
 whose 'Show' output is entirely unconstrained. Only the failure category
-(and, for 'AuthServiceError', the same non-secret status/code/request-id
-fields as 'AwsErrorDiagnostic') is reported.
+(and, for 'AuthServiceError', the same sanitized status/category as
+'AwsErrorDiagnostic' -- never the response's own error code or request id)
+is reported.
 -}
 data AwsAuthErrorDiagnostic
   = AwsAuthRetrievalFailure
@@ -145,7 +158,7 @@ data AwsAuthErrorDiagnostic
   | AwsAuthInvalidFile
   | AwsAuthInvalidIAM
   | AwsAuthCredentialChainExhausted
-  | AwsAuthServiceFailure {awsAuthErrorStatus :: Int, awsAuthErrorCode :: Text, awsAuthErrorRequestId :: Maybe Text}
+  | AwsAuthServiceFailure {awsAuthErrorStatus :: Int, awsAuthErrorCategory :: AwsErrorCategory}
   | AwsAuthOtherFailure
   deriving stock (Eq, Show)
 
@@ -157,7 +170,7 @@ classifyAuthErrorDiagnostic = \case
   InvalidFileError _ -> AwsAuthInvalidFile
   InvalidIAMError _ -> AwsAuthInvalidIAM
   CredentialChainExhausted -> AwsAuthCredentialChainExhausted
-  AuthServiceError e -> let (status, code, requestId) = serviceErrorDiagnosticFields e in AwsAuthServiceFailure status code requestId
+  AuthServiceError e -> let st = statusCode e.status in AwsAuthServiceFailure st (categorizeAwsStatus st)
   OtherAuthError _ -> AwsAuthOtherFailure
 
 postApiV1ArkhamGameBugR :: ArkhamGameId -> Handler Text
