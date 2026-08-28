@@ -4,11 +4,14 @@ import Api.Arkham.Helpers (ApiResponse (..))
 import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep (GameStepJson (..))
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo, WithFriends))
+import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
 import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
+import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
+import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Name (mkName)
 import Base.Api.Types.Account
 import Data.Aeson qualified as Aeson
@@ -289,6 +292,29 @@ spec = describe "Native client contract fixtures" do
           )
 
     Aeson.toJSON [notification] `shouldBe` fixture
+
+  it "matches the real card-list encoder" do
+    fixture <- loadFixtureField "catalog.json" "cards"
+
+    Aeson.toJSON [AssetCards.machete] `shouldBe` fixture
+
+  it "matches the real homebrew-card-list encoder" do
+    fixture <- loadFixtureField "catalog.json" "homebrewCards"
+
+    Aeson.toJSON [DarkMatterCards.rats] `shouldBe` fixture
+
+  it "matches the real card-detail encoder" do
+    fixture <- loadFixtureField "catalog.json" "card"
+
+    Aeson.toJSON InvestigatorCards.rolandBanks `shouldBe` fixture
+
+  it "matches the real investigator-artwork encoder" do
+    fixture <- loadFixtureField "catalog.json" "investigators"
+    let
+      artwork =
+        map cdArt [InvestigatorCards.rolandBanks, InvestigatorCards.daisyWalker]
+
+    Aeson.toJSON artwork `shouldBe` fixture
 
   for_ clientAnswerFixtures \(fileName, expectedConstructor) ->
     it ("decodes the real client answer for " <> fileName) do

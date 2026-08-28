@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.3
+  version: 0.1.4
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -162,6 +162,98 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotificationList"
+  /arkham/cards:
+    get:
+      operationId: listCards
+      summary: List built-in and installed player or campaign cards
+      description: |
+        Defaults to the player-card pool. `cardPool=campaign` returns campaign
+        cards, while `cardPool=both` returns both pools. For compatibility,
+        merely including the legacy `includeEncounter` parameter selects both
+        pools when `cardPool` is neither `campaign` nor `both`.
+
+        Browser lists omit the `01000` placeholder, special player assets, and
+        the later code of a two-sided card when both sides have definitions.
+        Results are not paginated.
+      security: []
+      parameters:
+        - name: cardPool
+          in: query
+          required: false
+          schema:
+            type: string
+            enum:
+              - player
+              - campaign
+              - both
+            default: player
+        - name: includeEncounter
+          in: query
+          required: false
+          deprecated: true
+          description: |
+            Presence enables the legacy combined pool behavior; the parameter
+            value is ignored.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Browser-visible card definitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardList"
+  /arkham/homebrew/cards:
+    get:
+      operationId: listHomebrewCards
+      summary: List browser-visible cards from installed homebrew campaigns
+      description: |
+        Returns homebrew locations, enemies, treacheries, acts, agendas,
+        encounter assets, player skills, and stories. Two-sided definitions
+        are deduplicated with the same rule as the primary card catalog.
+      security: []
+      responses:
+        "200":
+          description: Browser-visible homebrew card definitions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardList"
+  /arkham/card/{cardCode}:
+    get:
+      operationId: getCard
+      summary: Return one card definition by its raw card code
+      description: |
+        The path uses the raw code, such as `01020` or `:dark-matter:151`.
+        Unlike `CardDef.cardCode` in JSON, it does not include the Aeson `c`
+        prefix.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/CardCode"
+      responses:
+        "200":
+          description: Card definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardDef"
+        "404":
+          description: Card code does not exist
+  /arkham/investigators:
+    get:
+      operationId: listInvestigatorArtwork
+      summary: List available investigator artwork identifiers
+      description: |
+        Returns raw artwork identifiers rather than full card definitions.
+        Alternate printings are separate entries.
+      security: []
+      responses:
+        "200":
+          description: Investigator artwork identifiers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvestigatorArtwork"
   /arkham/games:
     get:
       operationId: listGames
@@ -251,6 +343,14 @@ components:
       schema:
         type: string
         format: uuid
+    CardCode:
+      name: cardCode
+      in: path
+      required: true
+      description: Raw card code without the JSON representation's leading `c`.
+      schema:
+        type: string
+        minLength: 1
     GameId:
       name: gameId
       in: path
@@ -333,6 +433,12 @@ components:
           format: uri
     NotificationList:
       $ref: "./schemas/account.schema.json#/$defs/notificationList"
+    CardDef:
+      $ref: "./schemas/catalog.schema.json#/$defs/cardDef"
+    CardList:
+      $ref: "./schemas/catalog.schema.json#/$defs/cardList"
+    InvestigatorArtwork:
+      $ref: "./schemas/catalog.schema.json#/$defs/investigatorArtwork"
     GameStep:
       $ref: "./schemas/game-step.schema.json"
     GameList:

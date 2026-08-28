@@ -93,6 +93,24 @@ will tighten each nested schema without changing the top-level envelope.
 - Notifications are unauthenticated global announcements, not user-specific
   records. They are returned newest first with `id`, `body`, and `createdAt`.
 
+## Card and investigator catalogs
+
+- Card catalogs, individual card lookup, and investigator artwork lookup are
+  public. Catalog lists are unpaginated and use the compact, omit-default
+  `CardDef` encoder.
+- `GET /arkham/cards` defaults to player cards. `cardPool=campaign` selects
+  campaign cards and `cardPool=both` combines both pools. The legacy
+  `includeEncounter` parameter is presence-based and also selects the combined
+  pool unless `cardPool` already names `campaign` or `both`.
+- `CardDef.cardCode` uses the Aeson-prefixed form such as `c01020` or
+  `c:dark-matter:151`. `GET /arkham/card/{cardCode}` instead expects the raw
+  form without that leading `c`.
+- `GET /arkham/investigators` returns raw artwork identifiers, not investigator
+  objects. Alternate printings are returned as separate entries.
+- The schema fixes all currently emitted `CardDef` top-level fields while
+  intentionally leaving complex matcher, criterion, action, keyword, and
+  customization payloads broad until their dedicated domain slices.
+
 ## Route inventory
 
 The route inventory expands every HTTP method in

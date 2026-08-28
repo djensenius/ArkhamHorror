@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.7",
+  "schemaRevision": "0.1.8",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -7,6 +7,7 @@
     "contracts/asyncapi.yaml",
     "contracts/route-inventory.json",
     "contracts/schemas/account.schema.json",
+    "contracts/schemas/catalog.schema.json",
     "contracts/schemas/client-answer.schema.json",
     "contracts/schemas/game-list.schema.json",
     "contracts/schemas/game-state.schema.json",
@@ -19,6 +20,10 @@
     {
       "path": "contracts/fixtures/account.json",
       "schema": "contracts/schemas/account.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/catalog.json",
+      "schema": "contracts/schemas/catalog.schema.json"
     },
     {
       "path": "contracts/fixtures/game-step.json",
