@@ -7,10 +7,14 @@ module Api.Handler.Arkham.Game.Bug (
   BugUploadFailure (..),
   classifyHeadObjectError,
   runBugUploadPolicy,
+  AwsErrorDiagnostic (..),
+  classifyErrorDiagnostic,
+  AwsAuthErrorDiagnostic (..),
+  classifyAuthErrorDiagnostic,
 ) where
 
-import Amazonka (Error (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
-import Amazonka.Auth (AuthError)
+import Amazonka (Error (..), ErrorCode (..), RequestId (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
+import Amazonka.Auth (AuthError (..))
 import Amazonka.S3
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
@@ -85,6 +89,77 @@ newtype BugUploadError = BugUploadError {message :: Text}
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
+{- | Non-secret, structured classification of a per-request 'Error', safe to
+log. Deliberately extracts only the HTTP status (and, for a genuine service
+response, its symbolic error code and opaque request id) rather than
+showing the exception itself: 'TransportError' wraps an 'HttpException'
+whose embedded 'Request' includes the raw @X-Amz-Security-Token@ header
+verbatim when temporary/session credentials are in use (http-client's
+default 'Show' instance only redacts @Authorization@, not that header),
+and 'SerializeError' carries the raw, unredacted response body. Neither is
+safe to log or report.
+-}
+data AwsErrorDiagnostic
+  = AwsTransportFailure
+  | AwsSerializeFailure {awsErrorStatus :: Int}
+  | AwsServiceFailure {awsErrorStatus :: Int, awsErrorCode :: Text, awsErrorRequestId :: Maybe Text}
+  deriving stock (Eq, Show)
+
+-- | Extract only the non-secret, structured fields of a 'ServiceError':
+-- HTTP status, symbolic error code, and opaque request id. Never the
+-- 'headers' (a full response header list) or 'message' (server-provided
+-- free text).
+serviceErrorDiagnosticFields :: ServiceError -> (Int, Text, Maybe Text)
+serviceErrorDiagnosticFields e =
+  ( statusCode e.status
+  , let ErrorCode code = e.code in code
+  , e.requestId <&> \(RequestId rid) -> rid
+  )
+
+classifyErrorDiagnostic :: Error -> AwsErrorDiagnostic
+classifyErrorDiagnostic = \case
+  TransportError _ -> AwsTransportFailure
+  -- Pattern-matched directly on the field (rather than record-dot syntax)
+  -- because 'SerializeError' and 'ServiceError' share field names within
+  -- Amazonka.Types, and only 'ServiceError' picks up an automatic
+  -- 'HasField' instance for '.status' in this GHC/amazonka-core version.
+  SerializeError SerializeError' {status = st} -> AwsSerializeFailure (statusCode st)
+  ServiceError e -> let (status, code, requestId) = serviceErrorDiagnosticFields e in AwsServiceFailure status code requestId
+
+{- | Non-secret, structured classification of an 'AuthError' raised by
+credential/config discovery, safe to log. Deliberately never shows the
+exception itself: 'RetrievalError' wraps an 'HttpException' with the same
+@X-Amz-Security-Token@/IMDS-token header risk as 'AwsErrorDiagnostic',
+'InvalidIAMError' wraps a message built by appending an Aeson decode error
+to text derived from the (potentially credential-bearing) container
+credentials response body (which Aeson's error messages can echo
+fragments of), and 'OtherAuthError' wraps an arbitrary 'SomeException'
+whose 'Show' output is entirely unconstrained. Only the failure category
+(and, for 'AuthServiceError', the same non-secret status/code/request-id
+fields as 'AwsErrorDiagnostic') is reported.
+-}
+data AwsAuthErrorDiagnostic
+  = AwsAuthRetrievalFailure
+  | AwsAuthMissingEnv
+  | AwsAuthMissingFile
+  | AwsAuthInvalidFile
+  | AwsAuthInvalidIAM
+  | AwsAuthCredentialChainExhausted
+  | AwsAuthServiceFailure {awsAuthErrorStatus :: Int, awsAuthErrorCode :: Text, awsAuthErrorRequestId :: Maybe Text}
+  | AwsAuthOtherFailure
+  deriving stock (Eq, Show)
+
+classifyAuthErrorDiagnostic :: AuthError -> AwsAuthErrorDiagnostic
+classifyAuthErrorDiagnostic = \case
+  RetrievalError _ -> AwsAuthRetrievalFailure
+  MissingEnvError _ -> AwsAuthMissingEnv
+  MissingFileError _ -> AwsAuthMissingFile
+  InvalidFileError _ -> AwsAuthInvalidFile
+  InvalidIAMError _ -> AwsAuthInvalidIAM
+  CredentialChainExhausted -> AwsAuthCredentialChainExhausted
+  AuthServiceError e -> let (status, code, requestId) = serviceErrorDiagnosticFields e in AwsAuthServiceFailure status code requestId
+  OtherAuthError _ -> AwsAuthOtherFailure
+
 postApiV1ArkhamGameBugR :: ArkhamGameId -> Handler Text
 postApiV1ArkhamGameBugR gameId = do
   Entity userId user <- getRequestUser
@@ -109,7 +184,7 @@ postApiV1ArkhamGameBugR gameId = do
       eEnv <- liftIO $ try @_ @AuthError (newEnv discover)
       case eEnv of
         Left authErr -> do
-          liftIO $ TIO.putStrLn $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow authErr
+          liftIO $ TIO.putStrLn $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyAuthErrorDiagnostic authErr)
           sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
         Right env -> do
           outcome <-
@@ -124,7 +199,7 @@ postApiV1ArkhamGameBugR gameId = do
                         when (classified == HeadObjectFailed)
                           $ liftIO
                           $ TIO.putStrLn
-                          $ "bug report upload: HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow err
+                          $ "bug report upload: HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyErrorDiagnostic err)
                         pure classified
                 )
                 ( do
@@ -134,7 +209,7 @@ postApiV1ArkhamGameBugR gameId = do
                       Left err -> do
                         liftIO
                           $ TIO.putStrLn
-                          $ "bug report upload: PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow err
+                          $ "bug report upload: PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyErrorDiagnostic err)
                         pure False
                 )
           case outcome of

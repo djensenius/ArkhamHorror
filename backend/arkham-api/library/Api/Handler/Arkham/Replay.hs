@@ -45,7 +45,7 @@ getApiV1ArkhamGameReplayR gameId step = do
         pure (ge, allChoices)
       let gameJson = arkhamGameCurrentData ge
       let choices = map (arkhamStepChoice . entityVal) $ reverse $ drop step allChoices
-      case replayChoicesEither gameJson [mconcat $ map choicePatchDown choices] of
+      case replayChoices gameJson [mconcat $ map choicePatchDown choices] of
         -- Stored patches failing to reconstruct is server-side data
         -- corruption/incompatibility, not malformed client input, so we
         -- respond 422 Unprocessable Entity rather than 400 or 500. The
