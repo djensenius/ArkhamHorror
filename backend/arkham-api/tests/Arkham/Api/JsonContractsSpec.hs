@@ -391,6 +391,28 @@ spec = describe "Native client contract fixtures" do
     importedDeckList `shouldBe` fixtureDeckList
     Aeson.toJSON importedDeckList `shouldBe` normalizedDeckList
 
+  it "defaults every unparsable sideSlots value to an empty map" do
+    deckListValue <-
+      loadFixtureField "decks.json" "validateDeckList"
+        :: IO Aeson.Value
+    let
+      withSideSlots value = case deckListValue of
+        Aeson.Object fields ->
+          Aeson.Object $ AesonKeyMap.insert "sideSlots" value fields
+        _ -> error "Expected validateDeckList to be an object"
+      unparsableValues =
+        [ Aeson.Null
+        , Aeson.Bool True
+        , Aeson.String "not a card-quantity map"
+        , Aeson.Number 42
+        , Aeson.Array $ fromList [Aeson.String "not a key-value pair"]
+        ]
+
+    for_ unparsableValues \value ->
+      case (Aeson.fromJSON (withSideSlots value) :: Aeson.Result ArkhamDBDecklist) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success deckList -> sideSlots deckList `shouldBe` mempty
+
   it "decodes the real create-deck request" do
     request <-
       loadFixtureField "decks.json" "createDeck"
