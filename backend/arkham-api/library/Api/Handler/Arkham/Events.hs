@@ -838,12 +838,24 @@ class Monad m => MonadEpicPersistence m where
 its own initial step (in ordinal order), then the event, the organizer's
 membership, and every group link. This is the single seam production and
 tests both exercise directly.
+
+The ordinal-order guarantee is enforced here, not merely assumed of the
+caller: 'pendingGroups' is stably sorted by '.ordinal' before anything is
+inserted, so games/steps -- and, since the sorted list also drives the later
+link loop, group links -- are always processed in ordinal order regardless
+of the order the caller's list happens to be in. 'preparePendingGroupGames'
+already produces an ordinal-ordered list, but a caller building
+'PendingGroupGame' values directly (its constructor is exported) could easily
+hand this function an unsorted, or duplicate-ordinal, list; the stable sort
+means duplicate ordinals are processed in their relative input order rather
+than being rejected.
 -}
 createEpicEventAggregate
   :: MonadEpicPersistence m
   => ArkhamEpicEvent -> UserId -> [PendingGroupGame] -> m ArkhamEpicEventId
 createEpicEventAggregate eventRecord organizerId pendingGroups = do
-  groupGameIds <- for pendingGroups \pg -> do
+  let orderedGroups = sortOn (.ordinal) pendingGroups
+  groupGameIds <- for orderedGroups \pg -> do
     gid <- insertGroupGame pg
     insertInitialStep gid
     pure (pg, gid)

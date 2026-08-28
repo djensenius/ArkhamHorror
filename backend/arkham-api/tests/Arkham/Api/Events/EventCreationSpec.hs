@@ -160,9 +160,11 @@ instance MonadEpicPersistence TestDB where
 
   insertInitialStep gid = do
     ordinals <- gets (.gameOrdinals)
-    let ordx = fromMaybe (error "insertInitialStep: unknown game id") (lookup gid ordinals)
-    failIfConfigured (FailAtInitialStep ordx)
-    recordStep (InsertedStep ordx)
+    case lookup gid ordinals of
+      Nothing -> throwError ("insertInitialStep: unknown game id " <> show gid)
+      Just ordx -> do
+        failIfConfigured (FailAtInitialStep ordx)
+        recordStep (InsertedStep ordx)
 
   insertEvent _event = do
     failIfConfigured FailAtEvent
@@ -353,3 +355,56 @@ spec = do
       let (result, log_) = runTestDB FailNever (createEpicEventAggregate fixtureEventRecord fixtureOrganizerId [])
       result `shouldBe` Right fixtureEventId
       log_ `shouldBe` [InsertedEvent, InsertedMember]
+
+    it "sequences games/steps/links by ordinal even when the caller's list is not already ordinal-ordered" do
+      -- 'PendingGroupGame's constructor is exported, so a caller could easily
+      -- hand this function an unsorted list. 'createEpicEventAggregate' must
+      -- not merely document ordinal ordering -- it must enforce it, by stably
+      -- sorting on '.ordinal' before inserting anything.
+      let shuffledGroups = [mkPending 2 "C" 3 333, mkPending 0 "A" 1 111, mkPending 1 "B" 2 222]
+          (result, log_) =
+            runTestDB FailNever (createEpicEventAggregate fixtureEventRecord fixtureOrganizerId shuffledGroups)
+      result `shouldBe` Right fixtureEventId
+      log_
+        `shouldBe` [ InsertedGame 0 111
+                   , InsertedStep 0
+                   , InsertedGame 1 222
+                   , InsertedStep 1
+                   , InsertedGame 2 333
+                   , InsertedStep 2
+                   , InsertedEvent
+                   , InsertedMember
+                   , InsertedLink 0
+                   , InsertedLink 1
+                   , InsertedLink 2
+                   ]
+
+    it "breaks ties between duplicate ordinals deterministically (stably, by input order) rather than rejecting them" do
+      let duplicateOrdinalGroups = [mkPending 0 "First" 1 111, mkPending 0 "Second" 2 222]
+          (result, log_) =
+            runTestDB FailNever (createEpicEventAggregate fixtureEventRecord fixtureOrganizerId duplicateOrdinalGroups)
+      result `shouldBe` Right fixtureEventId
+      -- both keep ordinal 0, but the stable sort preserves their relative
+      -- input order rather than raising an error or reordering arbitrarily
+      log_
+        `shouldBe` [ InsertedGame 0 111
+                   , InsertedStep 0
+                   , InsertedGame 0 222
+                   , InsertedStep 0
+                   , InsertedEvent
+                   , InsertedMember
+                   , InsertedLink 0
+                   , InsertedLink 0
+                   ]
+
+  describe "insertInitialStep (TestDB harness invariant)" do
+    it "raises a typed failure (not a runtime crash) for an unknown game id" do
+      -- The pure interpreter has no game-id-to-ordinal mapping recorded unless
+      -- 'insertGroupGame' ran first for that id. This proves the missing-id
+      -- path is handled via 'throwError' -- staying inside 'TestDB's
+      -- 'ExceptT String' -- rather than an uncaught 'error' call, so this
+      -- test itself would crash the whole suite (not just fail one example)
+      -- if that regressed.
+      let (result, log_) = runTestDB FailNever (insertInitialStep (fixtureGameId 999))
+      result `shouldSatisfy` isLeft
+      log_ `shouldBe` []
