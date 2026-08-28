@@ -1092,15 +1092,11 @@ deleteEpicEventAggregate eid userId = do
 
 instance MonadEpicEventDeletion (SqlPersistT Handler) where
   eventExists eid = do
-    -- Project only the id, same as 'lockEpicEvent' below, so this cheap
-    -- probe never materializes the (potentially large) 'sharedState'
-    -- column -- it takes no lock at all ('P.get' would fetch and decode
-    -- the whole row just to be discarded).
-    found <- select do
-      e <- from $ table @ArkhamEpicEvent
-      where_ $ e.id ==. val eid
-      pure e.id
-    pure $ not (null found)
+    -- 'P.exists' expresses a pure existence probe directly, never
+    -- materializing the (potentially large) 'sharedState' column and never
+    -- allocating a result list -- it takes no lock at all ('P.get' would
+    -- fetch and decode the whole row just to be discarded).
+    P.exists [ArkhamEpicEventId P.==. eid]
   isEventOrganizer eid uid =
     P.exists
       [ ArkhamEpicMemberArkhamEpicEventId P.==. eid
