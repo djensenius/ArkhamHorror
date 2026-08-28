@@ -428,22 +428,40 @@ spec = do
       -- roll back entries already appended before the failure -- it only
       -- demonstrates the deterministic order operations were attempted in,
       -- and where the sequence short-circuited.)
-      let duplicateOrdinalGroups = [mkPending 0 "First" 1 111, mkPending 0 "Second" 2 222]
+      --
+      -- A third, distinguishable, strictly-higher-ordinal group is included
+      -- *after* the duplicate pair so the "nothing after the failed link is
+      -- attempted" claim is non-vacuous: without it, the log simply ending
+      -- after the sole remaining operation would trivially satisfy any
+      -- "no later operations" assertion. With a third group present, we can
+      -- positively show its game/step *were* prepared up front (per the
+      -- sequencer's documented "all games/steps before any links" order) but
+      -- its link -- which the ordinal-ordered 'for_' would only reach after
+      -- the second duplicate link -- never appears in the log.
+      let duplicateOrdinalGroups =
+            [mkPending 0 "First" 1 111, mkPending 0 "Second" 2 222, mkPending 5 "Third" 3 555]
           (result, log_) =
             runTestDB FailNever (createEpicEventAggregate fixtureEventRecord fixtureOrganizerId duplicateOrdinalGroups)
       result `shouldSatisfy` isLeft
-      -- both groups' games/steps are still attempted, stably, in input order
-      -- (the stable sort preserves relative order for tied ordinals; distinct
-      -- fake game ids are still handed out per insert, just like a real
-      -- database would for two distinct rows); then the event and organizer
-      -- member rows succeed; then the first group's link succeeds -- but the
-      -- second group's link, sharing the same ordinal, fails, and nothing
-      -- after it is attempted
+      -- all three groups' games/steps are prepared and inserted, stably, in
+      -- input/ordinal order -- and, per 'createEpicEventAggregate's
+      -- documented sequencing, entirely before event creation -- regardless
+      -- of the later link failure (the stable sort preserves relative order
+      -- for tied ordinals; distinct fake game ids are still handed out per
+      -- insert, just like a real database would for three distinct rows);
+      -- then the event and organizer member rows succeed; then links begin
+      -- in that same stable ordinal order: the first group's ordinal-0 link
+      -- succeeds, but the second group's link, sharing the same ordinal,
+      -- fails on the simulated uniqueness constraint -- and the third
+      -- group's ordinal-5 link is conspicuously absent, proving nothing
+      -- after the failed duplicate link is attempted
       log_
         `shouldBe` [ InsertedGame 0 111
                    , InsertedStep 0
                    , InsertedGame 0 222
                    , InsertedStep 0
+                   , InsertedGame 5 555
+                   , InsertedStep 5
                    , InsertedEvent
                    , InsertedMember
                    , InsertedLink 0
