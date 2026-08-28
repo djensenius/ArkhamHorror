@@ -109,22 +109,35 @@ data FailAt
   | FailAtLink Int
   deriving stock (Eq, Show)
 
--- | Mutable state threaded through 'TestDB': the step log, plus a lookup from
--- an inserted game's id back to its ordinal (so 'insertInitialStep', which
--- only receives the game id, can still be checked against 'FailAtInitialStep'
--- and logged with the right ordinal).
+-- | Mutable state threaded through 'TestDB': the step log; a lookup from an
+-- inserted game's id back to its ordinal (so 'insertInitialStep', which only
+-- receives the game id, can still be checked against 'FailAtInitialStep' and
+-- logged with the right ordinal); a monotonically increasing counter used to
+-- hand out a fresh, distinct fake game id to every inserted game (mirroring a
+-- real database, where two rows always get distinct ids even if their
+-- application-level ordinal happens to collide); and the set of group-link
+-- ordinals already inserted for this event, used to model production's
+-- @(arkhamEpicEventId, ordinal)@ unique constraint on 'ArkhamEpicGroup'.
 data TestState = TestState
   { steps :: [Step]
   , gameOrdinals :: [(GameEntity.ArkhamGameId, Int)]
+  , nextGameId :: Int
+  , insertedLinkOrdinals :: [Int]
   }
 
 emptyTestState :: TestState
-emptyTestState = TestState {steps = [], gameOrdinals = []}
+emptyTestState =
+  TestState {steps = [], gameOrdinals = [], nextGameId = 0, insertedLinkOrdinals = []}
 
 {- | A pure interpreter of 'MonadEpicPersistence': records every step it is
 asked to perform and short-circuits (via 'ExceptT') at the configured 'FailAt'
 step, exactly the way an uncaught exception aborts a real 'runDB' transaction
-(see the rollback caveat documented on 'MonadEpicPersistence').
+(see the rollback caveat documented on 'MonadEpicPersistence'). Note that,
+unlike a real 'runDB' transaction, this interpreter does not roll back
+earlier entries already appended to its step log when a later operation
+throws -- the log is evidence of the deterministic order operations were
+attempted in and where the sequence short-circuited, not a simulation of what
+would (or would not) remain committed.
 -}
 newtype TestDB a = TestDB
   {unTestDB :: ReaderT FailAt (ExceptT String (State TestState)) a}
@@ -150,11 +163,21 @@ failIfConfigured this = do
 recordStep :: Step -> TestDB ()
 recordStep step = modify \s -> s {steps = s.steps ++ [step]}
 
+-- | Hand out a fresh fake game id, distinct from every previously issued one
+-- regardless of the inserted group's ordinal -- just as a real database
+-- would never reuse a primary key for two distinct inserted rows, even if
+-- their application-level ordinal happens to collide.
+freshGameId :: TestDB GameEntity.ArkhamGameId
+freshGameId = do
+  n <- gets (.nextGameId)
+  modify \s -> s {nextGameId = n + 1}
+  pure (fixtureGameId n)
+
 instance MonadEpicPersistence TestDB where
   insertGroupGame pg = do
     failIfConfigured (FailAtGame pg.ordinal)
     recordStep (InsertedGame pg.ordinal (gameSeed pg.game.currentData))
-    let gid = fixtureGameId pg.ordinal
+    gid <- freshGameId
     modify \s -> s {gameOrdinals = (gid, pg.ordinal) : s.gameOrdinals}
     pure gid
 
@@ -177,6 +200,18 @@ instance MonadEpicPersistence TestDB where
 
   insertGroupLink _eid pg _gid = do
     failIfConfigured (FailAtLink pg.ordinal)
+    -- Models production's unique constraint on
+    -- (arkhamEpicEventId, ordinal): a real insert of a second
+    -- 'ArkhamEpicGroup' row sharing this event's id and this ordinal would
+    -- fail, and 'runDB' would roll back the whole transaction.
+    existingOrdinals <- gets (.insertedLinkOrdinals)
+    when (pg.ordinal `elem` existingOrdinals)
+      $ throwError
+        ( "insertGroupLink: duplicate ordinal "
+            <> show pg.ordinal
+            <> " violates the (event, ordinal) unique constraint"
+        )
+    modify \s -> s {insertedLinkOrdinals = pg.ordinal : s.insertedLinkOrdinals}
     recordStep (InsertedLink pg.ordinal)
 
 -- Specs ---------------------------------------------------------------------------
@@ -379,13 +414,31 @@ spec = do
                    , InsertedLink 2
                    ]
 
-    it "breaks ties between duplicate ordinals deterministically (stably, by input order) rather than rejecting them" do
+    it "games/steps for duplicate ordinals are still inserted in stable, deterministic (input) order, but the second group's link cannot produce a success-shaped result" do
+      -- 'preparePendingGroupGames' always produces unique ordinals in
+      -- practice, but 'PendingGroupGame's constructor is exported, so nothing
+      -- stops a caller from constructing two groups that share an ordinal.
+      -- Production's 'ArkhamEpicGroup' table has a unique constraint on
+      -- (arkhamEpicEventId, ordinal), so the second group's link insert would
+      -- fail and a real 'runDB' would roll back the whole transaction --
+      -- this cannot be a committed success. The pure 'TestDB' interpreter
+      -- models that same constraint at the link-insertion step (see
+      -- 'insertGroupLink' above) so this test cannot claim an impossible
+      -- result. (Unlike a real transaction, this interpreter's log does not
+      -- roll back entries already appended before the failure -- it only
+      -- demonstrates the deterministic order operations were attempted in,
+      -- and where the sequence short-circuited.)
       let duplicateOrdinalGroups = [mkPending 0 "First" 1 111, mkPending 0 "Second" 2 222]
           (result, log_) =
             runTestDB FailNever (createEpicEventAggregate fixtureEventRecord fixtureOrganizerId duplicateOrdinalGroups)
-      result `shouldBe` Right fixtureEventId
-      -- both keep ordinal 0, but the stable sort preserves their relative
-      -- input order rather than raising an error or reordering arbitrarily
+      result `shouldSatisfy` isLeft
+      -- both groups' games/steps are still attempted, stably, in input order
+      -- (the stable sort preserves relative order for tied ordinals; distinct
+      -- fake game ids are still handed out per insert, just like a real
+      -- database would for two distinct rows); then the event and organizer
+      -- member rows succeed; then the first group's link succeeds -- but the
+      -- second group's link, sharing the same ordinal, fails, and nothing
+      -- after it is attempted
       log_
         `shouldBe` [ InsertedGame 0 111
                    , InsertedStep 0
@@ -393,7 +446,6 @@ spec = do
                    , InsertedStep 0
                    , InsertedEvent
                    , InsertedMember
-                   , InsertedLink 0
                    , InsertedLink 0
                    ]
 
