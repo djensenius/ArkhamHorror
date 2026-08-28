@@ -1,7 +1,7 @@
 module Base.Api.Handler.PasswordReset (postApiV1PasswordResetsR, putApiV1PasswordResetR) where
 
+import Base.Api.Types.Account
 import Crypto.BCrypt
-import Data.Aeson (withObject)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock
@@ -10,25 +10,13 @@ import Import
 import Network.Mail.Mailtrap
 import Text.Email.Parser (unsafeEmailAddress)
 
-newtype PasswordResetRequest = PasswordResetRequest {resetEmail :: Text}
-
-instance FromJSON PasswordResetRequest where
-  parseJSON = withObject "PasswordResetRequest" $ \o ->
-    PasswordResetRequest <$> o .: "email"
-
-data PasswordResetPassword = PasswordResetPassword {resetPassword :: Text}
-
-instance FromJSON PasswordResetPassword where
-  parseJSON = withObject "PasswordResetPassword" $ \o ->
-    PasswordResetPassword <$> o .: "password"
-
 postApiV1PasswordResetsR :: Handler ()
 postApiV1PasswordResetsR = do
-  payload <- requireCheckJsonBody
+  payload <- requireCheckJsonBody :: Handler PasswordResetRequest
   resetExpiresAt <- liftIO $ addUTCTime nominalDay <$> getCurrentTime
-  Entity userId _ <- runDB $ getBy404 (UniqueEmail $ resetEmail payload)
+  Entity userId _ <- runDB $ getBy404 (UniqueEmail payload.resetEmail)
   token <- runDB $ insert $ PasswordReset userId resetExpiresAt
-  sendPasswordResetEmail (resetEmail payload) (UUID.toText $ coerce token)
+  sendPasswordResetEmail payload.resetEmail (UUID.toText $ coerce token)
  where
   sendPasswordResetEmail :: Text -> Text -> Handler ()
   sendPasswordResetEmail email token = do
@@ -70,12 +58,12 @@ postApiV1PasswordResetsR = do
 
 putApiV1PasswordResetR :: PasswordResetId -> Handler ()
 putApiV1PasswordResetR resetId = do
-  payload <- requireCheckJsonBody
+  payload <- requireCheckJsonBody :: Handler PasswordResetUpdate
   mdigest <-
     liftIO
       $ hashPasswordUsingPolicy
         slowerBcryptHashingPolicy
-        (TE.encodeUtf8 $ resetPassword payload)
+        (TE.encodeUtf8 payload.resetPassword)
   now <- liftIO getCurrentTime
 
   runDB $ do

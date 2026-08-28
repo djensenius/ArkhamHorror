@@ -1,0 +1,23 @@
+{
+  "passwordResetRequest": {
+    "email": "investigator@example.com"
+  },
+  "passwordResetUpdate": {
+    "password": "new passphrase"
+  },
+  "userSettings": {
+    "beta": true
+  },
+  "settingsUser": {
+    "username": "Investigator",
+    "email": "investigator@example.com",
+    "beta": true
+  },
+  "notifications": [
+    {
+      "id": 17,
+      "body": "Contract fixture announcement.",
+      "createdAt": "2026-01-02T03:04:05Z"
+    }
+  ]
+}

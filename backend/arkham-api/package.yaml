@@ -196,6 +196,8 @@ tests:
       - lens
       - uuid
       - mtl
+      - persistent
       - random
       - containers
       - text
+      - time

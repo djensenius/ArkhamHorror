@@ -78,6 +78,21 @@ deck lists, destiny values, and campaign steps are intentionally broad in this
 revision; their representative fixtures are decoder-checked, and later slices
 will tighten each nested schema without changing the top-level envelope.
 
+## Accounts, settings, and notifications
+
+- Password-reset request and update routes are public. The request route
+  currently returns `404` for an unknown email, but clients must present the
+  same neutral result as `200` and never use this distinction for account
+  discovery. Reset tokens expire after one day; consuming an expired token
+  deletes it and returns success without changing the password.
+- Settings updates require authentication and currently accept only `beta`.
+  Their three-field response omits the `admin` field present in `GET /whoami`,
+  so clients must not decode both responses as the same shape.
+- Account deletion requires authentication, removes outstanding reset tokens,
+  and returns an empty success response.
+- Notifications are unauthenticated global announcements, not user-specific
+  records. They are returned newest first with `id`, `body`, and `createdAt`.
+
 ## Route inventory
 
 The route inventory expands every HTTP method in

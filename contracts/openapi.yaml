@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.2
+  version: 0.1.3
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -46,6 +46,50 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Token"
+  /password-reset:
+    post:
+      operationId: requestPasswordReset
+      summary: Create a one-day password-reset token and send its browser link
+      description: |
+        The current server returns `404` when the email does not identify an
+        account. Clients must present the same neutral result for `200` and
+        `404` rather than using this distinction for account discovery. A
+        successful response has no body.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetRequest"
+      responses:
+        "200":
+          description: Password-reset email processing completed
+        "404":
+          description: |
+            Request could not be completed; clients must present the same
+            neutral result as a successful request
+  /password-reset/{passwordResetId}:
+    put:
+      operationId: resetPassword
+      summary: Replace the password associated with a reset token
+      description: |
+        An expired token is deleted and currently returns `200` without
+        changing the password. A successful response has no body.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/PasswordResetId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordResetUpdate"
+      responses:
+        "200":
+          description: Reset token processing completed
+        "404":
+          description: Reset token does not exist
   /whoami:
     get:
       operationId: getCurrentUser
@@ -57,6 +101,40 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CurrentUser"
+        "401":
+          description: Token is absent or invalid
+  /settings:
+    put:
+      operationId: updateSettings
+      summary: Update settings for the authenticated account
+      description: |
+        The response identifies the updated account but, unlike `GET /whoami`,
+        does not include the account's administrator flag.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserSettings"
+      responses:
+        "200":
+          description: Updated account and settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SettingsUser"
+        "401":
+          description: Token is absent or invalid
+  /account:
+    delete:
+      operationId: deleteAccount
+      summary: Permanently delete the authenticated account
+      description: |
+        Deletes outstanding password-reset tokens before deleting the account.
+        A successful response has no body.
+      responses:
+        "200":
+          description: Account deleted
         "401":
           description: Token is absent or invalid
   /site-settings:
@@ -71,6 +149,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SiteSettings"
+  /notifications:
+    get:
+      operationId: listNotifications
+      summary: List public global announcements
+      description: Returns all announcements ordered newest first.
+      security: []
+      responses:
+        "200":
+          description: Global announcements
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationList"
   /arkham/games:
     get:
       operationId: listGames
@@ -153,6 +244,13 @@ components:
       name: Authorization
       description: Send the value as `Token <token>`.
   parameters:
+    PasswordResetId:
+      name: passwordResetId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     GameId:
       name: gameId
       in: path
@@ -196,6 +294,10 @@ components:
       properties:
         token:
           type: string
+    PasswordResetRequest:
+      $ref: "./schemas/account.schema.json#/$defs/passwordResetRequest"
+    PasswordResetUpdate:
+      $ref: "./schemas/account.schema.json#/$defs/passwordResetUpdate"
     CurrentUser:
       type: object
       additionalProperties: false
@@ -214,6 +316,10 @@ components:
           type: boolean
         admin:
           type: boolean
+    UserSettings:
+      $ref: "./schemas/account.schema.json#/$defs/userSettings"
+    SettingsUser:
+      $ref: "./schemas/account.schema.json#/$defs/settingsUser"
     SiteSettings:
       type: object
       additionalProperties: false
@@ -225,6 +331,8 @@ components:
             - string
             - "null"
           format: uri
+    NotificationList:
+      $ref: "./schemas/account.schema.json#/$defs/notificationList"
     GameStep:
       $ref: "./schemas/game-step.schema.json"
     GameList:
