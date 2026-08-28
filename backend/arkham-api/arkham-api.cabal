@@ -8734,6 +8734,7 @@ test-suite spec
       Arkham.UltimatumsAndBoons.UltimatumOfTheScreamSpec
       Arkham.UltimatumsAndBoons.UltimatumOfTheSpiralSpec
       Arkham.UltimatumsAndBoons.UltimatumOfUltimatumsSpec
+      Auth.JWTSpec
       Entity.AnswerSpec
       Helpers.Achievements
       Helpers.Message
@@ -8774,18 +8775,23 @@ test-suite spec
   build-tool-depends:
       cards-discover:cards-discover
   build-depends:
-      aeson
+      MonadRandom
+    , aeson
     , aeson-diff
     , arkham-api
     , base
+    , bytestring
     , containers
     , exceptions
     , hspec
     , hspec-expectations-lifted
+    , jose
     , lens
+    , monad-time
     , mtl
     , persistent
     , random
+    , relude
     , text
     , time
     , uuid

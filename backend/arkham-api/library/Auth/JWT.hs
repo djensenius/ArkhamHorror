@@ -68,7 +68,7 @@ tokenToJson jwtSecret token = do
     jwt <- decodeCompact $ TL.encodeUtf8 $ TL.fromStrict token
     verifyJWT (defaultJWTValidationSettings audCheck) jwk (jwt :: SignedJWT)
   pure $ case res of
-    Left (err :: JWTError) -> error $ show err
+    Left (_ :: JWTError) -> Nothing
     Right super -> Just (jwt super)
 
 extractToken :: Text -> Maybe Text
