@@ -12,6 +12,7 @@ module Api.Arkham.Epic where
 
 import Arkham.Card.CardCode (CardCode (..))
 import Arkham.Epic.Types
+import Data.List.Extra (nubOrd)
 import Data.Set qualified as Set
 import Data.Time.Clock (getCurrentTime)
 import Database.Esqueleto.Experimental hiding (update, (=.))
@@ -72,31 +73,29 @@ deterministic: it is included, and tested, purely so this ordering is total
 and reproducible from its OWN definition, not from an assumption about a
 constraint defined elsewhere.
 
-Deduplication matters for exactly one caller today:
-'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' is only ever handed two
-refs, but a degenerate request where both sides resolve to the same game
-would otherwise produce a two-element 'lockOrder' that redundantly
-re-acquires the same row's lock twice in one transaction. That is harmless
-under PostgreSQL's semantics (a transaction re-locking a row it already
-holds is a no-op), but every distinct game should still appear exactly once
-here, as an explicit invariant of this function rather than an accident of
-what happens to be harmless: "lock each distinct linked game once, in
-canonical order" is what every caller actually wants.
+Deduplication matters for both callers today, not just the two-game swap
+case: 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' can be handed
+refs for arbitrarily many linked games in one event, and nothing forbids
+two DIFFERENT groups (at different, non-adjacent ordinals, with some other
+game's group in between) from referencing the SAME game -- so
+deduplication must catch a repeated game id no matter how far apart its
+occurrences land after sorting, not merely when they happen to end up next
+to each other. 'nubOrd' below keeps only the first (i.e. lowest-ordinal)
+occurrence of each distinct game id and drops every later one, using an
+'Ord'-based set rather than a pairwise (and therefore adjacency-dependent)
+comparison, so this holds regardless of how the input is shaped. A
+redundant re-lock of an already-held row is harmless under PostgreSQL's
+semantics (a transaction re-locking a row it already holds is a no-op),
+but every distinct game should still appear exactly once here, as an
+explicit invariant of this function rather than an accident of what
+happens to be harmless: "lock each distinct linked game once, in canonical
+order" is what every caller actually wants.
 -}
 canonicalEpicGameLockOrder :: [EpicGameLockRef] -> [ArkhamGameId]
 canonicalEpicGameLockOrder =
-  dedupeSorted
+  nubOrd
     . map (.epicGameLockRefGameId)
     . sortOn (\ref -> (ref.epicGameLockRefOrdinal, ref.epicGameLockRefGameId))
- where
-  -- Collapses adjacent equal elements of an already-sorted list to one
-  -- occurrence each. Total: the first clause only ever matches a list of at
-  -- least two elements, and the second clause matches everything else (the
-  -- empty list and every singleton), so together they cover every list.
-  dedupeSorted (x : y : rest)
-    | x == y = dedupeSorted (y : rest)
-    | otherwise = x : dedupeSorted (y : rest)
-  dedupeSorted xs = xs
 
 {- | Build a per-action 'EpicEnv': the current shared state in an 'IORef' plus an
 empty delta buffer that the run loop appends to.

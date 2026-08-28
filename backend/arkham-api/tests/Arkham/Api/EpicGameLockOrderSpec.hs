@@ -82,6 +82,20 @@ spec = describe "canonicalEpicGameLockOrder (shared Epic game lock-order seam)" 
       [ref 2 (fixtureGameId 5), ref 0 (fixtureGameId 1), ref 1 (fixtureGameId 5)]
       `shouldBe` [fixtureGameId 1, fixtureGameId 5]
 
+  it "collapses a game id repeated at NON-ADJACENT ordinals -- with a different game's group in between -- to a single occurrence" do
+    -- Ordinal 0 and ordinal 2 both resolve to game 9, with ordinal 1
+    -- resolving to a DIFFERENT game (4) in between them. After sorting by
+    -- ordinal, the two game-9 occurrences are NOT next to each other in
+    -- the intermediate game-id list ([9, 4, 9]) -- only an adjacency-based
+    -- dedup would miss this and wrongly leave both. This is a real,
+    -- reachable shape for 'Api.Handler.Arkham.Events.deleteEpicEventAggregate':
+    -- nothing prevents two different groups of the same event from
+    -- referencing the same game, with some other group's game ordinally
+    -- between them.
+    canonicalEpicGameLockOrder
+      [ref 0 (fixtureGameId 9), ref 1 (fixtureGameId 4), ref 2 (fixtureGameId 9)]
+      `shouldBe` [fixtureGameId 9, fixtureGameId 4]
+
   it "handles an empty input" do
     canonicalEpicGameLockOrder [] `shouldBe` ([] :: [GameEntity.ArkhamGameId])
 
