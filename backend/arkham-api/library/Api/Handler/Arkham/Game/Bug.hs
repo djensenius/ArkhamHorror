@@ -108,19 +108,29 @@ classifyHeadObjectError :: Error -> HeadObjectOutcome
 classifyHeadObjectError (ServiceError e) | statusCode e.status == 404 = ObjectAbsent
 classifyHeadObjectError err = HeadObjectFailed (classifyErrorDiagnostic err)
 
-{- | Run the HeadObject check, forcing the sanitized outcome to normal form
-with 'evaluate' *before* returning it -- unlike a bare @pure $ either ...@,
+{- | Run the HeadObject check, forcing the sanitized outcome with
+'evaluate' *before* returning it -- unlike a bare @pure $ either ...@,
 which would only build an unforced thunk still closing over the raw
 Amazonka 'Error' (and, transitively, whatever it wraps: an 'HttpException'
 carrying request headers, or a raw response body) until something else
-happens to force it later. Forcing here, inside this action, guarantees
-that by the time it returns -- in particular, by the time 'runResourceT'
-built around it returns -- nothing reachable from the result can still
-retain the raw exception. A successful response is discarded in-scope
-(never inspected, never retained) since only presence\/absence\/failure is
-meaningful to callers. Polymorphic over 'MonadIO' \/ the response type so
-it is exactly the same code path production ('ResourceT IO', a real
-Amazonka response) and tests (plain 'IO', a fixture) both exercise.
+happens to force it later. 'evaluate' itself only forces to /weak head
+normal form/ (the outermost constructor), not full normal form -- but
+every type it can bottom out in here ('HeadObjectOutcome',
+'AwsErrorDiagnostic', 'AwsErrorCategory', down to a plain 'Int') is
+declared in this module, which enables this package's default
+'StrictData' extension, so every field of every nested constructor is
+itself strict. That single outer WHNF force therefore cascades through
+every nested constructor all the way down to atomic values with no
+further structure to hide a thunk in -- the practical result is full
+normal form, even though 'evaluate' alone never guarantees that in
+general. Forcing here, inside this action, guarantees that by the time it
+returns -- in particular, by the time 'runResourceT' built around it
+returns -- nothing reachable from the result can still retain the raw
+exception. A successful response is discarded in-scope (never inspected,
+never retained) since only presence\/absence\/failure is meaningful to
+callers. Polymorphic over 'MonadIO' \/ the response type so it is exactly
+the same code path production ('ResourceT IO', a real Amazonka response)
+and tests (plain 'IO', a fixture) both exercise.
 -}
 runHeadObjectAction :: MonadIO m => m (Either Error a) -> m HeadObjectOutcome
 runHeadObjectAction sendHeadObject =
@@ -128,11 +138,12 @@ runHeadObjectAction sendHeadObject =
     Right _response -> pure ObjectPresent
     Left err -> liftIO (evaluate (classifyHeadObjectError err))
 
-{- | Run the PutObject upload, forcing the sanitized outcome to normal form
-with 'evaluate' *before* returning it. See 'runHeadObjectAction' for why
-this matters: without it, a failing PUT's result would be an unforced
-thunk over the raw 'Error' until something outside this action's scope
-happened to force it.
+{- | Run the PutObject upload, forcing the sanitized outcome with
+'evaluate' *before* returning it. See 'runHeadObjectAction' for why this
+matters -- including why a single WHNF force is enough here, given this
+module's 'StrictData' default -- without it, a failing PUT's result would
+be an unforced thunk over the raw 'Error' until something outside this
+action's scope happened to force it.
 -}
 runPutObjectAction :: MonadIO m => m (Either Error a) -> m (Either AwsErrorDiagnostic ())
 runPutObjectAction sendPutObject =

@@ -149,12 +149,16 @@ spec = describe "bug report upload" do
     'Error' until something happened to force it later. It is now threaded
     straight through 'runBugUploadPolicy''s ordinary return value as a
     field of 'BugUploadFailure', built via 'classifyErrorDiagnostic' at the
-    exact point of failure. 'evaluate' fully forces the whole outcome here
-    (not just its outer constructor), and this is possible -- without ever
-    touching the original exception value again -- only because nothing
-    about that exception survives past classification: a distinctive
-    "secret" string embedded in the raw error's fields never appears
-    anywhere in the forced outcome's textual representation.
+    exact point of failure. 'evaluate' only forces its argument to weak
+    head normal form, but every type reachable from @outcome@ here is
+    declared with this package's default 'StrictData' extension (down to a
+    plain 'Int'), so that single outer force cascades through every nested
+    constructor -- the practical effect is the whole outcome ending up
+    fully evaluated, not just its outer constructor. This is possible --
+    without ever touching the original exception value again -- only
+    because nothing about that exception survives past classification: a
+    distinctive "secret" string embedded in the raw error's fields never
+    appears anywhere in the forced outcome's textual representation.
     -}
     it "never retains any part of the raw exception once forced into a BugUploadFailure, even under full strict evaluation" do
       let secret = "s3-secret-req-id-must-never-leak-6f2a1"
