@@ -212,14 +212,22 @@ data EventListEntry = EventListEntry
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
-deduplicateEventMemberships :: Eq eventId => [(eventId, name, EpicRole)] -> [(eventId, name, EpicRole)]
-deduplicateEventMemberships = foldl' upsert []
+deduplicateEventMemberships
+  :: Ord eventId => [(eventId, name, EpicRole)] -> [(eventId, name, EpicRole)]
+deduplicateEventMemberships rows =
+  let (reverseOrder, byId) = foldl' recordMembership ([], Map.empty) rows
+   in mapMaybe (`Map.lookup` byId) (reverse reverseOrder)
  where
-  upsert [] row = [row]
-  upsert (existing@(existingId, existingName, existingRole) : rest) row@(rowId, _, rowRole)
-    | existingId == rowId =
-        (existingId, existingName, preferredRole existingRole rowRole) : rest
-    | otherwise = existing : upsert rest row
+  recordMembership (order, byId) row@(rowId, _, rowRole) =
+    case Map.lookup rowId byId of
+      Nothing -> (rowId : order, Map.insert rowId row byId)
+      Just (existingId, existingName, existingRole) ->
+        ( order
+        , Map.insert
+            rowId
+            (existingId, existingName, preferredRole existingRole rowRole)
+            byId
+        )
 
   preferredRole Organizer _ = Organizer
   preferredRole _ Organizer = Organizer
