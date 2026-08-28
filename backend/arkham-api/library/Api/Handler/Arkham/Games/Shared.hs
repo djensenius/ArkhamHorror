@@ -912,9 +912,11 @@ directly unit testable without a live database -- see
 -}
 data MainStreetSwapPlan = MainStreetSwapPlan
   { lockOrder :: [ArkhamGameId]
-  -- ^ Every distinct involved game id, in the ascending
-  -- @(group ordinal, game id)@ order both this swap and
-  -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' lock in.
+  -- ^ Both involved game ids, in the ascending @(group ordinal, game id)@
+  -- order both this swap and
+  -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' lock in. Not
+  -- deduplicated: a degenerate same-game-id request (see below) repeats
+  -- that id here, harmlessly.
   , firstGameId :: ArkhamGameId
   -- ^ Unchanged from the request: the game 'firstOrdinal' resolved to.
   , secondGameId :: ArkhamGameId
@@ -998,12 +1000,13 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
         (Map.lookup secondOrdinal byOrdinal)
 
   runDB do
-    -- Lock every distinct involved game FOR UPDATE, in the canonical order
-    -- 'mainStreetSwapPlan' computes, before reading any mutable game state
-    -- or player row below. A game that has vanished concurrently locks
-    -- nothing here and is left to the existing 'P.getJust' below to
-    -- report -- unchanged, pre-existing behavior; issue #39 will replace
-    -- these swap panics comprehensively.
+    -- Lock both involved games FOR UPDATE (not deduplicated -- a degenerate
+    -- same-game-id request repeats the id here, harmlessly), in the
+    -- canonical order 'mainStreetSwapPlan' computes, before reading any
+    -- mutable game state or player row below. A game that has vanished
+    -- concurrently locks nothing here and is left to the existing
+    -- 'P.getJust' below to report -- unchanged, pre-existing behavior;
+    -- issue #39 will replace these swap panics comprehensively.
     let plan = mainStreetSwapPlan (firstOrdinal, firstGameId) (secondOrdinal, secondGameId)
     for_ plan.lockOrder \gid ->
       void $ select do
