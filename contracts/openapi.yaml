@@ -345,7 +345,8 @@ paths:
         first array entry. arkham.build share links are rewritten to its public
         API and return a null `url`; other URLs remain in the normalized list.
         This operation parses but does not validate card implementation or deck
-        legality. A legacy empty `sideSlots` array normalizes to an empty object.
+        legality. A `sideSlots` value that cannot decode as a card-quantity
+        object currently normalizes to an empty object.
       requestBody:
         required: true
         content:

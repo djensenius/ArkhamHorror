@@ -72,15 +72,7 @@
           "$ref": "#/$defs/cardQuantityMapInput"
         },
         "sideSlots": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/cardQuantityMapInput"
-            },
-            {
-              "type": "array",
-              "maxItems": 0
-            }
-          ]
+          "description": "A card-quantity object when valid. The production decoder currently replaces any value that fails to decode as that object with an empty map."
         },
         "investigator_code": {
           "type": "string",

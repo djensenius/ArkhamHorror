@@ -133,9 +133,11 @@ will tighten each nested schema without changing the top-level envelope.
   Deleting an absent or unowned ID succeeds without disclosing its existence.
 - Imported deck-list input requires only `slots` and `investigator_code`,
   accepts additional ArkhamDB fields, and defaults a missing `sideSlots` to an
-  empty object. A legacy empty array is also accepted for `sideSlots` and
-  normalizes to an empty object. `investigator_name` should be supplied, and
-  `meta` is a JSON-encoded string when present, not an embedded object.
+  empty object. Any `sideSlots` value that does not decode as a card-quantity
+  object currently normalizes to an empty object; clients should send an object
+  even though legacy arrays are accepted. `investigator_name` should be
+  supplied, and `meta` is a JSON-encoded string when present, not an embedded
+  object.
 - The normalized encoder always emits all nine deck-list fields. Card and
   investigator codes gain the Aeson `c` prefix, numeric external IDs become
   strings, and unknown input fields disappear.
