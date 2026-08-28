@@ -1,25 +1,24 @@
 module Arkham.Api.GameBugUploadSpec (spec) where
 
-import Amazonka (Error (..), SerializeError (..))
-import Amazonka.Auth (AuthError (..))
+import Amazonka (AuthEnv (..), Error (..), SerializeError (..))
+import Amazonka.Auth (Auth (..), AuthError (..))
 import Amazonka.Error (serviceError)
 import Api.Handler.Arkham.Game.Bug (
   AwsAuthErrorDiagnostic (..),
   AwsErrorCategory (..),
   AwsErrorDiagnostic (..),
-  AwsEnvSupervisorOutcome (..),
   BugUploadFailure (..),
   BugUploadOutcome (..),
   HeadObjectOutcome (..),
-  awsEnvSupervisorStep,
   classifyAuthErrorDiagnostic,
   classifyErrorDiagnostic,
   classifyHeadObjectError,
+  freezeAuth,
   runBugUploadPolicy,
+  runOnDisposableWorker,
  )
 import Arkham.Prelude
 import Control.Concurrent (forkIO, myThreadId, threadDelay)
-import Control.Exception qualified as Exception
 import Data.Text qualified as T
 import Network.HTTP.Client qualified as Client
 import Network.HTTP.Types.Status (Status, status403, status404, status429, status500)
@@ -191,100 +190,53 @@ spec = describe "bug report upload" do
 
   {- | Regression for the HIGH-severity async-credential-refresh audit: the
   pinned Amazonka fork's background credential-refresh timer captures the
-  thread that called 'Amazonka.newEnv'/'discover' and, on a later refresh
-  failure, unconditionally 'throwTo's an 'AuthError' at that exact thread --
-  never checking whether it is still doing anything related. Per-request
-  'newEnv discover' therefore risked a delayed refresh failure landing on a
-  reused Warp worker thread mid-way through an unrelated request.
-
-  'awsEnvSupervisorStep' is the exact seam the production supervisor loop
-  ('awsEnvSupervisorLoop', started once via 'forkIO' for the whole process)
-  is built from. These tests first prove its pure branch logic (discovery
-  failure / hold-success / hold-failure) with deterministic stubs, then a
-  concurrency test proves the real safety property with real GHC threads
-  and a real 'throwTo': a refresh failure aimed at the dedicated owning
-  thread is caught there and leaves a concurrently-running, unrelated
-  thread (standing in for a request worker) completely undisturbed. The
-  simulated refresh failure is delivered with the *base*, unwrapped
-  'Control.Exception.throwTo' to faithfully match
-  'Amazonka.Auth.Background.fetchAuthInBackground', which itself imports
-  plain @Control.Exception@ (qualified as @Exception@) and calls
-  @Exception.throwTo@ directly -- never the extra-safety, 'SomeAsyncException'
-  -wrapping 'UnliftIO.Exception.throwTo' that 'Arkham.Prelude' otherwise
-  re-exports. That distinction matters: an exception sent with the
-  wrapping variant is, by design, no longer caught by a plain @try \@_
-  \@AuthError@ on the receiving side, so using it here would not exercise
-  the code path this test exists to prove.
+  thread that called 'Amazonka.newEnv'/'discover' as its eventual
+  refresh-failure 'throwTo' target, and separately, its own 'ThreadId' --
+  distinct from that captured target -- is what 'Auth''s 'Ref' constructor
+  carries. 'freezeAuth' kills that 'Ref'-embedded thread id directly,
+  before it can ever reach its @throwTo@ line, and 'runOnDisposableWorker'
+  ensures discovery itself (and therefore the captured @throwTo@ target)
+  never runs on a long-lived Warp request thread. Together
+  ('discoverFrozenEnv') this means no background refresh thread can ever
+  outlive a single bounded credential-discovery call, and the only thread
+  it could ever target is a disposable worker that is never reused for
+  anything else.
   -}
-  describe "awsEnvSupervisorStep" do
-    it "reports discovery failure, publishes Nothing/the diagnostic, and never calls holdAction" do
-      holdCalls <- newIORef (0 :: Int)
-      publishedEnv <- newIORef Nothing
-      publishedDiagnostic <- newIORef Nothing
-      outcome <-
-        awsEnvSupervisorStep
-          (pure $ Left (RetrievalError httpExceptionFixture) :: IO (Either AuthError Int))
-          (\_ -> modifyIORef' holdCalls (+ 1) >> pure (Right ()))
-          (writeIORef publishedEnv)
-          (writeIORef publishedDiagnostic)
-      outcome `shouldBe` AwsEnvDiscoveryFailed
-      readIORef holdCalls `shouldReturn` 0
-      readIORef publishedEnv `shouldReturn` Nothing
-      readIORef publishedDiagnostic `shouldReturn` Just AwsAuthRetrievalFailure
+  describe "freezeAuth" do
+    it "returns already-static credentials unchanged, without starting or touching any thread" do
+      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing
+      frozen <- freezeAuth (Auth authEnv)
+      frozen `shouldBe` authEnv
 
-    it "reports a hold that finishes normally, publishing the discovered env and no diagnostic" do
-      outcome <-
-        awsEnvSupervisorStep
-          (pure $ Right (42 :: Int))
-          (\_ -> pure $ Right ())
-          (\_ -> pure ())
-          (\_ -> pure ())
-      outcome `shouldBe` AwsEnvHoldFinished
-
-    it "reports a hold/refresh failure, re-publishing Nothing/the diagnostic after having published the env" do
-      publishedEnvs <- newIORef []
-      publishedDiagnostics <- newIORef []
-      outcome <-
-        awsEnvSupervisorStep
-          (pure $ Right (7 :: Int))
-          (\_ -> pure $ Left (OtherAuthError (toException (userError "refresh failed"))))
-          (\mEnv -> modifyIORef' publishedEnvs (mEnv :))
-          (\mDiag -> modifyIORef' publishedDiagnostics (mDiag :))
-      outcome `shouldBe` AwsEnvRefreshFailed
-      -- Published in order: env available first, then unavailable again.
-      readIORef publishedEnvs `shouldReturn` [Nothing, Just 7]
-      readIORef publishedDiagnostics `shouldReturn` [Just AwsAuthOtherFailure, Nothing]
-
-    it "leaves an unrelated concurrently-running thread (standing in for a request worker) completely undisturbed when a delayed refresh failure is thrown at the dedicated supervisor thread, never at it" do
-      -- Simulates a delayed 'Amazonka.Auth.Background.fetchAuthInBackground'
-      -- refresh failure using a real 'throwTo': in production, the
-      -- supervisor thread is the *only* thread ever passed to Amazonka's
-      -- background timer as its target (because, unlike before, request
-      -- handlers never call 'newEnv'/'discover' themselves any more), so a
-      -- delayed refresh failure can only ever land here, never on a
-      -- request worker.
-      supervisorReady <- newEmptyMVar
-      supervisorCaught <- newEmptyMVar
-      workerDone <- newIORef False
-      _supervisorTid <-
-        forkIO $ do
-          myTid <- myThreadId
-          putMVar supervisorReady myTid
-          result <-
-            awsEnvSupervisorStep
-              (pure $ Right ())
-              (const $ try @_ @AuthError (threadDelay (60 * 1000000)))
-              (\_ -> pure ())
-              (\_ -> pure ())
-          putMVar supervisorCaught result
-      targetTid <- takeMVar supervisorReady
-      -- An unrelated, concurrently-running action standing in for a
-      -- request-worker thread that must remain unaffected.
-      _workerTid <- forkIO $ do
+    it "kills the background refresh thread before it can act, while still returning the current credentials" do
+      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
+      ref <- newIORef authEnv
+      reachedRefresh <- newIORef False
+      -- Stands in for Amazonka's real background refresh-timer thread:
+      -- it sleeps briefly, then (if never killed first) would flip this
+      -- flag, standing in for its real 'Exception.throwTo' call.
+      refreshThreadId <- forkIO $ do
         threadDelay (50 * 1000)
-        writeIORef workerDone True
+        writeIORef reachedRefresh True
+      frozen <- freezeAuth (Ref refreshThreadId ref)
+      frozen `shouldBe` authEnv
+      -- Long enough that, had the refresh thread not been killed by
+      -- 'freezeAuth' above, it would certainly have flipped the flag by
+      -- now.
       threadDelay (150 * 1000)
-      Exception.throwTo targetTid (OtherAuthError (toException (userError "delayed refresh failure")))
-      caught <- takeMVar supervisorCaught
-      caught `shouldBe` AwsEnvRefreshFailed
-      readIORef workerDone `shouldReturn` True
+      readIORef reachedRefresh `shouldReturn` False
+
+  describe "runOnDisposableWorker" do
+    it "runs the action on a different thread than the caller" do
+      callerTid <- myThreadId
+      actionTid <- runOnDisposableWorker myThreadId
+      actionTid `shouldNotBe` callerTid
+
+    it "returns the action's result on success" do
+      runOnDisposableWorker (pure (42 :: Int)) `shouldReturn` 42
+
+    it "propagates an exception raised inside the action back to the caller, not swallowed" do
+      result <- try @_ @IOException (runOnDisposableWorker (throwIO (userError "boom")))
+      case result of
+        Left ioErr -> show ioErr `shouldContain` "boom"
+        Right () -> expectationFailure "expected the worker's exception to propagate"
