@@ -1,0 +1,35 @@
+{
+  "achievements": [
+    {
+      "id": "00000000-0000-0000-0000-000000000015",
+      "userId": 7,
+      "achievement": "TheZealotsRevenge",
+      "earnedAt": "2026-02-03T04:05:06Z",
+      "arkhamGameId": "00000000-0000-0000-0000-000000000003",
+      "progress": {
+        "count": 3
+      }
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000016",
+      "userId": 7,
+      "achievement": "TheGangsAllHere",
+      "earnedAt": null,
+      "arkhamGameId": null,
+      "progress": {
+        "DrHenryArmitage": true
+      }
+    }
+  ],
+  "clearAll": {
+    "scope": "all"
+  },
+  "clearCampaign": {
+    "scope": "campaign",
+    "campaign": "51"
+  },
+  "clearAchievement": {
+    "scope": "achievement",
+    "achievement": "TheZealotsRevenge"
+  }
+}

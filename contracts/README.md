@@ -111,6 +111,21 @@ will tighten each nested schema without changing the top-level envelope.
   intentionally leaving complex matcher, criterion, action, keyword, and
   customization payloads broad until their dedicated domain slices.
 
+## Achievements
+
+- Achievement operations require authentication. The account-wide list returns
+  only the requesting user's earned and in-progress rows. A game-specific list
+  requires game membership and returns rows for every user associated with
+  that game, identified by `userId`.
+- Lists are ordered by `earnedAt` ascending. An in-progress row has null
+  `earnedAt` and may have a null `arkhamGameId`; `progress` is
+  achievement-specific JSON.
+- Clearing supports all earned achievements, a campaign identifier, or one
+  achievement identifier. It never deletes in-progress rows.
+- Achievement identifiers are flat constructor-name strings. The set is
+  additive, so clients must preserve and gracefully display unknown values
+  received from a newer server rather than decoding them as a closed enum.
+
 ## Route inventory
 
 The route inventory expands every HTTP method in

@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/achievements.schema.json",
+  "title": "Achievements",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "achievements",
+    "clearAll",
+    "clearCampaign",
+    "clearAchievement"
+  ],
+  "properties": {
+    "achievements": {
+      "$ref": "#/$defs/achievementList"
+    },
+    "clearAll": {
+      "$ref": "#/$defs/clearAchievements"
+    },
+    "clearCampaign": {
+      "$ref": "#/$defs/clearAchievements"
+    },
+    "clearAchievement": {
+      "$ref": "#/$defs/clearAchievements"
+    }
+  },
+  "$defs": {
+    "achievementList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/achievement"
+      }
+    },
+    "achievement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "userId",
+        "achievement",
+        "earnedAt",
+        "arkhamGameId",
+        "progress"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "userId": {
+          "type": "integer"
+        },
+        "achievement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "earnedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "arkhamGameId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "progress": {}
+      }
+    },
+    "clearAchievements": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scope"
+          ],
+          "properties": {
+            "scope": {
+              "const": "all"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scope",
+            "campaign"
+          ],
+          "properties": {
+            "scope": {
+              "const": "campaign"
+            },
+            "campaign": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scope",
+            "achievement"
+          ],
+          "properties": {
+            "scope": {
+              "const": "achievement"
+            },
+            "achievement": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    }
+  }
+}

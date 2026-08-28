@@ -1,9 +1,15 @@
 module Arkham.Api.JsonContractsSpec (spec) where
 
 import Api.Arkham.Helpers (ApiResponse (..))
+import Api.Arkham.Types.Achievement
 import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep (GameStepJson (..))
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo, WithFriends))
+import Arkham.Achievement.Types
+  ( Achievement (NightOfTheZealotAchievement, TheDunwichLegacyAchievement)
+  , NightOfTheZealotAchievement (TheZealotsRevenge)
+  , TheDunwichLegacyAchievement (TheGangsAllHere)
+  )
 import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
@@ -22,9 +28,10 @@ import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Time (secondsToDiffTime)
 import Data.UUID qualified as UUID
-import Database.Persist (Entity (..))
+import Database.Persist qualified as Persist
 import Database.Persist.Sql (toSqlKey)
 import Entity.Answer (Answer (..))
+import Entity.Arkham.Achievement qualified as AchievementEntity
 import Entity.Arkham.Game qualified as ArkhamGame
 import Entity.Notification (Notification (..))
 import System.IO.Error qualified as IOError
@@ -86,6 +93,28 @@ fixtureActiveGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 5
 
 fixtureCompletedGameId :: ArkhamGame.ArkhamGameId
 fixtureCompletedGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 6
+
+fixtureAchievements :: [Persist.Entity AchievementEntity.ArkhamAchievement]
+fixtureAchievements =
+  [ Persist.Entity
+      (AchievementEntity.ArkhamAchievementKey $ UUID.fromWords 0 0 0 21)
+      ( AchievementEntity.ArkhamAchievement
+          (toSqlKey 7)
+          (NightOfTheZealotAchievement TheZealotsRevenge)
+          (Just $ UTCTime (fromGregorian 2026 2 3) (secondsToDiffTime 14706))
+          (Just fixtureGameId)
+          (Aeson.object ["count" .= (3 :: Int)])
+      )
+  , Persist.Entity
+      (AchievementEntity.ArkhamAchievementKey $ UUID.fromWords 0 0 0 22)
+      ( AchievementEntity.ArkhamAchievement
+          (toSqlKey 7)
+          (TheDunwichLegacyAchievement TheGangsAllHere)
+          Nothing
+          Nothing
+          (Aeson.object ["DrHenryArmitage" .= True])
+      )
+  ]
 
 fixturePlayerId :: PlayerId
 fixturePlayerId = PlayerId $ UUID.fromWords 0 0 0 1
@@ -284,7 +313,7 @@ spec = describe "Native client contract fixtures" do
     fixture <- loadFixtureField "account.json" "notifications"
     let
       notification =
-        Entity
+        Persist.Entity
           (toSqlKey 17)
           ( Notification
               "Contract fixture announcement."
@@ -315,6 +344,26 @@ spec = describe "Native client contract fixtures" do
         map cdArt [InvestigatorCards.rolandBanks, InvestigatorCards.daisyWalker]
 
     Aeson.toJSON artwork `shouldBe` fixture
+
+  it "matches the real achievement-list encoder" do
+    fixture <- loadFixtureField "achievements.json" "achievements"
+
+    Aeson.toJSON fixtureAchievements `shouldBe` fixture
+
+  for_
+    ( [ ("clearAll", ClearAll)
+      , ("clearCampaign", ClearCampaign "51")
+      , ("clearAchievement", ClearAchievement $ NightOfTheZealotAchievement TheZealotsRevenge)
+      ]
+        :: [(Text, ClearAchievements)]
+    )
+    \(fieldName, expectedRequest) ->
+      it ("decodes the real achievement clear request for " <> Text.unpack fieldName) do
+        request <-
+          loadFixtureField "achievements.json" fieldName
+            :: IO ClearAchievements
+
+        request `shouldBe` expectedRequest
 
   for_ clientAnswerFixtures \(fileName, expectedConstructor) ->
     it ("decodes the real client answer for " <> fileName) do

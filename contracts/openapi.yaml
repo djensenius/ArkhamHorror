@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.4
+  version: 0.1.5
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -162,6 +162,43 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/NotificationList"
+  /arkham/achievements:
+    get:
+      operationId: listAchievements
+      summary: List achievement rows for the authenticated account
+      description: |
+        Returns earned and in-progress rows for the requesting user, ordered by
+        `earnedAt` ascending. In-progress rows have a null `earnedAt`.
+      responses:
+        "200":
+          description: Account achievement rows
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AchievementList"
+        "401":
+          description: Token is absent or invalid
+    delete:
+      operationId: clearAchievements
+      summary: Clear selected earned achievements for the authenticated account
+      description: |
+        Clears all earned rows, those associated with a campaign, or one named
+        achievement. In-progress rows with a null `earnedAt` are never deleted.
+        Achievement identifiers are additive flat constructor-name strings; an
+        identifier unknown to this server is rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClearAchievements"
+      responses:
+        "200":
+          description: Selected earned achievement rows were cleared
+        "400":
+          description: Scope or achievement identifier is invalid
+        "401":
+          description: Token is absent or invalid
   /arkham/cards:
     get:
       operationId: listCards
@@ -287,6 +324,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GetGame"
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Game or participant membership does not exist
+  /arkham/games/{gameId}/achievements:
+    get:
+      operationId: listGameAchievements
+      summary: List achievement rows associated with one game
+      description: |
+        Requires membership in the game. Returns earned and in-progress rows
+        for every user associated with that game, ordered by `earnedAt`
+        ascending; clients use `userId` to attribute each row.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Achievement rows associated with the game
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AchievementList"
         "401":
           description: Token is absent or invalid
         "404":
@@ -433,6 +491,10 @@ components:
           format: uri
     NotificationList:
       $ref: "./schemas/account.schema.json#/$defs/notificationList"
+    AchievementList:
+      $ref: "./schemas/achievements.schema.json#/$defs/achievementList"
+    ClearAchievements:
+      $ref: "./schemas/achievements.schema.json#/$defs/clearAchievements"
     CardDef:
       $ref: "./schemas/catalog.schema.json#/$defs/cardDef"
     CardList:
