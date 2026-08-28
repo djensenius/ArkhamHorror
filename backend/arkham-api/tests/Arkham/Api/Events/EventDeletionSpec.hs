@@ -8,7 +8,9 @@ lets us assert:
 * a missing (or already-deleted) event short-circuits to 'EventDeletionMissing'
   before any organizer lookup, lock, or delete is attempted;
 * an existing event whose caller holds no Organizer membership row
-  short-circuits to 'EventDeletionForbidden' before any lock or delete --
+  short-circuits to 'EventDeletionForbidden' -- but only once confirmed
+  against a ground-truth 'lockEpicEvent' check taken immediately after the
+  unauthorized-looking read, before any game is selected or locked --
   driven by actual @(event, user, role)@ membership rows, not a bare boolean,
   so a 'GroupPlayer'-only membership is correctly rejected while a caller who
   ALSO holds an 'Organizer' row for that same event is correctly authorized,
@@ -27,6 +29,11 @@ lets us assert:
   authoritative post-game-lock check (a concurrent deletion winning the race)
   is reported as 'EventDeletionMissing', never 'EventDeletionForbidden' and
   never a success, and no delete is attempted;
+* an event that vanishes between the initial probe and the initial
+  (unauthorized-looking) organizer check -- whose membership rows cascade
+  away with the event itself, so even a genuine organizer reads back as
+  unauthorized there -- is likewise reported as 'EventDeletionMissing', never
+  'EventDeletionForbidden', and without ever selecting or locking a game;
 * organizer membership is revalidated a second time, at the safe point after
   every lock is already held, and a caller who loses authorization between
   the two checks is rejected there too, before any delete;
@@ -368,7 +375,11 @@ spec = do
     it "forbids a caller who holds only a GroupPlayer row for the event" do
       let (result, log_) = run FailNever (fixtureTestState True groupPlayerOnlyMembership)
       result `shouldBe` Right EventDeletionForbidden
-      log_ `shouldBe` [ProbedEventExists True, CheckedOrganizer False]
+      -- The event is still present, so the ground-truth 'lockEpicEvent' check
+      -- taken after the unauthorized-looking read confirms Forbidden (never
+      -- Missing) -- see the "vanishes ... looks forbidden" test below for the
+      -- opposite case.
+      log_ `shouldBe` [ProbedEventExists True, CheckedOrganizer False, LockedEvent True]
 
     it "honors both the event id and the user id: an Organizer row for the wrong event, or for the wrong user, never authorizes this deletion" do
       let wrongEvent = run FailNever (fixtureTestState True [organizerRow otherEventId fixtureOrganizerId])
@@ -434,6 +445,23 @@ spec = do
                    , LockedEvent False
                    ]
 
+    it "an event that vanishes between the initial probe and the initial (unauthorized-looking) organizer check reports Missing, never Forbidden -- even for a caller with no membership row at all" do
+      -- The event's own membership rows cascade-delete with it, so a
+      -- concurrently-deleted event makes ANY caller -- including a genuine
+      -- organizer -- read back as unauthorized on the initial, non-locking
+      -- 'isEventOrganizer' check. Reporting Forbidden there would wrongly
+      -- disclose that the event still exists; the ground-truth 'lockEpicEvent'
+      -- check this branch takes must correct that to Missing instead, and
+      -- must do so without ever selecting or locking a game.
+      let racedAway = (fixtureTestState True []) {eventExistsAtLock = False}
+          (result, log_) = run FailNever racedAway
+      result `shouldBe` Right EventDeletionMissing
+      log_
+        `shouldBe` [ ProbedEventExists True
+                   , CheckedOrganizer False
+                   , LockedEvent False
+                   ]
+
     it "revalidates organizer membership at the safe point after every lock is held, rejecting a caller who lost authorization in between, before any delete" do
       -- Membership is removed (by mutating state directly) the moment the
       -- event lock succeeds -- i.e. between the two 'isEventOrganizer' calls
@@ -491,6 +519,11 @@ spec = do
       let (result, log_) = run (FailAtOrganizerCheck 1) (fixtureTestState True organizerMembership)
       result `shouldSatisfy` isLeft
       log_ `shouldBe` [ProbedEventExists True]
+
+    it "a failure locking the event in the unauthorized-looking ground-truth check cannot produce a success-shaped result, and no game is ever selected or locked" do
+      let (result, log_) = run FailAtLockEvent (fixtureTestState True groupPlayerOnlyMembership)
+      result `shouldSatisfy` isLeft
+      log_ `shouldBe` [ProbedEventExists True, CheckedOrganizer False]
 
     it "a failure selecting linked games cannot produce a success-shaped result, and no lock or delete is attempted" do
       let (result, log_) = run FailAtSelect (fixtureTestState True organizerMembership)

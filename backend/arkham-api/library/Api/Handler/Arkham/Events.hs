@@ -949,16 +949,20 @@ class Monad m => MonadEpicEventDeletion m where
   -- | Cheap, non-locking existence probe for the event row, used only to let
   -- an already-missing event short-circuit before any organizer lookup or
   -- any lock is taken. This does not by itself serialize anything -- the
-  -- authoritative existence decision is the second 'lockEpicEvent' call,
-  -- taken only after every linked game is already locked (see below).
+  -- authoritative existence decision is always a 'lockEpicEvent' call (see
+  -- below), taken either immediately after an unauthorized-looking
+  -- 'isEventOrganizer' read, or after every linked game is already locked.
   eventExists :: ArkhamEpicEventId -> m Bool
   -- | Organizer membership check ('P.exists' in production; a plain read,
-  -- never a lock). Called twice by 'deleteEpicEventAggregate': once up
-  -- front, so an unauthorized caller never pays for any game or event lock;
-  -- and once more as a safe-point revalidation, after every lock this
-  -- transaction will ever take is already held, in case membership could
-  -- change concurrently. Neither call takes a lock, so neither changes the
-  -- game-before-event lock order above.
+  -- never a lock). Called at least twice by 'deleteEpicEventAggregate':
+  -- once up front, so an unauthorized-looking caller never pays for any
+  -- game lock; and once more as a safe-point revalidation for an
+  -- authorized-looking caller, after every lock this transaction will ever
+  -- take is already held, in case membership could change concurrently.
+  -- Neither call takes a lock, so neither changes the game-before-event
+  -- lock order above; and neither call's 'False' result is trusted on its
+  -- own without also confirming ground truth via 'lockEpicEvent', since the
+  -- event's membership rows cascade away with it (see 'lockEpicEvent').
   isEventOrganizer :: ArkhamEpicEventId -> UserId -> m Bool
   -- | Every linked, non-null group game id, in deterministic ordinal order.
   -- A plain read -- no lock is taken here; see 'lockLinkedGame'.
@@ -967,11 +971,18 @@ class Monad m => MonadEpicEventDeletion m where
   -- whether it is still present. Called once per id from
   -- 'selectLinkedGameIds', in that same order, strictly before 'lockEpicEvent'.
   lockLinkedGame :: ArkhamGameId -> m Bool
-  -- | Row-lock the event ('FOR UPDATE' in production), taken only after
-  -- every linked game is already locked, and report whether it is still
-  -- present. If a concurrent deletion committed first, this reports 'False'
-  -- and the whole request is treated as missing -- never forbidden, never
-  -- successful.
+  -- | Row-lock the event ('FOR UPDATE' in production) and report whether it
+  -- is still present. Called from two places: (1) immediately after an
+  -- unauthorized-looking 'isEventOrganizer' read, with no game lock held
+  -- yet, to distinguish a genuinely forbidden request from one that only
+  -- looks unauthorized because the event was deleted concurrently (its
+  -- membership rows cascade away with it) -- 'False' there means Missing,
+  -- 'True' means Forbidden; and (2) after every linked game is already
+  -- locked, in the authorized branch, where 'False' also means Missing (a
+  -- concurrent deletion committed first). Neither call site ever holds a
+  -- game lock and then requests a *different* game lock afterward, so
+  -- taking this lock in branch (1) -- before any game is even selected --
+  -- cannot invert the game-before-event order used by branch (2).
   lockEpicEvent :: ArkhamEpicEventId -> m Bool
   -- | Delete one still-present linked game. Never called for a game
   -- 'lockLinkedGame' reported as already gone.
@@ -982,8 +993,19 @@ class Monad m => MonadEpicEventDeletion m where
 
 1. A non-locking existence probe lets a missing event short-circuit to
    'EventDeletionMissing' before any organizer lookup or lock.
-2. An organizer check lets an unauthorized caller short-circuit to
-   'EventDeletionForbidden' before any lock or delete.
+2. An organizer check (also non-locking) lets an unauthorized caller
+   short-circuit before any expensive lock or delete. But the event's
+   'ArkhamEpicMember' rows cascade away with it, so if the event was deleted
+   concurrently between step 1 and this read, a genuine organizer would
+   read back as unauthorized here too -- reporting 'EventDeletionForbidden'
+   in that case would be a wrong, disclosure-losing answer (it should be
+   'EventDeletionMissing', same as any other already-gone event). So an
+   unauthorized-looking result here is not trusted on its own: 'lockEpicEvent'
+   is taken immediately to get a ground-truth answer -- if the event is
+   really gone, this reports 'EventDeletionMissing'; only if it is still
+   there does this report 'EventDeletionForbidden'. No game lock is held in
+   this branch, so taking the event lock here does not invert or conflict
+   with the game-before-event order used by the authorized branch below.
 3. Every linked game id is selected (ordinal order), then locked
    ('FOR UPDATE') one at a time in that same order -- games are ALWAYS locked
    before the event, matching the lock order live gameplay uses, so a
@@ -1014,7 +1036,17 @@ deleteEpicEventAggregate eid userId = do
     else do
       organizer <- isEventOrganizer eid userId
       if not organizer
-        then pure EventDeletionForbidden
+        then do
+          -- Do not trust an unauthorized-looking read on its own: the event
+          -- may have been concurrently deleted since the probe above (its
+          -- membership rows cascade away with it), which would make even a
+          -- genuine organizer read back as unauthorized here. Lock the event
+          -- to get a ground-truth answer -- Missing takes priority over
+          -- Forbidden. No game lock is held in this branch, so this cannot
+          -- invert the game-before-event order used below.
+          stillPresent <- lockEpicEvent eid
+          pure $
+            if stillPresent then EventDeletionForbidden else EventDeletionMissing
         else do
           gameIds <- selectLinkedGameIds eid
           -- Lock every still-present linked game, in order, BEFORE the
