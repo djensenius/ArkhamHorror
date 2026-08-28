@@ -21,6 +21,7 @@ module Api.Handler.Arkham.Events (
   postApiV1ArkhamEventResolveAdvanceR,
   postApiV1ArkhamEventReplicateR,
   postApiV1ArkhamEventSwapMainStreetR,
+  deduplicateEventMemberships,
   withEventMember,
 ) where
 
@@ -211,6 +212,19 @@ data EventListEntry = EventListEntry
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
+deduplicateEventMemberships :: Eq eventId => [(eventId, name, EpicRole)] -> [(eventId, name, EpicRole)]
+deduplicateEventMemberships = foldl' upsert []
+ where
+  upsert [] row = [row]
+  upsert (existing@(existingId, existingName, existingRole) : rest) row@(rowId, _, rowRole)
+    | existingId == rowId =
+        (existingId, existingName, preferredRole existingRole rowRole) : rest
+    | otherwise = existing : upsert rest row
+
+  preferredRole Organizer _ = Organizer
+  preferredRole _ Organizer = Organizer
+  preferredRole GroupPlayer GroupPlayer = GroupPlayer
+
 -- AuthZ -----------------------------------------------------------------------
 
 {- | Gate a protected resource behind an authorization check.
@@ -265,7 +279,9 @@ getApiV1ArkhamEventsR = do
     pure (event.id, event.name, member.role)
   pure
     [ EventListEntry {id = eid, name = nm, role = r}
-    | (Value eid, Value nm, Value r) <- rows
+    | (eid, nm, r) <-
+        deduplicateEventMemberships
+          [(eid, nm, r) | (Value eid, Value nm, Value r) <- rows]
     ]
 
 {- | Create an event: build N group games (each a normal scenario game) and the
