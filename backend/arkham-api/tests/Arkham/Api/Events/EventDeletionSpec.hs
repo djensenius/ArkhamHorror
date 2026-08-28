@@ -313,8 +313,8 @@ organizerMembership :: [MembershipRow]
 organizerMembership = [organizerRow fixtureEventId fixtureOrganizerId]
 
 -- | Both roles at once -- proves an Organizer who ALSO plays in a group is
--- still authorized (the two rows coexist per 'UniqueEpicMember''s per-role
--- uniqueness, they are not mutually exclusive).
+-- still authorized (the two rows coexist under the per-role uniqueness
+-- enforced by 'UniqueEpicMember', they are not mutually exclusive).
 organizerAndGroupPlayerMembership :: [MembershipRow]
 organizerAndGroupPlayerMembership =
   [organizerRow fixtureEventId fixtureOrganizerId, groupPlayerRow fixtureEventId fixtureOrganizerId]
