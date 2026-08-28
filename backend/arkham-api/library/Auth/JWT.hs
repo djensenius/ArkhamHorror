@@ -59,17 +59,15 @@ jsonToToken jwtSecret userId = do
     Left (err :: JWTError) -> error $ show err
     Right tkn -> pure $ TL.toStrict $ TL.decodeUtf8 $ encodeCompact tkn
 
--- | verify
-tokenToJson :: MonadTime m => Text -> Text -> m (Maybe Value)
+-- | Verify a token while retaining the failure for server-side diagnostics.
+tokenToJson :: MonadTime m => Text -> Text -> m (Either JWTError Value)
 tokenToJson jwtSecret token = do
   res <- runJOSE do
     let jwk = fromOctets (encodeUtf8 @Text @BSL.ByteString jwtSecret)
     let audCheck = const True -- should be a proper audience check
     jwt <- decodeCompact $ TL.encodeUtf8 $ TL.fromStrict token
     verifyJWT (defaultJWTValidationSettings audCheck) jwk (jwt :: SignedJWT)
-  pure $ case res of
-    Left (_ :: JWTError) -> Nothing
-    Right super -> Just (jwt super)
+  pure $ jwt <$> res
 
 extractToken :: Text -> Maybe Text
 extractToken auth

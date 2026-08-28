@@ -59,25 +59,25 @@ makeExpiredToken secret payload = do
 spec :: Spec
 spec = do
   describe "tokenToJson" do
-    it "returns Just the payload for a valid token" do
+    it "returns Right with the payload for a valid token" do
       token <- jsonToToken testSecret testPayload
       result <- tokenToJson testSecret token
-      result `shouldBe` Just testPayload
+      result `shouldBe` Right testPayload
 
-    it "returns Nothing for a wrong signing key (signature mismatch)" do
+    it "returns Left for a wrong signing key (signature mismatch)" do
       token <- jsonToToken testSecret testPayload
       result <- tokenToJson "different-secret-also-32-bytes-!" token
-      result `shouldBe` Nothing
+      result `shouldSatisfy` isLeft
 
-    it "returns Nothing for a structurally malformed token" do
+    it "returns Left for a structurally malformed token" do
       result <- tokenToJson testSecret "not.a.valid.jwt"
-      result `shouldBe` Nothing
+      result `shouldSatisfy` isLeft
 
-    it "returns Nothing for an empty string" do
+    it "returns Left for an empty string" do
       result <- tokenToJson testSecret ""
-      result `shouldBe` Nothing
+      result `shouldSatisfy` isLeft
 
-    it "returns Nothing for a signature-tampered token" do
+    it "returns Left for a signature-tampered token" do
       token <- jsonToToken testSecret testPayload
       -- Replace the first character of the signature segment with a different one.
       let parts = T.splitOn "." token
@@ -86,13 +86,16 @@ spec = do
               T.intercalate "."
                 [ h
                 , p
-                , T.cons (if T.head sig == 'A' then 'B' else 'A') (T.tail sig)
+                , case T.uncons sig of
+                    Nothing -> "A"
+                    Just (initial, rest) ->
+                      T.cons (if initial == 'A' then 'B' else 'A') rest
                 ]
             _ -> token <> "x"
       result <- tokenToJson testSecret tampered
-      result `shouldBe` Nothing
+      result `shouldSatisfy` isLeft
 
-    it "returns Nothing for an expired token" do
+    it "returns Left for an expired token" do
       token <- makeExpiredToken testSecret testPayload
       result <- tokenToJson testSecret token
-      result `shouldBe` Nothing
+      result `shouldSatisfy` isLeft
