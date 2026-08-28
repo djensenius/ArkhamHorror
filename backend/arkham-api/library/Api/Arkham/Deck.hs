@@ -8,7 +8,7 @@ import Entity.Arkham.Deck (ArkhamDeck (..))
 import Entity.User (UserId)
 
 deckFromCreateRequest :: UserId -> CreateDeckRequest -> ArkhamDeck
-deckFromCreateRequest userId CreateDeckRequest {..} =
+deckFromCreateRequest userId CreateDeckRequest {deckName, deckUrl, deckList} =
   ArkhamDeck
     { arkhamDeckUserId = userId
     , arkhamDeckUrl = deckUrl
