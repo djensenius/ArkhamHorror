@@ -54,12 +54,13 @@ lets us assert:
   injected at the SECOND (or later) per-game delete proves the earlier
   delete(s) were genuinely attempted individually, and that no later game
   delete, event delete, or successful result follows;
-* the tiny, pure 'eventDeletionCleanupGameIds' helper -- the one seam the
-  production handler actually calls to decide whether to run any room
-  cleanup at all -- returns games to clean up only for 'EventDeletionDeleted',
-  never for 'EventDeletionMissing' or 'EventDeletionForbidden', and reflects
-  exactly the committed deletion plan (excluding any game that had already
-  vanished).
+* the tiny, pure 'eventDeletionCleanupGameIds' helper -- a standalone copy of
+  the exact decision 'Api.Handler.Arkham.Events.deleteApiV1ArkhamEventR' makes
+  by pattern-matching on the outcome directly, kept so that decision is
+  directly unit testable without a live server -- returns games to clean up
+  only for 'EventDeletionDeleted', never for 'EventDeletionMissing' or
+  'EventDeletionForbidden', and reflects exactly the committed deletion plan
+  (excluding any game that had already vanished).
 
 Lock-order analysis (why games are always locked before the event): live
 gameplay ('Api.Arkham.Helpers.atomicallyWithGame' + 'Api.Arkham.Epic.applyEpicDeltasLocked')

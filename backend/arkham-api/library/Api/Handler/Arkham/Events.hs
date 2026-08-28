@@ -385,7 +385,12 @@ permission failure. Deleting each group's 'ArkhamGame' cascades its
 players/steps/logs and the epic-group row; deleting the event cascades
 members and shared-state steps -- all inside the one transaction. Room
 cleanup only runs once that transaction has returned, and only for a
-committed deletion (see 'eventDeletionCleanupGameIds').
+committed deletion: pattern-matching directly on 'EventDeletionDeleted'
+below both selects the committed game ids and statically rules out cleanup
+for 'EventDeletionMissing'/'EventDeletionForbidden' (the exhaustiveness
+checker enforces it). 'eventDeletionCleanupGameIds' is the equivalent, pure
+decision as a standalone function, kept for direct unit testing without a
+live server.
 -}
 deleteApiV1ArkhamEventR :: ArkhamEpicEventId -> Handler ()
 deleteApiV1ArkhamEventR eid = do
@@ -395,8 +400,8 @@ deleteApiV1ArkhamEventR eid = do
     EventDeletionMissing -> notFound
     EventDeletionForbidden ->
       permissionDenied "Only the event organizer may perform this action"
-    EventDeletionDeleted _ -> do
-      for_ (eventDeletionCleanupGameIds outcome) deleteRoom
+    EventDeletionDeleted gameIds -> do
+      for_ gameIds deleteRoom
       deleteEventRoom eid
 
 {- | Organizer correction for the one user-adjustable Blob pool. Internal keys
@@ -1132,9 +1137,11 @@ instance MonadEpicEventDeletion (SqlPersistT Handler) where
 
 {- | Which group games' rooms (if any) a deletion outcome should clean up.
 Only a committed 'EventDeletionDeleted' has any -- 'EventDeletionMissing' and
-'EventDeletionForbidden' must never trigger room cleanup. A tiny, pure,
-production-used helper so this decision is directly testable without a live
-server.
+'EventDeletionForbidden' must never trigger room cleanup. This is the exact
+decision 'deleteApiV1ArkhamEventR' makes by pattern-matching on the outcome
+directly (so GHC's exhaustiveness check enforces it at the call site); this
+standalone, pure copy exists purely so that same decision is directly unit
+testable without a live server.
 -}
 eventDeletionCleanupGameIds :: EventDeletionOutcome -> [ArkhamGameId]
 eventDeletionCleanupGameIds (EventDeletionDeleted gameIds) = gameIds
