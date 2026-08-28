@@ -126,6 +126,31 @@ will tighten each nested schema without changing the top-level envelope.
   additive, so clients must preserve and gracefully display unknown values
   received from a newer server rather than decoding them as a closed enum.
 
+## Decks
+
+- Every deck operation requires authentication. Lists and detail reads expose
+  only the requesting user's saved decks; list order is currently unspecified.
+  Deleting an absent or unowned ID succeeds without disclosing its existence.
+- Imported deck-list input requires only `slots` and `investigator_code`,
+  accepts additional ArkhamDB fields, and defaults a missing `sideSlots` to an
+  empty object. A legacy empty array is also accepted for `sideSlots` and
+  normalizes to an empty object. `investigator_name` should be supplied, and
+  `meta` is a JSON-encoded string when present, not an embedded object.
+- The normalized encoder always emits all nine deck-list fields. Card and
+  investigator codes gain the Aeson `c` prefix, numeric external IDs become
+  strings, and unknown input fields disappear.
+- Saved deck responses additionally expose the database UUID, numeric `userId`,
+  saved `url`, display `name`, and `investigatorName`. The legacy `deckId`
+  supplied while creating a saved deck is required but ignored; the database
+  UUID in the response is authoritative.
+- `/decks/validate` and deck creation only reject unimplemented card codes in
+  `slots`. They do not validate deck legality, quantities, investigator
+  support, or `sideSlots`. Validation is read-only and safely retryable.
+- Fetch accepts a remote deck object or the first entry of a remote array.
+  arkham.build share URLs use its public API and normalize the embedded `url`
+  to null. Sync replaces a saved deck's embedded list without rerunning
+  implemented-card validation.
+
 ## Route inventory
 
 The route inventory expands every HTTP method in
