@@ -58,9 +58,10 @@ import UnliftIO.Exception (try)
 -- caller's @ArkhamPlayer@ row. The rejection action is 'notFound' in production
 -- so game absence and missing membership remain indistinguishable.
 requireGameDecksAccess :: Monad m => Bool -> m Bool -> m () -> m ()
-requireGameDecksAccess isAdmin lookupMembership reject = do
-  isMember <- if isAdmin then pure False else lookupMembership
-  unless (isAdmin || isMember) reject
+requireGameDecksAccess isAdmin lookupMembership reject =
+  unless isAdmin do
+    isMember <- lookupMembership
+    unless isMember reject
 
 getApiV1ArkhamDecksR :: Handler [Entity ArkhamDeck]
 getApiV1ArkhamDecksR = do
