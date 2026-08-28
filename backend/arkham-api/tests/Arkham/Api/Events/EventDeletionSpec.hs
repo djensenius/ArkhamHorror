@@ -19,11 +19,16 @@ lets us assert:
   rejected while a caller who ALSO holds an 'Organizer' row for that same
   event is correctly authorized, and a membership row for the wrong event id
   or wrong user id never grants access;
-* an authorized deletion selects every linked group game id (in deterministic
-  ordinal order), locks each one individually -- BEFORE the event, never
-  after -- deletes each still-present game individually, then locks and
-  deletes the event row, and returns exactly the present game ids (in order)
-  in 'EventDeletionDeleted';
+* an authorized deletion selects every linked group game as an
+  'EpicGameLockRef' (in whatever order a real query happens to return --
+  deliberately unsorted in this module's fixture, see 'fixtureLinkedGameRefs'),
+  hands them to 'canonicalEpicGameLockOrder' -- the SAME pure ordering
+  function 'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' delegates to
+  for its own lock plan, not an independently reimplemented sort -- locks
+  each resulting game individually in that canonical order -- BEFORE the
+  event, never after -- deletes each still-present game individually, then
+  locks and deletes the event row, and returns exactly the present game ids
+  (in canonical order) in 'EventDeletionDeleted';
 * a linked game that has vanished concurrently (e.g. a player deleting their
   own game directly, see 'Api.Handler.Arkham.Games.deleteApiV1ArkhamGameR') is
   simply excluded from what gets deleted and from the returned cleanup ids --
@@ -91,8 +96,9 @@ transaction), not of this test.
 -}
 module Arkham.Api.Events.EventDeletionSpec (spec) where
 
+import Api.Arkham.Epic (EpicGameLockRef (..), canonicalEpicGameLockOrder)
 import Api.Handler.Arkham.Events
-import Arkham.Epic.Types (EpicRole (..))
+import Arkham.Epic.Types (EpicRole (..), GroupOrdinal (..))
 import Arkham.Prelude
 import Control.Monad.Except (ExceptT, MonadError, runExceptT, throwError)
 import Control.Monad.State.Strict (MonadState, State, gets, modify, runState)
@@ -132,6 +138,24 @@ fixtureGameId ordx = GameEntity.ArkhamGameKey $ UUID.fromWords 0 0 0 (fromIntegr
 fixtureLinkedGameIds :: [GameEntity.ArkhamGameId]
 fixtureLinkedGameIds = [fixtureGameId 0, fixtureGameId 1, fixtureGameId 2]
 
+-- | One 'EpicGameLockRef' per fixture game, pairing its ordinal with its id.
+fixtureGameRef :: Int -> EpicGameLockRef
+fixtureGameRef ordx = EpicGameLockRef (GroupOrdinal ordx) (fixtureGameId ordx)
+
+{- | What a real query would return for the fixture games -- deliberately NOT
+in canonical (ascending ordinal) order. This is the concrete proof for the
+"canonical order is genuinely shared, not independently reimplemented" claim:
+'deleteEpicEventAggregate' -- not this fixture, and not any per-row @ORDER
+BY@ -- is what puts the resulting locks in canonical order, by handing
+whatever 'selectLinkedGameRefs' returns to 'canonicalEpicGameLockOrder', the
+exact same function 'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan'
+delegates to. If the aggregate instead trusted its input to already be
+sorted, every test below asserting canonically-ordered 'LockedGame' steps
+would fail against this shuffled fixture.
+-}
+fixtureLinkedGameRefs :: [EpicGameLockRef]
+fixtureLinkedGameRefs = [fixtureGameRef 2, fixtureGameRef 0, fixtureGameRef 1]
+
 -- | One real @arkham_epic_members@-shaped row: which event, which user, which
 -- role. 'isEventOrganizer' below filters these exactly the way the production
 -- 'P.exists' query filters on all three columns, so a row for the wrong event
@@ -155,7 +179,7 @@ data Step
     -- for the initial check and the post-lock revalidation -- their position
     -- in the log distinguishes which is which)
     CheckedOrganizer Bool
-  | SelectedGameIds [GameEntity.ArkhamGameId]
+  | SelectedGameRefs [EpicGameLockRef]
   | -- | one game was locked ('FOR UPDATE'), and whether it was still present
     LockedGame GameEntity.ArkhamGameId Bool
   | -- | the event was locked ('FOR UPDATE'), after every present game; whether
@@ -200,7 +224,7 @@ probe.
 
 'gamePresence' models the same idea per linked game: a game absent from this
 map (or mapped to 'False') is treated as already vanished when locked,
-regardless of still being listed by 'linkedGameIds' -- exactly what a
+regardless of still being listed by 'linkedGameRefs' -- exactly what a
 concurrently, independently deleted game (see
 'Api.Handler.Arkham.Games.deleteApiV1ArkhamGameR') looks like.
 -}
@@ -211,7 +235,7 @@ data TestState = TestState
   , eventExistsCallCount :: Int
   , membershipRows :: [MembershipRow]
   , organizerCheckCount :: Int
-  , linkedGameIds :: [GameEntity.ArkhamGameId]
+  , linkedGameRefs :: [EpicGameLockRef]
   , gamePresence :: Map GameEntity.ArkhamGameId Bool
   , lockGameCallCount :: Int
   , deleteGameCallCount :: Int
@@ -228,7 +252,7 @@ fixtureTestState eventPresent membership =
     , eventExistsCallCount = 0
     , membershipRows = membership
     , organizerCheckCount = 0
-    , linkedGameIds = fixtureLinkedGameIds
+    , linkedGameRefs = fixtureLinkedGameRefs
     , gamePresence = Map.fromList [(gid, True) | gid <- fixtureLinkedGameIds]
     , lockGameCallCount = 0
     , deleteGameCallCount = 0
@@ -291,11 +315,11 @@ instance MonadEpicEventDeletion TestDB where
     recordStep (CheckedOrganizer isOrganizer)
     pure isOrganizer
 
-  selectLinkedGameIds _eid = do
+  selectLinkedGameRefs _eid = do
     failIfConfigured FailAtSelect
-    gameIds <- gets (.linkedGameIds)
-    recordStep (SelectedGameIds gameIds)
-    pure gameIds
+    refs <- gets (.linkedGameRefs)
+    recordStep (SelectedGameRefs refs)
+    pure refs
 
   lockLinkedGame gid = do
     occurrence <- gets (.lockGameCallCount)
@@ -345,7 +369,7 @@ fullLog :: [Step]
 fullLog =
   [ ProbedEventExists True
   , CheckedOrganizer True
-  , SelectedGameIds fixtureLinkedGameIds
+  , SelectedGameRefs fixtureLinkedGameRefs
   , LockedGame (fixtureGameId 0) True
   , LockedGame (fixtureGameId 1) True
   , LockedGame (fixtureGameId 2) True
@@ -408,13 +432,13 @@ spec = do
       fst wrongUser `shouldBe` Right EventDeletionForbidden
 
     it "supports zero linked games, matching a single-group-only or already-empty event" do
-      let noGames = (fixtureTestState True organizerMembership) {linkedGameIds = [], gamePresence = Map.empty}
+      let noGames = (fixtureTestState True organizerMembership) {linkedGameRefs = [], gamePresence = Map.empty}
           (result, log_) = runTestDB FailNever noGames (deleteEpicEventAggregate fixtureEventId fixtureOrganizerId)
       result `shouldBe` Right (EventDeletionDeleted [])
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds []
+                   , SelectedGameRefs []
                    , LockedEvent True
                    , CheckedOrganizer True
                    , DeletedEventRow
@@ -429,7 +453,7 @@ spec = do
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds fixtureLinkedGameIds
+                   , SelectedGameRefs fixtureLinkedGameRefs
                    , LockedGame (fixtureGameId 0) True
                    , LockedGame (fixtureGameId 1) False
                    , LockedGame (fixtureGameId 2) True
@@ -458,7 +482,7 @@ spec = do
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds fixtureLinkedGameIds
+                   , SelectedGameRefs fixtureLinkedGameRefs
                    , LockedGame (fixtureGameId 0) True
                    , LockedGame (fixtureGameId 1) True
                    , LockedGame (fixtureGameId 2) True
@@ -495,7 +519,8 @@ spec = do
             runTestDB FailNever (fixtureTestState True organizerMembership) do
               found <- eventExists fixtureEventId
               organizer1 <- isEventOrganizer fixtureEventId fixtureOrganizerId
-              gids <- selectLinkedGameIds fixtureEventId
+              refs <- selectLinkedGameRefs fixtureEventId
+              let gids = canonicalEpicGameLockOrder refs
               present <- mapM lockLinkedGame gids
               stillThere <- lockEpicEvent fixtureEventId
               modify revoke
@@ -554,7 +579,7 @@ spec = do
     it "a failure locking the first linked game cannot produce a success-shaped result, and no later game or the event is locked or deleted" do
       let (result, log_) = run (FailAtLockGame 0) (fixtureTestState True organizerMembership)
       result `shouldSatisfy` isLeft
-      log_ `shouldBe` [ProbedEventExists True, CheckedOrganizer True, SelectedGameIds fixtureLinkedGameIds]
+      log_ `shouldBe` [ProbedEventExists True, CheckedOrganizer True, SelectedGameRefs fixtureLinkedGameRefs]
 
     it "a failure locking the SECOND linked game proves the first was genuinely locked first, and nothing further is locked or deleted" do
       let (result, log_) = run (FailAtLockGame 1) (fixtureTestState True organizerMembership)
@@ -562,7 +587,7 @@ spec = do
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds fixtureLinkedGameIds
+                   , SelectedGameRefs fixtureLinkedGameRefs
                    , LockedGame (fixtureGameId 0) True
                    ]
 
@@ -572,7 +597,7 @@ spec = do
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds fixtureLinkedGameIds
+                   , SelectedGameRefs fixtureLinkedGameRefs
                    , LockedGame (fixtureGameId 0) True
                    , LockedGame (fixtureGameId 1) True
                    , LockedGame (fixtureGameId 2) True
@@ -584,7 +609,7 @@ spec = do
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds fixtureLinkedGameIds
+                   , SelectedGameRefs fixtureLinkedGameRefs
                    , LockedGame (fixtureGameId 0) True
                    , LockedGame (fixtureGameId 1) True
                    , LockedGame (fixtureGameId 2) True
@@ -597,7 +622,7 @@ spec = do
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds fixtureLinkedGameIds
+                   , SelectedGameRefs fixtureLinkedGameRefs
                    , LockedGame (fixtureGameId 0) True
                    , LockedGame (fixtureGameId 1) True
                    , LockedGame (fixtureGameId 2) True
@@ -611,7 +636,7 @@ spec = do
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds fixtureLinkedGameIds
+                   , SelectedGameRefs fixtureLinkedGameRefs
                    , LockedGame (fixtureGameId 0) True
                    , LockedGame (fixtureGameId 1) True
                    , LockedGame (fixtureGameId 2) True
@@ -626,7 +651,7 @@ spec = do
       log_
         `shouldBe` [ ProbedEventExists True
                    , CheckedOrganizer True
-                   , SelectedGameIds fixtureLinkedGameIds
+                   , SelectedGameRefs fixtureLinkedGameRefs
                    , LockedGame (fixtureGameId 0) True
                    , LockedGame (fixtureGameId 1) True
                    , LockedGame (fixtureGameId 2) True

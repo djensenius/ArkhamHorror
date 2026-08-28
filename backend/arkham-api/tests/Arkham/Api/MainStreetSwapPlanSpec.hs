@@ -34,9 +34,10 @@ These tests prove:
   'Api.Handler.Arkham.Events.MonadEpicEventDeletion');
 * a degenerate request where both sides resolve to the same game id (which
   'Api.Handler.Arkham.Events.postApiV1ArkhamEventSwapMainStreetR' already
-  rejects one level up, by ordinal) still produces a well-defined plan
-  (that id repeated in the lock order -- a harmless, same-transaction
-  re-acquisition), never a crash.
+  rejects one level up, by ordinal) still produces a well-defined plan --
+  a single-element lock order, since 'canonicalEpicGameLockOrder' locks
+  each distinct linked game exactly once -- never a crash and never a
+  redundant double-lock of the same row.
 
 As with 'Api.Handler.Arkham.Events.EventDeletionSpec', there is no
 live-PostgreSQL integration test actually exercising two concurrent
@@ -92,8 +93,8 @@ spec = describe "mainStreetSwapPlan (Main Street swap lock-order seam)" do
             == [fixtureGameId (min a b), fixtureGameId (max a b)]
     all agrees ordinalPairs `shouldBe` True
 
-  it "a degenerate request where both sides resolve to the same game id produces a well-defined plan, never a crash" do
+  it "a degenerate request where both sides resolve to the same game id produces a well-defined, single-element plan, never a crash and never a duplicate lock" do
     let plan = mainStreetSwapPlan (1, fixtureGameId 1) (1, fixtureGameId 1)
-    plan.lockOrder `shouldBe` [fixtureGameId 1, fixtureGameId 1]
+    plan.lockOrder `shouldBe` [fixtureGameId 1]
     plan.firstGameId `shouldBe` fixtureGameId 1
     plan.secondGameId `shouldBe` fixtureGameId 1

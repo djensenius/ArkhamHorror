@@ -5,7 +5,9 @@
 module Api.Handler.Arkham.Games.Shared where
 
 import Api.Arkham.Epic (
+  EpicGameLockRef (..),
   applyEpicDeltasLocked,
+  canonicalEpicGameLockOrder,
   lookupGameEvent,
   mkEpicEnv,
   modifySharedStateLockedWith,
@@ -912,11 +914,16 @@ directly unit testable without a live database -- see
 -}
 data MainStreetSwapPlan = MainStreetSwapPlan
   { lockOrder :: [ArkhamGameId]
-  -- ^ Both involved game ids, in the ascending @(group ordinal, game id)@
-  -- order both this swap and
-  -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' lock in. Not
-  -- deduplicated: a degenerate same-game-id request (see below) repeats
-  -- that id here, harmlessly.
+  -- ^ Every DISTINCT game id among the two involved, in the ascending
+  -- @(group ordinal, game id)@ order both this swap and
+  -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' lock in -- computed
+  -- by the one shared 'canonicalEpicGameLockOrder' both delegate to, so
+  -- neither can independently drift into a different order. A degenerate
+  -- same-game-id request (see below) collapses to a single-element list
+  -- here: locking it once is exactly as sufficient as locking it twice, and
+  -- 'canonicalEpicGameLockOrder' treats "lock each distinct linked game
+  -- once" as its own invariant, not an accident of what happens to be
+  -- harmless.
   , firstGameId :: ArkhamGameId
   -- ^ Unchanged from the request: the game 'firstOrdinal' resolved to.
   , secondGameId :: ArkhamGameId
@@ -928,95 +935,169 @@ data MainStreetSwapPlan = MainStreetSwapPlan
 lock order is always ascending by @(ordinal, game id)@ regardless of which
 one the caller called "first" -- matching the fixed order
 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' locks linked games in,
-so the two paths can never wait on each other in opposite orders. The
+so the two paths can never wait on each other in opposite orders. Both sides
+are handed to 'canonicalEpicGameLockOrder' -- the SAME pure ordering
+function 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' uses for its
+own lock plan, not an independently reimplemented sort here. The
 'firstGameId'\/'secondGameId' fields are copied straight from the input,
 UNSORTED, so the original request's first/second mapping -- which decides
 the actual swap semantics, not just lock order -- is always preserved
 regardless of how 'lockOrder' turned out. A degenerate request where both
 sides resolve to the same game id (which
 'postApiV1ArkhamEventSwapMainStreetR' already rejects one level up, by
-ordinal) simply repeats that id in 'lockOrder' -- a same-transaction
-re-acquisition of a lock it already holds, which PostgreSQL treats as a
-no-op, never a self-deadlock.
+ordinal) collapses to a single-element 'lockOrder': locking that one game
+once is all a same-transaction re-acquisition of its own lock would
+accomplish anyway.
 -}
 mainStreetSwapPlan :: (Int, ArkhamGameId) -> (Int, ArkhamGameId) -> MainStreetSwapPlan
 mainStreetSwapPlan (firstOrdinal, firstGameId) (secondOrdinal, secondGameId) =
   MainStreetSwapPlan
     { lockOrder =
-        map snd
-          $ sortOn (\(ordinal, gid) -> (ordinal, gid))
-            [(firstOrdinal, firstGameId), (secondOrdinal, secondGameId)]
+        canonicalEpicGameLockOrder
+          [ EpicGameLockRef (GroupOrdinal firstOrdinal) firstGameId
+          , EpicGameLockRef (GroupOrdinal secondOrdinal) secondGameId
+          ]
     , firstGameId
     , secondGameId
     }
 
-{- | Resolve the ELSE! Main Street group swap. InvestigatorAttrs contains the
-investigator's deck, hand, discard, resources, damage, trauma, logs, and
-other personal state. We additionally move every controlled/play-area asset,
-threat-area treachery, controlled event, per-investigator entity cache,
-history, question, and player authorization row. Enemy cards stay behind
-because the printed ability disengages them before publishing readiness.
-
-This writes both games in one transaction, advances both revisions, publishes
-both websocket rooms, and places an undo floor at the new revisions. A swap
-is therefore never half-visible and can never be crossed by ordinary undo.
-
-Both involved 'ArkhamGame' rows are explicitly locked ('FOR UPDATE'), in the
-order 'mainStreetSwapPlan' computes, BEFORE reading either game's mutable
-state or touching any player row. A caller may request the swap in either
-order (@firstOrdinal@ larger or smaller than @secondOrdinal@); sorting only
-the LOCK ACQUISITION plan, never the first/second mapping used for the
-actual swap semantics and response, closes off a cross-path deadlock:
-without this, a reversed-order swap request (say, ordinals 2 then 1) would
-acquire its first update's implicit row lock on game 2 before game 1, while
-a concurrent deletion always locks in ascending order (game 1 before game
-2) -- each transaction then waits on the lock the other one holds. Acquiring
-both locks up front, in the one fixed order every writer uses, means at most
-one of these transactions is ever waiting at a time.
+{- | The result of attempting to plan and execute a Main Street group swap,
+decided entirely inside one locked transaction (see
+'planAndExecuteMainStreetSwap'). Mirrors
+'Api.Handler.Arkham.Events.EventDeletionOutcome': the handler maps each
+constructor to a distinct HTTP outcome, and only 'MainStreetSwapCompleted'
+carries anything for the caller to act on once 'runDB' returns.
 -}
-swapMainStreetInvestigators :: ArkhamEpicEventId -> Int -> Int -> Handler ()
-swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
-  (firstGameId, secondGameId) <- runDB do
-    groups <-
-      P.selectList
-        [ ArkhamEpicGroupArkhamEpicEventId P.==. eventId
-        , ArkhamEpicGroupOrdinal P.<-. [firstOrdinal, secondOrdinal]
+data MainStreetSwapOutcome
+  = -- | Either requested ordinal names no group for this event, or the
+    -- group it names has no linked game (never had one, or one that has
+    -- since been unlinked) -- both collapse to the same nondisclosing
+    -- outcome as a linked game vanishing concurrently before its lock could
+    -- be taken (see 'lockSwapGame'). Maps to a plain 404, matching
+    -- 'Api.Handler.Arkham.Events.EventDeletionMissing''s nondisclosure
+    -- policy. No lock is ever taken for this outcome.
+    MainStreetSwapMissing
+  | -- | Both ordinals resolved to a game, but to the SAME game. Nothing in
+    -- the schema forbids two distinct 'Entity.Arkham.Epic.ArkhamEpicGroup'
+    -- rows from referencing the same game (only the ordinal is unique per
+    -- event), so this is a real, checked outcome, not just a defensive
+    -- comment -- reported before 'mainStreetSwapPlan' is even built, and
+    -- before any lock is taken, never treated as two independent sides to
+    -- swap. Maps to 'invalidArgs'.
+    MainStreetSwapSameGame
+  | -- | Both games resolved to distinct ids, and both were confirmed locked
+    -- and present before any mutable state was read or written; the swap
+    -- itself has already been performed, in the same transaction that took
+    -- both locks. Carries the plan so the caller can run its post-commit
+    -- steps (spend the shared "ready" token, publish, set the undo floor)
+    -- against exactly the two games this transaction locked and wrote.
+    MainStreetSwapCompleted MainStreetSwapPlan
+  deriving stock (Eq, Show)
+
+{- | Abstract persistence steps needed to plan and execute a Main Street group
+swap. Mirrors 'Api.Handler.Arkham.Events.MonadEpicEventDeletion': a small set
+of typed, individually testable steps, threaded by
+'planAndExecuteMainStreetSwap' into the exact sequencing production runs.
+
+Do not write an instance that catches a write failure inside
+'performMainStreetSwap' and converts it into an ordinary return value of
+this class: as with 'Api.Handler.Arkham.Events.MonadEpicEventDeletion',
+'runDB' only rolls back on an actual uncaught exception, so silently turning
+one into a normal result here would defeat the rollback guarantee.
+-}
+class Monad m => MonadMainStreetSwap m where
+  -- | Resolve one side's requested group ordinal to its linked game id. A
+  -- plain, non-locking read -- never a lock, and never a write.
+  -- 'Nothing' covers BOTH "no such group for this ordinal" and "the group
+  -- exists but currently has no linked game": callers must not, and do
+  -- not, distinguish these -- both mean this side of the swap has no game
+  -- to lock, and 'planAndExecuteMainStreetSwap' maps either straight to
+  -- 'MainStreetSwapMissing' without ever calling 'lockSwapGame' or
+  -- 'performMainStreetSwap'.
+  resolveSwapGame :: ArkhamEpicEventId -> Int -> m (Maybe ArkhamGameId)
+  -- | Row-lock one game ('FOR UPDATE' in production) and report whether it
+  -- is still present. Called once per distinct game id in
+  -- 'mainStreetSwapPlan''s canonical 'lockOrder', in that order, strictly
+  -- BEFORE 'performMainStreetSwap'. 'planAndExecuteMainStreetSwap' always
+  -- attempts every game in the lock order -- via 'traverse', which runs
+  -- every action in the list before any result is inspected -- so a game
+  -- vanishing concurrently can never leave one lock attempt skipped
+  -- because an earlier one already failed.
+  lockSwapGame :: ArkhamGameId -> m Bool
+  -- | Perform the actual investigator swap: read both games' current
+  -- state, compute each side's new state, and persist it (plus the moved
+  -- 'Entity.Arkham.Player.ArkhamPlayer' rows). Called from exactly ONE
+  -- place: after both games in the plan are confirmed locked and present.
+  -- Never called for 'MainStreetSwapMissing' or 'MainStreetSwapSameGame'.
+  performMainStreetSwap :: MainStreetSwapPlan -> m ()
+
+{- | The Main Street swap decision:
+
+1. Resolve both requested ordinals to their linked game id. Either side
+   resolving to 'Nothing' (unknown group, or a group with no linked game)
+   short-circuits to 'MainStreetSwapMissing' -- before the two ordinals are
+   even compared to each other, and before any lock or write.
+2. If both resolve, but to the SAME game, report 'MainStreetSwapSameGame'
+   -- before 'mainStreetSwapPlan' is built, and before a single lock is
+   taken. This is a distinct check from the ordinal-equality guard
+   'Api.Handler.Arkham.Events.postApiV1ArkhamEventSwapMainStreetR' already
+   applies one level up (which only rejects requesting the SAME group
+   twice): two DIFFERENT groups can, as far as the schema is concerned,
+   reference the same game row.
+3. Otherwise, build the canonical 'MainStreetSwapPlan' and lock BOTH
+   involved games, in that canonical order, before reading either's
+   mutable state. Both lock attempts are always made before their results
+   are inspected together (see 'lockSwapGame'): if EITHER game vanished
+   concurrently -- a linked game can be deleted directly by any of its own
+   players, independent of this event, see
+   'Api.Handler.Arkham.Games.deleteApiV1ArkhamGameR' -- this reports
+   'MainStreetSwapMissing', and, critically, 'performMainStreetSwap' is
+   never called: no read or write happens for either game.
+
+This is the single seam production and tests both exercise directly,
+mirroring 'Api.Handler.Arkham.Events.deleteEpicEventAggregate'.
+-}
+planAndExecuteMainStreetSwap
+  :: MonadMainStreetSwap m
+  => ArkhamEpicEventId -> Int -> Int -> m MainStreetSwapOutcome
+planAndExecuteMainStreetSwap eventId firstOrdinal secondOrdinal = do
+  mFirstGameId <- resolveSwapGame eventId firstOrdinal
+  mSecondGameId <- resolveSwapGame eventId secondOrdinal
+  case (mFirstGameId, mSecondGameId) of
+    (Just firstGameId, Just secondGameId)
+      | firstGameId == secondGameId -> pure MainStreetSwapSameGame
+      | otherwise -> do
+          let plan = mainStreetSwapPlan (firstOrdinal, firstGameId) (secondOrdinal, secondGameId)
+          lockResults <- traverse lockSwapGame plan.lockOrder
+          if and lockResults
+            then do
+              performMainStreetSwap plan
+              pure (MainStreetSwapCompleted plan)
+            else pure MainStreetSwapMissing
+    _ -> pure MainStreetSwapMissing
+
+instance MonadMainStreetSwap (SqlPersistT Handler) where
+  resolveSwapGame eid ordinal = do
+    mGroup <-
+      P.selectFirst
+        [ ArkhamEpicGroupArkhamEpicEventId P.==. eid
+        , ArkhamEpicGroupOrdinal P.==. ordinal
         ]
         []
-    let byOrdinal =
-          Map.fromList
-            [ (arkhamEpicGroupOrdinal g, gid)
-            | Entity _ g <- groups
-            , gid <- toList (arkhamEpicGroupArkhamGameId g)
-            ]
-    (,)
-      <$> maybe
-        (error "First Main Street group has no game")
-        pure
-        (Map.lookup firstOrdinal byOrdinal)
-      <*> maybe
-        (error "Second Main Street group has no game")
-        pure
-        (Map.lookup secondOrdinal byOrdinal)
-
-  runDB do
-    -- Lock both involved games FOR UPDATE (not deduplicated -- a degenerate
-    -- same-game-id request repeats the id here, harmlessly), in the
-    -- canonical order 'mainStreetSwapPlan' computes, before reading any
-    -- mutable game state or player row below. A game that has vanished
-    -- concurrently locks nothing here and is left to the existing
-    -- 'P.getJust' below to report -- unchanged, pre-existing behavior;
-    -- issue #39 will replace these swap panics comprehensively.
-    let plan = mainStreetSwapPlan (firstOrdinal, firstGameId) (secondOrdinal, secondGameId)
-    for_ plan.lockOrder \gid ->
-      void $ select do
-        game <- from $ table @ArkhamGame
-        where_ $ game.id ==. val gid
-        locking forUpdate
-        pure game.id
-
-    firstRaw <- P.getJust firstGameId
-    secondRaw <- P.getJust secondGameId
+    pure $ mGroup >>= arkhamEpicGroupArkhamGameId . entityVal
+  lockSwapGame gid = do
+    -- Project only the id: 'FOR UPDATE' locks the whole row regardless of
+    -- which columns are selected, matching the same idiom
+    -- 'Api.Handler.Arkham.Events.lockLinkedGame' uses.
+    locked <- select do
+      game <- from $ table @ArkhamGame
+      where_ $ game.id ==. val gid
+      locking forUpdate
+      pure game.id
+    pure $ not (null locked)
+  performMainStreetSwap plan = do
+    firstRaw <- P.getJust plan.firstGameId
+    secondRaw <- P.getJust plan.secondGameId
     let
       firstGame = arkhamGameCurrentData firstRaw
       secondGame = arkhamGameCurrentData secondRaw
@@ -1039,20 +1120,57 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
         swapInvestigatorState firstIid firstDestination firstGame secondIid secondDestination secondGame
       firstStep = arkhamGameStep firstRaw + 1
       secondStep = arkhamGameStep secondRaw + 1
-    P.update firstGameId [ArkhamGameCurrentData P.=. firstGame', ArkhamGameStep P.=. firstStep]
-    P.update secondGameId [ArkhamGameCurrentData P.=. secondGame', ArkhamGameStep P.=. secondStep]
-    P.update (coerce firstPid) [ArkhamPlayerArkhamGameId P.=. secondGameId]
-    P.update (coerce secondPid) [ArkhamPlayerArkhamGameId P.=. firstGameId]
+    P.update plan.firstGameId [ArkhamGameCurrentData P.=. firstGame', ArkhamGameStep P.=. firstStep]
+    P.update plan.secondGameId [ArkhamGameCurrentData P.=. secondGame', ArkhamGameStep P.=. secondStep]
+    P.update (coerce firstPid) [ArkhamPlayerArkhamGameId P.=. plan.secondGameId]
+    P.update (coerce secondPid) [ArkhamPlayerArkhamGameId P.=. plan.firstGameId]
+
+{- | Resolve the ELSE! Main Street group swap. InvestigatorAttrs contains the
+investigator's deck, hand, discard, resources, damage, trauma, logs, and
+other personal state. We additionally move every controlled/play-area asset,
+threat-area treachery, controlled event, per-investigator entity cache,
+history, question, and player authorization row. Enemy cards stay behind
+because the printed ability disengages them before publishing readiness.
+
+This writes both games in one transaction, advances both revisions, publishes
+both websocket rooms, and places an undo floor at the new revisions. A swap
+is therefore never half-visible and can never be crossed by ordinary undo.
+
+The entire plan/lock/execute decision (unknown or unlinked group relations,
+two ordinals resolving to one game, and both games' 'FOR UPDATE' locks,
+taken in the canonical order 'mainStreetSwapPlan' computes, strictly before
+either game's mutable state is read) happens inside
+'planAndExecuteMainStreetSwap', in one transaction -- see that function's
+Haddoc for the full decision sequence, and 'MonadMainStreetSwap' for why
+each step is its own testable typeclass method. A caller may request the
+swap with either ordinal named first (@firstOrdinal@ larger or smaller than
+@secondOrdinal@); sorting only the LOCK ACQUISITION plan, never the
+first/second mapping used for the actual swap semantics and response,
+closes off a cross-path deadlock: without it, a reversed-order swap request
+(say, ordinals 2 then 1) would acquire its first update's implicit row lock
+on game 2 before game 1, while a concurrent deletion always locks in
+ascending order (game 1 before game 2) -- each transaction would then wait
+on the lock the other holds. Acquiring both locks up front, in the one
+fixed order every writer uses, means at most one of these transactions is
+ever waiting at a time.
+-}
+swapMainStreetInvestigators :: ArkhamEpicEventId -> Int -> Int -> Handler ()
+swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
+  outcome <- runDB $ planAndExecuteMainStreetSwap eventId firstOrdinal secondOrdinal
+  plan <- case outcome of
+    MainStreetSwapMissing -> notFound
+    MainStreetSwapSameGame -> invalidArgs ["Investigators must be in different groups"]
+    MainStreetSwapCompleted plan -> pure plan
 
   runMessagesInGroupWhen
     (const True)
     [SpendShared (MainStreetReady $ GroupOrdinal firstOrdinal) 1]
-    firstGameId
+    plan.firstGameId
   runMessagesInGroupWhen
     (const True)
     [SpendShared (MainStreetReady $ GroupOrdinal secondOrdinal) 1]
-    secondGameId
-  for_ [firstGameId, secondGameId] \gameId -> do
+    plan.secondGameId
+  for_ [plan.firstGameId, plan.secondGameId] \gameId -> do
     raw <- runDB $ P.get404 gameId
     setGameUndoFloor gameId (arkhamGameStep raw)
     publishToRoom gameId

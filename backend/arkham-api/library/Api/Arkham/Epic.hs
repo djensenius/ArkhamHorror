@@ -40,6 +40,64 @@ lookupGameEvent gameId = do
     (evt, Value ordinal) : _ -> Just (evt, GroupOrdinal ordinal)
     [] -> Nothing
 
+{- | A reference to one Epic-linked 'ArkhamGame', for lock-ordering purposes
+only: its group ordinal, and its game id. This is the single ordering key
+shared by every production writer that must lock more than one linked game
+in the same transaction --
+'Api.Handler.Arkham.Events.deleteEpicEventAggregate' (which locks every
+linked game before the event) and
+'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' (which locks the two
+games involved in a Main Street swap) both build a list of these and hand it
+to 'canonicalEpicGameLockOrder' -- neither computes its own, independent
+sort. Only for feeding that one function; not persisted, not compared for
+anything other than its role in that sort.
+-}
+data EpicGameLockRef = EpicGameLockRef
+  { epicGameLockRefOrdinal :: GroupOrdinal
+  , epicGameLockRefGameId :: ArkhamGameId
+  }
+  deriving stock (Eq, Show)
+
+{- | The one canonical lock order for a set of Epic-linked games: ascending by
+@(group ordinal, game id)@, with each distinct game id appearing exactly
+once, in that order, no matter how many times (or in what order) it appears
+in the input.
+
+The game id only ever breaks a tie between two references that share the
+same ordinal. In practice that can't happen for two DIFFERENT games in the
+same event -- 'Entity.Arkham.Epic.ArkhamEpicGroup' 's
+@UniqueEpicGroupOrdinal@ constraint makes ordinals unique per event -- but
+this function does not depend on that database invariant to be safe or
+deterministic: it is included, and tested, purely so this ordering is total
+and reproducible from its OWN definition, not from an assumption about a
+constraint defined elsewhere.
+
+Deduplication matters for exactly one caller today:
+'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' is only ever handed two
+refs, but a degenerate request where both sides resolve to the same game
+would otherwise produce a two-element 'lockOrder' that redundantly
+re-acquires the same row's lock twice in one transaction. That is harmless
+under PostgreSQL's semantics (a transaction re-locking a row it already
+holds is a no-op), but every distinct game should still appear exactly once
+here, as an explicit invariant of this function rather than an accident of
+what happens to be harmless: "lock each distinct linked game once, in
+canonical order" is what every caller actually wants.
+-}
+canonicalEpicGameLockOrder :: [EpicGameLockRef] -> [ArkhamGameId]
+canonicalEpicGameLockOrder =
+  dedupeSorted
+    . map (.epicGameLockRefGameId)
+    . sortOn (\ref -> (ref.epicGameLockRefOrdinal, ref.epicGameLockRefGameId))
+ where
+  -- Collapses adjacent equal elements of an already-sorted list to one
+  -- occurrence each. Total: the first clause only ever matches a list of at
+  -- least two elements, and the second clause matches everything else (the
+  -- empty list and every singleton), so together they cover every list.
+  dedupeSorted (x : y : rest)
+    | x == y = dedupeSorted (y : rest)
+    | otherwise = x : dedupeSorted (y : rest)
+  dedupeSorted xs = xs
+
 {- | Build a per-action 'EpicEnv': the current shared state in an 'IORef' plus an
 empty delta buffer that the run loop appends to.
 -}

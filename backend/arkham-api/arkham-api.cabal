@@ -8379,6 +8379,7 @@ test-suite spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.RestrictedAccessSpec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.EpicGameLockOrderSpec
       Arkham.Api.Events.EventCreationSpec
       Arkham.Api.Events.EventDeletionSpec
       Arkham.Api.Events.EventListSpec
@@ -8388,6 +8389,7 @@ test-suite spec
       Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
       Arkham.Api.MainStreetSwapPlanSpec
+      Arkham.Api.MainStreetSwapSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.ArcaneInitiateSpec
