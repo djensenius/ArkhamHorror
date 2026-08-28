@@ -21,6 +21,7 @@ module Api.Handler.Arkham.Events (
   postApiV1ArkhamEventResolveAdvanceR,
   postApiV1ArkhamEventReplicateR,
   postApiV1ArkhamEventSwapMainStreetR,
+  withEventMember,
 ) where
 
 import Api.Arkham.Epic (applyEpicDeltasLocked, modifySharedStateLocked)
@@ -212,6 +213,16 @@ data EventListEntry = EventListEntry
 
 -- AuthZ -----------------------------------------------------------------------
 
+{- | Gate a protected resource behind an authorization check.
+
+@authCheck@ runs first; if it throws (e.g. Yesod 'permissionDenied'),
+@onGranted@ is never invoked.  The polymorphic signature lets tests exercise
+the same sequencing guarantee in plain 'IO' without standing up the full
+application stack.
+-}
+withEventMember :: Monad m => m EpicRole -> (EpicRole -> m a) -> m a
+withEventMember authCheck onGranted = authCheck >>= onGranted
+
 requireEventMember :: UserId -> ArkhamEpicEventId -> Handler EpicRole
 requireEventMember userId eid = do
   mMember <-
@@ -318,10 +329,10 @@ postApiV1ArkhamEventsR = do
 getApiV1ArkhamEventR :: ArkhamEpicEventId -> Handler EventDetails
 getApiV1ArkhamEventR eid = do
   userId <- getRequestUserId
-  wsOptions <- websocketConnectionOptions
-  webSocketsOptions wsOptions $ eventStream eid
-  void $ requireEventMember userId eid
-  buildEventDetails userId eid
+  withEventMember (requireEventMember userId eid) \_ -> do
+    wsOptions <- websocketConnectionOptions
+    webSocketsOptions wsOptions $ eventStream eid
+    buildEventDetails userId eid
 
 {- | Delete an event and all of its group games (organizer only). Deleting each
 group's 'ArkhamGame' cascades its players/steps/logs and the epic-group row;
