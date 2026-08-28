@@ -903,6 +903,51 @@ increase (each settlement runs at a later step), so an unconditional set is
 monotonic.
 -}
 
+{- | The pure lock-vs-mapping split for a Main Street group swap: which
+'ArkhamGame' rows to lock, in canonical order, versus which one is
+"first"/"second" for the actual swap semantics and response. Kept as its own
+type (rather than inlining a sort at the call site) so this decision is
+directly unit testable without a live database -- see
+"Arkham.Api.MainStreetSwapPlanSpec".
+-}
+data MainStreetSwapPlan = MainStreetSwapPlan
+  { lockOrder :: [ArkhamGameId]
+  -- ^ Every distinct involved game id, in the ascending
+  -- @(group ordinal, game id)@ order both this swap and
+  -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' lock in.
+  , firstGameId :: ArkhamGameId
+  -- ^ Unchanged from the request: the game 'firstOrdinal' resolved to.
+  , secondGameId :: ArkhamGameId
+  -- ^ Unchanged from the request: the game 'secondOrdinal' resolved to.
+  }
+  deriving stock (Eq, Show)
+
+{- | Build a 'MainStreetSwapPlan' from each side's @(ordinal, game id)@. The
+lock order is always ascending by @(ordinal, game id)@ regardless of which
+one the caller called "first" -- matching the fixed order
+'Api.Handler.Arkham.Events.deleteEpicEventAggregate' locks linked games in,
+so the two paths can never wait on each other in opposite orders. The
+'firstGameId'\/'secondGameId' fields are copied straight from the input,
+UNSORTED, so the original request's first/second mapping -- which decides
+the actual swap semantics, not just lock order -- is always preserved
+regardless of how 'lockOrder' turned out. A degenerate request where both
+sides resolve to the same game id (which
+'postApiV1ArkhamEventSwapMainStreetR' already rejects one level up, by
+ordinal) simply repeats that id in 'lockOrder' -- a same-transaction
+re-acquisition of a lock it already holds, which PostgreSQL treats as a
+no-op, never a self-deadlock.
+-}
+mainStreetSwapPlan :: (Int, ArkhamGameId) -> (Int, ArkhamGameId) -> MainStreetSwapPlan
+mainStreetSwapPlan (firstOrdinal, firstGameId) (secondOrdinal, secondGameId) =
+  MainStreetSwapPlan
+    { lockOrder =
+        map snd
+          $ sortOn (\(ordinal, gid) -> (ordinal, gid))
+            [(firstOrdinal, firstGameId), (secondOrdinal, secondGameId)]
+    , firstGameId
+    , secondGameId
+    }
+
 {- | Resolve the ELSE! Main Street group swap. InvestigatorAttrs contains the
 investigator's deck, hand, discard, resources, damage, trauma, logs, and
 other personal state. We additionally move every controlled/play-area asset,
@@ -913,6 +958,19 @@ because the printed ability disengages them before publishing readiness.
 This writes both games in one transaction, advances both revisions, publishes
 both websocket rooms, and places an undo floor at the new revisions. A swap
 is therefore never half-visible and can never be crossed by ordinary undo.
+
+Both involved 'ArkhamGame' rows are explicitly locked ('FOR UPDATE'), in the
+order 'mainStreetSwapPlan' computes, BEFORE reading either game's mutable
+state or touching any player row. A caller may request the swap in either
+order (@firstOrdinal@ larger or smaller than @secondOrdinal@); sorting only
+the LOCK ACQUISITION plan, never the first/second mapping used for the
+actual swap semantics and response, closes off a cross-path deadlock:
+without this, a reversed-order swap request (say, ordinals 2 then 1) would
+acquire its first update's implicit row lock on game 2 before game 1, while
+a concurrent deletion always locks in ascending order (game 1 before game
+2) -- each transaction then waits on the lock the other one holds. Acquiring
+both locks up front, in the one fixed order every writer uses, means at most
+one of these transactions is ever waiting at a time.
 -}
 swapMainStreetInvestigators :: ArkhamEpicEventId -> Int -> Int -> Handler ()
 swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
@@ -940,6 +998,20 @@ swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
         (Map.lookup secondOrdinal byOrdinal)
 
   runDB do
+    -- Lock every distinct involved game FOR UPDATE, in the canonical order
+    -- 'mainStreetSwapPlan' computes, before reading any mutable game state
+    -- or player row below. A game that has vanished concurrently locks
+    -- nothing here and is left to the existing 'P.getJust' below to
+    -- report -- unchanged, pre-existing behavior; issue #39 will replace
+    -- these swap panics comprehensively.
+    let plan = mainStreetSwapPlan (firstOrdinal, firstGameId) (secondOrdinal, secondGameId)
+    for_ plan.lockOrder \gid ->
+      void $ select do
+        game <- from $ table @ArkhamGame
+        where_ $ game.id ==. val gid
+        locking forUpdate
+        pure game.id
+
     firstRaw <- P.getJust firstGameId
     secondRaw <- P.getJust secondGameId
     let
