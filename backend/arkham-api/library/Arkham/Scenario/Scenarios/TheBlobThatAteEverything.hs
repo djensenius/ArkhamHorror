@@ -84,7 +84,7 @@ instance RunMessage TheBlobThatAteEverything where
         & setMetaKey "variant" ("else" :: Text)
     Setup -> do
       -- Epic Multiplayer group games are flagged in scenario meta at creation
-      -- (see Api.Handler.Arkham.Events.createGroupGame): the join/setup path has
+      -- (see Api.Handler.Arkham.Events.buildGroupGame): the join/setup path has
       -- no event context, so we cannot consult the event row here. In epic mode
       -- the global health pool (Subject 8L-08) and the countermeasures pool are
       -- event-wide shared state, so we place the epic subject and let the shared

@@ -23,6 +23,11 @@ module Api.Handler.Arkham.Events (
   postApiV1ArkhamEventSwapMainStreetR,
   deduplicateEventMemberships,
   withEventMember,
+  PendingGroupGame (..),
+  buildGroupGame,
+  MonadEpicPersistence (..),
+  createEpicEventAggregate,
+  gameScenarioMetaDefault,
 ) where
 
 import Api.Arkham.Epic (applyEpicDeltasLocked, modifySharedStateLocked)
@@ -66,6 +71,7 @@ import Arkham.Scenario.Types (Scenario, getMetaKeyDefault)
 import Arkham.Source (Source (GameSource))
 import Arkham.Target (Target (..))
 import Control.Monad.Random.Class (getRandom)
+import Data.Aeson.Key qualified as AesonKey
 import Data.Bits (shiftL, (.|.))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -314,38 +320,46 @@ postApiV1ArkhamEventsR = do
           (\(k, v) -> setSharedCounter k v)
           (emptySharedEventState totalInvestigators)
           (epicScenarioSeeds scenarioId totalInvestigators)
+    eventRecord =
+      ArkhamEpicEvent
+        name
+        userId
+        (Just (tshow scenarioId))
+        Nothing
+        (tshow difficulty)
+        seeded
+        totalInvestigators
+        0
+        now
+        now
 
-  -- Create each group's game up front (own transaction per game, mirroring the
-  -- normal game-creation path).
-  groupGames <- for (zip [0 :: Int ..] groups) \(ordx, grp) -> do
-    gid <-
-      createGroupGame
-        grp.name
-        scenarioId
-        difficulty
-        includeTarotReadings
-        (fromMaybe False playWithBlobElse)
-        grp.playerCount
-    pure (ordx, grp, gid)
+  -- Build every group's pending game up front, in ordinal order, each with its
+  -- own independently drawn seed (never the shared event 'storySeed' and never
+  -- another group's seed). This is pure aside from drawing the seed itself, so
+  -- no database access happens here.
+  pendingGroups <- for (zip [0 :: Int ..] groups) \(ordx, grp) -> do
+    groupSeed <- liftIO getRandom
+    pure
+      PendingGroupGame
+        { ordinal = ordx
+        , name = grp.name
+        , seatCount = grp.playerCount
+        , game =
+            buildGroupGame
+              grp.name
+              scenarioId
+              difficulty
+              includeTarotReadings
+              (fromMaybe False playWithBlobElse)
+              grp.playerCount
+              groupSeed
+              now
+        }
 
-  eid <- runDB do
-    eid <-
-      P.insert
-        $ ArkhamEpicEvent
-          name
-          userId
-          (Just (tshow scenarioId))
-          Nothing
-          (tshow difficulty)
-          seeded
-          totalInvestigators
-          0
-          now
-          now
-    P.insert_ $ ArkhamEpicMember eid userId Organizer Nothing
-    for_ groupGames \(ordx, grp, gid) ->
-      P.insert_ $ ArkhamEpicGroup eid ordx (Just gid) grp.name grp.playerCount
-    pure eid
+  -- One transaction: every group's game + initial step, then the event,
+  -- organizer membership, and every group link. A failure at any step throws,
+  -- so 'runDB' rolls back the entire aggregate -- no orphan games or rows.
+  eid <- runDB $ createEpicEventAggregate eventRecord userId pendingGroups
 
   buildEventDetails userId eid
 
@@ -619,6 +633,17 @@ buildEventDetails userId eid = do
 scenarioUsesBlobElse :: Scenario -> Bool
 scenarioUsesBlobElse = getMetaKeyDefault "blobThatAteEverythingElse" False . toAttrs
 
+{- | Read a scenario meta key from a built 'Game', defaulting when the game has
+no scenario attached (campaign-only mode). Exposed so
+"Arkham.Api.Events.EventCreationSpec" can inspect 'buildGroupGame' output (its
+epic/blob/variant meta) without adding 'these' as a test dependency.
+-}
+gameScenarioMetaDefault :: FromJSON a => AesonKey.Key -> a -> Game -> a
+gameScenarioMetaDefault k def game = case gameMode game of
+  That scenario -> getMetaKeyDefault k def (toAttrs scenario)
+  These _ scenario -> getMetaKeyDefault k def (toAttrs scenario)
+  This _ -> def
+
 gameUsesBlobElse :: Game -> Bool
 gameUsesBlobElse game = case gameMode game of
   That scenario -> scenarioUsesBlobElse scenario
@@ -699,31 +724,102 @@ mkGroupDigest userId (Entity _ grp) = case arkhamEpicGroupArkhamGameId grp of
   nm = arkhamEpicGroupName grp
   seats = arkhamEpicGroupSeatCount grp
 
-{- | Create one group's game as an OPEN multiplayer lobby: a WithFriends game with
-@playerCount@ seats and no players yet. It stays in 'IsPending' until players
-join asynchronously via @PUT /games/:id/join@, then activates and runs setup
-once its seats fill — exactly the normal multiplayer flow, one lobby per group.
-The organizer is NOT auto-seated (they may join a group like anyone else).
+{- | One group's fully-built game, computed with its own independently drawn
+seed before the persistence transaction runs. Constructing this value performs
+no IO or database access, so it is safe to build outside (or, harmlessly,
+inside) the single transaction that persists it.
 -}
-createGroupGame
-  :: Text -> ScenarioId -> Difficulty -> Bool -> Bool -> Int -> Handler ArkhamGameId
-createGroupGame gameName scenarioId difficulty includeTarotReadings playWithBlobElse playerCount = do
-  newGameSeed <- liftIO getRandom
-  now <- liftIO getCurrentTime
+data PendingGroupGame = PendingGroupGame
+  { ordinal :: Int
+  , name :: Text
+  , seatCount :: Int
+  -- ^ the group's requested @playerCount@, unclamped -- this is what gets
+  -- written to 'ArkhamEpicGroup''s @seatCount@ column, matching prior
+  -- behavior. The game's own seat count ('gamePlayerCount', via 'buildGroupGame')
+  -- is separately clamped to a minimum of 1.
+  , game :: ArkhamGame
+  }
+  deriving stock (Show, Generic)
+
+{- | Pure construction of one group's initial 'ArkhamGame': an OPEN
+multiplayer lobby -- a WithFriends game with @playerCount@ seats (minimum 1)
+and no players yet. It stays in 'IsPending' until players join asynchronously
+via @PUT /games/:id/join@, then activates and runs setup once its seats fill —
+exactly the normal multiplayer flow, one lobby per group. The organizer is NOT
+auto-seated (they may join a group like anyone else).
+
+The scenario is flagged Epic Multiplayer in its meta so it picks its epic
+setup branch at Setup time (see 'Api.Handler.Arkham.Events.buildGroupGame' --
+the join/setup path has no event context to consult otherwise).
+-}
+buildGroupGame
+  :: Text
+  -> ScenarioId
+  -> Difficulty
+  -> Bool
+  -> Bool
+  -> Int
+  -> Int
+  -> UTCTime
+  -> ArkhamGame
+buildGroupGame gameName scenarioId difficulty includeTarotReadings playWithBlobElse playerCount newGameSeed now =
   let
     seats = max 1 playerCount
-    -- Flag the group's scenario as Epic Multiplayer so it picks its epic setup
-    -- branch at Setup time (the join path runs setup with no event context).
     game =
       (if playWithBlobElse then setInitialScenarioMeta "variant" ("else" :: Text) else id)
         $ setInitialScenarioMeta "blobThatAteEverythingElse" playWithBlobElse
         $ setInitialScenarioMeta "epicMultiplayer" True
         $ newScenario scenarioId newGameSeed seats difficulty includeTarotReadings
-    ag = ArkhamGame gameName game 0 WithFriends now now
-  runDB do
-    gameId <- P.insert ag
-    P.insert_ $ ArkhamStep gameId (Choice mempty []) 0 (ActionDiff [])
-    pure gameId
+   in ArkhamGame gameName game 0 WithFriends now now
+
+{- | Abstract persistence steps needed to create one Epic event aggregate: N
+group games (with their initial steps), then the event row, the creator's
+organizer membership, and every group link.
+
+Production runs 'createEpicEventAggregate' inside a single 'runDB' call over
+'SqlPersistT Handler' (see the instance below), so an exception thrown by any
+'P.insert'/'P.insert_' call rolls back every earlier insert in the same
+database transaction. Tests exercise the exact same sequencing against a pure,
+in-memory instance (see "Arkham.Api.Events.EventCreationSpec") to prove group
+games are always inserted before the event/member/link rows, each group
+receives its own supplied seed in ordinal order, and a failure injected at any
+step -- including the late event/member/link steps -- short-circuits with no
+successful result.
+
+Do not write an instance that catches an insertion exception and converts it
+into an ordinary return value of this class: 'runDB' only rolls back on an
+actual uncaught exception, so silently turning one into a normal result here
+would defeat the rollback guarantee.
+-}
+class Monad m => MonadEpicPersistence m where
+  insertGroupGame :: PendingGroupGame -> m ArkhamGameId
+  insertEvent :: ArkhamEpicEvent -> m ArkhamEpicEventId
+  insertOrganizerMember :: ArkhamEpicEventId -> UserId -> m ()
+  insertGroupLink :: ArkhamEpicEventId -> PendingGroupGame -> ArkhamGameId -> m ()
+
+{- | The sequencing plan itself: every group's game (in ordinal order), then
+the event, the organizer's membership, and every group link. This is the
+single seam production and tests both exercise directly.
+-}
+createEpicEventAggregate
+  :: MonadEpicPersistence m
+  => ArkhamEpicEvent -> UserId -> [PendingGroupGame] -> m ArkhamEpicEventId
+createEpicEventAggregate eventRecord organizerId pendingGroups = do
+  groupGameIds <- for pendingGroups \pg -> (,) pg <$> insertGroupGame pg
+  eid <- insertEvent eventRecord
+  insertOrganizerMember eid organizerId
+  for_ groupGameIds \(pg, gid) -> insertGroupLink eid pg gid
+  pure eid
+
+instance MonadEpicPersistence (SqlPersistT Handler) where
+  insertGroupGame pg = do
+    gid <- P.insert pg.game
+    P.insert_ $ ArkhamStep gid (Choice mempty []) 0 (ActionDiff [])
+    pure gid
+  insertEvent = P.insert
+  insertOrganizerMember eid uid = P.insert_ $ ArkhamEpicMember eid uid Organizer Nothing
+  insertGroupLink eid pg gid =
+    P.insert_ $ ArkhamEpicGroup eid pg.ordinal (Just gid) pg.name pg.seatCount
 
 {- | Initial shared counters for an event, by scenario. Frozen at event start
 (scales by the total investigator count across all groups).
