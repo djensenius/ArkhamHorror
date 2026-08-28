@@ -22,10 +22,12 @@ flag library-only
 
 library
   exposed-modules:
+      Api.Arkham.Deck
       Api.Arkham.Epic
       Api.Arkham.Export
       Api.Arkham.Helpers
       Api.Arkham.Types.Achievement
+      Api.Arkham.Types.Deck
       Api.Arkham.Types.Game
       Api.Arkham.Types.GameStep
       Api.Arkham.Types.MultiplayerVariant

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.5
+  version: 0.1.6
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -291,6 +291,173 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InvestigatorArtwork"
+  /arkham/decks:
+    get:
+      operationId: listDecks
+      summary: List saved decks for the authenticated account
+      description: |
+        Returns only the requesting user's decks. The server does not currently
+        define a stable result order.
+      responses:
+        "200":
+          description: Saved decks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckListResponse"
+        "401":
+          description: Token is absent or invalid
+    post:
+      operationId: createDeck
+      summary: Save an imported deck for the authenticated account
+      description: |
+        The required legacy `deckId` is decoded but not persisted; the server
+        assigns the returned deck's UUID. Before insertion, the server rejects
+        unimplemented card codes in `deckList.slots`. It does not perform deck
+        legality checks or validate `sideSlots`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateDeckRequest"
+      responses:
+        "200":
+          description: Saved deck
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deck"
+        "400":
+          description: One or more main-slot card codes are not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckValidationErrors"
+        "401":
+          description: Token is absent or invalid
+  /arkham/decks/fetch:
+    post:
+      operationId: fetchDeckList
+      summary: Fetch and normalize an external deck list
+      description: |
+        The server accepts either one deck-list object or an array and uses the
+        first array entry. arkham.build share links are rewritten to its public
+        API and return a null `url`; other URLs remain in the normalized list.
+        This operation parses but does not validate card implementation or deck
+        legality. A `sideSlots` value that cannot decode as a card-quantity
+        object currently normalizes to an empty object.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FetchDeckRequest"
+      responses:
+        "200":
+          description: Normalized external deck list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NormalizedDeckList"
+        "400":
+          description: The remote content is not a usable deck list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckOperationError"
+        "401":
+          description: Token is absent or invalid
+        "500":
+          description: The remote request failed before a response could be decoded
+  /arkham/decks/validate:
+    post:
+      operationId: validateDeckList
+      summary: Check whether main-slot cards are implemented
+      description: |
+        This is a read-only, safely retryable check. Despite its historical
+        name, it checks only that every code in `slots` exists in the server's
+        player-card registry. It does not check deck legality, investigator
+        support, quantities, or `sideSlots`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeckListInput"
+      responses:
+        "200":
+          description: Every main-slot card code is implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckValidationSuccess"
+        "400":
+          description: One or more main-slot card codes are not implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckValidationErrors"
+        "401":
+          description: Token is absent or invalid
+  /arkham/decks/{deckId}:
+    get:
+      operationId: getDeck
+      summary: Return one saved deck owned by the authenticated account
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      responses:
+        "200":
+          description: Saved deck
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deck"
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Deck does not exist or belongs to another account
+    delete:
+      operationId: deleteDeck
+      summary: Delete one saved deck owned by the authenticated account
+      description: |
+        A successful response has no relevant body. Deleting a missing deck or
+        a deck owned by another account is also treated as success.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      responses:
+        "200":
+          description: Deck is absent for this account
+        "401":
+          description: Token is absent or invalid
+  /arkham/decks/{deckId}/sync:
+    post:
+      operationId: syncDeck
+      summary: Replace a saved deck list from its external URL
+      description: |
+        Fetches the saved `url` and replaces only the embedded `list`; it does
+        not rerun the implemented-card validation used during creation.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      responses:
+        "200":
+          description: Synchronized saved deck
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deck"
+        "400":
+          description: Deck belongs to another account, has no URL, or could not be decoded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckOperationError"
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Deck does not exist
+        "500":
+          description: The remote request failed before a response could be decoded
   /arkham/games:
     get:
       operationId: listGames
@@ -409,6 +576,13 @@ components:
       schema:
         type: string
         minLength: 1
+    DeckId:
+      name: deckId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     GameId:
       name: gameId
       in: path
@@ -501,6 +675,24 @@ components:
       $ref: "./schemas/catalog.schema.json#/$defs/cardList"
     InvestigatorArtwork:
       $ref: "./schemas/catalog.schema.json#/$defs/investigatorArtwork"
+    Deck:
+      $ref: "./schemas/decks.schema.json#/$defs/deck"
+    DeckListResponse:
+      $ref: "./schemas/decks.schema.json#/$defs/deckListResponse"
+    DeckListInput:
+      $ref: "./schemas/decks.schema.json#/$defs/deckListInput"
+    NormalizedDeckList:
+      $ref: "./schemas/decks.schema.json#/$defs/deckList"
+    CreateDeckRequest:
+      $ref: "./schemas/decks.schema.json#/$defs/createDeckRequest"
+    FetchDeckRequest:
+      $ref: "./schemas/decks.schema.json#/$defs/fetchDeckRequest"
+    DeckValidationErrors:
+      $ref: "./schemas/decks.schema.json#/$defs/deckValidationErrors"
+    DeckValidationSuccess:
+      $ref: "./schemas/decks.schema.json#/$defs/deckValidationSuccess"
+    DeckOperationError:
+      $ref: "./schemas/decks.schema.json#/$defs/deckOperationError"
     GameStep:
       $ref: "./schemas/game-step.schema.json"
     GameList:

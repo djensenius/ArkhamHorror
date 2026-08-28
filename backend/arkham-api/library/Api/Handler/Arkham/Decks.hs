@@ -11,7 +11,9 @@ module Api.Handler.Arkham.Decks (
 
 import Import hiding (delete, on, update, (=.), (==.))
 
+import Api.Arkham.Deck (deckFromCreateRequest)
 import Api.Arkham.Helpers
+import Api.Arkham.Types.Deck
 import Api.Handler.Arkham.Games.Shared (publishToRoom)
 import Arkham.Card.CardCode
 import Arkham.Classes.Entity (attr)
@@ -59,29 +61,6 @@ getApiV1ArkhamDecksR = do
     where_ $ decks.userId ==. val userId
     pure decks
 
-data CreateDeckPost = CreateDeckPost
-  { deckId :: Text
-  , deckName :: Text
-  , deckUrl :: Maybe Text
-  , deckList :: ArkhamDBDecklist
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass FromJSON
-
-newtype ValidateDeckPost = ValidateDeckPost
-  { validateDeckList :: ArkhamDBDecklist
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass FromJSON
-
-newtype FetchDeckPost = FetchDeckPost
-  { fetchDeckUrl :: Text
-  }
-  deriving stock (Show, Generic)
-
-instance FromJSON FetchDeckPost where
-  parseJSON = genericParseJSON $ aesonOptions $ Just "fetchDeck"
-
 data UpgradeDeckPost = UpgradeDeckPost
   { udpInvestigatorId :: InvestigatorId
   , udpDeckUrl :: Maybe Text
@@ -92,13 +71,7 @@ data UpgradeDeckPost = UpgradeDeckPost
 instance FromJSON UpgradeDeckPost where
   parseJSON = genericParseJSON $ aesonOptions $ Just "udp"
 
-newtype DeckError = UnimplementedCard CardCode
-  deriving stock (Show, Eq, Generic)
-
-instance ToJSON DeckError where
-  toJSON = genericToJSON $ defaultOptions {tagSingleConstructors = True}
-
-toDeckErrors :: ArkhamDBDecklist -> [DeckError]
+toDeckErrors :: ArkhamDBDecklist -> [DeckValidationError]
 toDeckErrors decklist = flip mapMaybe cardCodes \cardCode ->
   maybe
     (Just $ UnimplementedCard cardCode)
@@ -111,7 +84,7 @@ postApiV1ArkhamDecksR :: Handler (Entity ArkhamDeck)
 postApiV1ArkhamDecksR = do
   userId <- getRequestUserId
   postData <- requireCheckJsonBody
-  let deck = fromPostData userId postData
+  let deck = deckFromCreateRequest userId postData
   case toDeckErrors (arkhamDeckList deck) of
     [] -> runDB $ insertEntity deck
     err -> sendStatusJSON status400 err
@@ -127,10 +100,10 @@ postApiV1ArkhamDecksValidateR = do
 postApiV1ArkhamDecksFetchR :: Handler ArkhamDBDecklist
 postApiV1ArkhamDecksFetchR = do
   _ <- getRequestUserId
-  FetchDeckPost {..} <- requireCheckJsonBody
+  FetchDeckRequest {..} <- requireCheckJsonBody
   getDeckList fetchDeckUrl >>= \case
     Right decklist -> pure decklist
-    Left err -> sendStatusJSON Status.status400 (JSONError $ T.pack err)
+    Left err -> sendStatusJSON Status.status400 (DeckOperationError $ T.pack err)
 
 {- | Load an upgraded (or replacement) deck into a running campaign.
 
@@ -245,14 +218,14 @@ putApiV1ArkhamGameDecksR gameId = do
                   pure $ Right g'
 
   case outcome of
-    Left (status, message) -> sendStatusJSON status (JSONError message)
+    Left (status, message) -> sendStatusJSON status (DeckOperationError message)
     Right ArkhamGame {..} ->
       publishToRoom gameId
         $ GameUpdate
         $ PublicGame gameId arkhamGameName mempty arkhamGameCurrentData
  where
   deckError :: Text -> Handler a
-  deckError = sendStatusJSON Status.status400 . JSONError
+  deckError = sendStatusJSON Status.status400 . DeckOperationError
 
   -- True when the decklist upgrades the SAME investigator (an alternate art of them counts)
   -- rather than replacing them with a different one.
@@ -283,16 +256,6 @@ putApiV1ArkhamGameDecksR gameId = do
       deckError
         $ "This deck contains cards that are not implemented yet: "
         <> T.intercalate ", " [tshow cCode | UnimplementedCard cCode <- errs]
-
-fromPostData :: UserId -> CreateDeckPost -> ArkhamDeck
-fromPostData userId CreateDeckPost {..} = do
-  ArkhamDeck
-    { arkhamDeckUserId = userId
-    , arkhamDeckUrl = deckUrl
-    , arkhamDeckInvestigatorName = tshow $ investigator_name deckList
-    , arkhamDeckName = deckName
-    , arkhamDeckList = deckList
-    }
 
 arkhamBuildDecklistUrl :: Text -> Maybe Text
 arkhamBuildDecklistUrl url = do
@@ -343,10 +306,6 @@ deleteApiV1ArkhamDeckR deckId = do
     where_ $ decks.id ==. val deckId
     where_ $ decks.userId ==. val userId
 
-newtype JSONError = JSONError {errorMsg :: Text}
-  deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON, FromJSON)
-
 postApiV1ArkhamSyncDeckR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
 postApiV1ArkhamSyncDeckR deckId = do
   userId <- getRequestUserId
@@ -354,7 +313,7 @@ postApiV1ArkhamSyncDeckR deckId = do
   unless (arkhamDeckUserId deck == userId) do
     sendStatusJSON
       Status.status400
-      (JSONError "Deck does not belong to this user")
+      (DeckOperationError "Deck does not belong to this user")
   edecklist <- maybe (pure $ Left "no deck url") getDeckList (arkhamDeckUrl deck)
   case edecklist of
     Right decklist -> do
@@ -362,4 +321,4 @@ postApiV1ArkhamSyncDeckR deckId = do
         set d [ArkhamDeckList =. val decklist]
         where_ $ d.id ==. val deckId
       pure $ Entity deckId $ deck {arkhamDeckList = decklist}
-    Left _ -> sendStatusJSON Status.status400 (JSONError "Could not sync deck")
+    Left _ -> sendStatusJSON Status.status400 (DeckOperationError "Could not sync deck")

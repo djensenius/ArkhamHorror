@@ -1,7 +1,9 @@
 module Arkham.Api.JsonContractsSpec (spec) where
 
+import Api.Arkham.Deck (deckFromCreateRequest)
 import Api.Arkham.Helpers (ApiResponse (..))
 import Api.Arkham.Types.Achievement
+import Api.Arkham.Types.Deck
 import Api.Arkham.Types.Game
 import Api.Arkham.Types.GameStep (GameStepJson (..))
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo, WithFriends))
@@ -14,6 +16,7 @@ import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
 import Arkham.Difficulty (Difficulty (Easy))
+import Arkham.Decklist (ArkhamDBDecklist (..))
 import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
 import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
@@ -32,6 +35,7 @@ import Database.Persist qualified as Persist
 import Database.Persist.Sql (toSqlKey)
 import Entity.Answer (Answer (..))
 import Entity.Arkham.Achievement qualified as AchievementEntity
+import Entity.Arkham.Deck qualified as DeckEntity
 import Entity.Arkham.Game qualified as ArkhamGame
 import Entity.Notification (Notification (..))
 import System.IO.Error qualified as IOError
@@ -115,6 +119,34 @@ fixtureAchievements =
           (Aeson.object ["DrHenryArmitage" .= True])
       )
   ]
+
+fixtureDeckList :: ArkhamDBDecklist
+fixtureDeckList =
+  ArkhamDBDecklist
+    { slots = Map.fromList [("01016", 2), ("01018", 1)]
+    , sideSlots = mempty
+    , investigator_code = "01001"
+    , investigator_name = "Roland Banks"
+    , meta = Just "{\"alternate_front\":\"c90001\"}"
+    , taboo_id = Nothing
+    , url = Just "https://arkhamdb.com/decklist/view/4242"
+    , decklist_id = Just "4242.0"
+    , decklist_name = Just "Contract deck"
+    }
+
+fixtureDeck :: Persist.Entity DeckEntity.ArkhamDeck
+fixtureDeck =
+  Persist.Entity
+    (DeckEntity.ArkhamDeckKey $ UUID.fromWords 0 0 0 23)
+    (deckFromCreateRequest (toSqlKey 7) fixtureCreateDeckRequest)
+
+fixtureCreateDeckRequest :: CreateDeckRequest
+fixtureCreateDeckRequest =
+  CreateDeckRequest
+    "external-4242"
+    "Contract deck"
+    (Just "https://arkhamdb.com/decklist/view/4242")
+    fixtureDeckList
 
 fixturePlayerId :: PlayerId
 fixturePlayerId = PlayerId $ UUID.fromWords 0 0 0 1
@@ -349,6 +381,83 @@ spec = describe "Native client contract fixtures" do
     fixture <- loadFixtureField "achievements.json" "achievements"
 
     Aeson.toJSON fixtureAchievements `shouldBe` fixture
+
+  it "normalizes the real imported-deck decoder through its encoder" do
+    importedDeckList <-
+      loadFixtureField "decks.json" "validateDeckList"
+        :: IO ArkhamDBDecklist
+    normalizedDeckList <- loadFixtureField "decks.json" "normalizedDeckList"
+
+    importedDeckList `shouldBe` fixtureDeckList
+    Aeson.toJSON importedDeckList `shouldBe` normalizedDeckList
+
+  it "defaults every unparsable sideSlots value to an empty map" do
+    deckListValue <-
+      loadFixtureField "decks.json" "validateDeckList"
+        :: IO Aeson.Value
+    let
+      withSideSlots value = case deckListValue of
+        Aeson.Object fields ->
+          Aeson.Object $ AesonKeyMap.insert "sideSlots" value fields
+        _ -> error "Expected validateDeckList to be an object"
+      unparsableValues =
+        [ Aeson.Null
+        , Aeson.Bool True
+        , Aeson.String "not a card-quantity map"
+        , Aeson.Number 42
+        , Aeson.Array $ fromList [Aeson.String "not a key-value pair"]
+        ]
+
+    for_ unparsableValues \value ->
+      case (Aeson.fromJSON (withSideSlots value) :: Aeson.Result ArkhamDBDecklist) of
+        Aeson.Error err -> expectationFailure err
+        Aeson.Success deckList -> sideSlots deckList `shouldBe` mempty
+
+  it "defaults a null investigator_name from the card registry" do
+    deckListValue <-
+      loadFixtureField "decks.json" "validateDeckList"
+        :: IO Aeson.Value
+    let withNullName = case deckListValue of
+          Aeson.Object fields ->
+            Aeson.Object $ AesonKeyMap.insert "investigator_name" Aeson.Null fields
+          _ -> error "Expected validateDeckList to be an object"
+
+    Aeson.fromJSON withNullName `shouldBe` Aeson.Success fixtureDeckList
+
+  it "decodes the real create-deck request" do
+    request <-
+      loadFixtureField "decks.json" "createDeck"
+        :: IO CreateDeckRequest
+
+    request `shouldBe` fixtureCreateDeckRequest
+
+  it "decodes the real fetch-deck request" do
+    request <-
+      loadFixtureField "decks.json" "fetchDeck"
+        :: IO FetchDeckRequest
+
+    request `shouldBe` FetchDeckRequest "https://arkhamdb.com/decklist/view/4242"
+
+  it "matches the real saved-deck encoder" do
+    fixture <- loadFixtureField "decks.json" "deck"
+
+    Aeson.toJSON fixtureDeck `shouldBe` fixture
+
+  it "matches the real deck-validation error encoder" do
+    fixture <- loadFixtureField "decks.json" "validationErrors"
+    let errors = [UnimplementedCard "99999"]
+
+    Aeson.toJSON errors `shouldBe` fixture
+
+  it "matches the real deck-validation success encoder" do
+    fixture <- loadFixtureField "decks.json" "validationSuccess"
+
+    Aeson.toJSON () `shouldBe` fixture
+
+  it "matches the real deck-operation error encoder" do
+    fixture <- loadFixtureField "decks.json" "operationError"
+
+    Aeson.toJSON (DeckOperationError "Could not sync deck") `shouldBe` fixture
 
   for_
     ( [ ("clearAll", ClearAll)
