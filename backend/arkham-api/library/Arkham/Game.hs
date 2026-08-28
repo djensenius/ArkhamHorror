@@ -392,17 +392,29 @@ toExternalGame g mq = do
   newGameSeed <- getRandom
   pure $ g {gameQuestion = mq, gameSeed = newGameSeed}
 
+{- | Opaque, non-secret failure reason for 'replayChoices'. Deliberately
+nullary and carries no field: the underlying patch/parser error text (which
+can echo fragments of stored game/user content) must never be retained,
+shown, logged, or returned by any caller. There is exactly one failure
+mode, so no further cases are needed.
+-}
+data ReplayChoicesError = ReplayChoicesPatchFailed
+  deriving stock (Eq, Show)
+
 {- | Apply a sequence of stored replay patches to a game, returning an
 explicit 'Left' describing the failure instead of throwing. Patch failures
 here reflect corrupt or incompatible stored data (not malformed request
 input), so callers must surface a stable, non-secret error rather than
-propagate a raw exception. There is deliberately no partial variant of this
-function: every caller must handle the 'Left' case explicitly.
+propagate a raw exception. The underlying patch/parser error text is
+intentionally discarded at the source -- never retained in a field, Show
+instance, logger, or response -- so callers cannot accidentally leak it.
+There is deliberately no partial variant of this function: every caller
+must handle the 'Left' case explicitly.
 -}
-replayChoices :: Game -> [Diff.Patch] -> Either Text Game
+replayChoices :: Game -> [Diff.Patch] -> Either ReplayChoicesError Game
 replayChoices currentGame choices =
   case foldM patch currentGame choices of
-    Error e -> Left $ pack e
+    Error _e -> Left ReplayChoicesPatchFailed
     Success g -> Right g
 
 withModifiers :: (HasGame m, Targetable a) => a -> m (With a ModifierData)
