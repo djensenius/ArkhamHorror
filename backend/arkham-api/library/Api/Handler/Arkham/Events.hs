@@ -898,7 +898,11 @@ data EventDeletionOutcome
     EventDeletionMissing
   | -- | The event exists, but the caller holds no Organizer membership row
     -- for it. Maps to the existing static, nondisclosing permission-denied
-    -- response; no group or event row was selected or deleted.
+    -- response. No linked group game is ever selected or locked for this
+    -- outcome, and nothing is deleted; the event row itself is briefly
+    -- locked ('FOR UPDATE') only to confirm ground truth that it is still
+    -- present (see 'lockEpicEvent'), never selected for reading its data or
+    -- written to.
     EventDeletionForbidden
   | -- | The event and every one of its linked group games were deleted in
     -- this transaction. Carries the committed game ids, in ordinal order, so
@@ -936,9 +940,10 @@ delete rolls back every earlier delete in the same transaction. Tests
 exercise the exact same sequencing against a pure, in-memory instance (see
 "Arkham.Api.Events.EventDeletionSpec") to prove a missing event short-circuits
 before any organizer lookup, lock, or delete; an existing non-organizer
-short-circuits before any lock or delete; and a failure injected at any step
--- including a late per-game delete -- cannot produce a successful
-('EventDeletionDeleted') result.
+short-circuits before any group game is selected or locked (the event row
+itself is briefly locked only to confirm it is still present, never selected
+or deleted); and a failure injected at any step -- including a late per-game
+delete -- cannot produce a successful ('EventDeletionDeleted') result.
 
 Do not write an instance that catches a delete exception and converts it into
 an ordinary return value of this class: 'runDB' only rolls back on an actual
