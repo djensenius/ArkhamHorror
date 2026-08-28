@@ -966,11 +966,15 @@ deleteEpicEventAggregate eid userId = do
 
 instance MonadEpicEventDeletion (SqlPersistT Handler) where
   lockEpicEvent eid = do
+    -- Project only the id: 'FOR UPDATE' locks the whole row regardless of
+    -- which columns are selected, and we only need existence here, so there
+    -- is no reason to materialize the (potentially large) 'sharedState'
+    -- column into Haskell just to throw it away.
     locked <- select do
       e <- from $ table @ArkhamEpicEvent
       where_ $ e.id ==. val eid
       locking forUpdate
-      pure e
+      pure e.id
     pure $ not (null locked)
   isEventOrganizer eid uid =
     P.exists
