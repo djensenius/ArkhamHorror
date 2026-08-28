@@ -1,5 +1,6 @@
 module Arkham.Api.JsonContractsSpec (spec) where
 
+import Api.Arkham.Deck (deckFromCreateRequest)
 import Api.Arkham.Helpers (ApiResponse (..))
 import Api.Arkham.Types.Achievement
 import Api.Arkham.Types.Deck
@@ -137,13 +138,15 @@ fixtureDeck :: Persist.Entity DeckEntity.ArkhamDeck
 fixtureDeck =
   Persist.Entity
     (DeckEntity.ArkhamDeckKey $ UUID.fromWords 0 0 0 23)
-    ( DeckEntity.ArkhamDeck
-        (toSqlKey 7)
-        (Just "https://arkhamdb.com/decklist/view/4242")
-        "Contract deck"
-        "Roland Banks"
-        fixtureDeckList
-    )
+    (deckFromCreateRequest (toSqlKey 7) fixtureCreateDeckRequest)
+
+fixtureCreateDeckRequest :: CreateDeckRequest
+fixtureCreateDeckRequest =
+  CreateDeckRequest
+    "external-4242"
+    "Contract deck"
+    (Just "https://arkhamdb.com/decklist/view/4242")
+    fixtureDeckList
 
 fixturePlayerId :: PlayerId
 fixturePlayerId = PlayerId $ UUID.fromWords 0 0 0 1
@@ -393,12 +396,7 @@ spec = describe "Native client contract fixtures" do
       loadFixtureField "decks.json" "createDeck"
         :: IO CreateDeckRequest
 
-    request
-      `shouldBe` CreateDeckRequest
-        "external-4242"
-        "Contract deck"
-        (Just "https://arkhamdb.com/decklist/view/4242")
-        fixtureDeckList
+    request `shouldBe` fixtureCreateDeckRequest
 
   it "decodes the real fetch-deck request" do
     request <-

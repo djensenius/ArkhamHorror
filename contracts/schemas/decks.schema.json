@@ -176,7 +176,7 @@
     },
     "createDeckRequest": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "deckId",
         "deckName",
@@ -202,7 +202,7 @@
     },
     "fetchDeckRequest": {
       "type": "object",
-      "additionalProperties": false,
+      "additionalProperties": true,
       "required": [
         "url"
       ],

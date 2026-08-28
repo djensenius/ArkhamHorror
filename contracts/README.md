@@ -144,7 +144,8 @@ will tighten each nested schema without changing the top-level envelope.
 - Saved deck responses additionally expose the database UUID, numeric `userId`,
   saved `url`, display `name`, and `investigatorName`. The legacy `deckId`
   supplied while creating a saved deck is required but ignored; the database
-  UUID in the response is authoritative.
+  UUID in the response is authoritative. Unknown create/fetch request fields
+  are ignored.
 - `/decks/validate` and deck creation only reject unimplemented card codes in
   `slots`. They do not validate deck legality, quantities, investigator
   support, or `sideSlots`. Validation is read-only and safely retryable.

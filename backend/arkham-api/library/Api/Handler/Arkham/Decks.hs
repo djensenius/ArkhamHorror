@@ -11,6 +11,7 @@ module Api.Handler.Arkham.Decks (
 
 import Import hiding (delete, on, update, (=.), (==.))
 
+import Api.Arkham.Deck (deckFromCreateRequest)
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Deck
 import Api.Handler.Arkham.Games.Shared (publishToRoom)
@@ -83,7 +84,7 @@ postApiV1ArkhamDecksR :: Handler (Entity ArkhamDeck)
 postApiV1ArkhamDecksR = do
   userId <- getRequestUserId
   postData <- requireCheckJsonBody
-  let deck = fromPostData userId postData
+  let deck = deckFromCreateRequest userId postData
   case toDeckErrors (arkhamDeckList deck) of
     [] -> runDB $ insertEntity deck
     err -> sendStatusJSON status400 err
@@ -255,16 +256,6 @@ putApiV1ArkhamGameDecksR gameId = do
       deckError
         $ "This deck contains cards that are not implemented yet: "
         <> T.intercalate ", " [tshow cCode | UnimplementedCard cCode <- errs]
-
-fromPostData :: UserId -> CreateDeckRequest -> ArkhamDeck
-fromPostData userId CreateDeckRequest {..} = do
-  ArkhamDeck
-    { arkhamDeckUserId = userId
-    , arkhamDeckUrl = deckUrl
-    , arkhamDeckInvestigatorName = tshow $ investigator_name deckList
-    , arkhamDeckName = deckName
-    , arkhamDeckList = deckList
-    }
 
 arkhamBuildDecklistUrl :: Text -> Maybe Text
 arkhamBuildDecklistUrl url = do

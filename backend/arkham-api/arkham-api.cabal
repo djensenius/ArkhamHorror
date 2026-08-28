@@ -22,6 +22,7 @@ flag library-only
 
 library
   exposed-modules:
+      Api.Arkham.Deck
       Api.Arkham.Epic
       Api.Arkham.Export
       Api.Arkham.Helpers
