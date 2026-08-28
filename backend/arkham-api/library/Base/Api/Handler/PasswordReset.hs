@@ -58,7 +58,7 @@ postApiV1PasswordResetsR = do
 
 putApiV1PasswordResetR :: PasswordResetId -> Handler ()
 putApiV1PasswordResetR resetId = do
-  payload <- requireCheckJsonBody :: Handler PasswordResetPassword
+  payload <- requireCheckJsonBody :: Handler PasswordResetUpdate
   mdigest <-
     liftIO
       $ hashPasswordUsingPolicy

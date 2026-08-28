@@ -260,7 +260,7 @@ spec = describe "Native client contract fixtures" do
   it "decodes the real password-reset update" do
     request <-
       loadFixtureField "account.json" "passwordResetUpdate"
-        :: IO PasswordResetPassword
+        :: IO PasswordResetUpdate
 
     request.resetPassword `shouldBe` "new passphrase"
 
@@ -274,7 +274,7 @@ spec = describe "Native client contract fixtures" do
   it "matches the real settings response encoder" do
     fixture <- loadFixtureField "account.json" "settingsUser"
 
-    Aeson.toJSON (UpdatedUser "Investigator" "investigator@example.com" True)
+    Aeson.toJSON (SettingsUser "Investigator" "investigator@example.com" True)
       `shouldBe` fixture
 
   it "matches the real notification-list encoder" do

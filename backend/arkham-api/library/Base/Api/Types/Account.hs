@@ -1,9 +1,9 @@
 {-# LANGUAGE NoFieldSelectors #-}
 
 module Base.Api.Types.Account (
-  PasswordResetPassword (..),
   PasswordResetRequest (..),
-  UpdatedUser (..),
+  PasswordResetUpdate (..),
+  SettingsUser (..),
   UserSettings (..),
 ) where
 
@@ -17,12 +17,12 @@ instance FromJSON PasswordResetRequest where
   parseJSON = withObject "PasswordResetRequest" \o ->
     PasswordResetRequest <$> o .: "email"
 
-newtype PasswordResetPassword = PasswordResetPassword {resetPassword :: Text}
+newtype PasswordResetUpdate = PasswordResetUpdate {resetPassword :: Text}
   deriving stock (Eq, Show)
 
-instance FromJSON PasswordResetPassword where
-  parseJSON = withObject "PasswordResetPassword" \o ->
-    PasswordResetPassword <$> o .: "password"
+instance FromJSON PasswordResetUpdate where
+  parseJSON = withObject "PasswordResetUpdate" \o ->
+    PasswordResetUpdate <$> o .: "password"
 
 newtype UserSettings = UserSettings {betaSetting :: Bool}
   deriving stock (Eq, Show)
@@ -31,7 +31,7 @@ instance FromJSON UserSettings where
   parseJSON = withObject "UserSettings" \o ->
     UserSettings <$> o .: "beta"
 
-data UpdatedUser = UpdatedUser
+data SettingsUser = SettingsUser
   { username :: Text
   , email :: Text
   , beta :: Bool

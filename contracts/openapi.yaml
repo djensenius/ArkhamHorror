@@ -52,7 +52,9 @@ paths:
       summary: Create a one-day password-reset token and send its browser link
       description: |
         The current server returns `404` when the email does not identify an
-        account. A successful response has no body.
+        account. Clients must present the same neutral result for `200` and
+        `404` rather than using this distinction for account discovery. A
+        successful response has no body.
       security: []
       requestBody:
         required: true
@@ -64,7 +66,9 @@ paths:
         "200":
           description: Password-reset email processing completed
         "404":
-          description: Account does not exist
+          description: |
+            Request could not be completed; clients must present the same
+            neutral result as a successful request
   /password-reset/{passwordResetId}:
     put:
       operationId: resetPassword

@@ -16,7 +16,7 @@ instance ToJSON SiteSettings where
 getApiV1SiteSettingsR :: Handler SiteSettings
 getApiV1SiteSettingsR = SiteSettings <$> getsApp (appAssetHost . appSettings)
 
-putApiV1SettingsR :: Handler UpdatedUser
+putApiV1SettingsR :: Handler SettingsUser
 putApiV1SettingsR = do
   userId <- getRequestUserId
   settings <- requireCheckJsonBody :: Handler UserSettings
@@ -25,4 +25,4 @@ putApiV1SettingsR = do
       set u [UserBeta =. val settings.betaSetting]
       where_ $ u.id ==. val userId
     User {..} <- get404 userId
-    pure $ UpdatedUser userUsername userEmail userBeta
+    pure $ SettingsUser userUsername userEmail userBeta

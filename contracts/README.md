@@ -81,9 +81,10 @@ will tighten each nested schema without changing the top-level envelope.
 ## Accounts, settings, and notifications
 
 - Password-reset request and update routes are public. The request route
-  currently returns `404` for an unknown email. Reset tokens expire after one
-  day; consuming an expired token deletes it and returns success without
-  changing the password.
+  currently returns `404` for an unknown email, but clients must present the
+  same neutral result as `200` and never use this distinction for account
+  discovery. Reset tokens expire after one day; consuming an expired token
+  deletes it and returns success without changing the password.
 - Settings updates require authentication and currently accept only `beta`.
   Their three-field response omits the `admin` field present in `GET /whoami`,
   so clients must not decode both responses as the same shape.
