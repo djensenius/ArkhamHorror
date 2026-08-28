@@ -41,10 +41,9 @@ constructor.
   authoritative `PublicGame`, and optional Epic event ID.
 - `GET /arkham/games/{gameId}/spectate` intentionally requires neither an
   account nor membership. Possession of the game UUID grants snapshot access,
-  and the response identifies the current active player for rendering. Native
-  spectator clients must not send answer frames: the current WebSocket upgrade
-  reuses the bidirectional game stream even though the spectator experience is
-  read-only.
+  and the response identifies the current active player for rendering. Its
+  WebSocket upgrade is server-enforced read-only: spectator frames are ignored
+  without being decoded or applied to the game.
 - The `PublicGame` schema governs all 58 top-level snapshot fields shared by
   REST game reads and WebSocket `GameUpdate`. Deep entity, question, target,
   source, and campaign unions remain intentionally broad until their dedicated
@@ -52,12 +51,13 @@ constructor.
 
 ## WebSocket behavior
 
-- Game sockets are bidirectional: servers emit `ServerMessage` envelopes and
-  clients send answer payloads. Epic Multiplayer event sockets are read-only;
-  inbound frames are ignored.
-- Send `Authorization: Token <token>` when upgrade headers are available. The
-  `token` query parameter remains a compatibility fallback, and the header
-  takes precedence when both are present.
+- Participant game sockets are bidirectional: servers emit `ServerMessage`
+  envelopes and clients send answer payloads. Spectator game sockets and Epic
+  Multiplayer event sockets are read-only; inbound frames are ignored.
+- Participant and event sockets accept `Authorization: Token <token>` when
+  upgrade headers are available. The `token` query parameter remains a
+  compatibility fallback, and the header takes precedence when both are
+  present. Spectator sockets require no authentication.
 - The server sends an RFC 6455 ping every 15 seconds. It may negotiate
   permessage-deflate, but clients must also work without compression.
 - Messages are not buffered for disconnected subscribers. After reconnecting,

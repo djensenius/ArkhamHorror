@@ -1,10 +1,10 @@
 asyncapi: 3.1.0
 info:
   title: Arkham Horror WebSocket API
-  version: 0.1.5
+  version: 0.1.6
   description: |
-    Envelope-level contract for game and Epic Multiplayer sockets. The server
-    sends an RFC 6455 ping every 15 seconds and may negotiate
+    Envelope-level contract for participant, spectator, and Epic Multiplayer
+    sockets. The server sends an RFC 6455 ping every 15 seconds and may negotiate
     permessage-deflate. Disconnected subscribers do not receive buffered
     updates, so a reconnect must refetch the authoritative REST snapshot.
 servers:
@@ -38,6 +38,18 @@ channels:
         $ref: "#/components/messages/ServerMessage"
       clientAnswer:
         $ref: "#/components/messages/ClientAnswer"
+  spectator:
+    address: /arkham/games/{gameId}/spectate
+    description: |
+      Unauthenticated, read-only game stream. The server publishes the same
+      complete snapshots and transient messages as the participant stream.
+      Inbound client frames are ignored without being decoded or applied.
+    parameters:
+      gameId:
+        description: Arkham game UUID
+    messages:
+      serverMessage:
+        $ref: "#/components/messages/ServerMessage"
   event:
     address: /arkham/events/{eventId}
     description: |
@@ -64,6 +76,14 @@ operations:
       $ref: "#/channels/game"
     messages:
       - $ref: "#/channels/game/messages/clientAnswer"
+  receiveSpectatorMessages:
+    action: receive
+    description: Receive public game snapshots and transient messages.
+    security: []
+    channel:
+      $ref: "#/channels/spectator"
+    messages:
+      - $ref: "#/channels/spectator/messages/serverMessage"
   receiveEventMessages:
     action: receive
     description: Receive shared event state or an event-details change signal.
