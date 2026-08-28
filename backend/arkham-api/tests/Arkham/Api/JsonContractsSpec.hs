@@ -418,6 +418,11 @@ spec = describe "Native client contract fixtures" do
 
     Aeson.toJSON errors `shouldBe` fixture
 
+  it "matches the real deck-validation success encoder" do
+    fixture <- loadFixtureField "decks.json" "validationSuccess"
+
+    Aeson.toJSON () `shouldBe` fixture
+
   it "matches the real deck-operation error encoder" do
     fixture <- loadFixtureField "decks.json" "operationError"
 

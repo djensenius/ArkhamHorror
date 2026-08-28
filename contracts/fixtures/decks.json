@@ -78,6 +78,7 @@
       "contents": "c99999"
     }
   ],
+  "validationSuccess": [],
   "operationError": {
     "errorMsg": "Could not sync deck"
   }

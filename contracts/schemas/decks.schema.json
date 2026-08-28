@@ -11,6 +11,7 @@
     "normalizedDeckList",
     "deck",
     "validationErrors",
+    "validationSuccess",
     "operationError"
   ],
   "properties": {
@@ -31,6 +32,9 @@
     },
     "validationErrors": {
       "$ref": "#/$defs/deckValidationErrors"
+    },
+    "validationSuccess": {
+      "$ref": "#/$defs/deckValidationSuccess"
     },
     "operationError": {
       "$ref": "#/$defs/deckOperationError"
@@ -101,8 +105,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "format": "uri"
+          ]
         },
         "id": {
           "type": [
@@ -163,8 +166,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "format": "uri"
+          ]
         },
         "id": {
           "type": [
@@ -199,8 +201,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "format": "uri"
+          ]
         },
         "deckList": {
           "$ref": "#/$defs/deckListInput"
@@ -215,8 +216,7 @@
       ],
       "properties": {
         "url": {
-          "type": "string",
-          "format": "uri"
+          "type": "string"
         }
       }
     },
@@ -243,8 +243,7 @@
           "type": [
             "string",
             "null"
-          ],
-          "format": "uri"
+          ]
         },
         "name": {
           "type": "string"
@@ -286,6 +285,10 @@
       "items": {
         "$ref": "#/$defs/deckValidationError"
       }
+    },
+    "deckValidationSuccess": {
+      "type": "array",
+      "maxItems": 0
     },
     "deckOperationError": {
       "type": "object",

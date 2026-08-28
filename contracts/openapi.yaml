@@ -387,6 +387,10 @@ paths:
       responses:
         "200":
           description: Every main-slot card code is implemented
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckValidationSuccess"
         "400":
           description: One or more main-slot card codes are not implemented
           content:
@@ -684,6 +688,8 @@ components:
       $ref: "./schemas/decks.schema.json#/$defs/fetchDeckRequest"
     DeckValidationErrors:
       $ref: "./schemas/decks.schema.json#/$defs/deckValidationErrors"
+    DeckValidationSuccess:
+      $ref: "./schemas/decks.schema.json#/$defs/deckValidationSuccess"
     DeckOperationError:
       $ref: "./schemas/decks.schema.json#/$defs/deckOperationError"
     GameStep:
