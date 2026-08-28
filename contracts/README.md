@@ -30,6 +30,21 @@ are compared semantically with real Aeson encoder output, while inbound
 fixtures must decode through the real `FromJSON` instance to the expected
 constructor.
 
+## Capability negotiation
+
+- `GET /capabilities` is public and identifies the running server's complete
+  contract bundle, compatibility floor, API base path, baseline status, and
+  additive capability identifiers.
+- Clients compare the three numeric revision components, never the strings
+  lexically. They ignore unknown capability identifiers and disable optional
+  behavior when its identifier is absent.
+- A `404` means the server predates negotiation. Clients may offer an explicitly
+  labeled conservative compatibility mode using `/site-settings`; they must not
+  infer capabilities by probing mutation routes.
+- Backend tests bind the response to the production encoder, while contract
+  validation also requires its revision, status, base path, and compatibility
+  floor to equal `manifest.json`.
+
 ## Game discovery
 
 - `GET /arkham/games` requires authentication, is ordered by most recently

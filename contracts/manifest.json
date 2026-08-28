@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.10",
+  "schemaRevision": "0.1.11",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -8,6 +8,7 @@
     "contracts/route-inventory.json",
     "contracts/schemas/account.schema.json",
     "contracts/schemas/achievements.schema.json",
+    "contracts/schemas/capabilities.schema.json",
     "contracts/schemas/catalog.schema.json",
     "contracts/schemas/client-answer.schema.json",
     "contracts/schemas/decks.schema.json",
@@ -26,6 +27,10 @@
     {
       "path": "contracts/fixtures/achievements.json",
       "schema": "contracts/schemas/achievements.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/capabilities.json",
+      "schema": "contracts/schemas/capabilities.schema.json"
     },
     {
       "path": "contracts/fixtures/catalog.json",

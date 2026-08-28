@@ -8109,12 +8109,14 @@ library
       Auth.JWT
       Base.Api.Handler.Account
       Base.Api.Handler.Authentication
+      Base.Api.Handler.Capabilities
       Base.Api.Handler.CurrentUser
       Base.Api.Handler.Notifications
       Base.Api.Handler.PasswordReset
       Base.Api.Handler.Registration
       Base.Api.Handler.Settings
       Base.Api.Types.Account
+      Base.Api.Types.Capabilities
       Base.Util
       Config
       Entity

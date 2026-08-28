@@ -12,6 +12,7 @@
     {"method": "PUT", "path": "/api/v1/settings", "resource": "ApiV1SettingsR", "surface": "account", "scope": "native-client", "coverage": "documented"},
     {"method": "DELETE", "path": "/api/v1/account", "resource": "ApiV1AccountR", "surface": "account", "scope": "native-client", "coverage": "documented"},
     {"method": "GET", "path": "/api/v1/site-settings", "resource": "ApiV1SiteSettingsR", "surface": "service", "scope": "native-client", "coverage": "documented"},
+    {"method": "GET", "path": "/api/v1/capabilities", "resource": "ApiV1CapabilitiesR", "surface": "service", "scope": "native-client", "coverage": "documented"},
     {"method": "GET", "path": "/api/v1/notifications", "resource": "ApiV1NotificationsR", "surface": "account", "scope": "native-client", "coverage": "documented"},
     {"method": "GET", "path": "/api/v1/arkham/cards", "resource": "ApiV1ArkhamCardsR", "surface": "catalog", "scope": "native-client", "coverage": "documented"},
     {"method": "GET", "path": "/api/v1/arkham/homebrew/cards", "resource": "ApiV1ArkhamHomebrewCardsR", "surface": "catalog", "scope": "native-client", "coverage": "documented"},

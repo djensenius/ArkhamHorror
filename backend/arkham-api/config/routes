@@ -11,6 +11,7 @@
     /settings ApiV1SettingsR PUT
     /account ApiV1AccountR DELETE
     /site-settings ApiV1SiteSettingsR GET
+    /capabilities ApiV1CapabilitiesR GET
     /notifications ApiV1NotificationsR GET
     /arkham ApiV1ArkhamP:
       /cards ApiV1ArkhamCardsR GET

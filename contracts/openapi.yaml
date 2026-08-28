@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.6
+  version: 0.1.7
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -149,6 +149,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SiteSettings"
+  /capabilities:
+    get:
+      operationId: getServerCapabilities
+      summary: Negotiate the native-client contract and optional server features
+      description: |
+        This public endpoint binds the running server to its contract bundle.
+        Clients compare numeric revision components rather than comparing the
+        strings lexically. Unknown capability identifiers are additive and
+        must be ignored; a missing identifier means the client must not assume
+        that behavior is available.
+
+        A `404` from this path identifies a legacy server. Clients may offer a
+        conservative compatibility mode using `/site-settings`, but must not
+        infer capabilities merely because another route exists.
+      security: []
+      responses:
+        "200":
+          description: Contract compatibility and server capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerCapabilities"
   /notifications:
     get:
       operationId: listNotifications
@@ -663,6 +685,8 @@ components:
             - string
             - "null"
           format: uri
+    ServerCapabilities:
+      $ref: "./schemas/capabilities.schema.json"
     NotificationList:
       $ref: "./schemas/account.schema.json#/$defs/notificationList"
     AchievementList:

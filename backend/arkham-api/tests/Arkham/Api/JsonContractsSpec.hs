@@ -23,6 +23,7 @@ import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Name (mkName)
 import Base.Api.Types.Account
+import Base.Api.Types.Capabilities
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
@@ -293,6 +294,11 @@ answerConstructor = \case
 
 spec :: Spec
 spec = describe "Native client contract fixtures" do
+  it "matches the runtime server-capabilities encoder" do
+    fixture <- loadFixture "capabilities.json"
+
+    Aeson.toJSON serverCapabilities `shouldBe` fixture
+
   it "matches the real game-step encoder" do
     fixture <- loadFixture "game-step.json"
 
