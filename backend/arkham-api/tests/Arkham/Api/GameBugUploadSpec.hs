@@ -1,11 +1,16 @@
 module Arkham.Api.GameBugUploadSpec (spec) where
 
-import Amazonka (Error (..), ServiceError (..))
+import Amazonka (Error (..), SerializeError (..))
+import Amazonka.Auth (AuthError (..))
 import Amazonka.Error (serviceError)
 import Api.Handler.Arkham.Game.Bug (
+  AwsAuthErrorDiagnostic (..),
+  AwsErrorDiagnostic (..),
   BugUploadFailure (..),
   BugUploadOutcome (..),
   HeadObjectOutcome (..),
+  classifyAuthErrorDiagnostic,
+  classifyErrorDiagnostic,
   classifyHeadObjectError,
   runBugUploadPolicy,
  )
@@ -21,7 +26,14 @@ serviceErrorWithStatus :: Status -> Error
 serviceErrorWithStatus status = ServiceError $ serviceError "S3" status [] Nothing Nothing Nothing
 
 transportFailure :: Error
-transportFailure = TransportError $ Client.InvalidUrlException "https://arkham-horror-bugs.s3.amazonaws.com" "connection failure"
+transportFailure = TransportError httpExceptionFixture
+
+-- | A bare HTTP transport exception, used both to build 'transportFailure'
+-- and directly as 'RetrievalError's payload, without ever needing to
+-- pattern-match back out of an existing 'Error'/'AuthError' value (which
+-- would require a partial fallback for constructors that cannot occur).
+httpExceptionFixture :: Client.HttpException
+httpExceptionFixture = Client.InvalidUrlException "https://arkham-horror-bugs.s3.amazonaws.com" "connection failure"
 
 {- | Regression for #30: 'postApiV1ArkhamGameBugR' caught only 'Amazonka.Error'
 around HeadObject and treated *every* service error -- including
@@ -91,3 +103,59 @@ spec = describe "bug report upload" do
     it "reports failure (never a false success) when PUT itself fails" do
       outcome <- runBugUploadPolicy (pure ObjectAbsent) (pure False)
       outcome `shouldBe` BugUploadFailed PutObjectFailed
+
+  {- | Regression for the follow-up audit: the handler used to log
+  'tshow err'/'tshow authErr' directly. 'TransportError'/'RetrievalError'
+  wrap an 'HttpException' whose embedded 'Request' leaves the
+  @X-Amz-Security-Token@ header (used for temporary/STS session
+  credentials) unredacted, and 'SerializeError' carries the raw response
+  body. 'classifyErrorDiagnostic'/'classifyAuthErrorDiagnostic' are the
+  exact functions the handler now logs instead: these tests prove the
+  diagnostic for every secret-bearing case is a bare, structurally
+  secret-free category (no wrapped exception, request, or body reaches the
+  diagnostic type at all), while a genuine service response still yields
+  the non-secret status/code/request-id fields.
+  -}
+  describe "classifyErrorDiagnostic" do
+    it "extracts only status/code/request-id from a genuine service error" do
+      let err = ServiceError $ serviceError "S3" status404 [] (Just "NoSuchKey") (Just "computer says no") (Just "req-123")
+      classifyErrorDiagnostic err `shouldBe` AwsServiceFailure 404 "NoSuchKey" (Just "req-123")
+
+    it "never carries the underlying exception for a transport failure" do
+      -- 'AwsTransportFailure' is nullary: this is a type-level guarantee,
+      -- not just a runtime one, that no 'HttpException' (and therefore no
+      -- unredacted request header) can reach the diagnostic.
+      classifyErrorDiagnostic transportFailure `shouldBe` AwsTransportFailure
+
+    it "drops the raw response body from a serialize error, keeping only the status" do
+      let err = SerializeError $ SerializeError' "S3" status500 (Just "<sensitive-looking-body>") "unexpected token"
+      classifyErrorDiagnostic err `shouldBe` AwsSerializeFailure 500
+
+  describe "classifyAuthErrorDiagnostic" do
+    it "never carries the underlying exception for a credential retrieval failure" do
+      let authErr = RetrievalError httpExceptionFixture
+      classifyAuthErrorDiagnostic authErr `shouldBe` AwsAuthRetrievalFailure
+
+    it "drops the (potentially credential-bearing) message for a missing env var" do
+      classifyAuthErrorDiagnostic (MissingEnvError "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") `shouldBe` AwsAuthMissingEnv
+
+    it "drops the message for a missing credentials file" do
+      classifyAuthErrorDiagnostic (MissingFileError "/root/.aws/credentials") `shouldBe` AwsAuthMissingFile
+
+    it "drops the message for an invalid credentials file (may echo file content)" do
+      classifyAuthErrorDiagnostic (InvalidFileError "parse error near line 3") `shouldBe` AwsAuthInvalidFile
+
+    it "drops the message for an invalid IAM/task-identity document (may echo response content)" do
+      classifyAuthErrorDiagnostic (InvalidIAMError "Error parsing Task Identity Document: ...") `shouldBe` AwsAuthInvalidIAM
+
+    it "reports credential chain exhaustion" do
+      classifyAuthErrorDiagnostic CredentialChainExhausted `shouldBe` AwsAuthCredentialChainExhausted
+
+    it "extracts only status/code/request-id from an auth-layer service error" do
+      let err = serviceError "S3" status403 [] (Just "AccessDenied") Nothing Nothing
+      classifyAuthErrorDiagnostic (AuthServiceError err) `shouldBe` AwsAuthServiceFailure 403 "AccessDenied" Nothing
+
+    it "never carries the underlying arbitrary exception for an uncategorized auth failure" do
+      -- 'AwsAuthOtherFailure' is nullary: 'OtherAuthError' wraps an
+      -- unconstrained 'SomeException', so this is the only safe diagnostic.
+      classifyAuthErrorDiagnostic (OtherAuthError (toException (userError "boom"))) `shouldBe` AwsAuthOtherFailure
