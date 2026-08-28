@@ -620,8 +620,8 @@ paths:
 
         After deck resolution succeeds, a request for a game or investigator
         that is no longer waiting for a deck succeeds without changing state.
-        The current handler requires authentication but does not independently
-        enforce game membership.
+        The caller must be a participant in the target game; administrators may
+        submit for any game.
       parameters:
         - $ref: "#/components/parameters/GameId"
       requestBody:
@@ -642,7 +642,7 @@ paths:
         "401":
           description: Token is absent or invalid
         "404":
-          description: Game does not exist
+          description: Game does not exist, or the authenticated caller is not a participant
         "500":
           description: Engine processing failed without persisting a partial update
           content:
