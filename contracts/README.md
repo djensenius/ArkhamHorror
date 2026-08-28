@@ -64,6 +64,33 @@ constructor.
   source, and campaign unions remain intentionally broad until their dedicated
   schema slices land.
 
+## Game creation and multiplayer lobbies
+
+- Creating a game requires authentication and at least one non-null
+  `campaignId` or `scenarioId`. A campaign may also name its starting scenario.
+  The legacy `deckIds` field remains required but is currently decoded without
+  affecting initialization. Creation has no idempotency key, so clients must
+  not automatically retry an ambiguous failure.
+- `ultimatumsAndBoons` defaults to an empty set and
+  `achievementsEnabled` defaults to true. Explicit `asIfRuling` takes
+  precedence over the legacy `strictAsIfAt` boolean.
+- Deletion is available to any participant, not a distinct owner. Missing and
+  non-participant game IDs both return empty success, making deletion
+  repeatable without disclosing existence.
+- Authenticated accounts may preview a pending game without joining; its log is
+  omitted. Joining twice is idempotent, and joining a game that already left
+  the pending state returns its unchanged snapshot. An Epic participant cannot
+  occupy groups in the same event twice.
+- Open-seat responses use `c`-prefixed investigator codes. Seat claims accept
+  prefixed or raw codes, only support `WithFriends`, and enforce one user per
+  seat and one seat per user. There is no player-facing unclaim route.
+- During initial deck selection and campaign upgrades, an embedded `deckList`
+  takes precedence over `deckUrl`; omitting both means continue without an
+  upgrade. Obsolete resubmissions succeed without changing state. The route
+  uses the same shallow main-slot implementation check and error envelope as
+  saved decks. It currently authenticates the caller without independently
+  checking game membership.
+
 ## WebSocket behavior
 
 - Participant game sockets are bidirectional: servers emit `ServerMessage`

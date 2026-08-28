@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.7
+  version: 0.1.8
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -501,6 +501,37 @@ paths:
                 $ref: "#/components/schemas/GameList"
         "401":
           description: Token is absent or invalid
+    post:
+      operationId: createGame
+      summary: Create and initialize a campaign or standalone game
+      description: |
+        At least one of `campaignId` or `scenarioId` must be non-null. When a
+        campaign ID is present, the optional scenario selects its starting
+        point. `ultimatumsAndBoons` defaults to an empty set and
+        `achievementsEnabled` defaults to true.
+
+        The required legacy `deckIds` array is decoded but is not currently
+        consumed by game initialization. Creation has no idempotency key:
+        retrying after an ambiguous transport failure can create another game.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateGameRequest"
+      responses:
+        "200":
+          description: Initialized authoritative game snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicGame"
+        "400":
+          description: Request JSON cannot be decoded
+        "401":
+          description: Token is absent or invalid
+        "500":
+          description: Campaign or scenario initialization failed
   /arkham/games/{gameId}:
     get:
       operationId: getGame
@@ -521,6 +552,150 @@ paths:
           description: Token is absent or invalid
         "404":
           description: Game or participant membership does not exist
+    delete:
+      operationId: deleteGame
+      summary: Delete a game in which the authenticated account participates
+      description: |
+        Any participant row authorizes deletion; there is no separate game
+        owner. Missing games and IDs in which the account does not participate
+        are intentionally indistinguishable no-op successes, so this operation
+        is safely repeatable.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Deletion request completed without disclosing game existence
+        "401":
+          description: Token is absent or invalid
+  /arkham/games/{gameId}/join:
+    get:
+      operationId: getPendingGame
+      summary: Preview a game before joining it
+      description: |
+        Requires authentication but not existing game membership. The returned
+        `PublicGame.log` is always empty.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Pending game snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicGame"
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Game does not exist
+    put:
+      operationId: joinPendingGame
+      summary: Join a pending multiplayer game
+      description: |
+        The request has no body. Joining twice is idempotent. A game that is no
+        longer pending is returned unchanged rather than rejected. Epic
+        Multiplayer participants cannot join a second group in the same event.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Current game snapshot after the join attempt
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicGame"
+        "401":
+          description: Token is absent or invalid
+        "403":
+          description: Account already occupies another group in this Epic event
+        "404":
+          description: Game does not exist
+  /arkham/games/{gameId}/decks:
+    put:
+      operationId: chooseGameDeck
+      summary: Submit or skip a deck-selection or upgrade prompt
+      description: |
+        `deckList` takes precedence when both it and `deckUrl` are supplied.
+        Omitting both continues without upgrading. Main-slot cards are checked
+        for server implementation, but deck legality is not validated.
+
+        After deck resolution succeeds, a request for a game or investigator
+        that is no longer waiting for a deck succeeds without changing state.
+        The current handler requires authentication but does not independently
+        enforce game membership.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChooseGameDeckRequest"
+      responses:
+        "200":
+          description: Deck selection was applied, skipped, or already obsolete
+        "400":
+          description: Deck fetch, decoding, validation, or investigator lookup failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckOperationError"
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Game does not exist
+        "500":
+          description: Engine processing failed without persisting a partial update
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckOperationError"
+  /arkham/games/{gameId}/open-seats:
+    get:
+      operationId: listOpenGameSeats
+      summary: List unclaimed investigator seats
+      description: |
+        Returned investigator codes always include their Aeson `c` prefix.
+        The current web lobby polls this operation while a game is pending.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Unclaimed investigator codes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OpenGameSeats"
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Game does not exist
+  /arkham/games/{gameId}/claim-seat:
+    post:
+      operationId: claimGameSeat
+      summary: Claim one investigator in a multiplayer game
+      description: |
+        The request accepts investigator codes with or without the Aeson `c`
+        prefix. Claims are limited to `WithFriends` games, one seat per account,
+        and one account per seat. There is no player-facing unclaim operation.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimGameSeatRequest"
+      responses:
+        "200":
+          description: Seat was claimed
+        "400":
+          description: Investigator is not a seat in this game
+        "401":
+          description: Token is absent or invalid
+        "403":
+          description: Game is not multiplayer, seat is occupied, or account already has a seat
+        "404":
+          description: Game does not exist
   /arkham/games/{gameId}/achievements:
     get:
       operationId: listGameAchievements
@@ -721,11 +896,21 @@ components:
       $ref: "./schemas/decks.schema.json#/$defs/deckValidationSuccess"
     DeckOperationError:
       $ref: "./schemas/decks.schema.json#/$defs/deckOperationError"
+    CreateGameRequest:
+      $ref: "./schemas/game-lifecycle.schema.json#/$defs/createGameRequest"
+    ChooseGameDeckRequest:
+      $ref: "./schemas/game-lifecycle.schema.json#/$defs/chooseDeckRequest"
+    ClaimGameSeatRequest:
+      $ref: "./schemas/game-lifecycle.schema.json#/$defs/claimSeatRequest"
+    OpenGameSeats:
+      $ref: "./schemas/game-lifecycle.schema.json#/$defs/openSeats"
     GameStep:
       $ref: "./schemas/game-step.schema.json"
     GameList:
       $ref: "./schemas/game-list.schema.json"
     GetGame:
       $ref: "./schemas/get-game.schema.json"
+    PublicGame:
+      $ref: "./schemas/public-game.schema.json"
 security:
   - TokenAuth: []

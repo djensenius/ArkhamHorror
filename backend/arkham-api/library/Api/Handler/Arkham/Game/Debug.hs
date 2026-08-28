@@ -12,6 +12,7 @@ module Api.Handler.Arkham.Game.Debug (
 
 import Api.Arkham.Export
 import Api.Arkham.Helpers
+import Api.Arkham.Types.Game (ClaimSeatPost (..))
 import Api.Arkham.Types.MultiplayerVariant
 import Arkham.Card.CardCode
 import Arkham.Game
@@ -264,12 +265,6 @@ getApiV1ArkhamGameOpenSeatsR gameId = do
         where_ $ players.arkhamGameId ==. val gameId
         pure players.investigatorId
     pure $ filter (`notElem` assignedInvestigators) allInvestigators
-
-data ClaimSeatPost = ClaimSeatPost
-  { investigatorId :: Text
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass FromJSON
 
 postApiV1ArkhamGameClaimSeatR :: ArkhamGameId -> Handler ()
 postApiV1ArkhamGameClaimSeatR gameId = do

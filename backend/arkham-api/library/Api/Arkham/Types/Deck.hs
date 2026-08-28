@@ -5,10 +5,12 @@ module Api.Arkham.Types.Deck (
   FetchDeckRequest (..),
   DeckValidationError (..),
   DeckOperationError (..),
+  UpgradeDeckPost (..),
 ) where
 
 import Arkham.Card.CardCode (CardCode)
 import Arkham.Decklist (ArkhamDBDecklist)
+import Arkham.Id (InvestigatorId)
 import Data.Aeson
 import Json (aesonOptions)
 import Relude
@@ -39,3 +41,13 @@ instance ToJSON DeckValidationError where
 newtype DeckOperationError = DeckOperationError {errorMsg :: Text}
   deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
+
+data UpgradeDeckPost = UpgradeDeckPost
+  { udpInvestigatorId :: InvestigatorId
+  , udpDeckUrl :: Maybe Text
+  , udpDeckList :: Maybe ArkhamDBDecklist
+  }
+  deriving stock (Eq, Show, Generic)
+
+instance FromJSON UpgradeDeckPost where
+  parseJSON = genericParseJSON $ aesonOptions $ Just "udp"

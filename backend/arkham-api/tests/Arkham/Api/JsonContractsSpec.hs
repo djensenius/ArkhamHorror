@@ -13,15 +13,22 @@ import Arkham.Achievement.Types
   , TheDunwichLegacyAchievement (TheGangsAllHere)
   )
 import Arkham.Asset.Cards qualified as AssetCards
+import Arkham.Campaign.Option (CampaignOption (..))
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
-import Arkham.Difficulty (Difficulty (Easy))
+import Arkham.Difficulty (Difficulty (Easy, Standard))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
+import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
 import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Name (mkName)
+import Arkham.UltimatumsAndBoons.Types
+  ( Boon (BoonOfHades)
+  , Ultimatum (UltimatumOfChaos)
+  , UltimatumOrBoon (Boon, Ultimatum)
+  )
 import Base.Api.Types.Account
 import Base.Api.Types.Capabilities
 import Data.Aeson qualified as Aeson
@@ -298,6 +305,99 @@ spec = describe "Native client contract fixtures" do
     fixture <- loadFixture "capabilities.json"
 
     Aeson.toJSON serverCapabilities `shouldBe` fixture
+
+  it "decodes the real create-game request" do
+    request <-
+      loadFixtureField "game-lifecycle.json" "createGame"
+        :: IO CreateGamePost
+
+    request
+      `shouldBe` CreateGamePost
+        [Just $ DeckEntity.ArkhamDeckKey $ UUID.fromWords 0 0 0 23, Nothing]
+        2
+        (Just "01")
+        Nothing
+        Standard
+        "Contract campaign"
+        WithFriends
+        True
+        (Set.fromList [PerformIntro, CampaignVariant "return-to"])
+        (Just False)
+        (Just Chapter1AsIfRuling)
+        (Set.fromList [Boon BoonOfHades, Ultimatum UltimatumOfChaos])
+        False
+
+  it "applies the real create-game request defaults" do
+    request <-
+      loadFixtureField "game-lifecycle.json" "createGameDefaults"
+        :: IO CreateGamePost
+
+    request
+      `shouldBe` CreateGamePost
+        []
+        1
+        Nothing
+        (Just "01104")
+        Easy
+        "Contract standalone"
+        Solo
+        False
+        mempty
+        Nothing
+        Nothing
+        mempty
+        True
+
+  it "applies the real create-game request defaults to null fields" do
+    request <-
+      loadFixtureField "game-lifecycle.json" "createGameNullDefaults"
+        :: IO CreateGamePost
+
+    request
+      `shouldBe` CreateGamePost
+        []
+        1
+        Nothing
+        (Just "01104")
+        Easy
+        "Contract standalone"
+        Solo
+        False
+        mempty
+        Nothing
+        Nothing
+        mempty
+        True
+
+  it "decodes the real choose-deck request" do
+    request <-
+      loadFixtureField "game-lifecycle.json" "chooseDeck"
+        :: IO UpgradeDeckPost
+
+    request
+      `shouldBe` UpgradeDeckPost
+        "01001"
+        (Just "https://arkhamdb.com/decklist/view/4242")
+        (Just fixtureDeckList)
+
+  it "decodes the real continue-without-upgrade request" do
+    request <-
+      loadFixtureField "game-lifecycle.json" "continueWithoutUpgrade"
+        :: IO UpgradeDeckPost
+
+    request `shouldBe` UpgradeDeckPost "01001" Nothing Nothing
+
+  it "decodes the real claim-seat request" do
+    request <-
+      loadFixtureField "game-lifecycle.json" "claimSeat"
+        :: IO ClaimSeatPost
+
+    request `shouldBe` ClaimSeatPost "01001"
+
+  it "matches the real open-seats encoder" do
+    fixture <- loadFixtureField "game-lifecycle.json" "openSeats"
+
+    Aeson.toJSON (["c01001", "c01002"] :: [Text]) `shouldBe` fixture
 
   it "matches the real game-step encoder" do
     fixture <- loadFixture "game-step.json"

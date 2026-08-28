@@ -61,16 +61,6 @@ getApiV1ArkhamDecksR = do
     where_ $ decks.userId ==. val userId
     pure decks
 
-data UpgradeDeckPost = UpgradeDeckPost
-  { udpInvestigatorId :: InvestigatorId
-  , udpDeckUrl :: Maybe Text
-  , udpDeckList :: Maybe ArkhamDBDecklist
-  }
-  deriving stock (Show, Generic)
-
-instance FromJSON UpgradeDeckPost where
-  parseJSON = genericParseJSON $ aesonOptions $ Just "udp"
-
 toDeckErrors :: ArkhamDBDecklist -> [DeckValidationError]
 toDeckErrors decklist = flip mapMaybe cardCodes \cardCode ->
   maybe
@@ -128,7 +118,7 @@ putApiV1ArkhamGameDecksR gameId = do
   outcome <- runDB $ atomicallyWithGame gameId \gameEntity@ArkhamGame {..} -> do
     mLastStep <- getBy (UniqueStep gameId arkhamGameStep)
     let Game {..} = arkhamGameCurrentData
-    let investigatorId = udpInvestigatorId postData
+    let investigatorId = postData.udpInvestigatorId
     let currentQueue = maybe [] (choiceMessages . arkhamStepChoice . entityVal) mLastStep
 
     -- A stale client (this campaign swaps which investigators exist between scenarios)
@@ -239,10 +229,10 @@ putApiV1ArkhamGameDecksR gameId = do
         (Map.lookup (toCardCode decklist.investigator) allInvestigatorCards)
 
   resolveDecklist :: UpgradeDeckPost -> Handler (Maybe ArkhamDBDecklist)
-  resolveDecklist postData = case udpDeckList postData of
+  resolveDecklist postData = case postData.udpDeckList of
     Just decklist -> Just <$> validateDecklist decklist
     -- Neither a decklist nor a url: "continue without upgrading".
-    Nothing -> for (udpDeckUrl postData) \url ->
+    Nothing -> for postData.udpDeckUrl \url ->
       -- getDeckList's http call throws on a non-2xx response rather than returning Left.
       try @_ @SomeException (getDeckList url) >>= \case
         Right (Right decklist) -> validateDecklist decklist

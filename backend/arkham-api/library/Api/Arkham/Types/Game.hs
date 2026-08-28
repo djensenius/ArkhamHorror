@@ -3,6 +3,8 @@
 
 module Api.Arkham.Types.Game (
   CampaignDetails (..),
+  ClaimSeatPost (..),
+  CreateGamePost (..),
   GameDetails (..),
   GameDetailsEntry (..),
   GetGameJson (..),
@@ -11,17 +13,64 @@ module Api.Arkham.Types.Game (
 ) where
 
 import Api.Arkham.Types.MultiplayerVariant
+import Arkham.Campaign.Option
 import Arkham.Campaigns.TheDreamEaters.Meta qualified as TheDreamEaters
 import Arkham.ClassSymbol
 import Arkham.Difficulty
 import Arkham.Game (PublicGame)
+import Arkham.Game.Settings (AsIfRuling)
 import Arkham.Game.State
 import Arkham.Id
 import Arkham.Name
+import Arkham.UltimatumsAndBoons.Types (UltimatumOrBoon)
 import Data.Aeson
+import Entity.Arkham.Deck (ArkhamDeckId)
 import Entity.Arkham.Epic (ArkhamEpicEventId)
 import Entity.Arkham.Game (ArkhamGameId)
 import Relude
+
+data CreateGamePost = CreateGamePost
+  { deckIds :: [Maybe ArkhamDeckId]
+  , playerCount :: Int
+  , campaignId :: Maybe CampaignId
+  , scenarioId :: Maybe ScenarioId
+  , difficulty :: Difficulty
+  , campaignName :: Text
+  , multiplayerVariant :: MultiplayerVariant
+  , includeTarotReadings :: Bool
+  , options :: Set CampaignOption
+  , strictAsIfAt :: Maybe Bool
+  , asIfRuling :: Maybe AsIfRuling
+  , ultimatumsAndBoons :: Set UltimatumOrBoon
+  , achievementsEnabled :: Bool
+  }
+  deriving stock (Eq, Show, Generic)
+
+{- | Hand-written so 'Maybe' fields stay optional and everything else stays
+required.
+-}
+instance FromJSON CreateGamePost where
+  parseJSON = withObject "CreateGamePost" \o -> do
+    deckIds <- o .: "deckIds"
+    playerCount <- o .: "playerCount"
+    campaignId <- o .:? "campaignId"
+    scenarioId <- o .:? "scenarioId"
+    difficulty <- o .: "difficulty"
+    campaignName <- o .: "campaignName"
+    multiplayerVariant <- o .: "multiplayerVariant"
+    includeTarotReadings <- o .: "includeTarotReadings"
+    options <- o .: "options"
+    strictAsIfAt <- o .:? "strictAsIfAt"
+    asIfRuling <- o .:? "asIfRuling"
+    ultimatumsAndBoons <- o .:? "ultimatumsAndBoons" .!= mempty
+    achievementsEnabled <- o .:? "achievementsEnabled" .!= True
+    pure CreateGamePost {..}
+
+newtype ClaimSeatPost = ClaimSeatPost
+  { investigatorId :: Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass FromJSON
 
 data GetGameJson = GetGameJson
   { playerId :: Maybe PlayerId
