@@ -32,9 +32,18 @@ def require(condition: bool, message: str) -> None:
 manifest = load_json(CONTRACTS / "manifest.json")
 documents = manifest["documents"]
 fixtures = manifest["fixtures"]
-capabilities_path = CONTRACTS / "fixtures" / "capabilities.json"
+capabilities_fixtures = [
+    fixture
+    for fixture in fixtures
+    if fixture.get("schema") == "contracts/schemas/capabilities.schema.json"
+]
 
-require(capabilities_path.is_file(), "Missing fixture: contracts/fixtures/capabilities.json")
+require(
+    len(capabilities_fixtures) == 1,
+    "manifest.json must register exactly one capabilities fixture",
+)
+capabilities_path = ROOT / capabilities_fixtures[0]["path"]
+require(capabilities_path.is_file(), f"Missing fixture: {capabilities_fixtures[0]['path']}")
 capabilities = load_json(capabilities_path)
 
 require(isinstance(capabilities, dict), "capabilities.json must be an object")
