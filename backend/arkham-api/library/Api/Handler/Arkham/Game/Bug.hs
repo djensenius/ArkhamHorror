@@ -14,19 +14,23 @@ module Api.Handler.Arkham.Game.Bug (
   classifyErrorDiagnostic,
   AwsAuthErrorDiagnostic (..),
   classifyAuthErrorDiagnostic,
+  AwsEnvSupervisorOutcome (..),
+  awsEnvSupervisorStep,
 ) where
 
-import Amazonka (Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
+import Amazonka (Env, Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
 import Amazonka.Auth (AuthError (..))
 import Amazonka.S3
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
+import Control.Concurrent (forkIO, threadDelay)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (encode)
 import Data.ByteString.Base16 qualified as B16
 import Import hiding ((==.))
 import Network.HTTP.Types.Status (statusCode)
 import Network.HTTP.Types.Status qualified as Status
+import System.IO.Unsafe (unsafePerformIO)
 import UnliftIO.Exception (try)
 
 {- | Result of attempting a HeadObject check for the export before upload.
@@ -39,7 +43,10 @@ data HeadObjectOutcome
   | -- | Any HeadObject failure other than a genuine 404: permission denied,
     -- throttling, server errors, or a transport-level failure (DNS, TLS,
     -- timeout, connection refused, etc, all wrapped as 'TransportError').
-    HeadObjectFailed
+    -- Carries the same sanitized diagnostic that would be logged, so the
+    -- failure and its diagnostic can never drift apart -- there is no
+    -- separate side channel to keep in sync.
+    HeadObjectFailed AwsErrorDiagnostic
   deriving stock (Eq, Show)
 
 -- | Final result of the bug-report upload policy.
@@ -49,8 +56,8 @@ data BugUploadOutcome
   deriving stock (Eq, Show)
 
 data BugUploadFailure
-  = HeadCheckFailed
-  | PutObjectFailed
+  = HeadCheckFailed AwsErrorDiagnostic
+  | PutObjectFailed AwsErrorDiagnostic
   deriving stock (Eq, Show)
 
 {- | Sequencing/policy seam for the protected upload.
@@ -60,16 +67,24 @@ triggers exactly one PUT. Any HeadObject failure short-circuits before PUT
 is ever attempted, and a failing PUT is reported as failure. This is kept
 free of any AWS/IO dependency (both actions are supplied by the caller) so
 tests can inject deterministic stub actions and assert PUT is (or is not)
-invoked, without encoding exceptions as strings.
+invoked. The diagnostic threaded through 'HeadObjectFailed'/'Left' is
+carried straight into the returned 'BugUploadFailure' as an ordinary,
+strict (via this package's default 'StrictData') function argument -- not
+stashed in a mutable cell for later, separate retrieval -- so by the time
+this action's result exists at all, it is already a fully-evaluated,
+self-contained value with no lingering reference to whatever exception it
+was classified from.
 -}
-runBugUploadPolicy :: Monad m => m HeadObjectOutcome -> m Bool -> m BugUploadOutcome
+runBugUploadPolicy :: Monad m => m HeadObjectOutcome -> m (Either AwsErrorDiagnostic ()) -> m BugUploadOutcome
 runBugUploadPolicy headAction putAction =
   headAction >>= \case
     ObjectPresent -> pure BugUploadSucceeded
-    HeadObjectFailed -> pure $ BugUploadFailed HeadCheckFailed
+    HeadObjectFailed diag -> pure $ BugUploadFailed (HeadCheckFailed diag)
     ObjectAbsent -> do
-      putSucceeded <- putAction
-      pure $ if putSucceeded then BugUploadSucceeded else BugUploadFailed PutObjectFailed
+      putResult <- putAction
+      pure $ case putResult of
+        Right () -> BugUploadSucceeded
+        Left diag -> BugUploadFailed (PutObjectFailed diag)
 
 {- | Classify a HeadObject failure using the exact Amazonka SDK error type.
 
@@ -83,7 +98,7 @@ never unlock the PUT.
 -}
 classifyHeadObjectError :: Error -> HeadObjectOutcome
 classifyHeadObjectError (ServiceError e) | statusCode e.status == 404 = ObjectAbsent
-classifyHeadObjectError _ = HeadObjectFailed
+classifyHeadObjectError err = HeadObjectFailed (classifyErrorDiagnostic err)
 
 -- | Stable, non-secret envelope for an upload failure. Never includes AWS
 -- credentials, request/response bodies, or bucket internals.
@@ -139,23 +154,15 @@ classifyErrorDiagnostic = \case
   SerializeError SerializeError' {status = st} -> AwsSerializeFailure (statusCode st) (categorizeAwsStatus (statusCode st))
   ServiceError e -> let st = statusCode e.status in AwsServiceFailure st (categorizeAwsStatus st)
 
-{- | Which AWS request a captured 'AwsErrorDiagnostic' came from, so the
-eventual log line can distinguish a HeadObject failure from a PutObject
-failure. This (along with the diagnostic itself) is the only thing carried
-across the 'runResourceT IO' boundary back into 'Handler': it is built
-from 'classifyErrorDiagnostic', so it inherits the same guarantee of
-containing no raw exception, header, body, or free-form server text.
--}
-data BugUploadDiagnostic
-  = HeadObjectDiagnostic AwsErrorDiagnostic
-  | PutObjectDiagnostic AwsErrorDiagnostic
-  deriving stock (Eq, Show)
-
--- | Render a captured diagnostic for the application logger.
-describeBugUploadDiagnostic :: ArkhamGameId -> BugUploadDiagnostic -> Text
-describeBugUploadDiagnostic gameId = \case
-  HeadObjectDiagnostic diag -> "HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
-  PutObjectDiagnostic diag -> "PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
+-- | Render a bug-upload failure for the application logger. The diagnostic
+-- crosses from 'runResourceT IO' back into 'Handler' as an ordinary,
+-- already-sanitized field of 'BugUploadFailure' (see 'runBugUploadPolicy'),
+-- never via a mutable side channel, so there is nothing here to keep in
+-- sync with what actually happened.
+describeBugUploadFailure :: ArkhamGameId -> BugUploadFailure -> Text
+describeBugUploadFailure gameId = \case
+  HeadCheckFailed diag -> "HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
+  PutObjectFailed diag -> "PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
 
 {- | Non-secret, structured classification of an 'AuthError' raised by
 credential/config discovery, safe to log. Deliberately never shows the
@@ -192,6 +199,139 @@ classifyAuthErrorDiagnostic = \case
   AuthServiceError e -> let st = statusCode e.status in AwsAuthServiceFailure st (categorizeAwsStatus st)
   OtherAuthError _ -> AwsAuthOtherFailure
 
+{- | Outcome of a single supervisor round, so the production driver
+('awsEnvSupervisorLoop') can decide whether to back off (discovery itself
+is failing -- e.g. no credential source is reachable at all) or retry
+immediately (discovery previously succeeded; this only recovers a now-stale
+env).
+-}
+data AwsEnvSupervisorOutcome
+  = AwsEnvDiscoveryFailed
+  | AwsEnvRefreshFailed
+  | AwsEnvHoldFinished
+  deriving stock (Eq, Show)
+
+{- | Sequencing seam for the AWS 'Env' supervisor. Decoupled from any real
+'newEnv'\/'discover'\/background-thread machinery so tests can inject
+deterministic stub actions and assert the loop's shape -- in particular,
+that a caught refresh failure from @holdAction@ is always absorbed here
+and never escapes -- without spawning a real background credential-refresh
+thread or depending on network\/IMDS\/ECS availability.
+
+Why this exists: the pinned Amazonka fork's
+@Amazonka.Auth.Background.fetchAuthInBackground@ (used internally by every
+role-based credential source @discover@ can reach -- container and
+instance-profile credentials both go through it) starts a background
+thread as soon as temporary\/expiring credentials are obtained. That thread
+captures the /calling/ thread's id and, on a later refresh failure,
+unconditionally @throwTo@s a sanitized-shape 'AuthError' at it, without
+ever checking whether the original caller is still doing anything related.
+If @newEnv discover@ were called per HTTP request (as it used to be), a
+delayed refresh failure could land on a Warp worker thread that has since
+moved on to -- or been reused for -- a completely unrelated request,
+producing a raw 500 and unstructured framework-level logging, plus a
+leaked background thread.
+
+The fix is architectural, not a broader catch: @newEnv discover@ is now
+called exactly once per \"round\" of this loop, always from the same
+dedicated, permanently-running supervisor thread ('awsEnvHandle', started
+once via 'forkIO' and never a Warp request-handling thread), and
+@holdAction@ -- which blocks for as long as this concrete env remains
+current -- always runs on that same thread too. Any refresh-failure
+@throwTo@ can therefore only ever target this loop, never a request
+worker. Request handlers only ever read the shared, published env (or its
+absence) from a 'TVar'; they never call @newEnv@\/@discover@ themselves, so
+they can never be the captured target in the first place.
+
+Per the fork's own source, a refresh failure is not retried internally: it
+throws once and that background thread ends there. So a failing
+@holdAction@ is treated as \"this concrete env's credentials are now stale
+and will not self-heal\": it is discarded (publishing 'Nothing') and the
+loop goes straight back to a fresh @discoverAction@ call, which starts an
+entirely new background refresh timer pinned to this same, still-alive
+supervisor thread.
+-}
+awsEnvSupervisorStep
+  :: Monad m
+  => m (Either AuthError env)
+  -> (env -> m (Either AuthError ()))
+  -> (Maybe env -> m ())
+  -> (Maybe AwsAuthErrorDiagnostic -> m ())
+  -> m AwsEnvSupervisorOutcome
+awsEnvSupervisorStep discoverAction holdAction publishEnv publishDiagnostic = do
+  discovered <- discoverAction
+  case discovered of
+    Left authErr -> do
+      publishEnv Nothing
+      publishDiagnostic (Just $ classifyAuthErrorDiagnostic authErr)
+      pure AwsEnvDiscoveryFailed
+    Right env -> do
+      publishEnv (Just env)
+      publishDiagnostic Nothing
+      held <- holdAction env
+      case held of
+        Left authErr -> do
+          publishEnv Nothing
+          publishDiagnostic (Just $ classifyAuthErrorDiagnostic authErr)
+          pure AwsEnvRefreshFailed
+        Right () -> pure AwsEnvHoldFinished
+
+-- | Capped exponential backoff between discovery attempts while credentials
+-- remain entirely unavailable (e.g. no credential source is reachable at
+-- all).
+awsEnvSupervisorMaxBackoffSeconds :: Int
+awsEnvSupervisorMaxBackoffSeconds = 60
+
+{- | Handle to the single, process-wide, supervised Amazonka 'Env' shared by
+every bug-report upload request. See 'awsEnvSupervisorStep' for why this
+must be a single long-lived owner rather than a per-request 'newEnv'.
+-}
+data AwsEnvHandle = AwsEnvHandle
+  { awsEnvCurrent :: TVar (Maybe Env)
+  , awsEnvLastDiagnostic :: TVar (Maybe AwsAuthErrorDiagnostic)
+  }
+
+{- | Production driver: repeatedly runs 'awsEnvSupervisorStep' against real
+'newEnv discover' \/ 'threadDelay' \/ 'TVar' publishing, forever, on
+whichever thread it is started on. Must only ever be started once, via
+'forkIO', from 'awsEnvHandle'.
+-}
+awsEnvSupervisorLoop :: AwsEnvHandle -> IO ()
+awsEnvSupervisorLoop handle = go 1
+ where
+  go backoffSeconds = do
+    outcome <-
+      awsEnvSupervisorStep
+        (try @_ @AuthError (newEnv discover))
+        (const $ try @_ @AuthError (threadDelay maxBound))
+        (atomically . writeTVar handle.awsEnvCurrent)
+        (atomically . writeTVar handle.awsEnvLastDiagnostic)
+    case outcome of
+      AwsEnvDiscoveryFailed -> do
+        threadDelay (backoffSeconds * 1000000)
+        go (min awsEnvSupervisorMaxBackoffSeconds (backoffSeconds * 2))
+      AwsEnvRefreshFailed -> go 1
+      AwsEnvHoldFinished -> go 1
+
+{- | The single, lazily-started, process-wide handle. Forcing this for the
+first time (i.e. the first bug-report upload request) starts the
+supervisor thread via 'forkIO'; every subsequent request -- and the
+supervisor thread itself -- shares the exact same 'TVar's. 'NOINLINE' plus
+'unsafePerformIO' is the same lazily-initialized-singleton idiom already
+used for 'Arkham.Metrics.globalMetricsRef'; here it guarantees "exactly one
+discovery, exactly one supervisor thread, for the life of the process"
+without threading a new field through 'Foundation'\/'Application' and every
+place that constructs an 'App' (including tests).
+-}
+{-# NOINLINE awsEnvHandle #-}
+awsEnvHandle :: AwsEnvHandle
+awsEnvHandle = unsafePerformIO do
+  current <- newTVarIO Nothing
+  lastDiagnostic <- newTVarIO Nothing
+  let handle = AwsEnvHandle current lastDiagnostic
+  _ <- forkIO (awsEnvSupervisorLoop handle)
+  pure handle
+
 postApiV1ArkhamGameBugR :: ArkhamGameId -> Handler Text
 postApiV1ArkhamGameBugR gameId = do
   Entity userId user <- getRequestUser
@@ -209,50 +349,47 @@ postApiV1ArkhamGameBugR gameId = do
       let bucket = "arkham-horror-bugs"
           key = ObjectKey $ "exports/" <> filename
 
-      -- Credential/config discovery is a separate exact exception type
-      -- ('AuthError') from the per-request 'Error' thrown by 'send', and
-      -- must be handled explicitly rather than allowed to escape as an
-      -- unhandled exception.
-      eEnv <- liftIO $ try @_ @AuthError (newEnv discover)
-      case eEnv of
-        Left authErr -> do
-          $(logWarn) $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow (classifyAuthErrorDiagnostic authErr)
+      -- The shared Amazonka 'Env' is discovered and supervised exactly once
+      -- for the whole process's lifetime by 'awsEnvHandle' (see
+      -- 'awsEnvSupervisorStep' for why); this handler only ever reads its
+      -- current published value, so it never calls 'newEnv'/'discover'
+      -- itself and can never be the thread a delayed background
+      -- credential-refresh failure targets.
+      mEnv <- liftIO $ readTVarIO awsEnvHandle.awsEnvCurrent
+      case mEnv of
+        Nothing -> do
+          mDiagnostic <- liftIO $ readTVarIO awsEnvHandle.awsEnvLastDiagnostic
+          $(logWarn)
+            $ "bug report upload: AWS credentials unavailable for game "
+            <> toPathPiece gameId
+            <> foldMap ((": " <>) . tshow) mDiagnostic
           sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
-        Right env -> do
+        Just env -> do
           -- The HeadObject/PutObject actions run inside 'runResourceT IO',
           -- which has no application-logger access. Rather than logging
           -- from inside that IO action (which would require an ad-hoc
           -- stdout/file logger bypassing the normal Yesod logging path),
-          -- any sanitized diagnostic is stashed here and logged afterwards,
-          -- back in 'Handler', via the normal monad-logger path.
-          diagnosticRef <- liftIO $ newIORef Nothing
+          -- any failure is classified into an already-sanitized,
+          -- strict-by-default (this package's 'StrictData') field of the
+          -- 'BugUploadOutcome' returned by 'runBugUploadPolicy', and logged
+          -- afterwards back in 'Handler' via the normal monad-logger path.
+          -- There is no mutable cell crossing the 'runResourceT' boundary,
+          -- so there is nothing that could retain an unforced thunk over a
+          -- raw exception.
           outcome <-
             liftIO $ runResourceT do
               runBugUploadPolicy
                 ( do
                     eHead <- try @_ @Error (send env (newHeadObject bucket key))
-                    case eHead of
-                      Right _ -> pure ObjectPresent
-                      Left err -> do
-                        let classified = classifyHeadObjectError err
-                        when (classified == HeadObjectFailed)
-                          $ liftIO
-                          $ writeIORef diagnosticRef (Just $ HeadObjectDiagnostic (classifyErrorDiagnostic err))
-                        pure classified
+                    pure $ either classifyHeadObjectError (const ObjectPresent) eHead
                 )
                 ( do
                     ePut <- try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))
-                    case ePut of
-                      Right _ -> pure True
-                      Left err -> do
-                        liftIO $ writeIORef diagnosticRef (Just $ PutObjectDiagnostic (classifyErrorDiagnostic err))
-                        pure False
+                    pure $ either (Left . classifyErrorDiagnostic) (const $ Right ()) ePut
                 )
-          mDiagnostic <- liftIO $ readIORef diagnosticRef
-          for_ mDiagnostic $ \diagnostic ->
-            $(logWarn) $ "bug report upload: " <> describeBugUploadDiagnostic gameId diagnostic
           case outcome of
             BugUploadSucceeded ->
               pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename
-            BugUploadFailed _ ->
+            BugUploadFailed failure -> do
+              $(logWarn) $ "bug report upload: " <> describeBugUploadFailure gameId failure
               sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
