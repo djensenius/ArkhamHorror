@@ -30,7 +30,7 @@ import Amazonka.S3
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Control.Concurrent (forkIOWithUnmask, killThread)
-import Control.Exception (catch, evaluate, mask, throwIO)
+import Control.Exception (catch, evaluate, mask, mask_, throwIO)
 import Control.Exception qualified as Exception
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (encode)
@@ -336,13 +336,29 @@ function's own cancellation cleanup above. Using the sync-only 'try'
 would let that 'killThread' terminate the worker before it ever reaches
 @putMVar@, so the cleanup path's subsequent @takeMVar resultVar@ would
 block forever waiting for an acknowledgement that can never arrive.
+
+The worker's final @putMVar resultVar@ is itself wrapped in
+'Control.Exception.mask_', closing a narrower version of that same race:
+@action@ runs unmasked (via 'forkIOWithUnmask'\'s @unmask@) so a
+cancellation delivered /while it is running/ is caught by the 'try' above
+and becomes part of @outcome@ -- but without this 'mask_', a
+'killThread' landing in the brief gap /after/ @outcome@ has already been
+computed and /before/ the worker finishes writing it to @resultVar@ would
+still terminate the worker with nothing ever written, and this function's
+cleanup handler would then block forever on its own @takeMVar resultVar@
+below. Once @outcome@ exists, committing it to @resultVar@ is a single
+non-blocking write (nothing else can ever put to this 'MVar' first), so
+masking just that final step cannot itself introduce any blocking or
+deadlock -- it only removes the one remaining window in which the
+worker's acknowledgement could be lost.
 -}
 runOnDisposableWorker :: IO a -> IO a
 runOnDisposableWorker action = do
   resultVar <- newEmptyMVar
   workerThreadId <-
-    forkIOWithUnmask $ \unmask ->
-      unmask (Exception.try @SomeException action) >>= putMVar resultVar
+    forkIOWithUnmask $ \unmask -> do
+      outcome <- unmask (Exception.try @SomeException action)
+      mask_ (putMVar resultVar outcome)
   result <-
     takeMVar resultVar `catch` \(callerException :: SomeException) -> do
       killThread workerThreadId
