@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/account.schema.json",
-  "title": "Account contract fixtures",
+  "title": "Account",
   "type": "object",
   "additionalProperties": false,
   "required": [

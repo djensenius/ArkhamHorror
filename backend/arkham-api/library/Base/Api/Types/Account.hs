@@ -1,3 +1,5 @@
+{-# LANGUAGE NoFieldSelectors #-}
+
 module Base.Api.Types.Account (
   PasswordResetPassword (..),
   PasswordResetRequest (..),

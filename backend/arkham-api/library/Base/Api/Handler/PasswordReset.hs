@@ -12,11 +12,11 @@ import Text.Email.Parser (unsafeEmailAddress)
 
 postApiV1PasswordResetsR :: Handler ()
 postApiV1PasswordResetsR = do
-  payload <- requireCheckJsonBody
+  payload <- requireCheckJsonBody :: Handler PasswordResetRequest
   resetExpiresAt <- liftIO $ addUTCTime nominalDay <$> getCurrentTime
-  Entity userId _ <- runDB $ getBy404 (UniqueEmail $ resetEmail payload)
+  Entity userId _ <- runDB $ getBy404 (UniqueEmail payload.resetEmail)
   token <- runDB $ insert $ PasswordReset userId resetExpiresAt
-  sendPasswordResetEmail (resetEmail payload) (UUID.toText $ coerce token)
+  sendPasswordResetEmail payload.resetEmail (UUID.toText $ coerce token)
  where
   sendPasswordResetEmail :: Text -> Text -> Handler ()
   sendPasswordResetEmail email token = do
@@ -58,12 +58,12 @@ postApiV1PasswordResetsR = do
 
 putApiV1PasswordResetR :: PasswordResetId -> Handler ()
 putApiV1PasswordResetR resetId = do
-  payload <- requireCheckJsonBody
+  payload <- requireCheckJsonBody :: Handler PasswordResetPassword
   mdigest <-
     liftIO
       $ hashPasswordUsingPolicy
         slowerBcryptHashingPolicy
-        (TE.encodeUtf8 $ resetPassword payload)
+        (TE.encodeUtf8 payload.resetPassword)
   now <- liftIO getCurrentTime
 
   runDB $ do
