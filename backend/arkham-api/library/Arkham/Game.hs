@@ -392,11 +392,26 @@ toExternalGame g mq = do
   newGameSeed <- getRandom
   pure $ g {gameQuestion = mq, gameSeed = newGameSeed}
 
-replayChoices :: Game -> [Diff.Patch] -> Game
-replayChoices currentGame choices = do
+{- | Apply a sequence of stored replay patches to a game, returning an
+explicit 'Left' describing the failure instead of throwing. Patch failures
+here reflect corrupt or incompatible stored data (not malformed request
+input), so callers should surface a stable, non-secret error rather than
+propagate a raw exception.
+-}
+replayChoicesEither :: Game -> [Diff.Patch] -> Either Text Game
+replayChoicesEither currentGame choices =
   case foldM patch currentGame choices of
-    Error e -> error e
-    Success g -> g
+    Error e -> Left $ pack e
+    Success g -> Right g
+
+-- | Partial wrapper retained for callers that cannot handle failure
+-- explicitly. Prefer 'replayChoicesEither' for anything reachable from a
+-- request handler.
+replayChoices :: Game -> [Diff.Patch] -> Game
+replayChoices currentGame choices =
+  case replayChoicesEither currentGame choices of
+    Left e -> error (unpack e)
+    Right g -> g
 
 withModifiers :: (HasGame m, Targetable a) => a -> m (With a ModifierData)
 withModifiers a = With a . ModifierData <$> (traverse (overModifierTypeM calculateModifier) =<< getModifiers' a)

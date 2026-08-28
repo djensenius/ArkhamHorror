@@ -1,14 +1,89 @@
-module Api.Handler.Arkham.Game.Bug (postApiV1ArkhamGameBugR) where
+module Api.Handler.Arkham.Game.Bug (
+  postApiV1ArkhamGameBugR,
 
-import Amazonka
+  -- * Exposed for regression tests
+  HeadObjectOutcome (..),
+  BugUploadOutcome (..),
+  BugUploadFailure (..),
+  classifyHeadObjectError,
+  runBugUploadPolicy,
+) where
+
+import Amazonka (Error (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
+import Amazonka.Auth (AuthError)
 import Amazonka.S3
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (encode)
 import Data.ByteString.Base16 qualified as B16
+import Data.Text.IO qualified as TIO
 import Import hiding ((==.))
-import UnliftIO.Exception (catch)
+import Network.HTTP.Types.Status (statusCode)
+import Network.HTTP.Types.Status qualified as Status
+import UnliftIO.Exception (try)
+
+{- | Result of attempting a HeadObject check for the export before upload.
+Deliberately excludes any AWS response payload -- only the fact of
+presence/absence/failure is meaningful to callers.
+-}
+data HeadObjectOutcome
+  = ObjectPresent
+  | ObjectAbsent
+  | -- | Any HeadObject failure other than a genuine 404: permission denied,
+    -- throttling, server errors, or a transport-level failure (DNS, TLS,
+    -- timeout, connection refused, etc, all wrapped as 'TransportError').
+    HeadObjectFailed
+  deriving stock (Eq, Show)
+
+-- | Final result of the bug-report upload policy.
+data BugUploadOutcome
+  = BugUploadSucceeded
+  | BugUploadFailed BugUploadFailure
+  deriving stock (Eq, Show)
+
+data BugUploadFailure
+  = HeadCheckFailed
+  | PutObjectFailed
+  deriving stock (Eq, Show)
+
+{- | Sequencing/policy seam for the protected upload.
+
+An existing object never triggers a PUT. A confirmed-absent object
+triggers exactly one PUT. Any HeadObject failure short-circuits before PUT
+is ever attempted, and a failing PUT is reported as failure. This is kept
+free of any AWS/IO dependency (both actions are supplied by the caller) so
+tests can inject deterministic stub actions and assert PUT is (or is not)
+invoked, without encoding exceptions as strings.
+-}
+runBugUploadPolicy :: Monad m => m HeadObjectOutcome -> m Bool -> m BugUploadOutcome
+runBugUploadPolicy headAction putAction =
+  headAction >>= \case
+    ObjectPresent -> pure BugUploadSucceeded
+    HeadObjectFailed -> pure $ BugUploadFailed HeadCheckFailed
+    ObjectAbsent -> do
+      putSucceeded <- putAction
+      pure $ if putSucceeded then BugUploadSucceeded else BugUploadFailed PutObjectFailed
+
+{- | Classify a HeadObject failure using the exact Amazonka SDK error type.
+
+Per AWS, a HeadObject error response carries no body (it's a HEAD request),
+so the HTTP status code is the only reliable signal: 404 means the object
+genuinely does not exist. Everything else -- 403 permission denied, 5xx
+server errors, 429 throttling, a malformed response ('SerializeError'), or
+a transport-level failure ('TransportError', covering DNS, TLS, timeout,
+and connection failures) -- must be treated as a real failure and must
+never unlock the PUT.
+-}
+classifyHeadObjectError :: Error -> HeadObjectOutcome
+classifyHeadObjectError (ServiceError e) | statusCode e.status == 404 = ObjectAbsent
+classifyHeadObjectError _ = HeadObjectFailed
+
+-- | Stable, non-secret envelope for an upload failure. Never includes AWS
+-- credentials, request/response bodies, or bucket internals.
+newtype BugUploadError = BugUploadError {message :: Text}
+  deriving stock (Show, Generic)
+  deriving anyclass ToJSON
 
 postApiV1ArkhamGameBugR :: ArkhamGameId -> Handler Text
 postApiV1ArkhamGameBugR gameId = do
@@ -27,16 +102,43 @@ postApiV1ArkhamGameBugR gameId = do
       let bucket = "arkham-horror-bugs"
           key = ObjectKey $ "exports/" <> filename
 
-      liftIO do
-        -- Initialize AWS environment
-        env <- newEnv discover
-        runResourceT do
-          mResponse <-
-            catch @_ @Error
-              (Just <$> send env (newHeadObject bucket key))
-              (\_ -> pure Nothing)
-
-          whenNothing_ mResponse do
-            void . send env $ newPutObject bucket key $ toBody jsonBody
-
-      pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename
+      -- Credential/config discovery is a separate exact exception type
+      -- ('AuthError') from the per-request 'Error' thrown by 'send', and
+      -- must be handled explicitly rather than allowed to escape as an
+      -- unhandled exception.
+      eEnv <- liftIO $ try @_ @AuthError (newEnv discover)
+      case eEnv of
+        Left authErr -> do
+          liftIO $ TIO.putStrLn $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow authErr
+          sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
+        Right env -> do
+          outcome <-
+            liftIO $ runResourceT do
+              runBugUploadPolicy
+                ( do
+                    eHead <- try @_ @Error (send env (newHeadObject bucket key))
+                    case eHead of
+                      Right _ -> pure ObjectPresent
+                      Left err -> do
+                        let classified = classifyHeadObjectError err
+                        when (classified == HeadObjectFailed)
+                          $ liftIO
+                          $ TIO.putStrLn
+                          $ "bug report upload: HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow err
+                        pure classified
+                )
+                ( do
+                    ePut <- try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))
+                    case ePut of
+                      Right _ -> pure True
+                      Left err -> do
+                        liftIO
+                          $ TIO.putStrLn
+                          $ "bug report upload: PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow err
+                        pure False
+                )
+          case outcome of
+            BugUploadSucceeded ->
+              pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename
+            BugUploadFailed _ ->
+              sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"

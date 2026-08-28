@@ -191,10 +191,14 @@ tests:
       - arkham-api
       - aeson
       - aeson-diff
+      - amazonka
+      - amazonka-core
       - bytestring
       - exceptions
       - hspec
       - hspec-expectations-lifted
+      - http-client
+      - http-types
       - jose
       - lens
       - monad-time

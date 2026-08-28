@@ -8375,15 +8375,17 @@ test-suite spec
       Arkham.Act.Cards.TheForgottenAge.HeartOfTheElders.AFamiliarPatternSpec
       Arkham.Act.Cards.TheScarletKeys.DancingMad.FalseStepV2Spec
       Arkham.ActionSpec
-      Arkham.Api.Events.EventStreamAuthSpec
-      Arkham.Api.GameDecksSpec
-      Arkham.Api.GameStreamSpec
-      Arkham.Api.GameUtilAccessSpec
-      Arkham.Api.JsonContractsSpec
       Arkham.Agenda.Cards.MurderAtTheExcelsiorHotel.TheTrueCulpritV10Spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.RestrictedAccessSpec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.Events.EventStreamAuthSpec
+      Arkham.Api.GameBugUploadSpec
+      Arkham.Api.GameDecksSpec
+      Arkham.Api.GameImportSpec
+      Arkham.Api.GameStreamSpec
+      Arkham.Api.GameUtilAccessSpec
+      Arkham.Api.JsonContractsSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.ArcaneInitiateSpec
@@ -8602,6 +8604,7 @@ test-suite spec
       Arkham.Game.ChooseDecksSpec
       Arkham.Game.DiffSpec
       Arkham.Game.PendingGameOptionsSpec
+      Arkham.Game.ReplayChoicesSpec
       Arkham.GameSpec
       Arkham.Helpers.EnemySpec
       Arkham.Helpers.InvestigatorSpec
@@ -8781,6 +8784,8 @@ test-suite spec
       MonadRandom
     , aeson
     , aeson-diff
+    , amazonka
+    , amazonka-core
     , arkham-api
     , base
     , bytestring
@@ -8788,6 +8793,8 @@ test-suite spec
     , exceptions
     , hspec
     , hspec-expectations-lifted
+    , http-client
+    , http-types
     , jose
     , lens
     , monad-time
