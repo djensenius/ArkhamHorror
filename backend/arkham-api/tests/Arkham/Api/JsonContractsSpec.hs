@@ -413,6 +413,17 @@ spec = describe "Native client contract fixtures" do
         Aeson.Error err -> expectationFailure err
         Aeson.Success deckList -> sideSlots deckList `shouldBe` mempty
 
+  it "defaults a null investigator_name from the card registry" do
+    deckListValue <-
+      loadFixtureField "decks.json" "validateDeckList"
+        :: IO Aeson.Value
+    let withNullName = case deckListValue of
+          Aeson.Object fields ->
+            Aeson.Object $ AesonKeyMap.insert "investigator_name" Aeson.Null fields
+          _ -> error "Expected validateDeckList to be an object"
+
+    Aeson.fromJSON withNullName `shouldBe` Aeson.Success fixtureDeckList
+
   it "decodes the real create-deck request" do
     request <-
       loadFixtureField "decks.json" "createDeck"

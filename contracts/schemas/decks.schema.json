@@ -79,7 +79,10 @@
           "minLength": 1
         },
         "investigator_name": {
-          "type": "string"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "meta": {
           "type": [
