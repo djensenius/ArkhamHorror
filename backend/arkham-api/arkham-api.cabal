@@ -8378,6 +8378,7 @@ test-suite spec
       Arkham.Api.Events.EventStreamAuthSpec
       Arkham.Api.GameDecksSpec
       Arkham.Api.GameStreamSpec
+      Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
       Arkham.Agenda.Cards.MurderAtTheExcelsiorHotel.TheTrueCulpritV10Spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.RestrictedAccessSpec
