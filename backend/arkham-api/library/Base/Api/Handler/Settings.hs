@@ -2,23 +2,9 @@
 
 module Base.Api.Handler.Settings where
 
+import Base.Api.Types.Account
 import Database.Esqueleto.Experimental
 import Import hiding (update, (=.), (==.))
-
-newtype UserSettings = UserSettings {beta :: Bool}
-  deriving stock Generic
-  deriving anyclass FromJSON
-
-betaSetting :: UserSettings -> Bool
-betaSetting (UserSettings b) = b
-
-data CurrentUser = CurrentUser
-  { username :: Text
-  , email :: Text
-  , beta :: Bool
-  }
-  deriving stock Generic
-  deriving anyclass ToJSON
 
 newtype SiteSettings = SiteSettings
   { assetHost :: Maybe Text
@@ -30,13 +16,13 @@ instance ToJSON SiteSettings where
 getApiV1SiteSettingsR :: Handler SiteSettings
 getApiV1SiteSettingsR = SiteSettings <$> getsApp (appAssetHost . appSettings)
 
-putApiV1SettingsR :: Handler CurrentUser
+putApiV1SettingsR :: Handler UpdatedUser
 putApiV1SettingsR = do
   userId <- getRequestUserId
-  settings <- requireCheckJsonBody
+  settings <- requireCheckJsonBody :: Handler UserSettings
   runDB do
     update \u -> do
-      set u [UserBeta =. val (betaSetting settings)]
+      set u [UserBeta =. val settings.betaSetting]
       where_ $ u.id ==. val userId
     User {..} <- get404 userId
-    pure $ CurrentUser userUsername userEmail userBeta
+    pure $ UpdatedUser userUsername userEmail userBeta

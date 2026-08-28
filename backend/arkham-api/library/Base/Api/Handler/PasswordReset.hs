@@ -1,7 +1,7 @@
 module Base.Api.Handler.PasswordReset (postApiV1PasswordResetsR, putApiV1PasswordResetR) where
 
+import Base.Api.Types.Account
 import Crypto.BCrypt
-import Data.Aeson (withObject)
 import Data.Text qualified as T
 import Data.Text.Encoding qualified as TE
 import Data.Time.Clock
@@ -9,18 +9,6 @@ import Data.UUID qualified as UUID (toText)
 import Import
 import Network.Mail.Mailtrap
 import Text.Email.Parser (unsafeEmailAddress)
-
-newtype PasswordResetRequest = PasswordResetRequest {resetEmail :: Text}
-
-instance FromJSON PasswordResetRequest where
-  parseJSON = withObject "PasswordResetRequest" $ \o ->
-    PasswordResetRequest <$> o .: "email"
-
-data PasswordResetPassword = PasswordResetPassword {resetPassword :: Text}
-
-instance FromJSON PasswordResetPassword where
-  parseJSON = withObject "PasswordResetPassword" $ \o ->
-    PasswordResetPassword <$> o .: "password"
 
 postApiV1PasswordResetsR :: Handler ()
 postApiV1PasswordResetsR = do

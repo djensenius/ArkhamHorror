@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/account.schema.json",
+  "title": "Account contract fixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "passwordResetRequest",
+    "passwordResetUpdate",
+    "userSettings",
+    "settingsUser",
+    "notifications"
+  ],
+  "properties": {
+    "passwordResetRequest": {
+      "$ref": "#/$defs/passwordResetRequest"
+    },
+    "passwordResetUpdate": {
+      "$ref": "#/$defs/passwordResetUpdate"
+    },
+    "userSettings": {
+      "$ref": "#/$defs/userSettings"
+    },
+    "settingsUser": {
+      "$ref": "#/$defs/settingsUser"
+    },
+    "notifications": {
+      "$ref": "#/$defs/notificationList"
+    }
+  },
+  "$defs": {
+    "passwordResetRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "email"
+      ],
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email"
+        }
+      }
+    },
+    "passwordResetUpdate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "password"
+      ],
+      "properties": {
+        "password": {
+          "type": "string"
+        }
+      }
+    },
+    "userSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "beta"
+      ],
+      "properties": {
+        "beta": {
+          "type": "boolean"
+        }
+      }
+    },
+    "settingsUser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "username",
+        "email",
+        "beta"
+      ],
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "beta": {
+          "type": "boolean"
+        }
+      }
+    },
+    "notificationList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/notification"
+      }
+    },
+    "notification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "body",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "integer"
+        },
+        "body": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

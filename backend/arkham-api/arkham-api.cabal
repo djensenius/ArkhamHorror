@@ -8111,6 +8111,7 @@ library
       Base.Api.Handler.PasswordReset
       Base.Api.Handler.Registration
       Base.Api.Handler.Settings
+      Base.Api.Types.Account
       Base.Util
       Config
       Entity
@@ -8778,7 +8779,9 @@ test-suite spec
     , hspec-expectations-lifted
     , lens
     , mtl
+    , persistent
     , random
     , text
+    , time
     , uuid
   default-language: GHC2021

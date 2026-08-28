@@ -10,12 +10,20 @@ import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
 import Arkham.Name (mkName)
+import Base.Api.Types.Account
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
+import Data.Text qualified as Text
+import Data.Time (secondsToDiffTime)
 import Data.UUID qualified as UUID
+import Database.Persist (Entity (..))
+import Database.Persist.Sql (toSqlKey)
 import Entity.Answer (Answer (..))
 import Entity.Arkham.Game qualified as ArkhamGame
+import Entity.Notification (Notification (..))
 import System.IO.Error qualified as IOError
 import TestImport
 
@@ -42,6 +50,27 @@ loadFixture fileName = findFixture fixturePaths
       Right (Left err) ->
         fail $ "Could not decode contract fixture " <> fileName <> " at " <> path <> ": " <> err
       Right (Right fixture) -> pure fixture
+
+loadFixtureField :: Aeson.FromJSON a => FilePath -> Text -> IO a
+loadFixtureField fileName fieldName = do
+  fixture <- loadFixture fileName
+  fieldValue <- case fixture of
+    Aeson.Object fields ->
+      maybe
+        (fail $ "Missing field " <> Text.unpack fieldName <> " in " <> fileName)
+        pure
+        (AesonKeyMap.lookup (AesonKey.fromText fieldName) fields)
+    _ -> fail $ "Expected an object fixture in " <> fileName
+  case Aeson.fromJSON fieldValue of
+    Aeson.Error err ->
+      fail
+        $ "Could not decode "
+        <> Text.unpack fieldName
+        <> " from "
+        <> fileName
+        <> ": "
+        <> err
+    Aeson.Success value -> pure value
 
 fixtureGameId :: ArkhamGame.ArkhamGameId
 fixtureGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 3
@@ -220,6 +249,46 @@ spec = describe "Native client contract fixtures" do
     fixture <- loadFixture "get-game.json"
 
     Aeson.toJSON fixtureGetGame `shouldBe` fixture
+
+  it "decodes the real password-reset request" do
+    request <-
+      loadFixtureField "account.json" "passwordResetRequest"
+        :: IO PasswordResetRequest
+
+    request.resetEmail `shouldBe` "investigator@example.com"
+
+  it "decodes the real password-reset update" do
+    request <-
+      loadFixtureField "account.json" "passwordResetUpdate"
+        :: IO PasswordResetPassword
+
+    request.resetPassword `shouldBe` "new passphrase"
+
+  it "decodes the real settings update" do
+    settings <-
+      loadFixtureField "account.json" "userSettings"
+        :: IO UserSettings
+
+    settings.betaSetting `shouldBe` True
+
+  it "matches the real settings response encoder" do
+    fixture <- loadFixtureField "account.json" "settingsUser"
+
+    Aeson.toJSON (UpdatedUser "Investigator" "investigator@example.com" True)
+      `shouldBe` fixture
+
+  it "matches the real notification-list encoder" do
+    fixture <- loadFixtureField "account.json" "notifications"
+    let
+      notification =
+        Entity
+          (toSqlKey 17)
+          ( Notification
+              "Contract fixture announcement."
+              (UTCTime (fromGregorian 2026 1 2) (secondsToDiffTime 11045))
+          )
+
+    Aeson.toJSON [notification] `shouldBe` fixture
 
   for_ clientAnswerFixtures \(fileName, expectedConstructor) ->
     it ("decodes the real client answer for " <> fileName) do
