@@ -8375,6 +8375,7 @@ test-suite spec
       Arkham.Act.Cards.TheForgottenAge.HeartOfTheElders.AFamiliarPatternSpec
       Arkham.Act.Cards.TheScarletKeys.DancingMad.FalseStepV2Spec
       Arkham.ActionSpec
+      Arkham.Api.Events.EventStreamAuthSpec
       Arkham.Api.GameStreamSpec
       Arkham.Api.JsonContractsSpec
       Arkham.Agenda.Cards.MurderAtTheExcelsiorHotel.TheTrueCulpritV10Spec
