@@ -7,6 +7,7 @@ module Api.Handler.Arkham.Decks (
   deleteApiV1ArkhamDeckR,
   putApiV1ArkhamGameDecksR,
   postApiV1ArkhamSyncDeckR,
+  requireGameDecksAccess,
 ) where
 
 import Import hiding (delete, on, update, (=.), (==.))
@@ -52,6 +53,14 @@ import Network.HTTP.Conduit (
 import Network.HTTP.Types
 import Network.HTTP.Types.Status qualified as Status
 import UnliftIO.Exception (try)
+
+-- | Admit administrators without a membership query; otherwise require the
+-- caller's @ArkhamPlayer@ row. The rejection action is 'notFound' in production
+-- so game absence and missing membership remain indistinguishable.
+requireGameDecksAccess :: Monad m => Bool -> m Bool -> m () -> m ()
+requireGameDecksAccess isAdmin lookupMembership reject = do
+  isMember <- if isAdmin then pure False else lookupMembership
+  unless (isAdmin || isMember) reject
 
 getApiV1ArkhamDecksR :: Handler [Entity ArkhamDeck]
 getApiV1ArkhamDecksR = do
@@ -105,7 +114,11 @@ so they submitted it again, which re-ran the whole load on an already-upgraded d
 -}
 putApiV1ArkhamGameDecksR :: ArkhamGameId -> Handler ()
 putApiV1ArkhamGameDecksR gameId = do
-  userId <- getRequestUserId
+  Entity userId user <- getRequestUser
+  requireGameDecksAccess
+    user.admin
+    (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
+    notFound
   postData <- requireCheckJsonBody
   now <- liftIO getCurrentTime
 
