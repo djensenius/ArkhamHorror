@@ -371,18 +371,21 @@ getApiV1ArkhamEventR eid = do
     webSocketsOptions wsOptions $ eventStream eid
     buildEventDetails userId eid
 
-{- | Delete an event and all of its group games (organizer only). The event row
-is locked ('FOR UPDATE') before anything else is decided: a missing/already-
-deleted event returns the same nondisclosing 404 that any other unknown event
-id would, instead of the misleading 403 a repeat deletion previously produced
-by checking organizer membership first; and locking (not merely checking)
+{- | Delete an event and all of its group games (organizer only). A missing or
+already-deleted event returns the same nondisclosing 404 that any other
+unknown event id would, instead of the misleading 403 a repeat deletion
+previously produced by checking organizer membership first. Every linked game
+is locked ('FOR UPDATE'), in deterministic order, BEFORE the event row is
+locked -- the same order live gameplay uses (see the Haddock on
+'MonadEpicEventDeletion') -- so this can never deadlock against a concurrent
+action on one of those games. Locking the event only after its games
 serializes a concurrent repeat deletion of the same event behind whichever
-request commits first, so the loser sees "missing", not a spurious permission
-failure. Deleting each group's 'ArkhamGame' cascades its players/steps/logs
-and the epic-group row; deleting the event cascades members and shared-state
-steps -- all inside the one locked transaction. Room cleanup only runs once
-that transaction has returned, and only for a committed deletion (see
-'eventDeletionCleanupGameIds').
+request gets there first, so the loser sees "missing", not a spurious
+permission failure. Deleting each group's 'ArkhamGame' cascades its
+players/steps/logs and the epic-group row; deleting the event cascades
+members and shared-state steps -- all inside the one transaction. Room
+cleanup only runs once that transaction has returned, and only for a
+committed deletion (see 'eventDeletionCleanupGameIds').
 -}
 deleteApiV1ArkhamEventR :: ArkhamEpicEventId -> Handler ()
 deleteApiV1ArkhamEventR eid = do
@@ -904,23 +907,38 @@ data EventDeletionOutcome
     EventDeletionDeleted [ArkhamGameId]
   deriving stock (Eq, Show)
 
-{- | Abstract persistence steps needed to delete one Epic event aggregate: lock
-the event row, check organizer membership, select every linked group game id
-(in ordinal order), delete each of those games, then the event row itself.
+{- | Abstract persistence steps needed to delete one Epic event aggregate.
+
+Lock ordering is the crux of this class: every linked 'ArkhamGame' is locked
+('FOR UPDATE') BEFORE the event row, and never the reverse. That matches the
+lock order live gameplay already uses --
+'Api.Arkham.Helpers.atomicallyWithGame' locks a game first, and
+'Api.Arkham.Epic.applyEpicDeltasLocked' then locks the event *inside* that
+same game-locked transaction (see both call sites in
+"Api.Handler.Arkham.Games.Shared" and "Api.Handler.Arkham.PendingGames"). A
+deletion that locked the event first, then its games, would be free to
+deadlock against a concurrent action on one of those games: the action holds
+the game lock and waits on the event lock, while the deletion holds the event
+lock and waits on the game lock. Locking games first here closes off that
+cycle entirely -- both paths always acquire game locks before any event lock,
+so at most one of them can ever be waiting.
+
+A per-game 'ArkhamGame' can also vanish concurrently, independent of any
+event: 'Api.Handler.Arkham.Games.deleteApiV1ArkhamGameR' lets any of its
+players delete it directly. 'lockLinkedGame' reports presence per game
+(never throws for a missing game, so callers never need a partial pattern
+match), and the aggregate below simply excludes a vanished game from what it
+deletes and from the ids it reports for post-commit room cleanup.
 
 Production runs 'deleteEpicEventAggregate' inside a single 'runDB' call over
-'SqlPersistT Handler' (see the instance below). 'lockEpicEvent' takes a
-@FOR UPDATE@ lock on the event row -- the same locking pattern
-'Api.Arkham.Epic.applyEpicDeltasLocked' uses -- so a concurrent deletion of
-the same event serializes behind whichever request locks the row first,
-rather than racing to an inconsistent 403/404 split; and an exception thrown
-by any subsequent delete rolls back every earlier delete in the same
-transaction. Tests exercise the exact same sequencing against a pure,
-in-memory instance (see "Arkham.Api.Events.EventDeletionSpec") to prove a
-missing event short-circuits before any organizer lookup or delete, an
-existing non-organizer short-circuits before any group is selected or
-deleted, and a failure injected at any step -- including a late group or
-event delete -- cannot produce a successful ('EventDeletionDeleted') result.
+'SqlPersistT Handler' (see the instance below); an exception thrown by any
+delete rolls back every earlier delete in the same transaction. Tests
+exercise the exact same sequencing against a pure, in-memory instance (see
+"Arkham.Api.Events.EventDeletionSpec") to prove a missing event short-circuits
+before any organizer lookup, lock, or delete; an existing non-organizer
+short-circuits before any lock or delete; and a failure injected at any step
+-- including a late per-game delete -- cannot produce a successful
+('EventDeletionDeleted') result.
 
 Do not write an instance that catches a delete exception and converts it into
 an ordinary return value of this class: 'runDB' only rolls back on an actual
@@ -928,31 +946,70 @@ uncaught exception, so silently turning one into a normal result here would
 defeat the rollback guarantee.
 -}
 class Monad m => MonadEpicEventDeletion m where
-  -- | Row-lock the event ('FOR UPDATE' in production) and report whether it
-  -- still exists. Locking (not merely checking existence) is what serializes
-  -- a concurrent repeat deletion of the same event behind this one.
-  lockEpicEvent :: ArkhamEpicEventId -> m Bool
+  -- | Cheap, non-locking existence probe for the event row, used only to let
+  -- an already-missing event short-circuit before any organizer lookup or
+  -- any lock is taken. This does not by itself serialize anything -- the
+  -- authoritative existence decision is the second 'lockEpicEvent' call,
+  -- taken only after every linked game is already locked (see below).
+  eventExists :: ArkhamEpicEventId -> m Bool
+  -- | Organizer membership check ('P.exists' in production; a plain read,
+  -- never a lock). Called twice by 'deleteEpicEventAggregate': once up
+  -- front, so an unauthorized caller never pays for any game or event lock;
+  -- and once more as a safe-point revalidation, after every lock this
+  -- transaction will ever take is already held, in case membership could
+  -- change concurrently. Neither call takes a lock, so neither changes the
+  -- game-before-event lock order above.
   isEventOrganizer :: ArkhamEpicEventId -> UserId -> m Bool
   -- | Every linked, non-null group game id, in deterministic ordinal order.
+  -- A plain read -- no lock is taken here; see 'lockLinkedGame'.
   selectLinkedGameIds :: ArkhamEpicEventId -> m [ArkhamGameId]
-  deleteLinkedGames :: [ArkhamGameId] -> m ()
+  -- | Row-lock one linked game ('FOR UPDATE' in production) and report
+  -- whether it is still present. Called once per id from
+  -- 'selectLinkedGameIds', in that same order, strictly before 'lockEpicEvent'.
+  lockLinkedGame :: ArkhamGameId -> m Bool
+  -- | Row-lock the event ('FOR UPDATE' in production), taken only after
+  -- every linked game is already locked, and report whether it is still
+  -- present. If a concurrent deletion committed first, this reports 'False'
+  -- and the whole request is treated as missing -- never forbidden, never
+  -- successful.
+  lockEpicEvent :: ArkhamEpicEventId -> m Bool
+  -- | Delete one still-present linked game. Never called for a game
+  -- 'lockLinkedGame' reported as already gone.
+  deleteLinkedGame :: ArkhamGameId -> m ()
   deleteEpicEventRow :: ArkhamEpicEventId -> m ()
 
-{- | The deletion decision itself: lock the event first, so a missing row
-short-circuits ('EventDeletionMissing') before any organizer lookup, group
-selection, or delete happens; a present-but-unauthorized row short-circuits
-('EventDeletionForbidden') before any group is selected or deleted; and only
-an authorized deletion selects every linked group game (ordinal order),
-deletes all of them, then the event row, returning the committed ids so the
-caller can run post-commit room cleanup for exactly those games. This is the
-single seam production and tests both exercise directly.
+{- | The deletion decision itself:
+
+1. A non-locking existence probe lets a missing event short-circuit to
+   'EventDeletionMissing' before any organizer lookup or lock.
+2. An organizer check lets an unauthorized caller short-circuit to
+   'EventDeletionForbidden' before any lock or delete.
+3. Every linked game id is selected (ordinal order), then locked
+   ('FOR UPDATE') one at a time in that same order -- games are ALWAYS locked
+   before the event, matching the lock order live gameplay uses, so a
+   deletion can never deadlock against a concurrent action on one of its
+   games. A game that has vanished concurrently (see
+   'Api.Handler.Arkham.Games.deleteApiV1ArkhamGameR') is simply excluded, not
+   an error.
+4. Only once every present game is locked is the event itself locked. If it
+   vanished while we were waiting on game locks (a concurrent deletion won
+   the race), this reports 'EventDeletionMissing', never a stale
+   forbidden/success decision.
+5. Organizer membership is revalidated at this same safe point -- every lock
+   the transaction will take is already held, so this plain re-read cannot
+   introduce any new lock ordering -- before any delete is issued.
+6. Only then are the still-present games deleted, then the event row,
+   returning exactly the game ids this transaction committed so the caller
+   can run post-commit room cleanup for exactly those games.
+
+This is the single seam production and tests both exercise directly.
 -}
 deleteEpicEventAggregate
   :: MonadEpicEventDeletion m
   => ArkhamEpicEventId -> UserId -> m EventDeletionOutcome
 deleteEpicEventAggregate eid userId = do
-  eventFound <- lockEpicEvent eid
-  if not eventFound
+  found <- eventExists eid
+  if not found
     then pure EventDeletionMissing
     else do
       organizer <- isEventOrganizer eid userId
@@ -960,22 +1017,23 @@ deleteEpicEventAggregate eid userId = do
         then pure EventDeletionForbidden
         else do
           gameIds <- selectLinkedGameIds eid
-          deleteLinkedGames gameIds
-          deleteEpicEventRow eid
-          pure (EventDeletionDeleted gameIds)
+          -- Lock every still-present linked game, in order, BEFORE the
+          -- event -- never the reverse (see the class Haddock above).
+          presentGameIds <- filterM lockLinkedGame gameIds
+          eventStillPresent <- lockEpicEvent eid
+          if not eventStillPresent
+            then pure EventDeletionMissing
+            else do
+              stillOrganizer <- isEventOrganizer eid userId
+              if not stillOrganizer
+                then pure EventDeletionForbidden
+                else do
+                  for_ presentGameIds deleteLinkedGame
+                  deleteEpicEventRow eid
+                  pure (EventDeletionDeleted presentGameIds)
 
 instance MonadEpicEventDeletion (SqlPersistT Handler) where
-  lockEpicEvent eid = do
-    -- Project only the id: 'FOR UPDATE' locks the whole row regardless of
-    -- which columns are selected, and we only need existence here, so there
-    -- is no reason to materialize the (potentially large) 'sharedState'
-    -- column into Haskell just to throw it away.
-    locked <- select do
-      e <- from $ table @ArkhamEpicEvent
-      where_ $ e.id ==. val eid
-      locking forUpdate
-      pure e.id
-    pure $ not (null locked)
+  eventExists eid = isJust <$> P.get eid
   isEventOrganizer eid uid =
     P.exists
       [ ArkhamEpicMemberArkhamEpicEventId P.==. eid
@@ -989,7 +1047,25 @@ instance MonadEpicEventDeletion (SqlPersistT Handler) where
       orderBy [asc grp.ordinal]
       pure grp.arkhamGameId
     pure [gid | Value (Just gid) <- gameValues]
-  deleteLinkedGames gameIds = for_ gameIds P.delete
+  lockLinkedGame gid = do
+    locked <- select do
+      g <- from $ table @ArkhamGame
+      where_ $ g.id ==. val gid
+      locking forUpdate
+      pure g.id
+    pure $ not (null locked)
+  lockEpicEvent eid = do
+    -- Project only the id: 'FOR UPDATE' locks the whole row regardless of
+    -- which columns are selected, and we only need existence here, so there
+    -- is no reason to materialize the (potentially large) 'sharedState'
+    -- column into Haskell just to throw it away.
+    locked <- select do
+      e <- from $ table @ArkhamEpicEvent
+      where_ $ e.id ==. val eid
+      locking forUpdate
+      pure e.id
+    pure $ not (null locked)
+  deleteLinkedGame = P.delete
   deleteEpicEventRow = P.delete
 
 {- | Which group games' rooms (if any) a deletion outcome should clean up.
