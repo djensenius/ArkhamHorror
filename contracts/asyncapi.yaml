@@ -1,7 +1,7 @@
 asyncapi: 3.1.0
 info:
   title: Arkham Horror WebSocket API
-  version: 0.1.4
+  version: 0.1.5
   description: |
     Envelope-level contract for game and Epic Multiplayer sockets. The server
     sends an RFC 6455 ping every 15 seconds and may negotiate

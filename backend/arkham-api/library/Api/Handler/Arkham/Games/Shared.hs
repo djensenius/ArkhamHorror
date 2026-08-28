@@ -11,17 +11,15 @@ import Api.Arkham.Epic (
   modifySharedStateLockedWith,
  )
 import Api.Arkham.Helpers
-import Api.Arkham.Types.MultiplayerVariant
+import Api.Arkham.Types.Game
+import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Arkham.Achievement.Types (Achievement, achievementChecklist, achievementName)
 import Arkham.Asset.Types (Asset, assetController, assetOwner, assetPlacement)
 import Arkham.Campaign.Types (CampaignAttrs)
-import Arkham.Campaigns.TheDreamEaters.Meta qualified as TheDreamEaters
 import Arkham.Card.CardCode (CardCode (..), HasCardCode (toCardCode))
-import Arkham.ClassSymbol
 import Arkham.Classes.Entity (attr, overAttrs, toAttrs)
 import Arkham.Classes.GameLogger
 import Arkham.Classes.HasQueue
-import Arkham.Difficulty
 import Arkham.Effect.Types (effectTarget)
 import Arkham.Entities (Entities (..), entitiesActs)
 import Arkham.Epic.Types (
@@ -58,7 +56,6 @@ import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement, investigatorPlayerId)
 import Arkham.Location.CardDefs.TheBlobThatAteEverythingELSE qualified as Locations
 import Arkham.Message
-import Arkham.Name
 import Arkham.Placement (
   Placement (AtLocation, AttachedToInvestigator, InPlayArea, InThreatArea, StillInHand),
  )
@@ -275,68 +272,6 @@ streamRoom joinRoom onLeave = catchingConnectionException $ withKeepAlive do
             )
             `catch` (\(_ :: SlowSubscriber) -> pure ())
     race_ sender (runConduit $ sourceWS .| mapM_C (\(_ :: ByteString) -> pure ()))
-
-data GetGameJson = GetGameJson
-  { playerId :: Maybe PlayerId
-  , multiplayerMode :: MultiplayerVariant
-  , game :: PublicGame ArkhamGameId
-  , eventId :: Maybe ArkhamEpicEventId
-  {- ^ the Epic Multiplayer event this game is a group of, if any. Lets the client
-  engage the event (shared state, start barrier, time limit) regardless of how
-  the player reached the game (so it doesn't depend on a @?event@ URL query).
-  -}
-  }
-  deriving stock (Show, Generic)
-
-instance ToJSON GetGameJson where
-  toJSON = genericToJSON defaultOptions
-  toEncoding = genericToEncoding defaultOptions
-
-data InvestigatorDetails = InvestigatorDetails
-  { id :: InvestigatorId
-  , classSymbol :: ClassSymbol
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass ToJSON
-
-data ScenarioDetails = ScenarioDetails
-  { id :: ScenarioId
-  , difficulty :: Difficulty
-  , name :: Name
-  , variant :: Maybe Text
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass ToJSON
-
-data CampaignDetails = CampaignDetails
-  { id :: CampaignId
-  , difficulty :: Difficulty
-  , currentCampaignMode :: Maybe TheDreamEaters.CampaignPart
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass ToJSON
-
-data GameDetails = GameDetails
-  { id :: ArkhamGameId
-  , scenario :: Maybe ScenarioDetails
-  , campaign :: Maybe CampaignDetails
-  , gameState :: GameState
-  , name :: Text
-  , investigators :: [InvestigatorDetails]
-  , otherInvestigators :: [InvestigatorDetails]
-  , multiplayerVariant :: MultiplayerVariant
-  , hasOpenSeats :: Bool
-  }
-  deriving stock (Show, Generic)
-  deriving anyclass ToJSON
-
-data GameDetailsEntry = FailedGameDetails Text | SuccessGameDetails GameDetails
-  deriving stock (Show, Generic)
-
-instance ToJSON GameDetailsEntry where
-  toJSON = \case
-    FailedGameDetails t -> object ["error" .= t]
-    SuccessGameDetails gd -> toJSON gd
 
 {- | A broadcast callback. Used to fan out log lines and game-state updates
 to every WebSocket subscriber on a room. May be a no-op if there are no

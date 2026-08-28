@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.4",
+  "schemaRevision": "0.1.5",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -7,7 +7,11 @@
     "contracts/asyncapi.yaml",
     "contracts/route-inventory.json",
     "contracts/schemas/client-answer.schema.json",
+    "contracts/schemas/game-list.schema.json",
+    "contracts/schemas/game-state.schema.json",
     "contracts/schemas/game-step.schema.json",
+    "contracts/schemas/get-game.schema.json",
+    "contracts/schemas/public-game.schema.json",
     "contracts/schemas/server-message.schema.json"
   ],
   "fixtures": [
@@ -18,6 +22,14 @@
     {
       "path": "contracts/fixtures/game-update.json",
       "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-list.json",
+      "schema": "contracts/schemas/game-list.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/get-game.json",
+      "schema": "contracts/schemas/get-game.schema.json"
     },
     {
       "path": "contracts/fixtures/game-error.json",

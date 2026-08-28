@@ -1,0 +1,370 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/public-game.schema.json",
+  "title": "PublicGame",
+  "description": "Top-level authoritative game snapshot published over REST and WebSocket.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tag",
+    "name",
+    "id",
+    "log",
+    "git",
+    "settings",
+    "gameSettings",
+    "mode",
+    "modifiers",
+    "encounterDeckSize",
+    "locations",
+    "investigators",
+    "otherInvestigators",
+    "killedInvestigators",
+    "enemies",
+    "assets",
+    "acts",
+    "agendas",
+    "treacheries",
+    "events",
+    "concealed",
+    "skills",
+    "stories",
+    "scarletKeys",
+    "playerCount",
+    "activeInvestigatorId",
+    "activePlayerId",
+    "turnPlayerInvestigatorId",
+    "leadInvestigatorId",
+    "playerOrder",
+    "phase",
+    "phaseStep",
+    "inAction",
+    "skillTest",
+    "skillTestChaosTokens",
+    "focusedCards",
+    "highlightedCards",
+    "focusedTarotCards",
+    "foundCards",
+    "focusedChaosTokens",
+    "activeCard",
+    "removedFromPlay",
+    "gameState",
+    "inSetup",
+    "skillTestResults",
+    "question",
+    "cards",
+    "totalDoom",
+    "totalClues",
+    "scenarioSteps",
+    "undoActionStep",
+    "undoTurnStep",
+    "undoPhaseStep",
+    "undoRoundStep",
+    "roundHistory",
+    "phaseHistory",
+    "turnHistory",
+    "enemyAttackTargets"
+  ],
+  "properties": {
+    "tag": {
+      "const": "PublicGame"
+    },
+    "name": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "log": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "git": {
+      "type": "string"
+    },
+    "settings": {
+      "$ref": "#/$defs/gameSettings"
+    },
+    "gameSettings": {
+      "$ref": "#/$defs/gameSettings"
+    },
+    "mode": {
+      "type": "object"
+    },
+    "modifiers": {
+      "type": "array"
+    },
+    "encounterDeckSize": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "locations": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "investigators": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "otherInvestigators": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "killedInvestigators": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "enemies": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "assets": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "acts": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "agendas": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "treacheries": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "events": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "concealed": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "skills": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "stories": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "scarletKeys": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "playerCount": {
+      "type": "integer"
+    },
+    "activeInvestigatorId": {
+      "type": "string"
+    },
+    "activePlayerId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "turnPlayerInvestigatorId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "leadInvestigatorId": {
+      "type": "string"
+    },
+    "playerOrder": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "phase": {
+      "enum": [
+        "MythosPhase",
+        "InvestigationPhase",
+        "EnemyPhase",
+        "UpkeepPhase",
+        "ResolutionPhase",
+        "CampaignPhase"
+      ]
+    },
+    "phaseStep": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "inAction": {
+      "type": "boolean"
+    },
+    "skillTest": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "skillTestChaosTokens": {
+      "$ref": "#/$defs/objectArray"
+    },
+    "focusedCards": {
+      "$ref": "#/$defs/objectArray"
+    },
+    "highlightedCards": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "focusedTarotCards": {
+      "$ref": "#/$defs/objectArray"
+    },
+    "foundCards": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/objectArray"
+      }
+    },
+    "focusedChaosTokens": {
+      "$ref": "#/$defs/objectArray"
+    },
+    "activeCard": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "removedFromPlay": {
+      "$ref": "#/$defs/objectArray"
+    },
+    "gameState": {
+      "$ref": "./game-state.schema.json"
+    },
+    "inSetup": {
+      "type": "boolean"
+    },
+    "skillTestResults": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "question": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "cards": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "totalDoom": {
+      "type": "integer"
+    },
+    "totalClues": {
+      "type": "integer"
+    },
+    "scenarioSteps": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "undoActionStep": {
+      "$ref": "#/$defs/nullableStep"
+    },
+    "undoTurnStep": {
+      "$ref": "#/$defs/nullableStep"
+    },
+    "undoPhaseStep": {
+      "$ref": "#/$defs/nullableStep"
+    },
+    "undoRoundStep": {
+      "$ref": "#/$defs/nullableStep"
+    },
+    "roundHistory": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "phaseHistory": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "turnHistory": {
+      "$ref": "#/$defs/entityMap"
+    },
+    "enemyAttackTargets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enemy",
+          "target"
+        ],
+        "properties": {
+          "enemy": {
+            "type": "string"
+          },
+          "target": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "entityMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "objectArray": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "nullableStep": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "gameSettings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "settingsAbilitiesCannotReactToThemselves",
+        "settingsAchievementsEnabled",
+        "settingsAsIfRuling",
+        "settingsRolledUltimatumOrBoon",
+        "settingsScreamedAllies",
+        "settingsStrictAsIfAt",
+        "settingsUltimatumsAndBoons",
+        "settingsUltimatumsAndBoonsEnabled"
+      ],
+      "properties": {
+        "settingsAbilitiesCannotReactToThemselves": {
+          "type": "boolean"
+        },
+        "settingsAchievementsEnabled": {
+          "type": "boolean"
+        },
+        "settingsAsIfRuling": {
+          "enum": [
+            "chapter1",
+            "chapter2"
+          ]
+        },
+        "settingsRolledUltimatumOrBoon": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "settingsScreamedAllies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "settingsStrictAsIfAt": {
+          "type": "boolean"
+        },
+        "settingsUltimatumsAndBoons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "settingsUltimatumsAndBoonsEnabled": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
