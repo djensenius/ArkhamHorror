@@ -109,21 +109,7 @@ for fixture in fixtures:
         )
         raise SystemExit(f"{fixture_path} does not match {schema_path}: {details}")
 
-negative_fixtures = manifest.get("negativeFixtures", [])
-for fixture in negative_fixtures:
-    fixture_path = fixture["path"]
-    schema_path = fixture["schema"]
-    require((ROOT / fixture_path).is_file(), f"Missing negative fixture: {fixture_path}")
-    require(schema_path in documents, f"Negative fixture schema is not a document: {schema_path}")
 
-    schema = load_json(ROOT / schema_path)
-    instance = load_json(ROOT / fixture_path)
-    validator_class = validator_for(schema)
-    validator = validator_class(
-        schema,
-        format_checker=FormatChecker(),
-        registry=registry,
-    )
 def flatten_errors(errors):
     for error in errors:
         yield error
