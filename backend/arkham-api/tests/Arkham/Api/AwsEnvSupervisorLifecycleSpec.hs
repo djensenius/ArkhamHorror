@@ -47,6 +47,8 @@ import Api.Arkham.Lifecycle (
   forkTransferringOwnershipUsing,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
   proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
+  publishTerminalFailureOnException,
+  raceManaged_,
   releaseAll,
   shutdownThenDeliver,
  )
@@ -231,6 +233,88 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       case result of
         Left _ -> pure ()
         Right () -> expectationFailure "expected the cancelled shutdown to be delivered as Left"
+
+  {- | Regression for the MEDIUM-severity audit finding: @app\/DevelMain.hs@'s
+  initial \"no server running\" branch created its 'Foreign.Store'-backed
+  slots (so a /subsequent/ @update@ call takes the \"server is already
+  running\" branch) and then called @start tidRef done@ directly, with no
+  handler at all. An ordinary acquisition\/spawn failure on that very
+  first generation (before any child is ever spawned to eventually fill
+  @done@ via 'shutdownThenDeliver') left @done@ permanently empty, so
+  /every/ later @update@ call would take the \"already running\" branch
+  and block forever inside
+  'proceedOnlyIfPreviousShutdownSucceededReplayable''s own
+  'Control.Concurrent.MVar.readMVar' against a cell nothing was ever
+  going to fill -- deadlocking restart permanently. The fix wraps that
+  initial @start@ call in 'publishTerminalFailureOnException', so an
+  exception escaping it is always durably published into @done@ as
+  @'Left'@ before propagating.
+
+  This test exercises the *exact* composition @DevelMain.update@ uses --
+  'publishTerminalFailureOnException' feeding the very same @done@ cell
+  that a subsequent restart attempt reads via
+  'proceedOnlyIfPreviousShutdownSucceededReplayable' -- not a
+  standalone, narrower test of either combinator alone, so a regression
+  in how @DevelMain@ actually wires them together (not just in either
+  combinator in isolation) would be caught here too.
+
+  Mutation check: removing the 'publishTerminalFailureOnException' wrapper
+  (reverting to a bare @start@ call, the pre-fix behavior) makes the
+  second 'proceedOnlyIfPreviousShutdownSucceededReplayable' call below
+  hang forever instead of immediately observing a repeated failure.
+  -}
+  describe "publishTerminalFailureOnException composed with proceedOnlyIfPreviousShutdownSucceededReplayable (DevelMain's exact initial-start/restart composition)" do
+    it "a failed very-first start durably publishes Left, so every subsequent restart attempt fails immediately (never blocks) and never starts a replacement" do
+      done <- newEmptyMVar
+      replacementStartedRef <- newIORef False
+      let failingInitialStart = Exception.throwIO (userError "initial acquisition failed")
+      -- Mirrors 'DevelMain.update''s @Nothing@ branch exactly.
+      result1 <- Exception.try @SomeException (publishTerminalFailureOnException done failingInitialStart)
+      case result1 of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the failing initial start to propagate"
+      -- The cell is durably filled -- not left empty -- immediately after
+      -- the failure, with no need for any other thread to ever fill it.
+      filled <- readMVar done
+      case filled of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected done to be durably filled with Left after the failing initial start"
+      -- Mirrors 'DevelMain.update''s @Just@ branch on the *second* call:
+      -- this must fail immediately (observing the same Left), never
+      -- block, and never run the replacement generation.
+      result2 <-
+        Exception.try @SomeException
+          (proceedOnlyIfPreviousShutdownSucceededReplayable done (writeIORef replacementStartedRef True))
+      case result2 of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the second restart attempt to observe the same durable failure"
+      readIORef replacementStartedRef `shouldReturn` False
+      -- A third attempt observes the exact same failure again, still
+      -- without blocking or starting a replacement -- the cell is never
+      -- silently drained by a failing read.
+      result3 <-
+        Exception.try @SomeException
+          (proceedOnlyIfPreviousShutdownSucceededReplayable done (writeIORef replacementStartedRef True))
+      case result3 of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the third restart attempt to observe the same durable failure"
+      readIORef replacementStartedRef `shouldReturn` False
+
+    it "a failed spawn/publish (not just a synchronous acquisition failure) is published identically, and a subsequently-successful start after that failure is never attempted automatically by this composition (the caller must explicitly retry only after fixing the underlying cause)" do
+      done <- newEmptyMVar
+      spawnAttempted <- newIORef (0 :: Int)
+      let failingSpawn = do
+            atomicModifyIORef' spawnAttempted (\n -> (n + 1, ()))
+            Exception.throwIO Exception.ThreadKilled
+      result <- Exception.try @SomeException (publishTerminalFailureOnException done failingSpawn)
+      case result of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the failing spawn to propagate"
+      readIORef spawnAttempted `shouldReturn` 1
+      outcome <- readMVar done
+      case outcome of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the failed spawn to be published as Left"
 
   {- | Regression for the exact @DevelMain.hs@ ordering bug: the old code
   signalled restart readiness (@putMVar done ()@, which unblocks
@@ -913,3 +997,85 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
             , atomicModifyIORef' ranAfterFailure (const (True, ()))
             ]
       readIORef ranAfterFailure `shouldReturn` False
+
+  {- | Regression for the HIGH-severity finding that 'Api.Arkham.Helpers.pubSubSupervisor'
+  used @UnliftIO.Async.race_@ (built on @Control.Concurrent.Async.withAsync@,
+  whose own cleanup is @uninterruptibleCancel@): a slow-to-respond losing
+  branch (e.g. blocked in a synchronous Redis read) made cleanup, and
+  therefore the whole race, unconditionally uninterruptible until that
+  loser eventually finished on its own -- capable of hanging Foundation
+  shutdown forever if the racer itself was ever asynchronously cancelled
+  while waiting. 'raceManaged_' is the repository-owned, always-interruptible
+  replacement now used there (via 'Api.Arkham.Lifecycle.raceManaged_').
+  -}
+  describe "raceManaged_ (always-interruptible race_ replacement used by Api.Arkham.Helpers.pubSubSupervisor)" do
+    it "returns the winner's own successful result, having already cancelled and genuinely awaited the loser before returning" do
+      loserCleanedUp <- newIORef False
+      let winner = pure ()
+          loser = Exception.finally (forever (threadDelay maxBound)) (writeIORef loserCleanedUp True)
+      result <- raceManaged_ winner loser
+      case result of
+        Right () -> pure ()
+        Left err -> expectationFailure ("expected the winner's own successful result, got Left " <> show err)
+      -- 'cancelBoth' runs via 'finally' *around* the wait for the
+      -- winner, so by the time 'raceManaged_' itself has returned, the
+      -- loser has already been genuinely cancelled and awaited to
+      -- completion -- not merely signalled and left running in the
+      -- background.
+      readIORef loserCleanedUp `shouldReturn` True
+
+    it "propagates the winner's own synchronous failure as Left, having already cancelled and awaited the loser first" do
+      loserCleanedUp <- newIORef False
+      let winner = Exception.throwIO (userError "winning side failed synchronously")
+          loser = Exception.finally (forever (threadDelay maxBound)) (writeIORef loserCleanedUp True)
+      result <- raceManaged_ winner loser
+      case result of
+        Left err -> show err `shouldContain` "winning side failed synchronously"
+        Right () -> expectationFailure "expected the winner's own synchronous failure to be captured, not swallowed"
+      readIORef loserCleanedUp `shouldReturn` True
+
+    {- | The core regression: unlike @withAsync@\/@uninterruptibleCancel@,
+    an asynchronous exception delivered to whichever thread is itself
+    calling 'raceManaged_' (standing in for 'Application.shutdownApp'
+    cancelling 'Api.Arkham.Helpers.pubSubSupervisor' during Foundation
+    shutdown) can always still land and propagate -- even while both
+    sides are still genuinely running and neither has responded to
+    cancellation yet -- and, when it does, both children are cancelled
+    and genuinely awaited to completion (not merely uninterruptibly,
+    silently abandoned) before that cancellation is allowed to finish
+    propagating out of 'raceManaged_' itself.
+
+    Mutation check: replacing 'raceManaged_' with an ordinary
+    @UnliftIO.Async.race_@\/@withAsync@-based implementation makes the
+    'Exception.throwTo' below block for as long as the (here,
+    permanently-blocked) losing sides take to finish on their own --
+    i.e. forever in this test, since neither ever exits by itself --
+    rather than landing and unwinding promptly once both children are
+    confirmed cancelled.
+    -}
+    it "when the racer itself is asynchronously cancelled while waiting on both sides, both children are cancelled and genuinely awaited before that cancellation propagates" do
+      leftStarted <- newEmptyMVar
+      rightStarted <- newEmptyMVar
+      leftCleanedUp <- newIORef False
+      rightCleanedUp <- newIORef False
+      let leftAction =
+            Exception.finally
+              (putMVar leftStarted () >> forever (threadDelay maxBound))
+              (writeIORef leftCleanedUp True)
+          rightAction =
+            Exception.finally
+              (putMVar rightStarted () >> forever (threadDelay maxBound))
+              (writeIORef rightCleanedUp True)
+      racerDone <- newEmptyMVar
+      racerTid <- forkIO $ do
+        outcome <- Exception.try @Exception.SomeException (raceManaged_ leftAction rightAction)
+        putMVar racerDone outcome
+      takeMVar leftStarted
+      takeMVar rightStarted
+      Exception.throwTo racerTid Exception.ThreadKilled
+      outcome <- takeMVar racerDone
+      case outcome of
+        Left _ -> pure ()
+        Right _ -> expectationFailure "expected the cancelled racer's own call to propagate a failure"
+      readIORef leftCleanedUp `shouldReturn` True
+      readIORef rightCleanedUp `shouldReturn` True

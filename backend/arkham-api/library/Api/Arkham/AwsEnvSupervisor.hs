@@ -470,13 +470,45 @@ managedFetchAuthInBackground getAuthEnv = do
       credentialsRef <- newIORef initial
       stopRequestedRef <- newIORef False
       refreshThread <- spawnManagedThread (refreshLoop callingThread credentialsRef stopRequestedRef)
-      let release = do
-            -- Recorded *before* delivering cancellation (see
-            -- 'cancelManagedThread'), so a caught exception the refresh
-            -- loop observes as a *result* of this release can always be
-            -- correctly recognized as expected, never misreported.
-            writeIORef stopRequestedRef True
-            cancelManagedThread refreshThread
+      let -- 'cancelManagedThread' can only ever observe *this exact*
+          -- 'refreshThread' as genuinely terminal via its own completion
+          -- 'MVar' -- but the calling thread performing this release may
+          -- be the *same* thread another, still-live, unrelated managed
+          -- refresh child (a sibling elsewhere in the same generation's
+          -- dependency graph, or -- see 'stopRequestedRef''s own
+          -- 'atomicWriteIORef' below -- even a stale, not-yet-visible
+          -- read of *this* child's own flag) targets with a delayed,
+          -- reclassified 'AuthError' via 'Exception.throwTo'. If that
+          -- lands asynchronously while this release's own
+          -- 'cancelManagedThread' call is blocked inside its 'readMVar'
+          -- wait, that wait is interrupted *without* 'refreshThread'
+          -- itself having actually terminated -- an 'AuthError' is never
+          -- proof that @refreshThread@ in particular is done. Retrying
+          -- 'cancelManagedThread' (re-delivering 'ThreadKilled' is always
+          -- safe: 'Control.Exception.throwTo' to an already-finished
+          -- thread is a documented no-op) discards only that specific,
+          -- recognized, sibling-feedback exception type and keeps
+          -- waiting until @refreshThread@'s own completion cell is
+          -- genuinely observed; any *other* exception arriving here
+          -- (e.g. a genuine external cancellation of this release
+          -- itself) is never swallowed and propagates immediately,
+          -- honestly reporting that release did not complete.
+          release = awaitReleased
+           where
+            awaitReleased = do
+              -- Recorded *before* delivering cancellation (see
+              -- 'cancelManagedThread'), so a caught exception the refresh
+              -- loop observes as a *result* of this release can always be
+              -- correctly recognized as expected, never misreported.
+              -- 'atomicWriteIORef' (not 'writeIORef') so this write is
+              -- guaranteed visible to 'refreshLoop' running on another
+              -- capability the instant it is next read, closing the
+              -- memory-visibility gap a plain 'writeIORef' leaves open.
+              atomicWriteIORef stopRequestedRef True
+              cancelManagedThread refreshThread `Exception.catch` \e ->
+                case Exception.fromException e of
+                  Just (_ :: AuthError) -> awaitReleased
+                  Nothing -> Exception.throwIO (e :: Exception.SomeException)
       pure (Ref (managedThreadId refreshThread) credentialsRef, release)
  where
   refreshLoop
@@ -492,8 +524,13 @@ managedFetchAuthInBackground getAuthEnv = do
         threadDelay =<< computeMicrosUntilRefreshDeadline expiry
         outcome <- Exception.try @Exception.SomeException getAuthEnv
         case outcome of
-          Right refreshed -> writeIORef credentialsRef refreshed >> go
+          Right refreshed -> atomicWriteIORef credentialsRef refreshed >> go
           Left err -> do
+            -- 'atomicWriteIORef'-paired read: without it, this could
+            -- observe a stale, pre-release @False@ even though 'release'
+            -- has already (per program order on the releasing thread)
+            -- written @True@, misreporting an expected cancellation as a
+            -- genuine 'AuthError' back to @callingThread@.
             stopRequested <- readIORef stopRequestedRef
             unless stopRequested $ Exception.throwTo callingThread (reclassifyAsAuthError err)
 
@@ -579,36 +616,37 @@ data AwsEnvAcquisition = AwsEnvAcquisition
 created, outermost\/newest first: 'awsEnvAcquisitionRelease' itself, then
 every hidden child, newest-to-oldest (see 'AwsEnvAcquisition').
 
-Every child's release is attempted even if an earlier one fails: this
-generation's own children can only ever target /this generation's own/
-dedicated thread with a delayed refresh-failure 'AuthError' (see
-'startSupervisedEnv''s per-generation thread isolation for why that
-target can never be a different generation's thread, nor this module's
-long-lived dispatcher) -- so an 'AuthError' surfacing while releasing one
-child here is provably just that same self-inflicted, expected feedback
-from killing it mid-refresh, not a fresh failure, and is discarded rather
-than aborting the remaining releases or being misreported. Any other
-(non-'AuthError') exception -- e.g. a genuine external cancellation
-landing while a specific child's release was in flight -- is never
-swallowed: every remaining child's release is still attempted regardless,
-but the first such genuine exception seen is re-raised only once every
-child has at least been attempted, preserving the original
-caller-visible failure\/cancellation exactly as if this function's own
-cleanup work were transparent.
+Every child's release is attempted even if an earlier one fails: each
+child's own release (see 'withManagedRelease'\/'managedFetchAuthInBackground')
+already never returns -- and so never lets 'attemptRelease' below observe
+success -- until that /exact/ child's own completion cell is genuinely
+observed, retrying internally past any asynchronously-arriving 'AuthError'
+feedback that could otherwise race a still-live child's confirmed
+termination (see 'managedFetchAuthInBackground''s @release@ for exactly
+why that retry, not a bare wait, is required: a sibling's own delayed
+refresh-failure notification can land on this exact calling thread while
+a wholly different child's release is still in flight, and must never be
+mistaken for /that/ child having stopped). By the time a release action
+here throws /anything/, it is therefore never merely that expected,
+self-inflicted feedback -- it is a genuine failure (or a genuine external
+cancellation of this cleanup itself) that this function must not
+discard: every remaining child's release is still attempted regardless,
+but the first such failure seen is re-raised only once every child has at
+least been attempted, preserving the original caller-visible
+failure\/cancellation exactly as if this function's own cleanup work were
+transparent.
 -}
 releaseAwsEnvAcquisition :: AwsEnvAcquisition -> IO ()
 releaseAwsEnvAcquisition (AwsEnvAcquisition _env finalRelease hiddenReleases) = do
   let orderedReleases = finalRelease : reverse hiddenReleases
-  firstGenuineFailure <- foldM attemptRelease Nothing orderedReleases
-  for_ firstGenuineFailure Exception.throwIO
+  firstFailure <- foldM attemptRelease Nothing orderedReleases
+  for_ firstFailure Exception.throwIO
  where
   attemptRelease :: Maybe Exception.SomeException -> IO () -> IO (Maybe Exception.SomeException)
-  attemptRelease firstGenuineFailure release =
+  attemptRelease firstFailure release =
     Exception.try @Exception.SomeException release >>= \case
-      Right () -> pure firstGenuineFailure
-      Left e
-        | Just (_ :: AuthError) <- Exception.fromException e -> pure firstGenuineFailure
-        | otherwise -> pure (Just (fromMaybe e firstGenuineFailure))
+      Right () -> pure firstFailure
+      Left e -> pure (Just (fromMaybe e firstFailure))
 
 {- | A drop-in replacement for the pinned Amazonka fork's own
 @Amazonka.Auth.discover@, identical in every credential source it tries,
@@ -680,7 +718,7 @@ discoverSafely :: IORef [IO ()] -> IORef (Maybe (IO ())) -> EnvNoAuth -> IO Env
 discoverSafely hiddenReleasesRef finalReleaseRef =
   runCredentialChain
     [ fromKeysEnv
-    , safeFileEnv productionConfigProfileResolvers hiddenReleasesRef
+    , safeFileEnv productionConfigProfileResolvers hiddenReleasesRef finalReleaseRef
     , safeWebIdentityEnv finalReleaseRef
     , safeContainerEnv finalReleaseRef
     , safeDefaultInstanceProfile finalReleaseRef
@@ -1319,17 +1357,38 @@ tolerance (pinned @fromFilePath@'s own @Exception.catchJust@ around each
 @loadIniFile@ call), and the same final @AWS_REGION@ override precedence,
 as the pinned source.
 
-Writes the resolved profile's hidden-release list into @hiddenReleasesRef@
--- read back by 'acquireAwsEnv' once 'discoverSafely' as a whole succeeds
--- but only on this function's own success: every failure path upstream in
-'safeEvalConfigProfile' already self-cleans via 'Exception.onException'
-before any exception ever reaches here, so this ledger always reflects
-either this attempt's complete hidden-release list, or (if this provider
-lost to an earlier one in 'discoverSafely''s chain, or failed outright)
-remains untouched.
+Writes the resolved profile's hidden-release list into @hiddenReleasesRef@,
+and -- exactly as every other managed provider in 'discoverSafely''s chain
+-- the resolved profile's own final, genuinely-awaiting
+'managedFetchAuthInBackground' release into @finalReleaseRef@, both read
+back by 'acquireAwsEnv' once 'discoverSafely' as a whole succeeds. Both
+are written only on this function's own success: every failure path
+upstream in 'safeEvalConfigProfile' already self-cleans via
+'Exception.onException' before any exception ever reaches here, so these
+ledgers always reflect either this attempt's complete release state, or
+(if this provider lost to an earlier one in 'discoverSafely''s chain, or
+failed outright) remain untouched. The two writes happen back to back
+with no interleaving fallible\/blocking step between them, and this
+function -- like every 'discoverSafely' provider -- only ever runs from
+'acquireAwsEnv'\/'runOneGeneration''s own masked span (see
+'startSupervisedEnv'), so neither write can itself be asynchronously
+interrupted: 'acquireAwsEnv' can never observe one without the other.
+
+Before this @finalReleaseRef@ threading existed, /every/ config-selected
+dynamic provider -- @sts:AssumeRole@ (direct or via @source_profile@),
+@AssumeRoleWithWebIdentity@, SSO, @credential_source=EcsContainer@, and
+@credential_source=Ec2InstanceMetadata@ -- left @finalReleaseRef@
+permanently empty whenever the config-file provider won outright:
+'safeEvalConfigProfile' still produced a fully correct
+'awsEnvAcquisitionRelease' (via 'withManagedRelease'\/'managedFetchAuthInBackground'),
+but this function discarded it, so 'acquireAwsEnv' silently fell back to
+the naive '.auth'-derived @requireChildReleased@ -- the exact
+kill-then-bounded-poll fallback (with no stop flag, no genuinely-awaited
+terminal acknowledgement) 'managedFetchAuthInBackground' exists to avoid
+for every provider capable of producing temporary\/expiring credentials.
 -}
-safeFileEnv :: ConfigProfileResolvers -> IORef [IO ()] -> Env' withAuth -> IO Env
-safeFileEnv resolvers hiddenReleasesRef env = do
+safeFileEnv :: ConfigProfileResolvers -> IORef [IO ()] -> IORef (Maybe (IO ())) -> Env' withAuth -> IO Env
+safeFileEnv resolvers hiddenReleasesRef finalReleaseRef env = do
   profileName <- maybe "default" Text.pack <$> lookupEnv "AWS_PROFILE"
   credentialsPath <- maybe (configPathRelative "/.aws/credentials") pure =<< lookupEnv "AWS_SHARED_CREDENTIALS_FILE"
   configPath <- maybe (configPathRelative "/.aws/config") pure =<< lookupEnv "AWS_CONFIG_FILE"
@@ -1340,6 +1399,7 @@ safeFileEnv resolvers hiddenReleasesRef env = do
   regionOverride <- lookupRegion
   let resolvedEnv = maybe id (\r e -> e {region = r}) regionOverride (awsEnvAcquisitionEnv acquisition)
   writeIORef hiddenReleasesRef (awsEnvAcquisitionHiddenReleases acquisition)
+  writeIORef finalReleaseRef (Just (awsEnvAcquisitionRelease acquisition))
   pure resolvedEnv
  where
   tolerateMissingOrInvalid = Exception.handle (\(_ :: AuthError) -> pure HashMap.empty)
@@ -1578,7 +1638,7 @@ startSupervisedEnv acquire awaitInvalidation backoff = do
   supervise stateVar =
     forever loopOnce `finally` publish stateVar AwsAuthSupervisorTerminated
    where
-    loopOnce = do
+    loopOnce = Exception.mask $ \restore -> do
       -- See the module Haddock ("Per-generation thread isolation"): each
       -- generation's own acquire/monitor/release cycle runs on a fresh
       -- 'ManagedThread', never this dispatcher thread itself, so a
@@ -1590,8 +1650,28 @@ startSupervisedEnv acquire awaitInvalidation backoff = do
       -- in-flight generation is cancelled and awaited first -- but,
       -- unlike 'Control.Concurrent.Async.withAsync', using only ordinary
       -- interruptible cancellation throughout (see 'ManagedThread').
+      --
+      -- 'loopOnce' itself runs entirely unmasked (this dispatcher thread
+      -- was itself spawned via 'spawnManagedThread', whose own body runs
+      -- via 'Control.Concurrent.forkIOWithUnmask' -- see 'ManagedThread'),
+      -- so without this explicit 'Exception.mask', a 'ThreadKilled'
+      -- delivered in the gap between 'spawnManagedThread' returning
+      -- @generationThread@ and 'Exception.onException' actually
+      -- installing its handler around the wait below could propagate
+      -- from this @do@-block *unhandled* -- orphaning @generationThread@
+      -- (and everything it owns) with nothing left to cancel\/await it,
+      -- while 'forever loopOnce''s own enclosing 'finally' only ever
+      -- publishes 'AwsAuthSupervisorTerminated', never releases a
+      -- specific in-flight generation. Masking the entire
+      -- spawn-through-handler-installation span closes that gap
+      -- completely: 'restore' is applied only around the wait itself, so
+      -- this dispatcher remains genuinely interruptible while blocked
+      -- there (and 'Exception.onException''s handler, installed while
+      -- still masked, is guaranteed to already be in place for any
+      -- exception 'restore' lets back in), but no exception can ever
+      -- land in the narrower window before that handler exists.
       generationThread <- spawnManagedThread runOneGeneration
-      diag <- waitManagedThread generationThread `Exception.onException` cancelManagedThread generationThread
+      diag <- restore (waitManagedThread generationThread) `Exception.onException` cancelManagedThread generationThread
       publish stateVar diag
       backoff
 

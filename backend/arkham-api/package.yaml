@@ -201,6 +201,8 @@ tests:
       - amazonka
       - amazonka-core
       - bytestring
+      - containers
+      - directory
       - exceptions
       - hspec
       - hspec-expectations-lifted
@@ -214,7 +216,6 @@ tests:
       - persistent
       - random
       - relude
-      - containers
       - text
       - time
       - unordered-containers

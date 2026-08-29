@@ -27,6 +27,7 @@ module Api.Arkham.Lifecycle (
   shutdownThenDeliver,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
   proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
+  publishTerminalFailureOnException,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
   ManagedThread,
@@ -34,6 +35,7 @@ module Api.Arkham.Lifecycle (
   spawnManagedThread,
   waitManagedThread,
   cancelManagedThread,
+  raceManaged_,
   acquireThenForkTransferringOwnership,
   acquireThenForkTransferringOwnershipUsing,
 ) where
@@ -45,6 +47,7 @@ import Control.Exception (
   SomeException,
   bracket,
   bracketOnError,
+  finally,
   mask,
   mask_,
   onException,
@@ -411,6 +414,110 @@ cancelManagedThread thread = do
   throwTo (managedThreadId thread) ThreadKilled
   _ <- readMVar (managedThreadDone thread)
   pure ()
+
+{- | A repository-owned, always-interruptible replacement for
+@UnliftIO.Async.race_@\/@Control.Concurrent.Async.race_@: run @left@ and
+@right@ concurrently (each on its own 'ManagedThread'), wait for whichever
+finishes first (successfully or by throwing -- either way counts as
+\"done\" for racing purposes, exactly like @race_@), then cancel and
+genuinely await the other before returning.
+
+@async@\/@unliftio@\'s own @race_@ is built on
+@Control.Concurrent.Async.withAsync@ for both branches, whose own cleanup
+(run once the racing @waitEither@ decides a winner, or if @race_@\'s
+/caller/ is itself asynchronously cancelled while waiting) is
+@Control.Concurrent.Async.uninterruptibleCancel@ -- so if the losing
+branch does not respond to cancellation quickly (e.g. it is blocked
+inside a synchronous, non-interruptible network read), that cleanup, and
+therefore @race_@ itself, becomes unconditionally uninterruptible until
+the loser eventually finishes, however long that takes. This can make an
+enclosing shutdown (a 'cancelManagedThread' call from
+'Application.shutdownApp' targeting whatever 'ManagedThread' this
+function itself runs on) hang exactly as
+'Api.Arkham.AwsEnvSupervisor''s own former @withAsync@ usage could.
+
+This instead uses only ordinary, always-interruptible primitives
+throughout -- 'spawnManagedThread', a plain 'Control.Concurrent.MVar.MVar'
+signalled via 'Control.Concurrent.MVar.tryPutMVar' (so it can never
+itself block), and 'cancelManagedThread' (ordinary @throwTo@ + a genuine,
+interruptible, non-destructive wait) -- so a caller of this function can
+always itself still be interrupted, even against a loser that never
+responds; it never becomes uninterruptible no matter how stuck that loser
+is, and it never returns having merely /started/ cancelling the loser
+without having actually, synchronously confirmed it stopped.
+
+Every child's cancellation is attempted even if the other fails or this
+function's own wait is itself interrupted while racing: 'finally' ensures
+'cancelBoth' always runs, and 'cancelBoth' itself always attempts to
+cancel\/await *both* children regardless of whether the first one's
+cancellation throws.
+
+Returns whichever side finished first as an already-caught
+@'Either' 'SomeException' ()@ (mirroring @Control.Exception.try
+\@SomeException@ wrapped around an ordinary @race_@ call -- see
+'Api.Arkham.Helpers.pubSubSupervisor', this function's only current
+caller, for exactly why that outcome, not just @()@, is needed): only the
+/synchronous/ result of whichever @action@ actually finished first is
+ever captured this way; an asynchronous exception delivered to /this/
+thread while it waits is never caught, and propagates exactly as an
+ordinary interruptible 'Control.Concurrent.MVar.readMVar' would.
+-}
+raceManaged_ :: IO () -> IO () -> IO (Either SomeException ())
+raceManaged_ leftAction rightAction = mask $ \restore -> do
+  firstDone <- newEmptyMVar
+  let announce action = do
+        outcome <- try @SomeException action
+        _ <- tryPutMVar firstDone outcome
+        pure ()
+  leftThread <- spawnManagedThread (announce leftAction)
+  rightThread <-
+    spawnManagedThread (announce rightAction)
+      `onException` cancelManagedThread leftThread
+  restore (readMVar firstDone)
+    `finally` cancelBoth leftThread rightThread
+ where
+  cancelBoth :: ManagedThread () -> ManagedThread () -> IO ()
+  cancelBoth leftThread rightThread = do
+    leftOutcome <- try @SomeException (cancelManagedThread leftThread)
+    rightOutcome <- try @SomeException (cancelManagedThread rightThread)
+    case (leftOutcome, rightOutcome) of
+      (Left e, _) -> throwIO e
+      (Right (), Left e) -> throwIO e
+      (Right (), Right ()) -> pure ()
+
+{- | Used by @app\/DevelMain.hs@'s initial \"no server running\" branch:
+run @action@ (expected to eventually make some other caller's future
+'proceedOnlyIfPreviousShutdownSucceededReplayable' call against @done@
+observe a definite outcome via that same @done@ cell -- see
+'acquireThenForkTransferringOwnership''s own @finalize@\/'shutdownThenDeliver'),
+but if @action@ itself fails before ever reaching the point where a
+spawned child's own finalizer takes over responsibility for eventually
+filling @done@ (i.e. an ordinary acquisition\/spawn failure on the very
+first generation, with no child ever created), durably publish that same
+failure into @done@ (via 'Control.Concurrent.MVar.tryPutMVar', so this
+can never itself block) before propagating it, rather than leaving @done@
+permanently empty.
+
+Without this, a failed\/cancelled first @start@ still leaves the
+'Foreign.Store.Store'-backed slot itself created (so the /next/
+@DevelMain.update@ call takes the \"server is already running\" branch,
+not \"no server running\"), reading that exact same, still-empty @done@
+via 'proceedOnlyIfPreviousShutdownSucceededReplayableUsing''s own
+'Control.Concurrent.MVar.readMVar' -- which then blocks forever, since
+nothing was ever going to fill it. Publishing a terminal 'Left' here
+instead makes every subsequent restart attempt observe that same failure
+immediately, exactly as 'proceedOnlyIfPreviousShutdownSucceededReplayableUsing'
+already does for a /later/ generation's own failed shutdown.
+-}
+publishTerminalFailureOnException :: MVar (Either SomeException ()) -> IO a -> IO a
+publishTerminalFailureOnException done action =
+  action `catchAndPublish` \err -> do
+    _ <- tryPutMVar done (Left err)
+    throwIO err
+ where
+  catchAndPublish act handler = do
+    outcome <- try @SomeException act
+    either handler pure outcome
 
 {- | As 'forkTransferringOwnershipUsing', but additionally owns
 *acquiring* @res@ itself, rather than accepting an already-acquired

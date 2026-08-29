@@ -8803,6 +8803,7 @@ test-suite spec
     , base
     , bytestring
     , containers
+    , directory
     , exceptions
     , hspec
     , hspec-expectations-lifted

@@ -1,6 +1,6 @@
 module Arkham.Api.AwsEnvSupervisorSpec (spec) where
 
-import Amazonka (AuthEnv (..), Env, Env' (..), Error (..), Region (..), SerializeError (..), newEnvNoAuth)
+import Amazonka (AuthEnv (..), Env, Env' (..), Error (..), Region (..), SerializeError (..), Time (..), newEnvNoAuth)
 import Amazonka.Auth (Auth (..), AuthError (..))
 import Amazonka.Error (serviceError)
 import Api.Arkham.AwsEnvSupervisor (
@@ -18,6 +18,7 @@ import Api.Arkham.AwsEnvSupervisor (
   acquireRegionBeforeAuth,
   classifyAuthErrorDiagnostic,
   classifyErrorDiagnostic,
+  managedFetchAuthInBackground,
   newDemandDrivenSupervisor,
   readSupervisedEnv,
   releaseAwsEnvAcquisition,
@@ -25,6 +26,7 @@ import Api.Arkham.AwsEnvSupervisor (
   requestDemandDrivenReady,
   requireChildReleased,
   safeEvalConfigProfile,
+  safeFileEnv,
   startSupervisedEnv,
   stopDemandDrivenSupervisor,
   stopSupervisedEnv,
@@ -33,10 +35,13 @@ import Arkham.Prelude
 import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId, threadDelay)
 import Control.Exception qualified as Exception
 import Data.HashMap.Strict qualified as HashMap
+import Data.Time (addUTCTime)
 import Data.Void (absurd)
 import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Network.HTTP.Client qualified as Client
 import Network.HTTP.Types.Status (status403, status404, status500)
+import System.Directory qualified as Directory
+import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Hspec
 
@@ -606,6 +611,76 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     waitForAllLabels 2000
     readIORef releaseOrderRef `shouldReturn` ["c", "b", "a"]
 
+{- | Regression for the HIGH-severity finding that 'safeFileEnv' recorded
+only 'awsEnvAcquisitionHiddenReleases' into @hiddenReleasesRef@ and never
+threaded the resolved profile's own 'awsEnvAcquisitionRelease' into
+@finalReleaseRef@ at all: whenever the config-file provider won outright
+for a profile resolving to a dynamic (@sts:AssumeRole@\/web identity\/
+SSO\/@credential_source@) provider, 'acquireAwsEnv' would find
+@finalReleaseRef@ still 'Nothing' and silently fall back to the naive,
+un-awaited 'requireChildReleased' kill-then-bounded-poll release for the
+final @.auth@ -- exactly the un-awaited-terminal-acknowledgement fallback
+'managedFetchAuthInBackground' exists to avoid.
+
+Deliberately goes through 'safeFileEnv' itself (not a direct
+'safeEvalConfigProfile' call, which every other test in this module
+already exercises for the config-graph's own resolution\/accumulation
+correctness) -- i.e. real, on-disk credentials\/config INI files read via
+the exact @AWS_SHARED_CREDENTIALS_FILE@\/@AWS_CONFIG_FILE@\/@AWS_PROFILE@
+environment-variable\/@mergeConfigs@\/'safeLoadIniFile' path production
+uses -- so a regression in 'safeFileEnv''s own two 'writeIORef' calls (the
+actual site of this bug) is directly caught, not bypassed. The fixture
+files live under a uniquely-named, test-owned directory (created and torn
+down entirely within this one test) so no other test or run is affected;
+the three environment variables this reads are saved and unconditionally
+restored via 'Exception.bracket' around the narrow span that needs them.
+
+Mutation check: reverting 'safeFileEnv' to omit the
+@writeIORef finalReleaseRef (Just (awsEnvAcquisitionRelease acquisition))@
+line makes this test's @hasFinalRelease@ assertion fail (it would remain
+'Nothing').
+-}
+safeFileEnvSpec :: Spec
+safeFileEnvSpec = describe "safeFileEnv (config-file bridge: threading finalReleaseRef through to acquireAwsEnv)" do
+  it "writes BOTH hiddenReleasesRef and finalReleaseRef for a real, on-disk source_profile + assume-role config-file chain" do
+    envNoAuth <- newEnvNoAuth
+    let fixtureDir = "safefileenv-source-profile-assume-role-fixture"
+        credentialsPath = fixtureDir <> "/credentials"
+        configPath = fixtureDir <> "/config"
+        withSavedEnvVar name action =
+          Exception.bracket
+            (lookupEnv name)
+            (\prior -> maybe (unsetEnv name) (setEnv name) prior)
+            (const action)
+    Exception.bracket_
+      ( do
+          Directory.createDirectoryIfMissing True fixtureDir
+          writeFile credentialsPath "[source]\naws_access_key_id = AKIASOURCE\naws_secret_access_key = secretsource\n"
+          writeFile configPath "[profile target]\nrole_arn = arn:aws:iam::123456789012:role/TestRole\nsource_profile = source\n"
+      )
+      (Directory.removeDirectoryRecursive fixtureDir)
+      $ withSavedEnvVar "AWS_PROFILE"
+      $ withSavedEnvVar "AWS_CONFIG_FILE"
+      $ withSavedEnvVar "AWS_SHARED_CREDENTIALS_FILE"
+      $ do
+        setEnv "AWS_PROFILE" "target"
+        setEnv "AWS_CONFIG_FILE" configPath
+        setEnv "AWS_SHARED_CREDENTIALS_FILE" credentialsPath
+        hiddenReleasesRef <- newIORef []
+        finalReleaseRef <- newIORef Nothing
+        let resolvers = unreachableConfigProfileResolvers {resolveAssumedRole = \_ _ sourceEnv -> fst <$> fakeRefEnv sourceEnv}
+        _finalEnv <- safeFileEnv resolvers hiddenReleasesRef finalReleaseRef envNoAuth
+        hidden <- readIORef hiddenReleasesRef
+        length hidden `shouldBe` 1
+        maybeFinal <- readIORef finalReleaseRef
+        case maybeFinal of
+          Nothing -> expectationFailure "expected safeFileEnv to populate finalReleaseRef with the resolved profile's own release, not leave it Nothing"
+          Just finalRelease ->
+            -- The threaded release must genuinely be the resolved
+            -- profile's own (fake-managed) release, not a stub: calling
+            -- it must not throw.
+            finalRelease
+
 {- | Regression\/design-verification for the application-lifetime
 supervised-'Env' architecture that replaced the earlier per-request
 @discoverFrozenEnv@\/@freezeAuth@\/@runOnDisposableWorker@ worker protocol,
@@ -631,6 +706,7 @@ each test's own gates establish.
 spec :: Spec
 spec = describe "AWS Env supervisor" do
   configProfileGraphSpec
+  safeFileEnvSpec
 
   {- | Regression for the follow-up audit: the handler used to log
   'tshow err'/'tshow authErr' directly. 'TransportError'/'RetrievalError'
@@ -814,18 +890,32 @@ spec = describe "AWS Env supervisor" do
 
   {- | Regression for the HIGH-severity cleanup-order audit's second half:
   'releaseAwsEnvAcquisition' must attempt every child's release even if
-  an earlier one throws, discarding an 'AuthError' specifically (self-
-  inflicted feedback from killing a child mid-refresh -- safe precisely
-  because 'startSupervisedEnv' gives every generation its own dedicated
-  thread, so it can only ever be this generation's own noise; see that
-  module Haddock) while still surfacing any genuine non-'AuthError'
-  failure once every release has at least been attempted. These
+  an earlier one throws, and re-raise the first genuine failure only
+  once every release has at least been attempted. An earlier revision of
+  this module special-cased 'AuthError' here as automatically-safe-to-
+  discard feedback from killing a child mid-refresh; that assumption was
+  unsound (a *sibling* worker's own late, genuine refresh-failure
+  notification can land on the very thread performing an unrelated
+  child's release, and is indistinguishable from that unrelated child's
+  own outcome at this layer -- see 'managedFetchAuthInBackground''s own
+  Haddock), so an 'AuthError' arriving here is now treated exactly like
+  any other exception: every remaining release is still attempted
+  regardless, but it is genuinely re-thrown, never silently swallowed.
+  The retry that safely discards *expected* sibling 'AuthError' feedback
+  now lives one layer down, inside 'managedFetchAuthInBackground''s own
+  @release@ -- the only place that can actually tell whether an
+  'AuthError' arriving during its wait belongs to *this specific* child
+  (see the live-worker regression test below). These first two tests
   construct an 'AwsEnvAcquisition' directly (with a static, no-op-release
   outer @.auth@) so each hidden release's own behaviour is fully
   test-controlled, independent of any real forked thread.
+
+  Mutation check: reintroducing an @AuthError@-is-automatically-safe
+  special case into 'attemptRelease' makes the first test below fail
+  (the 'AuthError' would be discarded instead of propagating).
   -}
   describe "releaseAwsEnvAcquisition (attempts every release even if one throws)" do
-    it "an AuthError from one child's release is discarded, and every other release still runs, in order" do
+    it "an AuthError from one child's release is no longer discarded -- every other release still runs, then it is genuinely re-thrown" do
       envNoAuth <- newEnvNoAuth
       staticEnv <- fakeStaticEnv envNoAuth
       orderRef <- newIORef ([] :: [Text])
@@ -835,11 +925,75 @@ spec = describe "AWS Env supervisor" do
             , record "second" >> Exception.throwIO (RetrievalError httpExceptionFixture)
             , record "third"
             ]
-      releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv (pure ()) hiddenReleases)
-      -- Hidden releases run newest-to-oldest (reversed): "third", then
-      -- "second" (which throws, but is caught and discarded), then
-      -- "first" still runs regardless.
+      outcome <-
+        Exception.try @AuthError
+          (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv (pure ()) hiddenReleases))
+      case outcome of
+        Left (RetrievalError _) -> pure ()
+        _ -> expectationFailure "expected the AuthError to propagate genuinely, not be swallowed"
+      -- Hidden releases still run newest-to-oldest (reversed): "third",
+      -- then "second" (which throws, and is now recorded rather than
+      -- discarded), then "first" still runs regardless.
       readIORef orderRef `shouldReturn` ["third", "second", "first"]
+
+    {- | Regression for the retry actually added inside
+    'managedFetchAuthInBackground' itself (see that function's Haddock),
+    exercised through the *real*, live worker\/'cancelManagedThread'
+    machinery rather than a fake, single-shot 'Exception.throwIO' at the
+    'attemptRelease' layer. @target@ below is an ordinary, otherwise
+    unremarkable live worker with a far-future expiration: sitting
+    quietly in its own scheduled refresh delay, it can *only* ever
+    terminate here via a genuinely successful 'cancelManagedThread' call
+    actually reaching it -- never a coincidental natural refresh failure
+    of its own. While its release is in flight, a background flood
+    repeatedly delivers a correctly-classified 'AuthError' (the exact
+    type\/shape 'reclassifyAsAuthError' produces for a live sibling's own
+    genuine refresh failure) to this very same calling thread, bounded to
+    a fixed, short window so the test remains deterministic rather than
+    racing an unbounded flood against 'release'.
+
+    Mutation check: reverting 'managedFetchAuthInBackground''s
+    @awaitReleased@ retry back to a bare 'cancelManagedThread' call makes
+    this test fail: the very first flooded 'AuthError' can interrupt
+    'release' before it has even sent 'ThreadKilled' to @targetTid@ at
+    all, so 'releaseAwsEnvAcquisition' would return (having wrongly
+    treated that unrelated feedback as this target's own release) while
+    @targetTid@ is reported still-live by 'threadStatus' below.
+    -}
+    it "the target worker's release keeps retrying, never reporting success, until its own thread is genuinely confirmed terminated -- even while continuously interrupted by correctly-classified AuthError feedback landing on the very same calling thread" do
+      farFuture <- (\now -> Time (addUTCTime 60 now)) <$> getCurrentTime
+      (targetAuth, releaseTarget) <-
+        managedFetchAuthInBackground (pure (AuthEnv "AKIAEXAMPLE" "secret" Nothing (Just farFuture)))
+      case targetAuth of
+        Ref targetTid _ -> do
+          envNoAuth <- newEnvNoAuth
+          staticEnv <- fakeStaticEnv envNoAuth
+          myTid <- myThreadId
+          floodStopRef <- newIORef False
+          floodDoneGate <- newEmptyMVar
+          let floodIterations = 200 :: Int
+              flood n
+                | n >= floodIterations = pure ()
+                | otherwise = do
+                    stop <- readIORef floodStopRef
+                    unless stop $ do
+                      Exception.throwTo myTid (OtherAuthError (Exception.toException (userError "sibling feedback")))
+                      threadDelay 1_000
+                      flood (n + 1)
+          _ <- forkIO (flood 0 >> putMVar floodDoneGate ())
+          result <-
+            timeout 5_000_000
+              $ Exception.try @Exception.SomeException
+                (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv releaseTarget []))
+          writeIORef floodStopRef True
+          takeMVar floodDoneGate
+          case result of
+            Nothing -> expectationFailure "releaseAwsEnvAcquisition did not return within the bounded timeout"
+            Just (Left (e :: Exception.SomeException)) -> Exception.throwIO e
+            Just (Right ()) -> pure ()
+          status <- threadStatus targetTid
+          status `shouldSatisfy` isTerminatedStatus
+        _ -> expectationFailure "expected managedFetchAuthInBackground to return a Ref for a far-future expiration, not a static Auth"
 
     {- | Mutation check: if 'releaseAwsEnvAcquisition' instead let ANY
     exception (not just 'AuthError') abort the remaining releases, this
@@ -882,6 +1036,98 @@ spec = describe "AWS Env supervisor" do
       case outcome of
         Left e -> show e `shouldContain` "runs first, must be the one re-thrown"
         Right () -> expectationFailure "expected the first genuine (in execution order) failure to propagate"
+
+  {- | Regression for the MEDIUM-severity finding that 'managedFetchAuthInBackground'
+  published both @stopRequestedRef@ (in @release@) and @credentialsRef@ (in
+  @refreshLoop@) with a plain 'Data.IORef.writeIORef' rather than
+  'Data.IORef.atomicWriteIORef': on a weak-memory architecture (this
+  suite runs on aarch64), a plain write from the releasing thread is not
+  guaranteed to be promptly visible to @refreshLoop@ running concurrently
+  on a different capability, so an in-flight refresh failure racing an
+  in-flight release could observe a stale, pre-release @False@ and
+  misclassify an entirely expected cancellation as a genuine 'AuthError',
+  incorrectly delivering it to the calling thread via
+  'Exception.throwTo'. These tests exercise the real
+  'managedFetchAuthInBackground' (not a fake @Ref@), not
+  'releaseAwsEnvAcquisition'\/'attemptRelease' one layer up, so a
+  regression in this specific visibility fix is caught here directly.
+  -}
+  describe "managedFetchAuthInBackground (refresh-loop / release visibility)" do
+    it "a genuine refresh failure that is never raced by a release is still classified and delivered to the calling thread as an AuthError" do
+      alreadyExpired <- (\now -> Time (addUTCTime (-1) now)) <$> getCurrentTime
+      callCountRef <- newIORef (0 :: Int)
+      let getAuthEnv = do
+            n <- atomicModifyIORef' callCountRef (\k -> (k + 1, k + 1))
+            if n == 1
+              then pure (AuthEnv "AKIAEXAMPLE" "secret" Nothing (Just alreadyExpired))
+              else Exception.throwIO (RetrievalError httpExceptionFixture)
+      outcome <- Exception.try @AuthError $ do
+        (_auth, _release) <- managedFetchAuthInBackground getAuthEnv
+        -- No release is ever called here: the refresh loop is left free
+        -- to run and observe the already-past expiry, attempt an
+        -- immediate refresh, and correctly report its own genuine
+        -- failure -- proving a real failure is never accidentally
+        -- suppressed as if it were an expected, release-driven stop.
+        forever (threadDelay maxBound) :: IO ()
+      case outcome of
+        Left (RetrievalError _) -> pure ()
+        Left other -> expectationFailure ("expected a RetrievalError, got " <> show other)
+        Right () -> expectationFailure "expected the genuine refresh failure to be delivered as an AuthError"
+
+    {- | Best-effort regression check for the 'atomicWriteIORef' visibility
+    fix: many independent trials each construct a fresh worker whose
+    expiry is already in the past (so its very first scheduled refresh
+    happens essentially immediately, racing this test's own immediate
+    @release@ call across as many different real scheduling
+    interleavings as this many iterations naturally sample), and assert
+    that not one single trial ever lets a stray 'AuthError' escape past a
+    successful @release@ to the calling thread.
+
+    Honesty about this test's actual power: locally reverting
+    'atomicWriteIORef' back to a plain 'writeIORef' at both call sites
+    and re-running this exact test (300 iterations, repeatedly) did
+    /not/ reproduce a visible failure on this machine\/GHC\/RTS
+    combination -- consistent with 'writeIORef' and 'atomicWriteIORef'
+    compiling to near-identical code for a lone boolean flag under @-O0@
+    (the flag this test suite always builds with), with no second,
+    reorderable memory operation nearby for a genuine store-reordering
+    race to manifest against in practice. This test therefore does
+    /not/ meet the usual \"mutation must fail\" bar for the specific
+    @atomicWriteIORef@-vs-@writeIORef@ choice: it is retained as a
+    behavioral regression net for the *combined* release\/refresh-race
+    contract (still meaningfully exercises the real, live
+    'managedFetchAuthInBackground' under adversarial timing, and would
+    catch a regression in @awaitReleased@'s own 'AuthError' retry -- see
+    the mutation-checked test above for that), not as proof that this
+    exact primitive choice is behaviorally load-bearing on this specific
+    hardware. 'atomicWriteIORef' is kept on correctness-by-construction
+    grounds (it is the documented, portable way to publish a flag read
+    by another capability without depending on any particular
+    architecture's cache-coherence timing), not because this test can
+    demonstrably fail without it.
+    -}
+    it "release racing an imminent refresh failure never lets a stray AuthError escape to the calling thread, across many real scheduling interleavings" do
+      strayCountRef <- newIORef (0 :: Int)
+      let iterations = 300 :: Int
+          oneTrial = do
+            alreadyExpired <- (\now -> Time (addUTCTime (-0.001) now)) <$> getCurrentTime
+            callCountRef <- newIORef (0 :: Int)
+            let getAuthEnv = do
+                  n <- atomicModifyIORef' callCountRef (\k -> (k + 1, k + 1))
+                  if n == 1
+                    then pure (AuthEnv "AKIAEXAMPLE" "secret" Nothing (Just alreadyExpired))
+                    else Exception.throwIO (RetrievalError httpExceptionFixture)
+            outcome <- Exception.try @AuthError $ do
+              (_auth, release) <- managedFetchAuthInBackground getAuthEnv
+              -- No gate, no delay: release is issued immediately,
+              -- deliberately racing whatever the freshly-spawned refresh
+              -- loop is doing at that exact moment.
+              release
+            case outcome of
+              Left (_ :: AuthError) -> atomicModifyIORef' strayCountRef (\n -> (n + 1, ()))
+              Right () -> pure ()
+      replicateM_ iterations oneTrial
+      readIORef strayCountRef `shouldReturn` 0
 
   {- | Regression for the HIGH-severity finding that
   @Amazonka.Auth.InstanceProfile.fromNamedInstanceProfile@ (pinned source,
@@ -958,20 +1204,58 @@ spec = describe "AWS Env supervisor" do
       -- once nothing is monitoring it any longer.
       readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
 
-    it "also terminates cleanly, publishing terminal Unavailable, when stopped while still Initializing (acquisition never completes)" do
-      acquireStarted <- newEmptyMVar
+    {- | Regression for the HIGH-severity finding that 'loopOnce' ran
+    entirely unmasked between 'spawnManagedThread' returning
+    @generationThread@ and 'Exception.onException' actually installing its
+    handler around the wait: a 'ThreadKilled' delivered to the dispatcher
+    in that exact gap could propagate out of 'loopOnce' unhandled,
+    orphaning @generationThread@ (and everything it in turn owns) with
+    nothing left to cancel\/await it -- 'forever loopOnce''s own enclosing
+    'finally' only ever publishes 'AwsAuthSupervisorTerminated', which
+    (as this very test's setup proves) is published identically whether
+    or not the generation thread was actually cancelled, since an
+    unhandled exception escaping @loopOnce@ still terminates the
+    @forever loopOnce@ dispatcher and runs that outer 'finally' either
+    way. A prior version of this suite only asserted the published
+    terminal state here, which cannot distinguish the fixed design from
+    the bug: this test additionally captures @generationThread@'s own
+    'Control.Concurrent.ThreadId' (via 'myThreadId' called directly from
+    inside @acquire@ itself, which always runs on that generation's own
+    dedicated thread) and proves it is genuinely, provably terminated --
+    not merely that some terminal state was published -- after
+    'stopSupervisedEnv' returns, even though @acquire@ here never returns
+    on its own (so the only way the generation thread can die is via
+    'loopOnce''s 'Exception.onException'-driven cancel\/await).
+
+    Mutation check: reverting 'loopOnce' to mask only around
+    'spawnManagedThread' itself (restoring before installing
+    'Exception.onException', re-introducing the gap) makes this
+    generation thread's 'GHC.Conc.Sync.threadStatus' remain live
+    (indistinguishable from 'ThreadRunning'\/blocked, never terminated) an
+    observable fraction of the time this test runs, since a 'ThreadKilled'
+    landing in that reintroduced gap now propagates straight out of
+    'loopOnce' without ever cancelling @generationThread@.
+    -}
+    it "genuinely cancels and awaits the in-flight generation's own dedicated thread when stopped while still Initializing, not merely publishing a terminal state that could equally result from an orphaned generation" do
+      generationTidVar <- newEmptyMVar
       sup <-
         startSupervisedEnv
           ( withRelease
               noRelease
-              (putMVar acquireStarted () >> forever (threadDelay maxBound) :: IO (Either AwsAuthErrorDiagnostic TestResource))
+              ( do
+                  tid <- myThreadId
+                  putMVar generationTidVar tid
+                  forever (threadDelay maxBound) :: IO (Either AwsAuthErrorDiagnostic TestResource)
+              )
           )
           neverInvalidate
           (pure ())
-      takeMVar acquireStarted
+      generationTid <- takeMVar generationTidVar
       readSupervisedEnv sup `shouldReturn` SupervisedEnvInitializing
       stopSupervisedEnv sup
       readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
+      status <- waitUntilTerminated generationTid
+      status `shouldSatisfy` isTerminatedStatus
 
     it "publishes Unavailable with the acquire's diagnostic on failure, and does not retry until backoff completes (no retry storm)" do
       attemptCountRef <- newIORef (0 :: Int)

@@ -2,6 +2,7 @@
 
 module Api.Arkham.Helpers where
 
+import Api.Arkham.Lifecycle (raceManaged_)
 import Arkham.Card
 import Arkham.Classes hiding (Entity (..), select)
 import Arkham.Classes.HasGame
@@ -45,7 +46,7 @@ import Entity.Arkham.Game
 import Entity.Arkham.LogEntry
 import GHC.Records
 import Import hiding (appLogger, (==.), (>=.))
-import UnliftIO.Async qualified as UA
+import UnliftIO.Exception qualified as UE
 
 newtype GameLog = GameLog {gameLogToLogEntries :: [Text]}
   deriving newtype (Monoid, Semigroup)
@@ -413,7 +414,19 @@ roomHeartbeat broker gameRooms = case broker of
     active <- catMaybes <$> traverse keepIfActive (Map.toList rooms)
     unless (null active) do
       now <- currentEpoch
-      void $ try @SomeException $ runRedis conn do
+      -- 'UE.tryAny' (not 'Control.Exception.try' \@'SomeException'): this
+      -- loop is tracked via 'Api.Arkham.Lifecycle.spawnManagedThread' and
+      -- cancelled\/awaited by 'Application.shutdownApp', so a shutdown
+      -- 'Control.Exception.ThreadKilled' delivered while inside
+      -- 'runRedis' must actually terminate this thread rather than being
+      -- caught here and silently absorbed into another 'forever'
+      -- iteration -- which would leave the managed thread's own
+      -- completion cell never filled, hanging Foundation shutdown
+      -- indefinitely. 'UE.tryAny' only ever catches genuinely synchronous
+      -- exceptions (a real Redis\/network failure), exactly the
+      -- best-effort case this is meant to tolerate; any asynchronous
+      -- exception -- shutdown or otherwise -- propagates unchanged.
+      void $ UE.tryAny $ runRedis conn do
         for_ active \gid ->
           void $ hset roomsSeenHashKey ((roomField gid, BS8.pack (show now)) :| [])
  where
@@ -491,9 +504,19 @@ pubSubSupervisor healthVar conn ctrl = go 1
   go backoff = do
     markPubSubAlive healthVar
     startedAt <- getCurrentTime
-    outcome <-
-      try @SomeException
-        $ UA.race_ (pubSubForever conn ctrl (markPubSubAlive healthVar)) watchdog
+    -- 'raceManaged_' (not 'UnliftIO.Async.race_'): this loop is tracked
+    -- via 'Api.Arkham.Lifecycle.spawnManagedThread' and
+    -- cancelled\/awaited by 'Application.shutdownApp'. 'race_' is built
+    -- on 'Control.Concurrent.Async.withAsync' for both branches, whose
+    -- own cleanup falls back to 'Control.Concurrent.Async.uninterruptibleCancel'
+    -- if the losing branch does not respond to cancellation quickly (e.g.
+    -- 'pubSubForever' blocked in a synchronous socket read) -- making a
+    -- shutdown cancellation of *this* thread hang until that loser
+    -- eventually finishes. 'raceManaged_' uses only ordinary,
+    -- always-interruptible cancellation throughout, so a shutdown
+    -- 'Control.Exception.ThreadKilled' targeting this thread can never be
+    -- turned uninterruptible by racing.
+    outcome <- raceManaged_ (pubSubForever conn ctrl (markPubSubAlive healthVar)) watchdog
     endedAt <- getCurrentTime
     putStrLn $ case outcome of
       Left e -> "pubsub subscriber died, reconnecting: " <> show e

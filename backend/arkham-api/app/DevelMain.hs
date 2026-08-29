@@ -39,6 +39,7 @@ module DevelMain where
 import Api.Arkham.Lifecycle (
   acquireThenForkTransferringOwnership,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
+  publishTerminalFailureOnException,
   shutdownThenDeliver,
  )
 import Application (getApplicationRepl, shutdownApp)
@@ -63,7 +64,17 @@ update = do
     Nothing -> do
       done <- storeAction doneStore newEmptyMVar
       tidRef <- storeAction (Store tidStoreNum) (newIORef Nothing)
-      start tidRef done
+      -- See 'publishTerminalFailureOnException': without this, an
+      -- ordinary acquisition\/spawn failure on this very first
+      -- generation (before any child is ever spawned to eventually fill
+      -- @done@ itself) would leave @done@ permanently empty, even though
+      -- the 'Foreign.Store.Store' slots above are already durably
+      -- created -- so every /subsequent/ 'update' call would take the
+      -- \"server is already running\" branch below and block forever on
+      -- 'proceedOnlyIfPreviousShutdownSucceededReplayable''s own
+      -- 'Control.Concurrent.MVar.readMVar' against a cell nothing was
+      -- ever going to fill.
+      publishTerminalFailureOnException done (start tidRef done)
     -- server is already running
     Just tidStore -> withStore tidStore (`restartAppInNewThread` doneStore)
  where
