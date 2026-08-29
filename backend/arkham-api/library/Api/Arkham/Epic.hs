@@ -91,7 +91,7 @@ invariant of this function, not an accident of what happens to be
 harmless.
 -}
 canonicalEpicGameLockOrder :: [ArkhamGameId] -> [ArkhamGameId]
-canonicalEpicGameLockOrder = sort . nubOrd
+canonicalEpicGameLockOrder = nubOrd . sort
 
 {- | Build a per-action 'EpicEnv': the current shared state in an 'IORef' plus an
 empty delta buffer that the run loop appends to.

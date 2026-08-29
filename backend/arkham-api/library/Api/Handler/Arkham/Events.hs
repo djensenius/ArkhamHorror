@@ -914,12 +914,14 @@ data EventDeletionOutcome
     -- any 'FOR UPDATE' contention with live gameplay for an
     -- unauthorized/probing caller.
     EventDeletionForbidden
-  | -- | The event and every one of its linked group games were deleted in
-    -- this transaction. Carries the committed game ids, in ascending
-    -- 'ArkhamGameId' lock order (see 'canonicalEpicGameLockOrder' -- NOT
-    -- ordinal order, which is not subset-independent, see that function's
-    -- Haddock), so the caller can run room cleanup for exactly those games
-    -- once 'runDB' returns.
+  | -- | The event, and every one of its linked group games that was still
+    -- present at lock time, were deleted in this transaction (a linked game
+    -- that had already vanished concurrently is simply excluded, never a
+    -- partial-function crash -- see 'lockLinkedGame'). Carries exactly
+    -- those committed game ids, in ascending 'ArkhamGameId' lock order (see
+    -- 'canonicalEpicGameLockOrder' -- NOT ordinal order, which is not
+    -- subset-independent, see that function's Haddock), so the caller can
+    -- run room cleanup for exactly those games once 'runDB' returns.
     EventDeletionDeleted [ArkhamGameId]
   deriving stock (Eq, Show)
 
