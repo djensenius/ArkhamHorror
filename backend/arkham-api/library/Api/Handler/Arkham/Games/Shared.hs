@@ -335,12 +335,34 @@ exception propagates out of runDB, rolls back the transaction, and frees
 the worker. Search Honeycomb / logs for this to find poison games.
 -}
 data RunMessagesTimeout = RunMessagesTimeout ArkhamGameId Int
-  deriving stock Show
+  deriving stock (Eq, Show)
   deriving anyclass Exception
 
 data EpicOrganizerGateBlocked = EpicOrganizerGateBlocked
   deriving stock Show
   deriving anyclass Exception
+
+{- | Run @action@ under a hard @micros@ time limit, throwing
+'RunMessagesTimeout' (never returning a fake success) if it does not
+finish in time. This is the SAME circuit breaker 'updateGame' uses around
+its 'runMessages' call (with the fixed 'runMessagesTimeoutMicros' budget),
+factored out so 'Api.Handler.Arkham.PendingGames.runPendingJoinSetup' can
+wrap its own (potentially TWO, back-to-back) 'runMessages' calls with the
+identical budget and exception, and so tests can call this directly with a
+short duration instead of waiting out the real 30s production budget. The
+caller must invoke this from inside the same 'runDB' transaction whose
+locks it wants released on timeout: an uncaught 'RunMessagesTimeout'
+propagates out of 'runDB' and rolls the whole transaction back via
+'runDB'\'s ordinary all-or-nothing semantics -- there is no separate
+rollback step here, exactly as every other write failure in this codebase
+already relies on.
+-}
+runWithMessagesTimeout :: MonadIO m => ArkhamGameId -> Int -> IO a -> m a
+runWithMessagesTimeout gameId micros action = do
+  mResult <- liftIO $ timeout micros action
+  case mResult of
+    Just a -> pure a
+    Nothing -> liftIO $ throwIO $ RunMessagesTimeout gameId micros
 
 updateGame :: Answer -> ArkhamGameId -> Maybe Room -> Handler ()
 updateGame response gameId mRoom = do
@@ -427,12 +449,9 @@ updateGame response gameId mRoom = do
             AchievementProgressBy iid a items ->
               modifyIORef' achievementProgressByRef ((iid, a, items) :)
             _ -> pure ()
-        mResult <- liftIO $ timeout runMessagesTimeoutMicros do
+        runWithMessagesTimeout gameId runMessagesTimeoutMicros do
           runGameApp (GameApp gameRef queueRef genRef (handleMessageLog logRef broadcast) mEpicEnv) do
             runMessages (gameIdToText gameId) (Just collectAchievements)
-        case mResult of
-          Just () -> pure ()
-          Nothing -> liftIO $ throwIO $ RunMessagesTimeout gameId runMessagesTimeoutMicros
 
         ge <- readIORef gameRef
         let diffDown = diff ge arkhamGameCurrentData
@@ -1089,6 +1108,23 @@ data MainStreetSwapStateFailure
     -- participants are locked, validated, and confirmed to be different
     -- users.
     MainStreetSwapDestinationOccupied
+  | -- | Either locked game's 'Arkham.Entities.entitiesInvestigators' or
+    -- 'Arkham.Entities.entitiesLocations' contains AT LEAST ONE entry whose
+    -- map key disagrees with that entry's own internal id -- participant
+    -- or not (see 'validateEntityMapIdentity'). Distinct from, and checked
+    -- strictly BEFORE, 'MainStreetSwapInvestigatorKeyMismatch' (which only
+    -- re-confirms this for the specific ready participant this swap
+    -- resolved): a mismatch anywhere else in either map is just as
+    -- dangerous, since 'computeMainStreetSwap''s @addOwned@ always
+    -- re-inserts an ARRIVING investigator under its own (correct) internal
+    -- id, so a stray, wrongly-keyed NONPARTICIPANT entry sharing that same
+    -- internal id would otherwise let the arriving entry silently
+    -- duplicate it once the swap actually mutated state, rather than being
+    -- caught by the existing 'Map.member'-based collision check (which
+    -- only inspects the CURRENT key set, not whether it is itself
+    -- internally consistent). Checked for BOTH games, before any
+    -- readiness\/placement\/membership check or transformation ever runs.
+    MainStreetSwapInvalidEntityMap
   deriving stock (Eq, Show)
 
 {- | The result of attempting to plan and execute a Main Street group swap,
@@ -1554,21 +1590,58 @@ readyInvestigator game = case gameMode game of
 
 {- | The Main Street location (card @89006@) in these entities, if any.
 
-Audited for the same map-key\/internal-id divergence
-'MainStreetSwapInvestigatorKeyMismatch' guards against for investigators
-(see 'resolveSwapInvestigator'): unlike 'Arkham.Entities.entitiesInvestigators',
-this is never looked up by a caller-supplied key at all -- it is found purely
-by searching 'Arkham.Entities.entitiesLocations' for a matching card code, so
-there is no key\/value pair for a stale or malformed persisted map to
-disagree with here. 'computeMainStreetSwap' also never re-keys or moves any
-location entry (only investigators and their owned assets\/treacheries\/
-events\/effects move between games -- see 'ownedEntities'\/'removeOwned'\/
-'addOwned', none of which touch 'Arkham.Entities.entitiesLocations' at all),
-so no analogous transform-side bug is possible for locations either.
+This is never looked up by a caller-supplied key at all -- it is found
+purely by searching 'Arkham.Entities.entitiesLocations' for a matching card
+code (via 'toList', i.e. 'Data.Foldable.toList'\/'Map.elems', which discards
+key identity), so a mismatched key\/id pair on this SPECIFIC entry cannot
+make this function itself return the wrong id -- it always returns the
+matched VALUE's own internal id. 'computeMainStreetSwap' also never re-keys
+or moves any location entry (only investigators and their owned
+assets\/treacheries\/events\/effects move between games -- see
+'ownedEntities'\/'removeOwned'\/'addOwned', none of which touch
+'Arkham.Entities.entitiesLocations' at all), so no analogous transform-side
+bug is possible for locations either. That narrow safety argument is about
+THIS function only, though: it says nothing about whether some OTHER,
+unrelated location or investigator entry elsewhere in either map is itself
+mismatched -- 'validateEntityMapIdentity' checks that, globally, for both
+maps in both games, before 'swapInvestigatorState' ever calls this.
 -}
 mainStreetLocation :: Entities -> Maybe LocationId
 mainStreetLocation entities =
   (.id) <$> find ((== CardCode "89006") . toCardCode) (toList $ entitiesLocations entities)
+
+{- | Whether every entry in an 'Arkham.Entities.EntityMap' is internally
+consistent: the map KEY exactly equals that entry's own VALUE's internal
+id. Checked via key\/value PAIRS ('Map.toList'), never via
+'Data.Foldable.toList'\/'Map.elems' alone (which discards the key entirely,
+as 'mainStreetLocation' above does deliberately for its own narrower
+purpose) -- so this genuinely proves the map-wide invariant
+'MainStreetSwapInvestigatorKeyMismatch' historically only checked for one
+specific (participant) entry.
+-}
+entityMapKeysMatchIds :: Eq key => (value -> key) -> Map key value -> Bool
+entityMapKeysMatchIds keyOf = all (\(k, v) -> k == keyOf v) . Map.toList
+
+{- | Reject either game's 'Arkham.Entities.entitiesInvestigators' or
+'Arkham.Entities.entitiesLocations' containing ANY entry -- participant or
+not -- whose map key disagrees with that entry's own internal id (see
+'MainStreetSwapInvalidEntityMap'). Without this, a NONPARTICIPANT
+investigator or location stored under a stale, unrelated key could let an
+arriving investigator sharing that VALUE's internal id silently duplicate
+it once 'computeMainStreetSwap''s @addOwned@ re-inserts the arriving
+investigator under its OWN (correct) id: the existing collision check in
+'validateSwapSide' only inspects 'Map.member' against the CURRENT (possibly
+already-inconsistent) key set, so it cannot detect this on its own.
+Checked, for BOTH games, strictly BEFORE 'resolveSwapParticipants' or any
+other readiness\/placement\/membership check ever runs, so
+'swapInvestigatorState' never even attempts to resolve a participant out
+of an already-inconsistent map.
+-}
+validateEntityMapIdentity :: Game -> Either MainStreetSwapStateFailure ()
+validateEntityMapIdentity game = do
+  let entities = gameEntities game
+  unless (entityMapKeysMatchIds (.id) (entitiesInvestigators entities)) $ Left MainStreetSwapInvalidEntityMap
+  unless (entityMapKeysMatchIds (.id) (entitiesLocations entities)) $ Left MainStreetSwapInvalidEntityMap
 
 {- | Resolve both sides' recorded ready investigator ids, rejecting either
 side being absent ('MainStreetSwapNotReady') or both sides naming the SAME
@@ -1725,9 +1798,19 @@ covers every precondition expressible from the two 'Game' payloads alone;
 the participant 'Entity.Arkham.Player.ArkhamPlayer' rows themselves are
 locked and cross-checked separately, by 'performMainStreetSwap', against
 the 'MainStreetSwapTransform' this returns.
+
+The VERY FIRST checks ('validateEntityMapIdentity', on BOTH games) reject
+any investigator or location map already keyed inconsistently with its own
+entries' internal ids -- participant or not -- before even attempting to
+resolve which investigator is "ready": a narrower, participant-only version
+of this check ('MainStreetSwapInvestigatorKeyMismatch', inside
+'resolveSwapInvestigator') still runs later purely for defense in depth,
+but by that point a global inconsistency has already been rejected.
 -}
 swapInvestigatorState :: Game -> Game -> Either MainStreetSwapStateFailure MainStreetSwapTransform
 swapInvestigatorState firstGame secondGame = do
+  validateEntityMapIdentity firstGame
+  validateEntityMapIdentity secondGame
   (firstIid, secondIid) <- resolveSwapParticipants (readyInvestigator firstGame) (readyInvestigator secondGame)
   firstDestination <- maybe (Left MainStreetSwapNoLocation) Right (mainStreetLocation (gameEntities secondGame))
   secondDestination <- maybe (Left MainStreetSwapNoLocation) Right (mainStreetLocation (gameEntities firstGame))

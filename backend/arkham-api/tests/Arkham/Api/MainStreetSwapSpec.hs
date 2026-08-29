@@ -147,6 +147,39 @@ fixtureEntitiesWithMainStreet :: LocationId -> Entities
 fixtureEntitiesWithMainStreet lid =
   mempty {entitiesLocations = Map.singleton lid (lookupLocation (CardCode "89006") lid nullCardId)}
 
+{- | Insert one EXTRA 'Investigator' entry into a 'Game''s
+'Arkham.Entities.entitiesInvestigators', under the given key -- used ONLY to
+build a deliberately\/artificially INCONSISTENT map (see
+'validateEntityMapIdentity'\/'MainStreetSwapInvalidEntityMap' below), by
+passing a @key@ that does NOT equal @investigator.id@. Every other fixture
+helper in this module (e.g. 'fixtureEntitiesWithInvestigator', 'buildGame')
+always keys an investigator under its own id, so this is the one place a
+mismatch can be constructed at all.
+-}
+withInvestigatorEntry :: InvestigatorId -> Investigator -> Game -> Game
+withInvestigatorEntry key investigator game =
+  game
+    { gameEntities =
+        (gameEntities game)
+          { entitiesInvestigators = Map.insert key investigator (entitiesInvestigators (gameEntities game))
+          }
+    }
+
+{- | Insert one EXTRA location entry (via the same 'lookupLocation' production
+uses) into a 'Game''s 'Arkham.Entities.entitiesLocations', under the given
+key -- the location analogue of 'withInvestigatorEntry' above, used ONLY to
+build a deliberately inconsistent map.
+-}
+withLocationEntry :: LocationId -> LocationId -> Game -> Game
+withLocationEntry key locationOwnId game =
+  game
+    { gameEntities =
+        (gameEntities game)
+          { entitiesLocations =
+              Map.insert key (lookupLocation (CardCode "89006") locationOwnId nullCardId) (entitiesLocations (gameEntities game))
+          }
+    }
+
 {- | Populate the given base 'Game' (already in whichever 'gameMode' the
 caller needs) with exactly the given Main Street location and investigators,
 with 'gamePlayerOrder'\/'gamePlayers' populated consistently -- unlike
@@ -438,6 +471,7 @@ spec = do
   swapPreconditionHelpersSpec
   swapMembershipHelpersSpec
   validateSwapPlayerSpec
+  validateEntityMapIdentitySpec
   swapInvestigatorStateEndToEndSpec
   lockAndValidateSwapPlayersSpec
 
@@ -908,6 +942,58 @@ arriving investigator was placed back at their OWN former game's Main
 Street location instead of the OTHER game's); the corrected definition is
 restored and verified in this committed code.
 -}
+{- | Directly exercises the production-used 'entityMapKeysMatchIds' and
+'validateEntityMapIdentity' -- the GLOBAL map-key\/internal-id identity
+check 'swapInvestigatorState' runs, on BOTH games' 'entitiesInvestigators'
+AND 'entitiesLocations', strictly BEFORE any participant resolution,
+readiness, placement, or membership check (see 'swapInvestigatorStateEndToEndSpec'
+below for that end-to-end ordering proof). This block proves the pure
+helpers themselves are total and correctly discriminate consistent from
+inconsistent maps, including for entries that are NOT swap participants at
+all -- the exact gap the historical, participant-only
+'MainStreetSwapInvestigatorKeyMismatch' check could not close.
+-}
+validateEntityMapIdentitySpec :: Spec
+validateEntityMapIdentitySpec = describe "validateEntityMapIdentity / entityMapKeysMatchIds (production-used global map-key/internal-id identity check)" do
+  describe "entityMapKeysMatchIds" do
+    it "an empty map is trivially consistent" do
+      entityMapKeysMatchIds (.id) (Map.empty :: Map InvestigatorId Investigator) `shouldBe` True
+
+    it "a map whose every key matches its value's own internal id is consistent" do
+      let investigator = fixtureInvestigator rolandId (fixturePlayerId 1) (fixtureLocationId 1)
+      entityMapKeysMatchIds (.id) (Map.singleton rolandId investigator) `shouldBe` True
+
+    it "a map with even ONE entry whose key disagrees with its value's own internal id is inconsistent" do
+      let mismatched = fixtureInvestigator daisyId (fixturePlayerId 1) (fixtureLocationId 1) -- internal id daisyId
+      entityMapKeysMatchIds (.id) (Map.singleton rolandId mismatched) `shouldBe` False
+
+  describe "validateEntityMapIdentity" do
+    it "a fully consistent game (investigators and locations both keyed by their own internal ids) passes" do
+      let locA = fixtureLocationId 1
+          game = fixtureReadyGame locA rolandId (fixtureInvestigator rolandId (fixturePlayerId 1) locA)
+      validateEntityMapIdentity game `shouldBe` Right ()
+
+    it "an investigator map with a mismatched key -- even for a NONPARTICIPANT entry unrelated to any ready investigator -- reports MainStreetSwapInvalidEntityMap" do
+      let locA = fixtureLocationId 1
+          skidsId = InvestigatorId (CardCode "01003")
+          -- skidsId is stored as the KEY, but the stored value's own
+          -- internal id is actually daisyId: a stale/corrupt nonparticipant
+          -- entry, unrelated to Roland (the ready investigator here).
+          nonparticipant = fixtureInvestigator daisyId (fixturePlayerId 2) locA
+          game =
+            withInvestigatorEntry skidsId nonparticipant
+              $ fixtureReadyGame locA rolandId (fixtureInvestigator rolandId (fixturePlayerId 1) locA)
+      validateEntityMapIdentity game `shouldBe` Left MainStreetSwapInvalidEntityMap
+
+    it "a location map with a mismatched key -- for a location no participant is even standing at -- reports MainStreetSwapInvalidEntityMap" do
+      let locA = fixtureLocationId 1
+          bystanderKey = fixtureLocationId 98
+          bystanderOwnId = fixtureLocationId 99
+          game =
+            withLocationEntry bystanderKey bystanderOwnId
+              $ fixtureReadyGame locA rolandId (fixtureInvestigator rolandId (fixturePlayerId 1) locA)
+      validateEntityMapIdentity game `shouldBe` Left MainStreetSwapInvalidEntityMap
+
 swapInvestigatorStateEndToEndSpec :: Spec
 swapInvestigatorStateEndToEndSpec =
   describe "swapInvestigatorState / computeMainStreetSwap (production transform, end to end)" do
@@ -980,22 +1066,68 @@ swapInvestigatorStateEndToEndSpec =
       let brokenGame1 = game1 {gamePlayerOrder = []}
       swapInvestigatorState brokenGame1 game2 `shouldBe` Left MainStreetSwapParticipantInconsistent
 
-    it "a stale/corrupt \"mainStreetReady\" key resolving to an investigator recorded under a DIFFERENT internal id reports InvestigatorKeyMismatch (not a swap under the wrong identity), even when the destination independently already contains that other internal id, with no partial swap" do
+    it "a stale/corrupt \"mainStreetReady\" key resolving to an investigator recorded under a DIFFERENT internal id is caught by the GLOBAL validateEntityMapIdentity check (reporting MainStreetSwapInvalidEntityMap), before resolveSwapInvestigator's own narrower, participant-only key check ever runs -- even when the destination independently already contains that other internal id, with no partial swap" do
       -- readyIid is rolandId, but the entities map stores it under that key
       -- holding an investigator whose OWN internal id is actually daisyId --
       -- a stale/corrupt keying, however it could arise in persisted state.
+      -- This is exactly the shape 'entityMapKeysMatchIds' checks for EVERY
+      -- entry, so it is now impossible for such a map to reach
+      -- 'resolveSwapInvestigator''s own (still-present, defense-in-depth)
+      -- 'MainStreetSwapInvestigatorKeyMismatch' check at all.
       let mismatched = fixtureInvestigator daisyId pid1 locA
           brokenGame1 = fixtureReadyGameWith locA rolandId [(rolandId, mismatched)]
       -- game2 (daisyAtB, above) already independently contains daisyId as
       -- its OWN distinct, unrelated ready investigator.
-      swapInvestigatorState brokenGame1 game2 `shouldBe` Left MainStreetSwapInvestigatorKeyMismatch
+      swapInvestigatorState brokenGame1 game2 `shouldBe` Left MainStreetSwapInvalidEntityMap
 
-    it "the same stale/corrupt key/id mismatch reports InvestigatorKeyMismatch even when the destination does NOT otherwise contain that internal id" do
+    it "the same stale/corrupt key/id mismatch is caught by MainStreetSwapInvalidEntityMap even when the destination does NOT otherwise contain that internal id" do
       let mismatched = fixtureInvestigator daisyId pid1 locA
           brokenGame1 = fixtureReadyGameWith locA rolandId [(rolandId, mismatched)]
           skidsId = InvestigatorId (CardCode "01003")
           destWithoutDaisy = fixtureReadyGame locB skidsId (fixtureInvestigator skidsId pid2 locB)
-      swapInvestigatorState brokenGame1 destWithoutDaisy `shouldBe` Left MainStreetSwapInvestigatorKeyMismatch
+      swapInvestigatorState brokenGame1 destWithoutDaisy `shouldBe` Left MainStreetSwapInvalidEntityMap
+
+    it "a NONPARTICIPANT investigator entry in the SOURCE game, stored under a mismatched key, reports MainStreetSwapInvalidEntityMap before any participant is even resolved -- both sides are otherwise entirely valid and would swap successfully" do
+      let skidsId = InvestigatorId (CardCode "01003")
+          -- Stored under skidsId, but its OWN internal id is daisyId --
+          -- daisyId is also game2's genuine ready participant, so this is
+          -- exactly the "nonparticipant value with internal id A under key
+          -- X, where A collides with something relevant elsewhere"
+          -- shape the global check exists to catch.
+          bystander = fixtureInvestigator daisyId (fixturePlayerId 3) (fixtureLocationId 98)
+          brokenGame1 = withInvestigatorEntry skidsId bystander game1
+      swapInvestigatorState brokenGame1 game2 `shouldBe` Left MainStreetSwapInvalidEntityMap
+
+    it "a NONPARTICIPANT investigator entry in the DESTINATION game, stored under a key that disagrees with its own internal id which equals the INCOMING investigator's id, reports MainStreetSwapInvalidEntityMap -- catching a collision 'validateSwapSide's Map.member check (keyed lookup only) cannot see" do
+      let skidsId = InvestigatorId (CardCode "01003")
+          -- Stored under skidsId in game2, but its OWN internal id is
+          -- rolandId -- the very investigator ABOUT to arrive in game2.
+          -- Before the global identity check existed, 'validateSwapSide's
+          -- 'Map.member rolandId' probe would look up key rolandId, find
+          -- nothing (this bystander sits under skidsId), and wrongly permit
+          -- 'addOwned' to insert the arriving Roland, silently duplicating
+          -- his internal id under two distinct keys.
+          bystander = fixtureInvestigator rolandId (fixturePlayerId 4) (fixtureLocationId 98)
+          brokenGame2 = withInvestigatorEntry skidsId bystander game2
+      swapInvestigatorState game1 brokenGame2 `shouldBe` Left MainStreetSwapInvalidEntityMap
+
+    it "a mismatched LOCATION map key in either game reports MainStreetSwapInvalidEntityMap, even for a location no participant is standing at" do
+      let bystanderKey = fixtureLocationId 97
+          bystanderOwnId = fixtureLocationId 96
+          brokenGame1 = withLocationEntry bystanderKey bystanderOwnId game1
+          brokenGame2 = withLocationEntry bystanderKey bystanderOwnId game2
+      swapInvestigatorState brokenGame1 game2 `shouldBe` Left MainStreetSwapInvalidEntityMap
+      swapInvestigatorState game1 brokenGame2 `shouldBe` Left MainStreetSwapInvalidEntityMap
+
+    it "a valid EXTRA, correctly-keyed nonparticipant investigator/location in either game does not itself block a successful swap (the check rejects inconsistency, not mere extra entries)" do
+      let extraId = InvestigatorId (CardCode "01003")
+          extra = fixtureInvestigator extraId (fixturePlayerId 5) locA
+          extraLocId = fixtureLocationId 95
+          gameWithExtras =
+            withLocationEntry extraLocId extraLocId $ withInvestigatorEntry extraId extra game1
+      case swapInvestigatorState gameWithExtras game2 of
+        Left failure -> expectationFailure $ "expected a successful transform, got: " <> show failure
+        Right transform -> transform.firstIid `shouldBe` rolandId
 
 
 fixtureTransform :: InvestigatorId -> PlayerId -> InvestigatorId -> PlayerId -> MainStreetSwapTransform

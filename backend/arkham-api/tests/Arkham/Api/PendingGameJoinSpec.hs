@@ -9,10 +9,14 @@ A pure, in-memory 'MonadPendingJoin' instance ('TestDB') runs the exact same
 production decision function ('planPendingJoinMembership') and records every
 step it performs. This lets us assert:
 
-* a user who already holds a player row in THIS (already-locked) game
-  reports 'PendingJoinAlreadyMember' before any event lookup, lock, or
-  reservation is even attempted -- the idempotent, doubled-click re-join
-  case;
+* a user who already holds a player row in THIS (already-locked), NON-Epic
+  game reports 'PendingJoinAlreadyMember' with no event lookup, lock, or
+  reservation even attempted (there is no event to reconcile against) --
+  the idempotent, doubled-click re-join case; for an EPIC-LINKED game, the
+  SAME idempotent re-join instead reports 'PendingJoinAlreadyMember' only
+  AFTER event-membership reconciliation has ALREADY locked the event and
+  reserved\/repaired this user's own group membership as a side effect --
+  see the dedicated legacy-seat reconciliation tests below;
 * a game with no linked Epic event at all reports 'PendingJoinNoEvent'
   and never locks an event or attempts a reservation;
 * a game linked to an Epic event locks that event row ('lockPendingJoinEvent')
@@ -47,6 +51,18 @@ step it performs. This lets us assert:
   delegate to the identical 'Api.Arkham.Epic.reserveEpicGroupMembership'
   primitive (mirrored here by the identical pure reservation semantics in
   both instances below);
+* legacy-seat reconciliation -- a bare 'Entity.Arkham.Player.ArkhamPlayer'
+  row in some OTHER game of this event with NO membership row at all,
+  predating the reservation machinery entirely -- is modelled directly by
+  'reservePendingJoinMembership'\'s own pure formula (mirroring
+  'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' exactly): a seat
+  in a DIFFERENT ordinal than requested conflicts with zero writes; a seat
+  ONLY in the requested ordinal is idempotently repaired (a membership row
+  is created even though no player row previously recorded one); seats
+  spanning two different legacy ordinals always conflict, whichever is
+  requested; and this reconciliation genuinely runs even for the
+  already-a-member branch (a legacy seat elsewhere is still caught for an
+  otherwise idempotent re-join);
 * a failure injected at any single step -- the already-member check, the
   event lock, or the membership reservation -- can never produce a
   success-shaped ('PendingJoinReserved' or 'PendingJoinNoEvent') result, and
@@ -139,18 +155,25 @@ unique key (event, user) -> ordinal -- 'reservePendingJoinMembership'
 actually reads AND writes it, exactly like the production
 'Api.Arkham.Epic.reserveEpicGroupMembership' it delegates to, and exactly
 like "Arkham.Api.ClaimSeatSpec"'s own 'reserveClaimSeatMembership'
-analogue.
+analogue. 'legacySeats' is an INDEPENDENT analogue of every OTHER game's
+linked 'Entity.Arkham.Player.ArkhamPlayer' row for this (event, user) that
+predates the reservation machinery entirely -- a bare seat with no
+membership row at all -- exactly what
+'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' additionally
+queries ('Api.Arkham.Epic.selectUserEpicSeatOrdinals') before ever
+consulting or writing 'membership'.
 -}
 data TestState = TestState
   { steps :: [Step]
   , alreadyMember :: Bool
   , eventPresent :: Bool
   , membership :: Map (Epic.ArkhamEpicEventId, User.UserId) Int
+  , legacySeats :: Map (Epic.ArkhamEpicEventId, User.UserId) [Int]
   }
 
 -- | The common case: no pre-existing player row in this game, the event
--- (when supplied) still present, no pre-existing membership conflict, zero
--- steps recorded yet.
+-- (when supplied) still present, no pre-existing membership/legacy-seat
+-- conflict, zero steps recorded yet.
 fixtureTestState :: TestState
 fixtureTestState =
   TestState
@@ -158,6 +181,7 @@ fixtureTestState =
     , alreadyMember = False
     , eventPresent = True
     , membership = Map.empty
+    , legacySeats = Map.empty
     }
 
 {- | A pure interpreter of 'MonadPendingJoin': records every step it is asked
@@ -209,22 +233,32 @@ instance MonadPendingJoin TestDB where
     recordStep (LockedEvent present)
     pure present
 
-  -- Mirrors 'Api.Arkham.Epic.reserveEpicGroupMembership' exactly: a fresh
-  -- key inserts and reserves; an existing key under the SAME ordinal is
-  -- idempotently reserved (no map change); an existing key under a
-  -- DIFFERENT ordinal conflicts and the map is left untouched.
+  -- Mirrors 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' exactly:
+  -- FIRST, any seat (via 'legacySeats') under a DIFFERENT ordinal than
+  -- requested conflicts outright, with 'membership' left untouched (the
+  -- legacy-seat reconciliation this round adds); OTHERWISE falls through
+  -- to the ordinary 'Api.Arkham.Epic.reserveEpicGroupMembership' formula:
+  -- a fresh key inserts and reserves; an existing key under the SAME
+  -- ordinal is idempotently reserved (no map change); an existing key
+  -- under a DIFFERENT ordinal conflicts and the map is left untouched.
   reservePendingJoinMembership eid userId ordinal = do
     failIfConfigured FailAtReserve
-    existing <- gets (Map.lookup (eid, userId) . (.membership))
-    let reservation = case existing of
-          Nothing -> EpicGroupReserved
-          Just existingOrdinal
-            | existingOrdinal == ordinal -> EpicGroupReserved
-            | otherwise -> EpicGroupReservationConflict
-    when (reservation == EpicGroupReserved)
-      $ modify \s -> s {membership = Map.insert (eid, userId) ordinal s.membership}
-    recordStep (ReservedMembership reservation)
-    pure reservation
+    seated <- gets (Map.findWithDefault [] (eid, userId) . (.legacySeats))
+    if any (/= ordinal) seated
+      then do
+        recordStep (ReservedMembership EpicGroupReservationConflict)
+        pure EpicGroupReservationConflict
+      else do
+        existing <- gets (Map.lookup (eid, userId) . (.membership))
+        let reservation = case existing of
+              Nothing -> EpicGroupReserved
+              Just existingOrdinal
+                | existingOrdinal == ordinal -> EpicGroupReserved
+                | otherwise -> EpicGroupReservationConflict
+        when (reservation == EpicGroupReserved)
+          $ modify \s -> s {membership = Map.insert (eid, userId) ordinal s.membership}
+        recordStep (ReservedMembership reservation)
+        pure reservation
 
 -- Pure, in-memory persistence backend for 'MonadClaimSeat' (cross-module
 -- shared-invariant proof only) ------------------------------------------------
@@ -292,40 +326,45 @@ spec = describe "planPendingJoinMembership (game-locked-first pending-join membe
   let run failAt state mEvent =
         runTestDB failAt state (planPendingJoinMembership fixtureGameId (fixtureUserId 1) mEvent)
 
-  it "a user who already holds a player row in this game reports AlreadyMember before any event lookup/lock/reservation is even attempted" do
-    let (result, log_) = run FailNever fixtureTestState {alreadyMember = True} (Just (fixtureEventId, 0))
+  it "a user who already holds a player row in this NON-Epic game reports AlreadyMember, with no event lookup/lock/reservation even attempted (no event to reconcile against)" do
+    let (result, log_) = run FailNever fixtureTestState {alreadyMember = True} Nothing
     result `shouldBe` Right PendingJoinAlreadyMember
     log_ `shouldBe` [CheckedAlreadyMember True]
+
+  it "a user who already holds a player row in an EPIC-linked game still reports AlreadyMember, but only AFTER event-membership reconciliation has ALREADY run and repaired this user's own group membership as a side effect" do
+    let (result, log_) = run FailNever fixtureTestState {alreadyMember = True} (Just (fixtureEventId, 0))
+    result `shouldBe` Right PendingJoinAlreadyMember
+    log_ `shouldBe` [LockedEvent True, ReservedMembership EpicGroupReserved, CheckedAlreadyMember True]
 
   it "a game with no linked Epic event at all reports NoEvent and never locks an event or attempts a reservation" do
     let (result, log_) = run FailNever fixtureTestState Nothing
     result `shouldBe` Right PendingJoinNoEvent
     log_ `shouldBe` [CheckedAlreadyMember False]
 
-  it "a fresh reservation into a linked event's own group succeeds: the event is locked, then the membership actually reserved" do
+  it "a fresh reservation into a linked event's own group succeeds: the event is locked and the membership actually reserved BEFORE the already-member check is even consulted" do
     let (result, log_) = run FailNever fixtureTestState (Just (fixtureEventId, 0))
     result `shouldBe` Right (PendingJoinReserved fixtureEventId (GroupOrdinal 0))
     log_
-      `shouldBe` [CheckedAlreadyMember False, LockedEvent True, ReservedMembership EpicGroupReserved]
+      `shouldBe` [LockedEvent True, ReservedMembership EpicGroupReserved, CheckedAlreadyMember False]
 
   it "a pre-existing GroupPlayer reservation under the SAME ordinal (re-joining this very group) is correctly NOT a conflict" do
     let seeded = Map.singleton (fixtureEventId, fixtureUserId 1) 2
         (result, log_) = run FailNever fixtureTestState {membership = seeded} (Just (fixtureEventId, 2))
     result `shouldBe` Right (PendingJoinReserved fixtureEventId (GroupOrdinal 2))
     log_
-      `shouldBe` [CheckedAlreadyMember False, LockedEvent True, ReservedMembership EpicGroupReserved]
+      `shouldBe` [LockedEvent True, ReservedMembership EpicGroupReserved, CheckedAlreadyMember False]
 
-  it "a pre-existing GroupPlayer reservation under a DIFFERENT ordinal reports Conflict and writes nothing -- the sequential cross-group bug this round fixes" do
+  it "a pre-existing GroupPlayer reservation under a DIFFERENT ordinal reports Conflict and writes nothing -- the sequential cross-group bug this round fixes -- and the already-member check is never even reached" do
     let seeded = Map.singleton (fixtureEventId, fixtureUserId 1) 1
         (result, log_) = run FailNever fixtureTestState {membership = seeded} (Just (fixtureEventId, 0))
     result `shouldBe` Right PendingJoinConflict
     log_
-      `shouldBe` [CheckedAlreadyMember False, LockedEvent True, ReservedMembership EpicGroupReservationConflict]
+      `shouldBe` [LockedEvent True, ReservedMembership EpicGroupReservationConflict]
 
-  it "an event that vanished concurrently between the game lock and the event lock reports EventVanished" do
+  it "an event that vanished concurrently between the game lock and the event lock reports EventVanished, with the already-member check never even reached" do
     let (result, log_) = run FailNever fixtureTestState {eventPresent = False} (Just (fixtureEventId, 0))
     result `shouldBe` Right PendingJoinEventVanished
-    log_ `shouldBe` [CheckedAlreadyMember False, LockedEvent False]
+    log_ `shouldBe` [LockedEvent False]
 
   it "two complete SEQUENTIAL joins by the same user into two DIFFERENT groups of the SAME event: the first reserves and succeeds, the second is rejected with the membership map untouched" do
     let firstGroupOrdinal = 0
@@ -367,20 +406,25 @@ spec = describe "planPendingJoinMembership (game-locked-first pending-join membe
       result `shouldBe` Right EpicGroupReservationConflict
       Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Just 0
 
-  it "a failure checking whether this user is already a member cannot produce a success-shaped result, and no other step is ever attempted" do
-    let (result, log_) = run FailAtAlreadyMember fixtureTestState (Just (fixtureEventId, 0))
+  it "for a NON-Epic game, a failure checking whether this user is already a member cannot produce a success-shaped result, and no other step is ever attempted" do
+    let (result, log_) = run FailAtAlreadyMember fixtureTestState Nothing
     result `shouldSatisfy` isLeft
     log_ `shouldBe` []
 
-  it "a failure locking the event cannot produce a success-shaped result, proving the already-member check was genuinely attempted first" do
+  it "for an EPIC-linked game, a failure checking whether this user is already a member cannot produce a success-shaped result, proving the event was genuinely locked AND reconciled/reserved first" do
+    let (result, log_) = run FailAtAlreadyMember fixtureTestState (Just (fixtureEventId, 0))
+    result `shouldSatisfy` isLeft
+    log_ `shouldBe` [LockedEvent True, ReservedMembership EpicGroupReserved]
+
+  it "a failure locking the event cannot produce a success-shaped result, and no other step is ever attempted (the event lock is the FIRST action for an Epic-linked game)" do
     let (result, log_) = run FailAtLockEvent fixtureTestState (Just (fixtureEventId, 0))
     result `shouldSatisfy` isLeft
-    log_ `shouldBe` [CheckedAlreadyMember False]
+    log_ `shouldBe` []
 
   it "a failure reserving Epic membership cannot produce a success-shaped result, proving the event was genuinely locked first" do
     let (result, log_) = run FailAtReserve fixtureTestState (Just (fixtureEventId, 0))
     result `shouldSatisfy` isLeft
-    log_ `shouldBe` [CheckedAlreadyMember False, LockedEvent True]
+    log_ `shouldBe` [LockedEvent True]
 
   it "a failure reserving membership AFTER the event was genuinely locked still cannot produce a success-shaped result -- and the pure model's step log, unlike real runDB, does NOT roll back (documented, not a rollback claim)" do
     let (result, finalState) =
@@ -389,7 +433,7 @@ spec = describe "planPendingJoinMembership (game-locked-first pending-join membe
             fixtureTestState
             (planPendingJoinMembership fixtureGameId (fixtureUserId 1) (Just (fixtureEventId, 0)))
     result `shouldSatisfy` isLeft
-    finalState.steps `shouldBe` [CheckedAlreadyMember False, LockedEvent True]
+    finalState.steps `shouldBe` [LockedEvent True]
     -- No reservation was attempted this time (the injected failure is
     -- BEFORE the reservation call itself), so the membership map is
     -- untouched -- distinguishing "failed before reserving" from
@@ -435,3 +479,109 @@ spec = describe "planPendingJoinMembership (game-locked-first pending-join membe
               fixtureTestState {membership = afterClaim}
               (planPendingJoinMembership fixtureOtherGameId (fixtureUserId 1) (Just (fixtureEventId, 3)))
       pendingResult `shouldBe` Right (PendingJoinReserved fixtureEventId (GroupOrdinal 3))
+
+  describe "legacy-seat reconciliation (a pre-existing ArkhamPlayer row in ANOTHER game of this event, with NO membership row at all, predating the reservation machinery)" do
+    it "a legacy seat in a DIFFERENT ordinal than requested is a typed conflict, with zero membership writes and the already-member check never even reached" do
+      let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [2]
+          (result, finalState) =
+            runTestDBWithState
+              FailNever
+              fixtureTestState {legacySeats = seededLegacy}
+              (planPendingJoinMembership fixtureGameId (fixtureUserId 1) (Just (fixtureEventId, 0)))
+      result `shouldBe` Right PendingJoinConflict
+      finalState.steps `shouldBe` [LockedEvent True, ReservedMembership EpicGroupReservationConflict]
+      Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Nothing
+
+    it "a legacy seat ONLY in the requested ordinal (this very group) is idempotently repaired: a membership row is created even though no player row previously recorded one" do
+      let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [0]
+          (result, finalState) =
+            runTestDBWithState
+              FailNever
+              fixtureTestState {legacySeats = seededLegacy}
+              (planPendingJoinMembership fixtureGameId (fixtureUserId 1) (Just (fixtureEventId, 0)))
+      result `shouldBe` Right (PendingJoinReserved fixtureEventId (GroupOrdinal 0))
+      Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Just 0
+
+    it "seats recorded across TWO different legacy ordinals reject regardless of which ordinal is requested -- an inconsistent legacy state is never silently resolved" do
+      let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [1, 2]
+          (result, finalState) =
+            runTestDBWithState
+              FailNever
+              fixtureTestState {legacySeats = seededLegacy}
+              (planPendingJoinMembership fixtureGameId (fixtureUserId 1) (Just (fixtureEventId, 1)))
+      result `shouldBe` Right PendingJoinConflict
+      Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Nothing
+
+    it "the already-a-member branch genuinely invokes reconciliation: a legacy seat in a DIFFERENT game's group is caught even for a user re-joining their OWN existing seat" do
+      let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [7]
+          (result, finalState) =
+            runTestDBWithState
+              FailNever
+              fixtureTestState {alreadyMember = True, legacySeats = seededLegacy}
+              (planPendingJoinMembership fixtureGameId (fixtureUserId 1) (Just (fixtureEventId, 0)))
+      -- Reconciliation runs and conflicts BEFORE 'CheckedAlreadyMember' is
+      -- ever consulted -- the conflict outcome, not 'PendingJoinAlreadyMember',
+      -- is reported, and 'CheckedAlreadyMember' never appears in the log.
+      result `shouldBe` Right PendingJoinConflict
+      CheckedAlreadyMember True `shouldSatisfy` (`notElem` finalState.steps)
+      CheckedAlreadyMember False `shouldSatisfy` (`notElem` finalState.steps)
+
+    it "a user with NO legacy seat at all and no prior membership reserves normally -- the common, unaffected case" do
+      let (result, finalState) =
+            runTestDBWithState
+              FailNever
+              fixtureTestState
+              (planPendingJoinMembership fixtureGameId (fixtureUserId 1) (Just (fixtureEventId, 0)))
+      result `shouldBe` Right (PendingJoinReserved fixtureEventId (GroupOrdinal 0))
+      Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Just 0
+
+    it "reservation itself (exercised directly): a legacy seat in a different ordinal conflicts even against an otherwise-empty membership map" do
+      let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [5]
+          (result, finalState) =
+            runTestDBWithState
+              FailNever
+              fixtureTestState {legacySeats = seededLegacy}
+              (reservePendingJoinMembership fixtureEventId (fixtureUserId 1) 9)
+      result `shouldBe` Right EpicGroupReservationConflict
+      Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Nothing
+
+    it "sequential reservations: a first user's legacy-seat repair does not affect a second, unrelated user's fresh reservation into the same event" do
+      let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [4]
+          (firstResult, afterFirst) =
+            runTestDBWithState
+              FailNever
+              fixtureTestState {legacySeats = seededLegacy}
+              (reservePendingJoinMembership fixtureEventId (fixtureUserId 1) 4)
+      firstResult `shouldBe` Right EpicGroupReserved
+      let (secondResult, afterSecond) =
+            runTestDBWithState FailNever afterFirst (reservePendingJoinMembership fixtureEventId (fixtureUserId 2) 0)
+      secondResult `shouldBe` Right EpicGroupReserved
+      Map.lookup (fixtureEventId, fixtureUserId 1) afterSecond.membership `shouldBe` Just 4
+      Map.lookup (fixtureEventId, fixtureUserId 2) afterSecond.membership `shouldBe` Just 0
+
+    it "the 'unique-key loser' side of a genuine concurrent race, now with a legacy seat in the mix: the WINNER's repair commits first, and a LOSER attempt for the SAME user under a DIFFERENT ordinal still conflicts against the winner's committed row" do
+      let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [0]
+          (winnerResult, afterWinner) =
+            runTestDBWithState
+              FailNever
+              fixtureTestState {legacySeats = seededLegacy}
+              (reservePendingJoinMembership fixtureEventId (fixtureUserId 1) 0)
+      winnerResult `shouldBe` Right EpicGroupReserved
+      let (loserResult, afterLoser) =
+            runTestDBWithState FailNever afterWinner (reservePendingJoinMembership fixtureEventId (fixtureUserId 1) 1)
+      loserResult `shouldBe` Right EpicGroupReservationConflict
+      Map.lookup (fixtureEventId, fixtureUserId 1) afterLoser.membership `shouldBe` Just 0
+
+    it "an Organizer-role membership row is a structurally SEPARATE key ('UniqueEpicMember (eventId, userId, Organizer)' vs '(eventId, userId, GroupPlayer)') that this reconciliation neither reads nor writes: an organizer with no ArkhamPlayer seat anywhere reserves a GroupPlayer seat exactly as any other user would" do
+      let (result, finalState) =
+            runTestDBWithState
+              FailNever
+              -- 'selectUserEpicSeatOrdinals' joins 'ArkhamEpicGroup' to
+              -- 'ArkhamPlayer' alone, which has no role column at all, so an
+              -- Organizer-role row (which need not ever have a
+              -- corresponding player row) can never appear in
+              -- 'legacySeats' or be conflated with a GroupPlayer seat here.
+              fixtureTestState
+              (planPendingJoinMembership fixtureGameId (fixtureUserId 1) (Just (fixtureEventId, 0)))
+      result `shouldBe` Right (PendingJoinReserved fixtureEventId (GroupOrdinal 0))
+      Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Just 0

@@ -14,7 +14,12 @@ module Api.Handler.Arkham.Game.Debug (
   planAndExecuteClaimSeat,
 ) where
 
-import Api.Arkham.Epic (EpicGroupReservation (..), lockEpicEventRow, lookupGameEvent, reserveEpicGroupMembership)
+import Api.Arkham.Epic (
+  EpicGroupReservation (..),
+  lockEpicEventRow,
+  lookupGameEvent,
+  reserveEpicGroupMembershipReconciling,
+ )
 import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game (ClaimSeatPost (..))
@@ -300,20 +305,32 @@ data ClaimSeatFailure
     ClaimSeatInvalidInvestigator
   | -- | The requesting user's 'GroupPlayer' membership for this game's Epic
     -- event could not be reserved under this game's own group ordinal,
-    -- because a membership row already exists for a DIFFERENT ordinal --
-    -- the existing "one event group per user" restriction (see
+    -- because this user already holds a seat -- WITH a membership row
+    -- under a DIFFERENT ordinal, or a LEGACY seat (no membership row at
+    -- all) in some OTHER game of this event -- the existing "one event
+    -- group per user" restriction (see
     -- 'Api.Handler.Arkham.PendingGames.putApiV1ArkhamPendingGameR', which
     -- enforces the same invariant for its own join flow). Unlike a bare
     -- read, this actually RESERVES the membership (see
-    -- 'reserveClaimSeatMembership') so a user with no prior membership can
-    -- no longer claim seats in two different groups of the same event --
-    -- checked\/reserved only after the target game's own row (and, for an
-    -- Epic-linked game, the event row too) are already locked.
+    -- 'reserveClaimSeatMembership', which delegates to
+    -- 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling') so a user
+    -- with no prior seat OR membership can no longer claim seats in two
+    -- different groups of the same event -- checked\/reserved only after
+    -- the target game's own row (and, for an Epic-linked game, the event
+    -- row too) are already locked, and BEFORE 'ClaimSeatAlreadyJoined' is
+    -- even decided (see 'planAndExecuteClaimSeat'), so a legacy seat is
+    -- reconciled\/repaired even on an otherwise-idempotent re-claim.
     ClaimSeatEventMembershipConflict
   | -- | Some OTHER player already occupies this investigator slot in this
     -- game.
     ClaimSeatTaken
   | -- | This user already holds a seat (any investigator) in this game.
+    -- Decided AFTER the event-membership reconciliation above, never
+    -- before it (see 'planAndExecuteClaimSeat'): an idempotent re-claim of
+    -- a user's OWN existing seat still runs
+    -- 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling', repairing a
+    -- legacy seat's missing membership row as a side effect, even though
+    -- the ultimate response is unchanged.
     ClaimSeatAlreadyJoined
   deriving stock (Eq, Show)
 
@@ -360,31 +377,41 @@ class Monad m => MonadClaimSeat m where
   -- | Whether some OTHER player already occupies this investigator slot in
   -- this game.
   isClaimSeatTaken :: ArkhamGameId -> Text -> m Bool
-  -- | Whether this user already holds ANY seat in this game.
+  -- | Whether this user already holds ANY seat in this game. Checked AFTER
+  -- event-membership reconciliation (see 'planAndExecuteClaimSeat'), never
+  -- before it: an idempotent re-claim of a user's OWN seat must still
+  -- reconcile\/repair a legacy seat's missing membership row first.
   isClaimSeatAlreadyJoined :: UserId -> ArkhamGameId -> m Bool
   -- | Row-lock the event ('FOR UPDATE' in production; see
   -- 'Api.Arkham.Epic.lockEpicEventRow') and report whether it is still
   -- present. Called from exactly ONE place: after the target game is
-  -- locked and every seat\/already-joined check has passed, strictly
-  -- BEFORE 'reserveClaimSeatMembership' -- preserving the game(s)-before-
-  -- event order 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' uses.
-  -- Only called when 'lookupClaimSeatEvent' found this game linked to an
-  -- event; 'False' would mean that event vanished concurrently, which is
+  -- locked and the seat-taken check has passed, strictly BEFORE
+  -- 'reserveClaimSeatMembership' and 'isClaimSeatAlreadyJoined' -- preserving
+  -- the game(s)-before-event order 'Api.Handler.Arkham.Events.deleteEpicEventAggregate'
+  -- uses. Only called when 'lookupClaimSeatEvent' found this game linked to
+  -- an event; 'False' would mean that event vanished concurrently, which is
   -- unreachable in practice (deleting it would first require locking, and
   -- deleting, THIS already-locked game as one of its linked games), but is
   -- still handled as a typed no-op rather than assumed impossible.
   lockClaimSeatEvent :: ArkhamEpicEventId -> m Bool
   -- | Attempt to reserve this user's 'GroupPlayer' membership for the
   -- ALREADY-LOCKED (per 'lockClaimSeatEvent') event under the requested
-  -- ordinal -- see 'Api.Arkham.Epic.reserveEpicGroupMembership', the SAME
-  -- unique-key reservation 'Api.Handler.Arkham.PendingGames' also calls
-  -- (via its own 'Api.Handler.Arkham.PendingGames.MonadPendingJoin'
+  -- ordinal -- see 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling',
+  -- the SAME legacy-aware reservation 'Api.Handler.Arkham.PendingGames' also
+  -- calls (via its own 'Api.Handler.Arkham.PendingGames.MonadPendingJoin'
   -- production instance) for its own join flow, so the invariant cannot
   -- independently drift between the two entry points. Because the event
   -- is already locked exclusively, two concurrent claims into DIFFERENT
   -- games of the SAME event can no longer both observe "no conflict yet":
   -- one must wait for the other's lock, closing the race a bare
-  -- 'UniqueEpicMember' insert alone could not.
+  -- 'UniqueEpicMember' insert alone could not -- and, unlike a bare
+  -- insert, this ALSO reconciles against a LEGACY seat (an
+  -- 'Entity.Arkham.Player.ArkhamPlayer' row in some other game of this
+  -- event with no membership row at all) that predates this reservation
+  -- machinery, closing the gap a membership-only check cannot see.
+  -- Called BEFORE 'isClaimSeatAlreadyJoined' is even consulted, for EVERY
+  -- Epic-linked game, so an otherwise-idempotent re-claim of a user's OWN
+  -- seat still repairs a legacy seat's missing membership row.
   reserveClaimSeatMembership :: ArkhamEpicEventId -> UserId -> Int -> m EpicGroupReservation
   -- | Insert the new 'Entity.Arkham.Player.ArkhamPlayer' row and remap its
   -- investigator's stored player UUID. Called from exactly ONE place:
@@ -399,20 +426,28 @@ class Monad m => MonadClaimSeat m where
 2. Reject a non-"WithFriends" game ('ClaimSeatNotMultiplayer') and an
    investigator id not part of this game ('ClaimSeatInvalidInvestigator'),
    both read from the locked snapshot.
-3. Reject an already-taken investigator slot ('ClaimSeatTaken') or an
-   already-held seat for this user ('ClaimSeatAlreadyJoined').
-4. Only now, with the target game locked and every cheaper check passed, is
+3. Reject an already-taken investigator slot ('ClaimSeatTaken').
+4. Only now, with the target game locked and the seat-taken check passed, is
    an Epic-linked game's event locked ('lockClaimSeatEvent') and this
-   user's 'GroupPlayer' membership actually RESERVED
-   ('reserveClaimSeatMembership') -- a genuine cross-game reservation
-   through 'UniqueEpicMember's own unique key, not merely a non-locking
-   read: a user with no prior membership can no longer claim seats in two
-   different groups of the same event, sequentially or concurrently,
-   because the event row lock serializes every such reservation attempt.
-   A conflicting pre-existing reservation under a DIFFERENT ordinal reports
-   'ClaimSeatEventMembershipConflict', with no player row inserted or
-   modified.
-5. Otherwise, insert the player row and remap it (see
+   user's 'GroupPlayer' membership actually RESERVED, WITH legacy-seat
+   reconciliation ('reserveClaimSeatMembership') -- a genuine cross-game
+   reservation through 'UniqueEpicMember's own unique key PLUS a scan of
+   every OTHER game linked to this event for a bare, unreconciled seat
+   (see 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling'), not
+   merely a non-locking read: a user with no prior seat OR membership can
+   no longer claim seats in two different groups of the same event,
+   sequentially or concurrently, because the event row lock serializes
+   every such reservation attempt. This step runs REGARDLESS of whether
+   this user already holds a seat in the TARGET game itself -- i.e. BEFORE
+   'ClaimSeatAlreadyJoined' is even decided -- specifically so an
+   otherwise-idempotent re-claim of a user's OWN seat still repairs a
+   legacy seat's missing membership row. A conflicting seat under a
+   DIFFERENT ordinal (whether via an existing membership row or a bare
+   legacy seat) reports 'ClaimSeatEventMembershipConflict', with no player
+   row inserted or modified.
+5. Only once reconciliation reports no conflict is 'ClaimSeatAlreadyJoined'
+   decided: this user already holding a seat in the TARGET game itself.
+6. Otherwise, insert the player row and remap it (see
    'insertClaimSeatPlayer'), reporting 'ClaimSeatClaimed'.
 
 This is the single seam production and tests both exercise directly,
@@ -437,13 +472,13 @@ planAndExecuteClaimSeat gameId userId investigatorId = do
               if taken
                 then pure (ClaimSeatRejected ClaimSeatTaken)
                 else do
-                  joined <- isClaimSeatAlreadyJoined userId gameId
-                  if joined
-                    then pure (ClaimSeatRejected ClaimSeatAlreadyJoined)
+                  conflict <- claimSeatEventMembershipConflict gameId userId
+                  if conflict
+                    then pure (ClaimSeatRejected ClaimSeatEventMembershipConflict)
                     else do
-                      conflict <- claimSeatEventMembershipConflict gameId userId
-                      if conflict
-                        then pure (ClaimSeatRejected ClaimSeatEventMembershipConflict)
+                      joined <- isClaimSeatAlreadyJoined userId gameId
+                      if joined
+                        then pure (ClaimSeatRejected ClaimSeatAlreadyJoined)
                         else do
                           insertClaimSeatPlayer userId gameId investigatorId
                           pure ClaimSeatClaimed
@@ -451,11 +486,14 @@ planAndExecuteClaimSeat gameId userId investigatorId = do
 {- | Whether this user's 'GroupPlayer' membership for this game's Epic event
 (if any) cannot be reserved under this game's own ordinal -- see
 'ClaimSeatEventMembershipConflict'. Locks the event row ('lockClaimSeatEvent')
-and performs the ACTUAL reservation ('reserveClaimSeatMembership'), it does
-not merely read existing state: a user with no membership row yet is
-reserved into THIS game's group here, closing the gap that previously let
-an unlimited number of different groups be claimed with no membership ever
-recorded.
+and performs the ACTUAL reservation, WITH legacy-seat reconciliation
+('reserveClaimSeatMembership'); it does not merely read existing state. Run
+BEFORE 'isClaimSeatAlreadyJoined' is even consulted (see
+'planAndExecuteClaimSeat'), so this ALSO repairs a legacy seat's missing
+membership row for an otherwise-idempotent re-claim of a user's OWN seat,
+closing the gap that previously let an unlimited number of different groups
+be claimed with no membership ever recorded, for a legacy seat in ANY
+OTHER game of this event as well as a bare 'UniqueEpicMember' insert.
 -}
 claimSeatEventMembershipConflict :: MonadClaimSeat m => ArkhamGameId -> UserId -> m Bool
 claimSeatEventMembershipConflict gameId userId = do
@@ -492,7 +530,7 @@ instance MonadClaimSeat (SqlPersistT Handler) where
     pure $ isJust mTaken
   isClaimSeatAlreadyJoined userId gid = isJust <$> getBy (UniquePlayer userId gid)
   lockClaimSeatEvent eid = isJust <$> lockEpicEventRow eid
-  reserveClaimSeatMembership = reserveEpicGroupMembership
+  reserveClaimSeatMembership = reserveEpicGroupMembershipReconciling
   insertClaimSeatPlayer userId gid investigatorId = do
     newPlayerId <- insert $ ArkhamPlayer userId gid investigatorId
     remapInvestigatorUUID gid investigatorId newPlayerId

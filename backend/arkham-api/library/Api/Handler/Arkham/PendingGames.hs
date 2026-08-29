@@ -5,10 +5,13 @@ order 'Api.Handler.Arkham.Game.Debug.MonadClaimSeat' and
 'Api.Handler.Arkham.Events.MonadEpicEventDeletion' already use, and, when
 this game is Epic-linked, RESERVING (not merely reading) this user's
 'Arkham.Epic.Types.GroupPlayer' membership through the SAME shared
-'Api.Arkham.Epic.reserveEpicGroupMembership' primitive claim-seat uses, so
-the "one event group per user" invariant cannot independently drift
-between the two entry points that can create a user's FIRST membership row
-for an event.
+'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' primitive
+claim-seat uses -- including reconciliation against a LEGACY seat (an
+'Entity.Arkham.Player.ArkhamPlayer' row in some OTHER game linked to this
+event with no membership row at all, predating this reservation
+machinery) -- so the "one event group per user" invariant cannot
+independently drift between the two entry points that can create a user's
+FIRST membership row for an event.
 
 /Cross-path lock-order audit (why this module cannot deadlock against
 event deletion, claim-seat, or Main Street swap):/ 'putApiV1ArkhamPendingGameR'
@@ -54,7 +57,7 @@ import Api.Arkham.Epic (
   lockEpicEventRow,
   lookupGameEvent,
   mkEpicEnv,
-  reserveEpicGroupMembership,
+  reserveEpicGroupMembershipReconciling,
  )
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.Games.Shared (
@@ -62,6 +65,8 @@ import Api.Handler.Arkham.Games.Shared (
   epicSyncMessages,
   propagateShared,
   publishToRoom,
+  runMessagesTimeoutMicros,
+  runWithMessagesTimeout,
  )
 import Arkham.Classes.HasQueue
 import Arkham.Epic.Types (
@@ -97,8 +102,12 @@ derived instances.
 data PendingJoinPlan
   = -- | This user already holds an 'Entity.Arkham.Player.ArkhamPlayer' row
     -- in THIS (already-locked) game -- a duplicate\/idempotent join
-    -- attempt (e.g. a doubled click). No event lookup, lock, or
-    -- reservation is even attempted.
+    -- attempt (e.g. a doubled click). For a non-Epic game, no event
+    -- lookup, lock, or reservation is even attempted. For an Epic-linked
+    -- game, this is decided ONLY AFTER event-membership reconciliation has
+    -- already run (see 'planPendingJoinMembership') -- never before it --
+    -- so an otherwise-idempotent re-join still repairs a legacy seat's
+    -- missing membership row.
     PendingJoinAlreadyMember
   | -- | This game is not linked to any Epic event at all. No lock\/
     -- reservation is attempted.
@@ -108,9 +117,10 @@ data PendingJoinPlan
     -- 'reservePendingJoinMembership'. The caller should proceed to insert
     -- the player and seed 'Api.Arkham.Epic.mkEpicEnv' from this event.
     PendingJoinReserved ArkhamEpicEventId GroupOrdinal
-  | -- | A pre-existing 'Entity.Arkham.Epic.ArkhamEpicMember' reservation
-    -- under a DIFFERENT ordinal already exists for this user\/event. No
-    -- player row is inserted or modified.
+  | -- | This user already holds a seat -- WITH a membership row under a
+    -- DIFFERENT ordinal, or a LEGACY seat (no membership row at all) in
+    -- some OTHER game of this event -- that conflicts with the requested
+    -- ordinal. No player row is inserted or modified.
     PendingJoinConflict
   | -- | The event vanished concurrently between discovering this game's
     -- link and locking it. Structurally unreachable in practice (see
@@ -144,57 +154,73 @@ ever consulted: 'putApiV1ArkhamPendingGameR' only calls
 -}
 class Monad m => MonadPendingJoin m where
   -- | Whether this user already holds a player row in this
-  -- (already-locked) game -- a duplicate\/idempotent join attempt.
-  -- Checked FIRST, before any event lookup, lock, or reservation is even
-  -- attempted, exactly mirroring
-  -- 'Api.Handler.Arkham.Game.Debug.isClaimSeatAlreadyJoined'.
+  -- (already-locked) game -- a duplicate\/idempotent join attempt. For a
+  -- non-Epic game, checked FIRST, before any event lookup, lock, or
+  -- reservation is even attempted. For an Epic-linked game, checked ONLY
+  -- AFTER 'reservePendingJoinMembership' has already run (see
+  -- 'planPendingJoinMembership'), never before it, exactly mirroring
+  -- 'Api.Handler.Arkham.Game.Debug.isClaimSeatAlreadyJoined''s own
+  -- ordering relative to
+  -- 'Api.Handler.Arkham.Game.Debug.reserveClaimSeatMembership'.
   hasExistingPendingPlayer :: ArkhamGameId -> UserId -> m Bool
 
   -- | Row-lock the Epic event ('FOR UPDATE' in production; see
   -- 'Api.Arkham.Epic.lockEpicEventRow') and report whether it is still
   -- present. Called from exactly ONE place, strictly BEFORE
-  -- 'reservePendingJoinMembership' and only once
-  -- 'hasExistingPendingPlayer' has already reported 'False' -- preserving
-  -- the SAME game(s)-before-event order
-  -- 'Api.Handler.Arkham.Game.Debug.lockClaimSeatEvent' and
-  -- 'Api.Handler.Arkham.Events.MonadEpicEventDeletion' already establish.
-  -- 'False' would mean the event vanished concurrently -- structurally
-  -- unreachable here (deleting it first requires locking, and deleting,
-  -- THIS already-locked game as one of its linked games), but handled as
-  -- a typed outcome rather than assumed impossible.
+  -- 'reservePendingJoinMembership' -- preserving the SAME
+  -- game(s)-before-event order 'Api.Handler.Arkham.Game.Debug.lockClaimSeatEvent'
+  -- and 'Api.Handler.Arkham.Events.MonadEpicEventDeletion' already
+  -- establish. 'False' would mean the event vanished concurrently --
+  -- structurally unreachable here (deleting it first requires locking,
+  -- and deleting, THIS already-locked game as one of its linked games),
+  -- but handled as a typed outcome rather than assumed impossible.
   lockPendingJoinEvent :: ArkhamEpicEventId -> m Bool
 
   -- | Attempt to reserve this user's 'GroupPlayer' membership for the
   -- ALREADY-LOCKED event under the requested ordinal -- see
-  -- 'Api.Arkham.Epic.reserveEpicGroupMembership', the EXACT SAME shared
-  -- primitive 'Api.Handler.Arkham.Game.Debug.reserveClaimSeatMembership'
-  -- delegates to for claim-seat's own flow, so the "one event group per
-  -- user" invariant cannot independently drift between the two entry
-  -- points that can create a user's FIRST membership row for an event.
+  -- 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling', the EXACT
+  -- SAME legacy-aware primitive
+  -- 'Api.Handler.Arkham.Game.Debug.reserveClaimSeatMembership' delegates
+  -- to for claim-seat's own flow, so the "one event group per user"
+  -- invariant (including reconciliation against a bare, unreconciled
+  -- LEGACY seat in some other game of this event, with no membership row
+  -- at all) cannot independently drift between the two entry points that
+  -- can create a user's FIRST membership row for an event. Called
+  -- REGARDLESS of whether this user already holds a player row in THIS
+  -- (target) game -- i.e. strictly BEFORE 'hasExistingPendingPlayer' is
+  -- even consulted (see 'planPendingJoinMembership') -- so an
+  -- otherwise-idempotent re-join still repairs a legacy seat's missing
+  -- membership row.
   reservePendingJoinMembership :: ArkhamEpicEventId -> UserId -> Int -> m EpicGroupReservation
 
 {- | The pending-join membership decision:
 
-1. If this user already holds a player row in this (already-locked) game,
-   report 'PendingJoinAlreadyMember' before any event lookup, lock, or
-   reservation is even attempted -- the ONLY branch reachable for a
-   repeat\/doubled join request.
-2. A game not linked to any Epic event reports 'PendingJoinNoEvent';
-   nothing further is attempted.
-3. Otherwise, lock the event row ('lockPendingJoinEvent') and, if it is
+1. A game not linked to any Epic event at all reports 'PendingJoinAlreadyMember'
+   (if this user already holds a player row here) or 'PendingJoinNoEvent'
+   otherwise; nothing else is ever attempted for a non-Epic game.
+2. Otherwise, lock the event row ('lockPendingJoinEvent') and, if it is
    somehow gone (structurally unreachable; see that method's Haddoc),
    report 'PendingJoinEventVanished'.
-4. Otherwise, actually RESERVE this user's 'GroupPlayer' membership under
-   THIS game's own ordinal ('reservePendingJoinMembership') -- a genuine
-   cross-game reservation through 'Entity.Arkham.Epic.UniqueEpicMember's
-   own unique key, not merely a non-locking read (unlike the code this
-   replaces): a user with no prior membership for this event can no
-   longer be the FIRST joiner of two different groups of the same event,
-   sequentially or concurrently, because the event row lock serializes
-   every such reservation attempt against the SAME primitive
-   'Api.Handler.Arkham.Game.Debug.claimSeatEventMembershipConflict' also
-   uses. A conflicting pre-existing reservation under a DIFFERENT ordinal
-   reports 'PendingJoinConflict', with no player row inserted.
+3. Otherwise, actually RESERVE this user's 'GroupPlayer' membership under
+   THIS game's own ordinal, WITH legacy-seat reconciliation
+   ('reservePendingJoinMembership') -- a genuine cross-game reservation
+   through 'Entity.Arkham.Epic.UniqueEpicMember's own unique key PLUS a
+   scan of every OTHER game linked to this event for a bare, unreconciled
+   seat (see 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling'),
+   run REGARDLESS of whether this user already holds a player row in THIS
+   game -- i.e. BEFORE 'hasExistingPendingPlayer' is even consulted --
+   specifically so an otherwise-idempotent re-join still repairs a legacy
+   seat's missing membership row: a user with no prior seat OR membership
+   for this event can no longer be the FIRST joiner of two different
+   groups of the same event, sequentially or concurrently, because the
+   event row lock serializes every such reservation attempt against the
+   SAME primitive 'Api.Handler.Arkham.Game.Debug.claimSeatEventMembershipConflict'
+   also uses. A conflicting seat under a DIFFERENT ordinal (whether via an
+   existing membership row or a bare legacy seat) reports 'PendingJoinConflict',
+   with no player row inserted.
+4. Only once reconciliation reports no conflict is 'hasExistingPendingPlayer'
+   consulted: this user already holding a player row in THIS (target) game
+   reports 'PendingJoinAlreadyMember'.
 5. Otherwise reports 'PendingJoinReserved', carrying the event id and
    ordinal the caller should seed 'Api.Arkham.Epic.mkEpicEnv' with.
 
@@ -211,27 +237,30 @@ planPendingJoinMembership
   -> UserId
   -> Maybe (ArkhamEpicEventId, Int)
   -> m PendingJoinPlan
-planPendingJoinMembership gameId userId mEvent = do
-  already <- hasExistingPendingPlayer gameId userId
-  if already
-    then pure PendingJoinAlreadyMember
-    else case mEvent of
-      Nothing -> pure PendingJoinNoEvent
-      Just (eventId, ordinal) -> do
-        eventStillPresent <- lockPendingJoinEvent eventId
-        if not eventStillPresent
-          then pure PendingJoinEventVanished
-          else do
-            reservation <- reservePendingJoinMembership eventId userId ordinal
-            pure $ case reservation of
-              EpicGroupReserved -> PendingJoinReserved eventId (GroupOrdinal ordinal)
-              EpicGroupReservationConflict -> PendingJoinConflict
+planPendingJoinMembership gameId userId mEvent = case mEvent of
+  Nothing -> do
+    already <- hasExistingPendingPlayer gameId userId
+    pure $ if already then PendingJoinAlreadyMember else PendingJoinNoEvent
+  Just (eventId, ordinal) -> do
+    eventStillPresent <- lockPendingJoinEvent eventId
+    if not eventStillPresent
+      then pure PendingJoinEventVanished
+      else do
+        reservation <- reservePendingJoinMembership eventId userId ordinal
+        case reservation of
+          EpicGroupReservationConflict -> pure PendingJoinConflict
+          EpicGroupReserved -> do
+            already <- hasExistingPendingPlayer gameId userId
+            pure
+              $ if already
+                then PendingJoinAlreadyMember
+                else PendingJoinReserved eventId (GroupOrdinal ordinal)
 
 instance MonadIO m => MonadPendingJoin (ReaderT SqlBackend m) where
   hasExistingPendingPlayer gid uid =
     exists [ArkhamPlayerArkhamGameId ==. gid, ArkhamPlayerUserId ==. uid]
   lockPendingJoinEvent eid = isJust <$> lockEpicEventRow eid
-  reservePendingJoinMembership = reserveEpicGroupMembership
+  reservePendingJoinMembership = reserveEpicGroupMembershipReconciling
 
 putApiV1ArkhamPendingGameR :: ArkhamGameId -> Handler (PublicGame ArkhamGameId)
 putApiV1ArkhamPendingGameR gameId = do
@@ -256,9 +285,12 @@ decide and execute the join, entirely inside the ONE transaction
 'atomicallyWithGame' already has this game locked for. The returned event
 id is threaded through regardless of branch (matching the previous
 behavior of broadcasting an event-changed notification whenever this game
-is Epic-linked at all, even for a no-op re-join), while the membership
-decision itself ('planPendingJoinMembership') only ever locks the event or
-reserves membership for the branch that actually inserts a NEW player.
+is Epic-linked at all, even for a no-op re-join). For an Epic-linked game,
+the membership decision itself ('planPendingJoinMembership') ALWAYS locks
+the event and attempts reservation\/reconciliation, even for a branch that
+turns out to be an already-a-member no-op re-join -- see that function's
+own Haddoc for why the repair must not be skipped for that branch; only a
+non-Epic game skips the event lock\/reservation entirely.
 -}
 planAndExecutePendingJoin
   :: ArkhamGameId
@@ -287,6 +319,14 @@ for an Epic-linked game whose membership 'planPendingJoinMembership' has
 ALREADY reserved -- seeds\/commits any shared-state deltas the setup run
 emitted. Called from exactly ONE place, after every membership check above
 has passed.
+
+Both 'runMessages' calls this can make (initial setup, and the
+deck-selection-complete shared-pool sync) run inside a SINGLE
+'runWithMessagesTimeout' wrap around the whole engine block, using the
+SAME budget\/exception 'Api.Handler.Arkham.Games.Shared.updateGame' uses --
+a pathological setup can only ever pin this transaction's game (and,
+when Epic-linked, event) lock for that one bounded window before the
+timeout exception aborts the whole 'runDB' transaction and releases both.
 -}
 runPendingJoinSetup
   :: ArkhamGameId
@@ -331,7 +371,15 @@ runPendingJoinSetup gameId userId now ArkhamGame {..} mEventCtx = do
       mEntity <- lockEpicEventRow eventId
       traverse (`mkEpicEnv` ordinal) mEntity
 
-  runGameApp (GameApp gameRef queueRef genRef (pure . const ()) mEpicEnv) $ do
+  -- Circuit breaker: cap BOTH runMessages calls below (setup, then the
+  -- deck-selection-complete sync pull) at the SAME budget 'updateGame'
+  -- uses, via the SAME 'runWithMessagesTimeout' helper, so a pathological
+  -- setup can't pin this game row's FOR UPDATE lock (and, for an
+  -- Epic-linked game, the event row already locked above) indefinitely.
+  -- An uncaught 'RunMessagesTimeout' escapes this 'runDB' transaction and
+  -- rolls back the player insert, any membership reservation, and any
+  -- shared-delta commit below -- nothing partial is left committed.
+  runWithMessagesTimeout gameId runMessagesTimeoutMicros $ runGameApp (GameApp gameRef queueRef genRef (pure . const ()) mEpicEnv) $ do
     addPlayer (PlayerId $ coerce pid)
     -- Run setup. For a multiplayer lobby this PAUSES at ChooseDeck
     -- (IsChooseDecks) until players pick decks, so we must NOT run any
