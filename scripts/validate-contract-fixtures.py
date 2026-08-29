@@ -177,10 +177,23 @@ def apply_mutation(value, mutation: dict):
             del parent[int(last)]
         else:
             del parent[last]
-    elif op in ("replace", "add"):
-        require("value" in mutation, f"Mutation op {op!r} requires a 'value'")
+    elif op == "replace":
+        require("value" in mutation, "Mutation op 'replace' requires a 'value'")
         if isinstance(parent, list):
             parent[int(last)] = mutation["value"]
+        else:
+            parent[last] = mutation["value"]
+    elif op == "add":
+        require("value" in mutation, "Mutation op 'add' requires a 'value'")
+        if isinstance(parent, list):
+            # RFC 6902 JSON-Patch "add" semantics for arrays: insert a new
+            # element at the given index (shifting later elements right), or
+            # append when the index is "-". This is intentionally distinct
+            # from "replace", which overwrites the existing element in place.
+            if last == "-":
+                parent.append(mutation["value"])
+            else:
+                parent.insert(int(last), mutation["value"])
         else:
             parent[last] = mutation["value"]
     else:
@@ -399,6 +412,41 @@ def run_self_test() -> None:
     )
 
 
+def run_apply_mutation_self_test() -> None:
+    """Prove `apply_mutation`'s array "add" is RFC 6902 JSON-Patch insertion
+    (shifts later elements right, or appends for "-"), and is distinct from
+    "replace" (which overwrites the element in place). This is a pure
+    in-memory check independent of any registered fixture/schema, since no
+    currently-registered negative fixture happens to mutate an array with
+    "add".
+    """
+    base = {"items": ["a", "b", "c"]}
+
+    inserted = apply_mutation(base, {"op": "add", "pointer": "/items/1", "value": "X"})
+    require(
+        inserted["items"] == ["a", "X", "b", "c"],
+        f"apply_mutation add-by-index must insert, not overwrite; got {inserted['items']!r}",
+    )
+
+    appended = apply_mutation(base, {"op": "add", "pointer": "/items/-", "value": "Y"})
+    require(
+        appended["items"] == ["a", "b", "c", "Y"],
+        f"apply_mutation add with '-' index must append; got {appended['items']!r}",
+    )
+
+    replaced = apply_mutation(base, {"op": "replace", "pointer": "/items/1", "value": "Z"})
+    require(
+        replaced["items"] == ["a", "Z", "c"],
+        f"apply_mutation replace-by-index must overwrite in place; got {replaced['items']!r}",
+    )
+
+    require(
+        base["items"] == ["a", "b", "c"],
+        "apply_mutation must not mutate its input value in place",
+    )
+
+
+run_apply_mutation_self_test()
 run_self_test()
 
 print(
