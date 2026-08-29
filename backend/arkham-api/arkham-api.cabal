@@ -8812,5 +8812,6 @@ test-suite spec
     , relude
     , text
     , time
+    , unordered-containers
     , uuid
   default-language: GHC2021
