@@ -1143,9 +1143,15 @@ threat-area treachery, controlled event, per-investigator entity cache,
 history, question, and player authorization row. Enemy cards stay behind
 because the printed ability disengages them before publishing readiness.
 
-This writes both games in one transaction, advances both revisions, publishes
-both websocket rooms, and places an undo floor at the new revisions. A swap
-is therefore never half-visible and can never be crossed by ordinary undo.
+This writes both games' persisted state and revision in one transaction
+(via 'planAndExecuteMainStreetSwap'/'performMainStreetSwap'), so that
+persisted state is never half-visible and can never be crossed by ordinary
+undo. Readiness spending, the per-game undo floor, and the websocket
+publish that follow (in 'swapMainStreetInvestigators', after 'runDB'
+returns) are separate, post-commit steps -- mirroring the same
+commit-then-cleanup shape 'Api.Handler.Arkham.Events.deleteApiV1ArkhamEventR'
+uses for room cleanup -- not additional writes inside the swap's own
+transaction.
 
 The entire plan/lock/execute decision (unknown or unlinked group relations,
 two ordinals resolving to one game, and both games' 'FOR UPDATE' locks,
