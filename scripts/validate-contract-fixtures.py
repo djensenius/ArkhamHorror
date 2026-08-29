@@ -37,6 +37,10 @@ def require_schema_document(schema_path, *, entry_kind: str) -> dict:
     presence is used as the schema-shaped marker. Returns the loaded schema
     dict for convenience.
     """
+    require(
+        isinstance(schema_path, str),
+        f"{entry_kind} schema must be a string document path, got {schema_path!r}",
+    )
     require(schema_path in documents, f"{entry_kind} schema is not a document: {schema_path}")
     require(schema_path in schemas_by_path, f"{entry_kind} schema document is not JSON: {schema_path}")
     schema = schemas_by_path[schema_path]
@@ -628,6 +632,28 @@ def run_self_test() -> None:
             "Self-test failure: require_schema_document() must reject a registered .json document "
             "that loads as a JSON object but has no root '$schema' marker (contracts/route-inventory.json "
             "is not a JSON Schema, just a plain JSON object) via a controlled SystemExit."
+        )
+
+    try:
+        require_schema_document({"not": "a string path"}, entry_kind="selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_schema_document() must reject a non-string, unhashable "
+            "schema_path (e.g. a dict) via a controlled SystemExit, not raise a raw TypeError "
+            "('unhashable type') from `schema_path in schemas_by_path`."
+        )
+
+    try:
+        require_schema_document(["not", "a", "string", "path"], entry_kind="selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_schema_document() must reject a non-string, unhashable "
+            "schema_path (e.g. a list) via a controlled SystemExit, not raise a raw TypeError "
+            "('unhashable type') from `schema_path in schemas_by_path`."
         )
 
     one_of_schema = {"oneOf": [{"type": "object"}, {"type": "string"}]}
