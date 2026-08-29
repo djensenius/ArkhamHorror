@@ -216,6 +216,28 @@ even 'Control.Exception.mask' cannot defer (see
 'Control.Concurrent.MVar.takeMVar' and STM's @retry@, which remain
 interruptible by design even when masked) -- not merely one @spawn@
 raises synchronously and immediately.
+
+@spawn@ is itself called from within this function's own 'mask', but the
+child body still runs genuinely unmasked via @spawn@'s /own/ supplied
+callback (in production, 'Control.Concurrent.forkIOWithUnmask''s
+@unmask@): unlike a plain 'mask'-produced @restore@ (which restores to
+whatever masking state was in effect /at the point 'mask' was entered/,
+so would only restore to /our/ masked state here, since we call @spawn@
+from within our own 'mask'), 'forkIOWithUnmask''s @unmask@ is documented
+and confirmed (by direct experimentation against GHC, including with an
+already-masked caller before this function is ever invoked) to always
+deliver a genuinely 'Control.Exception.Unmasked' state to its argument,
+regardless of any enclosing masking context -- this is its specific,
+documented purpose (\"used when the parent thread is masking
+asynchronous exceptions and doesn't want its children to inherit that
+masking state\"). So @spawn@'s own callback, not this function's own
+@restore@, is deliberately used for the body here. The finalizer, which
+must match 'Control.Concurrent.forkFinally' by running masked (so it
+cannot itself be interrupted mid-cleanup/result-delivery), is wrapped in
+an explicit 'mask_' rather than relying on it merely inheriting a masked
+state from being forked within this function's own 'mask' (true today,
+but not obviously so without tracing the masking-inheritance rules) --
+making that invariant self-evident at the call site instead.
 -}
 forkTransferringOwnershipUsing
   :: (((forall a. IO a -> IO a) -> IO ()) -> IO handle)
@@ -226,5 +248,5 @@ forkTransferringOwnershipUsing
   -> IO handle
 forkTransferringOwnershipUsing spawn res release body finalize =
   mask $ \_restore ->
-    spawn (\unmask -> try (unmask (body res)) >>= finalize res)
+    spawn (\unmask -> try (unmask (body res)) >>= \outcome -> mask_ (finalize res outcome))
       `onException` release res

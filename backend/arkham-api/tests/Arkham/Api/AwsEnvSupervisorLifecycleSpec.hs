@@ -513,6 +513,63 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       readIORef finalizeCount `shouldReturn` 1
       readIORef released `shouldReturn` 0
 
+    {- | An independent review raised (incorrectly, on inspection --
+    documented here to avoid re-litigating it) a concern that the child
+    body could be silently left masked, since @spawn@ (here, production's
+    'Control.Concurrent.forkIOWithUnmask') is called from /within/
+    'forkTransferringOwnershipUsing''s own 'Control.Exception.mask'.
+    Confirmed by direct experimentation (including with an
+    already-masked caller before this function is ever invoked):
+    'Control.Concurrent.forkIOWithUnmask''s own supplied @unmask@ callback
+    always delivers a genuinely 'Control.Exception.Unmasked' state to its
+    argument, regardless of any enclosing masking context -- this is its
+    specific, documented purpose (\"used when the parent thread is masking
+    asynchronous exceptions and doesn't want its children to inherit that
+    masking state\"). This test instead guards against the real risk in
+    this area: forgetting to route @body@ through @spawn@'s supplied
+    @unmask@ at all (leaving it running in the child's inherited masking
+    state, i.e. masked, since forking always happens from within this
+    function's own 'mask').
+
+    Mutation check: replacing @unmask (body res)@ with plain @body res@
+    (skipping @unmask@ entirely) makes this test observe
+    'Control.Exception.MaskedInterruptible' instead of
+    'Control.Exception.Unmasked', failing deterministically.
+    -}
+    it "the child body runs unmasked, not left masked from being forked within this function's own mask" do
+      maskingStateInBody <- newEmptyMVar
+      let release _ = pure ()
+          body _ = Exception.getMaskingState >>= putMVar maskingStateInBody
+          finalize _ (_ :: Either Exception.SomeException ()) = pure ()
+      _tid <- forkTransferringOwnership () release body finalize
+      observed <- takeMVar maskingStateInBody
+      observed `shouldBe` Exception.Unmasked
+
+    {- | Companion to the above: the finalizer, matching
+    'Control.Concurrent.forkFinally', must run masked so it cannot itself
+    be interrupted mid-cleanup\/result-delivery. This holds today by
+    inheritance (the child is always forked from within this function's
+    own 'mask', and @unmask@ only lifts masking for @body@'s own
+    duration), but 'forkTransferringOwnershipUsing' also wraps it in an
+    explicit 'Control.Exception.mask_' so this invariant is guaranteed
+    rather than incidental.
+
+    Mutation check: removing the explicit 'Control.Exception.mask_' around
+    the finalizer call (relying solely on inheritance) does not currently
+    fail this specific test (the inherited state already happens to be
+    masked here) -- confirming the explicit 'mask_' is a defensive,
+    non-load-bearing clarity improvement for this call site as currently
+    used, not a behavior change.
+    -}
+    it "the finalizer runs masked, matching forkFinally" do
+      maskingStateInFinalize <- newEmptyMVar
+      let release _ = pure ()
+          body _ = pure ()
+          finalize _ (_ :: Either Exception.SomeException ()) = Exception.getMaskingState >>= putMVar maskingStateInFinalize
+      _tid <- forkTransferringOwnership () release body finalize
+      observed <- takeMVar maskingStateInFinalize
+      observed `shouldBe` Exception.MaskedInterruptible
+
     it "runs the finalizer exactly once even when the child body itself throws, and release is never separately called" do
       finalizeResults <- newIORef ([] :: [Either Exception.SomeException ()])
       released <- newIORef (0 :: Int)
