@@ -230,38 +230,60 @@
       "type": "boolean"
     },
     "connectedLocations": {
-      "description": "Computed at snapshot time from directions and the revealed connection matchers: the ids of locations currently reachable from here.",
+      "description": "Computed at snapshot time from directions and the revealed connection matchers: the LocationId (UUID) of locations currently reachable from here.",
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "format": "uuid"
       }
     },
     "investigators": {
-      "description": "Computed at snapshot time: investigator ids currently at this location.",
+      "description": "Computed at snapshot time: InvestigatorId (card code) of investigators currently at this location.",
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^c[0-9a-z:._-]+$"
       }
     },
     "enemies": {
-      "description": "Computed at snapshot time: enemy ids at or attached to this location. Broad item shape (id format only), out of scope for this contract slice.",
-      "type": "array"
+      "description": "Computed at snapshot time: EnemyId (UUID) values at or attached to this location.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
     },
     "assets": {
-      "description": "Computed at snapshot time: asset ids at or attached to this location. Broad item shape, out of scope for this contract slice.",
-      "type": "array"
+      "description": "Computed at snapshot time: AssetId (UUID) values at or attached to this location.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
     },
     "events": {
-      "description": "Computed at snapshot time: event ids at or attached to this location. Broad item shape, out of scope for this contract slice.",
-      "type": "array"
+      "description": "Computed at snapshot time: EventId (UUID) values at or attached to this location.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
     },
     "treacheries": {
-      "description": "Computed at snapshot time: treachery ids at or attached to this location. Broad item shape, out of scope for this contract slice.",
-      "type": "array"
+      "description": "Computed at snapshot time: TreacheryId (UUID) values at or attached to this location.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
     },
     "scarletKeys": {
-      "description": "Computed at snapshot time: Scarlet Keys campaign key ids at this location. Broad item shape, out of scope for this contract slice.",
-      "type": "array"
+      "description": "Computed at snapshot time: ScarletKeyId (card code) values at this location.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^c[0-9a-z:._-]+$"
+      }
     },
     "modifiers": {
       "description": "Active modifiers targeting this location. Broad and additive, out of scope for this contract slice.",

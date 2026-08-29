@@ -109,10 +109,11 @@
       "description": "The card art/back code, usually equal to cardCode."
     },
     "assets": {
-      "description": "Asset ids owned/controlled by this investigator.",
+      "description": "AssetId (UUID) values owned/controlled by this investigator.",
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "format": "uuid"
       }
     },
     "assignedHealthDamage": {
@@ -132,10 +133,12 @@
       "type": "array"
     },
     "beganRoundAt": {
+      "description": "Maybe LocationId (UUID) recorded at the start of this investigator's turn.",
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "format": "uuid"
     },
     "bondedCards": {
       "description": "Bonded cards attached to this investigator. Broad card union, out of scope for this contract slice.",
@@ -164,10 +167,11 @@
       "type": "integer"
     },
     "connectedLocations": {
-      "description": "Computed at snapshot time: location ids currently reachable from this investigator.",
+      "description": "Computed at snapshot time: LocationId (UUID) values currently reachable from this investigator.",
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "format": "uuid"
       }
     },
     "deck": {
@@ -234,17 +238,19 @@
       "type": "boolean"
     },
     "engagedEnemies": {
-      "description": "Enemy ids currently engaged with this investigator.",
+      "description": "EnemyId (UUID) values currently engaged with this investigator.",
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "format": "uuid"
       }
     },
     "events": {
-      "description": "Event ids owned/controlled by this investigator.",
+      "description": "EventId (UUID) values owned/controlled by this investigator.",
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "format": "uuid"
       }
     },
     "excludeFromMulligan": {
@@ -340,10 +346,12 @@
       "format": "uuid"
     },
     "previousLocation": {
+      "description": "Maybe LocationId (UUID) this investigator moved from most recently.",
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "format": "uuid"
     },
     "remainingActions": {
       "type": "integer"
@@ -356,8 +364,12 @@
       "minimum": 0
     },
     "scarletKeys": {
-      "description": "Scarlet Keys campaign key ids held by this investigator. Broad, out of scope for this contract slice.",
-      "type": "array"
+      "description": "ScarletKeyId (card code) values held by this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^c[0-9a-z:._-]+$"
+      }
     },
     "sealedChaosTokens": {
       "type": "array",
@@ -384,8 +396,12 @@
       "description": "A named side deck reference, if any. Broad, out of scope for this contract slice."
     },
     "skills": {
-      "description": "Skill card/entity ids granted to this investigator. Broad item shape, out of scope for this contract slice.",
-      "type": "array"
+      "description": "SkillId (UUID) values granted to this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
     },
     "skippedWindow": {
       "type": "boolean"
@@ -439,8 +455,12 @@
       }
     },
     "treacheries": {
-      "description": "Treachery ids attached to this investigator. Broad item shape, out of scope for this contract slice.",
-      "type": "array"
+      "description": "TreacheryId (UUID) values attached to this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
     },
     "unhealedHorrorThisRound": {
       "type": "integer",

@@ -22,10 +22,12 @@
       "description": "An open string set, not a closed enum: the base game faces (PlusOne, Zero, MinusOne .. MinusEight, Skull, Cultist, Tablet, ElderThing, AutoFail, ElderSign, CurseToken, BlessToken, FrostToken, BloodToken) plus arbitrary homebrew/custom token slugs (e.g. ':circus-ex-mortis:moon'). Clients must preserve and gracefully display unknown values."
     },
     "chaosTokenRevealedBy": {
+      "description": "Maybe InvestigatorId (card code) of the investigator this token was drawn for, if any.",
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "pattern": "^c[0-9a-z:._-]+$"
     },
     "chaosTokenCancelled": {
       "type": "boolean"

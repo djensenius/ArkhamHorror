@@ -96,12 +96,18 @@ Haskell source is itself closed:
   instances accept arbitrary homebrew slugs.
 - `locations`, `investigators`, `acts`, `agendas` (and their counterparts
   `otherInvestigators`/`killedInvestigators`): every currently emitted field
-  is required and typed, including the location fields computed at snapshot
-  time from full-game context (`connectedLocations`, `investigators`,
-  `enemies`, `assets`, `events`, `treacheries`, `scarletKeys`) rather than
-  `LocationAttrs`'s own generic encoding. `enemies`/`assets` maps remain the
-  original broad entity-map placeholder because this scenario's opening board
-  has none placed yet; no fixture evidence exists to type them honestly.
+  is required and typed, including the location/investigator fields computed
+  at snapshot time from full-game context (`connectedLocations`,
+  `investigators`, `enemies`, `assets`, `events`, `skills`, `treacheries`,
+  `scarletKeys`) rather than `LocationAttrs`'/`InvestigatorAttrs`'s own
+  generic encoding. Every ID-shaped field is typed to its confirmed backend
+  newtype rather than a plain string: `format: "uuid"` for `LocationId`/
+  `AssetId`/`EnemyId`/`EventId`/`SkillId`/`TreacheryId`-backed fields (all
+  wrap `UUID`, per `Arkham/Id.hs`), and the existing card-code `pattern` for
+  `InvestigatorId`/`ActId`/`AgendaId`/`ScenarioId`/`ScarletKeyId`-backed
+  fields (all wrap `CardCode`). These arrays are empty in this fixture (the
+  opening board has no enemies/assets/treacheries placed yet), so only the
+  *item type* is evidenced from source, not populated instances.
 
 Known, deliberate scope limits carried by this fixture:
 

@@ -97,8 +97,12 @@
       }
     },
     "treacheries": {
-      "description": "Treachery ids attached to this act. Broad item shape, out of scope for this contract slice.",
-      "type": "array"
+      "description": "TreacheryId (UUID) values attached to this act.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
     },
     "usedWheelOfFortuneX": {
       "type": "boolean"

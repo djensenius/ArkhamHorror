@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/name.schema.json",
   "title": "Name",
-  "description": "A display name with an optional subtitle (Arkham.Name), used by investigators and scenarios.",
+  "description": "A display name (Arkham.Name), used by investigators and scenarios. Both keys are always present; subtitle is nullable rather than omitted when there is none.",
   "type": "object",
   "additionalProperties": false,
   "required": [
