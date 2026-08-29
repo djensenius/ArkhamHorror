@@ -323,8 +323,11 @@ runPendingJoinSetup gameId userId now ArkhamGame {..} mEventCtx = do
       -- here would mean the row we are still holding FOR UPDATE vanished
       -- out from under us, which is structurally impossible; rather than
       -- assume that, we degrade to skipping Epic wiring for this one
-      -- action (no game/player/step write has happened yet at this
-      -- point, so there is nothing to roll back) instead of crashing.
+      -- action instead of crashing -- accepting that the 'ArkhamPlayer'
+      -- row inserted just above would, in this unreachable branch, be
+      -- rolled back only via 'runDB'\'s normal all-or-nothing semantics
+      -- if some LATER step in this same transaction then fails, exactly
+      -- as any other write earlier in this function already relies on.
       mEntity <- lockEpicEventRow eventId
       traverse (`mkEpicEnv` ordinal) mEntity
 
