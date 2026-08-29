@@ -22,10 +22,26 @@ ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "contracts"
 
 strict_json.run_self_tests()
+strict_json.run_governed_bytes_self_tests()
+strict_json.run_governed_path_self_tests(ROOT)
 
 
 def load_json(path: Path) -> object:
     return strict_json.strict_json_load_path(path)
+
+
+def load_governed_json(relative_path: str) -> object:
+    """Read and strictly parse a manifest-declared governed artifact path
+    (a `documents`/`fixtures`/`basePositiveFixture` entry), routing it
+    through `strict_json.read_governed_worktree_bytes` so a manifest entry
+    can never cause this validator to silently follow a symlink, escape
+    this contract's governed subtree via a non-canonical path, or read a
+    non-regular file -- exactly the same path-safety guarantee
+    `update-manifest-hashes.py`/`check-schema-revision-drift.py` apply
+    before hashing the same governed paths.
+    """
+    content = strict_json.read_governed_worktree_bytes(ROOT, relative_path)
+    return strict_json.strict_json_loads(content, source=str(ROOT / relative_path))
 
 
 def require_schema_document(schema_path, *, entry_kind: str) -> dict:
@@ -78,7 +94,7 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(message)
 
 
-manifest = load_json(CONTRACTS / "manifest.json")
+manifest = load_governed_json("contracts/manifest.json")
 documents = manifest["documents"]
 fixtures = manifest["fixtures"]
 capabilities_fixtures = [
@@ -91,9 +107,7 @@ require(
     len(capabilities_fixtures) == 1,
     "manifest.json must register exactly one capabilities fixture",
 )
-capabilities_path = ROOT / capabilities_fixtures[0]["path"]
-require(capabilities_path.is_file(), f"Missing fixture: {capabilities_fixtures[0]['path']}")
-capabilities = load_json(capabilities_path)
+capabilities = load_governed_json(capabilities_fixtures[0]["path"])
 
 require(isinstance(capabilities, dict), "capabilities.json must be an object")
 for field in ("schemaRevision", "status", "apiBasePath"):
@@ -108,7 +122,7 @@ require(
 )
 
 for relative_path in documents:
-    require((ROOT / relative_path).is_file(), f"Missing contract file: {relative_path}")
+    strict_json.read_governed_worktree_bytes(ROOT, relative_path)
 
 for path in sorted(CONTRACTS.rglob("*.json")):
     load_json(path)
@@ -119,7 +133,7 @@ schemas_by_path: dict[str, object] = {}
 for relative_path in documents:
     if not relative_path.endswith(".json"):
         continue
-    schema = load_json(ROOT / relative_path)
+    schema = load_governed_json(relative_path)
     schemas_by_path[relative_path] = schema
     if not isinstance(schema, dict) or "$id" not in schema:
         continue
@@ -140,7 +154,7 @@ for fixture_index, fixture in enumerate(fixtures):
     require((ROOT / fixture_path).is_file(), f"Missing fixture: {fixture_path}")
     schema = require_schema_document(schema_path, entry_kind="Fixture")
 
-    instance = load_json(ROOT / fixture_path)
+    instance = load_governed_json(fixture_path)
     validator_class = validator_for(schema)
     validator_class.check_schema(schema)
     validator = validator_class(
@@ -473,7 +487,7 @@ positive_fixture_cache: dict[str, object] = {}
 
 def load_base_value(base_positive_fixture: str, base_pointer: str):
     if base_positive_fixture not in positive_fixture_cache:
-        positive_fixture_cache[base_positive_fixture] = load_json(ROOT / base_positive_fixture)
+        positive_fixture_cache[base_positive_fixture] = load_governed_json(base_positive_fixture)
     return resolve_json_pointer(positive_fixture_cache[base_positive_fixture], base_pointer)
 
 

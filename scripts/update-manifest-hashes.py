@@ -29,6 +29,8 @@ def require(condition: bool, message: str) -> None:
 
 def main() -> None:
     strict_json.run_self_tests()
+    strict_json.run_governed_bytes_self_tests()
+    strict_json.run_governed_path_self_tests(ROOT)
 
     manifest = strict_json.strict_json_load_path(MANIFEST)
     require(
@@ -72,13 +74,8 @@ def main() -> None:
 
     hashes = {}
     for relative_path in sorted_paths:
-        artifact_file = ROOT / relative_path
-        if not artifact_file.is_file():
-            raise SystemExit(
-                f"manifest.json references a governed artifact that does not exist on disk: "
-                f"{relative_path} (resolved: {artifact_file})"
-            )
-        hashes[relative_path] = hashlib.sha256(artifact_file.read_bytes()).hexdigest()
+        content = strict_json.read_governed_worktree_bytes(ROOT, relative_path)
+        hashes[relative_path] = hashlib.sha256(content).hexdigest()
 
     manifest["artifactHashes"] = hashes
     canon_bytes = strict_json.canonicalize_manifest_bytes(manifest)

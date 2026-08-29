@@ -138,29 +138,12 @@ def governed_paths(manifest: dict) -> list[str]:
 def compute_hashes_from_worktree(manifest: dict) -> dict[str, str]:
     hashes = {}
     for relative_path in governed_paths(manifest):
-        artifact_file = ROOT / relative_path
-        require(
-            artifact_file.is_file(),
-            f"manifest.json references a governed artifact that does not exist on disk: "
-            f"{relative_path} (resolved: {artifact_file})",
-        )
-        content = artifact_file.read_bytes()
+        content = strict_json.read_governed_worktree_bytes(ROOT, relative_path)
         hashes[relative_path] = hashlib.sha256(content).hexdigest()
     hashes["contracts/manifest.json"] = hashlib.sha256(
         strict_json.canonicalize_manifest_bytes(manifest)
     ).hexdigest()
     return hashes
-
-
-def git_show(ref: str, path: str) -> bytes | None:
-    result = subprocess.run(
-        ["git", "show", f"{ref}:{path}"],
-        cwd=ROOT,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout
 
 
 def resolve_ref(ref: str) -> bool:
@@ -296,7 +279,7 @@ def resolve_base_ref() -> str:
 
 
 def load_manifest_from_git_ref(ref: str) -> dict | None:
-    content = git_show(ref, "contracts/manifest.json")
+    content = strict_json.read_governed_git_ref_bytes(ROOT, ref, "contracts/manifest.json")
     if content is None:
         return None
     return strict_json.strict_json_loads(content, source=f"{ref}:contracts/manifest.json")
@@ -305,7 +288,7 @@ def load_manifest_from_git_ref(ref: str) -> dict | None:
 def compute_hashes_from_git_ref(ref: str, manifest: dict) -> dict[str, str]:
     hashes = {}
     for relative_path in governed_paths(manifest):
-        content = git_show(ref, relative_path)
+        content = strict_json.read_governed_git_ref_bytes(ROOT, ref, relative_path)
         require(content is not None, f"Could not read {relative_path} at {ref} via local git history")
         hashes[relative_path] = hashlib.sha256(content).hexdigest()
     hashes["contracts/manifest.json"] = hashlib.sha256(
@@ -367,6 +350,136 @@ def evaluate_drift(
     )
 
 
+def run_governed_json_strictness_self_tests() -> None:
+    """End-to-end proof (real filesystem I/O and real git plumbing, not
+    merely a direct unit call to `strict_json.strict_validate_governed_bytes_if_json`)
+    that both hash computers in this script -- `compute_hashes_from_worktree`
+    (the current/head side) and `compute_hashes_from_git_ref` (the
+    historical/base side, read via `strict_json.read_governed_git_ref_bytes`,
+    which itself verifies a `git ls-tree` mode/type before reading content
+    with `git show`) -- refuse to hash a malformed governed '.json' artifact
+    rather than silently blessing it as opaque bytes.
+
+    The sentinel path used throughout is nested under `contracts/fixtures/`
+    (rather than a bare top-level filename) because `validate_governed_path`
+    (added for this contract's path-safety hardening) only accepts this
+    contract's small fixed set of governed locations -- a bare top-level
+    filename would now be rejected before ever reaching either hash
+    computer, which would prove nothing about the malformed-content guard
+    this self-test exists to exercise.
+
+    The base-ref case constructs a throwaway git commit that is never
+    attached to any ref/branch (via `git hash-object`/`git mktree`/
+    `git commit-tree`), so this exercises the real historical-read code path
+    without touching this repository's actual history, working tree, or
+    index.
+    """
+    unique_name = f"__self-test-sentinel-{uuid.uuid4().hex}__.json"
+    governed_relative_path = f"contracts/fixtures/{unique_name}"
+
+    # Worktree (head) side: a real, malformed on-disk file must be rejected,
+    # not silently hashed as opaque bytes. Always cleaned up, even on
+    # assertion failure.
+    malformed_file = ROOT / governed_relative_path
+    malformed_file.write_bytes(b'{"a": 1, "a": 2}')
+    try:
+        try:
+            compute_hashes_from_worktree({"documents": [governed_relative_path], "fixtures": []})
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit(
+                "Self-test failure: compute_hashes_from_worktree must reject a malformed "
+                "(duplicate-key) governed .json artifact on disk via a controlled SystemExit, "
+                "not silently hash it as opaque bytes."
+            )
+    finally:
+        malformed_file.unlink(missing_ok=True)
+
+    # A well-formed on-disk file at the same kind of path must still hash
+    # successfully (this guard must not become overly strict).
+    well_formed_file = ROOT / governed_relative_path
+    well_formed_file.write_bytes(b'{"a": 1}')
+    try:
+        worktree_hashes = compute_hashes_from_worktree(
+            {"documents": [governed_relative_path], "fixtures": []}
+        )
+        require(
+            governed_relative_path in worktree_hashes,
+            "Self-test failure: compute_hashes_from_worktree must hash a well-formed governed "
+            ".json artifact successfully.",
+        )
+    finally:
+        well_formed_file.unlink(missing_ok=True)
+
+    # Historical/base side: a throwaway, unreferenced git commit whose tree
+    # contains a malformed governed .json file at contracts/fixtures/<name>
+    # must be rejected by compute_hashes_from_git_ref, exactly the path
+    # resolve_base_ref's CI-resolved base ref is read through in the real
+    # drift gate.
+    def _git(args: list[str], input_bytes: bytes | None = None) -> str:
+        result = subprocess.run(args, cwd=ROOT, capture_output=True, input=input_bytes)
+        require(
+            result.returncode == 0,
+            f"Self-test setup failure: {args!r} exited {result.returncode}: "
+            f"{result.stderr.decode('utf-8', errors='replace')}",
+        )
+        return result.stdout.decode("utf-8").strip()
+
+    def _commit_with_entry_at_governed_path(mode: str, object_type: str, object_id: str) -> str:
+        # git mktree only ever builds one flat tree level per invocation, so
+        # a nested path like contracts/fixtures/<name> needs an innermost
+        # tree for the leaf blob wrapped, one directory level at a time, in
+        # a tree for "fixtures" then a tree for "contracts" -- exactly how
+        # git itself resolves a multi-component path through nested trees.
+        path_segments = governed_relative_path.split("/")
+        tree_sha = _git(
+            ["git", "mktree"], f"{mode} {object_type} {object_id}\t{path_segments[-1]}\n".encode()
+        )
+        for directory_segment in reversed(path_segments[:-1]):
+            tree_sha = _git(
+                ["git", "mktree"], f"040000 tree {tree_sha}\t{directory_segment}\n".encode()
+            )
+        return _git(
+            [
+                "git",
+                "commit-tree",
+                tree_sha,
+                "-m",
+                "contract-tooling self-test throwaway commit (never attached to any ref/branch)",
+            ]
+        )
+
+    malformed_blob_sha = _git(["git", "hash-object", "-w", "--stdin"], b'{"a": 1, "a": 2}')
+    malformed_commit_sha = _commit_with_entry_at_governed_path("100644", "blob", malformed_blob_sha)
+    try:
+        compute_hashes_from_git_ref(
+            malformed_commit_sha, {"documents": [governed_relative_path], "fixtures": []}
+        )
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: compute_hashes_from_git_ref must reject a malformed "
+            "(duplicate-key) governed .json artifact read from a historical/base git ref via a "
+            "controlled SystemExit, not silently hash it as opaque bytes."
+        )
+
+    # The equivalent well-formed historical commit must still hash successfully.
+    well_formed_blob_sha = _git(["git", "hash-object", "-w", "--stdin"], b'{"a": 1}')
+    well_formed_commit_sha = _commit_with_entry_at_governed_path(
+        "100644", "blob", well_formed_blob_sha
+    )
+    git_ref_hashes = compute_hashes_from_git_ref(
+        well_formed_commit_sha, {"documents": [governed_relative_path], "fixtures": []}
+    )
+    require(
+        governed_relative_path in git_ref_hashes,
+        "Self-test failure: compute_hashes_from_git_ref must hash a well-formed governed .json "
+        "artifact read from a historical/base git ref successfully.",
+    )
+
+
 def run_self_tests() -> None:
     """Prove evaluate_drift()'s logic with small, hard-coded, in-memory
     fixtures, deterministic in any environment. Note this also calls
@@ -376,6 +489,8 @@ def run_self_tests() -> None:
     filesystem-free -- only the core evaluate_drift comparisons are purely
     in-memory."""
     strict_json.run_self_tests()
+    strict_json.run_governed_bytes_self_tests()
+    strict_json.run_governed_path_self_tests(ROOT)
 
     same_revision_changed_hash_ok, _ = evaluate_drift(
         base_revision="0.1.12",
@@ -462,6 +577,8 @@ def run_self_tests() -> None:
             "Self-test failure: compute_hashes_from_worktree must reject a governed path missing from "
             "disk via a controlled SystemExit, not raise a raw FileNotFoundError."
         )
+
+    run_governed_json_strictness_self_tests()
 
     try:
         require_manifest_schema_revision(["not", "a", "dict"], "selftest")
