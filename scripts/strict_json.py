@@ -63,6 +63,7 @@ import os
 import stat
 import subprocess
 import sys
+import uuid
 from decimal import Decimal
 from pathlib import Path
 
@@ -458,6 +459,134 @@ def _git_tracked_mode(root: Path, args: list[str], relative_path: str, *, label:
     return header.split(" ")[0]
 
 
+def _require_governed_worktree_mode(
+    root: Path, relative_path: str, *, require_exists: bool = False
+) -> Path:
+    """Shared preflight for every reader/writer that touches a governed
+    artifact's *current worktree* copy: validate `relative_path`
+    (`validate_governed_path`) and confirm the path, if it currently exists
+    on disk, is an ordinary, non-executable regular file at git mode
+    `100644` (via `os.lstat` -- which, unlike `Path.is_file()`, does not
+    follow a symlink to whatever file it currently happens to point at --
+    plus the git index/HEAD tree mode checks below). Returns the resolved
+    absolute `Path` on success.
+
+    Factored out of `read_governed_worktree_bytes` so
+    `write_governed_worktree_bytes` can apply the *exact same* three-signal
+    mode check (on-disk permission bits, git index mode, git HEAD tree mode)
+    immediately before writing, not just when reading -- a writer that
+    only validated on read, then wrote through `Path.write_text`/`open(...,
+    "w")` unconditionally, would still follow a symlink at write time (since
+    those APIs open-and-truncate whatever the final path component
+    currently resolves to), silently corrupting whatever external file the
+    symlink happened to point at.
+
+    If `relative_path` does not exist on disk yet and `require_exists` is
+    false (the default, appropriate for a writer that may be creating a
+    brand-new governed artifact), no mode check applies (there is nothing
+    to check) and this simply returns the resolved path the caller may go
+    on to create. If `require_exists` is true (used by
+    `read_governed_worktree_bytes`, which can never sensibly read bytes
+    from a path that is not there), a missing path raises
+    `GovernedPathError` immediately instead of silently returning as if
+    there were nothing to validate.
+    """
+    validated = validate_governed_path(relative_path)
+    absolute_path = root / validated
+    try:
+        file_stat = absolute_path.lstat()
+    except FileNotFoundError as exc:
+        if require_exists:
+            raise GovernedPathError(
+                f"governed artifact path {validated!r} does not exist on disk (resolved: "
+                f"{absolute_path})."
+            ) from exc
+        return absolute_path
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} is not a regular file on disk (resolved: "
+            f"{absolute_path}, st_mode={oct(file_stat.st_mode)}); a symlink, directory, or other "
+            "special file is never permitted as a governed artifact."
+        )
+    if stat.S_IMODE(file_stat.st_mode) & 0o111:
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} is executable on disk (permission bits "
+            f"{oct(stat.S_IMODE(file_stat.st_mode))}, resolved: {absolute_path}); governed "
+            "artifacts must be non-executable regular files (git mode 100644), matching the "
+            "exact mode read_governed_git_ref_bytes requires from history."
+        )
+    index_mode = _git_tracked_mode(
+        root, ["git", "ls-files", "--stage"], validated, label="git index"
+    )
+    if index_mode is not None and index_mode != "100644":
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} has git index (staged) mode {index_mode!r}, "
+            "expected 100644 (non-executable regular blob); a staged 'git update-index "
+            "--chmod=+x' (or equivalent) mode change is rejected even when the on-disk "
+            "permission bits were left untouched."
+        )
+    head_mode = _git_tracked_mode(
+        root, ["git", "ls-tree", "HEAD"], validated, label="git HEAD tree"
+    )
+    if head_mode is not None and head_mode != "100644":
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} has git HEAD-committed mode {head_mode!r}, "
+            "expected 100644 (non-executable regular blob)."
+        )
+    if index_mode is not None and head_mode is not None and index_mode != head_mode:
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} has disagreeing git modes: index (staged) "
+            f"mode {index_mode!r} vs. HEAD-committed mode {head_mode!r}; a governed artifact's "
+            "staged and last-committed mode must agree."
+        )
+    return absolute_path
+
+
+def write_governed_worktree_bytes(root: Path, relative_path: str, content: bytes) -> None:
+    """Write `content` as the current worktree copy of governed artifact
+    `relative_path`, without ever writing *through* a symlink at that path
+    (unlike `Path.write_text`/`open(path, "w")`, which follow a symlink's
+    final path component and overwrite whatever it currently points at).
+
+    Sequence:
+
+    1. `_require_governed_worktree_mode` re-validates the path and its
+       current on-disk/index/HEAD mode *immediately* before writing (not
+       merely once, earlier, at read time) -- this narrows, though does not
+       claim to eliminate, the TOCTOU window between an earlier read-side
+       validation and this write for a single local maintainer tool.
+    2. The new content is written to a throwaway temporary file created in
+       the *same parent directory* (so the final `os.replace` is on the
+       same filesystem and therefore atomic), with its permission bits
+       forced to exactly `0o644` regardless of the process umask.
+    3. `os.replace(tmp_path, absolute_path)` atomically replaces the
+       directory entry at `absolute_path`. Critically, `os.replace`
+       (`rename(2)`) never dereferences a symlink at the *destination* --
+       if `absolute_path` were a symlink, this unlinks the symlink itself
+       and puts the new regular file in its place, rather than following it
+       to overwrite whatever external file it pointed at. Combined with
+       step 1 rejecting a symlink outright before ever reaching this point,
+       an external symlink target is provably never written to by this
+       function, whether or not step 1's check is somehow bypassed.
+    """
+    absolute_path = _require_governed_worktree_mode(root, relative_path)
+    tmp_path = absolute_path.parent / f".{absolute_path.name}.tmp-{uuid.uuid4().hex}"
+    try:
+        with open(tmp_path, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, absolute_path)
+    finally:
+        # If os.replace succeeded, tmp_path no longer exists at this name
+        # (it was atomically renamed onto absolute_path) -- this only fires
+        # on an exception before/during the replace, cleaning up the
+        # throwaway file rather than leaving it behind.
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
 def read_governed_worktree_bytes(root: Path, relative_path: str) -> bytes:
     """Validate `relative_path` (`validate_governed_path`), read its bytes
     from the current worktree under `root` (rejecting anything that is not
@@ -524,51 +653,7 @@ def read_governed_worktree_bytes(root: Path, relative_path: str) -> bytes:
     because it happens to be new/untracked in some other context.
     """
     validated = validate_governed_path(relative_path)
-    absolute_path = root / validated
-    try:
-        file_stat = absolute_path.lstat()
-    except FileNotFoundError as exc:
-        raise GovernedPathError(
-            f"governed artifact path {validated!r} does not exist on disk (resolved: "
-            f"{absolute_path})."
-        ) from exc
-    if not stat.S_ISREG(file_stat.st_mode):
-        raise GovernedPathError(
-            f"governed artifact path {validated!r} is not a regular file on disk (resolved: "
-            f"{absolute_path}, st_mode={oct(file_stat.st_mode)}); a symlink, directory, or other "
-            "special file is never permitted as a governed artifact."
-        )
-    if stat.S_IMODE(file_stat.st_mode) & 0o111:
-        raise GovernedPathError(
-            f"governed artifact path {validated!r} is executable on disk (permission bits "
-            f"{oct(stat.S_IMODE(file_stat.st_mode))}, resolved: {absolute_path}); governed "
-            "artifacts must be non-executable regular files (git mode 100644), matching the "
-            "exact mode read_governed_git_ref_bytes requires from history."
-        )
-    index_mode = _git_tracked_mode(
-        root, ["git", "ls-files", "--stage"], validated, label="git index"
-    )
-    if index_mode is not None and index_mode != "100644":
-        raise GovernedPathError(
-            f"governed artifact path {validated!r} has git index (staged) mode {index_mode!r}, "
-            "expected 100644 (non-executable regular blob); a staged 'git update-index "
-            "--chmod=+x' (or equivalent) mode change is rejected even when the on-disk "
-            "permission bits were left untouched."
-        )
-    head_mode = _git_tracked_mode(
-        root, ["git", "ls-tree", "HEAD"], validated, label="git HEAD tree"
-    )
-    if head_mode is not None and head_mode != "100644":
-        raise GovernedPathError(
-            f"governed artifact path {validated!r} has git HEAD-committed mode {head_mode!r}, "
-            "expected 100644 (non-executable regular blob)."
-        )
-    if index_mode is not None and head_mode is not None and index_mode != head_mode:
-        raise GovernedPathError(
-            f"governed artifact path {validated!r} has disagreeing git modes: index (staged) "
-            f"mode {index_mode!r} vs. HEAD-committed mode {head_mode!r}; a governed artifact's "
-            "staged and last-committed mode must agree."
-        )
+    absolute_path = _require_governed_worktree_mode(root, relative_path, require_exists=True)
     content = absolute_path.read_bytes()
     strict_validate_governed_bytes_if_json(validated, content, source=str(absolute_path))
     return content
@@ -892,8 +977,6 @@ def run_governed_path_self_tests(root: Path) -> None:
     in `check-schema-revision-drift.py` already does), never touching any
     real branch, tag, the index, or this repository's actual history.
     """
-    import uuid
-
     # -- Pure path-string validation (no I/O) --------------------------------
     for bad_path, label in (
         ("", "an empty path"),
@@ -1158,6 +1241,154 @@ def run_governed_path_self_tests(root: Path) -> None:
         _with_throwaway_index(_stage_mode_disagreement)
     finally:
         staged_mode_file.unlink(missing_ok=True)
+
+    # -- write_governed_worktree_bytes: never writes through a symlink, and
+    # rejects the exact same bad-mode states read_governed_worktree_bytes
+    # rejects, *before* ever opening the destination for writing. These
+    # prove the "current manifest" write authority a manifest-hashing tool
+    # relies on when it publishes a recomputed contracts/manifest.json back
+    # to disk -- not merely that reading a bad-mode path fails, but that
+    # writing to one does too, and that a symlinked governed path's
+    # external target is providably untouched by a rejected (or even
+    # successful) write attempt.
+    writer_relative_path = f"contracts/fixtures/__self-test-writer-{uuid.uuid4().hex}__.json"
+    writer_file = root / writer_relative_path
+    writer_file.write_bytes(b'{"a": 1}')
+    writer_file.chmod(0o644)
+    try:
+        # Canonical case: an ordinary, non-executable, untracked (so no
+        # index/HEAD mode to disagree with) governed file must accept a
+        # write, replace its content exactly, and remain a plain regular
+        # file at mode 644 afterward (not, say, inheriting the umask or the
+        # temp file's permissions unpredictably).
+        write_governed_worktree_bytes(root, writer_relative_path, b'{"a": 2}')
+        if writer_file.read_bytes() != b'{"a": 2}':
+            raise SystemExit(
+                "Self-test failure: write_governed_worktree_bytes must replace a canonical "
+                "(mode 100644) governed file's content with the exact bytes given."
+            )
+        post_write_stat = writer_file.lstat()
+        if not stat.S_ISREG(post_write_stat.st_mode):
+            raise SystemExit(
+                "Self-test failure: write_governed_worktree_bytes must leave an ordinary "
+                "regular file (never a symlink or other special file) at the destination path."
+            )
+        if stat.S_IMODE(post_write_stat.st_mode) != 0o644:
+            raise SystemExit(
+                "Self-test failure: write_governed_worktree_bytes must leave the destination "
+                f"at exactly mode 100644 regardless of umask, got {oct(stat.S_IMODE(post_write_stat.st_mode))}."
+            )
+    finally:
+        writer_file.unlink(missing_ok=True)
+
+    # An executable-on-disk governed path must be rejected by the writer
+    # (not just the reader) before any write is attempted -- the original
+    # content must remain byte-for-byte untouched.
+    writer_executable_relative_path = (
+        f"contracts/fixtures/__self-test-writer-executable-{uuid.uuid4().hex}__.json"
+    )
+    writer_executable_file = root / writer_executable_relative_path
+    writer_executable_file.write_bytes(b'{"a": 1}')
+    writer_executable_file.chmod(0o755)
+    try:
+        try:
+            write_governed_worktree_bytes(root, writer_executable_relative_path, b'{"a": 2}')
+        except GovernedPathError:
+            pass
+        else:
+            raise SystemExit(
+                "Self-test failure: write_governed_worktree_bytes must reject writing to a "
+                "governed path that is currently executable on disk (mode 100755)."
+            )
+        if writer_executable_file.read_bytes() != b'{"a": 1}':
+            raise SystemExit(
+                "Self-test failure: write_governed_worktree_bytes must leave an executable "
+                "governed path's content completely untouched when the write is rejected."
+            )
+    finally:
+        writer_executable_file.unlink(missing_ok=True)
+
+    # A staged (index-only) mode-755 governed path -- on-disk bits still
+    # 644 -- must also be rejected by the writer, exactly like the reader.
+    writer_staged_relative_path = (
+        f"contracts/fixtures/__self-test-writer-staged-mode-{uuid.uuid4().hex}__.json"
+    )
+    writer_staged_file = root / writer_staged_relative_path
+    writer_staged_file.write_bytes(b'{"a": 1}')
+    writer_staged_file.chmod(0o644)
+    try:
+        staged_blob = _git(["git", "hash-object", "-w", "--stdin"], b'{"a": 1}')
+
+        def _writer_stage_mode_disagreement(git_in_throwaway_index):
+            git_in_throwaway_index(
+                ["git", "update-index", "--add", "--cacheinfo",
+                 f"100644,{staged_blob},{writer_staged_relative_path}"]
+            )
+            git_in_throwaway_index(
+                ["git", "update-index", "--chmod=+x", "--", writer_staged_relative_path]
+            )
+            try:
+                write_governed_worktree_bytes(root, writer_staged_relative_path, b'{"a": 2}')
+            except GovernedPathError:
+                pass
+            else:
+                raise SystemExit(
+                    "Self-test failure: write_governed_worktree_bytes must reject writing to a "
+                    "governed path whose git index (staged) mode is 100755 even when its "
+                    "on-disk permission bits are still 100644."
+                )
+            if writer_staged_file.read_bytes() != b'{"a": 1}':
+                raise SystemExit(
+                    "Self-test failure: write_governed_worktree_bytes must leave a staged/"
+                    "worktree mode-disagreement governed path's content completely untouched "
+                    "when the write is rejected."
+                )
+
+        _with_throwaway_index(_writer_stage_mode_disagreement)
+    finally:
+        writer_staged_file.unlink(missing_ok=True)
+
+    # The critical symlink case: a governed path that is currently a
+    # symlink pointing at some *external* file (outside the governed
+    # subtree entirely) with genuinely valid, well-formed JSON content
+    # identical in shape to a legitimate governed artifact. The writer must
+    # both (a) reject the write outright (mode check fails before any I/O
+    # against the destination), and (b) never have touched the external
+    # target's bytes at all -- proving this is not merely "rejected, but
+    # only after already corrupting the target".
+    external_sentinel_path = root / f"__self-test-external-sentinel-{uuid.uuid4().hex}__.json"
+    external_sentinel_path.write_bytes(b'{"external": true}')
+    writer_symlink_relative_path = (
+        f"contracts/fixtures/__self-test-writer-symlink-{uuid.uuid4().hex}__.json"
+    )
+    writer_symlink_path = root / writer_symlink_relative_path
+    try:
+        writer_symlink_path.symlink_to(external_sentinel_path)
+        try:
+            write_governed_worktree_bytes(root, writer_symlink_relative_path, b'{"a": 2}')
+        except GovernedPathError:
+            pass
+        else:
+            raise SystemExit(
+                "Self-test failure: write_governed_worktree_bytes must reject writing to a "
+                "governed path that is currently a symlink, rather than following it to "
+                "overwrite whatever external file it points at."
+            )
+        if not writer_symlink_path.is_symlink():
+            raise SystemExit(
+                "Self-test failure: a rejected write_governed_worktree_bytes call must leave "
+                "the symlink itself in place (unlinking/replacing it is only ever permitted "
+                "for an already-validated mode-100644 regular file, never a symlink)."
+            )
+        if external_sentinel_path.read_bytes() != b'{"external": true}':
+            raise SystemExit(
+                "Self-test failure: write_governed_worktree_bytes must never modify the "
+                "external file a governed-path symlink points at, whether the write is "
+                "accepted or rejected."
+            )
+    finally:
+        writer_symlink_path.unlink(missing_ok=True)
+        external_sentinel_path.unlink(missing_ok=True)
 
     def _commit_with_single_entry(
         mode: str, object_type: str, object_id: str, relative_entry_path: str

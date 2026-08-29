@@ -581,6 +581,35 @@ never race with a concurrent script's `index.lock`) prove the rejections
 actually fire against real filesystem/git state, not merely a unit-level
 string check.
 
+The manifest's own *current* bytes are not exempt from any of this: earlier,
+`update-manifest-hashes.py` and `check-schema-revision-drift.py` each read
+`contracts/manifest.json` via a bare `path.read_bytes()`-equivalent call,
+bypassing every one of the checks above for the one governed path both
+tools trust unconditionally — a manifest that was currently a symlink, or
+executable, or staged/committed at the wrong mode, would pass silently and
+only permanently break a future base-ref read once committed. Both tools
+now read the current manifest exclusively through
+`strict_json.read_governed_worktree_bytes(ROOT, "contracts/manifest.json")`,
+exactly like every other governed path. `update-manifest-hashes.py`'s
+write-back is similarly hardened: `strict_json.write_governed_worktree_bytes`
+re-validates the destination's current on-disk/index/HEAD mode immediately
+before writing, then publishes the new content via a temporary file in the
+same directory followed by an atomic `os.replace` — which, unlike
+`Path.write_text`/`open(path, "w")`, never dereferences a symlink at the
+destination, so even in the (already-rejected) case of a symlinked
+manifest path, the external file it points at is providably never written
+to. End-to-end self-tests prove both the writer in isolation (executable,
+staged-mode-disagreement, and symlink-to-external-target rejections, each
+confirmed to leave the original/external bytes completely untouched) and
+the two real CLI scripts end-to-end: each is copied into a small
+throwaway, freestanding scratch git repository and actually invoked as a
+subprocess against a current manifest that is executable on disk, staged
+executable while on-disk bits disagree, committed at a disagreeing HEAD
+mode, or a symlink to an external sentinel file — proving both tools
+reject every case (and leave a symlink's external target unchanged),
+while a canonical mode-`100644` manifest still works end-to-end through
+both tools.
+
 Contract changes must remain backward compatible with the Vue client. Runtime
 changes belong in separate, small pull requests so they can be contributed
 upstream independently of documentation and fixtures.

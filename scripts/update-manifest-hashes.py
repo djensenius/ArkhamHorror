@@ -20,6 +20,7 @@ import strict_json
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "contracts" / "manifest.json"
+MANIFEST_RELATIVE_PATH = "contracts/manifest.json"
 
 
 def require(condition: bool, message: str) -> None:
@@ -32,7 +33,20 @@ def main() -> None:
     strict_json.run_governed_bytes_self_tests()
     strict_json.run_governed_path_self_tests(ROOT)
 
-    manifest = strict_json.strict_json_load_path(MANIFEST)
+    # Route the *current* manifest itself through the exact same governed
+    # worktree reader every other governed artifact is hashed through
+    # (`read_governed_worktree_bytes`), rather than a bare
+    # `strict_json.strict_json_load_path(MANIFEST)` (equivalent to
+    # `MANIFEST.read_bytes()`), which would silently follow a manifest-path
+    # symlink and skip the filesystem-permission/git-index/git-HEAD mode
+    # checks entirely -- a current 100755 (or symlinked) manifest would
+    # otherwise pass this updater silently now, only to permanently break
+    # every future `read_governed_git_ref_bytes` base-ref read once that
+    # state is committed and later reused as an immutable base.
+    manifest = strict_json.strict_json_loads(
+        strict_json.read_governed_worktree_bytes(ROOT, MANIFEST_RELATIVE_PATH),
+        source=str(MANIFEST),
+    )
     require(
         isinstance(manifest, dict),
         f"manifest.json is not a JSON object (got {type(manifest).__name__}): {manifest!r}",
@@ -82,7 +96,19 @@ def main() -> None:
     manifest["artifactHashes"]["contracts/manifest.json"] = hashlib.sha256(canon_bytes).hexdigest()
     manifest["artifactHashes"] = dict(sorted(manifest["artifactHashes"].items()))
 
-    MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    # Publish through the same governed writer: it re-validates the current
+    # on-disk/index/HEAD mode immediately before writing, and atomically
+    # replaces the manifest's directory entry (`os.replace`) rather than
+    # opening-and-truncating whatever it currently resolves to -- so even if
+    # `contracts/manifest.json` somehow were a symlink, this can never write
+    # through it to whatever external file it points at (the write either
+    # fails the mode check outright, or, worst case, the replace unlinks the
+    # symlink itself and leaves the external target provably untouched).
+    strict_json.write_governed_worktree_bytes(
+        ROOT,
+        MANIFEST_RELATIVE_PATH,
+        (json.dumps(manifest, indent=2) + "\n").encode("utf-8"),
+    )
     print(f"Recomputed {len(manifest['artifactHashes'])} artifact hashes.")
 
 
