@@ -44,6 +44,7 @@ import Api.Arkham.Lifecycle (
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
+  proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
   shutdownThenDeliver,
  )
 import Arkham.Prelude
@@ -380,6 +381,104 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         Left _ -> pure ()
         Right () -> expectationFailure "expected the repopulated failure to propagate again"
       readIORef secondSupStartedRef `shouldReturn` False
+
+    {- | Structural, non-probabilistic regression for the exact
+    async-exception-safety gap identified in independent review: after
+    'takeMVar' consumes the previous 'Right ()' but before @onSuccess@'s
+    own 'Exception.try' installs its handler, an asynchronous exception
+    targeting this thread must not be deliverable in that window (which
+    would abort the function with the 'MVar' left permanently empty,
+    since nothing would ever catch it to write a replayable 'Left' back).
+    Rather than racing a real exception against that window (which, per
+    GHC's masking semantics, is only ever a few instructions wide and
+    cannot be reliably hit or missed on demand), this observes
+    'Control.Exception.getMaskingState' /from directly inside/ that exact
+    window via 'proceedOnlyIfPreviousShutdownSucceededReplayableUsing''s
+    test-only hook: it must read as 'Control.Exception.MaskedInterruptible'
+    (async exceptions deferred, except for the documented always-interruptible
+    operations), never 'Control.Exception.Unmasked'.
+
+    Mutation check: reverting 'proceedOnlyIfPreviousShutdownSucceededReplayable'
+    to the original, unmasked definition (no 'Control.Exception.mask'\/'restore'
+    at all) makes this same hook observe 'Control.Exception.Unmasked' instead,
+    failing deterministically -- confirmed by temporarily reverting the
+    production definition and re-running this test.
+    -}
+    it "the window between consuming the previous success and onSuccess beginning is masked, closing the async-exception gap" do
+      done <- newMVar (Right ())
+      maskingStateAfterConsume <- newEmptyMVar
+      let afterConsume = Exception.getMaskingState >>= putMVar maskingStateAfterConsume
+      proceedOnlyIfPreviousShutdownSucceededReplayableUsing afterConsume done (pure ())
+      observed <- takeMVar maskingStateAfterConsume
+      observed `shouldBe` Exception.MaskedInterruptible
+
+    {- | Regression for the async-exception-safety gap identified in
+    independent review: after 'takeMVar' consumes the previous 'Right ()'
+    but before @onSuccess@'s own 'Exception.try' installs its handler, an
+    asynchronous exception targeting this thread must not be delivered in
+    that narrow window (which would abort the function with the 'MVar'
+    left permanently empty, since nothing would ever catch it to write a
+    replayable 'Left' back). 'GHC.Conc.throwTo' blocks the calling thread
+    until the target thread actually receives the exception -- so, by
+    making @onSuccess@ itself the /only/ operation in this whole call that
+    can ever actually block (a 'takeMVar' on an 'MVar' nothing will ever
+    fill, which remains an interruptible wait even under 'Control.Exception.mask'
+    by design, precisely so a masked thread blocked forever cannot become
+    permanently uninterruptible), a successful, unblocked return from
+    'Exception.throwTo' below can /only/ mean the exception was received
+    there, at or after @onSuccess@ genuinely began running -- never any
+    earlier, during the masked 'readMVar'\/'takeMVar' bookkeeping (which
+    never blocks here, since 'done' already holds a value, and so is never
+    itself an interruption point). This makes the timing fully
+    deterministic: no sleep, no repeated racing, no possibility of a false
+    pass from the exception happening to land \"late enough\" by luck.
+
+    Mutation check: removing the 'Control.Exception.mask'\/'restore'
+    wrapper from 'proceedOnlyIfPreviousShutdownSucceededReplayable'
+    (reverting to the plain, unmasked original) makes the canary
+    exception's delivery point non-deterministic -- across repeated runs,
+    it can arrive before @onSuccess@ ever begins (interrupting the
+    'readMVar'\/'takeMVar' bookkeeping itself), in which case it is never
+    caught by 'Exception.try' at all, propagates as a bare 'Exception.throwTo'
+    failure with 'done' left holding neither a replayable 'Left' nor its
+    original 'Right' having ever been restored -- exactly the leak this
+    fix closes.
+    -}
+    it "defers a canary asynchronous exception through the just-consumed-success bookkeeping, delivering it only once onSuccess is genuinely running, where it is caught and safely re-recorded rather than lost with the MVar left empty" do
+      done <- newMVar (Right ())
+      neverFilled <- newEmptyMVar
+      caughtInsideOnSuccess <- newEmptyMVar
+      resultVar <- newEmptyMVar
+      let onSuccess =
+            takeMVar (neverFilled :: MVar ())
+              `Exception.catch` \e@(Exception.SomeException _) -> do
+                putMVar caughtInsideOnSuccess ()
+                Exception.throwIO e
+      -- The forking thread is itself masked, so the child inherits
+      -- 'Exception.MaskedInterruptible' at birth: this rules out the
+      -- exception being delivered before the child has even reached its
+      -- own internal 'Control.Exception.mask' call (a distinct, uninteresting
+      -- race this test is not about), isolating the one gap under test.
+      Exception.mask_ do
+        tid <- forkIO do
+          result <- Exception.try @Exception.SomeException (proceedOnlyIfPreviousShutdownSucceededReplayable done onSuccess)
+          putMVar resultVar result
+        Exception.throwTo tid (userError "canary")
+      -- 'Exception.throwTo' above only returned because the canary was
+      -- actually received -- confirm it was specifically inside
+      -- @onSuccess@, never lost any earlier.
+      takeMVar caughtInsideOnSuccess `shouldReturn` ()
+      outcome <- takeMVar resultVar
+      case outcome of
+        Left err -> show err `shouldContain` "canary"
+        Right () -> expectationFailure "expected the delivered canary exception to propagate as this call's result"
+      -- 'done' must hold a replayable failure, never be left permanently
+      -- empty (which would deadlock every future restart attempt).
+      final <- tryTakeMVar done
+      case final of
+        Just (Left _) -> pure ()
+        Just (Right ()) -> expectationFailure "expected 'done' to be repopulated with Left, not left as the original Right"
+        Nothing -> expectationFailure "expected 'done' to hold a replayable Left, not be left permanently empty"
 
   {- | Regression for the second MEDIUM lifecycle finding: 'DevelMain.hs's
   @start@ transfers an already-acquired 'App''s remaining lifetime to a

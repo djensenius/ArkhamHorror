@@ -25,6 +25,7 @@ module Api.Arkham.Lifecycle (
   acquireWithUnconditionalRelease,
   shutdownThenDeliver,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
+  proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
 ) where
@@ -122,16 +123,45 @@ instead of observing the same failure immediately. This version instead:
   never left permanently empty either, and every subsequent call
   immediately observes that same failure rather than blocking on a cell
   nothing will ever fill again.
+
+The gap between 'takeMVar' returning (consuming the previous 'Right ()')
+and @onSuccess@'s own failure handling being installed is closed with
+'mask': only 'readMVar' (which does not consume anything, so being
+interrupted there is harmless -- the cell is untouched for the next
+caller) and @onSuccess@ itself (explicitly 'restore'd, so it still runs
+interruptibly, and any exception it raises -- sync or async -- is caught
+by 'try' and written back before propagating) run with asynchronous
+exceptions enabled. 'takeMVar' remains genuinely interruptible by design
+even under 'mask' (so a blocked take can still be cancelled), but nothing
+is consumed unless it actually returns; once it returns, every step up to
+@onSuccess@ beginning is masked, so there is no window in which the cell
+has been emptied but nothing (yet) owns repopulating it.
 -}
 proceedOnlyIfPreviousShutdownSucceededReplayable
   :: MVar (Either SomeException ()) -> IO a -> IO a
-proceedOnlyIfPreviousShutdownSucceededReplayable done onSuccess = do
-  outcome <- readMVar done
+proceedOnlyIfPreviousShutdownSucceededReplayable =
+  proceedOnlyIfPreviousShutdownSucceededReplayableUsing (pure ())
+
+{- | As 'proceedOnlyIfPreviousShutdownSucceededReplayable', parameterized
+over an extra hook run (still under the enclosing 'mask', i.e. with
+asynchronous exceptions deferred) immediately after 'takeMVar' consumes
+the previous 'Right ()' and immediately before @onSuccess@ begins.
+Production always passes @'pure' ()@ via
+'proceedOnlyIfPreviousShutdownSucceededReplayable'; this seam exists
+purely so a test can observe (e.g. via 'Control.Exception.getMaskingState')
+that this exact window is genuinely masked, deterministically and without
+racing any real exception delivery against it.
+-}
+proceedOnlyIfPreviousShutdownSucceededReplayableUsing
+  :: IO () -> MVar (Either SomeException ()) -> IO a -> IO a
+proceedOnlyIfPreviousShutdownSucceededReplayableUsing afterConsume done onSuccess = mask $ \restore -> do
+  outcome <- restore (readMVar done)
   case outcome of
     Left err -> throwIO err
     Right () -> do
       _ <- takeMVar done
-      result <- try onSuccess
+      afterConsume
+      result <- try (restore onSuccess)
       case result of
         Left err -> do
           putMVar done (Left err)
