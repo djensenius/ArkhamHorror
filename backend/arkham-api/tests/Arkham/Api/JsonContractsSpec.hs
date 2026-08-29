@@ -16,6 +16,7 @@ import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.Campaign.Option (CampaignOption (..))
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
+import Arkham.Classes.HasGame (getGame)
 import Arkham.Difficulty (Difficulty (Easy, Standard))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Arkham.Epic.Types (SharedEventState (..))
@@ -24,6 +25,7 @@ import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
 import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Name (mkName)
+import Arkham.Scenario.Types (Scenario)
 import Arkham.UltimatumsAndBoons.Types
   ( Boon (BoonOfHades)
   , Ultimatum (UltimatumOfChaos)
@@ -47,6 +49,8 @@ import Entity.Arkham.Deck qualified as DeckEntity
 import Entity.Arkham.Game qualified as ArkhamGame
 import Entity.Notification (Notification (..))
 import System.IO.Error qualified as IOError
+import System.IO.Unsafe (unsafePerformIO)
+import System.Random (mkStdGen)
 import TestImport
 
 loadFixture :: FilePath -> IO Aeson.Value
@@ -159,11 +163,76 @@ fixtureCreateDeckRequest =
 fixturePlayerId :: PlayerId
 fixturePlayerId = PlayerId $ UUID.fromWords 0 0 0 1
 
+{- | Fixed seed for 'fixtureBoardGame': every shuffle performed while it is built
+(chaos bag construction, encounter set gathering, starting location draw) must
+be exactly reproducible, so the fixture is rebuilt from this constant rather
+than a live random seed.
+-}
+fixtureBoardSeed :: Int
+fixtureBoardSeed = 20260214
+
+-- | Roland Banks, seated with a fixed, non-random 'PlayerId' so the
+-- @investigators@ map in the board snapshot is fully deterministic.
+fixtureBoardInvestigator :: Investigator
+fixtureBoardInvestigator =
+  lookupInvestigator (InvestigatorId "01001") fixturePlayerId
+
+-- | "The Gathering", Night of the Zealot's opening scenario -- the same
+-- scenario id the previous (pending, empty-board) fixture used.
+fixtureBoardScenario :: Scenario
+fixtureBoardScenario = lookupScenario "01104" Easy
+
+{- | A genuinely non-empty, deterministic post-'Setup' board: one seated
+investigator, the act\/agenda decks in play, the chaos bag built, and the
+opening location placed -- produced by running the real 'StandaloneSetup',
+'Setup', and 'EndSetup' scenario message handlers (the exact same production
+code every other scenario spec in this suite exercises) against a fixed seed,
+rather than hand-writing a JSON sample (issue #44).
+
+This intentionally starts the game from 'TestImport.newGame' (seats the
+investigator directly) rather than the full production 'LoadScenario' chain,
+because the latter blocks on an interactive mulligan question before 'Setup'
+ever runs; that chain also folds in campaign-only concerns
+('SetChaosTokensForScenario', 'HandleKilledOrInsaneInvestigators',
+'CheckDestiny', tarot) that do not apply to a fresh standalone scenario and are
+out of scope for this contract slice. Every message this fixture *does* push
+is the real, unmodified production handler.
+-}
+fixtureBoardGame :: Game
+fixtureBoardGame = unsafePerformIO buildFixtureBoardGame
+{-# NOINLINE fixtureBoardGame #-}
+
+buildFixtureBoardGame :: IO Game
+buildFixtureBoardGame = do
+  baseGame <- newGame fixtureBoardScenario fixtureBoardInvestigator
+  let
+    game =
+      baseGame
+        { gameSeed = fixtureBoardSeed
+        , gameInitialSeed = fixtureBoardSeed
+        , gameGitRevision = "contract-fixture"
+        }
+  gameRef <- newIORef game
+  queueRef <- newQueue []
+  genRef <- newIORef $ mkStdGen fixtureBoardSeed
+  debugLevelRef <- newIORef 0
+  let testApp = TestApp gameRef queueRef genRef Nothing (pure . const ()) debugLevelRef
+  runReaderT (overGameM preloadModifiers) testApp
+  runTestApp testApp do
+    pushAndRunAll [StandaloneSetup, Setup, EndSetup]
+    -- "The Gathering" opens with a setup flavor-text prompt (the same
+    -- "Read"/continue prompt every real player clicks through); dismiss it so
+    -- the queued placement messages behind it (act/agenda decks, starting
+    -- location) actually run.
+    chooseOnlyOption "advance past The Gathering's setup introduction"
+    -- 'startAt' asks the lead investigator to reveal/enter the single starting
+    -- location ("Study"); answering it (there is only one option) is what
+    -- actually seats the investigator on the board.
+    chooseOnlyOption "reveal and enter the starting location"
+    getGame
+
 fixtureGame :: Game
-fixtureGame =
-  (newScenario "01104" 1729 1 Easy False)
-    { gameGitRevision = "contract-fixture"
-    }
+fixtureGame = fixtureBoardGame
 
 fixturePublicGame :: PublicGame ArkhamGame.ArkhamGameId
 fixturePublicGame =

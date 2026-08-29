@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.12",
+  "schemaRevision": "0.1.13",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -17,6 +17,17 @@
     "contracts/schemas/game-state.schema.json",
     "contracts/schemas/game-step.schema.json",
     "contracts/schemas/get-game.schema.json",
+    "contracts/schemas/act.schema.json",
+    "contracts/schemas/agenda.schema.json",
+    "contracts/schemas/chaos-bag.schema.json",
+    "contracts/schemas/chaos-token.schema.json",
+    "contracts/schemas/game-value.schema.json",
+    "contracts/schemas/investigator.schema.json",
+    "contracts/schemas/location.schema.json",
+    "contracts/schemas/mode.schema.json",
+    "contracts/schemas/name.schema.json",
+    "contracts/schemas/phase-step.schema.json",
+    "contracts/schemas/placement.schema.json",
     "contracts/schemas/public-game.schema.json",
     "contracts/schemas/server-message.schema.json"
   ],
@@ -169,5 +180,32 @@
   "compatibility": {
     "webClient": "unchanged",
     "nativeClientMinimumRevision": "0.1.0"
-  }
+  },
+  "negativeFixtures": [
+    {
+      "path": "contracts/fixtures/invalid/location-missing-required-field.json",
+      "schema": "contracts/schemas/location.schema.json",
+      "description": "Location entity missing required shroud field."
+    },
+    {
+      "path": "contracts/fixtures/invalid/phase-step-wrong-tag.json",
+      "schema": "contracts/schemas/phase-step.schema.json",
+      "description": "PhaseStep with an unrecognized tag value not in the closed PhaseStep union."
+    },
+    {
+      "path": "contracts/fixtures/invalid/chaos-token-malformed-id.json",
+      "schema": "contracts/schemas/chaos-token.schema.json",
+      "description": "ChaosToken with a chaosTokenId that is not a well-formed UUID."
+    },
+    {
+      "path": "contracts/fixtures/invalid/name-nullability-violation.json",
+      "schema": "contracts/schemas/name.schema.json",
+      "description": "Name with a non-null, non-string subtitle (violates the nullable-string constraint)."
+    },
+    {
+      "path": "contracts/fixtures/invalid/chaos-bag-structural-drift.json",
+      "schema": "contracts/schemas/chaos-bag.schema.json",
+      "description": "ChaosBag with chaosTokens replaced by an object instead of an array (structural drift)."
+    }
+  ]
 }

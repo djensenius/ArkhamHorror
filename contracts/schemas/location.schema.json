@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/location.schema.json",
+  "title": "Location",
+  "description": "A location entity as published in PublicGame.locations (Arkham.Location.Base.LocationAttrs plus the computed connection/occupant fields Arkham.Game.withLocationConnectionData merges in). Matcher, cost, and card-union payloads remain intentionally broad; see the field descriptions below for exactly what is out of scope in this slice.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "cardCode",
+    "cardId",
+    "label",
+    "revealClues",
+    "tokens",
+    "shroud",
+    "revealed",
+    "symbol",
+    "revealedSymbol",
+    "connectedMatchers",
+    "revealedConnectedMatchers",
+    "directions",
+    "connectsTo",
+    "cardsUnderneath",
+    "costToEnterUnrevealed",
+    "canBeFlipped",
+    "investigateSkill",
+    "placement",
+    "keys",
+    "seals",
+    "sealedChaosTokens",
+    "placedChaosTokens",
+    "floodLevel",
+    "brazier",
+    "breaches",
+    "withoutClues",
+    "meta",
+    "globalMeta",
+    "position",
+    "beingRemoved",
+    "concealedCards",
+    "outOfGame",
+    "connectedLocations",
+    "investigators",
+    "enemies",
+    "assets",
+    "events",
+    "treacheries",
+    "scarletKeys",
+    "modifiers"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "cardCode": {
+      "type": "string",
+      "pattern": "^c[0-9a-z:._-]+$"
+    },
+    "cardId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "label": {
+      "type": "string"
+    },
+    "revealClues": {
+      "$ref": "./game-value.schema.json"
+    },
+    "tokens": {
+      "description": "A Token-keyed multiset (e.g. clues, doom, resources), encoded as an array of [tokenName, count] pairs.",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": false,
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "shroud": {
+      "oneOf": [
+        {
+          "$ref": "./game-value.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "revealed": {
+      "type": "boolean"
+    },
+    "symbol": {
+      "$ref": "#/$defs/locationSymbol"
+    },
+    "revealedSymbol": {
+      "$ref": "#/$defs/locationSymbol"
+    },
+    "connectedMatchers": {
+      "description": "Unrevealed-side connection matchers (Arkham.Matcher.Location.LocationMatcher). Broad and out of scope for this contract slice.",
+      "type": "array"
+    },
+    "revealedConnectedMatchers": {
+      "description": "Revealed-side connection matchers (Arkham.Matcher.Location.LocationMatcher). Broad and out of scope for this contract slice.",
+      "type": "array"
+    },
+    "directions": {
+      "description": "A Direction-keyed map of grid-adjacent location ids, encoded as an array of [direction, [locationId, ...]] pairs. Empty for every non-grid scenario (including this fixture's Night of the Zealot board), so the populated pair shape is not asserted here.",
+      "type": "array"
+    },
+    "connectsTo": {
+      "description": "The set of grid Directions (Above, Below, LeftOf, RightOf) this location opens toward. Empty outside grid-based scenarios.",
+      "type": "array",
+      "items": {
+        "enum": [
+          "Above",
+          "Below",
+          "LeftOf",
+          "RightOf"
+        ]
+      }
+    },
+    "cardsUnderneath": {
+      "description": "Cards physically stacked underneath this location. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "costToEnterUnrevealed": {
+      "description": "The Arkham.Cost required to enter this location while unrevealed. Broad tagged union, out of scope for this contract slice.",
+      "type": "object"
+    },
+    "canBeFlipped": {
+      "type": "boolean"
+    },
+    "investigateSkill": {
+      "enum": [
+        "SkillWillpower",
+        "SkillIntellect",
+        "SkillCombat",
+        "SkillAgility"
+      ]
+    },
+    "placement": {
+      "oneOf": [
+        {
+          "$ref": "./placement.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "keys": {
+      "description": "Arkham keys placed on this location. Broad (ArkhamKey nests a ChaosToken and recurses), out of scope for this contract slice.",
+      "type": "array"
+    },
+    "seals": {
+      "description": "Scarlet Keys campaign seals placed on this location. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "sealedChaosTokens": {
+      "type": "array",
+      "items": {
+        "$ref": "./chaos-token.schema.json"
+      }
+    },
+    "placedChaosTokens": {
+      "type": "array",
+      "items": {
+        "$ref": "./chaos-token.schema.json"
+      }
+    },
+    "floodLevel": {
+      "description": "Edge of the Earth flood-level marker. Broad, out of scope for this contract slice.",
+      "type": [
+        "string",
+        "object",
+        "null"
+      ]
+    },
+    "brazier": {
+      "description": "Edge of the Earth brazier state. Broad, out of scope for this contract slice.",
+      "type": [
+        "string",
+        "object",
+        "null"
+      ]
+    },
+    "breaches": {
+      "description": "Breach/collapse status. Broad, out of scope for this contract slice.",
+      "type": [
+        "string",
+        "object",
+        "null"
+      ]
+    },
+    "withoutClues": {
+      "type": "boolean"
+    },
+    "meta": {
+      "description": "Free-form per-location scenario metadata."
+    },
+    "globalMeta": {
+      "description": "Free-form shared scenario metadata, keyed by arbitrary string keys.",
+      "type": "object"
+    },
+    "position": {
+      "description": "The grid position, when this location is placed on a grid-based board. Broad, out of scope for this contract slice.",
+      "type": [
+        "array",
+        "object",
+        "null"
+      ]
+    },
+    "beingRemoved": {
+      "type": "boolean"
+    },
+    "concealedCards": {
+      "description": "Concealed-card ids hidden at this location. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "outOfGame": {
+      "type": "boolean"
+    },
+    "connectedLocations": {
+      "description": "Computed at snapshot time from directions and the revealed connection matchers: the ids of locations currently reachable from here.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "investigators": {
+      "description": "Computed at snapshot time: investigator ids currently at this location.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "enemies": {
+      "description": "Computed at snapshot time: enemy ids at or attached to this location. Broad item shape (id format only), out of scope for this contract slice.",
+      "type": "array"
+    },
+    "assets": {
+      "description": "Computed at snapshot time: asset ids at or attached to this location. Broad item shape, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "events": {
+      "description": "Computed at snapshot time: event ids at or attached to this location. Broad item shape, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "treacheries": {
+      "description": "Computed at snapshot time: treachery ids at or attached to this location. Broad item shape, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "scarletKeys": {
+      "description": "Computed at snapshot time: Scarlet Keys campaign key ids at this location. Broad item shape, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "modifiers": {
+      "description": "Active modifiers targeting this location. Broad and additive, out of scope for this contract slice.",
+      "type": "array"
+    }
+  },
+  "$defs": {
+    "locationSymbol": {
+      "enum": [
+        "Circle",
+        "Square",
+        "Triangle",
+        "Plus",
+        "Diamond",
+        "Squiggle",
+        "Moon",
+        "Hourglass",
+        "T",
+        "Equals",
+        "Heart",
+        "Star",
+        "Droplet",
+        "Trefoil",
+        "Spade",
+        "NoSymbol"
+      ]
+    }
+  }
+}

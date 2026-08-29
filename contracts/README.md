@@ -64,6 +64,94 @@ constructor.
   source, and campaign unions remain intentionally broad until their dedicated
   schema slices land.
 
+### CORE board snapshot (mode, phase, chaos bag, locations, investigators, act/agenda)
+
+A dedicated fixture (`fixtures/get-game.json` / `fixtures/game-update.json`)
+now carries a genuinely non-empty, deterministic board built from the real
+production handlers: `TestImport.newGame` plus
+`pushAndRunAll [StandaloneSetup, Setup, EndSetup]` and two natural
+`chooseOnlyOption` answers, reaching an authentic mid-turn CORE snapshot
+(Night of the Zealot, "The Gathering") with a placed investigator, a live
+location, act/agenda stacks, an active player-window question, and a real
+chaos bag. Nothing is hand-authored; every field comes from the same
+`PublicGame`/`Api.GetGameJson`/`ApiResponse` encoders exercised by
+`backend/arkham-api/tests/Arkham/Api/JsonContractsSpec.hs`, and both the REST
+envelope and the WebSocket `GameUpdate` are asserted against the same
+underlying value.
+
+This slice tightens, with exact required keys and closed tags/enums where the
+Haskell source is itself closed:
+
+- `mode`: the `These Campaign Scenario` wrapper. The scenario (`That`) branch
+  is fully specified (58 required keys), including `chaosBag`, `name`,
+  `decksLayout`/`locationLayout` topology strings, and `difficulty`. The
+  campaign-only (`This`) and campaign+scenario (`These`) branches remain
+  broad: no fixture exercises them yet, so their shape is asserted only by
+  Haskell's `These` wrapper, not by direct evidence.
+- `phaseStep`: the 4-tag `PhaseStep` union, each tag's `contents` a closed
+  sub-step enum taken directly from `Arkham.Phase`.
+- `chaosBag` / chaos tokens: all 8 `ChaosBag` fields and all 5 `ChaosToken`
+  fields. `chaosTokenFace` is deliberately typed as an open `string` (not a
+  closed enum) because the backend's own `ToJSON`/`FromJSON ChaosTokenFace`
+  instances accept arbitrary homebrew slugs.
+- `locations`, `investigators`, `acts`, `agendas` (and their counterparts
+  `otherInvestigators`/`killedInvestigators`): every currently emitted field
+  is required and typed, including the location fields computed at snapshot
+  time from full-game context (`connectedLocations`, `investigators`,
+  `enemies`, `assets`, `events`, `treacheries`, `scarletKeys`) rather than
+  `LocationAttrs`'s own generic encoding. `enemies`/`assets` maps remain the
+  original broad entity-map placeholder because this scenario's opening board
+  has none placed yet; no fixture evidence exists to type them honestly.
+
+Known, deliberate scope limits carried by this fixture:
+
+- Interactive `Question`/`Message`/`Target`/`Source` payloads, the full card
+  union, `Placement` contents, matchers, and campaign-specific unions (tarot,
+  scarlet key, standalone campaign log internals) stay broad. `Placement`'s
+  28 tags are enumerated exactly, but each tag's `contents` shape varies and
+  is left `true` (unconstrained).
+- "The Gathering" only places one location (`Study`) during `Setup`; the rest
+  of the investigators' starting locations are `setAside` cards, not placed
+  entities. `connectedLocations`/`directions`/`connectsTo` are therefore
+  correctly typed but empty in this fixture — not a fabricated topology.
+- `contracts/manifest.json` has no hash/checksum mechanism to recompute;
+  schema and fixture integrity is enforced entirely by
+  `scripts/validate-contract-fixtures.py`'s registry-based JSON Schema
+  validation, which this slice extends with `negativeFixtures` (missing
+  required fields, wrong tags, malformed IDs, nullability violations, and
+  structural drift) so a schema regression fails loudly instead of silently
+  widening.
+
+Discrepancies found against the Vue native client while grounding this slice
+(cited here per the source-of-truth backend wire output, not fixed, since
+this contract does not change runtime behavior):
+
+- `Arkham.Phase`'s `Phase` enum has 6 constructors, including
+  `ResolutionPhase`; the Vue `phaseDecoder`
+  (`frontend/src/arkham/types/Phase.ts`) only lists 5, omitting
+  `ResolutionPhase` entirely, so a server sending that phase name would fail
+  to decode client-side. `PhaseStep`'s 4-tag union matches exactly between
+  backend and Vue.
+- Backend `ChaosToken` has exactly 5 fields
+  (`chaosTokenId`, `chaosTokenFace`, `chaosTokenRevealedBy`,
+  `chaosTokenCancelled`, `chaosTokenSealed`). Vue's `chaosTokenDecoder`
+  (`frontend/src/arkham/types/ChaosToken.ts`) decodes only `chaosTokenId` and
+  `chaosTokenFace`, silently drops `chaosTokenRevealedBy`/
+  `chaosTokenCancelled`/`chaosTokenSealed`, and additionally declares optional
+  `modifiers`/`modifiedFaces` fields that do not exist anywhere on the
+  backend `ChaosToken` type.
+- Backend `ChaosBag` has 8 fields; Vue's `chaosBagDecoder`
+  (`frontend/src/arkham/types/ChaosBag.ts`) decodes only `chaosTokens` and
+  `choice`, ignoring `setAsideChaosTokens`, `revealedChaosTokens`,
+  `forceDraw`, `tokenPool`, `totalRevealedChaosTokens`, and
+  `pendingRequests`.
+- Backend `InvestigatorAttrs` has 81 fields in this fixture; Vue's
+  `investigatorDecoder` (`frontend/src/arkham/types/Investigator.ts`) decodes
+  59 of them and silently ignores the rest (e.g. `killed`, `traits`,
+  `previousLocation`, `usedAbilities`, `drivenInsane`, `movement`). Notably,
+  the wire `eliminated` field is ignored entirely in favor of a
+  client-computed `defeated || resigned`.
+
 ## Game creation and multiplayer lobbies
 
 - Creating a game requires authentication and at least one non-null
@@ -225,6 +313,12 @@ alone.
 ```sh
 mise run contracts:validate
 ```
+
+`contracts:fixtures` also asserts a small set of `manifest.json`
+`negativeFixtures` (`fixtures/invalid/*.json`) fail validation for an
+expected reason (missing required field, wrong tag, malformed ID, nullability
+violation, structural drift), so schema regressions that silently widen
+coverage are caught alongside the positive fixtures.
 
 Contract changes must remain backward compatible with the Vue client. Runtime
 changes belong in separate, small pull requests so they can be contributed

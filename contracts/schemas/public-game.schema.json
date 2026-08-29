@@ -92,7 +92,7 @@
       "$ref": "#/$defs/gameSettings"
     },
     "mode": {
-      "type": "object"
+      "$ref": "./mode.schema.json"
     },
     "modifiers": {
       "type": "array"
@@ -102,16 +102,28 @@
       "minimum": 0
     },
     "locations": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "./location.schema.json"
+      }
     },
     "investigators": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "./investigator.schema.json"
+      }
     },
     "otherInvestigators": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "./investigator.schema.json"
+      }
     },
     "killedInvestigators": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "./investigator.schema.json"
+      }
     },
     "enemies": {
       "$ref": "#/$defs/entityMap"
@@ -120,10 +132,16 @@
       "$ref": "#/$defs/entityMap"
     },
     "acts": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "./act.schema.json"
+      }
     },
     "agendas": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "./agenda.schema.json"
+      }
     },
     "treacheries": {
       "$ref": "#/$defs/entityMap"
@@ -179,10 +197,7 @@
       ]
     },
     "phaseStep": {
-      "type": [
-        "object",
-        "null"
-      ]
+      "$ref": "./phase-step.schema.json"
     },
     "inAction": {
       "type": "boolean"

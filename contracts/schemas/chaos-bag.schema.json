@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/chaos-bag.schema.json",
+  "title": "ChaosBag",
+  "description": "The scenario's chaos bag (Arkham.ChaosBag.Base.ChaosBag).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "chaosTokens",
+    "setAsideChaosTokens",
+    "revealedChaosTokens",
+    "choice",
+    "forceDraw",
+    "tokenPool",
+    "totalRevealedChaosTokens",
+    "pendingRequests"
+  ],
+  "properties": {
+    "chaosTokens": {
+      "type": "array",
+      "items": {
+        "$ref": "./chaos-token.schema.json"
+      }
+    },
+    "setAsideChaosTokens": {
+      "type": "array",
+      "items": {
+        "$ref": "./chaos-token.schema.json"
+      }
+    },
+    "revealedChaosTokens": {
+      "type": "array",
+      "items": {
+        "$ref": "./chaos-token.schema.json"
+      }
+    },
+    "choice": {
+      "description": "The in-progress chaos-bag draw/resolution step, if any (Arkham.ChaosBagStepState). Broad and out of scope for this contract slice.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "forceDraw": {
+      "description": "A forced ChaosTokenFace, when set. Same open string set as ChaosToken.chaosTokenFace.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "tokenPool": {
+      "type": "array",
+      "items": {
+        "$ref": "./chaos-token.schema.json"
+      }
+    },
+    "totalRevealedChaosTokens": {
+      "type": "array",
+      "items": {
+        "$ref": "./chaos-token.schema.json"
+      }
+    },
+    "pendingRequests": {
+      "description": "A Source-keyed map of pending chaos-token requests, encoded as an array of [source, chaosTokens] pairs because Source is not a plain string key. Broad and out of scope for this contract slice.",
+      "type": "array"
+    }
+  }
+}

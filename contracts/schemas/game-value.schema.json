@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/game-value.schema.json",
+  "title": "GameValue",
+  "description": "A player-count-scaled integer value (Arkham.GameValue), used for shroud, clue thresholds, and doom thresholds. A closed, non-additive union: every constructor is enumerated here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tag"
+  ],
+  "properties": {
+    "tag": {
+      "enum": [
+        "Static",
+        "PerPlayer",
+        "StaticWithPerPlayer",
+        "ByPlayerCount",
+        "ValueX",
+        "ValueStar",
+        "ValueUnknown"
+      ]
+    },
+    "contents": {
+      "description": "Absent for the nullary ValueX/ValueStar/ValueUnknown tags. A single integer for Static/PerPlayer, a 2-tuple for StaticWithPerPlayer, and a 4-tuple (one value per player count 1-4) for ByPlayerCount.",
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 2,
+          "maxItems": 4
+        }
+      ]
+    }
+  }
+}
