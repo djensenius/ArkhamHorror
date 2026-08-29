@@ -28,14 +28,23 @@ def load_json(path: Path) -> object:
 
 def require_schema_document(schema_path, *, entry_kind: str) -> dict:
     """Validate that `schema_path` is a registered document AND that the
-    loaded JSON value is actually schema-shaped (a JSON object), not merely
-    any `.json` document (e.g. a fixture or capabilities file mistakenly
-    referenced as a schema). Returns the loaded schema dict for convenience.
+    loaded JSON value is actually schema-shaped, not merely any `.json`
+    document listed in manifest.json's `documents[]` (e.g.
+    `contracts/route-inventory.json`, which is a plain JSON object with no
+    schema semantics, would otherwise silently pass an `isinstance(..., dict)`
+    check). Every real schema document in `contracts/schemas/` declares a
+    root `$schema` draft URI (verified across all of them), so that key's
+    presence is used as the schema-shaped marker. Returns the loaded schema
+    dict for convenience.
     """
     require(schema_path in documents, f"{entry_kind} schema is not a document: {schema_path}")
     require(schema_path in schemas_by_path, f"{entry_kind} schema document is not JSON: {schema_path}")
     schema = schemas_by_path[schema_path]
     require(isinstance(schema, dict), f"{entry_kind} schema document is not a JSON object: {schema_path}")
+    require(
+        "$schema" in schema,
+        f"{entry_kind} schema document has no root '$schema' marker, so it is not schema-shaped: {schema_path}",
+    )
     return schema
 
 
@@ -123,9 +132,8 @@ for fixture_index, fixture in enumerate(fixtures):
     fixture_path = fixture["path"]
     schema_path = fixture["schema"]
     require((ROOT / fixture_path).is_file(), f"Missing fixture: {fixture_path}")
-    require(schema_path in documents, f"Fixture schema is not a document: {schema_path}")
+    schema = require_schema_document(schema_path, entry_kind="Fixture")
 
-    schema = load_json(ROOT / schema_path)
     instance = load_json(ROOT / fixture_path)
     validator_class = validator_for(schema)
     validator_class.check_schema(schema)
@@ -571,6 +579,17 @@ def run_self_test() -> None:
         raise SystemExit(
             "Self-test failure: require_schema_document() must reject a registered document that is "
             "not a JSON schema (a YAML document) via a controlled SystemExit."
+        )
+
+    try:
+        require_schema_document("contracts/route-inventory.json", entry_kind="selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_schema_document() must reject a registered .json document "
+            "that loads as a JSON object but has no root '$schema' marker (contracts/route-inventory.json "
+            "is not a JSON Schema, just a plain JSON object) via a controlled SystemExit."
         )
 
 
