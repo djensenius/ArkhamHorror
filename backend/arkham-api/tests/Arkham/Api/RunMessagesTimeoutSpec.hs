@@ -19,10 +19,17 @@ This lets us assert:
   normally, with 'RunMessagesTimeout' never thrown;
 * an action that runs LONGER than the budget is genuinely interrupted (not
   merely raced against and ignored): a shared 'IORef' proves the action's
-  own "I finished" flag is never set, and 'RunMessagesTimeout' -- the SAME
-  typed exception 'updateGame' throws today, carrying the exact game id
-  and budget supplied -- propagates OUT of 'runWithMessagesTimeout' rather
-  than being swallowed into a fake success;
+  own "I finished" flag is never set -- checked BOTH immediately after
+  'runWithMessagesTimeout' returns AND again well after the action's own
+  internal delay would have elapsed, so a hypothetical future
+  implementation that raced a detached worker thread against a timer
+  (instead of relying on GHC's genuinely-interrupting, same-thread
+  'System.Timeout.timeout') and merely returned early while the worker
+  kept running unobserved would still be caught -- and 'RunMessagesTimeout'
+  -- the SAME typed exception 'updateGame' throws today, carrying the
+  exact game id and budget supplied -- propagates OUT of
+  'runWithMessagesTimeout' rather than being swallowed into a fake
+  success;
 * an action that throws its OWN, DIFFERENT exception before the budget
   elapses propagates that exact exception unchanged (never reinterpreted
   as a timeout, and never swallowed);
@@ -66,14 +73,26 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
     result <- runWithMessagesTimeout fixtureGameId shortBudgetMicros (pure (42 :: Int))
     result `shouldBe` 42
 
-  it "an action that runs LONGER than the budget is genuinely interrupted -- its own 'finished' flag is never set -- and RunMessagesTimeout propagates with the exact game id and budget supplied" do
+  it "an action that runs LONGER than the budget is genuinely interrupted -- its own 'finished' flag is never set, checked both immediately and again well after its internal delay would have elapsed -- and RunMessagesTimeout propagates with the exact game id and budget supplied" do
     finished <- newIORef False
+    let internalDelayMicros = shortBudgetMicros * 20
     outcome <-
       try
         $ runWithMessagesTimeout fixtureGameId shortBudgetMicros do
-          threadDelay (shortBudgetMicros * 20)
+          threadDelay internalDelayMicros
           writeIORef finished True
     (outcome :: Either RunMessagesTimeout ()) `shouldBe` Left (RunMessagesTimeout fixtureGameId shortBudgetMicros)
+    readIORef finished `shouldReturn` False
+    -- Wait well past 'internalDelayMicros' -- long enough for the action to
+    -- have set 'finished' had it kept running in the background after
+    -- 'runWithMessagesTimeout' returned -- and re-check. This is what
+    -- actually distinguishes a GENUINE cancellation from a mere race where
+    -- 'timeout' merely returns early while the action keeps running
+    -- unobserved: the immediate check alone cannot tell the two apart, but
+    -- this second, delayed check would catch a future implementation that
+    -- raced a detached worker thread instead of relying on GHC's
+    -- genuinely-interrupting, same-thread 'System.Timeout.timeout'.
+    threadDelay (internalDelayMicros * 2)
     readIORef finished `shouldReturn` False
 
   it "an action that throws its OWN, DIFFERENT exception before the budget elapses propagates that exact exception unchanged -- never reinterpreted as a timeout, never swallowed" do
