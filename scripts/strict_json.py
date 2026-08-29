@@ -9,10 +9,14 @@ already catches this), and the non-JSON `NaN`/`Infinity`/`-Infinity`
 constants the stdlib `json` module accepts by default via `parse_constant`.
 Strict UTF-8 decoding and rejection of trailing tokens after the top-level
 value are both already the stdlib's default behavior (`json.loads` raises
-`JSONDecodeError` for trailing garbage; explicit `.decode("utf-8", strict)`
-below adds the same strictness for raw bytes, e.g. `git show` output, which
-the stdlib json module would otherwise decode more leniently via its
-internal latin-1 fallback path for bytes input).
+`JSONDecodeError` for trailing garbage; for raw bytes input, e.g. `git show`
+output, the stdlib `json` module already autodetects UTF-8/UTF-16/UTF-32 via
+BOM/null-byte heuristics and would itself reject invalid UTF-8 -- the
+explicit `.decode("utf-8", errors="strict")` below does not change that
+strictness, it exists only to make the expected encoding explicit rather
+than relying on autodetection, and to raise this module's own controlled
+`StrictJSONError` with a clear message instead of a raw `UnicodeDecodeError`
+propagating from inside the stdlib decoder).
 
 Every governed JSON read across this contract tooling -- the manifest,
 schemas, fixtures, negative-fixture descriptors, and the base-ref manifest

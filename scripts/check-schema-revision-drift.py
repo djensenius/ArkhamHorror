@@ -178,7 +178,7 @@ def _is_ci_environment() -> bool:
     return os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("CI") == "true"
 
 
-def _is_repository_initialization(candidate_sha: str) -> bool:
+def _is_repository_initialization() -> bool:
     """The only case where an all-zero/missing base SHA is legitimate: this
     push genuinely created the very first commit this repository has ever
     had (so there is, by construction, no prior governed-artifact state to
@@ -240,7 +240,7 @@ def resolve_base_ref() -> str:
         )
         if _ALL_ZERO_SHA_RE.fullmatch(env_ref or ""):
             require(
-                _is_repository_initialization(env_ref),
+                _is_repository_initialization(),
                 f"CONTRACT_BASE_REF {env_ref!r} is the all-zero SHA git uses for "
                 "'no prior commit' (e.g. a newly created branch/ref), which is only "
                 "acceptable if this repository has no commit history at all yet; it "
