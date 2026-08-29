@@ -26,6 +26,19 @@ def load_json(path: Path) -> object:
         return json.load(handle)
 
 
+def require_schema_document(schema_path, *, entry_kind: str) -> dict:
+    """Validate that `schema_path` is a registered document AND that the
+    loaded JSON value is actually schema-shaped (a JSON object), not merely
+    any `.json` document (e.g. a fixture or capabilities file mistakenly
+    referenced as a schema). Returns the loaded schema dict for convenience.
+    """
+    require(schema_path in documents, f"{entry_kind} schema is not a document: {schema_path}")
+    require(schema_path in schemas_by_path, f"{entry_kind} schema document is not JSON: {schema_path}")
+    schema = schemas_by_path[schema_path]
+    require(isinstance(schema, dict), f"{entry_kind} schema document is not a JSON object: {schema_path}")
+    return schema
+
+
 def require_entry_keys(entry: object, required_keys: list, *, entry_kind: str, index: int) -> dict:
     """Validate that a manifest list entry (negativeFixtures/enumBoundaryChecks
     element, etc.) is a dict containing every one of ``required_keys`` before
@@ -346,6 +359,14 @@ def diagnose_negative(schema: dict, branch, instance, expected_errors: list[dict
     if not errors:
         return False, "instance unexpectedly validated"
 
+    for expected_index, expected in enumerate(expected_errors):
+        require_entry_keys(
+            expected,
+            ["path", "keyword", "messageContains"],
+            entry_kind="expectedErrors",
+            index=expected_index,
+        )
+
     remaining = list(errors)
     unmatched_expected = []
     for expected in expected_errors:
@@ -404,12 +425,10 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
         any(isinstance(f, dict) and f.get("path") == base_positive_fixture for f in fixtures),
         f"basePositiveFixture {base_positive_fixture!r} is not a registered positive fixture",
     )
-    require(schema_path in documents, f"Negative fixture schema is not a document: {schema_path}")
-    require(schema_path in schemas_by_path, f"Negative fixture schema document is not a JSON schema: {schema_path}")
+    schema = require_schema_document(schema_path, entry_kind="Negative fixture")
 
     base_value = load_base_value(base_positive_fixture, base_pointer)
     mutated_instance = apply_mutation(base_value, mutation)
-    schema = schemas_by_path[schema_path]
 
     ok, detail = diagnose_negative(schema, schema_branch, mutated_instance, expected_errors)
     require(
@@ -465,10 +484,9 @@ for enum_boundary_index, check in enumerate(enum_boundary_checks):
     schema_path = check["schema"]
     schema_pointer = check["schemaPointer"]
     description = check.get("description", "no description")
-    require(schema_path in documents, f"enumBoundaryChecks schema is not a document: {schema_path}")
-    require(schema_path in schemas_by_path, f"enumBoundaryChecks schema document is not a JSON schema: {schema_path}")
+    schema_document = require_schema_document(schema_path, entry_kind="enumBoundaryChecks")
 
-    sub_schema = resolve_json_pointer(schemas_by_path[schema_path], schema_pointer)
+    sub_schema = resolve_json_pointer(schema_document, schema_pointer)
     require(isinstance(sub_schema, dict) and "enum" in sub_schema, f"{schema_path}{schema_pointer} is not an enum sub-schema")
     validator = make_validator(sub_schema)
 
@@ -514,6 +532,46 @@ def run_self_test() -> None:
         f"(added key {extra_key!r}) on top of {sample['basePositiveFixture']}{sample['basePointer']}; "
         "the exact-error-set check is not actually discriminating.",
     )
+
+    try:
+        diagnose_negative(schema, None, corrupted, [{"path": [], "keyword": "required"}])
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: diagnose_negative() must reject an expectedErrors entry missing "
+            "'messageContains' via a controlled SystemExit, not raise a raw KeyError."
+        )
+
+    try:
+        require_entry_keys({"path": "x"}, ["path", "schema"], entry_kind="selftest", index=0)
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_entry_keys() must reject a dict missing a required key "
+            "via a controlled SystemExit."
+        )
+
+    try:
+        require_entry_keys(["not", "a", "dict"], ["path"], entry_kind="selftest", index=0)
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_entry_keys() must reject a non-dict entry via a controlled "
+            "SystemExit."
+        )
+
+    try:
+        require_schema_document("contracts/openapi.yaml", entry_kind="selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_schema_document() must reject a registered document that is "
+            "not a JSON schema (a YAML document) via a controlled SystemExit."
+        )
 
 
 def run_apply_mutation_self_test() -> None:

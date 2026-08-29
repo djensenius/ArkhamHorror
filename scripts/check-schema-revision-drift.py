@@ -65,7 +65,11 @@ def canonicalize_manifest_bytes(manifest: dict) -> bytes:
 
 def governed_paths(manifest: dict) -> list[str]:
     paths = list(manifest.get("documents", []))
-    for fixture in manifest.get("fixtures", []):
+    for index, fixture in enumerate(manifest.get("fixtures", [])):
+        require(
+            isinstance(fixture, dict) and "path" in fixture,
+            f"manifest.json fixtures entry #{index} is not an object with a 'path' key: {fixture!r}",
+        )
         if fixture["path"] not in paths:
             paths.append(fixture["path"])
     return paths
@@ -74,7 +78,13 @@ def governed_paths(manifest: dict) -> list[str]:
 def compute_hashes_from_worktree(manifest: dict) -> dict[str, str]:
     hashes = {}
     for relative_path in governed_paths(manifest):
-        content = (ROOT / relative_path).read_bytes()
+        artifact_file = ROOT / relative_path
+        require(
+            artifact_file.is_file(),
+            f"manifest.json references a governed artifact that does not exist on disk: "
+            f"{relative_path} (resolved: {artifact_file})",
+        )
+        content = artifact_file.read_bytes()
         hashes[relative_path] = hashlib.sha256(content).hexdigest()
     hashes["contracts/manifest.json"] = hashlib.sha256(
         canonicalize_manifest_bytes(manifest)
@@ -226,6 +236,38 @@ def run_self_tests() -> None:
         parse_revision("0.2.0") > parse_revision("0.1.99"),
         "Self-test failure: parse_revision must compare left-to-right by component, not lexicographically.",
     )
+
+    try:
+        governed_paths({"documents": [], "fixtures": [{"notPath": "x"}]})
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: governed_paths must reject a fixtures[] entry missing 'path' via a "
+            "controlled SystemExit, not silently proceed."
+        )
+
+    try:
+        governed_paths({"documents": [], "fixtures": ["not-a-dict"]})
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: governed_paths must reject a non-dict fixtures[] entry via a "
+            "controlled SystemExit, not silently proceed."
+        )
+
+    try:
+        compute_hashes_from_worktree(
+            {"documents": ["contracts/schemas/__does-not-exist__.schema.json"], "fixtures": []}
+        )
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: compute_hashes_from_worktree must reject a governed path missing from "
+            "disk via a controlled SystemExit, not raise a raw FileNotFoundError."
+        )
 
 
 def main() -> None:
