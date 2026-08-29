@@ -221,7 +221,7 @@
         },
         "id": {
           "type": "string",
-          "pattern": "^c?[0-9a-z:._-]+$"
+          "pattern": "^c[0-9a-z:._-]+$"
         },
         "inResolution": {
           "type": "boolean"

@@ -37,6 +37,7 @@ import json
 import os
 import re
 import subprocess
+import uuid
 from pathlib import Path
 
 import strict_json
@@ -447,9 +448,13 @@ def run_self_tests() -> None:
         )
 
     try:
-        compute_hashes_from_worktree(
-            {"documents": ["contracts/schemas/__does-not-exist__.schema.json"], "fixtures": []}
+        # Use a per-run unique sentinel filename (rather than a fixed
+        # hardcoded name) so this self-test can never accidentally collide
+        # with a real path some future commit legitimately adds to the repo.
+        missing_sentinel_path = (
+            f"contracts/schemas/__self-test-sentinel-{uuid.uuid4().hex}__.schema.json"
         )
+        compute_hashes_from_worktree({"documents": [missing_sentinel_path], "fixtures": []})
     except SystemExit:
         pass
     else:
