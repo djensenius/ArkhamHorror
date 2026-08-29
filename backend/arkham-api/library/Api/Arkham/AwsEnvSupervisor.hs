@@ -271,14 +271,24 @@ themselves. Never contains a raw exception: 'SupervisedEnvUnavailable'
 only ever carries an already-forced 'AwsAuthErrorDiagnostic'.
 -}
 data SupervisedEnvState env
-  = -- | The supervisor has not yet completed its first acquisition.
+  = -- | No generation is currently 'SupervisedEnvReady': either the
+    -- supervisor has not yet completed its first acquisition, or an
+    -- acquisition attempt for a fresh generation (after backoff following
+    -- a prior failure\/invalidation) is currently in flight. Both cases
+    -- are the same constructor deliberately: either way, a caller with a
+    -- bounded wait budget (see 'requestDemandDrivenReady') should wait
+    -- rather than immediately treat this as a hard failure, since an
+    -- in-flight acquisition may well succeed before the caller's own
+    -- timeout elapses.
     SupervisedEnvInitializing
   | -- | @env@ is this generation's live, currently-valid resource.
     SupervisedEnvReady env
   | -- | The most recent generation failed to acquire, or was invalidated
-    -- (e.g. a genuine background refresh failure), or the supervisor
-    -- itself has stopped; a fresh attempt is (or was, before stopping)
-    -- pending after backoff.
+    -- (e.g. a genuine background refresh failure), and the supervisor is
+    -- currently backing off before its next attempt (which will publish
+    -- 'SupervisedEnvInitializing' again once it actually begins) -- or
+    -- the supervisor itself has stopped, in which case no further attempt
+    -- will ever begin.
     SupervisedEnvUnavailable AwsAuthErrorDiagnostic
   deriving stock (Eq, Show)
 
@@ -340,17 +350,26 @@ actually finish before returning -- exactly the \"terminate and wait for
 completion\" protocol this module previously had to construct and debug
 by hand.
 
-On every loop iteration: @acquire@ is attempted; a failure publishes
+On every loop iteration: 'SupervisedEnvInitializing' is (re-)published
+first, then @acquire@ is attempted; a failure publishes
 'SupervisedEnvUnavailable' and waits @backoff@ before retrying. A success
 publishes 'SupervisedEnvReady', then blocks in @awaitInvalidation@ until
 that generation is invalidated, at which point its diagnostic is published
-and @backoff@ is awaited before the next attempt. Whatever exception
-terminates the supervisor thread itself (an external 'stopSupervisedEnv',
-or an unanticipated exception escaping @acquire@\/@awaitInvalidation@ that
-is deliberately *not* caught here, per the \"no broad catch\" requirement)
-is guaranteed, via 'finally', to first publish 'AwsAuthSupervisorTerminated'
--- so a reader can never observe a stale 'SupervisedEnvReady' snapshot
-pointing at a resource nobody is monitoring any longer.
+and @backoff@ is awaited before the next attempt (which will again publish
+'SupervisedEnvInitializing' once it actually begins). Re-publishing
+'SupervisedEnvInitializing' on every attempt -- not only the very first --
+matters because 'requestDemandDrivenReady' only performs a bounded wait
+when it observes 'SupervisedEnvInitializing'; without this, a caller
+arriving while a post-failure re-acquisition is already in flight would
+instead see the *previous* generation's stale 'SupervisedEnvUnavailable'
+and fail immediately, even if this attempt goes on to succeed well within
+that caller's own timeout. Whatever exception terminates the supervisor
+thread itself (an external 'stopSupervisedEnv', or an unanticipated
+exception escaping @acquire@\/@awaitInvalidation@ that is deliberately
+*not* caught here, per the \"no broad catch\" requirement) is guaranteed,
+via 'finally', to first publish 'AwsAuthSupervisorTerminated' -- so a
+reader can never observe a stale 'SupervisedEnvReady' snapshot pointing at
+a resource nobody is monitoring any longer.
 -}
 startSupervisedEnv
   :: IO (Either AwsAuthErrorDiagnostic env)
@@ -377,9 +396,19 @@ startSupervisedEnv acquire awaitInvalidation backoff = do
 
     -- One full generation, masked from just before @acquire@ through the
     -- publication of 'SupervisedEnvReady': see the Haddock above for
-    -- exactly what this does and does not protect against.
+    -- exactly what this does and does not protect against. Publishes
+    -- 'SupervisedEnvInitializing' before calling @acquire@ on *every*
+    -- attempt (not only the very first) so a caller whose own bounded
+    -- wait (see 'requestDemandDrivenReady') lands while a re-acquisition
+    -- following a prior failure/invalidation is already in flight can
+    -- still observe that an attempt is under way and wait for it, rather
+    -- than immediately reading a stale 'SupervisedEnvUnavailable' from
+    -- the *previous* generation and returning an avoidable failure to the
+    -- caller even though this attempt might succeed well within their
+    -- timeout.
     runGeneration :: IO AwsAuthErrorDiagnostic
     runGeneration = mask $ \restore -> do
+      atomically $ writeTVar stateVar SupervisedEnvInitializing
       acquired <- acquire
       case acquired of
         Left diag -> pure diag
