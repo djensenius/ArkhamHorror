@@ -52,34 +52,37 @@ class StrictJSONError(SystemExit):
     text violates one of this module's extra strictness rules."""
 
 
-def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict:
+def _reject_duplicate_keys(pairs: list[tuple[str, object]], *, source: str) -> dict:
     seen: dict[str, object] = {}
     for key, value in pairs:
         if key in seen:
             raise StrictJSONError(
-                f"Duplicate JSON object key {key!r}: JSON object keys must be unique at "
-                "every nesting depth (this includes a plain key and a distinct "
+                f"{source}: duplicate JSON object key {key!r}: JSON object keys must be unique "
+                "at every nesting depth (this includes a plain key and a distinct "
                 "\\uXXXX-escaped form that decodes to the same text)."
             )
         seen[key] = value
     return seen
 
 
-def _reject_constant(constant_name: str):
+def _reject_constant(constant_name: str, *, source: str):
     raise StrictJSONError(
-        f"Non-finite JSON constant {constant_name!r} is not permitted in governed contract "
-        "artifacts; this toolchain requires strictly finite numeric values."
+        f"{source}: non-finite JSON constant {constant_name!r} is not permitted in governed "
+        "contract artifacts; this toolchain requires strictly finite numeric values."
     )
 
 
 def strict_json_loads(text_or_bytes, *, source: str = "<string>"):
     """Parse `text_or_bytes` (a `str`, or `bytes`/`bytearray` decoded as
     strict UTF-8) as JSON, rejecting duplicate object keys at any nesting
-    depth and `NaN`/`Infinity`/`-Infinity` constants. `source` only makes
-    error messages actionable; it does not affect parsing. Any other input
-    type (e.g. a `dict`, `Path`, or `int` passed by mistake) is rejected
-    with the same controlled `StrictJSONError`/`SystemExit` this module
-    always raises, rather than letting a raw `TypeError` escape from
+    depth and `NaN`/`Infinity`/`-Infinity` constants. `source` makes every
+    error message actionable (including duplicate-key and NaN/Infinity
+    rejections, which are otherwise raised deep inside `json.loads`'s
+    `object_pairs_hook`/`parse_constant` callbacks with no built-in access
+    to which file/ref was being parsed) and does not affect parsing. Any
+    other input type (e.g. a `dict`, `Path`, or `int` passed by mistake) is
+    rejected with the same controlled `StrictJSONError`/`SystemExit` this
+    module always raises, rather than letting a raw `TypeError` escape from
     `json.loads` for a non-`str` argument.
     """
     if isinstance(text_or_bytes, (bytes, bytearray)):
@@ -98,8 +101,8 @@ def strict_json_loads(text_or_bytes, *, source: str = "<string>"):
     try:
         return json.loads(
             text,
-            object_pairs_hook=_reject_duplicate_keys,
-            parse_constant=_reject_constant,
+            object_pairs_hook=lambda pairs: _reject_duplicate_keys(pairs, source=source),
+            parse_constant=lambda constant_name: _reject_constant(constant_name, source=source),
         )
     except StrictJSONError:
         raise
