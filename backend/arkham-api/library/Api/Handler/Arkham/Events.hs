@@ -1057,7 +1057,7 @@ class Monad m => MonadEpicEventDeletion m where
    only ever sees the two it resolved), and two callers who compute
    "ascending order" from different, overlapping subsets can disagree about
    which of a shared pair of games comes first -- see
-   'Api.Arkham.Epic.canonicalEpicGameLockOrder' 's Haddock for the concrete
+   'Api.Arkham.Epic.canonicalEpicGameLockOrder's Haddock for the concrete
    scenario. Ordering by the id's own 'Ord' instance has no such
    dependency: for any two games that both appear in ANY subset, their
    relative order is fixed by the ids alone. Games are ALWAYS locked before

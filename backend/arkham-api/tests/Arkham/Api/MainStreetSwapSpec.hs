@@ -1,6 +1,6 @@
 {- | Proves the Main Street group swap decision sequencing described in
 'Api.Handler.Arkham.Games.Shared.planAndExecuteMainStreetSwap' without a live
-database, mirroring "Arkham.Api.Events.EventDeletionSpec" 's approach for
+database, mirroring the approach in "Arkham.Api.Events.EventDeletionSpec" for
 'Api.Handler.Arkham.Events.deleteEpicEventAggregate'.
 
 A pure, in-memory 'MonadMainStreetSwap' instance ('TestDB') runs the exact
@@ -228,8 +228,9 @@ spec = describe "planAndExecuteMainStreetSwap (Main Street swap decision sequenc
             (Map.fromList [(fixtureGameId 1, False), (fixtureGameId 2, True)])
         (result, log_) = run FailNever state_ 1 2
     result `shouldBe` Right MainStreetSwapMissing
-    -- Canonical lock order is ascending by ordinal here (1 then 2), so game
-    -- 1's absent lock is attempted first, but game 2's is STILL attempted
+    -- Canonical lock order is ascending by 'ArkhamGameId' (fixture ids 1
+    -- and 2 here, which happen to equal their ordinals), so game 1's
+    -- absent lock is attempted first, but game 2's is STILL attempted
     -- (see the "both locks always attempted" tests below): no
     -- 'PerformedSwap' step follows either way.
     log_
@@ -254,7 +255,9 @@ spec = describe "planAndExecuteMainStreetSwap (Main Street swap decision sequenc
                  ]
 
   it "when the canonically-FIRST lock succeeds but the canonically-SECOND is absent, both locks are still attempted, and no swap is performed" do
-    -- Ordinal 0 < ordinal 1, so canonical order locks game 0 first. Game 0
+    -- Fixture game id 0 < game id 1, so canonical order locks game 0
+    -- first (ordinal happens to equal id here, but id alone decides).
+    -- Game 0
     -- is present, game 1 is absent: 'and lockResults' must still be
     -- checked only after BOTH are attempted, not short-circuited after the
     -- first succeeds.

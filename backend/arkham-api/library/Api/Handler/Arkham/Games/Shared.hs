@@ -914,7 +914,7 @@ directly unit testable without a live database -- see
 data MainStreetSwapPlan = MainStreetSwapPlan
   { lockOrder :: [ArkhamGameId]
   -- ^ Every DISTINCT game id among the two involved, ascending by
-  -- 'ArkhamGameId' 's own 'Ord' instance -- computed by the one shared
+  -- 'ArkhamGameId's own 'Ord' instance -- computed by the one shared
   -- 'canonicalEpicGameLockOrder' both this swap and
   -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' delegate to, so
   -- neither can independently drift into a different order. Deliberately
@@ -922,7 +922,7 @@ data MainStreetSwapPlan = MainStreetSwapPlan
   -- TWO of an event's linked games, while a full deletion locks every
   -- linked game, and an ordinal-based order is not independent of which
   -- subset of games a caller happens to have -- see
-  -- 'canonicalEpicGameLockOrder' 's Haddock for the concrete scenario
+  -- 'canonicalEpicGameLockOrder's Haddock for the concrete scenario
   -- where that would let this swap and a deletion lock the same pair of
   -- games in opposite orders. A degenerate same-game-id request (see
   -- below) collapses to a single-element list here: locking it once is
@@ -1154,7 +1154,7 @@ first/second mapping used for the actual swap semantics and response,
 closes off a cross-path deadlock: without it, a reversed-order swap request
 (say, ordinals 2 then 1) would acquire its first update's implicit row lock
 on whichever game ordinal 2 resolves to before whichever game ordinal 1
-resolves to. 'mainStreetSwapPlan' 's 'lockOrder' is ascending by
+resolves to. 'mainStreetSwapPlan's 'lockOrder' is ascending by
 'ArkhamGameId' ALONE -- never by ordinal, and never dependent on which two
 of an event's linked games this swap happened to resolve -- and
 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' locks every linked

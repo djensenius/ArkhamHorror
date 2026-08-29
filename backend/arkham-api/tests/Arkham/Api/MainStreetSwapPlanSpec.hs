@@ -58,9 +58,9 @@ import Entity.Arkham.Game qualified as GameEntity
 import Test.Hspec
 
 -- | Two fixture ids whose NUMERIC order is the REVERSE of the names given to
--- them here ('gameNamedFirst' has the numerically SMALLER underlying id) --
+-- them here ('gameNamedFirst' has the numerically LARGER underlying id) --
 -- deliberately, so a test that names the numerically-smaller game SECOND
--- still proves it locks FIRST: it is genuinely 'ArkhamGameId' 's own 'Ord'
+-- still proves it locks FIRST: it is genuinely 'ArkhamGameId's own 'Ord'
 -- instance controlling 'lockOrder', not argument position or any other
 -- proxy for order.
 gameNamedFirst :: GameEntity.ArkhamGameId

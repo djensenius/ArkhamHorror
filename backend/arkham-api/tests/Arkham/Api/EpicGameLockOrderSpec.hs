@@ -12,8 +12,8 @@ deletion sees every one of an event's linked games, while a Main Street swap
 only ever sees the two it resolved, and an ordinal-based order can put the
 same pair of games in OPPOSITE relative order depending on which other
 ordinals happen to be in a caller's particular subset (see this module's
-final test, and 'canonicalEpicGameLockOrder' 's own Haddock, for the
-concrete scenario). Ordering by 'ArkhamGameId' 's own 'Ord' instance alone
+final test, and 'canonicalEpicGameLockOrder's own Haddock, for the
+concrete scenario). Ordering by 'ArkhamGameId's own 'Ord' instance alone
 has no such dependency: the relative order of any two ids that both appear
 in ANY subset is fixed by the ids themselves.
 
@@ -22,14 +22,14 @@ These tests prove:
 * the result is sorted ascending by 'ArkhamGameId' alone;
 * duplicate ids (the same game appearing more than once in the input)
   collapse to a single occurrence, whether the duplicates are adjacent or
-  separated by other distinct ids after sorting;
+  separated by other distinct ids in the input;
 * an already-sorted input, an empty input, and a single-element input are
   all handled without incident;
 * the ordering is genuinely subset-independent: handed the FULL set of ids
   a deletion would see (including a repeated id, aliased across two
   ordinals) versus just the SUBSET of two ids a Main Street swap resolved,
   this function returns the SAME relative order for any pair of ids common
-  to both -- exercised directly against 'mainStreetSwapPlan' 's actual
+  to both -- exercised directly against 'mainStreetSwapPlan's actual
   'lockOrder' field, not merely re-derived, with fixture ids chosen so
   their OWN numeric order deliberately conflicts with any "the game
   mentioned first/at the lowest ordinal locks first" assumption, so this
@@ -62,13 +62,16 @@ spec = describe "canonicalEpicGameLockOrder (shared Epic game lock-order seam)" 
     canonicalEpicGameLockOrder [fixtureGameId 1, fixtureGameId 1]
       `shouldBe` [fixtureGameId 1]
 
-  it "collapses a game id repeated at NON-ADJACENT positions in the input -- with a different id in between -- to a single occurrence" do
-    -- After sorting, the two occurrences of game 9 are separated by game 4
-    -- ([9, 4, 9] in input order) -- only a global (not merely adjacency-based)
-    -- dedup collapses both correctly. This is a real, reachable shape for
-    -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate': nothing prevents
-    -- two different groups of the same event from referencing the same
-    -- game, with some other group's game between them.
+  it "collapses a game id repeated at NON-ADJACENT positions in the INPUT -- with a different id between them -- to a single occurrence" do
+    -- The two occurrences of game 9 are separated by game 4 in the INPUT
+    -- order ([9, 4, 9]) -- this is the shape that defeated the old
+    -- adjacency-only 'dedupeSorted' helper, which sorted by
+    -- @(ordinal, game id)@ and could leave two same-id refs at different
+    -- ordinals non-adjacent even after sorting. Sorting purely by
+    -- 'GameEntity.ArkhamGameId' (as this function now does) always groups
+    -- equal ids together, so 'nubOrd' collapses them regardless of their
+    -- input positions -- this test pins that regression directly, using
+    -- the same input shape that previously broke the invariant.
     canonicalEpicGameLockOrder [fixtureGameId 9, fixtureGameId 4, fixtureGameId 9]
       `shouldBe` [fixtureGameId 4, fixtureGameId 9]
 
