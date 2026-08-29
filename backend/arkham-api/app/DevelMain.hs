@@ -67,8 +67,23 @@ update = do
     -- server is already running
     Just tidStore -> withStore tidStore (`restartAppInNewThread` doneStore)
  where
+  {- | 'Foreign.Store' values persist across GHCi @:r@ reloads purely by
+  numeric slot, with no runtime type check at all -- reusing a slot
+  whose stored /type/ has changed (as this one has, historically: from a
+  bare @MVar ()@ in the original Yesod scaffold, to
+  @MVar (Either SomeException ())@ once 'shutdownThenDeliver' needed to
+  report failures) is memory-unsafe in an already-running GHCi session
+  that populated the slot under the old type: 'readStore'\/'withStore'
+  would reinterpret the old value as the new type rather than failing
+  loudly. @100@ is a fresh slot never used by any prior version of this
+  module, so a session that already has slot @0@ populated under the old
+  type is simply left with an inert, orphaned old store -- a full GHCi
+  restart (already the normal remedy whenever this module's own
+  persisted types change) picks up the new slot cleanly, and nothing
+  here silently misinterprets stale memory.
+  -}
   doneStore :: Store (MVar (Either SomeException ()))
-  doneStore = Store 0
+  doneStore = Store 100
 
   -- Kill the previous generation's Warp thread, wait for its shutdown
   -- result, and only start a replacement if that shutdown actually
@@ -164,5 +179,14 @@ shutdown = do
           killThread tid
           putStrLn "Yesod app is shutdown"
 
+{- | See 'doneStore''s Haddock for why this is @101@, not the scaffold's
+original @1@: the stored type at this slot changed from a bare
+@IORef ThreadId@ to @IORef (Maybe ThreadId)@ (so it can be seeded before
+any generation has ever started, and durably published by
+'acquireThenForkTransferringOwnership''s own masked @publish@ step), and
+'Foreign.Store' has no runtime type check to catch that mismatch in an
+already-running session -- a fresh slot avoids it rather than papering
+over it.
+-}
 tidStoreNum :: Word32
-tidStoreNum = 1
+tidStoreNum = 101
