@@ -124,13 +124,53 @@ for fixture in negative_fixtures:
         format_checker=FormatChecker(),
         registry=registry,
     )
-    errors = list(validator.iter_errors(instance))
+def flatten_errors(errors):
+    for error in errors:
+        yield error
+        yield from flatten_errors(error.context or ())
+
+
+negative_fixtures = manifest.get("negativeFixtures", [])
+for fixture in negative_fixtures:
+    fixture_path = fixture["path"]
+    schema_path = fixture["schema"]
+    expected = fixture["expectedError"]
+    require((ROOT / fixture_path).is_file(), f"Missing negative fixture: {fixture_path}")
+    require(schema_path in documents, f"Negative fixture schema is not a document: {schema_path}")
+
+    schema = load_json(ROOT / schema_path)
+    instance = load_json(ROOT / fixture_path)
+    validator_class = validator_for(schema)
+    validator = validator_class(
+        schema,
+        format_checker=FormatChecker(),
+        registry=registry,
+    )
+    errors = list(flatten_errors(validator.iter_errors(instance)))
 
     require(
         len(errors) > 0,
         f"Negative fixture {fixture_path} unexpectedly validated against {schema_path} "
         f"({fixture.get('description', 'no description')})",
     )
+
+    matches_expected = any(
+        list(map(str, error.absolute_path)) == expected["path"]
+        and error.validator == expected["keyword"]
+        and expected["messageContains"] in error.message
+        for error in errors
+    )
+    if not matches_expected:
+        observed = "; ".join(
+            f"{list(map(str, error.absolute_path))}/{error.validator}: {error.message}"
+            for error in errors
+        )
+        raise SystemExit(
+            f"Negative fixture {fixture_path} failed validation against {schema_path}, "
+            f"but not for its declared reason (expected keyword={expected['keyword']!r} "
+            f"at path={expected['path']!r} containing {expected['messageContains']!r}); "
+            f"got: {observed}"
+        )
 
 print(
     f"Validated {len(documents)} contract documents, {len(fixtures)} fixtures, "

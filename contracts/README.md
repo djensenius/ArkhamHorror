@@ -315,10 +315,13 @@ mise run contracts:validate
 ```
 
 `contracts:fixtures` also asserts a small set of `manifest.json`
-`negativeFixtures` (`fixtures/invalid/*.json`) fail validation for an
-expected reason (missing required field, wrong tag, malformed ID, nullability
-violation, structural drift), so schema regressions that silently widen
-coverage are caught alongside the positive fixtures.
+`negativeFixtures` (`fixtures/invalid/*.json`) fail validation for their
+declared reason: each entry's `expectedError` names the exact instance path,
+JSON Schema keyword, and message substring that must appear somewhere in the
+(recursively flattened) validation error tree, covering a missing required
+field, a wrong closed-union tag, a malformed ID, a nullability violation, and
+structural drift. This catches a schema regression that fails for the wrong
+reason, not just "any failure", alongside the positive fixtures.
 
 Contract changes must remain backward compatible with the Vue client. Runtime
 changes belong in separate, small pull requests so they can be contributed

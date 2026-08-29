@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/game-value.schema.json",
   "title": "GameValue",
-  "description": "A player-count-scaled integer value (Arkham.GameValue), used for shroud, clue thresholds, and doom thresholds. A closed, non-additive union: every constructor is enumerated here.",
+  "description": "A player-count-scaled integer value (Arkham.GameValue), used for shroud, clue thresholds, and doom thresholds. A closed, non-additive union: every constructor is enumerated here. Per-tag contents shape (present/absent, arity) is enforced by the conditionals below, matching aeson's defaultOptions TaggedObject encoding of Arkham.GameValue.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -21,20 +21,137 @@
       ]
     },
     "contents": {
-      "description": "Absent for the nullary ValueX/ValueStar/ValueUnknown tags. A single integer for Static/PerPlayer, a 2-tuple for StaticWithPerPlayer, and a 4-tuple (one value per player count 1-4) for ByPlayerCount.",
-      "oneOf": [
-        {
-          "type": "integer"
-        },
-        {
-          "type": "array",
-          "items": {
-            "type": "integer"
-          },
-          "minItems": 2,
-          "maxItems": 4
-        }
-      ]
+      "description": "Shape depends on tag; see the per-tag conditionals below. Absent entirely for the nullary ValueX/ValueStar/ValueUnknown tags. A single integer for Static/PerPlayer, a 2-tuple for StaticWithPerPlayer, and a 4-tuple (one value per player count 1-4) for ByPlayerCount."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "tag": {
+            "const": "Static"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "contents"
+        ],
+        "properties": {
+          "contents": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tag": {
+            "const": "PerPlayer"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "contents"
+        ],
+        "properties": {
+          "contents": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tag": {
+            "const": "StaticWithPerPlayer"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "contents"
+        ],
+        "properties": {
+          "contents": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tag": {
+            "const": "ByPlayerCount"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "contents"
+        ],
+        "properties": {
+          "contents": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tag": {
+            "const": "ValueX"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "contents": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tag": {
+            "const": "ValueStar"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "contents": false
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "tag": {
+            "const": "ValueUnknown"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "contents": false
+        }
+      }
+    }
+  ]
 }
