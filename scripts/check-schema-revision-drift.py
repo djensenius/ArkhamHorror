@@ -98,11 +98,30 @@ def require_manifest_artifact_hashes(manifest: dict, label: str) -> dict:
 
 
 def governed_paths(manifest: dict) -> list[str]:
-    paths = list(manifest.get("documents", []))
-    for index, fixture in enumerate(manifest.get("fixtures", [])):
+    documents = manifest.get("documents", [])
+    require(
+        isinstance(documents, list),
+        f"manifest.json 'documents' must be a JSON array, got {documents!r}",
+    )
+    for index, document in enumerate(documents):
+        require(
+            isinstance(document, str),
+            f"manifest.json documents entry #{index} must be a string path, got {document!r}",
+        )
+    paths = list(documents)
+    fixtures = manifest.get("fixtures", [])
+    require(
+        isinstance(fixtures, list),
+        f"manifest.json 'fixtures' must be a JSON array, got {fixtures!r}",
+    )
+    for index, fixture in enumerate(fixtures):
         require(
             isinstance(fixture, dict) and "path" in fixture,
             f"manifest.json fixtures entry #{index} is not an object with a 'path' key: {fixture!r}",
+        )
+        require(
+            isinstance(fixture["path"], str),
+            f"manifest.json fixtures entry #{index} 'path' must be a string, got {fixture['path']!r}",
         )
         if fixture["path"] not in paths:
             paths.append(fixture["path"])

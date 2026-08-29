@@ -257,6 +257,14 @@ def apply_mutation(value, mutation: dict):
         isinstance(mutation, dict) and "op" in mutation and "pointer" in mutation,
         f"Mutation descriptor must be an object with at least 'op' and 'pointer' keys: {mutation!r}",
     )
+    require(
+        isinstance(mutation["op"], str),
+        f"Mutation descriptor 'op' must be a string, got {mutation['op']!r}",
+    )
+    require(
+        isinstance(mutation["pointer"], str),
+        f"Mutation descriptor 'pointer' must be a string, got {mutation['pointer']!r}",
+    )
     if mutation["pointer"] == "":
         require(mutation["op"] == "replace", "Root-pointer mutations must use op 'replace'")
         require("value" in mutation, "Mutation op 'replace' requires a 'value'")
