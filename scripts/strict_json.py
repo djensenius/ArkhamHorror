@@ -15,8 +15,14 @@ the three named literal tokens `NaN`/`Infinity`/`-Infinity`, not ordinary
 number syntax that merely evaluates too large. This module's custom
 `parse_float` (`_parse_float_or_reject_overflow`) closes that gap by first
 parsing the exact value via `decimal.Decimal` (which never silently
-overflows) to determine, precisely, whether it fits in a finite `float`,
-and rejecting it outright if not, rather than ever returning `inf`.
+overflows to infinity for any exponent within its own default context
+range) to determine, precisely, whether it fits in a finite `float`, and
+rejecting it outright if not, rather than ever returning `inf`. JSON syntax
+itself places no bound on how many exponent digits a literal may have, so
+`Decimal(raw)` can itself raise `decimal.InvalidOperation` for an exponent
+extreme enough to exceed even `Decimal`'s own context range -- caught and
+re-raised as this module's own controlled `StrictJSONError` rather than
+letting a raw `decimal.InvalidOperation` escape uncaught.
 Strict UTF-8 decoding and rejection of trailing tokens after the top-level
 value are both already the stdlib's default behavior (`json.loads` raises
 `JSONDecodeError` for trailing garbage; for raw bytes input, e.g. `git show`
@@ -51,6 +57,7 @@ test importing it in isolation).
 
 from __future__ import annotations
 
+import decimal
 import json
 import os
 import stat
@@ -115,14 +122,25 @@ def _parse_float_or_reject_overflow(raw: str, *, source: str) -> float:
     tokens, and `1e9999` is ordinary JSON number syntax.
 
     This first parses the raw number text as `decimal.Decimal`, which is
-    exact and never silently overflows to infinity for any finite-length
-    JSON number literal, so whether the value fits in a `float` can be
-    determined precisely -- rather than trusting `float()`'s own silent
-    rounding/overflow behavior to decide, which is exactly the bug this
-    function exists to close. A value that fits is returned as an ordinary
-    `float` (matching the stdlib's default `parse_float` return type
-    exactly, so every downstream consumer keeps working unchanged): this
-    toolchain's JSON Schema validation (the `jsonschema` library) checks
+    exact and never silently overflows to infinity for any JSON number
+    literal whose exponent fits `Decimal`'s own (very large, but still
+    finite) default context range, so whether the value fits in a `float`
+    can be determined precisely -- rather than trusting `float()`'s own
+    silent rounding/overflow behavior to decide, which is exactly the bug
+    this function exists to close. JSON syntax itself places no bound on
+    how many exponent digits a number literal may have, so `Decimal(raw)`
+    itself can raise `decimal.InvalidOperation` for an exponent large
+    enough to exceed even `Decimal`'s default context's `Emax`/`Emin` (in
+    the millions of digits) -- caught here and re-raised as this module's
+    own controlled `StrictJSONError` rather than letting a raw
+    `decimal.InvalidOperation` escape uncaught; such a value is, if
+    anything, even more clearly non-representable than an ordinary
+    `1e9999`-style float overflow.
+
+    A value that fits is returned as an ordinary `float` (matching the
+    stdlib's default `parse_float` return type exactly, so every downstream
+    consumer keeps working unchanged): this toolchain's JSON Schema
+    validation (the `jsonschema` library) checks
     `isinstance(x, (int, float))` for the `"number"` type and does not
     recognize `Decimal`, and `json.dumps` (used by
     `canonicalize_manifest_bytes` and every fixture-writing tool) does not
@@ -131,7 +149,15 @@ def _parse_float_or_reject_overflow(raw: str, *, source: str) -> float:
     toolchain, and this function fails closed (rejects) instead of ever
     returning a non-finite `float`, rather than silently returning `inf`.
     """
-    decimal_value = Decimal(raw)
+    try:
+        decimal_value = Decimal(raw)
+    except decimal.InvalidOperation as exc:
+        raise StrictJSONError(
+            f"{source}: JSON number {raw!r} could not be parsed exactly as decimal.Decimal "
+            f"({exc}); its exponent is too extreme even for Decimal's own default context "
+            "range, so it is rejected outright rather than falling back to float()'s silent "
+            "overflow-to-inf behavior."
+        ) from exc
     if abs(decimal_value) > _FLOAT_MAX_MAGNITUDE:
         raise StrictJSONError(
             f"{source}: JSON number {raw!r} overflows the finite range a JSON Schema "
@@ -490,6 +516,14 @@ def run_self_tests() -> None:
     # silently coerced to inf the way bare float() would.
     _expect_rejected("[1e9999]", "a positive exponent-overflow number literal")
     _expect_rejected("[-1e9999]", "a negative exponent-overflow number literal")
+
+    # An exponent so extreme it exceeds even decimal.Decimal's own default
+    # context range must be rejected via the controlled StrictJSONError,
+    # not let a raw decimal.InvalidOperation escape uncaught.
+    _expect_rejected(
+        "[1e99999999999999999999999999999999999999]",
+        "a number literal whose exponent exceeds Decimal's own context range",
+    )
 
     # Ordinary finite fractional/exponent numbers must still parse exactly
     # like the stdlib default (as a plain `float`), unaffected by the
