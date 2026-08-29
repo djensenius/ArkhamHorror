@@ -72,15 +72,24 @@ def strict_json_loads(text_or_bytes, *, source: str = "<string>"):
     """Parse `text_or_bytes` (a `str`, or `bytes`/`bytearray` decoded as
     strict UTF-8) as JSON, rejecting duplicate object keys at any nesting
     depth and `NaN`/`Infinity`/`-Infinity` constants. `source` only makes
-    error messages actionable; it does not affect parsing.
+    error messages actionable; it does not affect parsing. Any other input
+    type (e.g. a `dict`, `Path`, or `int` passed by mistake) is rejected
+    with the same controlled `StrictJSONError`/`SystemExit` this module
+    always raises, rather than letting a raw `TypeError` escape from
+    `json.loads` for a non-`str` argument.
     """
     if isinstance(text_or_bytes, (bytes, bytearray)):
         try:
             text = text_or_bytes.decode("utf-8", errors="strict")
         except UnicodeDecodeError as exc:
             raise StrictJSONError(f"{source}: not valid strict UTF-8: {exc}") from exc
-    else:
+    elif isinstance(text_or_bytes, str):
         text = text_or_bytes
+    else:
+        raise StrictJSONError(
+            f"{source}: strict_json_loads requires a str, bytes, or bytearray, got "
+            f"{type(text_or_bytes).__name__!r}."
+        )
 
     try:
         return json.loads(
@@ -168,3 +177,26 @@ def run_self_tests() -> None:
         raise SystemExit(
             "Self-test failure: strict_json_loads must not reject distinct (non-colliding) keys."
         )
+
+    # A caller accidentally passing a non-str/bytes/bytearray value (e.g. a
+    # dict, Path, or int) must raise the toolchain's controlled
+    # StrictJSONError, never a raw TypeError from json.loads.
+    for bad_input, label in (
+        ({"already": "parsed"}, "a dict"),
+        (Path("contracts/manifest.json"), "a Path"),
+        (42, "an int"),
+        (None, "None"),
+    ):
+        try:
+            strict_json_loads(bad_input, source=f"<selftest: {label}>")
+        except StrictJSONError:
+            pass
+        except TypeError:
+            raise SystemExit(
+                f"Self-test failure: strict_json_loads raised a raw TypeError for {label} "
+                "instead of the controlled StrictJSONError."
+            )
+        else:
+            raise SystemExit(
+                f"Self-test failure: strict_json_loads accepted {label}, which it must reject."
+            )
