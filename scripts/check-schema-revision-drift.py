@@ -33,7 +33,6 @@ still never makes a network call or depends on a remote ref.
 """
 
 import hashlib
-import json
 import os
 import re
 import subprocess
