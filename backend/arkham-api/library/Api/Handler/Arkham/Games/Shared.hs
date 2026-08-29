@@ -980,7 +980,13 @@ data MainStreetSwapOutcome
     -- outcome as a linked game vanishing concurrently before its lock could
     -- be taken (see 'lockSwapGame'). Maps to a plain 404, matching
     -- 'Api.Handler.Arkham.Events.EventDeletionMissing''s nondisclosure
-    -- policy. No lock is ever taken for this outcome.
+    -- policy. In the unresolved-relation case, no lock is ever taken; in
+    -- the vanished-concurrently case, one or even both canonical-order
+    -- locks may already have been taken (every entry in 'lockOrder' is
+    -- always attempted -- see 'planAndExecuteMainStreetSwap' -- before the
+    -- results are inspected together) before this outcome is reported, but
+    -- no mutable game state is ever read or written and no swap is
+    -- performed either way.
     MainStreetSwapMissing
   | -- | Both ordinals resolved to a game, but to the SAME game. Nothing in
     -- the schema forbids two distinct 'Entity.Arkham.Epic.ArkhamEpicGroup'
