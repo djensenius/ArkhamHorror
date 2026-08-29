@@ -66,8 +66,13 @@ def load_json(path: Path) -> object:
 def require_manifest_schema_revision(manifest: object, label: str) -> str:
     """Read `schemaRevision` from a manifest, failing via a controlled
     SystemExit (not a raw KeyError/TypeError) if the manifest itself isn't an
-    object, the key is missing, or its value isn't the dot-separated numeric
-    string this gate's monotonic-revision comparison requires.
+    object, the key is missing, or its value isn't the strictly numeric
+    dot-separated string (e.g. "0.1.13") this gate's monotonic-revision
+    comparison requires. Format validation happens here (by delegating to
+    `parse_revision`) rather than being deferred to the first caller that
+    happens to parse the revision, so a malformed `schemaRevision` is
+    rejected immediately and attributed to the specific manifest (`label`)
+    that contained it.
     """
     require(isinstance(manifest, dict), f"{label} manifest.json is not a JSON object: {manifest!r}")
     require(
@@ -79,6 +84,10 @@ def require_manifest_schema_revision(manifest: object, label: str) -> str:
         isinstance(revision, str) and revision,
         f"{label} manifest.json 'schemaRevision' must be a non-empty string, got {revision!r}",
     )
+    try:
+        parse_revision(revision)
+    except SystemExit as error:
+        raise SystemExit(f"{label} manifest.json 'schemaRevision' is malformed: {error}") from None
     return revision
 
 
@@ -492,6 +501,21 @@ def run_self_tests() -> None:
         raise SystemExit(
             "Self-test failure: require_manifest_schema_revision must reject an empty "
             "'schemaRevision' string via a controlled SystemExit."
+        )
+
+    try:
+        require_manifest_schema_revision({"schemaRevision": "v1"}, "selftest-malformed-label")
+    except SystemExit as error:
+        require(
+            "selftest-malformed-label" in str(error),
+            "Self-test failure: require_manifest_schema_revision must attribute a malformed "
+            f"(non-numeric) 'schemaRevision' rejection to its manifest label, got: {error}",
+        )
+    else:
+        raise SystemExit(
+            "Self-test failure: require_manifest_schema_revision must reject a non-numeric "
+            "'schemaRevision' (e.g. 'v1') via a controlled SystemExit, not defer the failure to a "
+            "later, unlabelled parse_revision() call."
         )
 
     require(
