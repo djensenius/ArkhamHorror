@@ -113,6 +113,26 @@ def strict_json_load_path(path: Path):
     return strict_json_loads(path.read_bytes(), source=str(path))
 
 
+def canonicalize_manifest_bytes(manifest: dict) -> bytes:
+    """The single shared implementation of contracts/manifest.json's
+    self-hash canonicalization, used by both `update-manifest-hashes.py`
+    (which writes `artifactHashes["contracts/manifest.json"]`) and
+    `check-schema-revision-drift.py` (which recomputes and verifies it).
+    Keeping exactly one implementation -- rather than two independently
+    maintained copies -- means a future tweak to the canonical form (e.g.
+    `separators`/`ensure_ascii`/`sort_keys`/`indent`/trailing newline)
+    can never update one script but not the other, which would otherwise
+    produce a hard-to-debug hash mismatch between the two tools.
+
+    Zeroes out the self-referential `artifactHashes` map so the manifest
+    can be hashed like any other governed artifact without hashing its own
+    hash map (which would be circular).
+    """
+    canonical = dict(manifest)
+    canonical["artifactHashes"] = {}
+    return json.dumps(canonical, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+
+
 def run_self_tests() -> None:
     """Prove every rejection this module claims to make, using small
     in-memory fixtures (no filesystem, no git) -- deterministic in any

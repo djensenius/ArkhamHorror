@@ -63,15 +63,6 @@ def load_json(path: Path) -> object:
     return strict_json.strict_json_load_path(path)
 
 
-def canonicalize_manifest_bytes(manifest: dict) -> bytes:
-    """Manifest content, with the self-referential `artifactHashes` map
-    zeroed out, so the manifest can be hashed like any other governed
-    artifact without hashing its own hash map (which would be circular)."""
-    canonical = dict(manifest)
-    canonical["artifactHashes"] = {}
-    return json.dumps(canonical, sort_keys=True, indent=2).encode("utf-8") + b"\n"
-
-
 def require_manifest_schema_revision(manifest: object, label: str) -> str:
     """Read `schemaRevision` from a manifest, failing via a controlled
     SystemExit (not a raw KeyError/TypeError) if the manifest itself isn't an
@@ -147,7 +138,7 @@ def compute_hashes_from_worktree(manifest: dict) -> dict[str, str]:
         content = artifact_file.read_bytes()
         hashes[relative_path] = hashlib.sha256(content).hexdigest()
     hashes["contracts/manifest.json"] = hashlib.sha256(
-        canonicalize_manifest_bytes(manifest)
+        strict_json.canonicalize_manifest_bytes(manifest)
     ).hexdigest()
     return hashes
 
@@ -309,7 +300,7 @@ def compute_hashes_from_git_ref(ref: str, manifest: dict) -> dict[str, str]:
         require(content is not None, f"Could not read {relative_path} at {ref} via local git history")
         hashes[relative_path] = hashlib.sha256(content).hexdigest()
     hashes["contracts/manifest.json"] = hashlib.sha256(
-        canonicalize_manifest_bytes(manifest)
+        strict_json.canonicalize_manifest_bytes(manifest)
     ).hexdigest()
     return hashes
 

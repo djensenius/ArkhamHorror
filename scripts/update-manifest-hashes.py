@@ -81,9 +81,7 @@ def main() -> None:
         hashes[relative_path] = hashlib.sha256(artifact_file.read_bytes()).hexdigest()
 
     manifest["artifactHashes"] = hashes
-    canonical = dict(manifest)
-    canonical["artifactHashes"] = {}
-    canon_bytes = json.dumps(canonical, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    canon_bytes = strict_json.canonicalize_manifest_bytes(manifest)
     manifest["artifactHashes"]["contracts/manifest.json"] = hashlib.sha256(canon_bytes).hexdigest()
     manifest["artifactHashes"] = dict(sorted(manifest["artifactHashes"].items()))
 
