@@ -110,12 +110,13 @@ import Data.ByteString.Lazy.Char8 qualified as LBS8
 import Data.HashMap.Strict qualified as HashMap
 import Data.Ini qualified as INI
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as Text
+import Data.Text.Encoding qualified as TE
 import Data.Void (Void, absurd)
 import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Network.HTTP.Types.Status (statusCode)
 import System.Directory qualified as Directory
 import System.Environment (lookupEnv)
+import UnliftIO.Timeout (timeout)
 
 {- | Non-secret, structured classification of a per-request 'Error', safe to
 log. Deliberately extracts only the numeric HTTP status, plus a category
@@ -460,7 +461,7 @@ safeDefaultInstanceProfile env =
     ls <-
       Exception.try $ metadata (manager env) (IAM (SecurityCredentials Nothing))
     case BS8.lines <$> ls of
-      Right (x : _) -> safeNamedInstanceProfile (Text.decodeUtf8 x) env
+      Right (x : _) -> safeNamedInstanceProfile (TE.decodeUtf8 x) env
       Left e -> Exception.throwIO (RetrievalError e)
       _ ->
         Exception.throwIO

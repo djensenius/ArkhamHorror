@@ -136,6 +136,21 @@ even under 'mask' (so a blocked take can still be cancelled), but nothing
 is consumed unless it actually returns; once it returns, every step up to
 @onSuccess@ beginning is masked, so there is no window in which the cell
 has been emptied but nothing (yet) owns repopulating it.
+
+The @onSuccess@-failure repopulation ('putMVar done (Left err)') is
+additionally wrapped in an explicit 'mask_', even though it already
+executes at this function's own ambient masked level (everything here
+except the two 'restore'd calls above runs masked, so this call is never
+actually unmasked to begin with): 'Control.Concurrent.MVar.putMVar' can
+still be interrupted even under (non-uninterruptible) 'mask' if it has to
+/block/ (i.e. the target cell is unexpectedly already full), and this
+call's safety otherwise relies on the single-owner invariant that this
+cell is always empty here (having just been emptied by the 'takeMVar'
+above, with nothing else able to refill it concurrently by this module's
+design) rather than on any local, self-evident guarantee. The explicit
+'mask_' costs nothing, does not change today's observable masking state,
+and documents the invariant this call actually depends on rather than
+leaving it implicit.
 -}
 proceedOnlyIfPreviousShutdownSucceededReplayable
   :: MVar (Either SomeException ()) -> IO a -> IO a
@@ -164,7 +179,7 @@ proceedOnlyIfPreviousShutdownSucceededReplayableUsing afterConsume done onSucces
       result <- try (restore onSuccess)
       case result of
         Left err -> do
-          putMVar done (Left err)
+          mask_ (putMVar done (Left err))
           throwIO err
         Right a -> pure a
 
