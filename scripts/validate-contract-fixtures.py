@@ -211,12 +211,32 @@ def _require_array_index(raw_token: str, *, length: int, allow_equal_length: boo
     return index
 
 
+_JSON_POINTER_INVALID_TILDE_RE = re.compile(r"~(?![01])")
+
+
+def _decode_json_pointer_token(raw_token: str, *, pointer: str) -> str:
+    """Decode a single RFC 6901 JSON Pointer reference-token, rejecting any
+    `~` not immediately followed by `0` or `1` (the only two escape
+    sequences RFC 6901 defines). A bare/malformed `~` (e.g. a typo'd
+    pointer) must fail deterministically here rather than being silently
+    treated as a literal `~` character, which could otherwise make a
+    malformed mutation pointer resolve to -- and mutate -- the wrong
+    location instead of failing closed.
+    """
+    require(
+        _JSON_POINTER_INVALID_TILDE_RE.search(raw_token) is None,
+        f"Invalid JSON Pointer escape in segment {raw_token!r} (pointer {pointer!r}): "
+        "'~' must be immediately followed by '0' or '1'",
+    )
+    return raw_token.replace("~1", "/").replace("~0", "~")
+
+
 def resolve_json_pointer(document, pointer: str):
     """Resolve an RFC 6901 JSON Pointer against an in-memory document."""
     require(pointer == "" or pointer.startswith("/"), f"Invalid JSON Pointer: {pointer!r}")
     value = document
     for raw_token in pointer.split("/")[1:]:
-        token = raw_token.replace("~1", "/").replace("~0", "~")
+        token = _decode_json_pointer_token(raw_token, pointer=pointer)
         if isinstance(value, list):
             value = value[_require_array_index(token, length=len(value), allow_equal_length=False)]
         elif isinstance(value, dict):
@@ -276,7 +296,7 @@ def apply_mutation(value, mutation: dict):
     *parent_tokens, last_raw = pointer.split("/")[1:]
     parent = mutated
     for raw_token in parent_tokens:
-        token = raw_token.replace("~1", "/").replace("~0", "~")
+        token = _decode_json_pointer_token(raw_token, pointer=pointer)
         if isinstance(parent, list):
             parent = parent[_require_array_index(token, length=len(parent), allow_equal_length=False)]
         elif isinstance(parent, dict):
@@ -284,7 +304,7 @@ def apply_mutation(value, mutation: dict):
             parent = parent[token]
         else:
             raise SystemExit(f"Cannot descend into scalar with pointer segment {token!r} ({pointer!r})")
-    last = last_raw.replace("~1", "/").replace("~0", "~")
+    last = _decode_json_pointer_token(last_raw, pointer=pointer)
 
     op = mutation["op"]
     if op == "remove":
@@ -893,6 +913,38 @@ def run_apply_mutation_self_test() -> None:
     )
     _expect_rejected(
         {"op": "add", "pointer": "/leaf/nested", "value": "X"}, "add (scalar parent)", doc=scalar_parent_base
+    )
+
+    # RFC 6901 defines only two escape sequences ('~0' -> '~', '~1' -> '/');
+    # a bare/malformed '~' not immediately followed by '0' or '1' must be
+    # rejected deterministically rather than silently treated as a literal
+    # '~' character, which could otherwise resolve a typo'd pointer to --
+    # and mutate -- the wrong location instead of failing closed.
+    tilde_base = {"a~b": "escaped-tilde-key", "a/b": "escaped-slash-key", "a~1b": "literal-tilde-one-key"}
+    valid_tilde = apply_mutation(tilde_base, {"op": "replace", "pointer": "/a~0b", "value": "X"})
+    require(
+        valid_tilde["a~b"] == "X" and valid_tilde["a/b"] == "escaped-slash-key",
+        "apply_mutation must decode a valid '~0' escape to a literal '~' and target only that key",
+    )
+    valid_slash = apply_mutation(tilde_base, {"op": "replace", "pointer": "/a~1b", "value": "Y"})
+    require(
+        valid_slash["a/b"] == "Y" and valid_slash["a~b"] == "escaped-tilde-key",
+        "apply_mutation must decode a valid '~1' escape to a literal '/' and target only that key",
+    )
+    _expect_rejected(
+        {"op": "replace", "pointer": "/a~b", "value": "X"},
+        "replace (bare '~' not followed by '0' or '1')",
+        doc=tilde_base,
+    )
+    _expect_rejected(
+        {"op": "replace", "pointer": "/a~2b", "value": "X"},
+        "replace ('~2', not a valid RFC 6901 escape)",
+        doc=tilde_base,
+    )
+    _expect_rejected(
+        {"op": "replace", "pointer": "/trailing~", "value": "X"},
+        "replace (trailing bare '~' at end of segment)",
+        doc=tilde_base,
     )
 
 

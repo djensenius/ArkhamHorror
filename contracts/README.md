@@ -153,6 +153,14 @@ Known, deliberate scope limits carried by this fixture:
   act has none (most acts, including every First Night act in this scenario).
   `fixtures/act-no-advance-cost.json` is the real production encoding of
   `HotOnYourTail`, an act with no advance cost.
+- `cost.schema.json`'s top-level `TaggedObject` envelope (`Arkham.Cost.Cost`,
+  `deriveToJSON defaultOptions`) is closed (`additionalProperties: false`):
+  only `tag` (required) and an optional `contents` are permitted, matching
+  Aeson's exact wire shape for every constructor. `contents` itself stays
+  intentionally unconstrained (any JSON value), since Cost is a broad tagged
+  union of dozens of action/resource/clue/discard/matcher-driven
+  constructors whose individual payload shapes remain out of scope for this
+  contract slice.
 - Act/agenda `sequence` "side" fields are the closed, all-nullary Haskell
   unions `Arkham.Act.Sequence.ActSide` (`A`..`H`) and
   `Arkham.Agenda.Sequence.AgendaSide` (`A`..`D`); the schemas enumerate them
