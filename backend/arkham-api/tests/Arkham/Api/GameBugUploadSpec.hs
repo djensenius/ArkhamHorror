@@ -10,34 +10,61 @@ import Api.Handler.Arkham.Game.Bug (
   BugUploadFailure (..),
   BugUploadOutcome (..),
   HeadObjectOutcome (..),
+  SupervisedEnv,
+  SupervisedEnvState (..),
   classifyAuthErrorDiagnostic,
   classifyErrorDiagnostic,
   classifyHeadObjectError,
-  freezeAuth,
-  runBoundedOnDisposableWorker,
+  readSupervisedEnv,
+  releaseAwsEnvChild,
   runBugUploadPolicy,
   runHeadObjectAction,
-  runOnDisposableWorker,
   runPutObjectAction,
+  startSupervisedEnv,
+  stopSupervisedEnv,
  )
 import Arkham.Prelude
-import Control.Concurrent (forkIO, myThreadId, threadDelay)
+import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
 import Control.Exception qualified as Exception
 import Data.Text qualified as T
+import Data.Void (absurd)
 import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Network.HTTP.Client qualified as Client
 import Network.HTTP.Types.Status (Status, status403, status404, status429, status500)
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Hspec
 
--- | Deliberately distinct from any exception type used elsewhere in this
--- suite (or thrown internally by the production code under test), so a
--- test can prove a caught exception is *exactly* this one -- i.e. the
--- caller's own cancellation -- and not, say, a worker's internal failure
--- coincidentally caught by too broad a handler.
-data TestCancellation = TestCancellation
+-- | A minimal fake resource standing in for a real Amazonka 'Env' in the
+-- generic 'startSupervisedEnv'\/'readSupervisedEnv'\/'stopSupervisedEnv'
+-- lifecycle tests below, which exercise the supervisor protocol itself
+-- and deliberately have no real AWS\/network dependency. The wrapped 'Int'
+-- lets successive acquisition generations be told apart.
+newtype TestResource = TestResource Int
   deriving stock (Eq, Show)
-  deriving anyclass Exception
+
+-- | An @awaitInvalidation@ action for supervisor tests that never expect
+-- their generation to be invalidated at all (e.g. because the test stops
+-- the supervisor explicitly before that would ever matter).
+neverInvalidate :: env -> IO AwsAuthErrorDiagnostic
+neverInvalidate _ = forever (threadDelay maxBound)
+
+{- | Poll 'readSupervisedEnv' until @predicate@ holds. This is only a
+bounded hang-guard against a genuinely stuck test suite: the actual
+ordering\/determinism each test proves comes from the 'MVar' gates its own
+fake @acquire@\/@awaitInvalidation@\/@backoff@ actions synchronize on, not
+from this loop's polling interval or bound.
+-}
+waitForSupervisedState :: Show env => SupervisedEnv env -> (SupervisedEnvState env -> Bool) -> IO ()
+waitForSupervisedState sup predicate = go (200 :: Int)
+ where
+  go 0 = do
+    s <- readSupervisedEnv sup
+    expectationFailure $ "supervisor state never satisfied the expected predicate; last seen: " <> show s
+  go n = do
+    s <- readSupervisedEnv sup
+    if predicate s
+      then pure ()
+      else threadDelay (10 * 1000) >> go (n - 1)
 
 {- | Wraps a value so that the *first* time it is forced (to WHNF), it
 records that fact into @ref@ before returning the value unchanged. Used to
@@ -269,24 +296,17 @@ spec = describe "bug report upload" do
   {- | Regression for the HIGH-severity async-credential-refresh audit: the
   pinned Amazonka fork's background credential-refresh timer captures the
   thread that called 'Amazonka.newEnv'/'discover' as its eventual
-  refresh-failure 'throwTo' target, and separately, its own 'ThreadId' --
-  distinct from that captured target -- is what 'Auth''s 'Ref' constructor
-  carries. 'freezeAuth' kills that 'Ref'-embedded thread id directly,
-  before it can ever reach its @throwTo@ line, and 'runOnDisposableWorker'
-  ensures discovery itself (and therefore the captured @throwTo@ target)
-  never runs on a long-lived Warp request thread. Together
-  ('discoverFrozenEnv') this means no background refresh thread can ever
-  outlive a single bounded credential-discovery call, and the only thread
-  it could ever target is a disposable worker that is never reused for
-  anything else.
+  refresh-failure 'throwTo' target. 'releaseAwsEnvChild' kills that
+  target's associated 'Ref'-embedded refresh 'ThreadId' directly, before
+  it can ever reach its @throwTo@ line; see 'startSupervisedEnv' for how
+  this is composed with a single dedicated supervisor thread so that
+  target is always this same long-lived thread, never a per-request one.
   -}
-  describe "freezeAuth" do
-    it "returns already-static credentials unchanged, without starting or touching any thread" do
-      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing
-      frozen <- freezeAuth (Auth authEnv)
-      frozen `shouldBe` authEnv
+  describe "releaseAwsEnvChild" do
+    it "does nothing for already-static credentials, without starting or touching any thread" do
+      releaseAwsEnvChild (Auth (AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing)) `shouldReturn` ()
 
-    it "kills the background refresh thread before it can act, while still returning the current credentials" do
+    it "kills the background refresh thread before it can act" do
       let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
       ref <- newIORef authEnv
       reachedRefresh <- newIORef False
@@ -296,210 +316,145 @@ spec = describe "bug report upload" do
       refreshThreadId <- forkIO $ do
         threadDelay (50 * 1000)
         writeIORef reachedRefresh True
-      frozen <- freezeAuth (Ref refreshThreadId ref)
-      frozen `shouldBe` authEnv
-      -- Long enough that, had the refresh thread not been killed by
-      -- 'freezeAuth' above, it would certainly have flipped the flag by
-      -- now.
+      releaseAwsEnvChild (Ref refreshThreadId ref)
+      -- Long enough that, had the refresh thread not been killed above,
+      -- it would certainly have flipped the flag by now.
       threadDelay (150 * 1000)
       readIORef reachedRefresh `shouldReturn` False
 
-  describe "runOnDisposableWorker" do
-    it "runs the action on a different thread than the caller" do
-      callerTid <- myThreadId
-      actionTid <- runOnDisposableWorker myThreadId
-      actionTid `shouldNotBe` callerTid
+  {- | Regression\/design-verification for the application-lifetime
+  supervised-'Env' architecture that replaced the earlier per-request
+  @discoverFrozenEnv@\/@freezeAuth@\/@runOnDisposableWorker@ worker
+  protocol: exactly one dedicated thread -- the supervisor's own, started
+  once by 'startSupervisedEnv' and never restarted -- ever calls
+  @acquire@ (in production, 'acquireAwsEnv', i.e. @newEnv discover@), so
+  it is the only thread a delayed background-refresh 'AuthError' could
+  ever target; a Warp request thread only ever reads a strict, typed
+  snapshot via 'readSupervisedEnv' and never itself performs, or blocks
+  on, acquisition.
 
-    it "returns the action's result on success" do
-      runOnDisposableWorker (pure (42 :: Int)) `shouldReturn` 42
+  These tests exercise the generic protocol directly against fake, fully
+  test-controlled @acquire@\/@awaitInvalidation@\/@backoff@ actions -- no
+  real AWS\/network dependency is involved -- using 'MVar's as
+  synchronization gates so each assertion is deterministic rather than
+  timing-dependent. 'waitForSupervisedState' below is only a bounded
+  hang-guard against a genuinely stuck suite; it never substitutes for
+  the ordering guarantees each test's own gates establish.
+  -}
+  describe "startSupervisedEnv / readSupervisedEnv / stopSupervisedEnv" do
+    it "reports Initializing before the first acquisition completes, then Ready once it does, then terminal Unavailable once stopped" do
+      acquireGate <- newEmptyMVar
+      sup <- startSupervisedEnv (takeMVar acquireGate >> pure (Right (TestResource 1))) neverInvalidate (pure ())
+      readSupervisedEnv sup `shouldReturn` SupervisedEnvInitializing
+      putMVar acquireGate ()
+      waitForSupervisedState sup \case SupervisedEnvReady _ -> True; _ -> False
+      readSupervisedEnv sup `shouldReturn` SupervisedEnvReady (TestResource 1)
+      stopSupervisedEnv sup
+      -- A reader can never observe a stale 'SupervisedEnvReady' snapshot
+      -- once nothing is monitoring it any longer.
+      readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
 
-    it "propagates an exception raised inside the action back to the caller, not swallowed" do
-      result <- try @_ @IOException (runOnDisposableWorker (throwIO (userError "boom")))
-      case result of
-        Left ioErr -> show ioErr `shouldContain` "boom"
-        Right () -> expectationFailure "expected the worker's exception to propagate"
+    it "also terminates cleanly, publishing terminal Unavailable, when stopped while still Initializing (acquisition never completes)" do
+      acquireStarted <- newEmptyMVar
+      sup <-
+        startSupervisedEnv
+          (putMVar acquireStarted () >> forever (threadDelay maxBound) :: IO (Either AwsAuthErrorDiagnostic TestResource))
+          neverInvalidate
+          (pure ())
+      takeMVar acquireStarted
+      readSupervisedEnv sup `shouldReturn` SupervisedEnvInitializing
+      stopSupervisedEnv sup
+      readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
 
-    it "leaves no worker thread running after a normal return" do
-      workerTidRef <- newIORef Nothing
-      _ <- runOnDisposableWorker (myThreadId >>= writeIORef workerTidRef . Just)
-      mWorkerTid <- readIORef workerTidRef
-      case mWorkerTid of
-        Nothing -> expectationFailure "worker never recorded its own ThreadId"
-        Just workerTid -> do
-          status <- threadStatus workerTid
-          status `shouldNotBe` ThreadRunning
+    it "publishes Unavailable with the acquire's diagnostic on failure, and does not retry until backoff completes (no retry storm)" do
+      attemptCountRef <- newIORef (0 :: Int)
+      backoffGate <- newEmptyMVar
+      let acquire = do
+            n <- atomicModifyIORef' attemptCountRef (\k -> (k + 1, k + 1))
+            pure $ if n == 1 then Left AwsAuthCredentialChainExhausted else Right (TestResource n)
+      sup <- startSupervisedEnv acquire neverInvalidate (takeMVar backoffGate)
+      waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthCredentialChainExhausted)
+      -- Backoff has not been released yet: no second attempt has happened.
+      threadDelay (50 * 1000)
+      readIORef attemptCountRef `shouldReturn` 1
+      putMVar backoffGate ()
+      waitForSupervisedState sup \case SupervisedEnvReady (TestResource 2) -> True; _ -> False
+      stopSupervisedEnv sup
 
-    {- | Regression for the caller-cancellation/worker-lifetime audit: a
-    fire-and-forget @forkIO@ that merely discarded the worker's 'ThreadId'
-    could leave the worker running indefinitely past a cancelled caller.
-    'runOnDisposableWorker' now retains that 'ThreadId' and, on caller
-    cancellation, kills the worker and waits for its acknowledgement before
-    letting the caller's own exception propagate -- unchanged, never
-    swallowed, never turned into a false success.
+    {- | Regression for the HIGH-severity async-credential-refresh-escape
+    audit itself: a delayed invalidation (standing in for the pinned
+    Amazonka fork's real background refresh-timer 'Exception.throwTo')
+    can only ever land on the supervisor's own dedicated thread, never on
+    a separate thread standing in for a live Warp request worker -- and
+    the old generation's child resource is released (here, a flag flipped
+    by its own 'finally') strictly before the next generation's 'Ready' is
+    published.
 
-    Run via a "canary" thread (rather than 'throwTo'ing this test thread
-    itself) so the cancellation exception can be delivered with an ordinary
-    'throwTo' from outside, exactly as a real caller (e.g. Warp abandoning a
-    request) would be interrupted asynchronously.
-
-    Both the delivery ('Control.Exception.throwTo') and the observing
-    catch ('Control.Exception.try', qualified here as @Exception@) are
-    deliberately the plain ones from "Control.Exception", not this
-    module's ambient "UnliftIO.Exception" re-exports (via 'Arkham.Prelude'
-    \/ @classy-prelude@). 'UnliftIO.Exception.throwTo' marks the delivered
-    exception as asynchronous so that 'UnliftIO.Exception.try' -- which
-    only ever catches /synchronous/ exceptions by design -- correctly
-    refuses to catch it; using that pairing here would make this test's
-    own observation @try@ unable to see the very cancellation it just
-    delivered, which is a property of the sync-only wrapper, not evidence
-    of any bug in 'runOnDisposableWorker'. A real caller cancellation (e.g.
-    Warp's own thread-kill on an abandoned request) is delivered with
-    plain, unwrapped 'Control.Exception.throwTo' semantics, so using the
-    same plain functions here is also the more faithful simulation.
+    Delivery uses plain, unwrapped 'Control.Exception.throwTo' carrying a
+    real 'AuthError' constructor, matching exactly how the pinned fork's
+    own background timer delivers it (see the module-level Haddock on
+    'runOnDisposableWorker'\/'releaseAwsEnvChild' history above for why
+    the plain, not "UnliftIO.Exception", functions are used here).
     -}
-    it "propagates the caller's own asynchronous cancellation unchanged, terminating (not orphaning) the worker" do
-      workerStarted <- newEmptyMVar
-      workerFinishedNormally <- newIORef False
-      canaryResult <- newEmptyMVar
-      canaryTid <- forkIO do
-        result <-
-          Exception.try @SomeException $
-            runOnDisposableWorker do
-              putMVar workerStarted ()
-              threadDelay (2 * 1000 * 1000)
-              writeIORef workerFinishedNormally True
-        putMVar canaryResult result
-      takeMVar workerStarted
-      -- A tiny scheduler-settle delay: 'workerStarted' only proves the
-      -- *worker* thread has begun running (it alone can 'putMVar' it),
-      -- not that the *canary* thread calling 'runOnDisposableWorker' has
-      -- itself already reached its own blocking wait. This closes that
-      -- narrow scheduling gap so the cancellation below reliably lands
-      -- while canary is genuinely blocked waiting on the worker, exactly
-      -- as intended, rather than racing its own setup code.
-      threadDelay (20 * 1000)
-      Exception.throwTo canaryTid TestCancellation
-      mResult <- timeout (5 * 1000 * 1000) (takeMVar canaryResult)
-      case mResult of
-        Nothing -> expectationFailure "runOnDisposableWorker did not return after caller cancellation"
-        Just (Left ex) -> fromException ex `shouldBe` Just TestCancellation
-        Just (Right ()) -> expectationFailure "expected the caller's cancellation to propagate, got a normal result instead"
-      -- The worker's own action never reached its final line: it was
-      -- genuinely killed, not merely abandoned while still running.
-      readIORef workerFinishedNormally `shouldReturn` False
+    it "a delayed invalidation lands only on the supervisor thread, never an unrelated request-worker stand-in, releasing the old generation's child before the next is published" do
+      supervisorTidVar <- newEmptyMVar
+      childReleasedRef <- newIORef False
+      generationRef <- newIORef (0 :: Int)
+      backoffGate <- newEmptyMVar
+      let acquire = do
+            n <- atomicModifyIORef' generationRef (\k -> (k + 1, k + 1))
+            pure (Right (TestResource n))
+          awaitInvalidation _ = do
+            tid <- myThreadId
+            putMVar supervisorTidVar tid
+            outcome <-
+              Exception.try @AuthError (forever (threadDelay maxBound) `finally` writeIORef childReleasedRef True)
+            either (evaluate . classifyAuthErrorDiagnostic) absurd outcome
+      -- A separate, unrelated thread standing in for a live Warp request
+      -- worker: it must never be affected by the delayed invalidation
+      -- below, however precisely it targets only the supervisor's thread.
+      requestWorkerAffected <- newIORef False
+      requestWorkerTid <-
+        forkIO $ Exception.catch (forever (threadDelay maxBound)) \(_ :: AuthError) -> writeIORef requestWorkerAffected True
+      sup <- startSupervisedEnv acquire awaitInvalidation (takeMVar backoffGate)
+      waitForSupervisedState sup \case SupervisedEnvReady (TestResource 1) -> True; _ -> False
+      supervisorTid <- takeMVar supervisorTidVar
+      supervisorTid `shouldNotBe` requestWorkerTid
+      Exception.throwTo supervisorTid (RetrievalError httpExceptionFixture)
+      waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthRetrievalFailure)
+      readIORef childReleasedRef `shouldReturn` True
+      readIORef requestWorkerAffected `shouldReturn` False
+      killThread requestWorkerTid
+      stopSupervisedEnv sup
 
-    {- | Regression for the same audit: proves 'runOnDisposableWorker'
-    genuinely *waits* for the worker's cleanup to finish, rather than
-    firing 'killThread' and immediately letting the caller's cancellation
-    through regardless. The worker's own 'finally' cleanup (itself run
-    under an implicit mask while it handles its incoming 'ThreadKilled')
-    can only complete -- and only afterwards does the worker 'putMVar' its
-    result -- strictly before 'runOnDisposableWorker''s cleanup handler can
-    'takeMVar' that result and rethrow the caller's exception. So by the
-    time this test observes the caller's cancellation having propagated,
-    the flag below can only already be 'True': this is a structural
-    guarantee, not a timing race.
-    -}
-    it "waits for the worker's own cleanup to finish before letting a cancelled caller's exception through" do
-      workerStarted <- newEmptyMVar
-      ackFinished <- newIORef False
-      canaryResult <- newEmptyMVar
-      canaryTid <- forkIO do
-        result <-
-          Exception.try @SomeException $
-            runOnDisposableWorker $
-              (putMVar workerStarted () >> threadDelay (2 * 1000 * 1000))
-                `finally` writeIORef ackFinished True
-        putMVar canaryResult result
-      takeMVar workerStarted
-      -- A tiny scheduler-settle delay: 'workerStarted' only proves the
-      -- *worker* thread has begun running (it alone can 'putMVar' it),
-      -- not that the *canary* thread calling 'runOnDisposableWorker' has
-      -- itself already reached its own blocking wait. This closes that
-      -- narrow scheduling gap so the cancellation below reliably lands
-      -- while canary is genuinely blocked waiting on the worker, exactly
-      -- as intended, rather than racing its own setup code.
-      threadDelay (20 * 1000)
-      Exception.throwTo canaryTid TestCancellation
-      mResult <- timeout (5 * 1000 * 1000) (takeMVar canaryResult)
-      case mResult of
-        Nothing -> expectationFailure "runOnDisposableWorker did not return after caller cancellation"
-        Just _ -> pure ()
-      readIORef ackFinished `shouldReturn` True
+    it "forces the classified diagnostic before publishing it, not deferring it as a thunk for a later reader to force" do
+      forcedRef <- newIORef False
+      let acquire = pure (Left (markForcedOnceEvaluated forcedRef AwsAuthCredentialChainExhausted)) :: IO (Either AwsAuthErrorDiagnostic ())
+      sup <- startSupervisedEnv acquire neverInvalidate (forever (threadDelay maxBound))
+      -- This predicate inspects only the outer constructor (a wildcard
+      -- binder for the wrapped diagnostic), never the diagnostic value
+      -- itself, so if 'forcedRef' is already 'True' once it is satisfied,
+      -- that can only be because 'startSupervisedEnv' forced the
+      -- diagnostic *before* publishing it -- not because this test's own
+      -- inspection forced it first.
+      waitForSupervisedState sup \case SupervisedEnvUnavailable _ -> True; _ -> False
+      readIORef forcedRef `shouldReturn` True
+      -- Only now does the test itself inspect the diagnostic's value.
+      readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthCredentialChainExhausted
+      stopSupervisedEnv sup
 
-    it "leaves no worker thread running after the caller is cancelled and the worker is killed" do
-      workerStarted <- newEmptyMVar
-      workerTidRef <- newIORef Nothing
-      canaryResult <- newEmptyMVar
-      canaryTid <- forkIO do
-        result <-
-          Exception.try @SomeException $
-            runOnDisposableWorker do
-              tid <- myThreadId
-              writeIORef workerTidRef (Just tid)
-              putMVar workerStarted ()
-              threadDelay (2 * 1000 * 1000)
-        putMVar canaryResult result
-      takeMVar workerStarted
-      -- A tiny scheduler-settle delay: 'workerStarted' only proves the
-      -- *worker* thread has begun running (it alone can 'putMVar' it),
-      -- not that the *canary* thread calling 'runOnDisposableWorker' has
-      -- itself already reached its own blocking wait. This closes that
-      -- narrow scheduling gap so the cancellation below reliably lands
-      -- while canary is genuinely blocked waiting on the worker, exactly
-      -- as intended, rather than racing its own setup code.
-      threadDelay (20 * 1000)
-      Exception.throwTo canaryTid TestCancellation
-      _ <- timeout (5 * 1000 * 1000) (takeMVar canaryResult)
-      mWorkerTid <- readIORef workerTidRef
-      case mWorkerTid of
-        Nothing -> expectationFailure "worker never recorded its own ThreadId"
-        Just workerTid -> do
-          status <- threadStatus workerTid
-          status `shouldNotBe` ThreadRunning
-
-  describe "runBoundedOnDisposableWorker" do
-    it "returns the action's result when it completes within the bound" do
-      runBoundedOnDisposableWorker (2 * 1000 * 1000) (pure (7 :: Int)) `shouldReturn` Just 7
-
-    it "propagates an exception raised inside the action, never converting it into a Nothing timeout" do
-      result <- try @_ @IOException (runBoundedOnDisposableWorker (2 * 1000 * 1000) (throwIO (userError "boom")))
-      case result of
-        Left ioErr -> show ioErr `shouldContain` "boom"
-        Right _ -> expectationFailure "expected the action's exception to propagate, not become Nothing"
-
-    it "returns Nothing, without ever letting the action finish, when it does not complete within the bound" do
-      hangCompleted <- newIORef False
-      result <-
-        runBoundedOnDisposableWorker (50 * 1000) do
-          threadDelay (2 * 1000 * 1000)
-          writeIORef hangCompleted True
-      result `shouldBe` Nothing
-      -- Long enough that, had the hung action not actually been
-      -- terminated, it would certainly have flipped the flag by now.
-      threadDelay (300 * 1000)
-      readIORef hangCompleted `shouldReturn` False
-
-    {- | Regression for the refresh-thread-lifetime audit, composed at the
-    same level 'discoverFrozenEnvWithTimeout' itself uses: even when the
-    /overall/ bounded action goes on to time out doing unrelated work
-    /after/ 'freezeAuth', the background refresh thread it killed is
-    -- and stays -- dead. Termination of the refresh child is not
-    contingent on the outer bound being respected by the rest of the
-    action; 'freezeAuth' kills it immediately, synchronously, as soon as
-    it runs.
-    -}
-    it "still lets freezeAuth kill a background refresh thread even when the overall bounded action itself later times out" do
-      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
-      ref <- newIORef authEnv
-      reachedRefresh <- newIORef False
-      refreshThreadId <- forkIO do
-        threadDelay (400 * 1000)
-        writeIORef reachedRefresh True
-      result <-
-        runBoundedOnDisposableWorker (50 * 1000) do
-          _ <- freezeAuth (Ref refreshThreadId ref)
-          threadDelay (2 * 1000 * 1000)
-      result `shouldBe` Nothing
-      threadDelay (500 * 1000)
-      readIORef reachedRefresh `shouldReturn` False
+    it "stopSupervisedEnv terminates the supervisor thread and releases (waits for) the current generation's live child" do
+      supervisorTidVar <- newEmptyMVar
+      childKilled <- newIORef False
+      let acquire = pure (Right (TestResource 1))
+          awaitInvalidation _ = do
+            tid <- myThreadId
+            putMVar supervisorTidVar tid
+            forever (threadDelay maxBound) `finally` writeIORef childKilled True
+      sup <- startSupervisedEnv acquire awaitInvalidation (pure ())
+      waitForSupervisedState sup \case SupervisedEnvReady _ -> True; _ -> False
+      supervisorTid <- takeMVar supervisorTidVar
+      stopSupervisedEnv sup
+      status <- threadStatus supervisorTid
+      status `shouldNotBe` ThreadRunning
+      readIORef childKilled `shouldReturn` True

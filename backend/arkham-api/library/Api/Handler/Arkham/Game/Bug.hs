@@ -14,32 +14,38 @@ module Api.Handler.Arkham.Game.Bug (
   classifyErrorDiagnostic,
   AwsAuthErrorDiagnostic (..),
   classifyAuthErrorDiagnostic,
-  freezeAuth,
-  runOnDisposableWorker,
-  runBoundedOnDisposableWorker,
-  discoverFrozenEnv,
-  discoverFrozenEnvWithTimeout,
-  defaultDiscoverFrozenEnvTimeoutMicros,
   runHeadObjectAction,
   runPutObjectAction,
+
+  -- * Supervised AWS 'Env' lifecycle -- exposed for regression tests
+  SupervisedEnvState (..),
+  SupervisedEnv,
+  startSupervisedEnv,
+  readSupervisedEnv,
+  stopSupervisedEnv,
+  releaseAwsEnvChild,
+  acquireAwsEnv,
+  awaitAwsEnvInvalidation,
+  defaultAwsEnvDiscoveryTimeoutMicros,
 ) where
 
-import Amazonka (AuthEnv (..), Env, Env' (..), Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
+import Amazonka (Env, Env' (..), Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
 import Amazonka.Auth (Auth (..), AuthError (..))
 import Amazonka.S3
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
-import Control.Concurrent (forkIOWithUnmask, killThread)
-import Control.Exception (catch, evaluate, mask, mask_, throwIO)
-import Control.Exception qualified as Exception
+import Control.Concurrent (killThread, threadDelay)
+import Control.Concurrent.Async qualified as Async
+import Control.Exception (evaluate)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (encode)
 import Data.ByteString.Base16 qualified as B16
 import Import hiding ((==.))
 import Network.HTTP.Types.Status (statusCode)
 import Network.HTTP.Types.Status qualified as Status
+import System.IO.Unsafe (unsafePerformIO)
 import System.Timeout (timeout)
-import UnliftIO.Exception (try)
+import UnliftIO.Exception (finally, try)
 
 {- | Result of attempting a HeadObject check for the export before upload.
 Deliberately excludes any AWS response payload -- only the fact of
@@ -239,11 +245,20 @@ data AwsAuthErrorDiagnostic
   | AwsAuthCredentialChainExhausted
   | AwsAuthServiceFailure {awsAuthErrorStatus :: Int, awsAuthErrorCategory :: AwsErrorCategory}
   | AwsAuthOtherFailure
-  | -- | Credential discovery plus freezing did not finish within
-    -- 'defaultDiscoverFrozenEnvTimeoutMicros' (or an injected test bound).
+  | -- | Credential discovery did not finish within
+    -- 'defaultAwsEnvDiscoveryTimeoutMicros' (or an injected test bound).
     -- Deliberately nullary: there is no underlying exception to classify,
     -- only the bare fact that the bound was exceeded.
     AwsAuthDiscoveryTimedOut
+  | -- | The dedicated AWS 'Env' supervisor thread itself has exited --
+    -- whether from an unanticipated programmer fault propagating out of
+    -- 'acquireAwsEnv'\/'awaitAwsEnvInvalidation', or from an explicit
+    -- 'stopSupervisedEnv' -- and so no generation is being acquired,
+    -- refreshed, or monitored any longer. Published so that a stale
+    -- 'SupervisedEnvReady' snapshot (pointing at an 'Env' nobody is still
+    -- supervising) can never be read as if it were still valid; see
+    -- 'startSupervisedEnv'.
+    AwsAuthSupervisorTerminated
   deriving stock (Eq, Show)
 
 classifyAuthErrorDiagnostic :: AuthError -> AwsAuthErrorDiagnostic
@@ -257,9 +272,8 @@ classifyAuthErrorDiagnostic = \case
   AuthServiceError e -> let st = statusCode e.status in AwsAuthServiceFailure st (categorizeAwsStatus st)
   OtherAuthError _ -> AwsAuthOtherFailure
 
-{- | Given a freshly 'Amazonka.discover'ed 'Auth' value, synchronously stop
-any background credential-refresh thread it may own and return a frozen
-snapshot of the current credentials.
+{- | Kill whatever background credential-refresh thread an already-acquired
+'Auth' value may own, without otherwise touching its credentials.
 
 Why this exists: the pinned Amazonka fork's
 @Amazonka.Auth.Background.fetchAuthInBackground@ (used internally by every
@@ -267,183 +281,227 @@ role-based credential source @discover@ can reach -- container and
 instance-profile credentials both go through it) starts a background
 thread as soon as temporary\/expiring credentials are obtained. Per its
 own source, that thread captures /the thread that called @discover@/ as
-@p@, and separately, its own 'ThreadId' -- returned by 'forkIO' -- is what
-ends up inside the 'Ref' constructor here. On a later refresh failure it
-unconditionally @throwTo@s a sanitized-shape 'AuthError' at @p@, without
-ever checking whether that original caller is still doing anything
-related. If @newEnv discover@ were called once per HTTP request and then
-kept around (as it used to be, and as a naive per-request 'Env' still
-would be), a delayed refresh failure could land on a Warp worker thread
-that has since moved on to -- or been reused for -- a completely
-unrelated request.
-
-The fix is architectural, not a broader catch: 'killThread' on the 'Ref'
-constructor's 'ThreadId' terminates that exact background thread
-immediately, before it can ever reach its @throwTo@ line -- there is no
-window in which it is merely \"caught\" after firing, it is prevented from
-firing at all. 'Auth' (no expiration, e.g. static access keys) never
-started such a thread in the first place, so there is nothing to stop.
-The returned 'AuthEnv' is then a plain, static snapshot: safe to embed in
-a frozen 'Env' that will only ever be used for one bounded
-HeadObject\/PutObject sequence and discarded, never refreshed or reused
-for longer than that.
+its eventual refresh-failure @throwTo@ target, and separately, its own
+'ThreadId' -- returned by 'forkIO' -- is what ends up inside the 'Ref'
+constructor here. This is exactly why 'startSupervisedEnv' never calls
+@discover@ from a Warp request-handling thread: it is always called from
+one dedicated, long-lived supervisor thread (see 'acquireAwsEnv'), which
+remains alive for as long as the generation it acquired remains current
+(see 'awaitAwsEnvInvalidation') -- so that thread is always still there,
+never a request worker, to either observe a genuine refresh failure or
+(via this function) pre-emptively kill the thread that would otherwise
+raise it. 'Auth' (no expiration, e.g. static access keys) never started
+such a thread in the first place, so there is nothing to kill.
 -}
-freezeAuth :: Auth -> IO AuthEnv
-freezeAuth (Auth authEnv) = pure authEnv
-freezeAuth (Ref refreshThreadId ref) = do
-  killThread refreshThreadId
-  readIORef ref
+releaseAwsEnvChild :: Auth -> IO ()
+releaseAwsEnvChild (Auth _) = pure ()
+releaseAwsEnvChild (Ref refreshThreadId _) = killThread refreshThreadId
 
-{- | Run @action@ to completion on a brand-new, disposable worker thread --
-never the calling thread -- and return (or re-throw, on the calling
-thread, as an ordinary synchronous exception) its result once finished.
-
-This exists solely so that 'Amazonka.newEnv'\/'discover' -- and therefore
-'Amazonka.Auth.Background.fetchAuthInBackground''s capture of \"the
-calling thread\" as its eventual refresh-failure @throwTo@ target -- is
-never run on a long-lived Warp request-handling thread. The disposable
-worker is the only thread that can ever be targeted, and (via
-'freezeAuth', called from within @action@) it kills any such target
-before it returns, so there is nothing left to target by the time this
-function's caller resumes; the worker itself is not reused for anything
-else afterwards.
-
-If the calling thread is itself asynchronously interrupted (or
-cancelled -- e.g. Warp abandoning a request) while waiting for the
-worker, the worker is never left running past this call: it is killed
-and this function synchronously waits for its acknowledgement (the
-worker always @putMVar@s exactly once, even when killed) before letting
-the original interrupting exception propagate completely unchanged --
-never a false 502, never swallowed. That wait is only as protected as
-an ordinary 'Control.Exception.catch' handler already is: per its own
-Haddock, \"the handler is inside an implicit mask\" -- not
-'Control.Exception.uninterruptibleMask_'. So if the worker were ever
-somehow genuinely stuck (e.g. blocked in an uninterruptible foreign
-call), a further external exception could still interrupt this wait,
-rather than turning the calling thread into a permanent,
-uninterruptible orphan.
-
-The worker deliberately wraps @action@ in
-'Control.Exception.try' (the plain one from "Control.Exception", imported
-qualified here as @Exception@) rather than the otherwise-preferred
-"UnliftIO.Exception" 'try'. The latter only catches /synchronous/
-exceptions by design (it is meant to keep code from accidentally
-swallowing an unrelated asynchronous cancellation), which is exactly
-wrong here: this worker's own @putMVar resultVar@ acknowledgement must
-run even when it was the disposable worker itself that received an
-asynchronous exception -- namely the very 'killThread' issued by this
-function's own cancellation cleanup above. Using the sync-only 'try'
-would let that 'killThread' terminate the worker before it ever reaches
-@putMVar@, so the cleanup path's subsequent @takeMVar resultVar@ would
-block forever waiting for an acknowledgement that can never arrive.
-
-The worker's final @putMVar resultVar@ is itself wrapped in
-'Control.Exception.mask_', closing a narrower version of that same race:
-@action@ runs unmasked (via 'forkIOWithUnmask'\'s @unmask@) so a
-cancellation delivered /while it is running/ is caught by the 'try' above
-and becomes part of @outcome@ -- but without this 'mask_', a
-'killThread' landing in the brief gap /after/ @outcome@ has already been
-computed and /before/ the worker finishes writing it to @resultVar@ would
-still terminate the worker with nothing ever written, and this function's
-cleanup handler would then block forever on its own @takeMVar resultVar@
-below. Once @outcome@ exists, committing it to @resultVar@ is a single
-non-blocking write (nothing else can ever put to this 'MVar' first), so
-masking just that final step cannot itself introduce any blocking or
-deadlock -- it only removes the one remaining window in which the
-worker's acknowledgement could be lost.
+{- | How long 'acquireAwsEnv' allows AWS credential discovery to run before
+giving up and reporting the sanitized 'AwsAuthDiscoveryTimedOut' dependency
+failure, instead of ever blocking the supervisor thread indefinitely. Real
+discovery (environment\/file\/IMDS\/ECS metadata lookups) normally completes
+in well under a second; this bound exists purely so a wedged or
+unreachable credential provider can never permanently wedge the
+supervisor in 'SupervisedEnvInitializing'. Because discovery always runs
+on the dedicated supervisor thread (never a request-handling thread), a
+hang here only ever delays this one thread reaching 'SupervisedEnvReady'
+-- every request continues to observe an immediate, bounded, sanitized
+snapshot (see 'readSupervisedEnv') the entire time, never blocking on
+discovery itself.
 -}
-runOnDisposableWorker :: IO a -> IO a
-runOnDisposableWorker action = do
-  resultVar <- newEmptyMVar
-  workerThreadId <-
-    forkIOWithUnmask $ \unmask -> do
-      outcome <- unmask (Exception.try @SomeException action)
-      mask_ (putMVar resultVar outcome)
-  result <-
-    takeMVar resultVar `catch` \(callerException :: SomeException) -> do
-      killThread workerThreadId
-      _ <- takeMVar resultVar
-      throwIO callerException
-  either throwIO pure result
+defaultAwsEnvDiscoveryTimeoutMicros :: Int
+defaultAwsEnvDiscoveryTimeoutMicros = 8 * 1000 * 1000
 
-{- | As 'runOnDisposableWorker', but bounded to at most @timeoutMicros@
-microseconds; returns 'Nothing' if that bound is exceeded. The timeout is
-applied *inside* the disposable worker (i.e. it is the worker, never the
-caller, that 'System.Timeout.timeout' can interrupt), so a hung @action@
-is still cleaned up exactly as 'runOnDisposableWorker' always cleans up a
-cancelled worker -- nothing survives this call either way, whether it
-finishes, times out, or the caller is itself cancelled while waiting.
-
-'System.Timeout.timeout' only ever converts *its own* internal,
-uniquely-tagged timeout signal into 'Nothing'; any other exception raised
-by @action@ (including a genuine 'AuthError' from discovery) still
-propagates through unchanged -- this is not a broad, success-shaped catch.
+{- | Acquire one fresh generation of AWS credentials\/'Env', already
+classified into a sanitized diagnostic on failure (including timeout). Only
+ever called from 'startSupervisedEnv''s dedicated supervisor thread -- see
+'releaseAwsEnvChild' for why that placement matters. Credentials are left
+exactly as @discover@\/'Amazonka.newEnv' returned them (never frozen): a
+successfully acquired 'Env' keeps Amazonka's own background refresh alive
+for as long as this generation remains current, so genuine temporary
+credentials (IAM\/ECS\/IMDS) stay fresh for the supervisor's entire
+lifetime rather than being re-discovered\/re-frozen per request.
 -}
-runBoundedOnDisposableWorker :: Int -> IO a -> IO (Maybe a)
-runBoundedOnDisposableWorker timeoutMicros action =
-  runOnDisposableWorker (timeout timeoutMicros action)
+acquireAwsEnv :: IO (Either AwsAuthErrorDiagnostic Env)
+acquireAwsEnv = do
+  outcome <- timeout defaultAwsEnvDiscoveryTimeoutMicros (try @_ @AuthError (newEnv discover))
+  case outcome of
+    Nothing -> pure (Left AwsAuthDiscoveryTimedOut)
+    Just (Left authErr) -> Left <$> evaluate (classifyAuthErrorDiagnostic authErr)
+    Just (Right env) -> pure (Right env)
 
-{- | How long 'discoverFrozenEnv' allows AWS credential discovery plus
-freezing to run before giving up and reporting the sanitized
-'AwsAuthDiscoveryTimedOut' dependency failure, instead of ever blocking a
-request indefinitely. Real discovery (environment\/file\/IMDS\/ECS
-metadata lookups) normally completes in well under a second; this bound
-exists purely so a wedged or unreachable credential provider can never
-hang a request worker forever, and is kept comfortably below typical
-request-handling deadlines.
--}
-defaultDiscoverFrozenEnvTimeoutMicros :: Int
-defaultDiscoverFrozenEnvTimeoutMicros = 8 * 1000 * 1000
+{- | Block for as long as @env@'s generation remains valid, then return the
+sanitized diagnostic that invalidated it. Only ever called from
+'startSupervisedEnv''s dedicated supervisor thread, immediately after that
+same thread acquired @env@ via 'acquireAwsEnv' -- so it is exactly the
+thread the pinned Amazonka fork's background refresh timer captured as its
+@throwTo@ target (see 'releaseAwsEnvChild'), and it is still here,
+deliberately blocked, ready to receive that exact exception whenever (if
+ever) it arrives; never a Warp request thread that has since moved on.
 
-{- | Discover fresh AWS credentials for exactly one bounded upload, never
-leaving behind a background refresh thread that could survive this call
-(see 'runOnDisposableWorker' and 'freezeAuth'), and never blocking past
-'defaultDiscoverFrozenEnvTimeoutMicros'. The returned 'Env', if any, has
-entirely static credentials from this point forward: reusing or holding
-onto it for longer than the immediate HeadObject\/PutObject sequence
-would silently let its temporary credentials go stale (Amazonka's own
-refresh mechanism no longer exists for it), so a fresh 'discoverFrozenEnv'
-is called for every request rather than caching the result -- this
-preserves IAM\/ECS\/IMDS-sourced temporary-credential support and
-freshness, it just never lets any single 'Env' outlive one request.
+Blocks forever unless interrupted: either by a genuine delayed
+'AuthError' refresh failure (caught here, classified, and returned as this
+generation's invalidation reason), or by an external asynchronous
+exception (e.g. 'stopSupervisedEnv''s cancellation, or an unanticipated
+programmer fault elsewhere) -- which is deliberately *not* caught here and
+propagates unchanged, since only 'AuthError' is a recognized,
+sanitizable dependency failure for this generation. Either way, this
+generation's background refresh child (if it has one) is always killed
+via 'releaseAwsEnvChild' -- wrapped in 'finally', so it runs whether this
+function returns normally (an 'AuthError' was caught) or the exception
+propagates straight through -- so no refresh child ever survives whatever
+made this function stop blocking.
 -}
-discoverFrozenEnv :: IO (Either AwsAuthErrorDiagnostic Env)
-discoverFrozenEnv = discoverFrozenEnvWithTimeout defaultDiscoverFrozenEnvTimeoutMicros
-
-{- | As 'discoverFrozenEnv', but with an explicit, injectable timeout (in
-microseconds) rather than the fixed production default -- this is the
-seam production code and deterministic tests share, so tests can exercise
-the discovery-hangs-forever case with a tiny bound instead of waiting on
-(or trying to fake) the real production duration. 'discoverFrozenEnv'
-itself is not directly unit-tested beyond this: real credential discovery
-genuinely talks to the environment\/filesystem\/IMDS\/ECS metadata
-endpoints, which is out of scope for a deterministic unit test, consistent
-with this codebase's existing practice of only unit-testing the pure
-classification\/sequencing seams around such calls.
--}
-discoverFrozenEnvWithTimeout :: Int -> IO (Either AwsAuthErrorDiagnostic Env)
-discoverFrozenEnvWithTimeout timeoutMicros = do
-  eResult <- try @_ @AuthError (runBoundedOnDisposableWorker timeoutMicros discoverAndFreeze)
-  pure $ case eResult of
-    Left authErr -> Left (classifyAuthErrorDiagnostic authErr)
-    Right Nothing -> Left AwsAuthDiscoveryTimedOut
-    Right (Just env) -> Right env
+awaitAwsEnvInvalidation :: Env -> IO AwsAuthErrorDiagnostic
+awaitAwsEnvInvalidation env = do
+  outcome <- try @_ @AuthError (blockForever `finally` releaseAwsEnvChild (runIdentity env.auth))
+  either (evaluate . classifyAuthErrorDiagnostic) absurd outcome
  where
-  -- 'mask'ed (not 'uninterruptibleMask_'ed) from the moment 'newEnv
-  -- discover' returns: 'restore' only re-admits interruption for the
-  -- discovery call itself (so a hung network request can still be timed
-  -- out or cancelled), never for the freeze step immediately after, so
-  -- there is no gap in which a background refresh thread could exist
-  -- without this worker having already committed to killing it before
-  -- anything else can interrupt it. If 'killThread' itself would need to
-  -- block (the refresh thread already masked), that specific call
-  -- remains an interruptible operation even under plain 'mask', so this
-  -- can still be interrupted rather than hang uninterruptibly.
-  discoverAndFreeze :: IO Env
-  discoverAndFreeze = mask $ \restore -> do
-    env <- restore (newEnv discover)
-    frozen <- freezeAuth (runIdentity env.auth)
-    pure env {auth = Identity (Auth frozen)}
+  blockForever :: IO Void
+  blockForever = forever (threadDelay maxBound)
+
+{- | A typed snapshot of the application's single AWS 'Env' supervisor,
+observable by request handlers without ever blocking on -- or triggering
+-- credential discovery\/refresh themselves. Never contains a raw
+exception: 'SupervisedEnvUnavailable' only ever carries an already-forced
+'AwsAuthErrorDiagnostic'.
+-}
+data SupervisedEnvState env
+  = -- | The supervisor has not yet completed its first acquisition.
+    SupervisedEnvInitializing
+  | -- | @env@ is this generation's live, currently-valid resource.
+    SupervisedEnvReady env
+  | -- | The most recent generation failed to acquire, or was invalidated
+    -- (e.g. a genuine background refresh failure), or the supervisor
+    -- itself has stopped; a fresh attempt is (or was, before stopping)
+    -- pending after backoff.
+    SupervisedEnvUnavailable AwsAuthErrorDiagnostic
+  deriving stock (Eq, Show)
+
+-- | A running supervisor: a strict, typed state snapshot plus the handle
+-- of the single dedicated thread that owns its entire acquire\/monitor\/
+-- reacquire lifecycle. See 'startSupervisedEnv'.
+data SupervisedEnv env = SupervisedEnv
+  { supervisedEnvStateVar :: TVar (SupervisedEnvState env)
+  , supervisedEnvAsync :: Async.Async ()
+  }
+
+{- | Start a dedicated, single-thread supervisor that owns the entire
+acquire\/monitor\/reacquire lifecycle of one resource generation at a time,
+publishing a strict typed snapshot of its current state for readers (see
+'readSupervisedEnv') and never blocking a caller on acquisition.
+
+This is the architectural fix for the async-credential-refresh-escape
+audit: exactly one thread -- this supervisor's own, for the entire
+lifetime of the running application -- ever calls @acquire@ (in
+production, 'acquireAwsEnv', i.e. @newEnv discover@). Because the pinned
+Amazonka fork's background refresh timer always targets \"the thread that
+called @discover@\" for its eventual refresh-failure @throwTo@, and that
+thread here is always this same dedicated supervisor thread (never a
+per-request thread, and this supervisor is never restarted per request),
+a delayed refresh failure can only ever land back on the one thread still
+deliberately waiting for it (in @awaitInvalidation@, in production
+'awaitAwsEnvInvalidation') -- never on a Warp worker that has since moved
+on to, or been reused for, an unrelated request.
+
+The lifecycle itself is built entirely from the \"async\" package's
+high-level 'Async.async'\/'Async.cancel' rather than a hand-rolled
+@forkIO@\/@MVar@\/@mask@ protocol: 'Async.async' already wraps its action in
+a plain, unrestricted 'Control.Exception.try' internally (catching
+/every/ exception, synchronous or asynchronous, so its result @MVar@\/@STM@
+slot is always filled), and 'Async.cancel' both delivers an ordinary,
+interruptible @throwTo@ and synchronously waits for the target thread to
+actually finish before returning -- exactly the \"terminate and wait for
+completion\" protocol this module previously had to construct and debug
+by hand.
+
+On every loop iteration: @acquire@ is attempted; a failure publishes
+'SupervisedEnvUnavailable' and waits @backoff@ before retrying.  A success
+publishes 'SupervisedEnvReady', then blocks in @awaitInvalidation@ until
+that generation is invalidated, at which point its diagnostic is published
+and @backoff@ is awaited before the next attempt. Whatever exception
+terminates the supervisor thread itself (an external 'stopSupervisedEnv',
+or an unanticipated exception escaping @acquire@\/@awaitInvalidation@ that
+is deliberately *not* caught here, per the \"no broad catch\" requirement)
+is guaranteed, via 'finally', to first publish 'AwsAuthSupervisorTerminated'
+-- so a reader can never observe a stale 'SupervisedEnvReady' snapshot
+pointing at a resource nobody is monitoring any longer.
+-}
+startSupervisedEnv
+  :: IO (Either AwsAuthErrorDiagnostic env)
+  -- ^ acquire one fresh generation.
+  -> (env -> IO AwsAuthErrorDiagnostic)
+  -- ^ block until @env@'s generation is invalidated (or an external
+  -- exception interrupts this call), returning the classified reason.
+  -> IO ()
+  -- ^ backoff between a failed\/invalidated generation and the next
+  -- attempt.
+  -> IO (SupervisedEnv env)
+startSupervisedEnv acquire awaitInvalidation backoff = do
+  stateVar <- newTVarIO SupervisedEnvInitializing
+  supervisorAsync <- Async.async (supervise stateVar)
+  pure SupervisedEnv {supervisedEnvStateVar = stateVar, supervisedEnvAsync = supervisorAsync}
+ where
+  supervise stateVar =
+    forever loopOnce `finally` publish stateVar AwsAuthSupervisorTerminated
+   where
+    loopOnce = do
+      acquired <- acquire
+      case acquired of
+        Left diag -> publish stateVar diag >> backoff
+        Right env -> do
+          atomically $ writeTVar stateVar (SupervisedEnvReady env)
+          diag <- awaitInvalidation env
+          publish stateVar diag
+          backoff
+  publish stateVar diag = do
+    forced <- evaluate diag
+    atomically $ writeTVar stateVar (SupervisedEnvUnavailable forced)
+
+-- | Read the supervisor's current strict, typed state snapshot. Never
+-- blocks on acquisition\/refresh: a request observing 'SupervisedEnvReady'
+-- may use that @env@ immediately; any other state is an immediate,
+-- sanitized dependency failure.
+readSupervisedEnv :: SupervisedEnv env -> IO (SupervisedEnvState env)
+readSupervisedEnv = readTVarIO . supervisedEnvStateVar
+
+{- | Explicitly stop a supervisor: terminate its dedicated thread and
+/wait/ for it to actually finish (via 'Async.cancel', see 'startSupervisedEnv')
+-- which, per 'awaitInvalidation''s\/'awaitAwsEnvInvalidation''s own
+'finally', also releases the current generation's background resource
+(e.g. kills a live Amazonka refresh thread) before this returns. Intended
+for deterministic tests (each starting\/stopping its own supervisor) and,
+optionally, graceful process shutdown; production request handling never
+calls this on the application's single supervisor.
+-}
+stopSupervisedEnv :: SupervisedEnv env -> IO ()
+stopSupervisedEnv = Async.cancel . supervisedEnvAsync
+
+{- | The application's single AWS 'Env' supervisor: lazily started on first
+use and, once started, never restarted for the remainder of the process.
+'unsafePerformIO' plus 'NOINLINE' on a top-level CAF is this codebase's
+existing pattern for exactly this "lazy, at-most-once, shared for the
+whole process" idiom (see @Arkham.Metrics@'s @globalMetricsRef@); GHC's
+runtime guarantees a 'NOINLINE' top-level CAF is forced at most once even
+under concurrent access from multiple Warp request threads (the first
+forcer runs it; any concurrent forcer blocks until that completes and then
+shares the same result) -- so no additional locking is needed here to
+ensure only one supervisor thread\/one @newEnv discover@ call site ever
+exists for the whole application.
+-}
+{-# NOINLINE globalAwsEnvSupervisor #-}
+globalAwsEnvSupervisor :: SupervisedEnv Env
+globalAwsEnvSupervisor =
+  unsafePerformIO $ startSupervisedEnv acquireAwsEnv awaitAwsEnvInvalidation awsEnvSupervisorBackoff
+ where
+  -- Real reacquisition backoff: deliberately not configurable/injectable
+  -- in production (unlike 'defaultAwsEnvDiscoveryTimeoutMicros'), since
+  -- nothing about backoff duration affects request-facing correctness --
+  -- it only paces how often a persistently failing credential source is
+  -- retried, avoiding a tight retry storm against it.
+  awsEnvSupervisorBackoff :: IO ()
+  awsEnvSupervisorBackoff = threadDelay (5 * 1000 * 1000)
 
 postApiV1ArkhamGameBugR :: ArkhamGameId -> Handler Text
 postApiV1ArkhamGameBugR gameId = do
@@ -462,21 +520,23 @@ postApiV1ArkhamGameBugR gameId = do
       let bucket = "arkham-horror-bugs"
           key = ObjectKey $ "exports/" <> filename
 
-      -- Fresh credentials are discovered for every request (see
-      -- 'discoverFrozenEnv') on a disposable worker thread, never this
-      -- Warp request-handling thread, and immediately frozen: no
-      -- background credential-refresh thread can survive past
-      -- 'discoverFrozenEnv' returning (whether it succeeds, times out,
-      -- fails, or this very request is cancelled while waiting on it),
-      -- so this thread can never be the target of a delayed
-      -- refresh-failure 'throwTo'. The returned diagnostic (including the
-      -- timeout case) is already fully classified/sanitized.
-      eEnv <- liftIO discoverFrozenEnv
-      case eEnv of
-        Left diag -> do
-          $(logWarn) $ "bug report upload: AWS credential discovery failed for game " <> toPathPiece gameId <> ": " <> tshow diag
+      -- Read the application's single AWS 'Env' supervisor's current
+      -- snapshot (see 'globalAwsEnvSupervisor'/'startSupervisedEnv'):
+      -- never blocks on credential discovery/refresh, and never runs
+      -- 'newEnv'/'discover' on this (or any other) Warp request-handling
+      -- thread -- only the supervisor's own dedicated thread ever does,
+      -- so a delayed background refresh failure can never target a
+      -- request worker. Any non-'Ready' snapshot is already a fully
+      -- classified/sanitized diagnostic (or the absence of one yet).
+      snapshot <- liftIO (readSupervisedEnv globalAwsEnvSupervisor)
+      case snapshot of
+        SupervisedEnvInitializing -> do
+          $(logWarn) $ "bug report upload: AWS credential supervisor still initializing for game " <> toPathPiece gameId
           sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
-        Right env -> do
+        SupervisedEnvUnavailable diag -> do
+          $(logWarn) $ "bug report upload: AWS credentials unavailable for game " <> toPathPiece gameId <> ": " <> tshow diag
+          sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
+        SupervisedEnvReady env -> do
           -- The HeadObject/PutObject actions run inside 'runResourceT IO',
           -- which has no application-logger access. Rather than logging
           -- from inside that IO action (which would require an ad-hoc
