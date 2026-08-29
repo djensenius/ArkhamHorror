@@ -71,6 +71,14 @@ from pathlib import Path
 # which never silently overflows), not as a parsing float itself.
 _FLOAT_MAX_MAGNITUDE = Decimal(sys.float_info.max)
 
+# `json`'s stdlib default `parse_int` is the bare `int` constructor, which
+# since Python 3.11 enforces a global digit-count safety limit
+# (`sys.get_int_max_str_digits()`, 4300 by default) on str->int conversion
+# and raises a raw `ValueError` for a syntactically valid JSON integer
+# literal with more digits than that (e.g. a 5,000-digit integer) --
+# `_parse_int_or_reject_unsupported` below catches this and re-raises it as
+# this module's own controlled, source-qualified `StrictJSONError` instead.
+
 # `git commit-tree` refuses to run without a configured author/committer
 # identity, which a fresh CI runner never has (unlike most local developer
 # checkouts). Every self-test that creates a throwaway, never-referenced git
@@ -148,9 +156,65 @@ def _parse_float_or_reject_overflow(raw: str, *, source: str) -> float:
     `Decimal` value itself flowing downstream is not viable in this
     toolchain, and this function fails closed (rejects) instead of ever
     returning a non-finite `float`, rather than silently returning `inf`.
+
+    Three further subtleties, all found and closed by review, are handled
+    below rather than being left as latent bugs:
+
+    1. Comparing an *unbounded*-magnitude `Decimal` (`abs(decimal_value)`,
+       or the bare `>` operator on it) against `_FLOAT_MAX_MAGNITUDE` is
+       itself a context-*rounded* arithmetic operation in the `decimal`
+       module -- for a value whose exponent is extreme enough (e.g.
+       `1e1000000`), the default context's own `Emax` makes that comparison
+       raise `decimal.Overflow` internally, which would otherwise escape
+       this function as a raw, uncontrolled exception instead of this
+       module's own `StrictJSONError`. `Decimal.copy_abs()` (unlike the
+       bare `abs()` builtin) is documented to perform no rounding and use
+       no context at all, so magnitude is computed exactly first and only
+       *then* compared -- and a plain `Decimal.__gt__` comparison (as
+       opposed to e.g. subtraction) does not perform context-rounded
+       arithmetic and cannot itself raise `Overflow`.
+    2. A *nonzero* JSON number literal whose magnitude is smaller than the
+       smallest positive value a `float` can represent at all (e.g.
+       `1e-1000000`, or even an ordinary `1e-400`) silently converts via the
+       bare `float()` constructor to positive/negative *zero* -- changing a
+       nonzero value into zero is exactly the kind of silent, undetected
+       precision loss this module exists to prevent (a schema `"minimum"`
+       far above zero would then wrongly appear satisfied, for instance).
+       This is detected generically, for any magnitude, by comparing the
+       exact `Decimal` value against the converted `float` result rather
+       than hard-coding any particular boundary.
+    3. Any other `decimal.DecimalException` (the common base class for
+       every exception the `decimal` module can raise, including
+       `InvalidOperation` and `Overflow`) is caught as a final defensive
+       fallback and re-raised as this module's own controlled
+       `StrictJSONError`, so no raw `decimal` traceback can ever escape
+       this function even for a case not explicitly enumerated above.
     """
     try:
         decimal_value = Decimal(raw)
+        magnitude = decimal_value.copy_abs()
+        if magnitude > _FLOAT_MAX_MAGNITUDE:
+            raise StrictJSONError(
+                f"{source}: JSON number {raw!r} overflows the finite range a JSON Schema "
+                "\"number\"/\"float\" can represent in this toolchain (exact magnitude computed "
+                "via Decimal.copy_abs(), which -- unlike the bare abs() builtin -- performs no "
+                "context-rounded arithmetic and so cannot itself raise decimal.Overflow, to avoid "
+                "trusting float()'s own silent overflow-to-inf behavior); non-finite numeric "
+                "values are not permitted in governed contract artifacts."
+            )
+        result = float(raw)
+        if decimal_value != 0 and result == 0.0:
+            raise StrictJSONError(
+                f"{source}: JSON number {raw!r} is nonzero but underflows to signed zero when "
+                "converted to a finite-range float (its magnitude is smaller than the smallest "
+                "positive value a float can represent); silently treating a nonzero value as "
+                "zero could change whether a JSON Schema \"minimum\"/\"exclusiveMinimum\" "
+                "constraint appears satisfied, so this toolchain rejects the conversion outright "
+                "instead of returning 0.0."
+            )
+        return result
+    except StrictJSONError:
+        raise
     except decimal.InvalidOperation as exc:
         raise StrictJSONError(
             f"{source}: JSON number {raw!r} could not be parsed exactly as decimal.Decimal "
@@ -158,14 +222,43 @@ def _parse_float_or_reject_overflow(raw: str, *, source: str) -> float:
             "range, so it is rejected outright rather than falling back to float()'s silent "
             "overflow-to-inf behavior."
         ) from exc
-    if abs(decimal_value) > _FLOAT_MAX_MAGNITUDE:
+    except decimal.DecimalException as exc:
         raise StrictJSONError(
-            f"{source}: JSON number {raw!r} overflows the finite range a JSON Schema "
-            "\"number\"/\"float\" can represent in this toolchain (exact value computed via "
-            "decimal.Decimal to avoid trusting float()'s own silent overflow-to-inf behavior); "
-            "non-finite numeric values are not permitted in governed contract artifacts."
-        )
-    return float(raw)
+            f"{source}: JSON number {raw!r} could not be parsed exactly as decimal.Decimal "
+            f"due to an unexpected {type(exc).__name__} ({exc}); rejected outright rather than "
+            "letting a raw decimal exception escape or falling back to float()'s own silent "
+            "rounding/overflow behavior."
+        ) from exc
+
+
+def _parse_int_or_reject_unsupported(raw: str, *, source: str) -> int:
+    """`json.loads`'s default `parse_int` is the bare `int` constructor,
+    which (since Python 3.11, see PEP 664 / bpo-95778) enforces a global
+    digit-count safety limit (`sys.get_int_max_str_digits()`, 4300 digits by
+    default) on any str->int conversion, to guard against a denial-of-service
+    attack via a maliciously huge numeral -- but JSON integer syntax itself
+    places no bound on digit count, so a syntactically valid (if unusual)
+    JSON integer literal past that limit (e.g. a 5,000-digit integer) makes
+    the bare `int()` constructor raise a raw `ValueError` that would
+    otherwise escape uncontrolled from deep inside `json.loads`'s
+    `parse_int` callback. This wraps that conversion and re-raises any such
+    failure as this module's own controlled, source-qualified
+    `StrictJSONError` instead, consistent with every other numeric-parsing
+    guard in this module (this toolchain does not need to support integers
+    at that scale for any governed contract artifact, so failing closed
+    with a clear diagnostic -- rather than raising the process-wide safety
+    limit via `sys.set_int_max_str_digits()`, which would weaken a
+    deliberate CPython security guard for every caller of this process, not
+    just this module -- is the correct behavior here).
+    """
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise StrictJSONError(
+            f"{source}: JSON integer literal {raw!r} could not be parsed as a Python int "
+            f"({exc}); this toolchain does not support integer literals this large in governed "
+            "contract artifacts."
+        ) from exc
 
 
 def strict_json_loads(text_or_bytes, *, source: str = "<string>"):
@@ -204,6 +297,7 @@ def strict_json_loads(text_or_bytes, *, source: str = "<string>"):
             object_pairs_hook=lambda pairs: _reject_duplicate_keys(pairs, source=source),
             parse_constant=lambda constant_name: _reject_constant(constant_name, source=source),
             parse_float=lambda raw: _parse_float_or_reject_overflow(raw, source=source),
+            parse_int=lambda raw: _parse_int_or_reject_unsupported(raw, source=source),
         )
     except StrictJSONError:
         raise
@@ -328,17 +422,54 @@ def validate_governed_path(relative_path: object) -> str:
     )
 
 
+def _git_tracked_mode(root: Path, args: list[str], relative_path: str, *, label: str) -> str | None:
+    """Run a `git ls-files --stage`/`git ls-tree`-style plumbing command
+    (`args`, with the ref/flags already filled in by the caller) restricted
+    to exactly `relative_path`, and return the 6-digit octal mode of the
+    single matching entry (e.g. `"100644"`), or `None` if `relative_path` is
+    not tracked at all in that context (a brand-new file never `git add`-ed,
+    or a path that does not exist at the given ref/commit). `label` (e.g.
+    `"git index"`, `"git HEAD tree"`) makes any diagnostic actionable about
+    which git context the mode check failed in.
+    """
+    result = subprocess.run(
+        [*args, "--", relative_path],
+        cwd=root,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise GovernedPathError(
+            f"{label} lookup failed for governed artifact path {relative_path!r}: "
+            f"{result.stderr.decode('utf-8', errors='replace')}"
+        )
+    stdout = result.stdout
+    if not stdout.strip():
+        return None
+    lines = [line for line in stdout.split(b"\n") if line.strip()]
+    if len(lines) != 1:
+        raise GovernedPathError(
+            f"{label} lookup for governed artifact path {relative_path!r} unexpectedly matched "
+            f"{len(lines)} entries; expected exactly 0 (untracked) or 1."
+        )
+    # Both `git ls-files --stage` ("<mode> <sha> <stage>\t<path>") and
+    # `git ls-tree` ("<mode> <type> <sha>\t<path>") put the mode as the
+    # first space-separated field before the first tab.
+    header = lines[0].split(b"\t", 1)[0].decode("utf-8", errors="replace")
+    return header.split(" ")[0]
+
+
 def read_governed_worktree_bytes(root: Path, relative_path: str) -> bytes:
     """Validate `relative_path` (`validate_governed_path`), read its bytes
     from the current worktree under `root` (rejecting anything that is not
-    an ordinary regular file via `os.lstat` -- unlike `Path.is_file()`/
-    `Path.read_bytes()`, `lstat` does not follow a symlink to whatever file
-    it currently happens to point at), and, if the path looks like JSON
+    an ordinary, non-executable regular file at git mode `100644` via
+    `os.lstat` -- unlike `Path.is_file()`/`Path.read_bytes()`, `lstat` does
+    not follow a symlink to whatever file it currently happens to point
+    at), and, if the path looks like JSON
     (`strict_validate_governed_bytes_if_json`), strictly parse those bytes
     before returning them -- so a caller that goes on to hash the returned
     bytes never hashes content this toolchain has not already confirmed is
-    both a genuine regular file and (for `.json` paths) well-formed strict
-    JSON.
+    both a genuine, non-executable regular file and (for `.json` paths)
+    well-formed strict JSON.
 
     The regular-file check matters specifically because git itself stores a
     symlink as a blob containing its target path text at mode `120000`: a
@@ -351,6 +482,46 @@ def read_governed_worktree_bytes(root: Path, relative_path: str) -> bytes:
     Rejecting any non-regular-file mode outright (symlink, directory,
     device, etc.) removes that ambiguity entirely rather than trying to make
     both readers agree on a resolved target.
+
+    The *executable*-bit and git-mode checks close a distinct, narrower gap
+    review found: `stat.S_ISREG` alone does not distinguish a mode-`100644`
+    regular file from a mode-`100755` (executable) one -- both are
+    "regular files" as far as `S_ISREG` is concerned, and (for identical
+    content) hash identically here. But `read_governed_git_ref_bytes`
+    (used for the immutable base ref) *does* strictly require exact git
+    mode `100644` via `git ls-tree`. Left unchecked here, a `chmod +x` (or
+    a purely-staged `git update-index --chmod=+x`, with the on-disk bytes
+    and permissions untouched) on a governed file would pass this worktree
+    reader silently (same content, same hash, no revision-drift signal
+    today) -- and then, once that state is ever committed and later reused
+    as a *base* ref for some future revision-drift check, permanently and
+    unfixably break every future base-artifact read for that historical
+    revision (since the immutable base blob would forever carry the
+    now-wrong mode). Rejecting the mode change the moment it is introduced
+    -- here, at the worktree/head side -- means the hashing tools fail
+    loudly immediately, rather than silently accepting it now and only
+    discovering the breakage much later when it is no longer fixable.
+    Three independent signals are checked, since any one of them alone can
+    miss a real-world case the others catch:
+
+    1. The actual on-disk POSIX permission bits (`file_stat.st_mode`'s
+       executable bits) -- catches an ordinary `chmod +x`, staged or not.
+    2. The git *index* (staged) mode, via `git ls-files --stage` -- catches
+       a purely-staged `git update-index --chmod=+x` where the on-disk
+       permission bits were never actually touched (signal 1 alone would
+       miss this, since the file's real POSIX bits still say non-executable).
+    3. The git *HEAD* (last-committed) tree mode, via `git ls-tree HEAD` --
+       catches a committed mode change that has not yet been touched again
+       in the index/worktree (signals 1-2 alone could miss this if HEAD and
+       the index/worktree were checked out inconsistently).
+
+    A path that is not yet tracked at all in a given context (a brand-new
+    file never `git add`-ed, for the index; a file added on this branch but
+    not yet committed, for HEAD) has no recorded mode to compare there,
+    so only the signals that actually apply are checked -- but signal 1 (the
+    real on-disk permission bits) always applies and is never skipped, so
+    this function never silently passes an executable file through purely
+    because it happens to be new/untracked in some other context.
     """
     validated = validate_governed_path(relative_path)
     absolute_path = root / validated
@@ -366,6 +537,37 @@ def read_governed_worktree_bytes(root: Path, relative_path: str) -> bytes:
             f"governed artifact path {validated!r} is not a regular file on disk (resolved: "
             f"{absolute_path}, st_mode={oct(file_stat.st_mode)}); a symlink, directory, or other "
             "special file is never permitted as a governed artifact."
+        )
+    if stat.S_IMODE(file_stat.st_mode) & 0o111:
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} is executable on disk (permission bits "
+            f"{oct(stat.S_IMODE(file_stat.st_mode))}, resolved: {absolute_path}); governed "
+            "artifacts must be non-executable regular files (git mode 100644), matching the "
+            "exact mode read_governed_git_ref_bytes requires from history."
+        )
+    index_mode = _git_tracked_mode(
+        root, ["git", "ls-files", "--stage"], validated, label="git index"
+    )
+    if index_mode is not None and index_mode != "100644":
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} has git index (staged) mode {index_mode!r}, "
+            "expected 100644 (non-executable regular blob); a staged 'git update-index "
+            "--chmod=+x' (or equivalent) mode change is rejected even when the on-disk "
+            "permission bits were left untouched."
+        )
+    head_mode = _git_tracked_mode(
+        root, ["git", "ls-tree", "HEAD"], validated, label="git HEAD tree"
+    )
+    if head_mode is not None and head_mode != "100644":
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} has git HEAD-committed mode {head_mode!r}, "
+            "expected 100644 (non-executable regular blob)."
+        )
+    if index_mode is not None and head_mode is not None and index_mode != head_mode:
+        raise GovernedPathError(
+            f"governed artifact path {validated!r} has disagreeing git modes: index (staged) "
+            f"mode {index_mode!r} vs. HEAD-committed mode {head_mode!r}; a governed artifact's "
+            "staged and last-committed mode must agree."
         )
     content = absolute_path.read_bytes()
     strict_validate_governed_bytes_if_json(validated, content, source=str(absolute_path))
@@ -524,6 +726,65 @@ def run_self_tests() -> None:
         "[1e99999999999999999999999999999999999999]",
         "a number literal whose exponent exceeds Decimal's own context range",
     )
+
+    # An exponent extreme enough that even Decimal.copy_abs() magnitude
+    # comparison against the float-max bound would raise decimal.Overflow if
+    # a context-rounded operation (e.g. the bare abs() builtin, unlike
+    # copy_abs()) were used instead -- must still be rejected via the
+    # controlled StrictJSONError, both for a positive and a negative sign.
+    _expect_rejected(
+        "[1e1000000]",
+        "a positive-sign, context-overflow-triggering exponent magnitude",
+    )
+    _expect_rejected(
+        "[-1e1000000]",
+        "a negative-sign, context-overflow-triggering exponent magnitude",
+    )
+
+    # A nonzero number literal whose magnitude is smaller than the smallest
+    # positive float must be rejected rather than silently converted to
+    # signed zero (which would make a positive JSON Schema "minimum" wrongly
+    # appear satisfied) -- for both an ordinary small-exponent underflow and
+    # an extreme-exponent underflow, and both signs.
+    _expect_rejected("[1e-400]", "an ordinary-exponent positive underflow-to-zero value")
+    _expect_rejected("[-1e-400]", "an ordinary-exponent negative underflow-to-zero value")
+    _expect_rejected("[1e-1000000]", "an extreme-exponent positive underflow-to-zero value")
+    _expect_rejected("[-1e-1000000]", "an extreme-exponent negative underflow-to-zero value")
+
+    # decimal.Decimal's actual Emax/Emin boundary and subnormal-adjacent
+    # values must still parse as ordinary finite floats when they are not
+    # actually zero/overflow after conversion -- proving the guards above
+    # reject only genuine overflow/underflow, not merely "large" exponents.
+    ok_boundary = strict_json_loads(
+        "[1e300, -1e300, 1e-300, -1e-300, 5e-324, -5e-324]",
+        source="<selftest: decimal boundary-adjacent ordinary values>",
+    )
+    expected_boundary = [1e300, -1e300, 1e-300, -1e-300, 5e-324, -5e-324]
+    if ok_boundary != expected_boundary:
+        raise SystemExit(
+            "Self-test failure: strict_json_loads must still accept ordinary finite "
+            f"boundary-adjacent float values, got {ok_boundary!r}."
+        )
+
+    # A syntactically valid JSON integer literal with far more digits than
+    # Python 3.11+'s default int-string-conversion safety limit (4300
+    # digits) must be rejected via the controlled StrictJSONError, not let a
+    # raw ValueError escape uncaught from the bare int() constructor.
+    _expect_rejected("[" + "9" * 5000 + "]", "a 5,000-digit integer literal")
+
+    # An ordinary integer, including one comfortably larger than any real
+    # governed ID but still far below the digit-count safety limit, must
+    # still parse exactly like the stdlib default (as a plain int).
+    ok_int = strict_json_loads(
+        "[0, -0, 1, -1, 123456789012345678901234567890]",
+        source="<selftest: ordinary integers>",
+    )
+    expected_int = [0, 0, 1, -1, 123456789012345678901234567890]
+    if ok_int != expected_int or any(not isinstance(value, int) for value in ok_int):
+        raise SystemExit(
+            "Self-test failure: strict_json_loads must parse ordinary integers exactly "
+            f"like the stdlib default, got {ok_int!r}."
+        )
 
     # Ordinary finite fractional/exponent numbers must still parse exactly
     # like the stdlib default (as a plain `float`), unaffected by the
@@ -736,6 +997,167 @@ def run_governed_path_self_tests(root: Path) -> None:
                 f"{result.stderr.decode('utf-8', errors='replace')}"
             )
         return result.stdout.decode("utf-8").strip()
+
+    # -- Worktree (head) side: executable-bit and git-mode consistency ------
+    executable_relative_path = f"contracts/fixtures/__self-test-executable-{uuid.uuid4().hex}__.json"
+    executable_file = root / executable_relative_path
+    executable_file.write_bytes(b'{"a": 1}')
+    executable_file.chmod(0o755)
+    try:
+        try:
+            read_governed_worktree_bytes(root, executable_relative_path)
+        except GovernedPathError:
+            pass
+        else:
+            raise SystemExit(
+                "Self-test failure: read_governed_worktree_bytes must reject a governed file "
+                "that is executable on disk (mode 100755), even with otherwise well-formed "
+                "content, since read_governed_git_ref_bytes requires exact mode 100644 from "
+                "history and a mode-only 100644->100755 change would otherwise pass here "
+                "silently (identical content hash) and only break much later, unfixably, once "
+                "committed and reused as an immutable base ref."
+            )
+    finally:
+        executable_file.unlink(missing_ok=True)
+
+    # An ordinary non-executable (mode 100644) governed file, staged in an
+    # isolated *throwaway* git index (never the real repository index --
+    # using `GIT_INDEX_FILE` to point at a private scratch index file, so
+    # this can never race with, or get raced by, any other concurrent
+    # process's `git add`/`git reset`/`index.lock` on the real shared
+    # index -- unlike an earlier version of this self-test, which mutated
+    # the real index directly and could fail with a stale/contended
+    # `index.lock` when multiple contract-tooling scripts run concurrently,
+    # e.g. via `mise run contracts:validate`), must still be accepted --
+    # proving the new executable/git-mode checks reject only genuine mode
+    # disagreements, not every tracked file.
+    def _with_throwaway_index(body):
+        """Run `body(git_in_throwaway_index, ambient_env_restore)` with
+        `GIT_INDEX_FILE` pointed at a brand-new, empty, per-call scratch
+        index file, and `os.environ["GIT_INDEX_FILE"]` (which
+        `_git_tracked_mode`'s ambient-environment `subprocess.run` call
+        inherits, since it passes no explicit `env=`) set to match for the
+        duration of the call -- so `read_governed_worktree_bytes`'s
+        `git ls-files --stage` lookup transparently sees the throwaway
+        index's contents instead of the real repository index's, without
+        needing to change that function's signature. Always restores (or
+        removes) the ambient `GIT_INDEX_FILE` environment variable and
+        deletes the scratch index file afterward, regardless of outcome.
+
+        The scratch index file is placed in the real, resolved git
+        directory (`git rev-parse --absolute-git-dir`, e.g.
+        `.git/worktrees/<name>` for a linked worktree) rather than assuming
+        `root / ".git"` is itself a directory -- in a linked worktree (such
+        as the one this contract-tooling branch was developed in), `.git`
+        at the worktree root is an ordinary *file* containing a `gitdir:`
+        pointer, not a directory, so writing directly under `root / ".git"`
+        would fail with `NotADirectoryError`.
+        """
+        git_dir = Path(
+            subprocess.run(
+                ["git", "-C", str(root), "rev-parse", "--absolute-git-dir"],
+                capture_output=True,
+                check=True,
+            ).stdout.decode("utf-8").strip()
+        )
+        throwaway_index_path = git_dir / f"selftest-index-{uuid.uuid4().hex}"
+        throwaway_env = {
+            **os.environ,
+            **THROWAWAY_GIT_COMMIT_ENV_OVERRIDES,
+            "GIT_INDEX_FILE": str(throwaway_index_path),
+        }
+
+        def _git_in_throwaway_index(args: list[str]) -> str:
+            result = subprocess.run(args, cwd=root, capture_output=True, env=throwaway_env)
+            if result.returncode != 0:
+                raise SystemExit(
+                    f"Self-test setup failure: {args!r} exited {result.returncode}: "
+                    f"{result.stderr.decode('utf-8', errors='replace')}"
+                )
+            return result.stdout.decode("utf-8").strip()
+
+        previous_ambient_value = os.environ.get("GIT_INDEX_FILE")
+        os.environ["GIT_INDEX_FILE"] = str(throwaway_index_path)
+        try:
+            body(_git_in_throwaway_index)
+        finally:
+            if previous_ambient_value is None:
+                os.environ.pop("GIT_INDEX_FILE", None)
+            else:
+                os.environ["GIT_INDEX_FILE"] = previous_ambient_value
+            throwaway_index_path.unlink(missing_ok=True)
+
+    ordinary_relative_path = (
+        f"contracts/fixtures/__self-test-ordinary-mode-{uuid.uuid4().hex}__.json"
+    )
+    ordinary_file = root / ordinary_relative_path
+    ordinary_file.write_bytes(b'{"a": 1}')
+    ordinary_file.chmod(0o644)
+    try:
+        ordinary_blob = _git(["git", "hash-object", "-w", "--stdin"], b'{"a": 1}')
+
+        def _stage_ordinary(git_in_throwaway_index):
+            git_in_throwaway_index(
+                ["git", "update-index", "--add", "--cacheinfo",
+                 f"100644,{ordinary_blob},{ordinary_relative_path}"]
+            )
+            content = read_governed_worktree_bytes(root, ordinary_relative_path)
+            if content != b'{"a": 1}':
+                raise SystemExit(
+                    "Self-test failure: read_governed_worktree_bytes must return a staged, "
+                    "ordinary (mode 100644) governed file's exact bytes unchanged."
+                )
+
+        _with_throwaway_index(_stage_ordinary)
+    finally:
+        ordinary_file.unlink(missing_ok=True)
+
+    # A file staged (in the same isolated throwaway index) with only its
+    # *git index* mode flipped to executable via `git update-index
+    # --chmod=+x` -- while its actual on-disk permission bits are left
+    # completely untouched at 100644 -- must still be rejected: this is the
+    # "staged/worktree mode disagreement" case the plain on-disk-
+    # permission-bit check alone cannot see.
+    staged_mode_relative_path = (
+        f"contracts/fixtures/__self-test-staged-mode-{uuid.uuid4().hex}__.json"
+    )
+    staged_mode_file = root / staged_mode_relative_path
+    staged_mode_file.write_bytes(b'{"a": 1}')
+    staged_mode_file.chmod(0o644)
+    try:
+        staged_mode_blob = _git(["git", "hash-object", "-w", "--stdin"], b'{"a": 1}')
+
+        def _stage_mode_disagreement(git_in_throwaway_index):
+            git_in_throwaway_index(
+                ["git", "update-index", "--add", "--cacheinfo",
+                 f"100644,{staged_mode_blob},{staged_mode_relative_path}"]
+            )
+            git_in_throwaway_index(
+                ["git", "update-index", "--chmod=+x", "--", staged_mode_relative_path]
+            )
+            on_disk_mode = stat.S_IMODE(staged_mode_file.lstat().st_mode)
+            if on_disk_mode & 0o111:
+                raise SystemExit(
+                    "Self-test setup failure: 'git update-index --chmod=+x' unexpectedly "
+                    "changed the on-disk permission bits too; this self-test's premise (a pure "
+                    "index-only mode change) no longer holds."
+                )
+            try:
+                read_governed_worktree_bytes(root, staged_mode_relative_path)
+            except GovernedPathError:
+                pass
+            else:
+                raise SystemExit(
+                    "Self-test failure: read_governed_worktree_bytes must reject a governed "
+                    "path whose git index (staged) mode is 100755 even when its actual on-disk "
+                    "permission bits are still 100644 -- a purely-staged mode change must not "
+                    "silently pass just because the on-disk executable-bit check alone did not "
+                    "catch it."
+                )
+
+        _with_throwaway_index(_stage_mode_disagreement)
+    finally:
+        staged_mode_file.unlink(missing_ok=True)
 
     def _commit_with_single_entry(
         mode: str, object_type: str, object_id: str, relative_entry_path: str

@@ -496,17 +496,36 @@ contract scripts) rather than a bare `json.load`/`json.loads`: it rejects
 duplicate object keys at any nesting depth (including a plain key and a
 distinct `\uXXXX`-escaped form that decodes to the same text), the
 non-JSON `NaN`/`Infinity`/`-Infinity` constants the stdlib accepts by
-default, non-strict UTF-8 decoding of raw bytes, and an ordinary
+default, non-strict UTF-8 decoding of raw bytes, an ordinary
 (syntactically valid) number literal whose exponent overflows finite
 `float` range — e.g. `1e9999` — which the stdlib's bare `float()`
 constructor would otherwise silently coerce to `inf` with no error at all
 (`parse_constant` only intercepts the three named `NaN`/`Infinity`/
 `-Infinity` tokens, not ordinary number syntax that merely evaluates too
-large). The overflow guard parses the raw literal via `decimal.Decimal`
+large), and an integer literal with more digits than Python 3.11+'s
+default `int()`-conversion safety limit (4300 digits), which the stdlib's
+bare `int()` constructor would otherwise raise an uncontrolled `ValueError`
+for. The overflow guard parses the raw literal via `decimal.Decimal`
 (exact, never silently overflows) to determine precisely whether it fits
 in a finite `float`, and fails closed rather than ever returning `inf` —
 `jsonschema`'s `"number"` type check does not recognize `Decimal`, so the
-value is still returned as a plain `float` once confirmed finite. Its own
+value is still returned as a plain `float` once confirmed finite. Three
+further numeric edge cases, all closed by review, are also guarded
+explicitly rather than left as latent bugs: (1) the magnitude comparison
+itself uses `Decimal.copy_abs()` (never rounds, never uses a context) — an
+exponent extreme enough (e.g. `1e1000000`) makes the bare `abs()` builtin's
+context-rounded comparison raise `decimal.Overflow` internally, which is
+caught and re-raised as a controlled `StrictJSONError` rather than
+escaping raw; (2) a genuinely nonzero literal whose magnitude underflows
+below the smallest positive `float` (e.g. `1e-1000000`, or even an
+ordinary `1e-400`) is rejected outright rather than silently converted to
+signed zero — accepting that silently could make a real, nonzero value
+wrongly appear to satisfy a JSON Schema `"minimum"`/`"exclusiveMinimum"`
+constraint; (3) any other `decimal.DecimalException` is caught as a final
+defensive fallback. A dedicated self-test in
+`scripts/validate-contract-fixtures.py` proves the underflow danger
+directly against the real `jsonschema` validator this tooling uses (not
+merely in isolation), then proves the guard prevents it. Every guard's own
 self-tests run automatically whenever any of the four scripts is invoked,
 proving the wiring end-to-end rather than only in isolation.
 
@@ -526,7 +545,22 @@ directory, or other non-regular file outright (unlike `Path.is_file()`/
 because a governed path that is actually an on-disk symlink could resolve
 to different bytes than the same pathname's content in a historical git
 tree, silently disagreeing about what the "same governed artifact" even
-is. `strict_json.read_governed_git_ref_bytes` mirrors this for a
+is. It also rejects an *executable* regular file (any on-disk permission
+execute bit set), and cross-checks the git *index* (staged) and *HEAD*
+(last-committed) tree modes for the same path (when tracked) both equal
+non-executable mode `100644` and agree with each other: `stat.S_ISREG`
+alone cannot distinguish a mode-`100644` file from a mode-`100755` one, and
+(for identical content) both hash identically — so, left unchecked, a bare
+`chmod +x` (or a purely-staged `git update-index --chmod=+x` with the
+on-disk bytes/permissions themselves untouched) on a governed file would
+pass silently today (same hash, no revision-drift signal) and only
+permanently break once that state is later committed and reused as an
+immutable base ref (since `read_governed_git_ref_bytes`, described below,
+strictly requires exact mode `100644` from history and could never read it
+again). Rejecting the mode change the moment it is introduced, at the
+worktree/head side, means the hashing tools fail loudly immediately
+instead of silently accepting a landmine. `strict_json.read_governed_git_ref_bytes`
+mirrors this for a
 historical/base ref: it first confirms via `git ls-tree` that the path
 resolves to exactly one regular, non-executable blob (mode `100644`) —
 never a symlink (`120000`), an executable file (`100755`), or a
@@ -534,13 +568,16 @@ submodule/gitlink (`160000`) — before reading its content with
 `git show`. Both readers additionally run the strict-JSON/overflow checks
 above before returning bytes to a caller, so a caller that goes on to hash
 or schema-validate those bytes never does so for content that was not
-first confirmed to be both a genuine regular file and (for `.json` paths)
-well-formed strict JSON. `scripts/update-manifest-hashes.py`,
+first confirmed to be both a genuine, non-executable regular file and (for
+`.json` paths) well-formed strict JSON. `scripts/update-manifest-hashes.py`,
 `scripts/check-schema-revision-drift.py` (both the worktree and base-ref
 hash computers), and `scripts/validate-contract-fixtures.py` all read every
 governed path exclusively through these two functions; end-to-end
 self-tests (real on-disk symlinks-to-identical-bytes, real throwaway git
-commits with symlink/executable/gitlink tree entries) prove the rejections
+commits with symlink/executable/gitlink tree entries, a real executable
+on-disk file, and a real purely-staged mode-only change made in an
+isolated throwaway git index — never the real repository index, so it can
+never race with a concurrent script's `index.lock`) prove the rejections
 actually fire against real filesystem/git state, not merely a unit-level
 string check.
 

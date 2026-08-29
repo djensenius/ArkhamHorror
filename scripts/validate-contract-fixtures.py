@@ -813,6 +813,90 @@ def run_self_test() -> None:
     )
 
 
+def run_numeric_overflow_underflow_schema_self_test() -> None:
+    """Prove, end-to-end through the actual `jsonschema` validator this
+    tool uses (not merely in isolation inside `strict_json.py`'s own
+    self-tests), that `strict_json.strict_json_loads`'s float-overflow/
+    -underflow guards are load-bearing for real JSON Schema `minimum`/
+    `maximum` semantics -- i.e. that skipping them would let a malformed
+    numeric literal silently change whether a schema constraint appears
+    satisfied, not merely fail to parse.
+
+    Concretely: a schema `{"type": "number", "minimum": 0}` intends to
+    accept only non-negative values. A JSON literal like `-1e-1000000` is
+    genuinely negative (violates that constraint), but the bare `float()`
+    constructor silently underflows it to `-0.0` -- and `-0.0 >= 0` is
+    `True` in Python (and thus in `jsonschema`'s numeric comparison, which
+    is plain Python `>=`), so a schema that used bare `float()` parsing
+    would incorrectly consider this out-of-range value to satisfy
+    `"minimum": 0`. This proves that danger directly against the real
+    validator, and then proves `strict_json_loads` rejects the literal
+    outright (as already exercised in `strict_json.run_self_tests()`) so
+    this false-positive validation can never actually occur in this
+    toolchain's real validation path.
+    """
+    minimum_zero_schema = {"type": "number", "minimum": 0}
+    validator = make_validator(minimum_zero_schema)
+
+    unsafe_bare_float = float("-1e-1000000")
+    require(
+        unsafe_bare_float == -0.0,
+        "Self-test failure: this self-test's premise requires bare float() to underflow "
+        f"'-1e-1000000' to -0.0, got {unsafe_bare_float!r}.",
+    )
+    require(
+        len(list(validator.iter_errors(unsafe_bare_float))) == 0,
+        "Self-test failure: this self-test's premise requires the real jsonschema validator "
+        "to (incorrectly) consider -0.0 to satisfy {'minimum': 0} -- if this no longer holds, "
+        "the danger this test exists to prove no longer applies and it should be revisited.",
+    )
+
+    try:
+        strict_json.strict_json_loads("-1e-1000000", source="<selftest: minimum-0 danger case>")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: strict_json_loads must reject '-1e-1000000' outright (a "
+            "genuinely negative value that bare float() would silently underflow to -0.0, "
+            "which would incorrectly satisfy a real {'minimum': 0} jsonschema constraint) "
+            "rather than ever letting it reach schema validation as -0.0."
+        )
+
+    # A genuinely tiny but still representable positive value (well above
+    # zero) must still validate as satisfying both a plain "minimum": 0 and
+    # an "exclusiveMinimum": 0 constraint, through the real validator --
+    # proving the guard above rejects only genuine underflow-to-zero, not
+    # every small magnitude.
+    tiny_positive_schema = {"type": "number", "exclusiveMinimum": 0, "maximum": 1}
+    tiny_positive_validator = make_validator(tiny_positive_schema)
+    tiny_positive_value = strict_json.strict_json_loads(
+        "5e-324", source="<selftest: smallest representable positive double>"
+    )
+    require(
+        len(list(tiny_positive_validator.iter_errors(tiny_positive_value))) == 0,
+        "Self-test failure: the smallest representable positive double (5e-324) must satisfy "
+        f"{{'exclusiveMinimum': 0, 'maximum': 1}}, got errors for {tiny_positive_value!r}.",
+    )
+
+    # A schema {"maximum": 1e300} boundary case: a value exactly at the
+    # boundary must pass, and a value whose exact Decimal magnitude exceeds
+    # float range entirely must never reach the validator at all (proven by
+    # strict_json_loads rejecting it before this point, exercised already
+    # in strict_json.run_self_tests(), not re-proven here) -- this proves
+    # the boundary-adjacent ordinary value itself still validates correctly.
+    boundary_schema = {"type": "number", "maximum": 1e300}
+    boundary_validator = make_validator(boundary_schema)
+    boundary_value = strict_json.strict_json_loads(
+        "1e300", source="<selftest: float-max-adjacent ordinary value>"
+    )
+    require(
+        len(list(boundary_validator.iter_errors(boundary_value))) == 0,
+        f"Self-test failure: 1e300 must satisfy {{'maximum': 1e300}}, got errors for "
+        f"{boundary_value!r}.",
+    )
+
+
 def run_apply_mutation_self_test() -> None:
     """Prove `apply_mutation`'s array "add" is RFC 6902 JSON-Patch insertion
     (shifts later elements right, or appends for "-"), and is distinct from
@@ -964,6 +1048,7 @@ def run_apply_mutation_self_test() -> None:
 
 run_apply_mutation_self_test()
 run_self_test()
+run_numeric_overflow_underflow_schema_self_test()
 
 print(
     f"Validated {len(documents)} contract documents, {len(fixtures)} fixtures, "
