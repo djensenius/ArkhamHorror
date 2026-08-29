@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/mode.schema.json",
+  "title": "GameMode",
+  "description": "PublicGame.mode: a These Campaign Scenario (the 'these' package). This project's `These a b` values encode via sibling keys in a single JSON object -- verified empirically against this exact dependency pin (This a -> {\"This\":a}; That b -> {\"That\":b}; These a b -> {\"This\":a,\"That\":b}) -- never a wrapping \"These\" key. Fresh standalone play (this contract slice's fixture) is always the That-only branch; This-only (between-scenario campaign screens) and the This+That running-campaign-scenario branch are real, reachable states but are not exercised by this fixture, so the Campaign payload stays broad here pending a dedicated campaign contract slice.",
+  "type": "object",
+  "oneOf": [
+    {
+      "description": "This-only: a Campaign snapshot with no active scenario (a between-scenario campaign screen).",
+      "additionalProperties": false,
+      "required": [
+        "This"
+      ],
+      "properties": {
+        "This": {
+          "$ref": "#/$defs/campaign"
+        }
+      }
+    },
+    {
+      "description": "That-only: a standalone scenario with no enclosing campaign.",
+      "additionalProperties": false,
+      "required": [
+        "That"
+      ],
+      "properties": {
+        "That": {
+          "$ref": "#/$defs/scenario"
+        }
+      }
+    },
+    {
+      "description": "This+That (production's `These` constructor): both an active Campaign and its currently running Scenario, encoded as sibling 'This'/'That' keys in the same object -- never a wrapping 'These' key.",
+      "additionalProperties": false,
+      "required": [
+        "This",
+        "That"
+      ],
+      "properties": {
+        "This": {
+          "$ref": "#/$defs/campaign"
+        },
+        "That": {
+          "$ref": "#/$defs/scenario"
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "campaign": {
+      "description": "A Campaign snapshot. Broad, out of scope for this contract slice.",
+      "type": "object"
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actStack",
+        "activeEncounterDeck",
+        "additionalReferences",
+        "agendaStack",
+        "campaignStep",
+        "cardsNextToActDeck",
+        "cardsNextToAgendaDeck",
+        "cardsUnderActDeck",
+        "cardsUnderAgendaDeck",
+        "cardsUnderScenarioReference",
+        "chaosBag",
+        "completedActStack",
+        "completedAgendaStack",
+        "counts",
+        "deckDiscards",
+        "decks",
+        "decksLayout",
+        "defeatedEnemies",
+        "difficulty",
+        "discard",
+        "encounterDeck",
+        "encounterDecks",
+        "grid",
+        "hasEncounterDeck",
+        "id",
+        "inResolution",
+        "inShuffle",
+        "isPrelude",
+        "isSideStory",
+        "keys",
+        "locationLayout",
+        "log",
+        "meta",
+        "name",
+        "noRemainingInvestigatorsHandler",
+        "options",
+        "playerDecks",
+        "reference",
+        "resignedCardCodes",
+        "resolvedStories",
+        "scope",
+        "search",
+        "setAsideCards",
+        "setAsideKeys",
+        "standaloneCampaignLog",
+        "started",
+        "storyCards",
+        "tarotCards",
+        "tarotDeck",
+        "timesPlayed",
+        "tokens",
+        "turn",
+        "useHardExpertReference",
+        "usesGrid",
+        "victoryDisplay",
+        "xpBreakdown"
+      ],
+      "properties": {
+        "actStack": {
+          "description": "The act deck, grouped by [deckIndex, [cards]]. Broad card union, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "activeEncounterDeck": {
+          "type": "string"
+        },
+        "additionalReferences": {
+          "description": "Additional scenario reference card ids in play. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "agendaStack": {
+          "description": "The agenda deck, grouped by [deckIndex, [cards]]. Broad card union, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "campaignStep": {
+          "description": "The active CampaignStep, when this scenario is running as part of a campaign. Broad, out of scope for this contract slice."
+        },
+        "cardsNextToActDeck": {
+          "type": "array"
+        },
+        "cardsNextToAgendaDeck": {
+          "type": "array"
+        },
+        "cardsUnderActDeck": {
+          "type": "array"
+        },
+        "cardsUnderAgendaDeck": {
+          "type": "array"
+        },
+        "cardsUnderScenarioReference": {
+          "type": "array"
+        },
+        "chaosBag": {
+          "$ref": "./chaos-bag.schema.json"
+        },
+        "completedActStack": {
+          "type": "array"
+        },
+        "completedAgendaStack": {
+          "type": "array"
+        },
+        "counts": {
+          "description": "Free-form scenario counters. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "deckDiscards": {
+          "type": "array"
+        },
+        "decks": {
+          "type": "array"
+        },
+        "decksLayout": {
+          "description": "The act/agenda deck row layout, e.g. [\"agenda1 act1\"].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "defeatedEnemies": {
+          "description": "Defeated-enemy bookkeeping, keyed by card code. Broad, out of scope for this contract slice.",
+          "type": "object"
+        },
+        "difficulty": {
+          "enum": [
+            "Easy",
+            "Standard",
+            "Hard",
+            "Expert"
+          ]
+        },
+        "discard": {
+          "description": "The encounter discard pile. Broad card union, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "encounterDeck": {
+          "description": "The encounter deck. Broad card union, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "encounterDecks": {
+          "type": "array"
+        },
+        "grid": {
+          "description": "The optional grid-based board layout. Broad, out of scope for this contract slice.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "gridAbove",
+            "gridBelow",
+            "gridCenter"
+          ],
+          "properties": {
+            "gridAbove": {
+              "type": "array"
+            },
+            "gridBelow": {
+              "type": "array"
+            },
+            "gridCenter": {
+              "type": "array"
+            }
+          }
+        },
+        "hasEncounterDeck": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^c[0-9a-z:._-]+$"
+        },
+        "inResolution": {
+          "type": "boolean"
+        },
+        "inShuffle": {
+          "type": "boolean"
+        },
+        "isPrelude": {
+          "type": "boolean"
+        },
+        "isSideStory": {
+          "type": "boolean"
+        },
+        "keys": {
+          "type": "array"
+        },
+        "locationLayout": {
+          "description": "The scenario's fixed grid-topology reference art, one string per row (e.g. \"   .   attic   .     \").",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "log": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "meta": {
+          "description": "Free-form scenario metadata."
+        },
+        "name": {
+          "$ref": "./name.schema.json"
+        },
+        "noRemainingInvestigatorsHandler": {
+          "description": "The Target to notify when no investigators remain. Broad tagged union beyond its tag, out of scope for this contract slice.",
+          "type": "object",
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "type": "string"
+            }
+          }
+        },
+        "options": {
+          "description": "Scenario-specific options selected at creation. Broad, out of scope for this contract slice."
+        },
+        "playerDecks": {
+          "description": "Per-player deck bookkeeping, keyed by player id. Broad, out of scope for this contract slice.",
+          "type": "object"
+        },
+        "reference": {
+          "type": "string"
+        },
+        "resignedCardCodes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resolvedStories": {
+          "type": "array"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "search": {
+          "description": "In-progress card-search state, if any. Broad, out of scope for this contract slice."
+        },
+        "setAsideCards": {
+          "description": "Cards set aside during setup, not yet placed or drawn. Broad card union, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "setAsideKeys": {
+          "type": "array"
+        },
+        "standaloneCampaignLog": {
+          "description": "The (empty, for a fresh standalone scenario) campaign log this scenario reads and writes.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "crossedOut",
+            "options",
+            "orderedKeys",
+            "partners",
+            "recorded",
+            "recordedCounts",
+            "recordedSets"
+          ],
+          "properties": {
+            "crossedOut": {
+              "type": "array"
+            },
+            "options": {
+              "type": "array"
+            },
+            "orderedKeys": {
+              "type": "array"
+            },
+            "partners": {
+              "type": "object"
+            },
+            "recorded": {
+              "type": "array"
+            },
+            "recordedCounts": {
+              "type": "array"
+            },
+            "recordedSets": {
+              "type": "array"
+            }
+          }
+        },
+        "started": {
+          "type": "boolean"
+        },
+        "storyCards": {
+          "type": "object"
+        },
+        "tarotCards": {
+          "type": "array"
+        },
+        "tarotDeck": {
+          "type": "array"
+        },
+        "timesPlayed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens": {
+          "description": "Tokens placed directly on the scenario reference card. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "turn": {
+          "description": "ScenarioAttrs.scenarioTurn (Arkham/Scenario/Types.hs). Initializes at 0 before the scenario's first turn begins.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "useHardExpertReference": {
+          "type": "boolean"
+        },
+        "usesGrid": {
+          "type": "boolean"
+        },
+        "victoryDisplay": {
+          "type": "array"
+        },
+        "xpBreakdown": {
+          "description": "Experience-point breakdown shown at scenario resolution. Broad, out of scope for this contract slice."
+        }
+      }
+    }
+  }
+}

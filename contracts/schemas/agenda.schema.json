@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/agenda.schema.json",
+  "title": "Agenda",
+  "description": "An agenda entity as published in PublicGame.agendas (Arkham.Agenda.Types.AgendaAttrs). Doom-remover-matcher and card-union payloads remain intentionally broad.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "cardId",
+    "sequence",
+    "deckId",
+    "doom",
+    "doomThreshold",
+    "flipped",
+    "cardsUnderneath",
+    "meta",
+    "modifiers",
+    "removeDoomMatchers",
+    "tokens",
+    "treacheries",
+    "usedWheelOfFortuneX"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^c[0-9a-z:._-]+$"
+    },
+    "cardId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sequence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agendaSequenceSide",
+        "agendaSequenceStep"
+      ],
+      "properties": {
+        "agendaSequenceSide": {
+          "description": "Arkham.Agenda.Sequence.AgendaSide (Agenda/Sequence.hs), nullary-only so aeson's allNullaryToStringTag applies and it encodes as a bare string tag.",
+          "type": "string",
+          "enum": ["A", "B", "C", "D"]
+        },
+        "agendaSequenceStep": {
+          "type": "integer"
+        }
+      }
+    },
+    "deckId": {
+      "type": "integer"
+    },
+    "doom": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "doomThreshold": {
+      "oneOf": [
+        {
+          "$ref": "./game-value.schema.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "flipped": {
+      "type": "boolean"
+    },
+    "cardsUnderneath": {
+      "description": "Cards physically stacked underneath this agenda. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "meta": {
+      "description": "Free-form per-agenda scenario metadata."
+    },
+    "modifiers": {
+      "description": "Active modifiers targeting this agenda. Broad and additive, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "removeDoomMatchers": {
+      "description": "The act/agenda matchers governing where a doom removal effect applies. Broad, out of scope for this contract slice.",
+      "type": "object"
+    },
+    "tokens": {
+      "description": "A Token-keyed multiset, encoded as an array of [tokenName, count] pairs.",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": false,
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer",
+            "minimum": 0
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "treacheries": {
+      "description": "TreacheryId (UUID) values attached to this agenda.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "usedWheelOfFortuneX": {
+      "type": "boolean"
+    }
+  }
+}

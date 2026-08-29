@@ -92,7 +92,7 @@
       "$ref": "#/$defs/gameSettings"
     },
     "mode": {
-      "type": "object"
+      "$ref": "./mode.schema.json"
     },
     "modifiers": {
       "type": "array"
@@ -102,46 +102,82 @@
       "minimum": 0
     },
     "locations": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/uuidMapKey"
+      },
+      "additionalProperties": {
+        "$ref": "./location.schema.json"
+      }
     },
     "investigators": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
+      "additionalProperties": {
+        "$ref": "./investigator.schema.json"
+      }
     },
     "otherInvestigators": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
+      "additionalProperties": {
+        "$ref": "./investigator.schema.json"
+      }
     },
     "killedInvestigators": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
+      "additionalProperties": {
+        "$ref": "./investigator.schema.json"
+      }
     },
     "enemies": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "assets": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "acts": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
+      "additionalProperties": {
+        "$ref": "./act.schema.json"
+      }
     },
     "agendas": {
-      "$ref": "#/$defs/entityMap"
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
+      "additionalProperties": {
+        "$ref": "./agenda.schema.json"
+      }
     },
     "treacheries": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "events": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "concealed": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "skills": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "stories": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "scarletKeys": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "playerCount": {
       "type": "integer"
@@ -179,10 +215,7 @@
       ]
     },
     "phaseStep": {
-      "type": [
-        "object",
-        "null"
-      ]
+      "$ref": "./phase-step.schema.json"
     },
     "inAction": {
       "type": "boolean"
@@ -239,10 +272,10 @@
       ]
     },
     "question": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "cards": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "totalDoom": {
       "type": "integer"
@@ -267,13 +300,13 @@
       "$ref": "#/$defs/nullableStep"
     },
     "roundHistory": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "phaseHistory": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "turnHistory": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "enemyAttackTargets": {
       "type": "array",
@@ -296,11 +329,35 @@
     }
   },
   "$defs": {
-    "entityMap": {
+    "uuidEntityMap": {
+      "description": "Wire shape for maps keyed by a UUID-backed newtype whose ToJSONKey is `deriving newtype` from the wrapped UUID (Arkham/Id.hs): EnemyId, AssetId, TreacheryId, EventId, SkillId, ConcealedCardId (enemies/assets/treacheries/events/skills/concealed), PlayerId (question), and CardId (cards, Arkham/Card/Id.hs). Entity value shapes remain an intentionally broad object placeholder -- out of scope for this map-key slice.",
       "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/uuidMapKey"
+      },
       "additionalProperties": {
         "type": "object"
       }
+    },
+    "cardCodeEntityMap": {
+      "description": "Wire shape for maps keyed by a CardCode-backed newtype whose ToJSONKey is `deriving newtype` from CardCode (Arkham/Id.hs): StoryId (stories), ScarletKeyId (scarletKeys, Arkham/Campaigns/TheScarletKeys/Key/Id.hs), and InvestigatorId (roundHistory/phaseHistory/turnHistory, Map InvestigatorId History in Arkham/Game/Base.hs). Entity value shapes remain an intentionally broad object placeholder -- out of scope for this map-key slice.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "uuidMapKey": {
+      "description": "Wire key for maps keyed by a UUID-backed newtype (e.g. LocationId, Arkham/Id.hs), whose ToJSONKey is the underlying UUID's textual form.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "cardCodeMapKey": {
+      "description": "Wire key for maps keyed by a CardCode-backed newtype (e.g. InvestigatorId, ActId, AgendaId, Arkham/Id.hs). CardCode itself (Arkham/Card/CardCode.hs) is `newtype CardCode = CardCode Text` with no character-class constraint at the type level; its ToJSONKey instance (`toJSONKeyText (T.cons 'c' . unCardCode)`) only ever prepends a literal 'c'. Constrained here to the same broad `^c[0-9a-z:._-]+$` grammar used by the `cardCode`/`id` fields elsewhere in these schemas (every one of the 815 real card codes in data/cards.json satisfies it), rather than the official 5-digit-plus-suffix form alone, since homebrew/unofficial codes are ordinary Text and are not required to follow that narrower shape.",
+      "type": "string",
+      "pattern": "^c[0-9a-z:._-]+$"
     },
     "objectArray": {
       "type": "array",

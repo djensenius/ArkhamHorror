@@ -1,0 +1,486 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/investigator.schema.json",
+  "title": "Investigator",
+  "description": "An investigator entity as published in PublicGame.investigators/otherInvestigators/killedInvestigators (Arkham.Investigator.Types.InvestigatorAttrs, merged with per-connection HasGame data such as connectedLocations). Deck/hand/discard card-union payloads, ability/action bookkeeping, campaign log, and slot layout remain intentionally broad in this contract slice; only the top-level field set, ids, and scalar stats are asserted exactly.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "actionsPerformed",
+    "actionsTaken",
+    "additionalActions",
+    "agility",
+    "art",
+    "assets",
+    "assignedHealthDamage",
+    "assignedHealthHeal",
+    "assignedSanityDamage",
+    "assignedSanityHeal",
+    "beganRoundAt",
+    "bondedCards",
+    "cardCode",
+    "cardsUnderneath",
+    "class",
+    "combat",
+    "connectedLocations",
+    "deck",
+    "deckBuildingAdjustments",
+    "deckSize",
+    "deckUrl",
+    "decks",
+    "defeated",
+    "discard",
+    "discarding",
+    "discover",
+    "drawing",
+    "drawnCards",
+    "drivenInsane",
+    "eliminated",
+    "endedTurn",
+    "engagedEnemies",
+    "events",
+    "excludeFromMulligan",
+    "form",
+    "formMeta",
+    "hand",
+    "handSize",
+    "health",
+    "horrorHealed",
+    "id",
+    "intellect",
+    "keys",
+    "killed",
+    "log",
+    "mentalTrauma",
+    "meta",
+    "modifiers",
+    "movement",
+    "mulligansTaken",
+    "mutated",
+    "name",
+    "physicalTrauma",
+    "placement",
+    "playerId",
+    "previousLocation",
+    "remainingActions",
+    "resigned",
+    "sanity",
+    "scarletKeys",
+    "sealedChaosTokens",
+    "seals",
+    "search",
+    "settings",
+    "sideDeck",
+    "skills",
+    "skippedWindow",
+    "slots",
+    "spentXp",
+    "startsWith",
+    "startsWithInHand",
+    "supplies",
+    "taboo",
+    "tokens",
+    "traits",
+    "treacheries",
+    "unhealedHorrorThisRound",
+    "usedAbilities",
+    "usedAdditionalActions",
+    "willpower",
+    "xp"
+  ],
+  "properties": {
+    "actionsPerformed": {
+      "description": "Actions performed this round, keyed by action type. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "actionsTaken": {
+      "description": "Actions taken this turn. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "additionalActions": {
+      "description": "Additional-action grants currently available. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "agility": {
+      "type": "integer"
+    },
+    "art": {
+      "type": "string",
+      "description": "The card art/back code, usually equal to cardCode."
+    },
+    "assets": {
+      "description": "AssetId (UUID) values owned/controlled by this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "assignedHealthDamage": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "assignedHealthHeal": {
+      "description": "Pending health-heal assignments. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "assignedSanityDamage": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "assignedSanityHeal": {
+      "description": "Pending sanity-heal assignments. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "beganRoundAt": {
+      "description": "Maybe LocationId (UUID) recorded at the start of this investigator's turn.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "bondedCards": {
+      "description": "Bonded cards attached to this investigator. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "cardCode": {
+      "type": "string",
+      "pattern": "^c[0-9a-z:._-]+$"
+    },
+    "cardsUnderneath": {
+      "description": "Cards physically stacked underneath this investigator. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "class": {
+      "enum": [
+        "Guardian",
+        "Seeker",
+        "Survivor",
+        "Rogue",
+        "Mystic",
+        "Neutral",
+        "Mythos"
+      ]
+    },
+    "combat": {
+      "type": "integer"
+    },
+    "connectedLocations": {
+      "description": "Computed at snapshot time: LocationId (UUID) values currently reachable from this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "deck": {
+      "description": "Remaining deck cards. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "deckBuildingAdjustments": {
+      "description": "Deckbuilding option adjustments. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "deckSize": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "deckUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "decks": {
+      "description": "Named side decks (e.g. bonded/spectral decks). Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "defeated": {
+      "type": "boolean"
+    },
+    "discard": {
+      "description": "Discarded cards. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "discarding": {
+      "description": "In-progress discard state, if any. Broad, out of scope for this contract slice.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "discover": {
+      "description": "In-progress clue-discovery state, if any. Broad, out of scope for this contract slice.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "drawing": {
+      "description": "In-progress card-draw state, if any. Broad, out of scope for this contract slice.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "drawnCards": {
+      "description": "Cards drawn so far this draw step. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "drivenInsane": {
+      "type": "boolean"
+    },
+    "eliminated": {
+      "type": "boolean"
+    },
+    "endedTurn": {
+      "type": "boolean"
+    },
+    "engagedEnemies": {
+      "description": "EnemyId (UUID) values currently engaged with this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "events": {
+      "description": "EventId (UUID) values owned/controlled by this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "excludeFromMulligan": {
+      "description": "Cards excluded from the opening mulligan. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "form": {
+      "description": "The investigator's current alternate-form state, if any (e.g. transformation cards). Broad tagged union beyond its tag, out of scope for this contract slice.",
+      "type": "object",
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string"
+        }
+      }
+    },
+    "formMeta": {
+      "description": "Free-form alternate-form metadata."
+    },
+    "hand": {
+      "description": "Cards currently in hand. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "handSize": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "health": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "horrorHealed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^c[0-9a-z:._-]+$"
+    },
+    "intellect": {
+      "type": "integer"
+    },
+    "keys": {
+      "description": "Arkham keys held by this investigator. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "killed": {
+      "type": "boolean"
+    },
+    "log": {
+      "description": "Per-investigator recorded campaign log entries. Broad, out of scope for this contract slice.",
+      "type": "object"
+    },
+    "mentalTrauma": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "meta": {
+      "description": "Free-form per-investigator scenario metadata."
+    },
+    "modifiers": {
+      "description": "Active modifiers targeting this investigator. Broad and additive, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "movement": {
+      "description": "InvestigatorAttrs.investigatorMovement (Maybe Movement): the in-progress move this investigator is currently mid-resolving, if any.",
+      "oneOf": [
+        { "$ref": "./movement.schema.json" },
+        { "type": "null" }
+      ]
+    },
+    "mulligansTaken": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mutated": {
+      "description": "An overriding mutated card code, if any."
+    },
+    "name": {
+      "$ref": "./name.schema.json"
+    },
+    "physicalTrauma": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "placement": {
+      "$ref": "./placement.schema.json"
+    },
+    "playerId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "previousLocation": {
+      "description": "Maybe LocationId (UUID) this investigator moved from most recently.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "remainingActions": {
+      "type": "integer"
+    },
+    "resigned": {
+      "type": "boolean"
+    },
+    "sanity": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "scarletKeys": {
+      "description": "ScarletKeyId (card code) values held by this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^c[0-9a-z:._-]+$"
+      }
+    },
+    "sealedChaosTokens": {
+      "type": "array",
+      "items": {
+        "$ref": "./chaos-token.schema.json"
+      }
+    },
+    "seals": {
+      "description": "Scarlet Keys campaign seals placed on this investigator. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "search": {
+      "description": "In-progress search state, if any. Broad, out of scope for this contract slice.",
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "settings": {
+      "description": "Per-investigator UI/rules settings (global and per-card overrides). Broad, out of scope for this contract slice.",
+      "type": "object"
+    },
+    "sideDeck": {
+      "description": "A named side deck reference, if any. Broad, out of scope for this contract slice."
+    },
+    "skills": {
+      "description": "SkillId (UUID) values granted to this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "skippedWindow": {
+      "type": "boolean"
+    },
+    "slots": {
+      "description": "The investigator's asset slot layout and current occupants, encoded as an array of [slotType, slots] pairs. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "spentXp": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "startsWith": {
+      "description": "Cards this investigator's deck must start with. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "startsWithInHand": {
+      "description": "Cards that start in this investigator's opening hand. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "supplies": {
+      "description": "Campaign supply cards. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "taboo": {
+      "description": "The applied taboo list id, if any."
+    },
+    "tokens": {
+      "description": "A Token-keyed multiset (e.g. resources, clues), encoded as an array of [tokenName, count] pairs.",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": false,
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer",
+            "minimum": 0
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "traits": {
+      "description": "An open, additive string set of card traits (e.g. Agency, Detective). Not a closed enum.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "treacheries": {
+      "description": "TreacheryId (UUID) values attached to this investigator.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "unhealedHorrorThisRound": {
+      "description": "Can go negative: healing (Runner/Damage.hs's `min 0 . subtract amount`) clamps the *upper* bound at 0 but not the lower one, so healing more horror in a round than was actually assigned genuinely produces a negative wire value. This models current production behavior, not an intentionally-designed range.",
+      "type": "integer"
+    },
+    "usedAbilities": {
+      "description": "Abilities used and their remaining-use bookkeeping. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "usedAdditionalActions": {
+      "description": "Additional-action grants already consumed. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "willpower": {
+      "type": "integer"
+    },
+    "xp": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

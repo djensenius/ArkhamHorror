@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.12",
+  "schemaRevision": "0.1.20",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -17,8 +17,23 @@
     "contracts/schemas/game-state.schema.json",
     "contracts/schemas/game-step.schema.json",
     "contracts/schemas/get-game.schema.json",
+    "contracts/schemas/act.schema.json",
+    "contracts/schemas/agenda.schema.json",
+    "contracts/schemas/chaos-bag.schema.json",
+    "contracts/schemas/chaos-token.schema.json",
+    "contracts/schemas/cost.schema.json",
+    "contracts/schemas/game-value.schema.json",
+    "contracts/schemas/investigator.schema.json",
+    "contracts/schemas/location.schema.json",
+    "contracts/schemas/mode.schema.json",
+    "contracts/schemas/movement.schema.json",
+    "contracts/schemas/name.schema.json",
+    "contracts/schemas/phase-step.schema.json",
+    "contracts/schemas/placement.schema.json",
     "contracts/schemas/public-game.schema.json",
-    "contracts/schemas/server-message.schema.json"
+    "contracts/schemas/server-message.schema.json",
+    "contracts/schemas/uuid-entity-map.schema.json",
+    "contracts/schemas/card-code-entity-map.schema.json"
   ],
   "fixtures": [
     {
@@ -60,6 +75,42 @@
     {
       "path": "contracts/fixtures/get-game.json",
       "schema": "contracts/schemas/get-game.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/mode-campaign-only.json",
+      "schema": "contracts/schemas/mode.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/mode-campaign-scenario.json",
+      "schema": "contracts/schemas/mode.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/mode-turn-zero.json",
+      "schema": "contracts/schemas/mode.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/location-enemy-view.json",
+      "schema": "contracts/schemas/location.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/movement.json",
+      "schema": "contracts/schemas/movement.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/act-no-advance-cost.json",
+      "schema": "contracts/schemas/act.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/investigator-unhealed-horror-negative.json",
+      "schema": "contracts/schemas/investigator.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/uuid-entity-map.json",
+      "schema": "contracts/schemas/uuid-entity-map.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/card-code-entity-map.json",
+      "schema": "contracts/schemas/card-code-entity-map.schema.json"
     },
     {
       "path": "contracts/fixtures/game-error.json",
@@ -169,5 +220,376 @@
   "compatibility": {
     "webClient": "unchanged",
     "nativeClientMinimumRevision": "0.1.0"
-  }
+  },
+  "negativeFixtures": [
+    {
+      "description": "Location entity missing required shroud field (single 'remove' mutation of the real The Gathering starting location, scoped to the ordinaryLocation oneOf branch).",
+      "schema": "contracts/schemas/location.schema.json",
+      "schemaBranch": "ordinaryLocation",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game/locations/d5a66e84-c729-4066-8475-d8a155609025",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/shroud"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'shroud' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Location token multiset count mutated negative, rejected by the tokens[*] count minimum>=0 constraint (single 'replace' mutation of the real The Gathering starting location's Clue token count, scoped to the ordinaryLocation oneOf branch).",
+      "schema": "contracts/schemas/location.schema.json",
+      "schemaBranch": "ordinaryLocation",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game/locations/d5a66e84-c729-4066-8475-d8a155609025",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tokens/0/1",
+        "value": -1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tokens",
+            "0",
+            "1"
+          ],
+          "keyword": "minimum",
+          "messageContains": "is less than the minimum of 0"
+        }
+      ]
+    },
+    {
+      "description": "PhaseStep with an unrecognized tag value not in the closed PhaseStep union (single 'replace' mutation of the real InvestigationPhaseStep phaseStep, scoped to that oneOf branch by index).",
+      "schema": "contracts/schemas/phase-step.schema.json",
+      "schemaBranch": 2,
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game/phaseStep",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "NotARealPhaseStep"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "was expected"
+        }
+      ]
+    },
+    {
+      "description": "ChaosToken with a chaosTokenId that is not a well-formed UUID (single 'replace' mutation of the real first chaos token).",
+      "schema": "contracts/schemas/chaos-token.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game/mode/That/chaosBag/chaosTokens/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/chaosTokenId",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "chaosTokenId"
+          ],
+          "keyword": "format",
+          "messageContains": "is not a 'uuid'"
+        }
+      ]
+    },
+    {
+      "description": "Name with a non-null, non-string subtitle (violates the nullable-string constraint; single 'replace' mutation of the real scenario name).",
+      "schema": "contracts/schemas/name.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game/mode/That/name",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/subtitle",
+        "value": 123
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "subtitle"
+          ],
+          "keyword": "type",
+          "messageContains": "is not of type 'string', 'null'"
+        }
+      ]
+    },
+    {
+      "description": "ChaosBag with chaosTokens replaced by an object instead of an array (structural drift; single 'replace' mutation of the real chaosBag).",
+      "schema": "contracts/schemas/chaos-bag.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game/mode/That/chaosBag",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/chaosTokens",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "chaosTokens"
+          ],
+          "keyword": "type",
+          "messageContains": "is not of type"
+        }
+      ]
+    },
+    {
+      "description": "Movement replaced outright by a bare location-ID string instead of the required object (the pre-fix wrong-type shape); single root 'replace' mutation of the real in-progress Movement fixture.",
+      "schema": "contracts/schemas/movement.schema.json",
+      "basePositiveFixture": "contracts/fixtures/movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "d5a66e84-c729-4066-8475-d8a155609025"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Scenario turn mutated to a negative value, rejected by the turn>=0 constraint (single 'replace' mutation of the real scenario mode, scoped to the scenario oneOf/$defs branch).",
+      "schema": "contracts/schemas/mode.schema.json",
+      "schemaBranch": "scenario",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game/mode/That",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/turn",
+        "value": -1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "turn"
+          ],
+          "keyword": "minimum",
+          "messageContains": "is less than the minimum"
+        }
+      ]
+    },
+    {
+      "description": "A payload carrying the nonexistent 'These' wrapper key (the shape this contract's mode.schema.json incorrectly modeled before it was corrected to match the real sibling-keys 'These a b' -> {\"This\":a,\"That\":b} encoding) is rejected by every disjoint oneOf branch: not This-only (extra 'These'), not That-only (extra 'These'/'This', missing 'That'), and not This+That-both (extra 'These', missing 'That'). Single 'add' mutation of the real This-only mode fixture, validated unscoped against the full oneOf root so every branch's rejection is exactly accounted for.",
+      "schema": "contracts/schemas/mode.schema.json",
+      "basePositiveFixture": "contracts/fixtures/mode-campaign-only.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/These",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "oneOf",
+          "messageContains": "is not valid under any of the given schemas"
+        },
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'These' was unexpected"
+        },
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'These', 'This' were unexpected"
+        },
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'That' is a required property"
+        },
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'These' was unexpected"
+        },
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'That' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "unhealedHorrorThisRound replaced by a string instead of the required integer; single 'replace' mutation of the real negative-value investigator fixture.",
+      "schema": "contracts/schemas/investigator.schema.json",
+      "basePositiveFixture": "contracts/fixtures/investigator-unhealed-horror-negative.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/unhealedHorrorThisRound",
+        "value": "-3"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "unhealedHorrorThisRound"
+          ],
+          "keyword": "type",
+          "messageContains": "is not of type 'integer'"
+        }
+      ]
+    },
+    {
+      "description": "UUID-keyed entity map with an additional invalid (non-UUID) key alongside the real, otherwise-untouched Swarm of Rats entry; single 'add' mutation of the real uuid-entity-map.json fixture. The added entry's own 'id' field stays a valid real UUID -- only its map key (property name) is invalid -- isolating the propertyNames constraint from any value-level check.",
+      "schema": "contracts/schemas/uuid-entity-map.schema.json",
+      "basePositiveFixture": "contracts/fixtures/uuid-entity-map.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/not-a-uuid",
+        "value": {
+          "id": "00000000-0000-0000-0000-000000000384"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        }
+      ]
+    },
+    {
+      "description": "CardCode-keyed entity map with an additional invalid (missing the mandatory leading 'c') key alongside the real, otherwise-untouched The Stakeout entry; single 'add' mutation of the real card-code-entity-map.json fixture. The added entry's own 'id' field stays a valid real card code -- only its map key (property name) is invalid.",
+      "schema": "contracts/schemas/card-code-entity-map.schema.json",
+      "basePositiveFixture": "contracts/fixtures/card-code-entity-map.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/01108",
+        "value": {
+          "id": "c88023"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "pattern",
+          "messageContains": "does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    }
+  ],
+  "artifactHashes": {
+    "contracts/asyncapi.yaml": "6479b3faabb2ba2cb192c333b17b3e2da850f409868a64315842d63ddc308f0e",
+    "contracts/fixtures/account.json": "817fa6242dce030a9345ddc632ac223a43d264a6e3d75ddb6422da7f2c868099",
+    "contracts/fixtures/achievements.json": "9323f78e201ced419f3ed843ef3bc3d375db24a2f376a25f7cf3e3a085483b83",
+    "contracts/fixtures/act-no-advance-cost.json": "ef6aa891184deafe2166b58b0df9c0818237a50efa93e3aa69db4aea0dc30a01",
+    "contracts/fixtures/answer-amounts.json": "9e2344dd6b03c2ca40b0ede6f223dc50cac0c20f9af7a5b65d9ddd770e4fd555",
+    "contracts/fixtures/answer-campaign-settings.json": "c64dd66679039db223b3d3879b6ef609cc89d1071bfa2438be34ada2f7e72ade",
+    "contracts/fixtures/answer-campaign-specific.json": "44e5d7bb1181a886c8331d9abd699b602aa0897c890390f64fc2510f201c61dd",
+    "contracts/fixtures/answer-campaign-step.json": "448ae784aa4b518ddfd5a8c71b997abdca327e55bd8a3d2ddf7ee862059eca76",
+    "contracts/fixtures/answer-deck-list.json": "132616f55e43bdf1e464178d71dd707b86b8917c213d1f56fef07eafd235cb89",
+    "contracts/fixtures/answer-deck.json": "c60e5744f958d74b8deac3fcae0e5dee02317fda930c649aae27e4dcf67a9883",
+    "contracts/fixtures/answer-exchange-amounts.json": "358e6dbd9a75ddf0080df46954cc58dd0df538205375cab61bd882396bf84f9e",
+    "contracts/fixtures/answer-payment-amounts.json": "d55055b00a8d4d7c93ca121af1d870367dd110ae95e271b47770b14bcf12bd1e",
+    "contracts/fixtures/answer-pick-destiny.json": "711e45c443be781868e7f30fde1d45c8b659bae6a53d9537cc021a5c2eccc8a0",
+    "contracts/fixtures/answer-question.json": "3342d5ad44ffd41cc45a286e0fa8470c5c4c703cecc13520b0d948414a9188c2",
+    "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
+    "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
+    "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
+    "contracts/fixtures/capabilities.json": "0e34f06a60fe095d0927b0be7a2825b135d499719ae273b46fa890276a152d19",
+    "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
+    "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
+    "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
+    "contracts/fixtures/event-changed.json": "e5c16ea398ec86f06bccf619cce633eabe0df4051f775b27663e1044b941f75e",
+    "contracts/fixtures/game-achievement.json": "8e586865fef4bbb7cc4b17c4e9671bb2a1c73038fd4f76bd34bb1e76ceb434ab",
+    "contracts/fixtures/game-audio.json": "f639e38d26c35ff6e805b2749e8990cb07c010af24065780d18394986024a7fe",
+    "contracts/fixtures/game-card-only.json": "9e073974c4e0d499d8064fabedde3249dbe5fc8f01a95b3bbeddb0c36ac0e8ec",
+    "contracts/fixtures/game-card.json": "69d958e102dacffc82c96142b11fec905dc6b55613907dff0a09cbb7adebf052",
+    "contracts/fixtures/game-error.json": "9d6087b5b8f6cebef216e4b4f20336c620ffaf36b0256e85617abf8dfab58a07",
+    "contracts/fixtures/game-lifecycle.json": "436fa9aea0e0e256b68b7f6038c15692e66af2677293b41bca25c691ab601204",
+    "contracts/fixtures/game-list.json": "5e89ffcf2cba73da7df12cd2f0a6fe6ccd951a2f1d7b5b404454abf2055785ff",
+    "contracts/fixtures/game-message.json": "fb7b8b7bff27dbf3827fab6572cf0e8bbabcad84a5f6c6714c341865ae1050f9",
+    "contracts/fixtures/game-playability-info.json": "1e19504ec115bbf2daa54709c776ef93872447b6d7a34ad649c5bc9ba6455336",
+    "contracts/fixtures/game-show-discard.json": "4211a110c2f3d3e7f6457572b43672a9f047b9bed1ad3513b34c7eff1058d6a8",
+    "contracts/fixtures/game-show-under.json": "22a4718d24fcbbe40d3cb3d323a67ffbb888cbbd6e466e91f110a64b762af9f2",
+    "contracts/fixtures/game-step.json": "441768cb79f54c925cd912b35d9650653be57232997ab4f593294fc622f01013",
+    "contracts/fixtures/game-tarot.json": "a7c1c85cf8a607b395070fdd73f18a50b7c73e8a28a4ba4b7c444ec2f982bb6b",
+    "contracts/fixtures/game-ui.json": "f96c401c965471510a003fdc497391369bd3930389967d1fa8a94ab43ea9f95a",
+    "contracts/fixtures/game-update.json": "ceb21a35691320516d3fe68b50d8115f092c4f32dd8f98d6240baeeeb73d07df",
+    "contracts/fixtures/get-game.json": "f406071dca455c1d87a2192729dda30c08d037bedfc78b3bb3ffc998f7304b93",
+    "contracts/fixtures/investigator-unhealed-horror-negative.json": "f251bd1a525fa0eb9508db084fbe7fb86928ec1ecb4472cf0c79cbaf9478762f",
+    "contracts/fixtures/location-enemy-view.json": "fd2cc29b6ea081cfa340b02c93194433542ee27ea50c9e841c94d6ed37f419b4",
+    "contracts/fixtures/mode-campaign-only.json": "b68d6e0422852684fd4ebdf2d6097bc6b65edda012cc91ccf38b55ca32b9213f",
+    "contracts/fixtures/mode-campaign-scenario.json": "36a77bcf41059ca4a5d2c0e5bbd4d9ff3b429da2f6ddbc35d7fb1e1491e88c89",
+    "contracts/fixtures/mode-turn-zero.json": "acc0cb8613b61d0bbb65ecdaefbae433276996fe8412b76046c4c90b3c933b71",
+    "contracts/fixtures/movement.json": "c284c0b4244024a072ee7a486c5907db4981c6ff4fed1d55cbe33046fb0b63dc",
+    "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
+    "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
+    "contracts/manifest.json": "1023a837dbb64f14a7f1c80e0509144306412328680e4080cffdf2fbb4124b8b",
+    "contracts/openapi.yaml": "825a681fa2ba583e7284fe72e0ad6e79f9a4e6b6546e72c300d57da9db5299d8",
+    "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
+    "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
+    "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
+    "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
+    "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
+    "contracts/schemas/capabilities.schema.json": "7086eff0abe304b7084bc37c455dfc519de11015fd13fbebbd8e40130843104e",
+    "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
+    "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
+    "contracts/schemas/chaos-bag.schema.json": "45c9a42563b5e13d054f5689a8acf578df81f45746445020628335794fce4339",
+    "contracts/schemas/chaos-token.schema.json": "f68258413e13898c655769f7bec6047898d9e02723c794782846d0a0fef7f137",
+    "contracts/schemas/client-answer.schema.json": "a83e998e32499cf45adfc10b29421d029cf04cce0d38d22564c12d3ccf701e81",
+    "contracts/schemas/cost.schema.json": "8dd749848f54b39edbcd432968d4f22c4f10e8ee7c94d16be0737e5c5c2859ef",
+    "contracts/schemas/decks.schema.json": "6e1e4bd7d5245c63d38a1f78b0c72541d20d36aa571cd3b5b060be6f8d9354ce",
+    "contracts/schemas/game-lifecycle.schema.json": "894ce38d078fe0857e824033578972bacab4744595ca1741250c2813f2fd682d",
+    "contracts/schemas/game-list.schema.json": "f34c3b12198bf2d3d7744d8793cb476b90b30bfec60a3ba5d415221b341e75d2",
+    "contracts/schemas/game-state.schema.json": "b193923d9d272df08adad5d2a3845b04171756edb1edb304f21fc774996a3069",
+    "contracts/schemas/game-step.schema.json": "a60158ed83eabd385d14b33f62d2c3ddd91e7491b22f3d64167284d466b99da3",
+    "contracts/schemas/game-value.schema.json": "dd9ffeca0f8dfa44b93cae97416736608eaa3a8d93b959e7ca06d9eee14ac7aa",
+    "contracts/schemas/get-game.schema.json": "60c58782db59095d18c6e6844dbe479b5432e08873a8de7c5dc2c29c895538ef",
+    "contracts/schemas/investigator.schema.json": "e71df9c4777bd2802eb12900784113d18f2e2a7429fc73411b97ae271c4b281c",
+    "contracts/schemas/location.schema.json": "15d299e7b37a72cd64b9a77f363c184c1e7d3cb9411cf21fbbea18e91bda2f1d",
+    "contracts/schemas/mode.schema.json": "d20070b73bed7a30803699a9cda0e3c094385e4a8ed28561795719b27c972417",
+    "contracts/schemas/movement.schema.json": "d9fff125d71f701d3b665c03fb0feb7454fd069083e109fcb252d54564120923",
+    "contracts/schemas/name.schema.json": "0a04d31f01c47671c7529f4afacaa42d69dc9f9de222a10eac3a5ecc67ae71d6",
+    "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
+    "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
+    "contracts/schemas/public-game.schema.json": "5904a95f1f44504fdf988c61b60a9bf5d6c598c0f876d2c2e734690926c1a7ef",
+    "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
+    "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6"
+  },
+  "enumBoundaryChecks": [
+    {
+      "description": "Act sequence side is the closed union Arkham.Act.Sequence.ActSide (A..H, all-nullary). Boundary members A and H must validate; an invented member Z must not.",
+      "schema": "contracts/schemas/act.schema.json",
+      "schemaPointer": "/properties/sequence/prefixItems/1",
+      "validValues": [
+        "A",
+        "H"
+      ],
+      "invalidValues": [
+        "Z"
+      ]
+    },
+    {
+      "description": "Agenda sequence side is the closed union Arkham.Agenda.Sequence.AgendaSide (A..D, all-nullary). Boundary members A and D must validate; an invented member Z must not.",
+      "schema": "contracts/schemas/agenda.schema.json",
+      "schemaPointer": "/properties/sequence/properties/agendaSequenceSide",
+      "validValues": [
+        "A",
+        "D"
+      ],
+      "invalidValues": [
+        "Z"
+      ]
+    }
+  ]
 }

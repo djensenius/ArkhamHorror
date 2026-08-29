@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/act.schema.json",
+  "title": "Act",
+  "description": "An act entity as published in PublicGame.acts (Arkham.Act.Types.ActAttrs). Advancement-cost, key, and card-union payloads remain intentionally broad.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "cardId",
+    "sequence",
+    "deckId",
+    "flipped",
+    "advanceCost",
+    "breaches",
+    "cardsUnderneath",
+    "keys",
+    "meta",
+    "modifiers",
+    "tokens",
+    "treacheries",
+    "usedWheelOfFortuneX"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^c[0-9a-z:._-]+$"
+    },
+    "cardId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sequence": {
+      "description": "A [step, side] pair, e.g. [1, \"A\"]. Side is the closed union Arkham.Act.Sequence.ActSide (Act/Sequence.hs), which is nullary-only so aeson's allNullaryToStringTag applies and it encodes as a bare string tag.",
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string",
+          "enum": ["A", "B", "C", "D", "E", "F", "G", "H"]
+        }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "deckId": {
+      "type": "integer"
+    },
+    "flipped": {
+      "type": "boolean"
+    },
+    "advanceCost": {
+      "description": "ActAttrs.actAdvanceCost (Maybe Cost).",
+      "oneOf": [
+        { "$ref": "./cost.schema.json" },
+        { "type": "null" }
+      ]
+    },
+    "breaches": {
+      "description": "Scarlet Keys campaign breach count. Broad, out of scope for this contract slice.",
+      "type": [
+        "integer",
+        "object",
+        "null"
+      ]
+    },
+    "cardsUnderneath": {
+      "description": "Cards physically stacked underneath this act. Broad card union, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "keys": {
+      "description": "Arkham keys placed on this act. Broad, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "meta": {
+      "description": "Free-form per-act scenario metadata."
+    },
+    "modifiers": {
+      "description": "Active modifiers targeting this act. Broad and additive, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "tokens": {
+      "description": "A Token-keyed multiset, encoded as an array of [tokenName, count] pairs.",
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": false,
+        "prefixItems": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer",
+            "minimum": 0
+          }
+        ],
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "treacheries": {
+      "description": "TreacheryId (UUID) values attached to this act.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "usedWheelOfFortuneX": {
+      "type": "boolean"
+    }
+  }
+}
