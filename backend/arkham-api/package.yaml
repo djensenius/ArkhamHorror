@@ -59,7 +59,10 @@ library:
     - aeson-casing
     - aeson-diff
     - amazonka
+    - amazonka-core
     - amazonka-s3
+    - amazonka-sso
+    - amazonka-sts
     - annotated-exception
     - async
     - base16-bytestring
@@ -90,6 +93,7 @@ library:
     - hashable
     - hedis
     - http-api-data
+    - http-client
     - http-client-tls
     - http-conduit
     - http-types

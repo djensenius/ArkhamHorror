@@ -185,10 +185,10 @@ unreachableConfigProfileResolvers =
   ConfigProfileResolvers
     { resolveEnvironmentSource = \_ -> Exception.throwIO (userError "resolveEnvironmentSource: unexpectedly reached")
     , resolveEc2Source = \_ _ -> Exception.throwIO (userError "resolveEc2Source: unexpectedly reached")
-    , resolveEcsSource = \_ -> Exception.throwIO (userError "resolveEcsSource: unexpectedly reached")
-    , resolveAssumedRole = \_ _ -> Exception.throwIO (userError "resolveAssumedRole: unexpectedly reached")
-    , resolveWebIdentity = \_ _ _ _ -> Exception.throwIO (userError "resolveWebIdentity: unexpectedly reached")
-    , resolveSSO = \_ _ _ _ _ -> Exception.throwIO (userError "resolveSSO: unexpectedly reached")
+    , resolveEcsSource = \_ _ -> Exception.throwIO (userError "resolveEcsSource: unexpectedly reached")
+    , resolveAssumedRole = \_ _ _ -> Exception.throwIO (userError "resolveAssumedRole: unexpectedly reached")
+    , resolveWebIdentity = \_ _ _ _ _ -> Exception.throwIO (userError "resolveWebIdentity: unexpectedly reached")
+    , resolveSSO = \_ _ _ _ _ _ -> Exception.throwIO (userError "resolveSSO: unexpectedly reached")
     }
 
 -- | A single-key profile HashMap, as 'safeEvalConfigProfile' expects
@@ -239,7 +239,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     assumedRoleCallsRef <- newIORef ([] :: [Text])
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \roleArn sourceEnv -> do
+            { resolveAssumedRole = \_ roleArn sourceEnv -> do
                 atomicModifyIORef' assumedRoleCallsRef (\cs -> (cs <> [roleArn], ()))
                 fst <$> fakeRefEnv sourceEnv
             }
@@ -264,8 +264,8 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     ecsCalledRef <- newIORef False
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveEcsSource = \env -> writeIORef ecsCalledRef True >> fst <$> fakeRefEnv env
-            , resolveAssumedRole = \_roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
+            { resolveEcsSource = \_ env -> writeIORef ecsCalledRef True >> fst <$> fakeRefEnv env
+            , resolveAssumedRole = \_ _roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
     readIORef ecsCalledRef `shouldReturn` True
@@ -290,7 +290,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     let resolvers =
           unreachableConfigProfileResolvers
             { resolveEc2Source = \_ref env -> writeIORef ec2CalledRef True >> fst <$> fakeRefEnv env
-            , resolveAssumedRole = \_roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
+            , resolveAssumedRole = \_ _roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
             }
     _ <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
     readIORef ec2CalledRef `shouldReturn` True
@@ -311,7 +311,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     capturedRef <- newIORef Nothing
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveWebIdentity = \tokenFile roleArn mSession env -> do
+            { resolveWebIdentity = \_ tokenFile roleArn mSession env -> do
                 writeIORef capturedRef (Just (tokenFile, roleArn, mSession))
                 fakeStaticEnv env
             }
@@ -336,7 +336,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     capturedRef <- newIORef Nothing
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveSSO = \_cachedTokenFile ssoRegion accountId roleName env -> do
+            { resolveSSO = \_ _cachedTokenFile ssoRegion accountId roleName env -> do
                 writeIORef capturedRef (Just (ssoRegion, accountId, roleName))
                 fakeStaticEnv env
             }
@@ -365,7 +365,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     middleThreadIdRef <- newIORef Nothing
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \roleArn sourceEnv ->
+            { resolveAssumedRole = \_ roleArn sourceEnv ->
                 if roleArn == "arn:aws:iam::1:role/middle"
                   then do
                     (fakeEnv, tid) <- fakeRefEnv sourceEnv
@@ -384,7 +384,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
   it "a plain leaf acquisition failure (no child ever created) propagates with nothing to release" do
     envNoAuth <- newEnvNoAuth
     let config = HashMap.fromList [("default", profileMap [("role_arn", "arn:aws:iam::1:role/ecs"), ("credential_source", "EcsContainer")])]
-        resolvers = unreachableConfigProfileResolvers {resolveEcsSource = \_ -> Exception.throwIO (MissingEnvError "simulated ECS metadata unavailable")}
+        resolvers = unreachableConfigProfileResolvers {resolveEcsSource = \_ _ -> Exception.throwIO (MissingEnvError "simulated ECS metadata unavailable")}
     result <- Exception.try @AuthError (safeEvalConfigProfile resolvers config [] "default" envNoAuth)
     case result of
       Left (MissingEnvError _) -> pure ()
@@ -416,7 +416,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     outerStarted <- newEmptyMVar
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \roleArn sourceEnv ->
+            { resolveAssumedRole = \_ roleArn sourceEnv ->
                 if roleArn == "arn:aws:iam::1:role/middle"
                   then do
                     -- "middle"'s own step completes normally and returns
@@ -464,7 +464,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
             [ ("parent", profileMap [("role_arn", "arn:aws:iam::1:role/parent"), ("source_profile", "leaf")])
             , ("leaf", profileMap [("aws_access_key_id", "AKIALEAF"), ("aws_secret_access_key", "s")])
             ]
-        resolvers = unreachableConfigProfileResolvers {resolveAssumedRole = \_ sourceEnv -> fst <$> fakeRefEnv sourceEnv}
+        resolvers = unreachableConfigProfileResolvers {resolveAssumedRole = \_ _ sourceEnv -> fst <$> fakeRefEnv sourceEnv}
     acquisition <- safeEvalConfigProfile resolvers config [] "parent" envNoAuth
     let [leafRelease] = awsEnvAcquisitionHiddenReleases acquisition
     leafRelease
@@ -506,7 +506,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     middleThreadIdRef <- newIORef Nothing
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \roleArn sourceEnv -> do
+            { resolveAssumedRole = \_ roleArn sourceEnv -> do
                 (fakeEnv, tid) <- fakeRefEnv sourceEnv
                 when (roleArn == "arn:aws:iam::1:role/middle") $ writeIORef middleThreadIdRef (Just tid)
                 pure fakeEnv
@@ -564,7 +564,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
           | otherwise = error "unexpected role_arn in three-deep order test"
         resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \roleArn sourceEnv -> do
+            { resolveAssumedRole = \_ roleArn sourceEnv -> do
                 let label = labelFor roleArn
                 -- A readiness gate, signalled from strictly inside the
                 -- already-installed 'Exception.catch' handler region,
