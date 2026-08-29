@@ -82,10 +82,16 @@ update = do
     (port, site, app) <- getApplicationRepl
     forkFinally
       (runSettings (setPort port defaultSettings) app)
-      -- Note that this implies concurrency
-      -- between shutdownApp and the next app that is starting.
-      -- Normally this should be fine
-      (\_ -> putMVar done () >> shutdownApp site)
+      -- 'shutdownApp' MUST finish before 'putMVar done ()': the latter is
+      -- what unblocks 'restartAppInNewThread''s 'takeMVar', which then
+      -- immediately proceeds to 'start' a brand-new foundation (and a
+      -- brand-new AWS 'Env' supervisor). Signalling @done@ first would let
+      -- that new foundation's supervisor start running concurrently with
+      -- the old one still being torn down -- an overlapping-generations
+      -- window this ordering closes entirely: by the time anything can
+      -- observe @done@, the old supervisor (and any live refresh child it
+      -- owned) is already fully stopped.
+      (\_ -> shutdownApp site >> putMVar done ())
 
 -- | kill the server
 shutdown :: IO ()

@@ -1,6 +1,6 @@
 module Arkham.Api.AwsEnvSupervisorSpec (spec) where
 
-import Amazonka (AuthEnv (..), Error (..), SerializeError (..))
+import Amazonka (AuthEnv (..), Env' (..), Error (..), Region (..), SerializeError (..), newEnvNoAuth)
 import Amazonka.Auth (Auth (..), AuthError (..))
 import Amazonka.Error (serviceError)
 import Api.Arkham.AwsEnvSupervisor (
@@ -10,6 +10,7 @@ import Api.Arkham.AwsEnvSupervisor (
   DemandDrivenSupervisor,
   SupervisedEnv,
   SupervisedEnvState (..),
+  acquireRegionBeforeAuth,
   classifyAuthErrorDiagnostic,
   classifyErrorDiagnostic,
   newDemandDrivenSupervisor,
@@ -43,6 +44,12 @@ newtype TestResource = TestResource Int
 -- the supervisor explicitly before that would ever matter).
 neverInvalidate :: env -> IO AwsAuthErrorDiagnostic
 neverInvalidate _ = forever (threadDelay maxBound)
+
+-- | A @release@ action for supervisor tests that do not exercise release
+-- behaviour at all -- most of the generic-protocol tests below are about
+-- state publication/acquisition/backoff, not the release contract itself.
+noRelease :: env -> IO ()
+noRelease _ = pure ()
 
 {- | Poll 'readSupervisedEnv' until @predicate@ holds. This is only a
 bounded hang-guard against a genuinely stuck test suite: the actual
@@ -210,10 +217,72 @@ spec = describe "AWS Env supervisor" do
       threadDelay (150 * 1000)
       readIORef reachedRefresh `shouldReturn` False
 
+  {- | Regression for the HIGH-severity finding that
+  @Amazonka.Auth.InstanceProfile.fromNamedInstanceProfile@ (pinned source,
+  @b562aa3f24845e34b95748daae671860017426be@) calls
+  @fetchAuthInBackground getCredentials@ -- which may fork a background
+  refresh child -- /before/ the separate, fallible
+  @getRegionFromIdentity@ metadata call: if region resolution fails or
+  this thread is cancelled after that fork, the only handle to the child
+  (inside @keys@) is discarded with it, with no way for anything in this
+  module's supervisor\/release protocol to ever kill it.
+  'acquireRegionBeforeAuth' is the exact ordering fix
+  'safeNamedInstanceProfile' applies -- factored out here so it can be
+  exercised directly against fake @getRegion@\/@getAuth@ actions, without
+  a real IMDS endpoint.
+
+  These are genuine mutation-check regressions: reverting
+  'acquireRegionBeforeAuth' to @getAuth@-then-@getRegion@ (the pinned
+  source's own order) makes the first test below fail, since @getAuth@
+  would then run -- and 'authAttempted' would become 'True' -- before
+  @getRegion@'s failure is ever observed.
+  -}
+  describe "acquireRegionBeforeAuth" do
+    it "never attempts auth/credential acquisition (which may fork a background refresh child) if region resolution fails first" do
+      envNoAuth <- newEnvNoAuth
+      authAttempted <- newIORef False
+      let getRegion = Exception.throwIO (RetrievalError httpExceptionFixture) :: IO Region
+          getAuth = writeIORef authAttempted True >> pure (Auth (AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing))
+      result <- Exception.try @AuthError (acquireRegionBeforeAuth envNoAuth getRegion getAuth)
+      -- Not 'shouldSatisfy': the wrapped 'Env' has no 'Show' instance, so
+      -- a 'case' avoids ever needing one for the success branch.
+      case result of
+        Left (RetrievalError _) -> pure ()
+        _ -> expectationFailure "expected acquireRegionBeforeAuth to fail with RetrievalError before ever calling getAuth"
+      readIORef authAttempted `shouldReturn` False
+
+    it "never attempts auth/credential acquisition if this thread is asynchronously cancelled while region resolution is still in flight" do
+      envNoAuth <- newEnvNoAuth
+      authAttempted <- newIORef False
+      regionStarted <- newEmptyMVar
+      let getRegion = putMVar regionStarted () >> forever (threadDelay maxBound) :: IO Region
+          getAuth = writeIORef authAttempted True >> pure (Auth (AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing))
+      resultVar <- newEmptyMVar
+      workerTid <-
+        forkIO
+          $ putMVar resultVar
+          =<< Exception.try @Exception.AsyncException (acquireRegionBeforeAuth envNoAuth getRegion getAuth)
+      takeMVar regionStarted
+      Exception.throwTo workerTid Exception.ThreadKilled
+      result <- takeMVar resultVar
+      case result of
+        Left Exception.ThreadKilled -> pure ()
+        _ -> expectationFailure "expected acquireRegionBeforeAuth to be cancelled with ThreadKilled while getRegion was still in flight"
+      readIORef authAttempted `shouldReturn` False
+
+    it "does still attempt auth/credential acquisition once region resolution has genuinely succeeded, and the resolved region reaches the returned Env" do
+      envNoAuth <- newEnvNoAuth
+      authAttempted <- newIORef False
+      let getRegion = pure Ireland
+          getAuth = writeIORef authAttempted True >> pure (Auth (AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing))
+      resultEnv <- acquireRegionBeforeAuth envNoAuth getRegion getAuth
+      readIORef authAttempted `shouldReturn` True
+      resultEnv.region `shouldBe` Ireland
+
   describe "startSupervisedEnv / readSupervisedEnv / stopSupervisedEnv" do
     it "reports Initializing before the first acquisition completes, then Ready once it does, then terminal Unavailable once stopped" do
       acquireGate <- newEmptyMVar
-      sup <- startSupervisedEnv (takeMVar acquireGate >> pure (Right (TestResource 1))) neverInvalidate (pure ())
+      sup <- startSupervisedEnv (takeMVar acquireGate >> pure (Right (TestResource 1))) noRelease neverInvalidate (pure ())
       readSupervisedEnv sup `shouldReturn` SupervisedEnvInitializing
       putMVar acquireGate ()
       waitForSupervisedState sup \case SupervisedEnvReady _ -> True; _ -> False
@@ -228,6 +297,7 @@ spec = describe "AWS Env supervisor" do
       sup <-
         startSupervisedEnv
           (putMVar acquireStarted () >> forever (threadDelay maxBound) :: IO (Either AwsAuthErrorDiagnostic TestResource))
+          noRelease
           neverInvalidate
           (pure ())
       takeMVar acquireStarted
@@ -241,7 +311,7 @@ spec = describe "AWS Env supervisor" do
       let acquire = do
             n <- atomicModifyIORef' attemptCountRef (\k -> (k + 1, k + 1))
             pure $ if n == 1 then Left AwsAuthCredentialChainExhausted else Right (TestResource n)
-      sup <- startSupervisedEnv acquire neverInvalidate (takeMVar backoffGate)
+      sup <- startSupervisedEnv acquire noRelease neverInvalidate (takeMVar backoffGate)
       waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthCredentialChainExhausted)
       -- Backoff has not been released yet: no second attempt has happened.
       threadDelay (50 * 1000)
@@ -274,7 +344,7 @@ spec = describe "AWS Env supervisor" do
             if n == 1
               then pure (Left AwsAuthCredentialChainExhausted)
               else takeMVar acquireGate >> pure (Right (TestResource n))
-      sup <- startSupervisedEnv acquire neverInvalidate (takeMVar backoffGate)
+      sup <- startSupervisedEnv acquire noRelease neverInvalidate (takeMVar backoffGate)
       waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthCredentialChainExhausted)
       putMVar backoffGate ()
       -- The second attempt is now genuinely in flight, blocked on
@@ -306,11 +376,11 @@ spec = describe "AWS Env supervisor" do
       let acquire = do
             n <- atomicModifyIORef' generationRef (\k -> (k + 1, k + 1))
             pure (Right (TestResource n))
+          release _ = writeIORef childReleasedRef True
           awaitInvalidation _ = do
             tid <- myThreadId
             putMVar supervisorTidVar tid
-            outcome <-
-              Exception.try @AuthError (forever (threadDelay maxBound) `finally` writeIORef childReleasedRef True)
+            outcome <- Exception.try @AuthError (forever (threadDelay maxBound))
             either (evaluate . classifyAuthErrorDiagnostic) absurd outcome
       -- A separate, unrelated thread standing in for a live Warp request
       -- worker: it must never be affected by the delayed invalidation
@@ -318,7 +388,7 @@ spec = describe "AWS Env supervisor" do
       requestWorkerAffected <- newIORef False
       requestWorkerTid <-
         forkIO $ Exception.catch (forever (threadDelay maxBound)) \(_ :: AuthError) -> writeIORef requestWorkerAffected True
-      sup <- startSupervisedEnv acquire awaitInvalidation (takeMVar backoffGate)
+      sup <- startSupervisedEnv acquire release awaitInvalidation (takeMVar backoffGate)
       waitForSupervisedState sup \case SupervisedEnvReady (TestResource 1) -> True; _ -> False
       supervisorTid <- takeMVar supervisorTidVar
       supervisorTid `shouldNotBe` requestWorkerTid
@@ -332,7 +402,7 @@ spec = describe "AWS Env supervisor" do
     it "forces the classified diagnostic before publishing it, not deferring it as a thunk for a later reader to force" do
       forcedRef <- newIORef False
       let acquire = pure (Left (markForcedOnceEvaluated forcedRef AwsAuthCredentialChainExhausted)) :: IO (Either AwsAuthErrorDiagnostic ())
-      sup <- startSupervisedEnv acquire neverInvalidate (forever (threadDelay maxBound))
+      sup <- startSupervisedEnv acquire noRelease neverInvalidate (forever (threadDelay maxBound))
       -- This predicate inspects only the outer constructor (a wildcard
       -- binder for the wrapped diagnostic), never the diagnostic value
       -- itself, so if 'forcedRef' is already 'True' once it is satisfied,
@@ -349,11 +419,12 @@ spec = describe "AWS Env supervisor" do
       supervisorTidVar <- newEmptyMVar
       childKilled <- newIORef False
       let acquire = pure (Right (TestResource 1))
+          release _ = writeIORef childKilled True
           awaitInvalidation _ = do
             tid <- myThreadId
             putMVar supervisorTidVar tid
-            forever (threadDelay maxBound) `finally` writeIORef childKilled True
-      sup <- startSupervisedEnv acquire awaitInvalidation (pure ())
+            forever (threadDelay maxBound)
+      sup <- startSupervisedEnv acquire release awaitInvalidation (pure ())
       waitForSupervisedState sup \case SupervisedEnvReady _ -> True; _ -> False
       supervisorTid <- takeMVar supervisorTidVar
       stopSupervisedEnv sup
@@ -375,12 +446,12 @@ spec = describe "AWS Env supervisor" do
     exception cannot possibly land until @awaitInvalidation@ is entered
     (restored), by which point 'SupervisedEnvReady' has already been
     published and the forked child is already reachable via @env@ -- so
-    @awaitInvalidation@'s own release logic can, and must, kill it exactly
-    once. If the exception could instead land in the gap between
-    @acquire@ returning and 'SupervisedEnvReady' being published, the
-    child would leak: nothing would ever call this test's release action
-    at all, since 'startSupervisedEnv' never even entered
-    @awaitInvalidation@ for a generation that was never published.
+    @release@ can, and must, kill it exactly once. If the exception could
+    instead land in the gap between @acquire@ returning and
+    'SupervisedEnvReady' being published, the child would leak: nothing
+    would ever call this test's release action at all, since
+    'startSupervisedEnv' never even entered @awaitInvalidation@ for a
+    generation that was never published.
     -}
     it "closes the fork-then-orphan gap: an async exception delivered exactly at acquire's handoff cannot orphan a child forked immediately before return" do
       readyPublished <- newEmptyMVar
@@ -391,16 +462,18 @@ spec = describe "AWS Env supervisor" do
             -- else happens between this and 'acquire' returning.
             childTid <- forkIO (forever (threadDelay maxBound))
             pure (Right childTid)
-          awaitInvalidation childTid = do
+          release childTid = do
+            atomicModifyIORef' releaseCountRef (\n -> (n + 1, ()))
+            killThread childTid
+          awaitInvalidation _ = do
             putMVar readyPublished ()
             -- Blocks here (restored/interruptible) until the external
-            -- exception below arrives; its own release always runs via
-            -- 'finally', proving release happens exactly once whether
-            -- this returns normally or the exception propagates through.
-            forever (threadDelay maxBound) `finally` do
-              atomicModifyIORef' releaseCountRef (\n -> (n + 1, ()))
-              killThread childTid
-      sup <- startSupervisedEnv acquire awaitInvalidation (pure ())
+            -- exception below arrives; @release@ (applied via 'finally'
+            -- around this call, see 'startSupervisedEnv') always runs
+            -- whether this returns normally or the exception propagates
+            -- through.
+            forever (threadDelay maxBound)
+      sup <- startSupervisedEnv acquire release awaitInvalidation (pure ())
       -- Waits only for 'SupervisedEnvReady' to have been *published*,
       -- which -- under the single-mask design -- can only happen after
       -- the fork above has already completed and its 'ThreadId' is
@@ -409,10 +482,82 @@ spec = describe "AWS Env supervisor" do
       -- 'awaitInvalidation' itself signals immediately upon entry.
       takeMVar readyPublished
       stopSupervisedEnv sup
-      -- Released by 'awaitInvalidation''s 'finally' exactly once -- not
-      -- zero times (which would mean the child leaked) and not more than
-      -- once (which would mean release raced/duplicated across
-      -- generations).
+      -- Released via 'finally' around @restore (awaitInvalidation env)@
+      -- exactly once -- not zero times (which would mean the child
+      -- leaked) and not more than once (which would mean release
+      -- raced/duplicated across generations).
+      readIORef releaseCountRef `shouldReturn` 1
+
+    {- | Regression for the second half of the same audit finding: a
+    /pending/ asynchronous exception queued while a generation is still
+    masked (i.e. during @acquire@, or between @acquire@ returning and
+    'SupervisedEnvReady' being published) is delivered the instant
+    'restore' unmasks -- /before/ @awaitInvalidation@'s own argument thunk
+    is ever forced, let alone entered. An internal @finally@ inside
+    @awaitInvalidation@'s own body (the design this replaced) could
+    therefore be skipped entirely, silently leaking the resource: exactly
+    why release is now applied via 'finally' /around/ the
+    @restore (awaitInvalidation env)@ call in 'startSupervisedEnv' itself
+    -- a handler installed synchronously, one level further out, before
+    'restore' is ever reached.
+
+    The pending exception here is queued from /within/ @acquire@ itself
+    (which always runs on the supervisor thread, still masked): a
+    throwaway helper thread @throwTo@s this same thread, then this test
+    spins (deliberately not 'threadDelay', which remains interruptible
+    even under mask -- see the inline comment below) long enough that the
+    RTS has certainly already queued the exception as pending before
+    @acquire@ returns -- so by the time @runGeneration@ reaches @restore
+    (awaitInvalidation env)@, delivery is guaranteed to happen at that
+    exact unmask, not later. 'awaitInvalidationEntered' staying 'False'
+    proves @awaitInvalidation@'s body genuinely never got a chance to run
+    even its first instruction; 'releaseCountRef' reading @1@ proves
+    'release' still ran despite that.
+
+    Mutation check: reverting to the previous design -- release folded
+    into @awaitInvalidation@'s own internal @finally@ instead of applied
+    by 'startSupervisedEnv' around the call -- makes this test fail
+    ('releaseCountRef' stays @0@), since the pending exception is
+    delivered before that internal handler is ever installed.
+    -}
+    it "closes the restore-boundary gap: a pending exception queued during acquire still runs release exactly once, even though it fires before awaitInvalidation's body ever executes" do
+      releaseCountRef <- newIORef (0 :: Int)
+      awaitInvalidationEnteredRef <- newIORef False
+      let acquire = do
+            tid <- myThreadId
+            _ <- forkIO $ Exception.throwTo tid Exception.ThreadKilled
+            -- A bounded, deliberately *non-interruptible* busy spin, not
+            -- 'threadDelay': 'threadDelay' is itself one of the specific
+            -- operations that remains interruptible even while masked
+            -- (verified directly against this exact pinned GHC), so it
+            -- would let the helper's pending exception land right here,
+            -- inside @acquire@, rather than staying genuinely pending
+            -- until 'restore' below -- defeating the very race this test
+            -- exists to reproduce. A tight recursive loop with no
+            -- interruptible operation cannot be preempted while masked,
+            -- no matter how long it runs, and is long enough here that
+            -- the helper thread has certainly already issued its
+            -- 'Exception.throwTo' (which itself blocks until delivered,
+            -- so it is provably still pending, not yet delivered, the
+            -- entire time this thread remains masked).
+            let spin :: Int -> IO ()
+                spin 0 = pure ()
+                spin n = spin (n - 1)
+            spin (20 * 1000 * 1000)
+            pure (Right (TestResource 1))
+          release _ = atomicModifyIORef' releaseCountRef (\n -> (n + 1, ()))
+          awaitInvalidation _ = do
+            writeIORef awaitInvalidationEnteredRef True
+            forever (threadDelay maxBound)
+      -- 'startSupervisedEnv' only starts its own dedicated thread and
+      -- returns immediately; the pending exception queued above
+      -- terminates that thread asynchronously, so wait for its terminal
+      -- published state rather than anything returned here.
+      sup <- startSupervisedEnv acquire release awaitInvalidation (pure ())
+      waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthSupervisorTerminated)
+      readIORef awaitInvalidationEnteredRef `shouldReturn` False
+      readIORef releaseCountRef `shouldReturn` 1
+      readIORef awaitInvalidationEnteredRef `shouldReturn` False
       readIORef releaseCountRef `shouldReturn` 1
 
   {- | The demand-driven wrapper ('newDemandDrivenSupervisor'\/
@@ -426,7 +571,7 @@ spec = describe "AWS Env supervisor" do
     it "starts its dedicated thread immediately but never calls acquire until first demanded" do
       acquireCalls <- newIORef (0 :: Int)
       let acquire = atomicModifyIORef' acquireCalls (\n -> (n + 1, ())) >> pure (Right (TestResource 1))
-      sup <- newDemandDrivenSupervisor acquire neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (pure ())
       -- Long enough that, had construction itself triggered acquisition,
       -- it would certainly have happened by now.
       threadDelay (100 * 1000)
@@ -439,7 +584,7 @@ spec = describe "AWS Env supervisor" do
     it "a second (or later) demand call is a cheap no-op: acquire is not called again" do
       acquireCalls <- newIORef (0 :: Int)
       let acquire = atomicModifyIORef' acquireCalls (\n -> (n + 1, ())) >> pure (Right (TestResource 1))
-      sup <- newDemandDrivenSupervisor acquire neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (pure ())
       _ <- requestDemandDrivenReady sup (200 * 1000)
       waitForDemandDrivenState sup \case SupervisedEnvReady _ -> True; _ -> False
       readIORef acquireCalls `shouldReturn` 1
@@ -451,7 +596,7 @@ spec = describe "AWS Env supervisor" do
     it "concurrent first demand triggers exactly one acquisition" do
       acquireCalls <- newIORef (0 :: Int)
       let acquire = atomicModifyIORef' acquireCalls (\n -> (n + 1, ())) >> pure (Right (TestResource 1))
-      sup <- newDemandDrivenSupervisor acquire neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (pure ())
       _ <- forkIO $ () <$ requestDemandDrivenReady sup (200 * 1000)
       _ <- forkIO $ () <$ requestDemandDrivenReady sup (200 * 1000)
       _ <- requestDemandDrivenReady sup (200 * 1000)
@@ -461,7 +606,7 @@ spec = describe "AWS Env supervisor" do
 
     it "a request's own wait timeout does NOT cancel the gated acquisition, which completes and is later observed" do
       acquireGate <- newEmptyMVar
-      sup <- newDemandDrivenSupervisor (takeMVar acquireGate >> pure (Right (TestResource 1))) neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor (takeMVar acquireGate >> pure (Right (TestResource 1))) noRelease neverInvalidate (pure ())
       -- A very short bound: this demand call will time out while the
       -- acquisition below is still deliberately blocked, well before
       -- 'acquireGate' is ever filled.
@@ -490,7 +635,7 @@ spec = describe "AWS Env supervisor" do
             if n == 1
               then pure (Left AwsAuthCredentialChainExhausted)
               else takeMVar acquireGate >> pure (Right (TestResource n))
-      sup <- newDemandDrivenSupervisor acquire neverInvalidate (takeMVar backoffGate)
+      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (takeMVar backoffGate)
       firstOutcome <- requestDemandDrivenReady sup (200 * 1000)
       firstOutcome `shouldBe` SupervisedEnvUnavailable AwsAuthCredentialChainExhausted
       putMVar backoffGate ()
@@ -512,7 +657,7 @@ spec = describe "AWS Env supervisor" do
     it "stop during gated pre-acquisition (never demanded) terminates the supervisor with no acquisition ever attempted" do
       acquireCalls <- newIORef (0 :: Int)
       let acquire = atomicModifyIORef' acquireCalls (\n -> (n + 1, ())) >> pure (Right (TestResource 1))
-      sup <- newDemandDrivenSupervisor acquire neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (pure ())
       stopDemandDrivenSupervisor sup
       readIORef acquireCalls `shouldReturn` 0
       requestDemandDrivenReady sup 0 `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
@@ -520,8 +665,9 @@ spec = describe "AWS Env supervisor" do
     it "stop during Ready terminates the child before returning" do
       childKilled <- newIORef False
       let acquire = pure (Right (TestResource 1))
-          awaitInvalidation _ = forever (threadDelay maxBound) `finally` writeIORef childKilled True
-      sup <- newDemandDrivenSupervisor acquire awaitInvalidation (pure ())
+          release _ = writeIORef childKilled True
+          awaitInvalidation _ = forever (threadDelay maxBound)
+      sup <- newDemandDrivenSupervisor acquire release awaitInvalidation (pure ())
       _ <- requestDemandDrivenReady sup (200 * 1000)
       waitForDemandDrivenState sup \case SupervisedEnvReady _ -> True; _ -> False
       stopDemandDrivenSupervisor sup
