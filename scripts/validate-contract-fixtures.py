@@ -133,22 +133,6 @@ def flatten_errors(errors):
 # ---------------------------------------------------------------------------
 
 
-def resolve_json_pointer(document, pointer: str):
-    """Resolve an RFC 6901 JSON Pointer against an in-memory document."""
-    require(pointer == "" or pointer.startswith("/"), f"Invalid JSON Pointer: {pointer!r}")
-    value = document
-    for raw_token in pointer.split("/")[1:]:
-        token = raw_token.replace("~1", "/").replace("~0", "~")
-        if isinstance(value, list):
-            value = value[int(token)]
-        elif isinstance(value, dict):
-            require(token in value, f"JSON Pointer segment {token!r} not found (pointer {pointer!r})")
-            value = value[token]
-        else:
-            raise SystemExit(f"Cannot descend into scalar with pointer segment {token!r} ({pointer!r})")
-    return value
-
-
 def _require_array_index(raw_token: str, *, length: int, allow_equal_length: bool) -> int:
     """Parse and bounds-check a JSON-Pointer array token per RFC 6901/6902.
 
@@ -174,6 +158,30 @@ def _require_array_index(raw_token: str, *, length: int, allow_equal_length: boo
     return index
 
 
+def resolve_json_pointer(document, pointer: str):
+    """Resolve an RFC 6901 JSON Pointer against an in-memory document."""
+    require(pointer == "" or pointer.startswith("/"), f"Invalid JSON Pointer: {pointer!r}")
+    value = document
+    for raw_token in pointer.split("/")[1:]:
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        if isinstance(value, list):
+            value = value[_require_array_index(token, length=len(value), allow_equal_length=False)]
+        elif isinstance(value, dict):
+            require(token in value, f"JSON Pointer segment {token!r} not found (pointer {pointer!r})")
+            value = value[token]
+        else:
+            raise SystemExit(f"Cannot descend into scalar with pointer segment {token!r} ({pointer!r})")
+    return value
+
+
+def _require_object_key(parent: dict, key: str, *, pointer: str) -> None:
+    """Require `key` to exist in `parent`, else fail deterministically via
+    `require()`/`SystemExit` instead of leaking a raw `KeyError` traceback
+    for an invalid/typo'd mutation pointer.
+    """
+    require(key in parent, f"JSON Pointer segment {key!r} not found (pointer {pointer!r})")
+
+
 def apply_mutation(value, mutation: dict):
     """Apply a single {op, pointer[, value]} mutation to a deep copy of `value`.
 
@@ -195,8 +203,11 @@ def apply_mutation(value, mutation: dict):
         token = raw_token.replace("~1", "/").replace("~0", "~")
         if isinstance(parent, list):
             parent = parent[_require_array_index(token, length=len(parent), allow_equal_length=False)]
-        else:
+        elif isinstance(parent, dict):
+            _require_object_key(parent, token, pointer=pointer)
             parent = parent[token]
+        else:
+            raise SystemExit(f"Cannot descend into scalar with pointer segment {token!r} ({pointer!r})")
     last = last_raw.replace("~1", "/").replace("~0", "~")
 
     op = mutation["op"]
@@ -204,12 +215,14 @@ def apply_mutation(value, mutation: dict):
         if isinstance(parent, list):
             del parent[_require_array_index(last, length=len(parent), allow_equal_length=False)]
         else:
+            _require_object_key(parent, last, pointer=pointer)
             del parent[last]
     elif op == "replace":
         require("value" in mutation, "Mutation op 'replace' requires a 'value'")
         if isinstance(parent, list):
             parent[_require_array_index(last, length=len(parent), allow_equal_length=False)] = mutation["value"]
         else:
+            _require_object_key(parent, last, pointer=pointer)
             parent[last] = mutation["value"]
     elif op == "add":
         require("value" in mutation, "Mutation op 'add' requires a 'value'")
@@ -225,6 +238,9 @@ def apply_mutation(value, mutation: dict):
             else:
                 parent.insert(_require_array_index(last, length=len(parent), allow_equal_length=True), mutation["value"])
         else:
+            # RFC 6902 "add" on an object sets the member whether or not it
+            # already existed, so (unlike remove/replace) no key-existence
+            # check is required here.
             parent[last] = mutation["value"]
     else:
         raise SystemExit(f"Unknown mutation op: {op!r}")
@@ -500,6 +516,35 @@ def run_apply_mutation_self_test() -> None:
     _expect_rejected({"op": "remove", "pointer": "/items/3"}, "remove index (== length)")
     _expect_rejected({"op": "add", "pointer": "/items/01", "value": "X"}, "add index (leading zero)")
     _expect_rejected({"op": "add", "pointer": "/items/-1", "value": "X"}, "add index (negative)")
+
+    # Missing object keys must fail deterministically via require()/SystemExit
+    # (a controlled validation error), not leak a raw KeyError traceback.
+    obj_base = {"nested": {"present": 1}}
+    _expect_rejected({"op": "remove", "pointer": "/missing"}, "remove (missing top-level key)")
+    _expect_rejected({"op": "replace", "pointer": "/missing", "value": "X"}, "replace (missing top-level key)")
+    require(
+        apply_mutation(obj_base, {"op": "remove", "pointer": "/nested/present"})["nested"] == {},
+        "apply_mutation remove of a present key should still succeed",
+    )
+    try:
+        apply_mutation(obj_base, {"op": "replace", "pointer": "/nested/missing/deeper", "value": "X"})
+        raise SystemExit(
+            "Self-test failure: apply_mutation accepted traversal through a missing "
+            "intermediate object key instead of rejecting it"
+        )
+    except SystemExit as exc:
+        require(
+            "not found" in str(exc),
+            f"apply_mutation should fail with a clear 'not found' message for a missing "
+            f"intermediate key, got: {exc}",
+        )
+    # RFC 6902 "add" on an object sets the member regardless of prior
+    # existence, so it must succeed even for a previously-absent key.
+    added = apply_mutation(obj_base, {"op": "add", "pointer": "/brandNew", "value": "X"})
+    require(
+        added.get("brandNew") == "X" and "brandNew" not in obj_base,
+        "apply_mutation add on an object must set a new key without mutating the input",
+    )
 
 
 run_apply_mutation_self_test()

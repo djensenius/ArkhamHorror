@@ -19,11 +19,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "contracts" / "manifest.json"
 
-manifest = json.loads(MANIFEST.read_text())
-paths = list(manifest.get("documents", []))
+manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+paths = set(manifest.get("documents", []))
 for fixture in manifest.get("fixtures", []):
-    if fixture["path"] not in paths:
-        paths.append(fixture["path"])
+    paths.add(fixture["path"])
+# Sort so `artifactHashes` ordering is stable and independent of the
+# (unordered-in-spirit) order documents/fixtures happen to be listed in,
+# keeping diffs minimal when entries are added/reordered elsewhere in the
+# manifest.
+paths = sorted(paths)
 
 hashes = {}
 for relative_path in paths:
@@ -34,7 +38,8 @@ canonical = dict(manifest)
 canonical["artifactHashes"] = {}
 canon_bytes = json.dumps(canonical, sort_keys=True, indent=2).encode("utf-8") + b"\n"
 manifest["artifactHashes"]["contracts/manifest.json"] = hashlib.sha256(canon_bytes).hexdigest()
+manifest["artifactHashes"] = dict(sorted(manifest["artifactHashes"].items()))
 
-MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n")
+MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 print(f"Recomputed {len(manifest['artifactHashes'])} artifact hashes.")
 

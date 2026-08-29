@@ -152,19 +152,23 @@ Known, deliberate scope limits carried by this fixture:
   entity map keyed by a confirmed newtype: `locations` (`LocationId`, UUID,
   per `Arkham/Id.hs`'s `deriving newtype ToJSONKey`) and
   `investigators`/`otherInvestigators`/`killedInvestigators`/`acts`/`agendas`
-  (`InvestigatorId`/`ActId`/`AgendaId`, `CardCode`-backed). `CardCode`'s
-  `ToJSONKey` instance always prepends a literal `c`
-  (`Arkham/Card/CardCode.hs`); empirically, every one of the 815 real card
-  codes in `data/cards.json` matches `^[0-9]{5}[a-z]?$`, so the wire key
-  pattern is `^c[0-9]{5}[a-z]?$`. This checkout has no homebrew card data to
-  verify homebrew key forms further, so that is documented as an explicit
-  caveat rather than assumed. The remaining, intentionally out-of-scope
-  entity maps (enemies/assets/treacheries/events/cards/concealed/skills/
-  stories/scarletKeys) are not constrained, since their *value* schemas stay
-  broad.
+  (`InvestigatorId`/`ActId`/`AgendaId`, `CardCode`-backed). `CardCode`
+  (`Arkham/Card/CardCode.hs`) is a bare `newtype CardCode = CardCode Text`
+  with no character-class constraint at the type level; its `ToJSONKey`
+  instance always prepends a literal `c` to the underlying text
+  (`toJSONKeyText (T.cons 'c' . unCardCode)`). Empirically, every one of the
+  815 real card codes in `data/cards.json` matches `^[0-9]{5}[a-z]?$`, but
+  since `CardCode` places no such restriction on homebrew/unofficial content,
+  `cardCodeMapKey`'s wire-key pattern is the broader `^c[0-9a-z:._-]+$` —
+  the same grammar already used by the `cardCode`/`id` fields elsewhere in
+  these schemas — rather than the narrower official-only shape. The
+  remaining, intentionally out-of-scope entity maps (enemies/assets/
+  treacheries/events/cards/concealed/skills/stories/scarletKeys) are not
+  constrained, since their *value* schemas stay broad.
 - Every governed schema/fixture/document is bound to a recomputed SHA-256 in
   `manifest.json`'s `artifactHashes`; see "Release immutability and
   `schemaRevision`" below for the enforcement rule.
+
 
 Discrepancies found against the Vue native client while grounding this slice
 (cited here per the source-of-truth backend wire output, not fixed, since
