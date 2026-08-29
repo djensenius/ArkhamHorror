@@ -61,6 +61,16 @@ module Api.Arkham.AwsEnvSupervisor (
   acquireRegionBeforeAuth,
   awaitAwsEnvInvalidation,
 
+  -- * Config-file credential provider graph -- exposed for regression tests
+  AwsEnvAcquisition (..),
+  releaseAwsEnvAcquisition,
+  ConfigProfileResolvers (..),
+  productionConfigProfileResolvers,
+  safeLoadIniFile,
+  safeEvalConfigProfile,
+  safeFileEnv,
+  discoverSafely,
+
   -- * Generic single-thread supervisor protocol -- exposed for regression tests
   SupervisedEnvState (..),
   SupervisedEnv,
@@ -82,10 +92,14 @@ module Api.Arkham.AwsEnvSupervisor (
 ) where
 
 import Amazonka (Env, Env' (..), EnvNoAuth, Error (..), Region, SerializeError (..), ServiceError (..), newEnv)
-import Amazonka.Auth (Auth (..), AuthError (..), fromContainerEnv, fromFileEnv, fromKeysEnv, fromWebIdentityEnv, runCredentialChain)
+import Amazonka.Auth (Auth (..), AuthError (..), fromContainerEnv, fromKeysEnv, fromWebIdentityEnv, runCredentialChain)
 import Amazonka.Auth.Background (fetchAuthInBackground)
+import Amazonka.Auth.ConfigFile (ConfigProfile (..), CredentialSource (..), configPathRelative, mergeConfigs, parseConfigProfile)
+import Amazonka.Auth.SSO (fromSSO, relativeCachedTokenFile)
+import Amazonka.Auth.STS (fromAssumedRole, fromWebIdentity)
 import Amazonka.EC2.Metadata hiding (region)
 import Amazonka.EC2.Metadata qualified as IdentityDocument (IdentityDocument (..))
+import Amazonka.Env (lookupRegion)
 import Arkham.Prelude
 import Control.Concurrent (killThread, threadDelay)
 import Control.Concurrent.Async qualified as Async
@@ -93,10 +107,14 @@ import Control.Concurrent.STM (check, retry)
 import Control.Exception qualified as Exception
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy.Char8 qualified as LBS8
+import Data.HashMap.Strict qualified as HashMap
+import Data.Ini qualified as INI
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Void (Void, absurd)
 import Network.HTTP.Types.Status (statusCode)
+import System.Directory qualified as Directory
+import System.Environment (lookupEnv)
 
 {- | Non-secret, structured classification of a per-request 'Error', safe to
 log. Deliberately extracts only the numeric HTTP status, plus a category
@@ -215,47 +233,86 @@ releaseAwsEnvChild :: Auth -> IO ()
 releaseAwsEnvChild (Auth _) = pure ()
 releaseAwsEnvChild (Ref refreshThreadId _) = killThread refreshThreadId
 
--- | See 'startSupervisedEnv''s @release@ parameter: the concrete release
--- action 'newAwsEnvSupervisor' passes for one 'Env' generation.
+-- | See 'startSupervisedEnv''s @acquire@ parameter: the concrete release
+-- action for a generation whose entire 'Env' was acquired via a single,
+-- non-recursive provider (i.e. every provider except the config-file
+-- chain -- see 'AwsEnvAcquisition' for why the config-file chain needs
+-- more than this).
 releaseAwsEnvGeneration :: Env -> IO ()
 releaseAwsEnvGeneration env = releaseAwsEnvChild (runIdentity env.auth)
+
+{- | One resolved 'Env' together with every background-refresh child that
+acquiring it created but which is no longer directly reachable via its
+own @.auth@ field -- see 'ConfigProfileResolvers'\/'safeEvalConfigProfile'
+for exactly how this arises. 'releaseAwsEnvAcquisition' releases all of
+them, plus whichever child is still directly reachable via @.auth@ itself.
+-}
+data AwsEnvAcquisition = AwsEnvAcquisition
+  { awsEnvAcquisitionEnv :: Env
+  , -- | Release actions for children hidden by an outer overwrite,
+    -- oldest\/innermost-acquired first. Always released newest-first (i.e.
+    -- reversed), then the still-visible @.auth@ itself, matching ordinary
+    -- bracket\/stack release discipline: whatever needed the child most
+    -- recently (a still-live outer @sts:AssumeRole@ refresh loop that
+    -- re-authenticates using it) is retired before what it depended on.
+    awsEnvAcquisitionHiddenReleases :: [IO ()]
+  }
+
+releaseAwsEnvAcquisition :: AwsEnvAcquisition -> IO ()
+releaseAwsEnvAcquisition (AwsEnvAcquisition env hiddenReleases) = do
+  sequence_ (reverse hiddenReleases)
+  releaseAwsEnvChild (runIdentity env.auth)
 
 {- | A drop-in replacement for the pinned Amazonka fork's own
 @Amazonka.Auth.discover@, identical in every credential source it tries,
 their order, and their error classification -- except for the instance
-profile\/IMDS provider, which is replaced with 'safeDefaultInstanceProfile'
-below. See that function's Haddock for exactly why, and for the pinned
-source (@lib/amazonka/src/Amazonka/Auth/InstanceProfile.hs@ at
-@b562aa3f24845e34b95748daae671860017426be@) this reimplements.
+profile\/IMDS provider (replaced with 'safeDefaultInstanceProfile') and the
+config-file provider (replaced with 'safeFileEnv'). See those functions'
+Haddocks for exactly why, and for the pinned source
+(@lib/amazonka/src/Amazonka/Auth/InstanceProfile.hs@\/@ConfigFile.hs@ at
+@b562aa3f24845e34b95748daae671860017426be@) each reimplements.
 
 Every other provider @discover@ tries was audited directly against that
 same pinned commit and found /already/ safe to use unmodified:
 
-* 'fromKeysEnv' (@Amazonka\/Auth\/Keys.hs@) and 'fromFileEnv'
-  (@Amazonka\/Auth\/ConfigFile.hs@) read static, non-expiring credentials
-  and never call 'fetchAuthInBackground' at all -- no background thread is
-  ever forked, so there is nothing a subsequent failure could orphan.
+* 'fromKeysEnv' (@Amazonka\/Auth\/Keys.hs@) reads static, non-expiring
+  credentials and never calls 'fetchAuthInBackground' at all -- no
+  background thread is ever forked, so there is nothing a subsequent
+  failure could orphan.
 * 'fromWebIdentityEnv' (@Amazonka\/Auth\/STS.hs@, @fromWebIdentity@) and
   'fromContainerEnv' (@Amazonka\/Auth\/Container.hs@, @fromContainer@) do
   call 'fetchAuthInBackground', but as the /last/ fallible action before
   returning -- nothing that can throw follows it, so a background child it
   creates is always safely attached to the 'Env' these functions return.
 
-'fromDefaultInstanceProfile'\/'fromNamedInstanceProfile' were the only
-provider in the entire chain where a fallible operation
-(@getRegionFromIdentity@, a separate IMDS metadata call) runs /after/
-'fetchAuthInBackground' may have already forked a background refresh
-child -- see 'safeDefaultInstanceProfile'.
+'fromDefaultInstanceProfile'\/'fromNamedInstanceProfile' were the first
+provider found where a fallible operation (@getRegionFromIdentity@, a
+separate IMDS metadata call) runs /after/ 'fetchAuthInBackground' may have
+already forked a background refresh child -- see 'safeDefaultInstanceProfile'.
+A second, distinct hazard was found in 'Amazonka.Auth.ConfigFile.fromFileEnv'
+itself: see 'AwsEnvAcquisition'\/'ConfigProfileResolvers'\/'safeFileEnv' for
+the full trace of every branch in @ConfigFile.evalConfig@ and why an
+unmodified @fromFileEnv@ can silently orphan a config-file /source/
+profile's refresh child, or reach the unsafe @fromDefaultInstanceProfile@
+via @credential_source=Ec2InstanceMetadata@.
+
+The IORef accumulates any \"hidden\" child release actions the config-file
+provider's own recursive chain produces -- see 'safeFileEnv' -- so that
+whichever provider in this list ultimately wins, 'acquireAwsEnv' can build
+a complete 'AwsEnvAcquisition' for it (an empty ledger for every provider
+except the config-file one simply means \"nothing hidden\", reducing to
+exactly the single-child release every other provider already had).
 -}
-discoverSafely :: EnvNoAuth -> IO Env
-discoverSafely =
+discoverSafely :: IORef [IO ()] -> EnvNoAuth -> IO Env
+discoverSafely hiddenReleasesRef =
   runCredentialChain
     [ fromKeysEnv
-    , fromFileEnv
+    , safeFileEnv productionConfigProfileResolvers hiddenReleasesRef
     , fromWebIdentityEnv
     , fromContainerEnv
     , safeDefaultInstanceProfile
     ]
+
 
 {- | A safe reimplementation of the pinned Amazonka fork's own
 @Amazonka.Auth.InstanceProfile.fromDefaultInstanceProfile@\/
@@ -393,13 +450,232 @@ ever delays this one thread reaching 'SupervisedEnvReady'; every request
 still observes an immediate, bounded, sanitized snapshot the entire time
 (see 'readSupervisedEnv'\/'requestAwsEnvReady'), never blocking on
 discovery itself.
+
+Returns the acquired 'Env' paired with its complete release action (see
+'AwsEnvAcquisition') rather than a bare 'Env': 'startSupervisedEnv' folds
+release into acquisition's own return value precisely because the
+config-file provider ('safeFileEnv') can acquire hidden children that are
+not recoverable from the published 'Env' value alone; deriving release
+from '.auth' the way 'releaseAwsEnvGeneration' does would silently miss
+them for every other provider this reduces to exactly that one release.
 -}
-acquireAwsEnv :: IO (Either AwsAuthErrorDiagnostic Env)
+acquireAwsEnv :: IO (Either AwsAuthErrorDiagnostic (Env, IO ()))
 acquireAwsEnv = do
-  outcome <- try @_ @AuthError (newEnv discoverSafely)
+  hiddenReleasesRef <- newIORef []
+  outcome <- try @_ @AuthError (newEnv (discoverSafely hiddenReleasesRef))
   case outcome of
     Left authErr -> Left <$> evaluate (classifyAuthErrorDiagnostic authErr)
-    Right env -> pure (Right env)
+    Right env -> do
+      hiddenReleases <- readIORef hiddenReleasesRef
+      let acquisition = AwsEnvAcquisition {awsEnvAcquisitionEnv = env, awsEnvAcquisitionHiddenReleases = hiddenReleases}
+      pure $ Right (env, releaseAwsEnvAcquisition acquisition)
+
+{- | Every acquisition primitive 'safeEvalConfigProfile' needs for one
+\"leaf\" @ConfigProfile@\/@CredentialSource@ variant, factored out so tests
+can inject deterministic fakes (that simulate forking a 'Ref' child
+without real credentials\/network\/filesystem access) rather than only
+ever exercising this against real AWS infrastructure. 'productionConfigProfileResolvers'
+wires the real pinned-source-equivalent calls; see 'safeEvalConfigProfile'
+for how each is used and 'AwsEnvSupervisorSpec' for the fakes.
+-}
+data ConfigProfileResolvers = ConfigProfileResolvers
+  { resolveEnvironmentSource :: forall withAuth. Env' withAuth -> IO Env
+  -- ^ @credential_source=Environment@ \/ plain env-var credentials.
+  , resolveEc2Source :: forall withAuth. Env' withAuth -> IO Env
+  -- ^ @credential_source=Ec2InstanceMetadata@ -- deliberately
+  -- 'safeDefaultInstanceProfile', /not/ the pinned source's own
+  -- @fromDefaultInstanceProfile@, which 'Amazonka.Auth.ConfigFile'
+  -- reaches directly and unsafely for this exact credential source.
+  , resolveEcsSource :: forall withAuth. Env' withAuth -> IO Env
+  -- ^ @credential_source=EcsContainer@.
+  , resolveAssumedRole :: Text -> Env -> IO Env
+  -- ^ @sts:AssumeRole@ onto an already-resolved source 'Env'.
+  , resolveWebIdentity :: forall withAuth. FilePath -> Text -> Maybe Text -> Env' withAuth -> IO Env
+  -- ^ @AssumeRoleWithWebIdentity@.
+  , resolveSSO :: forall withAuth. FilePath -> Region -> Text -> Text -> Env' withAuth -> IO Env
+  -- ^ @AssumeRoleViaSSO@.
+  }
+
+productionConfigProfileResolvers :: ConfigProfileResolvers
+productionConfigProfileResolvers =
+  ConfigProfileResolvers
+    { resolveEnvironmentSource = fromKeysEnv
+    , resolveEc2Source = safeDefaultInstanceProfile
+    , resolveEcsSource = fromContainerEnv
+    , resolveAssumedRole = \roleArn -> fromAssumedRole roleArn "amazonka-assumed-role"
+    , resolveWebIdentity = fromWebIdentity
+    , resolveSSO = fromSSO
+    }
+
+{- | A safe reimplementation of the pinned Amazonka fork's own
+@Amazonka.Auth.ConfigFile@ internal, non-exported @loadIniFile@
+(@lib/amazonka/src/Amazonka/Auth/ConfigFile.hs@ at
+@b562aa3f24845e34b95748daae671860017426be@), built entirely from the
+exported @directory@\/@ini@ packages that pinned function itself uses --
+no patched\/forked dependency. Matches its exact behavior byte-for-byte:
+a missing file throws 'MissingFileError', any other read\/parse failure
+throws 'InvalidFileError'; only the per-section key\/value assocs
+('INI.iniSections') are returned, exactly as pinned @loadIniFile@ does.
+-}
+safeLoadIniFile :: FilePath -> IO (HashMap Text [(Text, Text)])
+safeLoadIniFile path = do
+  exists <- Directory.doesFileExist path
+  unless exists $ Exception.throwIO (MissingFileError path)
+  INI.readIniFile path >>= \case
+    Left err -> Exception.throwIO $ InvalidFileError $ Text.pack (path <> ": " <> err)
+    Right ini -> pure (INI.iniSections ini)
+
+{- | A safe reimplementation of the pinned Amazonka fork's own
+@Amazonka.Auth.ConfigFile@ internal, non-exported @evalConfig@
+(@lib/amazonka/src/Amazonka/Auth/ConfigFile.hs@ at
+@b562aa3f24845e34b95748daae671860017426be@), built entirely from that
+module's own /exported/ primitives ('ConfigProfile', 'CredentialSource',
+'parseConfigProfile') plus the injected 'ConfigProfileResolvers' rather
+than a patched\/forked dependency.
+
+The pinned source's recursive @evalConfig@, for @AssumeRoleFromProfile@\/
+@AssumeRoleFromCredentialSource@ profiles, resolves a @sourceEnv@ (which
+may itself carry a 'Ref'-based background refresh child -- e.g. via
+@credential_source=Ec2InstanceMetadata@'s own @fromDefaultInstanceProfile@
+call, or a deeper nested @AssumeRoleFromProfile@), then calls
+@fromAssumedRole roleArn sessionName sourceEnv@, which does
+@pure env {auth = Identity keys}@ -- /overwriting/, not preserving, the
+source's own @.auth@ field with the new assumed-role's. The source's
+original 'Auth'\/'Ref' becomes reachable only via whatever internal
+closures Amazonka's own refresh loop happens to retain, with no explicit
+handle ever exposed back to @fromFilePath@'s caller -- so nothing this
+module's release protocol can ever see or kill it: it is orphaned, and a
+delayed refresh failure can still @throwTo@ this thread at an arbitrary
+future point, potentially misattributed to a /later/ generation.
+
+This reimplementation instead accumulates every such hidden child's
+release action explicitly (see 'AwsEnvAcquisition'), and wraps every
+onward acquisition step in 'Exception.onException' so that if it fails or
+this thread is cancelled /after/ a source's child was created but
+/before/ the wrapping step (@fromAssumedRole@\/@fromWebIdentity@\/
+@fromSSO@) returns, that source's already-accumulated children (and its
+own now-about-to-be-hidden @.auth@) are released before the
+exception propagates -- so a failed\/cancelled generation never leaks
+what it already acquired. Every @ConfigProfile@ variant otherwise
+resolves in exactly the pinned source's own precedence, region-override
+sequencing, and error classification (including its identical
+infinite-recursion\/@seen@-list cycle detection for
+@AssumeRoleFromProfile@ chains: a @source_profile@ is rejected as soon as
+it repeats one already on the current resolution path, exactly mirroring
+pinned @evalConfig@'s own @StateT [Text]@ tracking).
+-}
+safeEvalConfigProfile
+  :: ConfigProfileResolvers
+  -> HashMap Text (HashMap Text Text)
+  -> [Text]
+  -> Text
+  -> Env' withAuth
+  -> IO AwsEnvAcquisition
+safeEvalConfigProfile resolvers config seen profileName env =
+  case HashMap.lookup profileName config of
+    Nothing -> Exception.throwIO $ InvalidFileError $ "Missing profile: " <> Text.pack (show profileName)
+    Just profileSettings -> case parseConfigProfile profileSettings of
+      Nothing -> Exception.throwIO $ InvalidFileError $ "Parse error in profile: " <> Text.pack (show profileName)
+      Just (profile, mRegion) -> applyRegionOverride mRegion <$> resolveProfile profile
+ where
+  applyRegionOverride :: Maybe Region -> AwsEnvAcquisition -> AwsEnvAcquisition
+  applyRegionOverride Nothing acquisition = acquisition
+  applyRegionOverride (Just r) acquisition =
+    acquisition {awsEnvAcquisitionEnv = (awsEnvAcquisitionEnv acquisition) {region = r}}
+
+  leaf :: IO Env -> IO AwsEnvAcquisition
+  leaf act = (\finalEnv -> AwsEnvAcquisition finalEnv []) <$> act
+
+  -- | Resolve a source (recursively, or a leaf 'CredentialSource'), then
+  -- wrap it with @wrap@ (@fromAssumedRole@). If @wrap@ throws or this
+  -- thread is cancelled, release everything the source already
+  -- accumulated (including its own now-to-be-hidden @.auth@) before
+  -- propagating; on success, the source's own @.auth@ becomes hidden (no
+  -- longer reachable via the returned 'Env') and is appended to the
+  -- accumulated hidden-release list.
+  assumeRoleOnto :: IO AwsEnvAcquisition -> (Env -> IO Env) -> IO AwsEnvAcquisition
+  assumeRoleOnto acquireSource wrap = do
+    sourceAcquisition <- acquireSource
+    let sourceEnv = awsEnvAcquisitionEnv sourceAcquisition
+        sourceRelease = releaseAwsEnvChild (runIdentity sourceEnv.auth)
+    ( do
+        finalEnv <- wrap sourceEnv
+        pure
+          AwsEnvAcquisition
+            { awsEnvAcquisitionEnv = finalEnv
+            , awsEnvAcquisitionHiddenReleases = awsEnvAcquisitionHiddenReleases sourceAcquisition <> [sourceRelease]
+            }
+      )
+      `Exception.onException` releaseAwsEnvAcquisition sourceAcquisition
+
+  resolveProfile :: ConfigProfile -> IO AwsEnvAcquisition
+  resolveProfile = \case
+    ExplicitKeys authKeys -> leaf $ pure env {auth = Identity (Auth authKeys)}
+    AssumeRoleFromProfile roleArn sourceProfileName
+      | sourceProfileName `elem` seen ->
+          Exception.throwIO
+            $ InvalidFileError
+            $ "Infinite source_profile loop: "
+            <> Text.intercalate " -> " (reverse (sourceProfileName : seen))
+      | otherwise ->
+          assumeRoleOnto
+            (safeEvalConfigProfile resolvers config (sourceProfileName : seen) sourceProfileName env)
+            (resolveAssumedRole resolvers roleArn)
+    AssumeRoleFromCredentialSource roleArn source ->
+      assumeRoleOnto (leaf (resolveCredentialSource source)) (resolveAssumedRole resolvers roleArn)
+    AssumeRoleWithWebIdentity roleArn mSessionName tokenFile ->
+      leaf $ resolveWebIdentity resolvers tokenFile roleArn mSessionName env
+    AssumeRoleViaSSO startUrl ssoRegion accountId roleName -> do
+      cachedTokenFile <- configPathRelative (relativeCachedTokenFile startUrl)
+      leaf $ resolveSSO resolvers cachedTokenFile ssoRegion accountId roleName env
+
+  resolveCredentialSource :: CredentialSource -> IO Env
+  resolveCredentialSource = \case
+    Environment -> resolveEnvironmentSource resolvers env
+    Ec2InstanceMetadata -> resolveEc2Source resolvers env
+    EcsContainer -> resolveEcsSource resolvers env
+
+{- | A safe reimplementation of the pinned Amazonka fork's own
+@Amazonka.Auth.ConfigFile.fromFileEnv@\/@fromFilePath@
+(@lib/amazonka/src/Amazonka/Auth/ConfigFile.hs@ at
+@b562aa3f24845e34b95748daae671860017426be@), built entirely from that
+module's own /exported/ primitives ('mergeConfigs', 'configPathRelative',
+'Amazonka.Env.lookupRegion') plus 'safeLoadIniFile'\/'safeEvalConfigProfile'
+above, rather than a patched\/forked dependency. Resolves the exact same
+@AWS_PROFILE@\/@AWS_CONFIG_FILE@\/@AWS_SHARED_CREDENTIALS_FILE@ environment
+variables, the same default @~\/.aws\/config@\/@~\/.aws\/credentials@
+fallback paths (via 'configPathRelative'), the same \"a missing or
+unparsable credentials\/config file is treated as empty, not fatal\"
+tolerance (pinned @fromFilePath@'s own @Exception.catchJust@ around each
+@loadIniFile@ call), and the same final @AWS_REGION@ override precedence,
+as the pinned source.
+
+Writes the resolved profile's hidden-release list into @hiddenReleasesRef@
+-- read back by 'acquireAwsEnv' once 'discoverSafely' as a whole succeeds
+-- but only on this function's own success: every failure path upstream in
+'safeEvalConfigProfile' already self-cleans via 'Exception.onException'
+before any exception ever reaches here, so this ledger always reflects
+either this attempt's complete hidden-release list, or (if this provider
+lost to an earlier one in 'discoverSafely''s chain, or failed outright)
+remains untouched.
+-}
+safeFileEnv :: ConfigProfileResolvers -> IORef [IO ()] -> Env' withAuth -> IO Env
+safeFileEnv resolvers hiddenReleasesRef env = do
+  profileName <- maybe "default" Text.pack <$> lookupEnv "AWS_PROFILE"
+  credentialsPath <- maybe (configPathRelative "/.aws/credentials") pure =<< lookupEnv "AWS_SHARED_CREDENTIALS_FILE"
+  configPath <- maybe (configPathRelative "/.aws/config") pure =<< lookupEnv "AWS_CONFIG_FILE"
+  credentialsIni <- tolerateMissingOrInvalid (safeLoadIniFile credentialsPath)
+  configIni <- tolerateMissingOrInvalid (safeLoadIniFile configPath)
+  let config = mergeConfigs credentialsIni configIni
+  acquisition <- safeEvalConfigProfile resolvers config [] profileName env
+  regionOverride <- lookupRegion
+  let resolvedEnv = maybe id (\r e -> e {region = r}) regionOverride (awsEnvAcquisitionEnv acquisition)
+  writeIORef hiddenReleasesRef (awsEnvAcquisitionHiddenReleases acquisition)
+  pure resolvedEnv
+ where
+  tolerateMissingOrInvalid = Exception.handle (\(_ :: AuthError) -> pure HashMap.empty)
+
+
 
 {- | Block for as long as this generation remains valid, then return the
 sanitized diagnostic that invalidated it. Only ever called from
@@ -569,15 +845,12 @@ observe a stale 'SupervisedEnvReady' snapshot pointing at a resource
 nobody is monitoring any longer.
 -}
 startSupervisedEnv
-  :: IO (Either AwsAuthErrorDiagnostic env)
-  -- ^ acquire one fresh generation.
-  -> (env -> IO ())
-  -- ^ release the background resource (if any) owned by one generation,
-  -- regardless of how that generation's monitoring stopped -- applied via
-  -- 'finally' /around/ the @awaitInvalidation@ call in 'runGeneration',
-  -- not inside @awaitInvalidation@ itself. See the Haddock above for
-  -- exactly why that placement, rather than an internal 'finally' inside
-  -- @awaitInvalidation@, is required.
+  :: IO (Either AwsAuthErrorDiagnostic (env, IO ()))
+  -- ^ acquire one fresh generation, paired with its own complete release
+  -- action -- see 'AwsEnvAcquisition' for why release must be derived
+  -- from what @acquire@ itself acquired (which may include state not
+  -- recoverable from @env@ alone, e.g. a config-file source profile's
+  -- hidden refresh child) rather than a separate, @env@-only projection.
   -> (env -> IO AwsAuthErrorDiagnostic)
   -- ^ block until @env@'s generation is invalidated (or an external
   -- exception interrupts this call), returning the classified reason.
@@ -585,7 +858,7 @@ startSupervisedEnv
   -- ^ backoff between a failed\/invalidated generation and the next
   -- attempt.
   -> IO (SupervisedEnv env)
-startSupervisedEnv acquire release awaitInvalidation backoff = do
+startSupervisedEnv acquire awaitInvalidation backoff = do
   stateVar <- newTVarIO SupervisedEnvInitializing
   supervisorAsync <- Async.async (supervise stateVar)
   pure SupervisedEnv {supervisedEnvStateVar = stateVar, supervisedEnvAsync = supervisorAsync}
@@ -611,15 +884,15 @@ startSupervisedEnv acquire release awaitInvalidation backoff = do
     -- caller even though this attempt might succeed well within their
     -- timeout.
     --
-    -- @release env@ is applied via 'finally' /around/ @restore
-    -- (awaitInvalidation env)@ -- i.e. at this call site, not inside
-    -- @awaitInvalidation@'s own body -- so its handler is installed
-    -- synchronously, while still masked, before 'restore' ever unmasks.
-    -- A pending asynchronous exception delivered exactly as 'restore'
-    -- unmasks is therefore always caught by this already-installed
-    -- 'finally', which runs @release env@ before the exception
-    -- propagates; had @awaitInvalidation@ tried to install its own
-    -- handler as the first action of its (as-yet-unforced) body, that
+    -- @release@ (bundled with @env@ by @acquire@ itself) is applied via
+    -- 'finally' /around/ @restore (awaitInvalidation env)@ -- i.e. at
+    -- this call site, not inside @awaitInvalidation@'s own body -- so its
+    -- handler is installed synchronously, while still masked, before
+    -- 'restore' ever unmasks. A pending asynchronous exception delivered
+    -- exactly as 'restore' unmasks is therefore always caught by this
+    -- already-installed 'finally', which runs @release@ before the
+    -- exception propagates; had @awaitInvalidation@ tried to install its
+    -- own handler as the first action of its (as-yet-unforced) body, that
     -- pending exception could be delivered before that body ever begins
     -- running at all, skipping it entirely. See 'startSupervisedEnv''s
     -- Haddock for the full explanation.
@@ -629,9 +902,9 @@ startSupervisedEnv acquire release awaitInvalidation backoff = do
       acquired <- acquire
       case acquired of
         Left diag -> pure diag
-        Right env -> do
+        Right (env, release) -> do
           atomically $ writeTVar stateVar (SupervisedEnvReady env)
-          restore (awaitInvalidation env) `finally` release env
+          restore (awaitInvalidation env) `finally` release
   publish stateVar diag = do
     forced <- evaluate diag
     atomically $ writeTVar stateVar (SupervisedEnvUnavailable forced)
@@ -703,19 +976,18 @@ for the remainder of its lifetime: signalling demand a second (or
 subsequent) time is a cheap no-op.
 -}
 newDemandDrivenSupervisor
-  :: IO (Either AwsAuthErrorDiagnostic env)
-  -- ^ acquire one fresh generation -- not run at all until demanded.
-  -> (env -> IO ())
-  -- ^ release the background resource (if any) owned by one generation.
+  :: IO (Either AwsAuthErrorDiagnostic (env, IO ()))
+  -- ^ acquire one fresh generation (paired with its release action) --
+  -- not run at all until demanded.
   -> (env -> IO AwsAuthErrorDiagnostic)
   -- ^ block until @env@'s generation is invalidated.
   -> IO ()
   -- ^ backoff between a failed\/invalidated generation and the next
   -- attempt.
   -> IO (DemandDrivenSupervisor env)
-newDemandDrivenSupervisor acquire release awaitInvalidation backoff = do
+newDemandDrivenSupervisor acquire awaitInvalidation backoff = do
   demandVar <- newTVarIO False
-  generic <- startSupervisedEnv (waitForDemand demandVar >> acquire) release awaitInvalidation backoff
+  generic <- startSupervisedEnv (waitForDemand demandVar >> acquire) awaitInvalidation backoff
   pure DemandDrivenSupervisor {demandDrivenSupervisorGeneric = generic, demandDrivenSupervisorDemand = demandVar}
  where
   waitForDemand demandVar = atomically (readTVar demandVar >>= check)
@@ -781,7 +1053,6 @@ newAwsEnvSupervisor =
   AwsEnvSupervisor
     <$> newDemandDrivenSupervisor
       acquireAwsEnv
-      releaseAwsEnvGeneration
       awaitAwsEnvInvalidation
       awsEnvSupervisorBackoff
  where

@@ -93,6 +93,7 @@ library:
     - http-client-tls
     - http-conduit
     - http-types
+    - ini
     - jose
     - lens
     - lens-aeson
@@ -123,6 +124,7 @@ library:
     - tls
     - transformers
     - unliftio
+    - unordered-containers
     - uri-bytestring
     - uuid
     - vector

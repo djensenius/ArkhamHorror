@@ -28,10 +28,10 @@ import Api.Arkham.Helpers (
   pubSubSupervisor,
   roomHeartbeat,
  )
+import Api.Arkham.Lifecycle (acquireTransferringOwnershipOnSuccess, acquireWithUnconditionalRelease)
 import Arkham.Metrics qualified as Metrics
 import Config
 import Control.Concurrent.MVar (newMVar)
-import Control.Exception (bracket, bracketOnError, onException)
 import Control.Monad.Logger (liftLoc, runLoggingT)
 import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.CaseInsensitive (foldCase, mk)
@@ -140,17 +140,18 @@ makeFoundation appSettings = do
   -- credential source) until a bug-report upload actually demands it; see
   -- "Api.Arkham.AwsEnvSupervisor".
   --
-  -- 'bracketOnError' ties its fate to the REST of this function: if any
-  -- later initialization step below throws, or this thread is
-  -- asynchronously cancelled, before 'makeFoundation' returns, the
-  -- supervisor started here is stopped (its dedicated thread terminated
-  -- and awaited, see 'stopAwsEnvSupervisor') exactly once before that
-  -- exception propagates, so a failed/aborted Foundation construction can
-  -- never leak it. On success, ownership crosses into the returned 'App'
-  -- value for its ultimate owner ('shutdownApp', via 'appMain'/'handler'/
-  -- 'DevelMain') to stop later -- 'bracketOnError' deliberately does
-  -- *not* release on success, unlike a plain 'bracket'.
-  bracketOnError newAwsEnvSupervisor stopAwsEnvSupervisor $ \appAwsEnvSupervisor -> do
+  -- 'bracketOnError' (here, 'acquireTransferringOwnershipOnSuccess') ties
+  -- its fate to the REST of this function: if any later initialization
+  -- step below throws, or this thread is asynchronously cancelled, before
+  -- 'makeFoundation' returns, the supervisor started here is stopped (its
+  -- dedicated thread terminated and awaited, see 'stopAwsEnvSupervisor')
+  -- exactly once before that exception propagates, so a failed/aborted
+  -- Foundation construction can never leak it. On success, ownership
+  -- crosses into the returned 'App' value for its ultimate owner
+  -- ('shutdownApp', via 'appMain'/'handler'/'DevelMain') to stop later --
+  -- unlike 'acquireWithUnconditionalRelease', this deliberately does *not*
+  -- release on success.
+  acquireTransferringOwnershipOnSuccess newAwsEnvSupervisor stopAwsEnvSupervisor $ \appAwsEnvSupervisor -> do
     appMessageBroker <- case appRedisConnectionInfo appSettings of
       Nothing -> pure WebSocketBroker
       Just url -> do
@@ -319,11 +320,11 @@ appMain = do
 
   -- Generate the foundation from the settings, and bracket its ownership
   -- with 'shutdownApp' -- covering both a Warp exit/exception below and
-  -- (via 'onException' semantics were this a plain bracket -- here a full
-  -- 'bracket' since there is no "success" case to skip cleanup for: Warp
-  -- serves forever, so reaching this bracket's cleanup always means exit)
   -- an exception raised constructing the WAI 'Application' itself.
-  bracket (makeFoundation settings) shutdownApp $ \foundation -> do
+  -- 'acquireWithUnconditionalRelease' (plain 'bracket'): there is no
+  -- "success" case to skip cleanup for, since Warp serves forever, so
+  -- reaching this bracket's cleanup always means exit.
+  acquireWithUnconditionalRelease (makeFoundation settings) shutdownApp $ \foundation -> do
     -- Generate a WAI Application from the foundation
     app <- makeApplication foundation
 
@@ -336,17 +337,21 @@ appMain = do
 getApplicationRepl :: IO (Int, App, Application)
 getApplicationRepl = do
   settings <- getAppSettings
-  foundation <- makeFoundation settings
-  -- If either remaining step below fails, 'shutdownApp' runs immediately
-  -- rather than leaking the supervisor 'makeFoundation' already started;
-  -- on success, ownership crosses to the returned 'foundation' for
-  -- 'DevelMain''s restart protocol to shut down later.
-  ( do
-      wsettings <- getDevSettings $ warpSettings foundation
-      app1 <- makeApplication foundation
-      pure (getPort wsettings, foundation, app1)
-    )
-    `onException` shutdownApp foundation
+  -- 'acquireTransferringOwnershipOnSuccess' (here, 'bracketOnError'
+  -- semantics) spans acquisition of the WHOLE Foundation through the
+  -- complete '(Int, App, Application)' tuple being ready -- not just a
+  -- bare 'makeFoundation' call followed by a separately-installed
+  -- 'onException': the latter leaves a real gap between 'makeFoundation'
+  -- returning (unmasked) and the exception handler actually being
+  -- installed, in which a delivered async exception would leak the
+  -- Foundation (and its supervisor) with nothing left to shut it down.
+  -- 'bracketOnError' masks across exactly that boundary. On success,
+  -- ownership crosses to the returned 'foundation' for 'DevelMain''s
+  -- restart protocol to shut down later.
+  acquireTransferringOwnershipOnSuccess (makeFoundation settings) shutdownApp $ \foundation -> do
+    wsettings <- getDevSettings $ warpSettings foundation
+    app1 <- makeApplication foundation
+    pure (getPort wsettings, foundation, app1)
 
 shutdownApp :: App -> IO ()
 shutdownApp app = stopAwsEnvSupervisor (appAwsEnvSupervisor app)
@@ -363,7 +368,7 @@ shutdownApp app = stopAwsEnvSupervisor (appAwsEnvSupervisor app)
 handler :: Handler a -> IO a
 handler h = do
   settings <- getAppSettings
-  bracket (makeFoundation settings) shutdownApp (flip unsafeHandler h)
+  acquireWithUnconditionalRelease (makeFoundation settings) shutdownApp (flip unsafeHandler h)
 
 -- | Run DB queries
 db :: ReaderT SqlBackend Handler a -> IO a

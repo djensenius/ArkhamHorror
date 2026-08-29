@@ -6,20 +6,26 @@ bracketed by 'Application.makeFoundation'\/'Application.appMain'\/
 leak the supervisor's dedicated thread, the GHCI @handler@ helper never
 shut one down at all, and @DevelMain@ could signal restart readiness
 before the old generation's supervisor had actually finished stopping,
-letting two generations overlap.
+letting two generations overlap; and a failed\/interrupted @DevelMain@
+shutdown never delivered any result at all, deadlocking a later restart's
+wait forever.
 
 'Application.hs' cannot itself be exercised directly here without a live
 Postgres\/Redis connection ('makeFoundation' unconditionally creates a
-connection pool), so these tests instead exercise the exact composition
-/patterns/ each call site applies -- 'bracketOnError', plain 'bracket',
-and 'onException' -- directly against the real, production
-'Api.Arkham.AwsEnvSupervisor.AwsEnvSupervisor' (safe to construct and stop
-in a fast unit test: it is demand-driven and starts its dedicated thread
-without ever contacting a credential source until first demanded, see
-'Api.Arkham.AwsEnvSupervisor.newAwsEnvSupervisor'). Each test's shape
-mirrors one real call site closely enough that reverting that call site's
-combinator choice (e.g. plain 'bracket' back to 'bracketOnError', or
-removing 'onException') would make the corresponding test here fail.
+connection pool), so these tests instead import and directly execute the
+/exact/ production ownership helpers from 'Api.Arkham.Lifecycle' --
+'acquireTransferringOwnershipOnSuccess' ('Application.makeFoundation',
+'Application.getApplicationRepl'), 'acquireWithUnconditionalRelease'
+('Application.appMain', 'Application.handler'), and
+'shutdownThenDeliver' (@app\/DevelMain.hs@) -- against the real,
+production 'Api.Arkham.AwsEnvSupervisor.AwsEnvSupervisor' (safe to
+construct and stop in a fast unit test: it is demand-driven and starts
+its dedicated thread without ever contacting a credential source until
+first demanded, see 'Api.Arkham.AwsEnvSupervisor.newAwsEnvSupervisor').
+Because every call site and this spec share the same concrete
+definitions, a regression at 'Api.Arkham.Lifecycle' itself (its
+combinator choice, or 'shutdownThenDeliver''s result-delivery contract)
+is directly caught here, and is proven by the mutation checks below.
 -}
 module Arkham.Api.AwsEnvSupervisorLifecycleSpec (spec) where
 
@@ -30,14 +36,14 @@ import Api.Arkham.AwsEnvSupervisor (
   requestAwsEnvReady,
   stopAwsEnvSupervisor,
  )
-import Arkham.Prelude hiding (bracket, bracketOnError, onException)
+import Api.Arkham.Lifecycle (
+  acquireTransferringOwnershipOnSuccess,
+  acquireWithUnconditionalRelease,
+  proceedOnlyIfPreviousShutdownSucceeded,
+  shutdownThenDeliver,
+ )
+import Arkham.Prelude
 import Control.Concurrent (forkIO, threadDelay)
--- Explicitly the base 'Control.Exception' combinators, not
--- 'Arkham.Prelude''s re-exported "unliftio" versions -- these tests
--- exercise the exact composition each 'Application.hs' call site uses,
--- and 'Application.hs' (which does not import 'Arkham.Prelude') uses the
--- base versions.
-import Control.Exception (bracket, bracketOnError, onException)
 import Control.Exception qualified as Exception
 import Test.Hspec
 
@@ -72,7 +78,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     it "stops the supervisor exactly once when a later initialization step throws immediately after construction" do
       supRef <- newIORef Nothing
       result <- Exception.try @Exception.SomeException do
-        bracketOnError newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> do
+        acquireTransferringOwnershipOnSuccess newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> do
           writeIORef supRef (Just sup)
           Exception.throwIO (userError "connection pool creation failed")
       case result of
@@ -86,7 +92,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       supRef <- newIORef Nothing
       stepsCompletedRef <- newIORef (0 :: Int)
       result <- Exception.try @Exception.SomeException do
-        bracketOnError newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> do
+        acquireTransferringOwnershipOnSuccess newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> do
           writeIORef supRef (Just sup)
           -- Stand in for the several unrelated initialization steps that
           -- in 'Application.makeFoundation' run after the supervisor is
@@ -111,7 +117,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         forkIO
           $ putMVar workerDone
           =<< Exception.try @Exception.AsyncException do
-            bracketOnError newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> do
+            acquireTransferringOwnershipOnSuccess newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> do
               writeIORef supRef (Just sup)
               putMVar bodyStarted ()
               forever (threadDelay maxBound)
@@ -126,12 +132,12 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       shouldBeTerminated state
 
     it "does NOT stop the supervisor on success -- ownership transfers to the caller, matching bracketOnError semantics" do
-      result <- bracketOnError newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> pure sup
+      result <- acquireTransferringOwnershipOnSuccess newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> pure sup
       -- Still live: a fresh demand-driven supervisor that has never been
       -- stopped reports 'SupervisedEnvInitializing' (it never even
       -- attempts acquisition until first demanded), not the terminal
-      -- state 'bracketOnError' would have published had it (incorrectly)
-      -- released on this success path too.
+      -- state 'acquireTransferringOwnershipOnSuccess' would have
+      -- published had it (incorrectly) released on this success path too.
       state <- requestAwsEnvReady result 0
       shouldNotBeTerminated state
       -- Ownership transfers to this test, matching 'makeFoundation''s
@@ -142,37 +148,81 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
   describe "appMain/handler-style plain bracket: release unconditionally, on both success and failure" do
     it "stops the supervisor after a successful action" do
       sup <- newAwsEnvSupervisor
-      () <- bracket (pure sup) stopAwsEnvSupervisor \_ -> pure ()
+      () <- acquireWithUnconditionalRelease (pure sup) stopAwsEnvSupervisor \_ -> pure ()
       state <- requestAwsEnvReady sup 0
       shouldBeTerminated state
 
     it "stops the supervisor even when the action (standing in for a Warp exit/exception) throws" do
       sup <- newAwsEnvSupervisor
       result <- Exception.try @Exception.SomeException do
-        bracket (pure sup) stopAwsEnvSupervisor \_ -> Exception.throwIO (userError "Warp exited abnormally")
+        acquireWithUnconditionalRelease (pure sup) stopAwsEnvSupervisor \_ -> Exception.throwIO (userError "Warp exited abnormally")
       case result of
         Left _ -> pure ()
         Right () -> expectationFailure "expected the action's failure to propagate"
       state <- requestAwsEnvReady sup 0
       shouldBeTerminated state
 
-  describe "getApplicationRepl-style onException: release only on failure, ownership transfers to the caller on success" do
+  describe "getApplicationRepl-style acquireTransferringOwnershipOnSuccess: no gap between acquisition and cleanup installation" do
     it "stops the supervisor when a later step (standing in for getDevSettings/makeApplication) throws" do
-      sup <- newAwsEnvSupervisor
+      supRef <- newIORef Nothing
       result <- Exception.try @Exception.SomeException do
-        Exception.throwIO (userError "a later getApplicationRepl step failed") `onException` stopAwsEnvSupervisor sup
+        acquireTransferringOwnershipOnSuccess newAwsEnvSupervisor stopAwsEnvSupervisor \sup -> do
+          writeIORef supRef (Just sup)
+          Exception.throwIO (userError "a later getApplicationRepl step failed")
       case result of
         Left _ -> pure ()
         Right () -> expectationFailure "expected the failure to propagate"
+      Just sup <- readIORef supRef
       state <- requestAwsEnvReady sup 0
       shouldBeTerminated state
 
     it "does NOT stop the supervisor on success -- ownership transfers to DevelMain's site for later shutdownApp" do
-      sup <- newAwsEnvSupervisor
-      () <- pure () `onException` stopAwsEnvSupervisor sup
+      sup <- acquireTransferringOwnershipOnSuccess newAwsEnvSupervisor stopAwsEnvSupervisor pure
       state <- requestAwsEnvReady sup 0
       shouldNotBeTerminated state
       stopAwsEnvSupervisor sup
+
+  {- | 'shutdownThenDeliver' is what @DevelMain.hs@'s @start@ now uses
+  instead of the old bare @shutdownApp site >> putMVar done ()@: it must
+  always deliver an outcome to @done@, converting a shutdown failure (or
+  a cancellation delivered while shutdown is blocked on its own
+  interruptible internals) into a delivered 'Left' rather than letting it
+  propagate and skip delivery entirely.
+  -}
+  describe "shutdownThenDeliver (DevelMain restart-result delivery)" do
+    it "delivers Right () for a successful shutdown" do
+      done <- newEmptyMVar
+      shutdownThenDeliver (pure ()) done
+      result <- takeMVar done
+      case result of
+        Right () -> pure ()
+        Left e -> expectationFailure ("expected a successful shutdown to deliver Right (), got Left " <> show e)
+
+    it "delivers Left for a shutdown that throws, instead of propagating and skipping delivery" do
+      done <- newEmptyMVar
+      shutdownThenDeliver (Exception.throwIO (userError "supervisor stop failed")) done
+      result <- takeMVar done
+      case result of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the shutdown failure to be delivered as Left, not silently succeed"
+
+    it "delivers Left for a shutdown cancelled by an async exception mid-flight, rather than deadlocking the waiter forever" do
+      done <- newEmptyMVar
+      shutdownStarted <- newEmptyMVar
+      workerTid <-
+        forkIO
+          $ shutdownThenDeliver
+            ( do
+                putMVar shutdownStarted ()
+                forever (threadDelay maxBound)
+            )
+            done
+      takeMVar shutdownStarted
+      Exception.throwTo workerTid Exception.ThreadKilled
+      result <- takeMVar done
+      case result of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the cancelled shutdown to be delivered as Left"
 
   {- | Regression for the exact @DevelMain.hs@ ordering bug: the old code
   signalled restart readiness (@putMVar done ()@, which unblocks
@@ -180,7 +230,9 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
   a brand-new 'Application.App'\/supervisor generation) /before/
   @shutdownApp site@ on the old generation had actually finished,
   allowing the old and new supervisors to run concurrently for a window.
-  The fix reorders these two actions so shutdown is awaited first.
+  The fix reorders these two actions so shutdown is awaited first, using
+  'shutdownThenDeliver' to also ensure a failed shutdown is reported and
+  does not start a replacement generation at all.
   -}
   describe "DevelMain-style restart ordering: shutdown must complete before signalling restart readiness" do
     it "the corrected ordering never allows a new generation's supervisor to exist while the old one is still stopping" do
@@ -188,11 +240,16 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       newSupStartedRef <- newIORef False
       done <- newEmptyMVar
       -- Mirrors the fixed 'app/DevelMain.hs': finish stopping the OLD
-      -- generation's supervisor, and only then signal restart readiness.
-      _ <- forkIO (stopAwsEnvSupervisor oldSup >> putMVar done ())
+      -- generation's supervisor via the exact production
+      -- 'shutdownThenDeliver', and only then signal restart readiness.
+      _ <- forkIO (shutdownThenDeliver (stopAwsEnvSupervisor oldSup) done)
       -- Mirrors 'restartAppInNewThread': waits for the readiness signal
-      -- before ever constructing the next generation.
-      takeMVar done
+      -- before ever constructing the next generation, and only proceeds
+      -- on 'Right'.
+      result <- takeMVar done
+      case result of
+        Left err -> expectationFailure ("expected a clean shutdown, got: " <> show err)
+        Right () -> pure ()
       newSup <- newAwsEnvSupervisor
       writeIORef newSupStartedRef True
       -- By the time the new generation exists, the old one is
@@ -225,3 +282,28 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       putMVar allowStop ()
       stopAwsEnvSupervisor oldSup
       stopAwsEnvSupervisor newSup
+
+    it "does NOT start a replacement generation when the previous shutdown itself failed, matching restartAppInNewThread's Left branch" do
+      newSupStartedRef <- newIORef False
+      done <- newEmptyMVar
+      _ <- forkIO (shutdownThenDeliver (Exception.throwIO (userError "old supervisor failed to stop")) done)
+      result <- takeMVar done
+      -- Exercises the exact production 'proceedOnlyIfPreviousShutdownSucceeded'
+      -- helper that 'DevelMain.restartAppInNewThread' calls -- not a
+      -- locally-mirrored case expression -- so a regression that starts
+      -- a replacement on 'Left', or swallows the failure instead of
+      -- propagating it, is directly observable here.
+      propagated <- Exception.try @Exception.SomeException do
+        proceedOnlyIfPreviousShutdownSucceeded result (writeIORef newSupStartedRef True)
+      case propagated of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the previous shutdown's failure to propagate, not be swallowed"
+      readIORef newSupStartedRef `shouldReturn` False
+
+    it "DOES start a replacement generation when the previous shutdown succeeded, matching restartAppInNewThread's Right branch" do
+      newSupStartedRef <- newIORef False
+      done <- newEmptyMVar
+      shutdownThenDeliver (pure ()) done
+      result <- takeMVar done
+      proceedOnlyIfPreviousShutdownSucceeded result (writeIORef newSupStartedRef True)
+      readIORef newSupStartedRef `shouldReturn` True

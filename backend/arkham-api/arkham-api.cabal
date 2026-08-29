@@ -27,6 +27,7 @@ library
       Api.Arkham.Epic
       Api.Arkham.Export
       Api.Arkham.Helpers
+      Api.Arkham.Lifecycle
       Api.Arkham.Types.Achievement
       Api.Arkham.Types.Deck
       Api.Arkham.Types.Game
@@ -8216,6 +8217,7 @@ library
     , http-client-tls
     , http-conduit
     , http-types
+    , ini
     , jose
     , lens
     , lens-aeson
@@ -8246,6 +8248,7 @@ library
     , tls
     , transformers
     , unliftio
+    , unordered-containers
     , uri-bytestring
     , uuid
     , vector

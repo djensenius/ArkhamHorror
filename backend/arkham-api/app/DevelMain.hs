@@ -36,10 +36,12 @@ This option provides significantly faster code reload compared to
 -}
 module DevelMain where
 
+import Api.Arkham.Lifecycle (proceedOnlyIfPreviousShutdownSucceeded, shutdownThenDeliver)
 import Application (getApplicationRepl, shutdownApp)
 import Prelude
 
 import Control.Concurrent
+import Control.Exception (SomeException)
 import Control.Monad ((>=>))
 import Data.IORef
 import Foreign.Store
@@ -63,35 +65,49 @@ update = do
     -- server is already running
     Just tidStore -> restartAppInNewThread tidStore
  where
-  doneStore :: Store (MVar ())
+  doneStore :: Store (MVar (Either SomeException ()))
   doneStore = Store 0
 
-  -- shut the server down with killThread and wait for the done signal
+  -- Shut the server down with killThread, wait for the previous
+  -- generation's shutdown result, and only start a replacement if that
+  -- shutdown actually succeeded ('Right'). A failed/interrupted shutdown
+  -- ('Left') is reported and re-thrown rather than silently starting a
+  -- new generation on top of a supervisor that may not have actually
+  -- stopped -- this is exactly what 'shutdownThenDeliver' (used in
+  -- 'start' below) exists to make observable instead of deadlocking this
+  -- 'takeMVar' forever.
   restartAppInNewThread :: Store (IORef ThreadId) -> IO ()
   restartAppInNewThread tidStore = modifyStoredIORef tidStore $ \tid -> do
     killThread tid
-    withStore doneStore takeMVar
-    readStore doneStore >>= start
+    result <- withStore doneStore takeMVar
+    case result of
+      Left err ->
+        putStrLn
+          $ "DevelMain: the previous generation's shutdown failed; NOT starting a replacement: "
+          <> show err
+      Right () -> pure ()
+    proceedOnlyIfPreviousShutdownSucceeded result (readStore doneStore >>= start)
 
   -- \| Start the server in a separate thread.
   start
-    :: MVar ()
-    -- \^ Written to when the thread is killed.
+    :: MVar (Either SomeException ())
+    -- \^ Written to (with the shutdown outcome) when the thread is killed.
     -> IO ThreadId
   start done = do
     (port, site, app) <- getApplicationRepl
     forkFinally
       (runSettings (setPort port defaultSettings) app)
-      -- 'shutdownApp' MUST finish before 'putMVar done ()': the latter is
-      -- what unblocks 'restartAppInNewThread''s 'takeMVar', which then
+      -- 'shutdownThenDeliver' MUST finish (and deliver a result) before
+      -- 'restartAppInNewThread''s 'takeMVar' can unblock, which then
       -- immediately proceeds to 'start' a brand-new foundation (and a
-      -- brand-new AWS 'Env' supervisor). Signalling @done@ first would let
+      -- brand-new AWS 'Env' supervisor) -- but only on 'Right': signalling
+      -- unconditionally, or before shutdown actually finished, would let
       -- that new foundation's supervisor start running concurrently with
-      -- the old one still being torn down -- an overlapping-generations
-      -- window this ordering closes entirely: by the time anything can
-      -- observe @done@, the old supervisor (and any live refresh child it
-      -- owned) is already fully stopped.
-      (\_ -> shutdownApp site >> putMVar done ())
+      -- the old one still being torn down, or (if shutdown threw) with
+      -- the old one never actually torn down at all. This ordering closes
+      -- both an overlapping-generations window and a would-be deadlock if
+      -- shutdown itself fails or is cancelled.
+      (\_ -> shutdownThenDeliver (shutdownApp site) done)
 
 -- | kill the server
 shutdown :: IO ()

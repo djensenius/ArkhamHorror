@@ -1,12 +1,14 @@
 module Arkham.Api.AwsEnvSupervisorSpec (spec) where
 
-import Amazonka (AuthEnv (..), Env' (..), Error (..), Region (..), SerializeError (..), newEnvNoAuth)
+import Amazonka (AuthEnv (..), Env, Env' (..), Error (..), Region (..), SerializeError (..), newEnvNoAuth)
 import Amazonka.Auth (Auth (..), AuthError (..))
 import Amazonka.Error (serviceError)
 import Api.Arkham.AwsEnvSupervisor (
   AwsAuthErrorDiagnostic (..),
   AwsErrorCategory (..),
   AwsErrorDiagnostic (..),
+  AwsEnvAcquisition (..),
+  ConfigProfileResolvers (..),
   DemandDrivenSupervisor,
   SupervisedEnv,
   SupervisedEnvState (..),
@@ -15,15 +17,18 @@ import Api.Arkham.AwsEnvSupervisor (
   classifyErrorDiagnostic,
   newDemandDrivenSupervisor,
   readSupervisedEnv,
+  releaseAwsEnvAcquisition,
   releaseAwsEnvChild,
   requestDemandDrivenReady,
+  safeEvalConfigProfile,
   startSupervisedEnv,
   stopDemandDrivenSupervisor,
   stopSupervisedEnv,
  )
 import Arkham.Prelude
-import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
+import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId, threadDelay)
 import Control.Exception qualified as Exception
+import Data.HashMap.Strict qualified as HashMap
 import Data.Void (absurd)
 import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Network.HTTP.Client qualified as Client
@@ -50,6 +55,18 @@ neverInvalidate _ = forever (threadDelay maxBound)
 -- state publication/acquisition/backoff, not the release contract itself.
 noRelease :: env -> IO ()
 noRelease _ = pure ()
+
+{- | Adapts the old, separate @acquire :: IO (Either diag env)@ \/
+@release :: env -> IO ()@ pair (still the natural shape for most of these
+tests, which are about publication\/backoff\/acquisition timing, not the
+release-derivation mechanism itself) into 'startSupervisedEnv'\/
+'newDemandDrivenSupervisor''s current single
+@acquire :: IO (Either diag (env, IO ()))@ shape (see
+'Api.Arkham.AwsEnvSupervisor.AwsEnvAcquisition' for why production folds
+release into acquire's own return value).
+-}
+withRelease :: (env -> IO ()) -> IO (Either d env) -> IO (Either d (env, IO ()))
+withRelease release acquire = fmap (\env -> (env, release env)) <$> acquire
 
 {- | Poll 'readSupervisedEnv' until @predicate@ holds. This is only a
 bounded hang-guard against a genuinely stuck test suite: the actual
@@ -106,6 +123,407 @@ markForcedOnceEvaluated ref x = unsafePerformIO (writeIORef ref True) `seq` x
 httpExceptionFixture :: Client.HttpException
 httpExceptionFixture = Client.InvalidUrlException "https://arkham-horror-bugs.s3.amazonaws.com" "connection failure"
 
+-- | A leaf resolver result: static credentials, never a background
+-- refresh child -- matches pinned 'ExplicitKeys'\/'Auth' semantics
+-- exactly (see 'Amazonka.Auth.Keys.fromKeys' and friends, none of which
+-- ever construct a 'Ref').
+fakeStaticEnv :: Env' withAuth -> IO Env
+fakeStaticEnv env = pure env {auth = Identity (Auth (AuthEnv "AKIASTATIC" "secret" Nothing Nothing))}
+
+{- | A resolver result standing in for any real provider that calls
+'Amazonka.Auth.Background.fetchAuthInBackground' for temporary\/expiring
+credentials (assumed-role, web identity, SSO, ECS, EC2 instance profile):
+forks a real, killable thread and returns an 'Env' whose @.auth@ is
+'Ref'-shaped, exactly like the pinned real forker would for expiring
+credentials. Returns the child's 'ThreadId' too so tests can assert on
+its liveness directly via 'threadStatus', independent of whichever
+'Auth'\/'Env' value it ends up (or does not end up) reachable through.
+-}
+fakeRefEnv :: Env' withAuth -> IO (Env, ThreadId)
+fakeRefEnv env = do
+  tid <- forkIO (forever (threadDelay maxBound))
+  cell <- newIORef (AuthEnv "AKIAFAKE" "secret" Nothing Nothing)
+  pure (env {auth = Identity (Ref tid cell)}, tid)
+
+{- | Whether a 'ThreadStatus' represents definite, final termination.
+Note a genuinely still-alive thread parked in @forever (threadDelay
+maxBound)@ is very often reported as @'ThreadBlocked' 'BlockedOnMVar'@
+(the RTS's internal representation for a sleeping/blocked thread), not
+@'ThreadRunning'@ -- so \"is it alive\" checks must treat any non-terminal
+status as alive, never assert the specific @'ThreadRunning'@ constructor.
+-}
+isTerminatedStatus :: ThreadStatus -> Bool
+isTerminatedStatus status = status == ThreadFinished || status == ThreadDied
+
+{- | Poll (bounded, no unconditioned sleep-only assertion) until a
+thread's status is definitely terminal, or a generous bound elapses.
+'killThread'\/'throwTo' block until the target has begun handling the
+exception, but the RTS may take a further scheduling quantum to actually
+mark the thread 'ThreadDied'\/'ThreadFinished' -- so tests that assert
+termination poll for it explicitly instead of racing a single fixed
+delay against that quantum.
+-}
+waitUntilTerminated :: ThreadId -> IO ThreadStatus
+waitUntilTerminated tid = go (500 :: Int)
+  where
+    go n = do
+      status <- threadStatus tid
+      if isTerminatedStatus status || n <= 0
+        then pure status
+        else threadDelay 1000 >> go (n - 1)
+
+-- | A 'ConfigProfileResolvers' whose every field is a hard failure --
+-- used as a base for tests that only expect a handful of specific
+-- resolvers to ever actually be called, so an unexpectedly-reached one
+-- fails loudly rather than silently doing something unintended.
+unreachableConfigProfileResolvers :: ConfigProfileResolvers
+unreachableConfigProfileResolvers =
+  ConfigProfileResolvers
+    { resolveEnvironmentSource = \_ -> Exception.throwIO (userError "resolveEnvironmentSource: unexpectedly reached")
+    , resolveEc2Source = \_ -> Exception.throwIO (userError "resolveEc2Source: unexpectedly reached")
+    , resolveEcsSource = \_ -> Exception.throwIO (userError "resolveEcsSource: unexpectedly reached")
+    , resolveAssumedRole = \_ _ -> Exception.throwIO (userError "resolveAssumedRole: unexpectedly reached")
+    , resolveWebIdentity = \_ _ _ _ -> Exception.throwIO (userError "resolveWebIdentity: unexpectedly reached")
+    , resolveSSO = \_ _ _ _ _ -> Exception.throwIO (userError "resolveSSO: unexpectedly reached")
+    }
+
+-- | A single-key profile HashMap, as 'safeEvalConfigProfile' expects
+-- after 'mergeConfigs'\/'parseConfigProfile'-style merging (i.e. one
+-- entry per already-merged @[profile]@ section).
+profileMap :: [(Text, Text)] -> HashMap Text Text
+profileMap = HashMap.fromList
+
+{- | Regression\/design-verification for the config-file credential
+provider graph fix (see 'Api.Arkham.AwsEnvSupervisor.safeEvalConfigProfile'
+for the full pinned-source trace and rationale): the pinned Amazonka
+fork's own @Amazonka.Auth.ConfigFile.evalConfig@ can silently orphan a
+config-file /source/ profile's background refresh child once an outer
+@sts:AssumeRole@ step overwrites the returned 'Env''s single @.auth@
+field with its own -- this reimplementation instead accumulates every
+such hidden child's release action explicitly (see 'AwsEnvAcquisition'),
+exercised here directly against fake, fully test-controlled
+'ConfigProfileResolvers' (never touching real AWS\/network\/filesystem).
+-}
+configProfileGraphSpec :: Spec
+configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential provider graph)" do
+  it "a static ExplicitKeys profile resolves with no hidden releases" do
+    envNoAuth <- newEnvNoAuth
+    let config = HashMap.fromList [("default", profileMap [("aws_access_key_id", "AKIA"), ("aws_secret_access_key", "s")])]
+    acquisition <- safeEvalConfigProfile unreachableConfigProfileResolvers config [] "default" envNoAuth
+    length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 0
+    case runIdentity (awsEnvAcquisitionEnv acquisition).auth of
+      Auth _ -> pure ()
+      Ref {} -> expectationFailure "expected static Auth, not a background refresh Ref, for ExplicitKeys"
+
+  {- | A two-level @source_profile@ chain (@parent@ assumes a role from
+  @middle@, which itself assumes a role from @leaf@) with every
+  assumed-role step modelled as forking a real refresh child (matching
+  the pinned source's own always-temporary assumed-role credentials).
+  Proves both the @middle@ and @leaf@-wrapping intermediate children are
+  captured as hidden releases (not just the final, directly-visible
+  @parent@ child), and that releasing the whole 'AwsEnvAcquisition' kills
+  every one of them.
+  -}
+  it "a two-level source_profile assume-role chain captures every intermediate child as a hidden release, and releasing the acquisition kills all of them" do
+    envNoAuth <- newEnvNoAuth
+    let config =
+          HashMap.fromList
+            [ ("parent", profileMap [("role_arn", "arn:aws:iam::1:role/parent"), ("source_profile", "middle")])
+            , ("middle", profileMap [("role_arn", "arn:aws:iam::1:role/middle"), ("source_profile", "leaf")])
+            , ("leaf", profileMap [("aws_access_key_id", "AKIALEAF"), ("aws_secret_access_key", "s")])
+            ]
+    assumedRoleCallsRef <- newIORef ([] :: [Text])
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { resolveAssumedRole = \roleArn sourceEnv -> do
+                atomicModifyIORef' assumedRoleCallsRef (\cs -> (cs <> [roleArn], ()))
+                fst <$> fakeRefEnv sourceEnv
+            }
+    acquisition <- safeEvalConfigProfile resolvers config [] "parent" envNoAuth
+    -- Both assumed-role steps were attempted, source-to-sink.
+    readIORef assumedRoleCallsRef
+      `shouldReturn` ["arn:aws:iam::1:role/middle", "arn:aws:iam::1:role/parent"]
+    -- Two hidden children: "leaf" (once wrapped by "middle"'s own assumed
+    -- role) and "middle" (once wrapped by "parent"'s). The final,
+    -- directly-visible child is "parent"'s own -- not itself hidden.
+    length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 2
+    parentThreadId <- case runIdentity (awsEnvAcquisitionEnv acquisition).auth of
+      Ref tid _ -> pure tid
+      Auth _ -> expectationFailure "expected parent's own Ref auth" >> error "unreachable"
+    releaseAwsEnvAcquisition acquisition
+    finalStatus <- waitUntilTerminated parentThreadId
+    finalStatus `shouldSatisfy` isTerminatedStatus
+
+  it "credential_source=EcsContainer: the ECS source's child becomes a hidden release once the outer assumed role wraps it" do
+    envNoAuth <- newEnvNoAuth
+    let config = HashMap.fromList [("default", profileMap [("role_arn", "arn:aws:iam::1:role/ecs"), ("credential_source", "EcsContainer")])]
+    ecsCalledRef <- newIORef False
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { resolveEcsSource = \env -> writeIORef ecsCalledRef True >> fst <$> fakeRefEnv env
+            , resolveAssumedRole = \_roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
+            }
+    acquisition <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
+    readIORef ecsCalledRef `shouldReturn` True
+    length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 1
+
+  {- | @credential_source=Ec2InstanceMetadata@ is the specific sub-gap the
+  pinned source has: @Amazonka.Auth.ConfigFile@ reaches its own unsafe
+  @fromDefaultInstanceProfile@ directly for this credential source,
+  bypassing this module's 'Api.Arkham.AwsEnvSupervisor.safeDefaultInstanceProfile'
+  fix entirely. 'ConfigProfileResolvers.resolveEc2Source' is exactly the
+  substitution point that closes it in production (wired to
+  'Api.Arkham.AwsEnvSupervisor.safeDefaultInstanceProfile' in
+  'Api.Arkham.AwsEnvSupervisor.productionConfigProfileResolvers') -- this
+  proves 'safeEvalConfigProfile' genuinely calls through the injected
+  resolver for this credential source, not any hardcoded, unsafe
+  alternative.
+  -}
+  it "credential_source=Ec2InstanceMetadata calls through the injected (safe) resolver, never a hardcoded alternative" do
+    envNoAuth <- newEnvNoAuth
+    let config = HashMap.fromList [("default", profileMap [("role_arn", "arn:aws:iam::1:role/ec2"), ("credential_source", "Ec2InstanceMetadata")])]
+    ec2CalledRef <- newIORef False
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { resolveEc2Source = \env -> writeIORef ec2CalledRef True >> fst <$> fakeRefEnv env
+            , resolveAssumedRole = \_roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
+            }
+    _ <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
+    readIORef ec2CalledRef `shouldReturn` True
+
+  it "AssumeRoleWithWebIdentity is a single-level leaf: no hidden releases, and the token file/role/session args reach the resolver" do
+    envNoAuth <- newEnvNoAuth
+    let config =
+          HashMap.fromList
+            [
+              ( "default"
+              , profileMap
+                  [ ("role_arn", "arn:aws:iam::1:role/web")
+                  , ("web_identity_token_file", "/tmp-not-used/token")
+                  , ("role_session_name", "my-session")
+                  ]
+              )
+            ]
+    capturedRef <- newIORef Nothing
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { resolveWebIdentity = \tokenFile roleArn mSession env -> do
+                writeIORef capturedRef (Just (tokenFile, roleArn, mSession))
+                fakeStaticEnv env
+            }
+    acquisition <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
+    length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 0
+    readIORef capturedRef `shouldReturn` Just ("/tmp-not-used/token", "arn:aws:iam::1:role/web", Just "my-session")
+
+  it "AssumeRoleViaSSO is a single-level leaf: no hidden releases, and sso_region/account/role args reach the resolver" do
+    envNoAuth <- newEnvNoAuth
+    let config =
+          HashMap.fromList
+            [
+              ( "default"
+              , profileMap
+                  [ ("sso_start_url", "https://example.awsapps.com/start")
+                  , ("sso_region", "us-east-1")
+                  , ("sso_account_id", "123456789012")
+                  , ("sso_role_name", "MyRole")
+                  ]
+              )
+            ]
+    capturedRef <- newIORef Nothing
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { resolveSSO = \_cachedTokenFile ssoRegion accountId roleName env -> do
+                writeIORef capturedRef (Just (ssoRegion, accountId, roleName))
+                fakeStaticEnv env
+            }
+    acquisition <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
+    length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 0
+    readIORef capturedRef `shouldReturn` Just (Region' "us-east-1", "123456789012", "MyRole")
+
+  {- | If the /outer/ assumed-role step fails or this thread is cancelled
+  after the /source/ profile's own child has already been created, that
+  source's already-accumulated children (here, "leaf"'s hidden release
+  once wrapped by "middle", plus "middle"'s own now-about-to-be-hidden
+  child) must be released before the exception propagates -- otherwise a
+  failed\/cancelled generation would leak exactly what it already
+  acquired. Mirrors the two-level success test above, but the outermost
+  'resolveAssumedRole' call (wrapping "middle" on behalf of "parent")
+  throws.
+  -}
+  it "a failure in the outer assume-role step after the source already forked a child releases that child before propagating" do
+    envNoAuth <- newEnvNoAuth
+    let config =
+          HashMap.fromList
+            [ ("parent", profileMap [("role_arn", "arn:aws:iam::1:role/parent"), ("source_profile", "middle")])
+            , ("middle", profileMap [("role_arn", "arn:aws:iam::1:role/middle"), ("source_profile", "leaf")])
+            , ("leaf", profileMap [("aws_access_key_id", "AKIALEAF"), ("aws_secret_access_key", "s")])
+            ]
+    middleThreadIdRef <- newIORef Nothing
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { resolveAssumedRole = \roleArn sourceEnv ->
+                if roleArn == "arn:aws:iam::1:role/middle"
+                  then do
+                    (fakeEnv, tid) <- fakeRefEnv sourceEnv
+                    writeIORef middleThreadIdRef (Just tid)
+                    pure fakeEnv
+                  else Exception.throwIO (InvalidIAMError "simulated outer assume-role failure")
+            }
+    result <- Exception.try @AuthError (safeEvalConfigProfile resolvers config [] "parent" envNoAuth)
+    case result of
+      Left (InvalidIAMError _) -> pure ()
+      _ -> expectationFailure "expected the outer assume-role failure to propagate as InvalidIAMError"
+    Just middleThreadId <- readIORef middleThreadIdRef
+    finalStatus <- waitUntilTerminated middleThreadId
+    finalStatus `shouldSatisfy` isTerminatedStatus
+
+  it "a plain leaf acquisition failure (no child ever created) propagates with nothing to release" do
+    envNoAuth <- newEnvNoAuth
+    let config = HashMap.fromList [("default", profileMap [("role_arn", "arn:aws:iam::1:role/ecs"), ("credential_source", "EcsContainer")])]
+        resolvers = unreachableConfigProfileResolvers {resolveEcsSource = \_ -> Exception.throwIO (MissingEnvError "simulated ECS metadata unavailable")}
+    result <- Exception.try @AuthError (safeEvalConfigProfile resolvers config [] "default" envNoAuth)
+    case result of
+      Left (MissingEnvError _) -> pure ()
+      _ -> expectationFailure "expected the leaf failure to propagate as MissingEnvError"
+
+  {- | If this thread is asynchronously cancelled /during/ the outer
+  assumed-role wrap, after the /source/ profile ("middle") has already
+  completed and forked its own child, that source's child must still be
+  released -- exactly the same 'Exception.onException' coverage
+  'assumeRoleOnto' gives a synchronous failure at the same point (see the
+  "a failure in the outer assume-role step..." test above), just reached
+  via cancellation instead. (Cancellation reaching mid-flight /inside/ an
+  opaque resolver call, i.e. after that resolver's own internal fork but
+  before it has returned a value this module can see at all, is a
+  distinct, structurally-unclosable gap already accepted as residual risk
+  for the single-provider top-level acquisition; it is not what this test
+  targets, and not fixable without control over the resolver's own
+  internals.)
+  -}
+  it "cancellation during the outer assume-role step (after the source already forked and returned a child) still releases that child" do
+    envNoAuth <- newEnvNoAuth
+    let config =
+          HashMap.fromList
+            [ ("parent", profileMap [("role_arn", "arn:aws:iam::1:role/parent"), ("source_profile", "middle")])
+            , ("middle", profileMap [("role_arn", "arn:aws:iam::1:role/middle"), ("source_profile", "leaf")])
+            , ("leaf", profileMap [("aws_access_key_id", "AKIALEAF"), ("aws_secret_access_key", "s")])
+            ]
+    middleThreadIdRef <- newIORef Nothing
+    outerStarted <- newEmptyMVar
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { resolveAssumedRole = \roleArn sourceEnv ->
+                if roleArn == "arn:aws:iam::1:role/middle"
+                  then do
+                    -- "middle"'s own step completes normally and returns
+                    -- -- its resulting child is now fully known to
+                    -- 'safeEvalConfigProfile' before "parent"'s own wrap
+                    -- is even attempted.
+                    (fakeEnv, tid) <- fakeRefEnv sourceEnv
+                    writeIORef middleThreadIdRef (Just tid)
+                    pure fakeEnv
+                  else do
+                    -- "parent"'s own wrap (of "middle"'s already-returned
+                    -- child) never completes -- simulating cancellation
+                    -- landing while this specific call is in flight.
+                    putMVar outerStarted ()
+                    forever (threadDelay maxBound)
+            }
+    resultVar <- newEmptyMVar
+    workerTid <-
+      forkIO
+        $ putMVar resultVar
+        =<< Exception.try @Exception.AsyncException (safeEvalConfigProfile resolvers config [] "parent" envNoAuth)
+    takeMVar outerStarted
+    Exception.throwTo workerTid Exception.ThreadKilled
+    result <- takeMVar resultVar
+    case result of
+      Left Exception.ThreadKilled -> pure ()
+      _ -> expectationFailure "expected the outer assume-role step to be cancelled with ThreadKilled"
+    Just middleThreadId <- readIORef middleThreadIdRef
+    finalStatus <- waitUntilTerminated middleThreadId
+    finalStatus `shouldSatisfy` isTerminatedStatus
+
+  {- | Once 'releaseAwsEnvAcquisition' has killed a hidden child's
+  thread, that thread is provably no longer running -- and a dead thread
+  can never later deliver a delayed 'Exception.throwTo' refresh failure
+  into a /different/, newer generation's supervisor thread: there is
+  simply nothing left running that could still call it. This is the
+  config-file-specific instance of the same guarantee the
+  \"a delayed invalidation lands only on the supervisor thread\" test
+  proves for the single-provider case.
+  -}
+  it "a released hidden child can never later throwTo into a newer generation, because it is provably no longer running" do
+    envNoAuth <- newEnvNoAuth
+    let config =
+          HashMap.fromList
+            [ ("parent", profileMap [("role_arn", "arn:aws:iam::1:role/parent"), ("source_profile", "leaf")])
+            , ("leaf", profileMap [("aws_access_key_id", "AKIALEAF"), ("aws_secret_access_key", "s")])
+            ]
+        resolvers = unreachableConfigProfileResolvers {resolveAssumedRole = \_ sourceEnv -> fst <$> fakeRefEnv sourceEnv}
+    acquisition <- safeEvalConfigProfile resolvers config [] "parent" envNoAuth
+    let [leafRelease] = awsEnvAcquisitionHiddenReleases acquisition
+    leafRelease
+    -- The hidden child's release ran in isolation, independent of the
+    -- overall acquisition's own release -- prove it alone already killed
+    -- the thread, matching how a newer generation's own release will
+    -- never rely on, or be able to observe, this generation's state.
+    parentThreadId <- case runIdentity (awsEnvAcquisitionEnv acquisition).auth of
+      Ref tid _ -> pure tid
+      Auth _ -> expectationFailure "expected parent's own live Ref auth" >> error "unreachable"
+    releaseAwsEnvAcquisition acquisition
+    parentStatus <- waitUntilTerminated parentThreadId
+    parentStatus `shouldSatisfy` isTerminatedStatus
+
+  {- | Mutation-check: proves the hidden-release list genuinely matters,
+  by deliberately releasing /only/ the final, directly-visible @.auth@
+  (exactly what the pinned source's own unmodified
+  @releaseAwsEnvGeneration@-style \"project release from the final env
+  alone\" approach would do) instead of the full
+  'releaseAwsEnvAcquisition' -- reproducing the original bug's exact
+  leak. Uses a three-profile chain (@parent@ assumes-role from @middle@,
+  @middle@ assumes-role from a static @leaf@) so that @middle@'s own
+  forked refresh child is genuinely /hidden/ behind @parent@'s distinct,
+  separately-forked final child -- releasing only the final @.auth@ can
+  only ever reach @parent@'s thread, never @middle@'s. If
+  'safeEvalConfigProfile' regressed to no longer tracking hidden releases
+  at all (e.g. 'assumeRoleOnto' stopped appending @sourceRelease@), the
+  hidden-releases count assertion below would already fail first, so this
+  test cannot pass by accident once the mechanism is broken.
+  -}
+  it "mutation check: releasing only the final .auth (the pre-fix approach) leaks the source's hidden child; the full release does not" do
+    envNoAuth <- newEnvNoAuth
+    let config =
+          HashMap.fromList
+            [ ("parent", profileMap [("role_arn", "arn:aws:iam::1:role/parent"), ("source_profile", "middle")])
+            , ("middle", profileMap [("role_arn", "arn:aws:iam::1:role/middle"), ("source_profile", "leaf")])
+            , ("leaf", profileMap [("aws_access_key_id", "AKIALEAF"), ("aws_secret_access_key", "s")])
+            ]
+    middleThreadIdRef <- newIORef Nothing
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { resolveAssumedRole = \roleArn sourceEnv -> do
+                (fakeEnv, tid) <- fakeRefEnv sourceEnv
+                when (roleArn == "arn:aws:iam::1:role/middle") $ writeIORef middleThreadIdRef (Just tid)
+                pure fakeEnv
+            }
+    acquisition <- safeEvalConfigProfile resolvers config [] "parent" envNoAuth
+    length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 2
+    Just middleThreadId <- readIORef middleThreadIdRef
+    -- Deliberately release only the final env's own auth ("parent"'s own
+    -- thread) -- exactly the pre-fix, buggy "project release from the
+    -- final env alone" approach -- and prove "middle"'s hidden child,
+    -- which is a genuinely distinct thread, leaks (stays Running).
+    releaseAwsEnvChild (runIdentity (awsEnvAcquisitionEnv acquisition).auth)
+    threadDelay (10 * 1000)
+    leakedStatus <- threadStatus middleThreadId
+    leakedStatus `shouldSatisfy` (not . isTerminatedStatus)
+    -- The full, correct release additionally runs every hidden release,
+    -- and "middle"'s child that was still running above is now cleaned up.
+    releaseAwsEnvAcquisition acquisition
+    cleanedUpStatus <- waitUntilTerminated middleThreadId
+    cleanedUpStatus `shouldSatisfy` isTerminatedStatus
+
 {- | Regression\/design-verification for the application-lifetime
 supervised-'Env' architecture that replaced the earlier per-request
 @discoverFrozenEnv@\/@freezeAuth@\/@runOnDisposableWorker@ worker protocol,
@@ -130,6 +548,8 @@ each test's own gates establish.
 -}
 spec :: Spec
 spec = describe "AWS Env supervisor" do
+  configProfileGraphSpec
+
   {- | Regression for the follow-up audit: the handler used to log
   'tshow err'/'tshow authErr' directly. 'TransportError'/'RetrievalError'
   wrap an 'HttpException' whose embedded 'Request' leaves the
@@ -282,7 +702,7 @@ spec = describe "AWS Env supervisor" do
   describe "startSupervisedEnv / readSupervisedEnv / stopSupervisedEnv" do
     it "reports Initializing before the first acquisition completes, then Ready once it does, then terminal Unavailable once stopped" do
       acquireGate <- newEmptyMVar
-      sup <- startSupervisedEnv (takeMVar acquireGate >> pure (Right (TestResource 1))) noRelease neverInvalidate (pure ())
+      sup <- startSupervisedEnv (withRelease noRelease (takeMVar acquireGate >> pure (Right (TestResource 1)))) neverInvalidate (pure ())
       readSupervisedEnv sup `shouldReturn` SupervisedEnvInitializing
       putMVar acquireGate ()
       waitForSupervisedState sup \case SupervisedEnvReady _ -> True; _ -> False
@@ -296,8 +716,10 @@ spec = describe "AWS Env supervisor" do
       acquireStarted <- newEmptyMVar
       sup <-
         startSupervisedEnv
-          (putMVar acquireStarted () >> forever (threadDelay maxBound) :: IO (Either AwsAuthErrorDiagnostic TestResource))
-          noRelease
+          ( withRelease
+              noRelease
+              (putMVar acquireStarted () >> forever (threadDelay maxBound) :: IO (Either AwsAuthErrorDiagnostic TestResource))
+          )
           neverInvalidate
           (pure ())
       takeMVar acquireStarted
@@ -311,7 +733,7 @@ spec = describe "AWS Env supervisor" do
       let acquire = do
             n <- atomicModifyIORef' attemptCountRef (\k -> (k + 1, k + 1))
             pure $ if n == 1 then Left AwsAuthCredentialChainExhausted else Right (TestResource n)
-      sup <- startSupervisedEnv acquire noRelease neverInvalidate (takeMVar backoffGate)
+      sup <- startSupervisedEnv (withRelease noRelease acquire) neverInvalidate (takeMVar backoffGate)
       waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthCredentialChainExhausted)
       -- Backoff has not been released yet: no second attempt has happened.
       threadDelay (50 * 1000)
@@ -344,7 +766,7 @@ spec = describe "AWS Env supervisor" do
             if n == 1
               then pure (Left AwsAuthCredentialChainExhausted)
               else takeMVar acquireGate >> pure (Right (TestResource n))
-      sup <- startSupervisedEnv acquire noRelease neverInvalidate (takeMVar backoffGate)
+      sup <- startSupervisedEnv (withRelease noRelease acquire) neverInvalidate (takeMVar backoffGate)
       waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthCredentialChainExhausted)
       putMVar backoffGate ()
       -- The second attempt is now genuinely in flight, blocked on
@@ -388,7 +810,7 @@ spec = describe "AWS Env supervisor" do
       requestWorkerAffected <- newIORef False
       requestWorkerTid <-
         forkIO $ Exception.catch (forever (threadDelay maxBound)) \(_ :: AuthError) -> writeIORef requestWorkerAffected True
-      sup <- startSupervisedEnv acquire release awaitInvalidation (takeMVar backoffGate)
+      sup <- startSupervisedEnv (withRelease release acquire) awaitInvalidation (takeMVar backoffGate)
       waitForSupervisedState sup \case SupervisedEnvReady (TestResource 1) -> True; _ -> False
       supervisorTid <- takeMVar supervisorTidVar
       supervisorTid `shouldNotBe` requestWorkerTid
@@ -402,7 +824,7 @@ spec = describe "AWS Env supervisor" do
     it "forces the classified diagnostic before publishing it, not deferring it as a thunk for a later reader to force" do
       forcedRef <- newIORef False
       let acquire = pure (Left (markForcedOnceEvaluated forcedRef AwsAuthCredentialChainExhausted)) :: IO (Either AwsAuthErrorDiagnostic ())
-      sup <- startSupervisedEnv acquire noRelease neverInvalidate (forever (threadDelay maxBound))
+      sup <- startSupervisedEnv (withRelease noRelease acquire) neverInvalidate (forever (threadDelay maxBound))
       -- This predicate inspects only the outer constructor (a wildcard
       -- binder for the wrapped diagnostic), never the diagnostic value
       -- itself, so if 'forcedRef' is already 'True' once it is satisfied,
@@ -424,7 +846,7 @@ spec = describe "AWS Env supervisor" do
             tid <- myThreadId
             putMVar supervisorTidVar tid
             forever (threadDelay maxBound)
-      sup <- startSupervisedEnv acquire release awaitInvalidation (pure ())
+      sup <- startSupervisedEnv (withRelease release acquire) awaitInvalidation (pure ())
       waitForSupervisedState sup \case SupervisedEnvReady _ -> True; _ -> False
       supervisorTid <- takeMVar supervisorTidVar
       stopSupervisedEnv sup
@@ -473,7 +895,7 @@ spec = describe "AWS Env supervisor" do
             -- whether this returns normally or the exception propagates
             -- through.
             forever (threadDelay maxBound)
-      sup <- startSupervisedEnv acquire release awaitInvalidation (pure ())
+      sup <- startSupervisedEnv (withRelease release acquire) awaitInvalidation (pure ())
       -- Waits only for 'SupervisedEnvReady' to have been *published*,
       -- which -- under the single-mask design -- can only happen after
       -- the fork above has already completed and its 'ThreadId' is
@@ -553,7 +975,7 @@ spec = describe "AWS Env supervisor" do
       -- returns immediately; the pending exception queued above
       -- terminates that thread asynchronously, so wait for its terminal
       -- published state rather than anything returned here.
-      sup <- startSupervisedEnv acquire release awaitInvalidation (pure ())
+      sup <- startSupervisedEnv (withRelease release acquire) awaitInvalidation (pure ())
       waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthSupervisorTerminated)
       readIORef awaitInvalidationEnteredRef `shouldReturn` False
       readIORef releaseCountRef `shouldReturn` 1
@@ -571,7 +993,7 @@ spec = describe "AWS Env supervisor" do
     it "starts its dedicated thread immediately but never calls acquire until first demanded" do
       acquireCalls <- newIORef (0 :: Int)
       let acquire = atomicModifyIORef' acquireCalls (\n -> (n + 1, ())) >> pure (Right (TestResource 1))
-      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor (withRelease noRelease acquire) neverInvalidate (pure ())
       -- Long enough that, had construction itself triggered acquisition,
       -- it would certainly have happened by now.
       threadDelay (100 * 1000)
@@ -584,7 +1006,7 @@ spec = describe "AWS Env supervisor" do
     it "a second (or later) demand call is a cheap no-op: acquire is not called again" do
       acquireCalls <- newIORef (0 :: Int)
       let acquire = atomicModifyIORef' acquireCalls (\n -> (n + 1, ())) >> pure (Right (TestResource 1))
-      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor (withRelease noRelease acquire) neverInvalidate (pure ())
       _ <- requestDemandDrivenReady sup (200 * 1000)
       waitForDemandDrivenState sup \case SupervisedEnvReady _ -> True; _ -> False
       readIORef acquireCalls `shouldReturn` 1
@@ -596,7 +1018,7 @@ spec = describe "AWS Env supervisor" do
     it "concurrent first demand triggers exactly one acquisition" do
       acquireCalls <- newIORef (0 :: Int)
       let acquire = atomicModifyIORef' acquireCalls (\n -> (n + 1, ())) >> pure (Right (TestResource 1))
-      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor (withRelease noRelease acquire) neverInvalidate (pure ())
       _ <- forkIO $ () <$ requestDemandDrivenReady sup (200 * 1000)
       _ <- forkIO $ () <$ requestDemandDrivenReady sup (200 * 1000)
       _ <- requestDemandDrivenReady sup (200 * 1000)
@@ -606,7 +1028,7 @@ spec = describe "AWS Env supervisor" do
 
     it "a request's own wait timeout does NOT cancel the gated acquisition, which completes and is later observed" do
       acquireGate <- newEmptyMVar
-      sup <- newDemandDrivenSupervisor (takeMVar acquireGate >> pure (Right (TestResource 1))) noRelease neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor (withRelease noRelease (takeMVar acquireGate >> pure (Right (TestResource 1)))) neverInvalidate (pure ())
       -- A very short bound: this demand call will time out while the
       -- acquisition below is still deliberately blocked, well before
       -- 'acquireGate' is ever filled.
@@ -635,7 +1057,7 @@ spec = describe "AWS Env supervisor" do
             if n == 1
               then pure (Left AwsAuthCredentialChainExhausted)
               else takeMVar acquireGate >> pure (Right (TestResource n))
-      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (takeMVar backoffGate)
+      sup <- newDemandDrivenSupervisor (withRelease noRelease acquire) neverInvalidate (takeMVar backoffGate)
       firstOutcome <- requestDemandDrivenReady sup (200 * 1000)
       firstOutcome `shouldBe` SupervisedEnvUnavailable AwsAuthCredentialChainExhausted
       putMVar backoffGate ()
@@ -657,7 +1079,7 @@ spec = describe "AWS Env supervisor" do
     it "stop during gated pre-acquisition (never demanded) terminates the supervisor with no acquisition ever attempted" do
       acquireCalls <- newIORef (0 :: Int)
       let acquire = atomicModifyIORef' acquireCalls (\n -> (n + 1, ())) >> pure (Right (TestResource 1))
-      sup <- newDemandDrivenSupervisor acquire noRelease neverInvalidate (pure ())
+      sup <- newDemandDrivenSupervisor (withRelease noRelease acquire) neverInvalidate (pure ())
       stopDemandDrivenSupervisor sup
       readIORef acquireCalls `shouldReturn` 0
       requestDemandDrivenReady sup 0 `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
@@ -667,7 +1089,7 @@ spec = describe "AWS Env supervisor" do
       let acquire = pure (Right (TestResource 1))
           release _ = writeIORef childKilled True
           awaitInvalidation _ = forever (threadDelay maxBound)
-      sup <- newDemandDrivenSupervisor acquire release awaitInvalidation (pure ())
+      sup <- newDemandDrivenSupervisor (withRelease release acquire) awaitInvalidation (pure ())
       _ <- requestDemandDrivenReady sup (200 * 1000)
       waitForDemandDrivenState sup \case SupervisedEnvReady _ -> True; _ -> False
       stopDemandDrivenSupervisor sup
