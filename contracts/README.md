@@ -77,7 +77,18 @@ chaos bag. Nothing is hand-authored; every field comes from the same
 `PublicGame`/`Api.GetGameJson`/`ApiResponse` encoders exercised by
 `backend/arkham-api/tests/Arkham/Api/JsonContractsSpec.hs`, and both the REST
 envelope and the WebSocket `GameUpdate` are asserted against the same
-underlying value.
+underlying value. Every governed fixture is bound to *both* of Aeson's
+independently-implemented serialization paths: the ordinary `Aeson.toJSON`
+assertion, and a second assertion (`viaWireEncoding`, round-tripping through
+the real `Aeson.encode`, which always dispatches via `toEncoding` — the
+actual REST/WebSocket wire path, per `Orphans.hs`'s
+`ToContent a where toContent = toContent . toEncoding`) — because
+`PublicGame`'s `ToJSON` instance hand-writes `toJSON` and `toEncoding`
+separately rather than deriving one from the other, and this codebase has
+already had a real historical bug where the two silently disagreed (see the
+Haddock on `publicOtherInvestigators` in `Arkham/Game.hs`). A dedicated
+`ToEncodingDriftProof` self-test type with a deliberately mismatched
+`toJSON`/`toEncoding` pair proves this second assertion actually has teeth.
 
 This slice tightens, with exact required keys and closed tags/enums where the
 Haskell source is itself closed:
@@ -480,14 +491,58 @@ resolution both in and outside CI.
 Every governed JSON read across this tooling — the manifest, schemas,
 fixtures, negative-fixture descriptors, and the base-ref manifest read via
 `git show <ref>:path` bytes — goes through a single shared strict loader
-(`scripts/strict_json.py`, a plain sibling module imported by all three
+(`scripts/strict_json.py`, a plain sibling module imported by all four
 contract scripts) rather than a bare `json.load`/`json.loads`: it rejects
 duplicate object keys at any nesting depth (including a plain key and a
 distinct `\uXXXX`-escaped form that decodes to the same text), the
 non-JSON `NaN`/`Infinity`/`-Infinity` constants the stdlib accepts by
-default, and non-strict UTF-8 decoding of raw bytes. Its own self-tests run
-automatically whenever any of the three scripts is invoked, proving the
-wiring end-to-end rather than only in isolation.
+default, non-strict UTF-8 decoding of raw bytes, and an ordinary
+(syntactically valid) number literal whose exponent overflows finite
+`float` range — e.g. `1e9999` — which the stdlib's bare `float()`
+constructor would otherwise silently coerce to `inf` with no error at all
+(`parse_constant` only intercepts the three named `NaN`/`Infinity`/
+`-Infinity` tokens, not ordinary number syntax that merely evaluates too
+large). The overflow guard parses the raw literal via `decimal.Decimal`
+(exact, never silently overflows) to determine precisely whether it fits
+in a finite `float`, and fails closed rather than ever returning `inf` —
+`jsonschema`'s `"number"` type check does not recognize `Decimal`, so the
+value is still returned as a plain `float` once confirmed finite. Its own
+self-tests run automatically whenever any of the four scripts is invoked,
+proving the wiring end-to-end rather than only in isolation.
+
+Every governed path string a script reads bytes for — whether declared in
+`manifest.json`'s `documents`/`fixtures`/`basePositiveFixture` entries, or
+constructed internally — is first validated by
+`strict_json.validate_governed_path`: rejected are non-string/empty
+values, an absolute path, a backslash, an ASCII control character, any
+`.`/`..`/empty path segment (which would make the string a non-canonical
+alias of a different path), and anything outside this contract's small
+fixed set of governed locations (the four exact top-level documents, or a
+single flat file directly under `contracts/schemas/`/`contracts/fixtures/`
+— never a nested subdirectory). `strict_json.read_governed_worktree_bytes`
+then reads the current on-disk content via `lstat`, rejecting a symlink,
+directory, or other non-regular file outright (unlike `Path.is_file()`/
+`Path.read_bytes()`, which follow a symlink transparently) — this matters
+because a governed path that is actually an on-disk symlink could resolve
+to different bytes than the same pathname's content in a historical git
+tree, silently disagreeing about what the "same governed artifact" even
+is. `strict_json.read_governed_git_ref_bytes` mirrors this for a
+historical/base ref: it first confirms via `git ls-tree` that the path
+resolves to exactly one regular, non-executable blob (mode `100644`) —
+never a symlink (`120000`), an executable file (`100755`), or a
+submodule/gitlink (`160000`) — before reading its content with
+`git show`. Both readers additionally run the strict-JSON/overflow checks
+above before returning bytes to a caller, so a caller that goes on to hash
+or schema-validate those bytes never does so for content that was not
+first confirmed to be both a genuine regular file and (for `.json` paths)
+well-formed strict JSON. `scripts/update-manifest-hashes.py`,
+`scripts/check-schema-revision-drift.py` (both the worktree and base-ref
+hash computers), and `scripts/validate-contract-fixtures.py` all read every
+governed path exclusively through these two functions; end-to-end
+self-tests (real on-disk symlinks-to-identical-bytes, real throwaway git
+commits with symlink/executable/gitlink tree entries) prove the rejections
+actually fire against real filesystem/git state, not merely a unit-level
+string check.
 
 Contract changes must remain backward compatible with the Vue client. Runtime
 changes belong in separate, small pull requests so they can be contributed
