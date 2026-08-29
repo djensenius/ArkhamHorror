@@ -86,6 +86,50 @@ loadFixture fileName = findFixture fixturePaths
         fail $ "Could not decode contract fixture " <> fileName <> " at " <> path <> ": " <> err
       Right (Right fixture) -> pure fixture
 
+{- | Re-decode a value's *actual wire bytes* (@Aeson.encode@, which is
+defined as @encodingToLazyByteString . toEncoding@) back into a 'Value' for
+fixture comparison, as a second, independent check alongside plain
+@Aeson.toJSON@.
+
+This matters because @toJSON@ and @toEncoding@ can be, and in this codebase
+have been, hand-written separately rather than one being derived from the
+other: 'PublicGame' (Arkham\/Game.hs) defines both by hand, and its
+'publicOtherInvestigators' haddock documents a real historical drift where
+@toEncoding@ (the actual wire path) silently disagreed with @toJSON@ (what a
+naive test asserts against). The wire itself only ever goes through
+@toEncoding@: REST responses dispatch via @ToContent a where toContent =
+toContent . toEncoding@ (Orphans.hs), and the WebSocket broadcaster calls
+@Aeson.encode@ directly (Api\/Handler\/Arkham\/Games\/Shared.hs). A fixture
+assertion against @toJSON@ alone would not catch a bug that lives only in
+@toEncoding@.
+-}
+viaWireEncoding :: Aeson.ToJSON a => a -> Aeson.Value
+viaWireEncoding value = case Aeson.eitherDecode (Aeson.encode value) of
+  Left err ->
+    error
+      $ "viaWireEncoding: Aeson.encode (the actual toEncoding-driven wire path) "
+      <> "produced bytes that do not even parse as JSON: "
+      <> err
+  Right decoded -> decoded
+
+{- | A local type standing in for the exact class of historical bug
+'viaWireEncoding' exists to catch: a hand-written 'toEncoding' that silently
+disagrees with 'toJSON' for the same value (as 'PublicGame' once did per the
+haddock on 'publicOtherInvestigators'). This is not itself a contract
+fixture; it is a methodology self-test proving that if a *real* governed
+type's @toEncoding@ ever drifted from its @toJSON@ like this, the
+'viaWireEncoding' assertions threaded through every fixture spec below
+would fail the suite rather than passing silently.
+-}
+newtype ToEncodingDriftProof = ToEncodingDriftProof Text
+
+instance Aeson.ToJSON ToEncodingDriftProof where
+  toJSON (ToEncodingDriftProof value) =
+    Aeson.object ["tag" .= ("ToEncodingDriftProof" :: Text), "value" .= value]
+  toEncoding (ToEncodingDriftProof value) =
+    Aeson.pairs
+      ("tag" .= ("ToEncodingDriftProof" :: Text) <> "value" .= (value <> "-toEncoding-only-drift"))
+
 loadFixtureField :: Aeson.FromJSON a => FilePath -> Text -> IO a
 loadFixtureField fileName fieldName = do
   fixture <- loadFixture fileName
@@ -712,16 +756,35 @@ spec = describe "Native client contract fixtures" do
       fixture <- loadFixture fileName
 
       Aeson.toJSON response `shouldBe` fixture
+      -- Also bind the actual wire bytes (Aeson.encode, i.e. toEncoding --
+      -- what Orphans.hs's ToContent and the WebSocket broadcaster's direct
+      -- `encode` calls really send) to the same fixture, so this proves the
+      -- REST/WebSocket ApiResponse encoders (every one of them: GameUpdate
+      -- carries the same PublicGame as GetGame below) agree with toJSON
+      -- rather than only ever exercising the naive path.
+      viaWireEncoding response `shouldBe` fixture
 
   it "matches the real game-list encoder" do
     fixture <- loadFixture "game-list.json"
 
     Aeson.toJSON fixtureGameList `shouldBe` fixture
+    viaWireEncoding fixtureGameList `shouldBe` fixture
 
   it "matches the real get-game encoder" do
     fixture <- loadFixture "get-game.json"
 
     Aeson.toJSON fixtureGetGame `shouldBe` fixture
+    -- GetGameJson is the REST envelope around the very same PublicGame
+    -- GameUpdate carries over WebSocket; binding its actual wire bytes here
+    -- too proves both transports serialize the identical PublicGame shape
+    -- through the identical (toEncoding-driven) real encoder, not merely
+    -- through toJSON.
+    viaWireEncoding fixtureGetGame `shouldBe` fixture
+
+  it "proves viaWireEncoding actually exercises toEncoding, not toJSON twice (methodology self-test: if PublicGame's toEncoding ever silently drifted from its toJSON the way the historical bug documented on publicOtherInvestigators did, every viaWireEncoding assertion above would fail rather than pass silently)" do
+    let driftProof = ToEncodingDriftProof "same-input"
+
+    Aeson.toJSON driftProof `shouldNotBe` viaWireEncoding driftProof
 
   it "matches the real get-game mode encoder at turn zero (issue: mode.schema.json's turn minimum previously rejected the valid initial value 0, since ScenarioAttrs.scenarioTurn starts at 0 -- Scenario/Types.hs -- and is only incremented by EndSetup's queued BeginRound -- Scenario/Runner.hs)" do
     getGameFixture <- loadFixture "get-game.json"
