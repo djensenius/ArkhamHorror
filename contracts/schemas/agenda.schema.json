@@ -94,7 +94,8 @@
             "type": "string"
           },
           {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 0
           }
         ],
         "minItems": 2,

@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.16",
+  "schemaRevision": "0.1.17",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -215,6 +215,29 @@
       ]
     },
     {
+      "description": "Location token multiset count mutated negative, rejected by the tokens[*] count minimum>=0 constraint (single 'replace' mutation of the real The Gathering starting location's Clue token count, scoped to the ordinaryLocation oneOf branch).",
+      "schema": "contracts/schemas/location.schema.json",
+      "schemaBranch": "ordinaryLocation",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game/locations/d5a66e84-c729-4066-8475-d8a155609025",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tokens/0/1",
+        "value": -1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tokens",
+            "0",
+            "1"
+          ],
+          "keyword": "minimum",
+          "messageContains": "is less than the minimum of 0"
+        }
+      ]
+    },
+    {
       "description": "PhaseStep with an unrecognized tag value not in the closed PhaseStep union (single 'replace' mutation of the real InvestigationPhaseStep phaseStep, scoped to that oneOf branch by index).",
       "schema": "contracts/schemas/phase-step.schema.json",
       "schemaBranch": 2,
@@ -353,7 +376,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities.json": "19e0a9736edf20fa7ad1423f20dcff44b646869fcc2d6c5c6a9de05c04049820",
+    "contracts/fixtures/capabilities.json": "dcf3049bcd01f23e3cfc3c8f4c106f1b47a510729afe20ec488446cd52c61f96",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
     "contracts/fixtures/event-changed.json": "e5c16ea398ec86f06bccf619cce633eabe0df4051f775b27663e1044b941f75e",
@@ -376,13 +399,13 @@
     "contracts/fixtures/location-enemy-view.json": "fd2cc29b6ea081cfa340b02c93194433542ee27ea50c9e841c94d6ed37f419b4",
     "contracts/fixtures/movement.json": "c284c0b4244024a072ee7a486c5907db4981c6ff4fed1d55cbe33046fb0b63dc",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
-    "contracts/manifest.json": "47778abc04885e741304f834bb00c745dc2cb66ee86f2e1aabd8acdf23a380db",
+    "contracts/manifest.json": "aa9871500527a041d4aaae62189905442bd9a35e4e15d1344d2f80a9f6bdba7e",
     "contracts/openapi.yaml": "825a681fa2ba583e7284fe72e0ad6e79f9a4e6b6546e72c300d57da9db5299d8",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
-    "contracts/schemas/act.schema.json": "9ce073a59a71e20adb4d6fdae64d3031afcc351da0f2b1e43f615a4180e638c3",
-    "contracts/schemas/agenda.schema.json": "3fe695b3113aebf118588607ef39cc50e3ef674a45fe235f51db19bb4f5ec760",
+    "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
+    "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
     "contracts/schemas/capabilities.schema.json": "7086eff0abe304b7084bc37c455dfc519de11015fd13fbebbd8e40130843104e",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
     "contracts/schemas/chaos-bag.schema.json": "45c9a42563b5e13d054f5689a8acf578df81f45746445020628335794fce4339",
@@ -396,8 +419,8 @@
     "contracts/schemas/game-step.schema.json": "a60158ed83eabd385d14b33f62d2c3ddd91e7491b22f3d64167284d466b99da3",
     "contracts/schemas/game-value.schema.json": "dd9ffeca0f8dfa44b93cae97416736608eaa3a8d93b959e7ca06d9eee14ac7aa",
     "contracts/schemas/get-game.schema.json": "60c58782db59095d18c6e6844dbe479b5432e08873a8de7c5dc2c29c895538ef",
-    "contracts/schemas/investigator.schema.json": "3cd56c0535478c884ad9f3cfaa5fa666638edbeb05092e466066dcc5b29b1338",
-    "contracts/schemas/location.schema.json": "5ff46a008114f067b352a5a421e96d65caeef9617166bf4d547357892ea7ca7c",
+    "contracts/schemas/investigator.schema.json": "d7568b6f9f56cc0eb12f3151f3fe15d1fd93cdae6c8356e04911d027b73b2a41",
+    "contracts/schemas/location.schema.json": "15d299e7b37a72cd64b9a77f363c184c1e7d3cb9411cf21fbbea18e91bda2f1d",
     "contracts/schemas/mode.schema.json": "584f4874cec987ab75849a0a7f5e63f4a09151f31436d5170ba7f2e46cdb164f",
     "contracts/schemas/movement.schema.json": "d9fff125d71f701d3b665c03fb0feb7454fd069083e109fcb252d54564120923",
     "contracts/schemas/name.schema.json": "0a04d31f01c47671c7529f4afacaa42d69dc9f9de222a10eac3a5ecc67ae71d6",
