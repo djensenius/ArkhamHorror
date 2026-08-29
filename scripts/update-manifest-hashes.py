@@ -16,10 +16,14 @@ import hashlib
 import json
 from pathlib import Path
 
+import strict_json
+
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "contracts" / "manifest.json"
 
-manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+strict_json.run_self_tests()
+
+manifest = strict_json.strict_json_load_path(MANIFEST)
 paths = set(manifest.get("documents", []))
 for fixture_index, fixture in enumerate(manifest.get("fixtures", [])):
     if not isinstance(fixture, dict) or "path" not in fixture:

@@ -464,8 +464,8 @@
       }
     },
     "unhealedHorrorThisRound": {
-      "type": "integer",
-      "minimum": 0
+      "description": "Can go negative: healing (Runner/Damage.hs's `min 0 . subtract amount`) clamps the *upper* bound at 0 but not the lower one, so healing more horror in a round than was actually assigned genuinely produces a negative wire value. This models current production behavior, not an intentionally-designed range.",
+      "type": "integer"
     },
     "usedAbilities": {
       "description": "Abilities used and their remaining-use bookkeeping. Broad, out of scope for this contract slice.",

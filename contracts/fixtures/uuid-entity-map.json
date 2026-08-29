@@ -1,0 +1,77 @@
+{
+  "00000000-0000-0000-0000-000000000384": {
+    "asSelfLocation": null,
+    "assignedDamage": [],
+    "attackOfOpportunityFlagged": false,
+    "attacking": null,
+    "attacks": {
+      "contents": {
+        "contents": "00000000-0000-0000-0000-000000000384",
+        "tag": "EnemyWithId"
+      },
+      "tag": "InvestigatorEngagedWith"
+    },
+    "bearer": null,
+    "cardCode": "c01159",
+    "cardId": "00000000-0000-0000-0000-000000000385",
+    "cardsUnderneath": [],
+    "damageStrategy": {
+      "tag": "DamageAny"
+    },
+    "defeated": false,
+    "delayEngagement": false,
+    "discardedBy": null,
+    "drawnFrom": null,
+    "evade": {
+      "contents": {
+        "contents": 3,
+        "tag": "Static"
+      },
+      "tag": "GameValueCalculation"
+    },
+    "exhausted": false,
+    "fight": {
+      "contents": {
+        "contents": 1,
+        "tag": "Static"
+      },
+      "tag": "GameValueCalculation"
+    },
+    "flipped": false,
+    "health": {
+      "contents": {
+        "contents": 1,
+        "tag": "Static"
+      },
+      "tag": "GameValueCalculation"
+    },
+    "healthDamage": 1,
+    "id": "00000000-0000-0000-0000-000000000384",
+    "keys": [],
+    "lastKnownLocation": null,
+    "meta": null,
+    "modifiers": [],
+    "movedFromHunterKeyword": false,
+    "movement": null,
+    "originalCardCode": "c01159",
+    "placement": {
+      "tag": "Unplaced"
+    },
+    "prey": {
+      "contents": {
+        "tag": "Anyone"
+      },
+      "tag": "Prey"
+    },
+    "referenceCards": [],
+    "sanityDamage": 0,
+    "sealedChaosTokens": [],
+    "spawnAt": null,
+    "spawnDetails": null,
+    "spawnedBy": null,
+    "surgeIfUnableToSpawn": false,
+    "tokens": [],
+    "unableToSpawn": "DiscardIfUnableToSpawn",
+    "wantsToAttack": false
+  }
+}

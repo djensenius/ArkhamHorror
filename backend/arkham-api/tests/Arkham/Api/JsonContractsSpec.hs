@@ -13,9 +13,14 @@ import Arkham.Achievement.Types
   , TheDunwichLegacyAchievement (TheGangsAllHere)
   )
 import Arkham.Act (lookupAct)
+import Arkham.Campaign (lookupCampaign)
+import Arkham.Campaign.Types (Campaign)
 import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.EnemyLocation (lookupEnemyLocation)
 import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
+import Arkham.Enemy.CardDefs.NightOfTheZealot.Rats qualified as EnemyCards (swarmOfRats)
+import Arkham.Story (createStory)
+import Arkham.Story.CardDefs.FortuneAndFolly qualified as StoryCardDefs (theStakeout)
 import Arkham.Campaign.Option (CampaignOption (..))
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
@@ -210,6 +215,35 @@ fixtureBoardInvestigator =
 fixtureBoardScenario :: Scenario
 fixtureBoardScenario = lookupScenario "01104" Easy
 
+{- | Night of the Zealot, the same campaign "The Gathering" belongs to --
+produced by the real production 'lookupCampaign' (Campaign.hs), the exact
+constructor 'newCampaign' (Game.hs) uses to build a fresh campaign's
+'CampaignAttrs' -- used to prove the real wire shape of 'GameMode's 'This'
+(campaign, no active scenario) and 'These' (a running campaign scenario)
+branches (issue: mode.schema.json's third 'oneOf' branch modeled a
+nonexistent @{"These": {...}}@ wrapper; the 'these' package's actual encoding
+of @These a b@ is sibling @{"This": a, "That": b}@ keys, matching
+'Data.These'\'s behaviour empirically verified against this exact dependency
+pin -- there is no custom\/orphan 'ToJSON (These a b)' instance in this
+codebase).
+-}
+fixtureCampaign :: Campaign
+fixtureCampaign = lookupCampaign (CampaignId "01") Easy
+
+-- | Real production 'This' branch: a Campaign snapshot with no active
+-- scenario (a between-scenario campaign screen), matching what
+-- @newCampaign cid Nothing@ (Game.hs) sets 'gameMode' to.
+fixtureCampaignOnlyMode :: These Campaign Scenario
+fixtureCampaignOnlyMode = This fixtureCampaign
+
+-- | Real production 'These' branch: both an active Campaign and its
+-- currently running Scenario (reusing the same production 'lookupScenario'
+-- value 'fixtureBoardGame' is built from), matching what
+-- @newCampaign cid (Just sid)@ (Game.hs) sets 'gameMode' to. Encodes as
+-- sibling @{"This": ..., "That": ...}@ keys, never a wrapping @"These"@ key.
+fixtureRunningCampaignMode :: These Campaign Scenario
+fixtureRunningCampaignMode = These fixtureCampaign fixtureBoardScenario
+
 {- | A genuinely non-empty, deterministic post-'Setup' board: one seated
 investigator, the act\/agenda decks in play, the chaos bag built, and the
 opening location placed -- produced by running the real 'StandaloneSetup',
@@ -364,6 +398,75 @@ fixtureActNoAdvanceCost = unsafePerformIO $ runAgainstFixtureBoardGame do
     Left err -> liftIO $ IOError.ioError $ IOError.userError $ "Could not look up act 90014: " <> show err
     Right act' -> Aeson.toJSON <$> withActMetadata act'
 {-# NOINLINE fixtureActNoAdvanceCost #-}
+
+{- | A real production negative @unhealedHorrorThisRound@ regression: pushes
+the actual @HealHorrorDirectly@ handler (Investigator\/Runner\/Damage.hs) for
+more horror than the fixture investigator was ever assigned this round,
+which the real @min 0 . subtract amount@ arithmetic genuinely drives negative
+(issue: investigator.schema.json's field incorrectly had a @minimum: 0@ even
+though production can, and does, emit negative values here). Extracted from
+the same production @PublicGame@ envelope encoder every other fixture in
+this file is bound to, not a hand-authored investigator payload.
+-}
+fixtureInvestigatorNegativeUnhealedHorror :: Aeson.Value
+fixtureInvestigatorNegativeUnhealedHorror = unsafePerformIO $ runAgainstFixtureBoardGame do
+  pushAndRunAll
+    [HealHorrorDirectly (InvestigatorTarget $ InvestigatorId "01001") GameSource 3]
+  game <- getGame
+  let publicGame = PublicGame fixtureGameId "Contract fixture game" ["Contract fixture log entry."] game
+  pure $ case Aeson.toJSON publicGame of
+    Aeson.Object top -> case AesonKeyMap.lookup "investigators" top of
+      Just (Aeson.Object invs) -> case AesonKeyMap.elems invs of
+        [investigatorValue] -> investigatorValue
+        _ -> error "fixtureInvestigatorNegativeUnhealedHorror: expected exactly one investigator"
+      _ -> error "fixtureInvestigatorNegativeUnhealedHorror: missing investigators object"
+    _ -> error "fixtureInvestigatorNegativeUnhealedHorror: expected a PublicGame object"
+{-# NOINLINE fixtureInvestigatorNegativeUnhealedHorror #-}
+
+{- | Real production evidence for the UUID-keyed entity-map key class shared
+by @enemies@\/@assets@\/@treacheries@\/@events@\/@skills@\/@concealed@ (all
+@EntityMap a = Map (EntityId a) a@ where @EntityId a@ is a UUID-backed
+newtype whose @ToJSONKey@ is @deriving newtype@ from the wrapped UUID,
+Arkham\/Id.hs) plus @question@ (@Map PlayerId ...@) and @cards@ (@Map CardId
+Card@, Arkham\/Card\/Id.hs). Built via the real @createEnemy@ constructor
+(Arkham\/Enemy.hs) against a real core enemy card def (Swarm of Rats,
+Arkham\/Enemy\/CardDefs\/NightOfTheZealot\/Rats.hs) and encoded with the
+real @Map@\/@ToJSONKey@ @Aeson.toJSON@ instance actually exercised by
+@Game.hs@'s @PublicGame@ envelope encoder for every one of those fields --
+not a hand-authored duplicate encoder. Every real @get-game.json@\/
+@game-update.json@ fixture keeps these particular fields empty (no enemies
+are on the board at fixture setup), so this focused standalone fixture is
+what proves the shared UUID-map-key schema constraint against a genuinely
+non-empty example instead of only ever validating an empty map.
+-}
+fixtureUuidEntityMap :: Aeson.Value
+fixtureUuidEntityMap = Aeson.toJSON (Map.fromList [(enemyId, createEnemy card enemyId)])
+ where
+  enemyId = EnemyId (UUID.fromWords 0 0 0 900)
+  card = lookupCard EnemyCards.swarmOfRats (unsafeMakeCardId (UUID.fromWords 0 0 0 901))
+{-# NOINLINE fixtureUuidEntityMap #-}
+
+{- | Real production evidence for the CardCode-keyed entity\/history-map key
+class shared by @stories@\/@scarletKeys@ (@StoryId@\/@ScarletKeyId@, both
+@CardCode@-backed newtypes whose @ToJSONKey@ is @deriving newtype@ from
+CardCode) and @roundHistory@\/@phaseHistory@\/@turnHistory@ (@Map
+InvestigatorId History@, Arkham\/Game\/Base.hs; @InvestigatorId@ is also
+CardCode-backed). Built via the real @createStory@ constructor
+(Arkham\/Story.hs) against a real story card def (The Stakeout,
+Arkham\/Story\/CardDefs\/FortuneAndFolly.hs), keyed exactly as the real
+engine does at the one real call site (@Game\/Runner.hs@:
+@let storyId = StoryId $ toCardCode card@), and encoded with the real
+@Map@\/@ToJSONKey@ @Aeson.toJSON@ instance. Every real @get-game.json@\/
+@game-update.json@ fixture keeps @stories@\/@scarletKeys@\/@*History@ empty,
+so this standalone fixture proves the shared CardCode-map-key schema
+constraint against a genuinely non-empty example.
+-}
+fixtureCardCodeEntityMap :: Aeson.Value
+fixtureCardCodeEntityMap = Aeson.toJSON (Map.fromList [(storyId, createStory card Nothing storyId)])
+ where
+  card = lookupCard StoryCardDefs.theStakeout (unsafeMakeCardId (UUID.fromWords 0 0 0 902))
+  storyId = StoryId (toCardCode card)
+{-# NOINLINE fixtureCardCodeEntityMap #-}
 
 fixturePublicGame :: PublicGame ArkhamGame.ArkhamGameId
 fixturePublicGame =
@@ -622,6 +725,7 @@ spec = describe "Native client contract fixtures" do
 
   it "matches the real get-game mode encoder at turn zero (issue: mode.schema.json's turn minimum previously rejected the valid initial value 0, since ScenarioAttrs.scenarioTurn starts at 0 -- Scenario/Types.hs -- and is only incremented by EndSetup's queued BeginRound -- Scenario/Runner.hs)" do
     getGameFixture <- loadFixture "get-game.json"
+    governedTurnZeroFixture <- loadFixture "mode-turn-zero.json"
     let
       embeddedMode = lookupValue "mode" $ lookupValue "game" getGameFixture
       turnZeroMode = Aeson.toJSON $ gameMode fixtureBoardGameAtTurnZero
@@ -633,6 +737,22 @@ spec = describe "Native client contract fixtures" do
     -- targeted single-field (turn) regression, not a second copy of the
     -- fixture's ~5KB scenario payload.
     setModeTurn embeddedMode (0 :: Int) `shouldBe` turnZeroMode
+    -- Also bound to a governed, hashed, schema-validated fixture file
+    -- (contracts/fixtures/mode-turn-zero.json) generated directly from this
+    -- same real `toJSON (gameMode fixtureBoardGameAtTurnZero)` call, so the
+    -- turn-zero regression has real golden provenance rather than living
+    -- only as an in-memory diff -- a mutation test in
+    -- `check-schema-revision-drift`/manifest self-tests proves the schema's
+    -- `turn` minimum:0 bound is load-bearing against this exact fixture.
+    turnZeroMode `shouldBe` governedTurnZeroFixture
+
+  it "matches the real This-only mode encoder for a campaign with no active scenario (issue: mode.schema.json's third oneOf branch modeled a nonexistent {\"These\": {...}} wrapper; the real 'these' package encodes These a b as sibling {\"This\":a,\"That\":b} keys, verified empirically -- there is no custom ToJSON (These a b) instance anywhere in this codebase)" do
+    fixture <- loadFixture "mode-campaign-only.json"
+    Aeson.toJSON fixtureCampaignOnlyMode `shouldBe` fixture
+
+  it "matches the real This+That mode encoder for a running campaign scenario (production's These constructor, encoded as sibling 'This'/'That' keys -- never a wrapping \"These\" key)" do
+    fixture <- loadFixture "mode-campaign-scenario.json"
+    Aeson.toJSON fixtureRunningCampaignMode `shouldBe` fixture
 
   it "matches the real enemy-location view encoder (issue: location.schema.json needed a disjoint oneOf for the enemyLocation:true view Game.hs's withEnemyLocationAsLocationData emits, distinct from ordinary LocationAttrs)" do
     fixture <- loadFixture "location-enemy-view.json"
@@ -645,6 +765,18 @@ spec = describe "Native client contract fixtures" do
   it "matches the real act encoder for an act with no advance cost (issue: actAdvanceCost :: Maybe Cost encodes Nothing as null, not an object)" do
     fixture <- loadFixture "act-no-advance-cost.json"
     fixtureActNoAdvanceCost `shouldBe` fixture
+
+  it "matches the real investigator encoder for a negative unhealedHorrorThisRound (issue: investigator.schema.json incorrectly had a minimum:0 even though production's min 0 . subtract amount in Runner/Damage.hs genuinely emits negative values on the wire when over-healing)" do
+    fixture <- loadFixture "investigator-unhealed-horror-negative.json"
+    fixtureInvestigatorNegativeUnhealedHorror `shouldBe` fixture
+
+  it "matches the real UUID-keyed entity-map encoder (issue: PublicGame's enemies/assets/treacheries/events/skills/concealed/question/cards maps had no propertyNames constraint at all; every real get-game/game-update fixture keeps them empty, so this focused fixture proves the shared uuidMapKey grammar against a genuinely non-empty, real createEnemy-built map)" do
+    fixture <- loadFixture "uuid-entity-map.json"
+    fixtureUuidEntityMap `shouldBe` fixture
+
+  it "matches the real CardCode-keyed entity-map encoder (issue: PublicGame's stories/scarletKeys/roundHistory/phaseHistory/turnHistory maps had no propertyNames constraint; this focused fixture proves the shared cardCodeMapKey grammar -- keyed exactly as the real Game/Runner.hs call site does, StoryId $ toCardCode card -- against a genuinely non-empty, real createStory-built map)" do
+    fixture <- loadFixture "card-code-entity-map.json"
+    fixtureCardCodeEntityMap `shouldBe` fixture
 
   it "decodes the real password-reset request" do
     request <-

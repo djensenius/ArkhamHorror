@@ -82,16 +82,29 @@ underlying value.
 This slice tightens, with exact required keys and closed tags/enums where the
 Haskell source is itself closed:
 
-- `mode`: the `These Campaign Scenario` wrapper. The scenario (`That`) branch
-  is fully specified (58 required keys), including `chaosBag`, `name`,
-  `decksLayout`/`locationLayout` topology strings, and `difficulty`. The
-  campaign-only (`This`) and campaign+scenario (`These`) branches remain
-  broad: no fixture exercises them yet, so their shape is asserted only by
-  Haskell's `These` wrapper, not by direct evidence. `turn`
+- `mode`: `GameMode = These Campaign Scenario`, whose real Aeson wire shape
+  (verified empirically; the `these` package ships no aeson dependency and
+  this codebase declares no custom/orphan `ToJSON (These a b)` instance) is
+  sibling `This`/`That` keys, never a wrapping `"These"` object. The schema
+  is a disjoint 3-branch `oneOf`: `This`-only (a campaign with no active
+  scenario), `That`-only (a standalone scenario, fully specified — 58
+  required keys, including `chaosBag`, `name`, `decksLayout`/
+  `locationLayout` topology strings, and `difficulty`), and both `This`+
+  `That` present as siblings (a running campaign scenario). All three
+  branches are backed by real production `toJSON` fixtures generated from
+  the real `This`/`That`/`These` constructors
+  (`fixtures/mode-campaign-only.json`, `fixtures/mode-campaign-scenario.json`,
+  plus the existing standalone-scenario `get-game.json` fixture); a
+  dedicated negative fixture proves the nonexistent `"These"` wrapper key is
+  rejected across all three branches. The `This` campaign branch stays an
+  intentionally broad object placeholder (`$defs/campaign`); no deep
+  campaign schema is in scope for this slice. `turn`
   (`ScenarioAttrs.scenarioTurn`) has `minimum: 0` (not 1), since a scenario
-  genuinely initializes at turn 0 before its first turn begins; a Haskell
-  assertion proves the real turn-zero encoding is identical to the
-  already-validated `get-game.json` fixture except for that one field.
+  genuinely initializes at turn 0 before its first turn begins;
+  `fixtures/mode-turn-zero.json` is a governed, hashed, real production
+  `toJSON (gameMode fixtureBoardGameAtTurnZero)` fixture proving this exact
+  value validates, alongside the existing negative fixture proving `-1` does
+  not.
 - `phaseStep`: the 4-tag `PhaseStep` union, each tag's `contents` a closed
   sub-step enum taken directly from `Arkham.Phase`.
 - `chaosBag` / chaos tokens: all 8 `ChaosBag` fields and all 5 `ChaosToken`
@@ -148,23 +161,49 @@ Known, deliberate scope limits carried by this fixture:
   against the isolated enum sub-schema — this closed-set risk is fully
   retired by the Haskell ADT declaration itself, not by needing one JSON
   sample per letter.
-- `public-game.schema.json` constrains `propertyNames` for every in-scope
-  entity map keyed by a confirmed newtype: `locations` (`LocationId`, UUID,
-  per `Arkham/Id.hs`'s `deriving newtype ToJSONKey`) and
-  `investigators`/`otherInvestigators`/`killedInvestigators`/`acts`/`agendas`
-  (`InvestigatorId`/`ActId`/`AgendaId`, `CardCode`-backed). `CardCode`
+- `public-game.schema.json` constrains `propertyNames` for every entity map
+  it publishes, split by the two real key classes actually used: `$defs/
+  uuidEntityMap` (`$defs/uuidMapKey`, `format: "uuid"`) for `locations`,
+  `enemies`, `assets`, `treacheries`, `events`, `skills`, `concealed`,
+  `question` (`PlayerId`), and `cards` (`CardId`, `Arkham/Card/Id.hs`) — all
+  UUID-backed newtypes whose `ToJSONKey` is `deriving newtype` from the
+  wrapped `UUID` (`Arkham/Id.hs`) — and `$defs/cardCodeEntityMap`
+  (`$defs/cardCodeMapKey`) for `investigators`/`otherInvestigators`/
+  `killedInvestigators`/`acts`/`agendas`/`stories`/`scarletKeys` and
+  `roundHistory`/`phaseHistory`/`turnHistory` (`Map InvestigatorId History`,
+  `Arkham/Game/Base.hs`) — all `CardCode`-backed newtypes (`InvestigatorId`/
+  `ActId`/`AgendaId`/`StoryId`/`ScarletKeyId`). `CardCode`
   (`Arkham/Card/CardCode.hs`) is a bare `newtype CardCode = CardCode Text`
   with no character-class constraint at the type level; its `ToJSONKey`
   instance always prepends a literal `c` to the underlying text
   (`toJSONKeyText (T.cons 'c' . unCardCode)`). Empirically, every one of the
   815 real card codes in `data/cards.json` matches `^[0-9]{5}[a-z]?$`, but
-  since `CardCode` places no such restriction on homebrew/unofficial content,
-  `cardCodeMapKey`'s wire-key pattern is the broader `^c[0-9a-z:._-]+$` —
-  the same grammar already used by the `cardCode`/`id` fields elsewhere in
-  these schemas — rather than the narrower official-only shape. The
-  remaining, intentionally out-of-scope entity maps (enemies/assets/
-  treacheries/events/cards/concealed/skills/stories/scarletKeys) are not
-  constrained, since their *value* schemas stay broad.
+  since `CardCode` places no such restriction on homebrew/unofficial
+  content, `cardCodeMapKey`'s wire-key pattern is the broader
+  `^c[0-9a-z:._-]+$` — the same grammar already used by the `cardCode`/`id`
+  fields elsewhere in these schemas — rather than the narrower
+  official-only shape. Every real `get-game.json`/`game-update.json`
+  fixture keeps `enemies`/`assets`/`treacheries`/`events`/`concealed`/
+  `skills`/`cards`/`stories`/`scarletKeys`/`*History` empty (no enemies are
+  on the board at fixture setup), so two focused standalone fixtures —
+  `fixtures/uuid-entity-map.json` (a real `createEnemy`-built Swarm of Rats
+  entry) and `fixtures/card-code-entity-map.json` (a real `createStory`-built
+  The Stakeout entry, keyed exactly as the real `Game/Runner.hs` call site
+  does: `StoryId $ toCardCode card`) — validate each shared key class against
+  a genuinely non-empty map rather than only ever an empty one. Two
+  corresponding negative fixtures each add one additional, invalid-keyed
+  entry (whose own embedded `id` field stays valid) alongside the real entry,
+  isolating the `propertyNames` failure from any value-level check. Entity
+  *value* schemas stay an intentionally broad object placeholder for every
+  one of these maps — out of scope for this map-key slice.
+- `investigator.schema.json`'s `unhealedHorrorThisRound` has no `minimum`
+  constraint (plain `integer`): production's real arithmetic
+  (`min 0 . subtract amount` in `Investigator/Runner/Damage.hs`) can and
+  does drive this value negative on over-heal, so a `minimum: 0` schema
+  constraint would reject genuinely valid wire output.
+  `fixtures/investigator-unhealed-horror-negative.json` is a real production
+  encoding (via the actual `HealHorrorDirectly` handler) with the value
+  `-3`.
 - Every governed schema/fixture/document is bound to a recomputed SHA-256 in
   `manifest.json`'s `artifactHashes`; see "Release immutability and
   `schemaRevision`" below for the enforcement rule.
@@ -407,17 +446,40 @@ entry.
 
 `contracts:revision-drift` (`scripts/check-schema-revision-drift.py`)
 enforces the actual bump rule: it recomputes the current governed-artifact
-hash set, recomputes the same hash set as of a resolved base ref (trying, in
-order, `CONTRACT_BASE_REF`, `fork/main`, `origin/main`, `main`, and finally
-the commit this contract effort was originally branched from, as a
-last-resort deterministic pin — all via local `git show <ref>:path`, never a
-network call), and requires `schemaRevision` to have strictly, numerically
-increased whenever that diff is non-empty. A human updating only the hash or
-only the version number is not sufficient; the gate cross-checks both. Its
-comparison logic (`evaluate_drift`) is pure and is proven separately by a set
-of small, fully in-memory self-tests with no git or filesystem dependency,
-demonstrating a same-revision artifact change fails the gate while a
-strictly higher revision passes it — deterministic in any environment.
+hash set, recomputes the same hash set as of a resolved base ref, and
+requires `schemaRevision` to have strictly, numerically increased whenever
+that diff is non-empty. Base-ref resolution is deterministic and fails
+closed in CI: when both `GITHUB_ACTIONS` and `CI` are `"true"`, the gate
+*requires* an explicit `CONTRACT_BASE_REF` (wired by the workflow from the
+triggering event's own immutable base — `pull_request.base.sha`,
+`push.before`, or a required `workflow_dispatch.inputs.base_sha` — never an
+inferred branch/HEAD alias), validates it is a well-formed hex SHA, and
+rejects an all-zero SHA except a narrowly-checked repository-initialization
+escape hatch that cannot weaken `main`. Outside CI, an unset
+`CONTRACT_BASE_REF` falls back, in order, to `fork/main`, `origin/main`,
+`main`, and finally the commit this contract effort was originally branched
+from, as a last-resort deterministic pin — all via local
+`git show <ref>:path`, never a network call. A human updating only the hash
+or only the version number is not sufficient; the gate cross-checks both.
+Its comparison logic (`evaluate_drift`) is pure and is proven separately by
+a set of small, fully in-memory self-tests with no git or filesystem
+dependency, demonstrating a same-revision artifact change fails the gate
+while a strictly higher revision passes it — deterministic in any
+environment; `resolve_base_ref`'s own self-tests separately cover CI-mode
+missing/invalid/all-zero/unresolvable-SHA rejection and successful
+resolution both in and outside CI.
+
+Every governed JSON read across this tooling — the manifest, schemas,
+fixtures, negative-fixture descriptors, and the base-ref manifest read via
+`git show <ref>:path` bytes — goes through a single shared strict loader
+(`scripts/strict_json.py`, a plain sibling module imported by all three
+contract scripts) rather than a bare `json.load`/`json.loads`: it rejects
+duplicate object keys at any nesting depth (including a plain key and a
+distinct `\uXXXX`-escaped form that decodes to the same text), the
+non-JSON `NaN`/`Infinity`/`-Infinity` constants the stdlib accepts by
+default, and non-strict UTF-8 decoding of raw bytes. Its own self-tests run
+automatically whenever any of the three scripts is invoked, proving the
+wiring end-to-end rather than only in isolation.
 
 Contract changes must remain backward compatible with the Vue client. Runtime
 changes belong in separate, small pull requests so they can be contributed

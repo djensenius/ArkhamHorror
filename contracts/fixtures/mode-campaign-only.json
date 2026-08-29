@@ -1,0 +1,58 @@
+{
+  "This": {
+    "chaosBag": [
+      "PlusOne",
+      "PlusOne",
+      "Zero",
+      "Zero",
+      "Zero",
+      "MinusOne",
+      "MinusOne",
+      "MinusOne",
+      "MinusTwo",
+      "MinusTwo",
+      "Skull",
+      "Skull",
+      "Cultist",
+      "Tablet",
+      "AutoFail",
+      "ElderSign"
+    ],
+    "chaosBagHistory": [],
+    "completedSteps": [],
+    "decks": {},
+    "destiny": {},
+    "difficulty": "Easy",
+    "id": "01",
+    "log": {
+      "crossedOut": [],
+      "options": [],
+      "orderedKeys": [],
+      "partners": {},
+      "recorded": [],
+      "recordedCounts": [],
+      "recordedSets": []
+    },
+    "meta": null,
+    "modifiers": {},
+    "modifiersForAll": [],
+    "name": "Night of the Zealot",
+    "resolutions": {},
+    "step": {
+      "contents": {
+        "canChooseSideStory": false,
+        "canUpgradeDecks": false,
+        "chooseSideStory": false,
+        "lead": null,
+        "nextStep": {
+          "tag": "PrologueStep"
+        }
+      },
+      "tag": "ContinueCampaignStep"
+    },
+    "store": {},
+    "storyCards": {},
+    "usedAbilities": [],
+    "xpBreakdown": []
+  }
+}

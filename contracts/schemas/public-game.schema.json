@@ -138,10 +138,10 @@
       }
     },
     "enemies": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "assets": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "acts": {
       "type": "object",
@@ -162,22 +162,22 @@
       }
     },
     "treacheries": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "events": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "concealed": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "skills": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "stories": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "scarletKeys": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "playerCount": {
       "type": "integer"
@@ -272,10 +272,10 @@
       ]
     },
     "question": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "cards": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/uuidEntityMap"
     },
     "totalDoom": {
       "type": "integer"
@@ -300,13 +300,13 @@
       "$ref": "#/$defs/nullableStep"
     },
     "roundHistory": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "phaseHistory": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "turnHistory": {
-      "$ref": "#/$defs/entityMap"
+      "$ref": "#/$defs/cardCodeEntityMap"
     },
     "enemyAttackTargets": {
       "type": "array",
@@ -329,8 +329,22 @@
     }
   },
   "$defs": {
-    "entityMap": {
+    "uuidEntityMap": {
+      "description": "Wire shape for maps keyed by a UUID-backed newtype whose ToJSONKey is `deriving newtype` from the wrapped UUID (Arkham/Id.hs): EnemyId, AssetId, TreacheryId, EventId, SkillId, ConcealedCardId (enemies/assets/treacheries/events/skills/concealed), PlayerId (question), and CardId (cards, Arkham/Card/Id.hs). Entity value shapes remain an intentionally broad object placeholder -- out of scope for this map-key slice.",
       "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/uuidMapKey"
+      },
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "cardCodeEntityMap": {
+      "description": "Wire shape for maps keyed by a CardCode-backed newtype whose ToJSONKey is `deriving newtype` from CardCode (Arkham/Id.hs): StoryId (stories), ScarletKeyId (scarletKeys, Arkham/Campaigns/TheScarletKeys/Key/Id.hs), and InvestigatorId (roundHistory/phaseHistory/turnHistory, Map InvestigatorId History in Arkham/Game/Base.hs). Entity value shapes remain an intentionally broad object placeholder -- out of scope for this map-key slice.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
       "additionalProperties": {
         "type": "object"
       }

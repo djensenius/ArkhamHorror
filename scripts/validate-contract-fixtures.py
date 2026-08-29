@@ -8,7 +8,6 @@
 # ///
 
 import copy
-import json
 import re
 from pathlib import Path
 
@@ -16,14 +15,17 @@ from jsonschema import FormatChecker
 from jsonschema.validators import validator_for
 from referencing import Registry, Resource
 
+import strict_json
+
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACTS = ROOT / "contracts"
 
+strict_json.run_self_tests()
+
 
 def load_json(path: Path) -> object:
-    with path.open(encoding="utf-8") as handle:
-        return json.load(handle)
+    return strict_json.strict_json_load_path(path)
 
 
 def require_schema_document(schema_path, *, entry_kind: str) -> dict:

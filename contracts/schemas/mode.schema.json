@@ -2,22 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/mode.schema.json",
   "title": "GameMode",
-  "description": "PublicGame.mode: a These Campaign Scenario (the 'these' package). Fresh standalone play (this contract slice's fixture) is always the That-only branch; This-only (between-scenario campaign screens) and These (a running scenario within a campaign) are real, reachable states but are not exercised by this fixture, so their payloads stay broad here pending a dedicated campaign contract slice.",
+  "description": "PublicGame.mode: a These Campaign Scenario (the 'these' package). This project's `These a b` values encode via sibling keys in a single JSON object -- verified empirically against this exact dependency pin (This a -> {\"This\":a}; That b -> {\"That\":b}; These a b -> {\"This\":a,\"That\":b}) -- never a wrapping \"These\" key. Fresh standalone play (this contract slice's fixture) is always the That-only branch; This-only (between-scenario campaign screens) and the This+That running-campaign-scenario branch are real, reachable states but are not exercised by this fixture, so the Campaign payload stays broad here pending a dedicated campaign contract slice.",
   "type": "object",
   "oneOf": [
     {
+      "description": "This-only: a Campaign snapshot with no active scenario (a between-scenario campaign screen).",
       "additionalProperties": false,
       "required": [
         "This"
       ],
       "properties": {
         "This": {
-          "description": "A Campaign snapshot with no active scenario. Broad, out of scope for this contract slice.",
-          "type": "object"
+          "$ref": "#/$defs/campaign"
         }
       }
     },
     {
+      "description": "That-only: a standalone scenario with no enclosing campaign.",
       "additionalProperties": false,
       "required": [
         "That"
@@ -29,19 +30,27 @@
       }
     },
     {
+      "description": "This+That (production's `These` constructor): both an active Campaign and its currently running Scenario, encoded as sibling 'This'/'That' keys in the same object -- never a wrapping 'These' key.",
       "additionalProperties": false,
       "required": [
-        "These"
+        "This",
+        "That"
       ],
       "properties": {
-        "These": {
-          "description": "Both an active Campaign and Scenario. Broad, out of scope for this contract slice.",
-          "type": "object"
+        "This": {
+          "$ref": "#/$defs/campaign"
+        },
+        "That": {
+          "$ref": "#/$defs/scenario"
         }
       }
     }
   ],
   "$defs": {
+    "campaign": {
+      "description": "A Campaign snapshot. Broad, out of scope for this contract slice.",
+      "type": "object"
+    },
     "scenario": {
       "type": "object",
       "additionalProperties": false,

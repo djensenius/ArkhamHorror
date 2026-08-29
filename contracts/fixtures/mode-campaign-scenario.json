@@ -1,0 +1,176 @@
+{
+  "That": {
+    "actStack": [],
+    "activeEncounterDeck": "RegularEncounterDeck",
+    "additionalReferences": [],
+    "agendaStack": [],
+    "campaignStep": null,
+    "cardsNextToActDeck": [],
+    "cardsNextToAgendaDeck": [],
+    "cardsUnderActDeck": [],
+    "cardsUnderAgendaDeck": [],
+    "cardsUnderScenarioReference": [],
+    "chaosBag": {
+      "chaosTokens": [],
+      "choice": null,
+      "forceDraw": null,
+      "pendingRequests": [],
+      "revealedChaosTokens": [],
+      "setAsideChaosTokens": [],
+      "tokenPool": [],
+      "totalRevealedChaosTokens": []
+    },
+    "completedActStack": [],
+    "completedAgendaStack": [],
+    "counts": [],
+    "deckDiscards": [],
+    "decks": [],
+    "decksLayout": [
+      "agenda1 act1"
+    ],
+    "defeatedEnemies": {},
+    "difficulty": "Easy",
+    "discard": [],
+    "encounterDeck": [],
+    "encounterDecks": [],
+    "grid": {
+      "gridAbove": [
+        [
+          [
+            null
+          ],
+          null,
+          [
+            null
+          ]
+        ]
+      ],
+      "gridBelow": [
+        [
+          [
+            null
+          ],
+          null,
+          [
+            null
+          ]
+        ]
+      ],
+      "gridCenter": [
+        [
+          null
+        ],
+        null,
+        [
+          null
+        ]
+      ]
+    },
+    "hasEncounterDeck": true,
+    "id": "c01104",
+    "inResolution": false,
+    "inShuffle": false,
+    "isPrelude": false,
+    "isSideStory": false,
+    "keys": [],
+    "locationLayout": [
+      "   .   attic   .     ",
+      " study hallway parlor",
+      "   .   cellar  .     "
+    ],
+    "log": [],
+    "meta": null,
+    "name": {
+      "subtitle": null,
+      "title": "The Gathering"
+    },
+    "noRemainingInvestigatorsHandler": {
+      "tag": "ScenarioTarget"
+    },
+    "options": null,
+    "playerDecks": {},
+    "reference": "c01104",
+    "resignedCardCodes": [],
+    "resolvedStories": [],
+    "scope": "theGathering",
+    "search": null,
+    "setAsideCards": [],
+    "setAsideKeys": [],
+    "standaloneCampaignLog": {
+      "crossedOut": [],
+      "options": [],
+      "orderedKeys": [],
+      "partners": {},
+      "recorded": [],
+      "recordedCounts": [],
+      "recordedSets": []
+    },
+    "started": false,
+    "storyCards": {},
+    "tarotCards": [],
+    "tarotDeck": [],
+    "timesPlayed": 0,
+    "tokens": [],
+    "turn": 0,
+    "useHardExpertReference": false,
+    "usesGrid": false,
+    "victoryDisplay": [],
+    "xpBreakdown": null
+  },
+  "This": {
+    "chaosBag": [
+      "PlusOne",
+      "PlusOne",
+      "Zero",
+      "Zero",
+      "Zero",
+      "MinusOne",
+      "MinusOne",
+      "MinusOne",
+      "MinusTwo",
+      "MinusTwo",
+      "Skull",
+      "Skull",
+      "Cultist",
+      "Tablet",
+      "AutoFail",
+      "ElderSign"
+    ],
+    "chaosBagHistory": [],
+    "completedSteps": [],
+    "decks": {},
+    "destiny": {},
+    "difficulty": "Easy",
+    "id": "01",
+    "log": {
+      "crossedOut": [],
+      "options": [],
+      "orderedKeys": [],
+      "partners": {},
+      "recorded": [],
+      "recordedCounts": [],
+      "recordedSets": []
+    },
+    "meta": null,
+    "modifiers": {},
+    "modifiersForAll": [],
+    "name": "Night of the Zealot",
+    "resolutions": {},
+    "step": {
+      "contents": {
+        "canChooseSideStory": false,
+        "canUpgradeDecks": false,
+        "chooseSideStory": false,
+        "lead": null,
+        "nextStep": {
+          "tag": "PrologueStep"
+        }
+      },
+      "tag": "ContinueCampaignStep"
+    },
+    "store": {},
+    "storyCards": {},
+    "usedAbilities": [],
+    "xpBreakdown": []
+  }
+}

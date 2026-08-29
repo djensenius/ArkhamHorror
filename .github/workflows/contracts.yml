@@ -6,6 +6,11 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      base_sha:
+        description: "Base commit SHA to diff governed contract artifacts against (required; this workflow never infers one)."
+        required: true
+        type: string
 
 concurrency:
   group: contract-${{ github.ref }}
@@ -28,6 +33,8 @@ jobs:
           cache: true
       - run: mise run contracts:fixtures
       - run: mise run contracts:revision-drift
+        env:
+          CONTRACT_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || github.event.inputs.base_sha }}
 
   openapi:
     name: OpenAPI
