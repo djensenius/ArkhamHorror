@@ -63,6 +63,38 @@ def canonicalize_manifest_bytes(manifest: dict) -> bytes:
     return json.dumps(canonical, sort_keys=True, indent=2).encode("utf-8") + b"\n"
 
 
+def require_manifest_schema_revision(manifest: object, label: str) -> str:
+    """Read `schemaRevision` from a manifest, failing via a controlled
+    SystemExit (not a raw KeyError/TypeError) if the manifest itself isn't an
+    object, the key is missing, or its value isn't the dot-separated numeric
+    string this gate's monotonic-revision comparison requires.
+    """
+    require(isinstance(manifest, dict), f"{label} manifest.json is not a JSON object: {manifest!r}")
+    require(
+        "schemaRevision" in manifest,
+        f"{label} manifest.json is missing required key 'schemaRevision'",
+    )
+    revision = manifest["schemaRevision"]
+    require(
+        isinstance(revision, str) and revision,
+        f"{label} manifest.json 'schemaRevision' must be a non-empty string, got {revision!r}",
+    )
+    return revision
+
+
+def require_manifest_artifact_hashes(manifest: dict, label: str) -> dict:
+    """Read `artifactHashes` from a manifest, failing via a controlled
+    SystemExit (not a raw TypeError from `recorded_hashes[path]` or
+    `set(recorded_hashes)`) if present but not a JSON object.
+    """
+    recorded_hashes = manifest.get("artifactHashes", {})
+    require(
+        isinstance(recorded_hashes, dict),
+        f"{label} manifest.json 'artifactHashes' must be a JSON object, got {recorded_hashes!r}",
+    )
+    return recorded_hashes
+
+
 def governed_paths(manifest: dict) -> list[str]:
     paths = list(manifest.get("documents", []))
     for index, fixture in enumerate(manifest.get("fixtures", [])):
@@ -269,15 +301,78 @@ def run_self_tests() -> None:
             "disk via a controlled SystemExit, not raise a raw FileNotFoundError."
         )
 
+    try:
+        require_manifest_schema_revision(["not", "a", "dict"], "selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_manifest_schema_revision must reject a non-dict manifest via "
+            "a controlled SystemExit, not raise a raw TypeError."
+        )
+
+    try:
+        require_manifest_schema_revision({"artifactHashes": {}}, "selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_manifest_schema_revision must reject a manifest missing "
+            "'schemaRevision' via a controlled SystemExit, not raise a raw KeyError."
+        )
+
+    try:
+        require_manifest_schema_revision({"schemaRevision": 116}, "selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_manifest_schema_revision must reject a non-string "
+            "'schemaRevision' (e.g. an int) via a controlled SystemExit."
+        )
+
+    try:
+        require_manifest_schema_revision({"schemaRevision": ""}, "selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_manifest_schema_revision must reject an empty "
+            "'schemaRevision' string via a controlled SystemExit."
+        )
+
+    require(
+        require_manifest_schema_revision({"schemaRevision": "0.1.16"}, "selftest") == "0.1.16",
+        "Self-test failure: require_manifest_schema_revision must return a well-formed 'schemaRevision' "
+        "unchanged.",
+    )
+
+    try:
+        require_manifest_artifact_hashes({"artifactHashes": ["not", "a", "dict"]}, "selftest")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: require_manifest_artifact_hashes must reject a non-dict "
+            "'artifactHashes' (e.g. a list) via a controlled SystemExit, not raise a raw TypeError "
+            "later when treated as a mapping."
+        )
+
+    require(
+        require_manifest_artifact_hashes({}, "selftest") == {},
+        "Self-test failure: require_manifest_artifact_hashes must default a missing 'artifactHashes' "
+        "to an empty object rather than failing.",
+    )
+
 
 def main() -> None:
     run_self_tests()
 
     head_manifest = load_json(MANIFEST_PATH)
-    head_revision = head_manifest["schemaRevision"]
+    head_revision = require_manifest_schema_revision(head_manifest, "head")
     head_hashes = compute_hashes_from_worktree(head_manifest)
 
-    recorded_hashes = head_manifest.get("artifactHashes", {})
+    recorded_hashes = require_manifest_artifact_hashes(head_manifest, "head")
     recorded_paths = set(recorded_hashes)
     actual_paths = set(head_hashes)
     missing = sorted(actual_paths - recorded_paths)
@@ -331,7 +426,7 @@ def main() -> None:
         "the checkout includes enough local history to resolve one of these refs.",
     )
 
-    base_revision = base_manifest["schemaRevision"]
+    base_revision = require_manifest_schema_revision(base_manifest, f"base ({base_ref})")
     base_hashes = compute_hashes_from_git_ref(base_ref, base_manifest)
 
     ok, detail = evaluate_drift(base_revision, base_hashes, head_revision, head_hashes)
