@@ -26,6 +26,25 @@ def load_json(path: Path) -> object:
         return json.load(handle)
 
 
+def require_entry_keys(entry: object, required_keys: list, *, entry_kind: str, index: int) -> dict:
+    """Validate that a manifest list entry (negativeFixtures/enumBoundaryChecks
+    element, etc.) is a dict containing every one of ``required_keys`` before
+    the caller indexes into it. Manifest entries are hand-authored JSON, so a
+    typo or missing field must fail deterministically via ``require`` rather
+    than raising a raw KeyError/TypeError once the caller starts indexing.
+    """
+    require(
+        isinstance(entry, dict),
+        f"{entry_kind} entry #{index} is not a JSON object: {entry!r}",
+    )
+    missing = [key for key in required_keys if key not in entry]
+    require(
+        not missing,
+        f"{entry_kind} entry #{index} is missing required key(s) {missing}: {entry!r}",
+    )
+    return entry
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(message)
@@ -86,7 +105,8 @@ for relative_path in documents:
     schema_ids[schema_id] = relative_path
     registry = registry.with_resource(schema_id, Resource.from_contents(schema))
 
-for fixture in fixtures:
+for fixture_index, fixture in enumerate(fixtures):
+    require_entry_keys(fixture, ["path", "schema"], entry_kind="fixtures", index=fixture_index)
     fixture_path = fixture["path"]
     schema_path = fixture["schema"]
     require((ROOT / fixture_path).is_file(), f"Missing fixture: {fixture_path}")
@@ -364,7 +384,13 @@ def load_base_value(base_positive_fixture: str, base_pointer: str):
     return resolve_json_pointer(positive_fixture_cache[base_positive_fixture], base_pointer)
 
 
-for fixture in negative_fixtures:
+for negative_fixture_index, fixture in enumerate(negative_fixtures):
+    require_entry_keys(
+        fixture,
+        ["schema", "basePositiveFixture", "basePointer", "mutation", "expectedErrors"],
+        entry_kind="negativeFixtures",
+        index=negative_fixture_index,
+    )
     schema_path = fixture["schema"]
     base_positive_fixture = fixture["basePositiveFixture"]
     base_pointer = fixture["basePointer"]
@@ -375,10 +401,11 @@ for fixture in negative_fixtures:
 
     require((ROOT / base_positive_fixture).is_file(), f"Missing base positive fixture: {base_positive_fixture}")
     require(
-        any(f["path"] == base_positive_fixture for f in fixtures),
+        any(isinstance(f, dict) and f.get("path") == base_positive_fixture for f in fixtures),
         f"basePositiveFixture {base_positive_fixture!r} is not a registered positive fixture",
     )
     require(schema_path in documents, f"Negative fixture schema is not a document: {schema_path}")
+    require(schema_path in schemas_by_path, f"Negative fixture schema document is not a JSON schema: {schema_path}")
 
     base_value = load_base_value(base_positive_fixture, base_pointer)
     mutated_instance = apply_mutation(base_value, mutation)
@@ -428,11 +455,18 @@ for fixture in negative_fixtures:
 # ---------------------------------------------------------------------------
 
 enum_boundary_checks = manifest.get("enumBoundaryChecks", [])
-for check in enum_boundary_checks:
+for enum_boundary_index, check in enumerate(enum_boundary_checks):
+    require_entry_keys(
+        check,
+        ["schema", "schemaPointer", "validValues", "invalidValues"],
+        entry_kind="enumBoundaryChecks",
+        index=enum_boundary_index,
+    )
     schema_path = check["schema"]
     schema_pointer = check["schemaPointer"]
     description = check.get("description", "no description")
     require(schema_path in documents, f"enumBoundaryChecks schema is not a document: {schema_path}")
+    require(schema_path in schemas_by_path, f"enumBoundaryChecks schema document is not a JSON schema: {schema_path}")
 
     sub_schema = resolve_json_pointer(schemas_by_path[schema_path], schema_pointer)
     require(isinstance(sub_schema, dict) and "enum" in sub_schema, f"{schema_path}{schema_pointer} is not an enum sub-schema")

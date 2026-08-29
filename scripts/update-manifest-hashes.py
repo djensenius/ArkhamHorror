@@ -21,7 +21,11 @@ MANIFEST = ROOT / "contracts" / "manifest.json"
 
 manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
 paths = set(manifest.get("documents", []))
-for fixture in manifest.get("fixtures", []):
+for fixture_index, fixture in enumerate(manifest.get("fixtures", [])):
+    if not isinstance(fixture, dict) or "path" not in fixture:
+        raise SystemExit(
+            f"manifest.json fixtures entry #{fixture_index} is missing a 'path' key: {fixture!r}"
+        )
     paths.add(fixture["path"])
 # Sort so `artifactHashes` ordering is stable and independent of the
 # (unordered-in-spirit) order documents/fixtures happen to be listed in,
@@ -31,7 +35,13 @@ paths = sorted(paths)
 
 hashes = {}
 for relative_path in paths:
-    hashes[relative_path] = hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()
+    artifact_file = ROOT / relative_path
+    if not artifact_file.is_file():
+        raise SystemExit(
+            f"manifest.json references a governed artifact that does not exist on disk: "
+            f"{relative_path} (resolved: {artifact_file})"
+        )
+    hashes[relative_path] = hashlib.sha256(artifact_file.read_bytes()).hexdigest()
 
 manifest["artifactHashes"] = hashes
 canonical = dict(manifest)
