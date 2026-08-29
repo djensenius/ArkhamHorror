@@ -20,13 +20,21 @@ us assert:
   'ClaimSeatMissingGame' before any other check;
 * a locked game that is not a "WithFriends" multiplayer game reports
   'ClaimSeatNotMultiplayer', read straight from the locked snapshot, before
-  any seat-taken check, Epic-event check, or insert;
+  any seat-occupancy check, Epic-event check, or insert;
 * a requested investigator id that is not part of this game's own player
   order reports 'ClaimSeatInvalidInvestigator', likewise before any further
   check;
-* an already-taken investigator slot ('ClaimSeatTaken') and an
-  already-held seat for this user ('ClaimSeatAlreadyJoined') are each
-  checked before any Epic-event lock\/reservation is even attempted;
+* the requested slot's occupants are looked up and classified, relative to
+  the REQUESTING user, via 'Api.Handler.Arkham.Game.Debug.classifyClaimSeatOccupancy'
+  ('ClaimSeatOccupancy'), BEFORE any Epic-event lock\/reservation is even
+  attempted: some OTHER user's occupied slot (or an anomalous multi-occupant
+  slot) reports 'ClaimSeatTaken' immediately with no further check; the
+  REQUESTER's own already-held slot proceeds straight to Epic reconciliation
+  and, on success, reports 'ClaimSeatAlreadyJoined' directly -- WITHOUT ever
+  consulting 'isClaimSeatAlreadyJoined' or inserting a player row -- this is
+  the fix for the bug where a legacy user idempotently re-claiming their own
+  seat was previously rejected by a bare, non-user-aware "taken" check and
+  could never reach (and so never repair via) reconciliation at all;
 * a game linked to an Epic event only then has its event row locked
   ('lockClaimSeatEvent') and this user's 'GroupPlayer' membership actually
   RESERVED ('reserveClaimSeatMembership') -- a genuine mutation through
@@ -50,11 +58,11 @@ us assert:
   loser" side of a genuine concurrent race;
 * a successful claim performs the insert exactly once, only after every
   check has passed, with the game lock as the very first step in the log;
-* a failure injected at any single step -- the game lock, the seat-taken
-  check, the already-joined check, the event lookup, the event lock,
-  the membership reservation, or the insert itself -- can never produce a
-  successful ('ClaimSeatClaimed') result, and no step after the injected
-  failure is attempted.
+* a failure injected at any single step -- the game lock, the
+  occupancy lookup, the already-joined check, the event lookup, the event
+  lock, the membership reservation, or the insert itself -- can never
+  produce a successful ('ClaimSeatClaimed') result, and no step after the
+  injected failure is attempted.
 
 As with "Arkham.Api.Events.EventDeletionSpec" and
 "Arkham.Api.MainStreetSwapSpec", this pure interpreter's step log (and its
@@ -118,16 +126,29 @@ rolandRequestId = "c01001"
 unknownRequestId :: Text
 unknownRequestId = "c99999"
 
+-- | Wendy Adams (card 01003) -- a SECOND investigator in this game's own
+-- player order, distinct from 'rolandId', used to exercise the case where
+-- the requester already holds a DIFFERENT seat in this same game while the
+-- REQUESTED seat itself is free.
+secondInvestigatorId :: InvestigatorId
+secondInvestigatorId = InvestigatorId (CardCode "01003")
+
+-- | The exact text form of 'secondInvestigatorId'.
+secondRequestId :: Text
+secondRequestId = "c01003"
+
 {- | A minimal, fully-forced 'Entity.Arkham.Game.ArkhamGame' row: a
 "WithFriends" multiplayer game whose 'gamePlayerOrder' contains exactly
-'rolandId'. Entity fields in this codebase are strict (@StrictData@ is a
-default extension, see @package.yaml@).
+'rolandId' and 'secondInvestigatorId'. Entity fields in this codebase are
+strict (@StrictData@ is a default extension, see @package.yaml@).
 -}
 fixtureArkhamGame :: GameEntity.ArkhamGame
 fixtureArkhamGame =
   GameEntity.ArkhamGame
     { GameEntity.arkhamGameName = "fixture"
-    , GameEntity.arkhamGameCurrentData = (newCampaign "06" Nothing 0 1 Standard False) {gamePlayerOrder = [rolandId]}
+    , GameEntity.arkhamGameCurrentData =
+        (newCampaign "06" Nothing 0 1 Standard False)
+          {gamePlayerOrder = [rolandId, secondInvestigatorId]}
     , GameEntity.arkhamGameStep = 0
     , GameEntity.arkhamGameMultiplayerVariant = WithFriends
     , GameEntity.arkhamGameCreatedAt = fixtureTime
@@ -145,7 +166,10 @@ data Step
   | -- | whether the locked game resolved to a linked Epic event (and its
     -- group ordinal, if so)
     LookedUpEvent (Maybe Int)
-  | CheckedTaken Bool
+  | -- | every user id (ordinarily zero or one -- more than one models the
+    -- anomalous, defensively-handled case) currently occupying the
+    -- requested investigator slot in this game
+    CheckedOccupants [User.UserId]
   | CheckedAlreadyJoined Bool
   | -- | the event was locked ('FOR UPDATE'), and whether it was still present
     LockedEvent Bool
@@ -160,7 +184,7 @@ data FailAt
   = FailNever
   | FailAtLockGame
   | FailAtLookupEvent
-  | FailAtTaken
+  | FailAtOccupants
   | FailAtAlreadyJoined
   | FailAtLockEvent
   | FailAtReserve
@@ -178,7 +202,13 @@ predates the reservation machinery entirely -- a bare seat with no
 membership row at all -- exactly what
 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' additionally
 queries ('Api.Arkham.Epic.selectUserEpicSeatOrdinals') before ever
-consulting or writing 'membership'.
+consulting or writing 'membership'. 'seatOccupants' mirrors production's
+'lookupClaimSeatOccupants' exactly: every user id currently occupying the
+REQUESTED investigator slot in THIS game (see
+'Api.Handler.Arkham.Game.Debug.classifyClaimSeatOccupancy'), so a test can
+model the requester's OWN existing seat, a STRANGER's seat, or (for the
+anomalous case) more than one occupant, rather than a bare taken\/not-taken
+'Bool' that cannot distinguish those.
 -}
 data TestState = TestState
   { steps :: [Step]
@@ -188,12 +218,12 @@ data TestState = TestState
   , eventPresent :: Bool
   , membership :: Map (Epic.ArkhamEpicEventId, User.UserId) Int
   , legacySeats :: Map (Epic.ArkhamEpicEventId, User.UserId) [Int]
-  , seatTaken :: Bool
+  , seatOccupants :: [User.UserId]
   , alreadyJoined :: Bool
   }
 
 -- | The common case: the fixture game present (as a "WithFriends" game), no
--- linked Epic event, no pre-existing membership/legacy-seat/taken/joined
+-- linked Epic event, no pre-existing membership/legacy-seat/occupant/joined
 -- conflict, zero steps recorded yet.
 fixtureTestState :: TestState
 fixtureTestState =
@@ -205,7 +235,7 @@ fixtureTestState =
     , eventPresent = True
     , membership = Map.empty
     , legacySeats = Map.empty
-    , seatTaken = False
+    , seatOccupants = []
     , alreadyJoined = False
     }
 
@@ -266,11 +296,11 @@ instance MonadClaimSeat TestDB where
     recordStep (LookedUpEvent (snd <$> mEvent))
     pure mEvent
 
-  isClaimSeatTaken _gid _investigatorId = do
-    failIfConfigured FailAtTaken
-    taken <- gets (.seatTaken)
-    recordStep (CheckedTaken taken)
-    pure taken
+  lookupClaimSeatOccupants _gid _investigatorId = do
+    failIfConfigured FailAtOccupants
+    occupants <- gets (.seatOccupants)
+    recordStep (CheckedOccupants occupants)
+    pure occupants
 
   isClaimSeatAlreadyJoined _userId _gid = do
     failIfConfigured FailAtAlreadyJoined
@@ -326,7 +356,7 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
     result `shouldBe` Right ClaimSeatClaimed
     log_
       `shouldBe` [ LockedGame True
-                 , CheckedTaken False
+                 , CheckedOccupants []
                  , LookedUpEvent Nothing
                  , CheckedAlreadyJoined False
                  , InsertedPlayer
@@ -350,19 +380,77 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
     resultUnknown `shouldBe` Right (ClaimSeatRejected ClaimSeatInvalidInvestigator)
     logUnknown `shouldBe` [LockedGame True]
 
-  it "an already-taken investigator slot reports Taken, checked before any Epic event lookup/lock/reservation is even attempted" do
-    let (result, log_) = run FailNever fixtureTestState {seatTaken = True, linkedEvent = Just (fixtureEventId, 0)}
-    result `shouldBe` Right (ClaimSeatRejected ClaimSeatTaken)
-    log_ `shouldBe` [LockedGame True, CheckedTaken True]
-
-  it "a user who already holds ANY seat in this game reports AlreadyJoined -- but only AFTER event-membership reconciliation has ALREADY run and repaired this user's own group membership as a side effect" do
+  it "an investigator slot occupied by ANOTHER user reports Taken, checked before any Epic event lookup/lock/reservation is even attempted" do
     let (result, log_) =
-          run FailNever fixtureTestState {alreadyJoined = True, linkedEvent = Just (fixtureEventId, 0)}
+          run FailNever fixtureTestState {seatOccupants = [fixtureUserId 2], linkedEvent = Just (fixtureEventId, 0)}
+    result `shouldBe` Right (ClaimSeatRejected ClaimSeatTaken)
+    log_ `shouldBe` [LockedGame True, CheckedOccupants [fixtureUserId 2]]
+
+  it "an ANOMALOUS slot (more than one occupant, a data anomaly this codebase never expects but never assumes impossible either) also reports Taken, never a crash, and never reaches any Epic check" do
+    let (result, log_) =
+          run
+            FailNever
+            fixtureTestState {seatOccupants = [fixtureUserId 2, fixtureUserId 3], linkedEvent = Just (fixtureEventId, 0)}
+    result `shouldBe` Right (ClaimSeatRejected ClaimSeatTaken)
+    log_ `shouldBe` [LockedGame True, CheckedOccupants [fixtureUserId 2, fixtureUserId 3]]
+
+  it "the REQUESTER's own exact seat -- an idempotent re-claim -- is NEVER 'Taken': it proceeds straight through Epic reconciliation (repairing a legacy seat's missing membership row) and reports AlreadyJoined directly, WITHOUT ever consulting isClaimSeatAlreadyJoined or inserting a player row -- the bug this round fixes" do
+    let (result, log_) =
+          run FailNever fixtureTestState {seatOccupants = [fixtureUserId 1], linkedEvent = Just (fixtureEventId, 0)}
     result `shouldBe` Right (ClaimSeatRejected ClaimSeatAlreadyJoined)
     log_
       `shouldBe` [ LockedGame True
-                 , CheckedTaken False
+                 , CheckedOccupants [fixtureUserId 1]
                  , LookedUpEvent (Just 0)
+                 , LockedEvent True
+                 , ReservedMembership EpicGroupReserved
+                 ]
+    CheckedAlreadyJoined True `shouldSatisfy` (`notElem` log_)
+    CheckedAlreadyJoined False `shouldSatisfy` (`notElem` log_)
+    InsertedPlayer `shouldSatisfy` (`notElem` log_)
+
+  it "the REQUESTER's own seat, but with a CONFLICTING legacy seat in another group of the same event, is rejected with EventMembershipConflict and NO repair -- 'ClaimSeatSeatOwnedByRequester' still goes through the SAME reconciliation as every other branch" do
+    let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [7]
+        (result, finalState) =
+          runTestDBWithState
+            FailNever
+            fixtureTestState
+              { seatOccupants = [fixtureUserId 1]
+              , linkedEvent = Just (fixtureEventId, 0)
+              , legacySeats = seededLegacy
+              }
+            (planAndExecuteClaimSeat fixtureGameId (fixtureUserId 1) rolandRequestId)
+    result `shouldBe` Right (ClaimSeatRejected ClaimSeatEventMembershipConflict)
+    Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Nothing
+    InsertedPlayer `shouldSatisfy` (`notElem` finalState.steps)
+
+  it "a DIFFERENT (STRANGER) user occupying the requested slot is rejected with Taken and NO membership write is ever attempted, even when that stranger has their own legacy seat elsewhere" do
+    let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 2) [3]
+        (result, finalState) =
+          runTestDBWithState
+            FailNever
+            fixtureTestState
+              { seatOccupants = [fixtureUserId 2]
+              , linkedEvent = Just (fixtureEventId, 0)
+              , legacySeats = seededLegacy
+              }
+            (planAndExecuteClaimSeat fixtureGameId (fixtureUserId 1) rolandRequestId)
+    result `shouldBe` Right (ClaimSeatRejected ClaimSeatTaken)
+    finalState.steps `shouldBe` [LockedGame True, CheckedOccupants [fixtureUserId 2]]
+    Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Nothing
+    Map.lookup (fixtureEventId, fixtureUserId 2) finalState.membership `shouldBe` Nothing
+
+  it "a requester who already holds a DIFFERENT seat in this SAME game, requesting an investigator slot that is itself FREE, is reconciled into this game's own group THEN reported AlreadyJoined (idempotent) -- preserving the pre-existing already-joined semantics for a genuinely different requested seat" do
+    let (result, log_) =
+          runTestDB
+            FailNever
+            fixtureTestState {alreadyJoined = True, linkedEvent = Just (fixtureEventId, 2)}
+            (planAndExecuteClaimSeat fixtureGameId (fixtureUserId 1) secondRequestId)
+    result `shouldBe` Right (ClaimSeatRejected ClaimSeatAlreadyJoined)
+    log_
+      `shouldBe` [ LockedGame True
+                 , CheckedOccupants []
+                 , LookedUpEvent (Just 2)
                  , LockedEvent True
                  , ReservedMembership EpicGroupReserved
                  , CheckedAlreadyJoined True
@@ -385,7 +473,7 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
     result `shouldBe` Right (ClaimSeatRejected ClaimSeatEventMembershipConflict)
     log_
       `shouldBe` [ LockedGame True
-                 , CheckedTaken False
+                 , CheckedOccupants []
                  , LookedUpEvent (Just 0)
                  , LockedEvent True
                  , ReservedMembership EpicGroupReservationConflict
@@ -400,7 +488,7 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
     result `shouldBe` Right ClaimSeatClaimed
     log_
       `shouldBe` [ LockedGame True
-                 , CheckedTaken False
+                 , CheckedOccupants []
                  , LookedUpEvent (Just 0)
                  , LockedEvent True
                  , ReservedMembership EpicGroupReserved
@@ -437,7 +525,7 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
           afterFirst
             { steps = []
             , linkedEvent = Just (fixtureEventId, secondGroupOrdinal)
-            , seatTaken = False
+            , seatOccupants = []
             , alreadyJoined = False
             }
         (secondResult, afterSecond) =
@@ -483,36 +571,36 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
     result `shouldSatisfy` isLeft
     log_ `shouldBe` []
 
-  it "a failure checking whether the seat is already taken cannot produce a success-shaped result, proving the game was genuinely locked first" do
-    let (result, log_) = run FailAtTaken fixtureTestState
+  it "a failure checking who occupies the requested seat cannot produce a success-shaped result, proving the game was genuinely locked first" do
+    let (result, log_) = run FailAtOccupants fixtureTestState
     result `shouldSatisfy` isLeft
     log_ `shouldBe` [LockedGame True]
 
-  it "a failure checking whether the user already joined cannot produce a success-shaped result, proving the seat-taken check AND the (no-op, no-event) Epic lookup were genuinely attempted first" do
+  it "a failure checking whether the user already joined cannot produce a success-shaped result, proving the occupancy check AND the (no-op, no-event) Epic lookup were genuinely attempted first" do
     let (result, log_) = run FailAtAlreadyJoined fixtureTestState
     result `shouldSatisfy` isLeft
-    log_ `shouldBe` [LockedGame True, CheckedTaken False, LookedUpEvent Nothing]
+    log_ `shouldBe` [LockedGame True, CheckedOccupants [], LookedUpEvent Nothing]
 
-  it "a failure looking up the linked Epic event cannot produce a success-shaped result, proving every earlier check (game lock, seat-taken) was genuinely attempted first" do
+  it "a failure looking up the linked Epic event cannot produce a success-shaped result, proving every earlier check (game lock, occupancy check) was genuinely attempted first" do
     let (result, log_) = run FailAtLookupEvent fixtureTestState
     result `shouldSatisfy` isLeft
-    log_ `shouldBe` [LockedGame True, CheckedTaken False]
+    log_ `shouldBe` [LockedGame True, CheckedOccupants []]
 
-  it "a failure locking the event cannot produce a success-shaped result, proving every earlier check (game lock, seat-taken, event lookup) was genuinely attempted first" do
+  it "a failure locking the event cannot produce a success-shaped result, proving every earlier check (game lock, occupancy check, event lookup) was genuinely attempted first" do
     let (result, log_) = run FailAtLockEvent fixtureTestState {linkedEvent = Just (fixtureEventId, 0)}
     result `shouldSatisfy` isLeft
-    log_ `shouldBe` [LockedGame True, CheckedTaken False, LookedUpEvent (Just 0)]
+    log_ `shouldBe` [LockedGame True, CheckedOccupants [], LookedUpEvent (Just 0)]
 
   it "a failure reserving Epic membership cannot produce a success-shaped result, proving the event was genuinely locked first" do
     let (result, log_) = run FailAtReserve fixtureTestState {linkedEvent = Just (fixtureEventId, 0)}
     result `shouldSatisfy` isLeft
     log_
-      `shouldBe` [LockedGame True, CheckedTaken False, LookedUpEvent (Just 0), LockedEvent True]
+      `shouldBe` [LockedGame True, CheckedOccupants [], LookedUpEvent (Just 0), LockedEvent True]
 
   it "a failure inserting the player row cannot produce a success-shaped result, proving every precondition check was genuinely attempted first" do
     let (result, log_) = run FailAtInsert fixtureTestState
     result `shouldSatisfy` isLeft
-    log_ `shouldBe` [LockedGame True, CheckedTaken False, LookedUpEvent Nothing, CheckedAlreadyJoined False]
+    log_ `shouldBe` [LockedGame True, CheckedOccupants [], LookedUpEvent Nothing, CheckedAlreadyJoined False]
 
   it "a failure inserting the player row AFTER a real Epic reservation was made still cannot produce a success-shaped result -- and the pure model's membership map, unlike real runDB, does NOT roll back (documented, not a rollback claim)" do
     let (result, finalState) =
@@ -523,7 +611,7 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
     result `shouldSatisfy` isLeft
     finalState.steps
       `shouldBe` [ LockedGame True
-                 , CheckedTaken False
+                 , CheckedOccupants []
                  , LookedUpEvent (Just 0)
                  , LockedEvent True
                  , ReservedMembership EpicGroupReserved
@@ -548,7 +636,7 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
       result `shouldBe` Right (ClaimSeatRejected ClaimSeatEventMembershipConflict)
       finalState.steps
         `shouldBe` [ LockedGame True
-                   , CheckedTaken False
+                   , CheckedOccupants []
                    , LookedUpEvent (Just 0)
                    , LockedEvent True
                    , ReservedMembership EpicGroupReservationConflict
@@ -576,21 +664,28 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
       resultAt1 `shouldBe` Right (ClaimSeatRejected ClaimSeatEventMembershipConflict)
       Map.lookup (fixtureEventId, fixtureUserId 1) stateAt1.membership `shouldBe` Nothing
 
-    it "an already-joined (idempotent re-claim) branch still genuinely invokes reconciliation: a legacy seat in a DIFFERENT game's group is caught even for a user re-claiming their OWN existing seat" do
+    it "the 'ClaimSeatSeatOwnedByRequester' branch (an idempotent re-claim of a user's OWN seat) still genuinely invokes reconciliation: a legacy seat in a DIFFERENT game's group is caught even for a user re-claiming their OWN existing seat, and 'isClaimSeatAlreadyJoined' is never consulted at all in this branch" do
       let seededLegacy = Map.singleton (fixtureEventId, fixtureUserId 1) [7]
           (result, finalState) =
             runTestDBWithState
               FailNever
               fixtureTestState
-                { alreadyJoined = True
+                { seatOccupants = [fixtureUserId 1]
                 , linkedEvent = Just (fixtureEventId, 0)
                 , legacySeats = seededLegacy
                 }
               (planAndExecuteClaimSeat fixtureGameId (fixtureUserId 1) rolandRequestId)
-      -- Reconciliation runs and conflicts BEFORE 'CheckedAlreadyJoined' is
-      -- ever consulted -- the conflict outcome, not 'ClaimSeatAlreadyJoined',
-      -- is reported, and 'CheckedAlreadyJoined' never appears in the log.
+      -- Reconciliation runs and conflicts; 'CheckedAlreadyJoined' never
+      -- appears in the log because 'ClaimSeatSeatOwnedByRequester' never
+      -- calls 'isClaimSeatAlreadyJoined' at all.
       result `shouldBe` Right (ClaimSeatRejected ClaimSeatEventMembershipConflict)
+      finalState.steps
+        `shouldBe` [ LockedGame True
+                   , CheckedOccupants [fixtureUserId 1]
+                   , LookedUpEvent (Just 0)
+                   , LockedEvent True
+                   , ReservedMembership EpicGroupReservationConflict
+                   ]
       CheckedAlreadyJoined True `shouldSatisfy` (`notElem` finalState.steps)
       CheckedAlreadyJoined False `shouldSatisfy` (`notElem` finalState.steps)
 
@@ -658,3 +753,26 @@ spec = describe "planAndExecuteClaimSeat (game-locked-first claim decision seque
               (planAndExecuteClaimSeat fixtureGameId (fixtureUserId 1) rolandRequestId)
       result `shouldBe` Right ClaimSeatClaimed
       Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Just 0
+
+    it "an Organizer-role user re-claiming their OWN already-held seat is handled purely through 'ClaimSeatSeatOwnedByRequester', exactly like any other user: reconciled (idempotently, since a GroupPlayer membership already exists for this ordinal) and reported AlreadyJoined, with the SEPARATE Organizer role neither read nor written by this path" do
+      let seeded = Map.singleton (fixtureEventId, fixtureUserId 1) 0
+          (result, finalState) =
+            runTestDBWithState
+              FailNever
+              -- 'seatOccupants = [fixtureUserId 1]' models this organizer ALSO
+              -- already holding an ArkhamPlayer seat (Organizer and GroupPlayer
+              -- are independent 'UniqueEpicMember' roles for the same user, so
+              -- an organizer may hold one GroupPlayer seat too -- see
+              -- 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling').
+              fixtureTestState {seatOccupants = [fixtureUserId 1], linkedEvent = Just (fixtureEventId, 0), membership = seeded}
+              (planAndExecuteClaimSeat fixtureGameId (fixtureUserId 1) rolandRequestId)
+      result `shouldBe` Right (ClaimSeatRejected ClaimSeatAlreadyJoined)
+      finalState.steps
+        `shouldBe` [ LockedGame True
+                   , CheckedOccupants [fixtureUserId 1]
+                   , LookedUpEvent (Just 0)
+                   , LockedEvent True
+                   , ReservedMembership EpicGroupReserved
+                   ]
+      Map.lookup (fixtureEventId, fixtureUserId 1) finalState.membership `shouldBe` Just 0
+      InsertedPlayer `shouldSatisfy` (`notElem` finalState.steps)

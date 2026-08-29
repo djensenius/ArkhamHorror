@@ -305,7 +305,7 @@ instance MonadClaimSeat ClaimTestDB where
   lookupClaimSeatEvent _gid = pure (Just (fixtureEventId, claimGroupOrdinal))
    where
     claimGroupOrdinal = 3
-  isClaimSeatTaken _gid _investigatorId = pure False
+  lookupClaimSeatOccupants _gid _investigatorId = pure []
   isClaimSeatAlreadyJoined _uid _gid = pure False
   lockClaimSeatEvent _eid = pure True
   reserveClaimSeatMembership eid userId ordinal = do

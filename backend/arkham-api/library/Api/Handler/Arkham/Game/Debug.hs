@@ -9,6 +9,8 @@ module Api.Handler.Arkham.Game.Debug (
   getApiV1ArkhamGameOpenSeatsR,
   postApiV1ArkhamGameClaimSeatR,
   ClaimSeatFailure (..),
+  ClaimSeatOccupancy (..),
+  classifyClaimSeatOccupancy,
   ClaimSeatOutcome (..),
   MonadClaimSeat (..),
   planAndExecuteClaimSeat,
@@ -321,18 +323,71 @@ data ClaimSeatFailure
     -- even decided (see 'planAndExecuteClaimSeat'), so a legacy seat is
     -- reconciled\/repaired even on an otherwise-idempotent re-claim.
     ClaimSeatEventMembershipConflict
-  | -- | Some OTHER player already occupies this investigator slot in this
-    -- game.
+  | -- | Some OTHER user already occupies this investigator slot in this
+    -- game (see 'ClaimSeatOccupancy'\/'classifyClaimSeatOccupancy'). Decided
+    -- from a USER-AWARE occupancy check, strictly BEFORE any Epic-event
+    -- lock\/reservation is even attempted: the requester's OWN exact seat
+    -- is never reported as \"taken\" (see 'ClaimSeatAlreadyJoined' below)
+    -- -- otherwise a legacy user retrying their OWN investigator would be
+    -- rejected here and never reach (and repair via) reconciliation at
+    -- all.
     ClaimSeatTaken
-  | -- | This user already holds a seat (any investigator) in this game.
-    -- Decided AFTER the event-membership reconciliation above, never
-    -- before it (see 'planAndExecuteClaimSeat'): an idempotent re-claim of
-    -- a user's OWN existing seat still runs
+  | -- | This user already holds a seat in this game -- either the EXACT
+    -- investigator slot just requested (a genuine idempotent re-claim of
+    -- their own seat), or some OTHER investigator slot in the same game
+    -- (checked via 'isClaimSeatAlreadyJoined'). Decided AFTER the
+    -- event-membership reconciliation above, never before it (see
+    -- 'planAndExecuteClaimSeat'): an idempotent re-claim of a user's OWN
+    -- existing seat still runs
     -- 'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling', repairing a
     -- legacy seat's missing membership row as a side effect, even though
     -- the ultimate response is unchanged.
     ClaimSeatAlreadyJoined
   deriving stock (Eq, Show)
+
+{- | Who, if anyone, currently occupies a specific investigator slot in a
+specific game -- a USER-AWARE classification of
+'lookupClaimSeatOccupants'\'s raw result, computed by
+'classifyClaimSeatOccupancy'. This replaces a bare taken\/not-taken 'Bool'
+precisely because the requester's OWN existing occupant must be treated
+differently from any OTHER user's: otherwise a legacy user retrying their
+own investigator (a row that already, correctly, occupies that exact slot)
+would be indistinguishable from a stranger's seat and incorrectly rejected
+with 'ClaimSeatTaken' before ever reaching (and repairing, via
+'reserveClaimSeatMembership') Epic-event reconciliation -- the bug this
+type exists to make structurally impossible to reintroduce.
+-}
+data ClaimSeatOccupancy
+  = -- | No 'Entity.Arkham.Player.ArkhamPlayer' row occupies this slot yet.
+    ClaimSeatSeatFree
+  | -- | The REQUESTER's own existing row already occupies this exact slot
+    -- -- an idempotent re-claim, never \"taken\".
+    ClaimSeatSeatOwnedByRequester
+  | -- | Some OTHER user's row occupies this slot.
+    ClaimSeatSeatOwnedByOther
+  | -- | More than one row occupies this slot -- a data anomaly that should
+    -- be unreachable in practice (the target game is already locked
+    -- 'FOR UPDATE' by the time this is checked, and every writer that can
+    -- ever insert a player row holds that same lock first), but handled as
+    -- an explicit, typed, safe failure rather than assumed impossible or
+    -- resolved by arbitrarily picking one occupant. Mapped to the same
+    -- non-leaking 'ClaimSeatTaken' outcome as an ordinary other-user
+    -- occupant, never a raw database/uniqueness exception.
+    ClaimSeatSeatAnomalous
+  deriving stock (Eq, Show)
+
+{- | Classify a locked slot's raw occupant list (see 'lookupClaimSeatOccupants')
+against the requesting user. Pure and total: every possible occupant list
+-- none, one matching the requester, one belonging to someone else, or
+more than one (an anomaly) -- maps to exactly one 'ClaimSeatOccupancy'
+constructor, with no partial pattern match.
+-}
+classifyClaimSeatOccupancy :: UserId -> [UserId] -> ClaimSeatOccupancy
+classifyClaimSeatOccupancy requesterId occupants = case occupants of
+  [] -> ClaimSeatSeatFree
+  [occupantId] | occupantId == requesterId -> ClaimSeatSeatOwnedByRequester
+  [_otherId] -> ClaimSeatSeatOwnedByOther
+  _ : _ : _ -> ClaimSeatSeatAnomalous
 
 {- | The result of attempting to plan and execute a game-seat claim, decided
 entirely inside one transaction that locks the target game FIRST (see
@@ -374,22 +429,34 @@ class Monad m => MonadClaimSeat m where
   -- 'lookupGameEvent'), safe here because the game itself is already
   -- locked by the time 'planAndExecuteClaimSeat' calls this.
   lookupClaimSeatEvent :: ArkhamGameId -> m (Maybe (ArkhamEpicEventId, Int))
-  -- | Whether some OTHER player already occupies this investigator slot in
-  -- this game.
-  isClaimSeatTaken :: ArkhamGameId -> Text -> m Bool
+  -- | Every user id currently occupying this investigator slot in this
+  -- game (see 'ClaimSeatOccupancy'\/'classifyClaimSeatOccupancy'). Ordinarily
+  -- empty (free) or a single element -- more than one is the anomalous,
+  -- defensively-handled case ('ClaimSeatSeatAnomalous'). Deliberately
+  -- returns every occupant's identity, not a bare 'Bool', so the caller can
+  -- distinguish the REQUESTER's own existing seat (never \"taken\") from a
+  -- stranger's.
+  lookupClaimSeatOccupants :: ArkhamGameId -> Text -> m [UserId]
   -- | Whether this user already holds ANY seat in this game. Checked AFTER
   -- event-membership reconciliation (see 'planAndExecuteClaimSeat'), never
   -- before it: an idempotent re-claim of a user's OWN seat must still
-  -- reconcile\/repair a legacy seat's missing membership row first.
+  -- reconcile\/repair a legacy seat's missing membership row first. Only
+  -- reached when the requested slot is FREE (see 'classifyClaimSeatOccupancy')
+  -- -- when the requester already owns the requested slot itself, that is
+  -- decided directly from 'ClaimSeatSeatOwnedByRequester' without calling
+  -- this at all.
   isClaimSeatAlreadyJoined :: UserId -> ArkhamGameId -> m Bool
   -- | Row-lock the event ('FOR UPDATE' in production; see
   -- 'Api.Arkham.Epic.lockEpicEventRow') and report whether it is still
   -- present. Called from exactly ONE place: after the target game is
-  -- locked and the seat-taken check has passed, strictly BEFORE
-  -- 'reserveClaimSeatMembership' and 'isClaimSeatAlreadyJoined' -- preserving
-  -- the game(s)-before-event order 'Api.Handler.Arkham.Events.deleteEpicEventAggregate'
-  -- uses. Only called when 'lookupClaimSeatEvent' found this game linked to
-  -- an event; 'False' would mean that event vanished concurrently, which is
+  -- locked and the occupancy check has resolved to either
+  -- 'ClaimSeatSeatFree' or 'ClaimSeatSeatOwnedByRequester' (an OTHER
+  -- user's occupied slot short-circuits to 'ClaimSeatTaken' before this is
+  -- ever reached), strictly BEFORE 'reserveClaimSeatMembership' and
+  -- 'isClaimSeatAlreadyJoined' -- preserving the game(s)-before-event order
+  -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' uses. Only called
+  -- when 'lookupClaimSeatEvent' found this game linked to an event;
+  -- 'False' would mean that event vanished concurrently, which is
   -- unreachable in practice (deleting it would first require locking, and
   -- deleting, THIS already-locked game as one of its linked games), but is
   -- still handled as a typed no-op rather than assumed impossible.
@@ -426,9 +493,25 @@ class Monad m => MonadClaimSeat m where
 2. Reject a non-"WithFriends" game ('ClaimSeatNotMultiplayer') and an
    investigator id not part of this game ('ClaimSeatInvalidInvestigator'),
    both read from the locked snapshot.
-3. Reject an already-taken investigator slot ('ClaimSeatTaken').
-4. Only now, with the target game locked and the seat-taken check passed, is
-   an Epic-linked game's event locked ('lockClaimSeatEvent') and this
+3. Look up every user currently occupying the requested slot (see
+   'lookupClaimSeatOccupants') and classify it, relative to the REQUESTING
+   user, via 'classifyClaimSeatOccupancy':
+     * 'ClaimSeatSeatOwnedByOther' or the anomalous 'ClaimSeatSeatAnomalous'
+       both report 'ClaimSeatTaken' immediately, with NO Epic lookup\/lock\/
+       reservation ever attempted and no writes.
+     * 'ClaimSeatSeatOwnedByRequester' -- the requester's OWN row already
+       occupies this exact slot -- proceeds DIRECTLY to step 4 below (event
+       reconciliation), and on success reports 'ClaimSeatAlreadyJoined'
+       WITHOUT ever consulting 'isClaimSeatAlreadyJoined' or inserting\/
+       remapping a player row: this is the fix for the bug where a legacy
+       user idempotently re-claiming their own seat was previously rejected
+       with 'ClaimSeatTaken' (a bare, non-user-aware check) and could never
+       reach -- and so never repair via -- reconciliation at all.
+     * 'ClaimSeatSeatFree' proceeds to step 4, THEN additionally consults
+       'isClaimSeatAlreadyJoined' (step 5) since the requester may hold a
+       DIFFERENT investigator's seat in this same game.
+4. For 'ClaimSeatSeatFree' and 'ClaimSeatSeatOwnedByRequester' alike, an
+   Epic-linked game's event is locked ('lockClaimSeatEvent') and this
    user's 'GroupPlayer' membership actually RESERVED, WITH legacy-seat
    reconciliation ('reserveClaimSeatMembership') -- a genuine cross-game
    reservation through 'UniqueEpicMember's own unique key PLUS a scan of
@@ -437,18 +520,18 @@ class Monad m => MonadClaimSeat m where
    merely a non-locking read: a user with no prior seat OR membership can
    no longer claim seats in two different groups of the same event,
    sequentially or concurrently, because the event row lock serializes
-   every such reservation attempt. This step runs REGARDLESS of whether
-   this user already holds a seat in the TARGET game itself -- i.e. BEFORE
-   'ClaimSeatAlreadyJoined' is even decided -- specifically so an
-   otherwise-idempotent re-claim of a user's OWN seat still repairs a
-   legacy seat's missing membership row. A conflicting seat under a
-   DIFFERENT ordinal (whether via an existing membership row or a bare
-   legacy seat) reports 'ClaimSeatEventMembershipConflict', with no player
-   row inserted or modified.
-5. Only once reconciliation reports no conflict is 'ClaimSeatAlreadyJoined'
-   decided: this user already holding a seat in the TARGET game itself.
-6. Otherwise, insert the player row and remap it (see
-   'insertClaimSeatPlayer'), reporting 'ClaimSeatClaimed'.
+   every such reservation attempt. A conflicting seat under a DIFFERENT
+   ordinal (whether via an existing membership row or a bare legacy seat)
+   reports 'ClaimSeatEventMembershipConflict', with no player row inserted
+   or modified, regardless of which occupancy branch reached this step.
+5. For 'ClaimSeatSeatOwnedByRequester', once reconciliation reports no
+   conflict, 'ClaimSeatAlreadyJoined' is reported directly. For
+   'ClaimSeatSeatFree', once reconciliation reports no conflict,
+   'isClaimSeatAlreadyJoined' additionally decides whether this user
+   already holds a DIFFERENT seat in the TARGET game itself.
+6. Otherwise (only reachable from 'ClaimSeatSeatFree'), insert the player
+   row and remap it (see 'insertClaimSeatPlayer'), reporting
+   'ClaimSeatClaimed'.
 
 This is the single seam production and tests both exercise directly,
 mirroring 'Api.Handler.Arkham.Games.Shared.planAndExecuteMainStreetSwap' and
@@ -468,10 +551,17 @@ planAndExecuteClaimSeat gameId userId investigatorId = do
           if investigatorId `notElem` gameInvestigatorIds
             then pure (ClaimSeatRejected ClaimSeatInvalidInvestigator)
             else do
-              taken <- isClaimSeatTaken gameId investigatorId
-              if taken
-                then pure (ClaimSeatRejected ClaimSeatTaken)
-                else do
+              occupants <- lookupClaimSeatOccupants gameId investigatorId
+              case classifyClaimSeatOccupancy userId occupants of
+                ClaimSeatSeatOwnedByOther -> pure (ClaimSeatRejected ClaimSeatTaken)
+                ClaimSeatSeatAnomalous -> pure (ClaimSeatRejected ClaimSeatTaken)
+                ClaimSeatSeatOwnedByRequester -> do
+                  conflict <- claimSeatEventMembershipConflict gameId userId
+                  pure $
+                    if conflict
+                      then ClaimSeatRejected ClaimSeatEventMembershipConflict
+                      else ClaimSeatRejected ClaimSeatAlreadyJoined
+                ClaimSeatSeatFree -> do
                   conflict <- claimSeatEventMembershipConflict gameId userId
                   if conflict
                     then pure (ClaimSeatRejected ClaimSeatEventMembershipConflict)
@@ -488,8 +578,8 @@ planAndExecuteClaimSeat gameId userId investigatorId = do
 'ClaimSeatEventMembershipConflict'. Locks the event row ('lockClaimSeatEvent')
 and performs the ACTUAL reservation, WITH legacy-seat reconciliation
 ('reserveClaimSeatMembership'); it does not merely read existing state. Run
-BEFORE 'isClaimSeatAlreadyJoined' is even consulted (see
-'planAndExecuteClaimSeat'), so this ALSO repairs a legacy seat's missing
+for BOTH the 'ClaimSeatSeatFree' and 'ClaimSeatSeatOwnedByRequester' branches
+of 'planAndExecuteClaimSeat', so this ALSO repairs a legacy seat's missing
 membership row for an otherwise-idempotent re-claim of a user's OWN seat,
 closing the gap that previously let an unlimited number of different groups
 be claimed with no membership ever recorded, for a legacy seat in ANY
@@ -521,13 +611,13 @@ instance MonadClaimSeat (SqlPersistT Handler) where
       pure g
     pure $ entityVal <$> listToMaybe locked
   lookupClaimSeatEvent gid = fmap (\(e, GroupOrdinal o) -> (entityKey e, o)) <$> lookupGameEvent gid
-  isClaimSeatTaken gid investigatorId = do
-    mTaken <- selectOne do
+  lookupClaimSeatOccupants gid investigatorId = do
+    rows <- select do
       players <- from $ table @ArkhamPlayer
       where_ $ players.arkhamGameId ==. val gid
       where_ $ players.investigatorId ==. val investigatorId
-      pure players
-    pure $ isJust mTaken
+      pure players.userId
+    pure $ map unValue rows
   isClaimSeatAlreadyJoined userId gid = isJust <$> getBy (UniquePlayer userId gid)
   lockClaimSeatEvent eid = isJust <$> lockEpicEventRow eid
   reserveClaimSeatMembership = reserveEpicGroupMembershipReconciling
