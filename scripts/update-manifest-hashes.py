@@ -27,65 +27,70 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(message)
 
 
-strict_json.run_self_tests()
+def main() -> None:
+    strict_json.run_self_tests()
 
-manifest = strict_json.strict_json_load_path(MANIFEST)
-require(
-    isinstance(manifest, dict),
-    f"manifest.json is not a JSON object (got {type(manifest).__name__}): {manifest!r}",
-)
-
-documents = manifest.get("documents", [])
-require(
-    isinstance(documents, list),
-    f"manifest.json 'documents' must be a JSON array, got {documents!r}",
-)
-for document_index, document in enumerate(documents):
+    manifest = strict_json.strict_json_load_path(MANIFEST)
     require(
-        isinstance(document, str),
-        f"manifest.json documents entry #{document_index} must be a string path, got {document!r}",
+        isinstance(manifest, dict),
+        f"manifest.json is not a JSON object (got {type(manifest).__name__}): {manifest!r}",
     )
-paths = set(documents)
 
-fixtures = manifest.get("fixtures", [])
-require(
-    isinstance(fixtures, list),
-    f"manifest.json 'fixtures' must be a JSON array, got {fixtures!r}",
-)
-for fixture_index, fixture in enumerate(fixtures):
+    documents = manifest.get("documents", [])
     require(
-        isinstance(fixture, dict) and "path" in fixture,
-        f"manifest.json fixtures entry #{fixture_index} is missing a 'path' key: {fixture!r}",
+        isinstance(documents, list),
+        f"manifest.json 'documents' must be a JSON array, got {documents!r}",
     )
-    require(
-        isinstance(fixture["path"], str),
-        f"manifest.json fixtures entry #{fixture_index} 'path' must be a string, got "
-        f"{fixture['path']!r}",
-    )
-    paths.add(fixture["path"])
-# Sort so `artifactHashes` ordering is stable and independent of the
-# (unordered-in-spirit) order documents/fixtures happen to be listed in,
-# keeping diffs minimal when entries are added/reordered elsewhere in the
-# manifest.
-paths = sorted(paths)
-
-hashes = {}
-for relative_path in paths:
-    artifact_file = ROOT / relative_path
-    if not artifact_file.is_file():
-        raise SystemExit(
-            f"manifest.json references a governed artifact that does not exist on disk: "
-            f"{relative_path} (resolved: {artifact_file})"
+    for document_index, document in enumerate(documents):
+        require(
+            isinstance(document, str),
+            f"manifest.json documents entry #{document_index} must be a string path, got {document!r}",
         )
-    hashes[relative_path] = hashlib.sha256(artifact_file.read_bytes()).hexdigest()
+    paths = set(documents)
 
-manifest["artifactHashes"] = hashes
-canonical = dict(manifest)
-canonical["artifactHashes"] = {}
-canon_bytes = json.dumps(canonical, sort_keys=True, indent=2).encode("utf-8") + b"\n"
-manifest["artifactHashes"]["contracts/manifest.json"] = hashlib.sha256(canon_bytes).hexdigest()
-manifest["artifactHashes"] = dict(sorted(manifest["artifactHashes"].items()))
+    fixtures = manifest.get("fixtures", [])
+    require(
+        isinstance(fixtures, list),
+        f"manifest.json 'fixtures' must be a JSON array, got {fixtures!r}",
+    )
+    for fixture_index, fixture in enumerate(fixtures):
+        require(
+            isinstance(fixture, dict) and "path" in fixture,
+            f"manifest.json fixtures entry #{fixture_index} is missing a 'path' key: {fixture!r}",
+        )
+        require(
+            isinstance(fixture["path"], str),
+            f"manifest.json fixtures entry #{fixture_index} 'path' must be a string, got "
+            f"{fixture['path']!r}",
+        )
+        paths.add(fixture["path"])
+    # Sort so `artifactHashes` ordering is stable and independent of the
+    # (unordered-in-spirit) order documents/fixtures happen to be listed in,
+    # keeping diffs minimal when entries are added/reordered elsewhere in the
+    # manifest.
+    sorted_paths = sorted(paths)
 
-MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-print(f"Recomputed {len(manifest['artifactHashes'])} artifact hashes.")
+    hashes = {}
+    for relative_path in sorted_paths:
+        artifact_file = ROOT / relative_path
+        if not artifact_file.is_file():
+            raise SystemExit(
+                f"manifest.json references a governed artifact that does not exist on disk: "
+                f"{relative_path} (resolved: {artifact_file})"
+            )
+        hashes[relative_path] = hashlib.sha256(artifact_file.read_bytes()).hexdigest()
+
+    manifest["artifactHashes"] = hashes
+    canonical = dict(manifest)
+    canonical["artifactHashes"] = {}
+    canon_bytes = json.dumps(canonical, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+    manifest["artifactHashes"]["contracts/manifest.json"] = hashlib.sha256(canon_bytes).hexdigest()
+    manifest["artifactHashes"] = dict(sorted(manifest["artifactHashes"].items()))
+
+    MANIFEST.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    print(f"Recomputed {len(manifest['artifactHashes'])} artifact hashes.")
+
+
+if __name__ == "__main__":
+    main()
 

@@ -21,9 +21,15 @@ history), the script fails loudly rather than silently skipping the gate --
 it never falls back to fetching anything over the network.
 
 Separately, `run_self_tests()` exercises the pure `evaluate_drift` comparison
-logic against small, hard-coded, in-memory fixtures (no git, no filesystem),
-so the gate's own correctness can be proven deterministically in any
-environment, independent of this repository's actual git history.
+logic against small, hard-coded, in-memory fixtures, so that part of the
+gate's correctness can be proven deterministically in any environment,
+independent of this repository's actual git history. `run_self_tests()` also
+calls `compute_hashes_from_worktree()` (which does perform real filesystem
+existence checks against this checkout) and
+`run_resolve_base_ref_self_tests()` (which does invoke local `git` commands,
+e.g. `git rev-parse HEAD`) to prove those failure modes too -- so, taken as a
+whole, `run_self_tests()` is not entirely filesystem/git-free, though it
+still never makes a network call or depends on a remote ref.
 """
 
 import hashlib
@@ -361,8 +367,13 @@ def evaluate_drift(
 
 
 def run_self_tests() -> None:
-    """Prove evaluate_drift()'s logic with small, fully in-memory fixtures
-    (no git, no filesystem) -- deterministic in any environment."""
+    """Prove evaluate_drift()'s logic with small, hard-coded, in-memory
+    fixtures, deterministic in any environment. Note this also calls
+    compute_hashes_from_worktree() (real filesystem checks against this
+    checkout) and run_resolve_base_ref_self_tests() (invokes local git
+    commands) below, so this function as a whole is not itself git/
+    filesystem-free -- only the core evaluate_drift comparisons are purely
+    in-memory."""
     strict_json.run_self_tests()
 
     same_revision_changed_hash_ok, _ = evaluate_drift(
@@ -516,7 +527,10 @@ def run_self_tests() -> None:
 def run_resolve_base_ref_self_tests() -> None:
     """Prove resolve_base_ref()'s CI-mode fail-closed behavior deterministically,
     by toggling only environment variables it reads (restored via try/finally
-    regardless of outcome) -- never actual git state."""
+    regardless of outcome). This does still depend on a working local git
+    checkout: resolve_base_ref() and this function's own repository-
+    initialization check both invoke real local git plumbing (e.g. `git
+    rev-parse HEAD`), though never a remote ref or network call."""
     saved_env = {
         key: os.environ.get(key) for key in ("GITHUB_ACTIONS", "CI", "CONTRACT_BASE_REF")
     }
