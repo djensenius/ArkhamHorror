@@ -1006,6 +1006,43 @@ data MainStreetSwapStateFailure
     -- swap expects: it moved (or was moved) between the group activating
     -- Main Street and this transaction acquiring its lock.
     MainStreetSwapInvestigatorMoved
+  | -- | Both sides' recorded ready investigators resolved to the SAME
+    -- 'PlayerId'. Distinct from 'MainStreetSwapDuplicateInvestigator'
+    -- (which compares 'InvestigatorId's, a 'CardCode' shared across
+    -- games): this compares the underlying 'Entity.Arkham.Player.ArkhamPlayer'
+    -- row identity itself, which nothing in the persisted 'Game' JSON
+    -- otherwise prevents from colliding.
+    MainStreetSwapDuplicatePlayer
+  | -- | An outgoing participant is not represented EXACTLY ONCE across its
+    -- own game's entities map, player order, and players list -- missing
+    -- from one of them, or duplicated within one -- before this swap would
+    -- remove it. Reported before either game's membership lists are
+    -- mutated.
+    MainStreetSwapParticipantInconsistent
+  | -- | Once its own outgoing participant is accounted for, a destination
+    -- game ALREADY contains the incoming investigator id, player id, or
+    -- player-order entry -- e.g. a third, non-ready investigator in that
+    -- game happens to share a card code with the arriving investigator.
+    -- Reported before any 'Map.insert' or list append that could otherwise
+    -- silently overwrite or duplicate an unrelated investigator.
+    MainStreetSwapIncomingCollision
+  | -- | A participant's 'Entity.Arkham.Player.ArkhamPlayer' row could not be
+    -- row-locked because it no longer exists: it was deleted concurrently,
+    -- independent of this swap, between the recorded ready investigator
+    -- being read and this transaction locking its player row.
+    MainStreetSwapPlayerMissing
+  | -- | A participant's locked 'Entity.Arkham.Player.ArkhamPlayer' row is
+    -- currently linked to a DIFFERENT game than the one this swap expects
+    -- it to be leaving: the authorization table and the persisted 'Game'
+    -- JSON have fallen out of sync (a prior partial write, or a direct
+    -- mutation of one without the other, independent of this request).
+    MainStreetSwapPlayerWrongGame
+  | -- | A participant's locked 'Entity.Arkham.Player.ArkhamPlayer' row is
+    -- recorded under a DIFFERENT investigator id than the one this swap
+    -- resolved as ready: same desynchronization hazard as
+    -- 'MainStreetSwapPlayerWrongGame', for the OTHER column that row
+    -- carries.
+    MainStreetSwapPlayerMismatch
   deriving stock (Eq, Show)
 
 {- | The result of attempting to plan and execute a Main Street group swap,
@@ -1104,17 +1141,31 @@ class Monad m => MonadMainStreetSwap m where
   -- another transaction between the lock and the re-read, defeating the
   -- point of locking in the first place).
   lockSwapGame :: ArkhamGameId -> m (Maybe ArkhamGame)
+  -- | Row-lock one participant's 'Entity.Arkham.Player.ArkhamPlayer' row
+  -- ('FOR UPDATE' in production) and return its CURRENT row if it is still
+  -- present, or 'Nothing' if it vanished concurrently. Called from
+  -- 'performMainStreetSwap' ONLY after BOTH games in the plan are already
+  -- confirmed locked (see 'lockSwapGame') -- games lock first, participant
+  -- players lock second, and this is the ONLY place in the codebase that
+  -- takes a row lock on 'Entity.Arkham.Player.ArkhamPlayer' at all, so this
+  -- fixed game-then-player order can never be acquired in reverse by any
+  -- other transaction. Called once per distinct locked player id, in
+  -- ascending 'PlayerId' order, strictly BEFORE any game or player write --
+  -- exactly mirroring 'lockSwapGame''s own contract, one level down.
+  lockSwapPlayer :: PlayerId -> m (Maybe ArkhamPlayer)
   -- | Perform the actual investigator swap using the two ALREADY-LOCKED
   -- game rows 'planAndExecuteMainStreetSwap' passes in (never re-read from
-  -- storage): compute each side's new state, and persist it (plus the moved
-  -- 'Entity.Arkham.Player.ArkhamPlayer' rows) if, and only if, the state
-  -- under those locks actually supports the swap. Returns 'Left' (and
-  -- performs no write, spend, or side effect whatsoever) if it does not --
-  -- see 'MainStreetSwapStateFailure' for every distinct cause -- so a
-  -- caller can never observe a crash from stale or malformed persisted
-  -- state, only ever a typed result. Called from exactly ONE place: after
-  -- both games in the plan are confirmed locked and present. Never called
-  -- for 'MainStreetSwapMissing' or 'MainStreetSwapSameGame'. The two
+  -- storage): compute each side's new state, lock and validate both
+  -- participants' 'Entity.Arkham.Player.ArkhamPlayer' rows (see
+  -- 'lockSwapPlayer', 'validateSwapPlayer'), and persist all four rows if,
+  -- and only if, every precondition on the locked game AND player state
+  -- actually supports the swap. Returns 'Left' (and performs no write,
+  -- spend, or side effect whatsoever) if it does not -- see
+  -- 'MainStreetSwapStateFailure' for every distinct cause -- so a caller
+  -- can never observe a crash from stale or malformed persisted state,
+  -- only ever a typed result. Called from exactly ONE place: after both
+  -- games in the plan are confirmed locked and present. Never called for
+  -- 'MainStreetSwapMissing' or 'MainStreetSwapSameGame'. The two
   -- 'ArkhamGame' arguments correspond to the plan's 'firstGameId' and
   -- 'secondGameId' respectively, NOT to canonical lock order.
   performMainStreetSwap
@@ -1180,6 +1231,40 @@ planAndExecuteMainStreetSwap eventId firstOrdinal secondOrdinal = do
                 _ -> pure MainStreetSwapMissing
     _ -> pure MainStreetSwapMissing
 
+{- | The player-lock-and-validate sequencing 'performMainStreetSwap' performs
+once 'swapInvestigatorState' has already validated a 'MainStreetSwapTransform'
+from the two locked games' state: lock BOTH participants'
+'Entity.Arkham.Player.ArkhamPlayer' rows (via 'lockSwapPlayer', games having
+already locked first -- see that method's Haddoc for why this order can
+never be reversed), in ascending 'PlayerId' order, attempting both before
+either result is inspected (exactly mirroring 'lockSwapGame''s own
+game-level contract), then validate each locked row against its expected
+source game and investigator (see 'validateSwapPlayer') before returning
+either both validated rows or the first failure encountered. Performs no
+write of any kind: this is purely the read-lock-and-validate half of
+'performMainStreetSwap', factored out as its own 'MonadMainStreetSwap'-
+polymorphic function so it is the exact same code path production runs and
+tests can exercise directly (see "Arkham.Api.MainStreetSwapSpec").
+-}
+lockAndValidateSwapPlayers
+  :: MonadMainStreetSwap m
+  => ArkhamGameId
+  -> ArkhamGameId
+  -> MainStreetSwapTransform
+  -> m (Either MainStreetSwapStateFailure (ArkhamPlayer, ArkhamPlayer))
+lockAndValidateSwapPlayers firstGameId secondGameId transform = do
+  let lockPlayerOrder = sort [transform.firstPid, transform.secondPid]
+  playerLockResults <- traverse lockSwapPlayer lockPlayerOrder
+  pure $ case sequence playerLockResults of
+    Nothing -> Left MainStreetSwapPlayerMissing
+    Just lockedPlayers -> do
+      let lockedByPid = Map.fromList (zip lockPlayerOrder lockedPlayers)
+      firstPlayer <-
+        validateSwapPlayer firstGameId transform.firstIid (Map.lookup transform.firstPid lockedByPid)
+      secondPlayer <-
+        validateSwapPlayer secondGameId transform.secondIid (Map.lookup transform.secondPid lockedByPid)
+      Right (firstPlayer, secondPlayer)
+
 instance MonadMainStreetSwap (SqlPersistT Handler) where
   resolveSwapGame eid ordinal = do
     mGroup <-
@@ -1202,18 +1287,46 @@ instance MonadMainStreetSwap (SqlPersistT Handler) where
       locking forUpdate
       pure game
     pure $ entityVal <$> listToMaybe locked
+  lockSwapPlayer pid = do
+    locked <- select do
+      player <- from $ table @ArkhamPlayer
+      where_ $ player.id ==. val (coerce pid)
+      locking forUpdate
+      pure player
+    pure $ entityVal <$> listToMaybe locked
   performMainStreetSwap plan firstRaw secondRaw =
     case swapInvestigatorState (arkhamGameCurrentData firstRaw) (arkhamGameCurrentData secondRaw) of
       Left failure -> pure (Left failure)
-      Right (firstGame', secondGame', firstPid, secondPid) -> do
-        let
-          firstStep = arkhamGameStep firstRaw + 1
-          secondStep = arkhamGameStep secondRaw + 1
-        P.update plan.firstGameId [ArkhamGameCurrentData P.=. firstGame', ArkhamGameStep P.=. firstStep]
-        P.update plan.secondGameId [ArkhamGameCurrentData P.=. secondGame', ArkhamGameStep P.=. secondStep]
-        P.update (coerce firstPid) [ArkhamPlayerArkhamGameId P.=. plan.secondGameId]
-        P.update (coerce secondPid) [ArkhamPlayerArkhamGameId P.=. plan.firstGameId]
-        pure (Right ())
+      Right transform -> do
+        -- Game locks (via 'lockSwapGame', already held by the time
+        -- 'performMainStreetSwap' is called -- see 'planAndExecuteMainStreetSwap')
+        -- come first; participant player-row locks come SECOND (see
+        -- 'lockAndValidateSwapPlayers').
+        playerLockResult <- lockAndValidateSwapPlayers plan.firstGameId plan.secondGameId transform
+        case playerLockResult of
+          Left failure -> pure (Left failure)
+          Right _validatedPlayers -> do
+            let
+              firstStep = arkhamGameStep firstRaw + 1
+              secondStep = arkhamGameStep secondRaw + 1
+            -- 'updateGet' throws if its key does not exist, rather than
+            -- silently affecting zero rows: defense in depth on top of
+            -- the fact that every key updated here was already
+            -- confirmed present and locked, in this same transaction,
+            -- moments ago (games via 'lockSwapGame', players via
+            -- 'lockSwapPlayer'). No key here is ever re-derived from
+            -- anywhere but that same lock.
+            _ <-
+              P.updateGet
+                plan.firstGameId
+                [ArkhamGameCurrentData P.=. transform.firstGame', ArkhamGameStep P.=. firstStep]
+            _ <-
+              P.updateGet
+                plan.secondGameId
+                [ArkhamGameCurrentData P.=. transform.secondGame', ArkhamGameStep P.=. secondStep]
+            _ <- P.updateGet (coerce transform.firstPid) [ArkhamPlayerArkhamGameId P.=. plan.secondGameId]
+            _ <- P.updateGet (coerce transform.secondPid) [ArkhamPlayerArkhamGameId P.=. plan.firstGameId]
+            pure (Right ())
 
 {- | Resolve the ELSE! Main Street group swap (see 'computeMainStreetSwap' for
 exactly what state moves between the two games).
@@ -1257,10 +1370,15 @@ transactions is ever waiting at a time.
 
 Every lookup this swap performs against the two locked games' persisted
 state -- the recorded ready investigator, the Main Street location, that
-investigator's own entity row, and its current placement -- is total (see
-'swapInvestigatorState'): stale or malformed persisted state can only ever
-produce a typed 'MainStreetSwapInvalidState', mapped below to the same
-static, non-leaking rejection as 'MainStreetSwapSameGame', never a crash.
+investigator's own entity row, its current placement, cross-game membership
+consistency, and each participant's locked
+'Entity.Arkham.Player.ArkhamPlayer' row -- is total (see
+'swapInvestigatorState', 'validateSwapPlayer'): stale or malformed persisted
+state can only ever produce a typed 'MainStreetSwapInvalidState', mapped
+below to the same static, non-leaking rejection as 'MainStreetSwapSameGame',
+never a crash. Game locks always precede participant player-row locks (see
+'MonadMainStreetSwap'), an order this swap shares with no other lock kind in
+the codebase, so it can never be acquired in reverse.
 -}
 swapMainStreetInvestigators :: ArkhamEpicEventId -> Int -> Int -> Handler ()
 swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do
@@ -1344,6 +1462,99 @@ validateSwapPlacement :: LocationId -> Investigator -> Either MainStreetSwapStat
 validateSwapPlacement destination investigator =
   when (attr investigatorPlacement investigator /= AtLocation destination) $ Left MainStreetSwapInvestigatorMoved
 
+-- | Reject the two participants' player ids being the same. Nothing in the
+-- persisted 'Game' JSON structurally prevents this the way
+-- 'Entity.Arkham.Player.UniquePlayer' prevents it at the database level --
+-- checked here, defensively, before either game's membership is touched.
+rejectDuplicatePlayers :: PlayerId -> PlayerId -> Either MainStreetSwapStateFailure ()
+rejectDuplicatePlayers firstPid secondPid =
+  when (firstPid == secondPid) $ Left MainStreetSwapDuplicatePlayer
+
+-- | Whether @x@ appears in @xs@ EXACTLY once: neither missing nor
+-- duplicated. Used by 'validateSwapSide' to require a swap's outgoing
+-- participant be represented singularly in a game's own membership lists.
+exactlyOnce :: Eq a => a -> [a] -> Bool
+exactlyOnce x xs = length (filter (== x) xs) == 1
+
+{- | Confirm ONE side of a swap is safe to apply to ONE game: the outgoing
+participant (about to leave THIS game) is genuinely, singularly present in
+every membership list this game keeps -- its own entities map, player
+order, and players list -- never missing, never duplicated ('MainStreetSwapParticipantInconsistent');
+and, once that outgoing participant is accounted for, the INCOMING
+participant (about to arrive from the other side) is not already present in
+any of them ('MainStreetSwapIncomingCollision' -- e.g. a third, non-ready
+investigator already in this game happens to share a card code with the
+one arriving). Checked against the game's CURRENT, pre-transform state, so
+'computeMainStreetSwap''s own 'Map.insert'\/list-append can never silently
+overwrite or duplicate an unrelated investigator.
+-}
+validateSwapSide
+  :: InvestigatorId -> PlayerId -> InvestigatorId -> PlayerId -> Game -> Either MainStreetSwapStateFailure ()
+validateSwapSide outgoingIid outgoingPid incomingIid incomingPid game = do
+  let investigators = entitiesInvestigators (gameEntities game)
+  unless (Map.member outgoingIid investigators) $ Left MainStreetSwapParticipantInconsistent
+  unless (exactlyOnce outgoingIid (gamePlayerOrder game)) $ Left MainStreetSwapParticipantInconsistent
+  unless (exactlyOnce outgoingPid (gamePlayers game)) $ Left MainStreetSwapParticipantInconsistent
+  let
+    investigatorsAfterRemoval = Map.delete outgoingIid investigators
+    orderAfterRemoval = filter (/= outgoingIid) (gamePlayerOrder game)
+    playersAfterRemoval = filter (/= outgoingPid) (gamePlayers game)
+  when (Map.member incomingIid investigatorsAfterRemoval) $ Left MainStreetSwapIncomingCollision
+  when (incomingIid `elem` orderAfterRemoval) $ Left MainStreetSwapIncomingCollision
+  when (incomingPid `elem` playersAfterRemoval) $ Left MainStreetSwapIncomingCollision
+
+-- | Apply 'validateSwapSide' to BOTH games this swap touches: each game is
+-- the destination for the OTHER side's incoming participant, and the
+-- source its own outgoing participant is leaving.
+validateSwapMembership
+  :: InvestigatorId
+  -> PlayerId
+  -> Game
+  -> InvestigatorId
+  -> PlayerId
+  -> Game
+  -> Either MainStreetSwapStateFailure ()
+validateSwapMembership firstIid firstPid firstGame secondIid secondPid secondGame = do
+  validateSwapSide firstIid firstPid secondIid secondPid firstGame
+  validateSwapSide secondIid secondPid firstIid firstPid secondGame
+
+{- | Confirm one participant's LOCKED 'Entity.Arkham.Player.ArkhamPlayer' row
+(see 'lockSwapPlayer' -- never a separate, unlocked re-read) is genuinely
+usable for this swap: present (rejecting 'Nothing', whether the row vanished
+concurrently or never existed), currently linked to the EXPECTED source
+game ('MainStreetSwapPlayerWrongGame' otherwise), and recorded under the
+EXPECTED investigator id ('MainStreetSwapPlayerMismatch' otherwise) -- the
+authorization table and the persisted 'Game' JSON this swap's investigator
+data comes from are two independent sources of truth, and this is the one
+place they are cross-checked against each other before either is trusted
+for a write.
+-}
+validateSwapPlayer
+  :: ArkhamGameId -> InvestigatorId -> Maybe ArkhamPlayer -> Either MainStreetSwapStateFailure ArkhamPlayer
+validateSwapPlayer expectedGameId expectedIid mPlayer = do
+  player <- maybe (Left MainStreetSwapPlayerMissing) Right mPlayer
+  unless (arkhamPlayerArkhamGameId player == expectedGameId) $ Left MainStreetSwapPlayerWrongGame
+  unless (arkhamPlayerInvestigatorId player == coerce expectedIid) $ Left MainStreetSwapPlayerMismatch
+  pure player
+
+{- | Everything 'performMainStreetSwap' needs to actually persist a validated
+swap: both games' new state, and each side's resolved participant identity
+(needed to then lock and validate its 'Entity.Arkham.Player.ArkhamPlayer'
+row -- see 'validateSwapPlayer' -- before any write). Produced only once
+EVERY precondition on the two locked games' CURRENT state -- readiness,
+location, investigator resolution, placement, player-id distinctness, and
+cross-game membership consistency -- has already checked out.
+-}
+data MainStreetSwapTransform = MainStreetSwapTransform
+  { firstGame' :: Game
+  , secondGame' :: Game
+  , firstIid :: InvestigatorId
+  , firstPid :: PlayerId
+  , secondIid :: InvestigatorId
+  , secondPid :: PlayerId
+  }
+  deriving stock (Eq, Show)
+
 {- | Validate and compute a Main Street swap's new state from both locked
 games' CURRENT (freshly locked, never re-read) data. Total: every lookup
 that used to be a partial 'error'\/'fromMaybe (error ...)' call (an absent
@@ -1352,10 +1563,13 @@ investigator entity, two ordinals naming the same investigator, or a
 since-moved investigator) now returns a typed 'MainStreetSwapStateFailure'
 instead, checked in this fixed order, so a caller can never observe a crash
 from stale or malformed persisted state -- only ever a typed 'Left', mapped
-by 'swapMainStreetInvestigators' to a static, non-leaking rejection.
+by 'swapMainStreetInvestigators' to a static, non-leaking rejection. This
+covers every precondition expressible from the two 'Game' payloads alone;
+the participant 'Entity.Arkham.Player.ArkhamPlayer' rows themselves are
+locked and cross-checked separately, by 'performMainStreetSwap', against
+the 'MainStreetSwapTransform' this returns.
 -}
-swapInvestigatorState
-  :: Game -> Game -> Either MainStreetSwapStateFailure (Game, Game, PlayerId, PlayerId)
+swapInvestigatorState :: Game -> Game -> Either MainStreetSwapStateFailure MainStreetSwapTransform
 swapInvestigatorState firstGame secondGame = do
   (firstIid, secondIid) <- resolveSwapParticipants (readyInvestigator firstGame) (readyInvestigator secondGame)
   firstDestination <- maybe (Left MainStreetSwapNoLocation) Right (mainStreetLocation (gameEntities secondGame))
@@ -1364,16 +1578,31 @@ swapInvestigatorState firstGame secondGame = do
   secondInvestigator <- resolveSwapInvestigator secondIid (gameEntities secondGame)
   validateSwapPlacement secondDestination firstInvestigator
   validateSwapPlacement firstDestination secondInvestigator
+  let
+    firstPid = attr investigatorPlayerId firstInvestigator
+    secondPid = attr investigatorPlayerId secondInvestigator
+  rejectDuplicatePlayers firstPid secondPid
+  validateSwapMembership firstIid firstPid firstGame secondIid secondPid secondGame
+  let
+    (firstGame'', secondGame'', _, _) =
+      computeMainStreetSwap
+        firstIid
+        firstDestination
+        firstInvestigator
+        firstGame
+        secondIid
+        secondDestination
+        secondInvestigator
+        secondGame
   pure
-    $ computeMainStreetSwap
-      firstIid
-      firstDestination
-      firstInvestigator
-      firstGame
-      secondIid
-      secondDestination
-      secondInvestigator
-      secondGame
+    MainStreetSwapTransform
+      { firstGame' = firstGame''
+      , secondGame' = secondGame''
+      , firstIid
+      , firstPid
+      , secondIid
+      , secondPid
+      }
 
 {- | The actual swap, given both sides' already-validated participant and
 destination. Total by construction: every value this consumes was already
@@ -1404,8 +1633,12 @@ computeMainStreetSwap firstIid firstDestination firstInvestigator firstGame seco
  where
   firstPid = attr investigatorPlayerId firstInvestigator
   secondPid = attr investigatorPlayerId secondInvestigator
-  firstMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation secondDestination}) firstInvestigator
-  secondMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation firstDestination}) secondInvestigator
+  -- Each arriving investigator lands at the destination game's OWN Main
+  -- Street location: 'firstInvestigator' arrives in 'secondGame', so it is
+  -- placed at 'firstDestination' (== mainStreetLocation secondGame, per
+  -- 'swapInvestigatorState'); symmetrically for 'secondInvestigator'.
+  firstMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation firstDestination}) firstInvestigator
+  secondMoved = overAttrs (\a -> a {investigatorPlacement = AtLocation secondDestination}) secondInvestigator
   firstOwned = ownedEntities firstIid (gameEntities firstGame)
   secondOwned = ownedEntities secondIid (gameEntities secondGame)
 
