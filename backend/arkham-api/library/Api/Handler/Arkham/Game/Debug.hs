@@ -376,12 +376,14 @@ class Monad m => MonadClaimSeat m where
   lockClaimSeatEvent :: ArkhamEpicEventId -> m Bool
   -- | Attempt to reserve this user's 'GroupPlayer' membership for the
   -- ALREADY-LOCKED (per 'lockClaimSeatEvent') event under the requested
-  -- ordinal -- see 'Api.Arkham.Epic.reserveEpicGroupMembership', the same
-  -- unique-key reservation 'Api.Handler.Arkham.PendingGames' documents (but
-  -- does not itself call) for its own join flow. Because the event is
-  -- already locked exclusively, two concurrent claims into DIFFERENT games
-  -- of the SAME event can no longer both observe "no conflict yet": one
-  -- must wait for the other's lock, closing the race a bare
+  -- ordinal -- see 'Api.Arkham.Epic.reserveEpicGroupMembership', the SAME
+  -- unique-key reservation 'Api.Handler.Arkham.PendingGames' also calls
+  -- (via its own 'Api.Handler.Arkham.PendingGames.MonadPendingJoin'
+  -- production instance) for its own join flow, so the invariant cannot
+  -- independently drift between the two entry points. Because the event
+  -- is already locked exclusively, two concurrent claims into DIFFERENT
+  -- games of the SAME event can no longer both observe "no conflict yet":
+  -- one must wait for the other's lock, closing the race a bare
   -- 'UniqueEpicMember' insert alone could not.
   reserveClaimSeatMembership :: ArkhamEpicEventId -> UserId -> Int -> m EpicGroupReservation
   -- | Insert the new 'Entity.Arkham.Player.ArkhamPlayer' row and remap its

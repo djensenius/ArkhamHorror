@@ -8391,6 +8391,7 @@ test-suite spec
       Arkham.Api.JsonContractsSpec
       Arkham.Api.MainStreetSwapPlanSpec
       Arkham.Api.MainStreetSwapSpec
+      Arkham.Api.PendingGameJoinSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.ArcaneInitiateSpec

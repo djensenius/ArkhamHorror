@@ -117,25 +117,18 @@ reserveEpicGroupMembership eid userId ordinal = do
       | arkhamEpicMemberGroupOrdinal existing == Just ordinal -> EpicGroupReserved
       | otherwise -> EpicGroupReservationConflict
 
-{- | /Residual, pre-existing, deliberately out-of-scope risk:/
-'Api.Handler.Arkham.PendingGames' independently performs its own
-@insertBy ArkhamEpicMember ...@ reservation (for a group's very first
-player, at game-creation time) followed by a partial 'Prelude.error' on
-the losing branch. That code path is untouched by this change (it does
-not call 'reserveEpicGroupMembership' or 'lockEpicEventRow') and is not
-proven race-free against a concurrent claim-seat reservation for the
-same event\/user: nothing there locks the event row first, so two
-concurrent \"first join\" attempts into different groups of the same
-event could still both pass 'Database.Persist.insertBy'\'s pre-check
-before either commits. Restructuring it was judged too broad and risky
-for this PR -- it sits deep inside an unrelated, delicate
-game-setup\/deck-selection\/message-running transaction
-('Api.Arkham.Helpers.atomicallyWithGame') where the 'DB' type alias
-already forbids calling 'Yesod.Core.notFound'\/'Yesod.Core.permissionDenied'-style
-handler functions, so any real fix would require restructuring that
-callback's control flow, not just swapping in a typed result. This is
-called out explicitly, rather than silently left, so it is tracked as a
-known follow-up rather than mistaken for an already-safe path.
+{- | 'Api.Handler.Arkham.PendingGames.putApiV1ArkhamPendingGameR' (a game's
+first join, from the lobby) also delegates to this exact function -- via
+its own 'Api.Handler.Arkham.PendingGames.MonadPendingJoin' production
+instance, mirroring 'Api.Handler.Arkham.Game.Debug.MonadClaimSeat' -- for
+a group's very first player, so the "one event group per user" invariant
+and its conflict semantics are genuinely shared by, and cannot
+independently drift between, every entry point that can create a user's
+FIRST 'ArkhamEpicMember' row for an event. See that module's own Haddoc
+for the full lock-order audit proving its single-game lock
+('Api.Arkham.Helpers.atomicallyWithGame') can never invert against this
+event lock, or against 'Api.Handler.Arkham.Events' or
+'Api.Handler.Arkham.Games.Shared''s multi-game locks.
 -}
 
 {- | The one canonical lock order for a set of Epic-linked games: ascending by
