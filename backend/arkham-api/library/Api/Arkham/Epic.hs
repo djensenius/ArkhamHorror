@@ -41,6 +41,103 @@ lookupGameEvent gameId = do
     (evt, Value ordinal) : _ -> Just (evt, GroupOrdinal ordinal)
     [] -> Nothing
 
+{- | The result of attempting to reserve a user's 'Arkham.Epic.Types.GroupPlayer'
+membership for an Epic event under a specific group ordinal, via
+'Entity.Arkham.Epic.UniqueEpicMember's own unique key (event, user, role).
+This is the ONE typed answer to "is this user\/event\/ordinal combination
+allowed to proceed", shared by every entry point that can create the FIRST
+'ArkhamEpicMember' row for a user in an event --
+'Api.Handler.Arkham.Game.Debug.postApiV1ArkhamGameClaimSeatR' delegates to it
+via 'reserveEpicGroupMembership' -- so the "one event group per user"
+invariant and its conflict semantics cannot independently drift between
+entry points that share it.
+-}
+data EpicGroupReservation
+  = -- | Either a freshly-inserted row, or a pre-existing row already under
+    -- the SAME ordinal (e.g. re-claiming a seat in a group this user
+    -- previously left, if this game's own player row was since removed).
+    -- Either way, the caller may proceed.
+    EpicGroupReserved
+  | -- | A pre-existing row under a DIFFERENT ordinal. No row was inserted or
+    -- modified.
+    EpicGroupReservationConflict
+  deriving stock (Eq, Show)
+
+{- | Row-lock an Epic event ('FOR UPDATE' in production) and report its
+CURRENT row if still present, or 'Nothing' if it never existed or vanished
+concurrently. Reused by every writer that must serialize against the event
+row -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' (after every
+linked game is already locked; see that module's
+'Api.Handler.Arkham.Events.MonadEpicEventDeletion' production instance) and
+'Api.Handler.Arkham.Game.Debug.planAndExecuteClaimSeat' (after its own
+single game lock; see 'Api.Handler.Arkham.Game.Debug.MonadClaimSeat') -- so
+this lock is always taken from the game(s)-then-event side of the one
+shared cross-path lock-order invariant, never the reverse.
+-}
+lockEpicEventRow
+  :: MonadIO m
+  => ArkhamEpicEventId
+  -> ReaderT SqlBackend m (Maybe (Entity ArkhamEpicEvent))
+lockEpicEventRow eid = do
+  locked <- select do
+    e <- from $ table @ArkhamEpicEvent
+    where_ $ e.id ==. val eid
+    locking forUpdate
+    pure e
+  pure $ listToMaybe locked
+
+{- | Attempt to reserve this user's 'Arkham.Epic.Types.GroupPlayer' membership
+for the given event under the requested ordinal, via
+'Entity.Arkham.Epic.UniqueEpicMember's unique key.
+
+The caller MUST already hold the event row's 'FOR UPDATE' lock (see
+'lockEpicEventRow') before calling this: only then is the underlying
+check-then-insert race-free. 'Database.Persist.insertBy' itself only
+pre-checks the unique key with a plain 'SELECT' before inserting -- two
+concurrent callers reserving for DIFFERENT games of the SAME event never
+share a game lock, so without the event row locked first, both could pass
+that pre-check before either commits (a lost-conflict false negative), or
+one could lose an actual concurrent 'INSERT' race and surface a raw
+unique-constraint violation as an untyped exception instead of a typed
+result. With the event already locked exclusively, at most one caller can
+ever be inside this function for a given event at a time, so the ordinary
+check-then-insert behavior is sufficient by construction and cannot race.
+-}
+reserveEpicGroupMembership
+  :: MonadIO m
+  => ArkhamEpicEventId
+  -> UserId
+  -> Int
+  -> ReaderT SqlBackend m EpicGroupReservation
+reserveEpicGroupMembership eid userId ordinal = do
+  result <- P.insertBy $ ArkhamEpicMember eid userId GroupPlayer (Just ordinal)
+  pure $ case result of
+    Right _ -> EpicGroupReserved
+    Left (Entity _ existing)
+      | arkhamEpicMemberGroupOrdinal existing == Just ordinal -> EpicGroupReserved
+      | otherwise -> EpicGroupReservationConflict
+
+{- | /Residual, pre-existing, deliberately out-of-scope risk:/
+'Api.Handler.Arkham.PendingGames' independently performs its own
+@insertBy ArkhamEpicMember ...@ reservation (for a group's very first
+player, at game-creation time) followed by a partial 'Prelude.error' on
+the losing branch. That code path is untouched by this change (it does
+not call 'reserveEpicGroupMembership' or 'lockEpicEventRow') and is not
+proven race-free against a concurrent claim-seat reservation for the
+same event\/user: nothing there locks the event row first, so two
+concurrent \"first join\" attempts into different groups of the same
+event could still both pass 'Database.Persist.insertBy'\'s pre-check
+before either commits. Restructuring it was judged too broad and risky
+for this PR -- it sits deep inside an unrelated, delicate
+game-setup\/deck-selection\/message-running transaction
+('Api.Arkham.Helpers.atomicallyWithGame') where the 'DB' type alias
+already forbids calling 'Yesod.Core.notFound'\/'Yesod.Core.permissionDenied'-style
+handler functions, so any real fix would require restructuring that
+callback's control flow, not just swapping in a typed result. This is
+called out explicitly, rather than silently left, so it is tracked as a
+known follow-up rather than mistaken for an already-safe path.
+-}
+
 {- | The one canonical lock order for a set of Epic-linked games: ascending by
 'ArkhamGameId' itself -- Haskell's own 'Ord' instance for the id, NEVER a
 database @ORDER BY@/collation, and, critically, NEVER a group's ordinal --

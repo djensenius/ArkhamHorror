@@ -38,6 +38,7 @@ module Api.Handler.Arkham.Events (
 import Api.Arkham.Epic (
   applyEpicDeltasLocked,
   canonicalEpicGameLockOrder,
+  lockEpicEventRow,
   modifySharedStateLocked,
  )
 import Api.Arkham.Helpers
@@ -1163,17 +1164,10 @@ instance MonadEpicEventDeletion (SqlPersistT Handler) where
       locking forUpdate
       pure g.id
     pure $ not (null locked)
-  lockEpicEvent eid = do
-    -- Project only the id: 'FOR UPDATE' locks the whole row regardless of
-    -- which columns are selected, and we only need existence here, so there
-    -- is no reason to materialize the (potentially large) 'sharedState'
-    -- column into Haskell just to throw it away.
-    locked <- select do
-      e <- from $ table @ArkhamEpicEvent
-      where_ $ e.id ==. val eid
-      locking forUpdate
-      pure e.id
-    pure $ not (null locked)
+  -- Delegates to the SAME 'lockEpicEventRow' 'Api.Handler.Arkham.Game.Debug.planAndExecuteClaimSeat'
+  -- uses, so the event's 'FOR UPDATE' lock can never independently drift
+  -- between these two writers.
+  lockEpicEvent eid = isJust <$> lockEpicEventRow eid
   deleteLinkedGame = P.delete
   deleteEpicEventRow = P.delete
 
