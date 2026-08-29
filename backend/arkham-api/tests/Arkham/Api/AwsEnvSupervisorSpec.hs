@@ -524,6 +524,84 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     cleanedUpStatus <- waitUntilTerminated middleThreadId
     cleanedUpStatus `shouldSatisfy` isTerminatedStatus
 
+  {- | Exact release-order regression for the HIGH-severity cleanup-order
+  audit finding: for a chain of three real refresh children (@root@,
+  static, wrapped by @a@'s own assumed role, wrapped in turn by @b@'s,
+  wrapped in turn by @c@'s -- the final, directly-visible child),
+  'releaseAwsEnvAcquisition' must release the still-visible outer child
+  (@c@) FIRST, then the hidden children newest-to-oldest (@b@, then
+  @a@) -- i.e. exactly @c, b, a@ -- never the old, buggy @b, a, c@ order
+  (hidden-then-outer). Each fake child records its own label into a
+  shared, order-preserving list the instant it is actually killed (from
+  inside its own exception handler, not merely once
+  'releaseAwsEnvChild''s\/'awaitThreadTerminated''s call returns), so this
+  proves the true release sequence, not just that all three eventually
+  terminate.
+
+  Mutation check: reverting 'releaseAwsEnvAcquisition' to its previous
+  @sequence_ (reverse hiddenReleases) >> releaseAwsEnvChild ...@ order
+  (hidden newest-to-oldest, then outer last) makes this test fail with
+  the order @[\"b\",\"a\",\"c\"]@ instead of the required @[\"c\",\"b\",\"a\"]@.
+  -}
+  it "releases the still-visible outer child first, then hidden children newest-to-oldest: exact order c, b, a for a three-deep chain" do
+    envNoAuth <- newEnvNoAuth
+    let config =
+          HashMap.fromList
+            [ ("c", profileMap [("role_arn", "arn:aws:iam::1:role/c"), ("source_profile", "b")])
+            , ("b", profileMap [("role_arn", "arn:aws:iam::1:role/b"), ("source_profile", "a")])
+            , ("a", profileMap [("role_arn", "arn:aws:iam::1:role/a"), ("source_profile", "root")])
+            , ("root", profileMap [("aws_access_key_id", "AKIAROOT"), ("aws_secret_access_key", "s")])
+            ]
+    releaseOrderRef <- newIORef ([] :: [Text])
+    let labelFor roleArn
+          | roleArn == "arn:aws:iam::1:role/a" = "a"
+          | roleArn == "arn:aws:iam::1:role/b" = "b"
+          | roleArn == "arn:aws:iam::1:role/c" = "c"
+          | otherwise = error "unexpected role_arn in three-deep order test"
+        resolvers =
+          unreachableConfigProfileResolvers
+            { resolveAssumedRole = \roleArn sourceEnv -> do
+                let label = labelFor roleArn
+                -- A readiness gate, signalled from strictly inside the
+                -- already-installed 'Exception.catch' handler region,
+                -- before this function returns: without it, a
+                -- freshly-forked child could still be killed before it
+                -- has ever installed its handler (its very first
+                -- scheduler slice not yet run), silently dying via an
+                -- unmasked, uncaught 'ThreadKilled' with nothing
+                -- recorded -- exactly the same forkIO/catch-installation
+                -- race documented on 'forkTransferringOwnership''s own
+                -- cancellation test below.
+                readyGate <- newEmptyMVar
+                tid <-
+                  forkIO
+                    $ Exception.catch
+                      (putMVar readyGate () >> forever (threadDelay maxBound))
+                    $ \Exception.ThreadKilled ->
+                      atomicModifyIORef' releaseOrderRef (\labels -> (labels <> [label], ()))
+                takeMVar readyGate
+                cell <- newIORef (AuthEnv "AKIAFAKE" "secret" Nothing Nothing)
+                pure sourceEnv {auth = Identity (Ref tid cell)}
+            }
+    acquisition <- safeEvalConfigProfile resolvers config [] "c" envNoAuth
+    -- Three hidden releases: root's own (a static, no-op release, since
+    -- root uses plain access keys rather than an assumed role), plus the
+    -- real "a" and "b" children -- "c"'s own auth is the visible outer
+    -- one, released separately (see 'releaseAwsEnvAcquisition').
+    length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 3
+    releaseAwsEnvAcquisition acquisition
+    -- Bounded poll: each fake child's own handler above appends its
+    -- label synchronously as part of being killed, so once all three
+    -- labels are present the true release order is already fixed and
+    -- will never change further.
+    let waitForAllLabels (n :: Int)
+          | n <= 0 = expectationFailure "not all three children were ever released"
+          | otherwise = do
+              labels <- readIORef releaseOrderRef
+              if length labels >= 3 then pure () else threadDelay 1000 >> waitForAllLabels (n - 1)
+    waitForAllLabels 2000
+    readIORef releaseOrderRef `shouldReturn` ["c", "b", "a"]
+
 {- | Regression\/design-verification for the application-lifetime
 supervised-'Env' architecture that replaced the earlier per-request
 @discoverFrozenEnv@\/@freezeAuth@\/@runOnDisposableWorker@ worker protocol,
@@ -636,6 +714,111 @@ spec = describe "AWS Env supervisor" do
       -- it would certainly have flipped the flag by now.
       threadDelay (150 * 1000)
       readIORef reachedRefresh `shouldReturn` False
+
+    {- | Deterministic (non-flaky) proof that 'releaseAwsEnvChild' does not
+    return until the target thread has genuinely, observably terminated
+    -- not merely until 'killThread' has raised the exception in it (per
+    -- the GHC docs, 'killThread'\/'throwTo' block only until the
+    -- exception is /raised/, not until the target finishes unwinding).
+    Checking 'threadStatus' with NO further delay whatsoever immediately
+    upon return is what makes this deterministic: if
+    'releaseAwsEnvChild' returned as soon as the exception was merely
+    raised (the pre-fix behaviour), this thread would very often still be
+    observed mid-unwind\/not yet finished at the exact instant of return.
+
+    Mutation check: removing 'awaitThreadTerminated' from
+    'releaseAwsEnvChild' (reverting to bare @killThread@) makes this
+    test intermittently fail (the target frequently has not yet reached
+    a terminal 'ThreadStatus' the instant @killThread@ returns).
+    -}
+    it "does not return until the target thread has already reached a terminal status, with zero further waiting" do
+      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
+      ref <- newIORef authEnv
+      -- A slow-to-unwind stand-in: on being killed, it does some (tiny
+      -- but nonzero) cleanup work of its own before actually finishing,
+      -- so a caller that doesn't truly await termination has every
+      -- opportunity to observe it as still non-terminal. The readyGate
+      -- guarantees the handler below is already installed before this
+      -- thread can possibly be killed -- see the three-deep release
+      -- order test above for why that matters.
+      readyGate <- newEmptyMVar
+      refreshThreadId <- forkIO $ Exception.catch (putMVar readyGate () >> forever (threadDelay maxBound)) \Exception.ThreadKilled ->
+        threadDelay (2 * 1000)
+      takeMVar readyGate
+      releaseAwsEnvChild (Ref refreshThreadId ref)
+      statusImmediatelyAfterReturn <- threadStatus refreshThreadId
+      statusImmediatelyAfterReturn `shouldSatisfy` isTerminatedStatus
+
+  {- | Regression for the HIGH-severity cleanup-order audit's second half:
+  'releaseAwsEnvAcquisition' must attempt every child's release even if
+  an earlier one throws, discarding an 'AuthError' specifically (self-
+  inflicted feedback from killing a child mid-refresh -- safe precisely
+  because 'startSupervisedEnv' gives every generation its own dedicated
+  thread, so it can only ever be this generation's own noise; see that
+  module Haddock) while still surfacing any genuine non-'AuthError'
+  failure once every release has at least been attempted. These
+  construct an 'AwsEnvAcquisition' directly (with a static, no-op-release
+  outer @.auth@) so each hidden release's own behaviour is fully
+  test-controlled, independent of any real forked thread.
+  -}
+  describe "releaseAwsEnvAcquisition (attempts every release even if one throws)" do
+    it "an AuthError from one child's release is discarded, and every other release still runs, in order" do
+      envNoAuth <- newEnvNoAuth
+      staticEnv <- fakeStaticEnv envNoAuth
+      orderRef <- newIORef ([] :: [Text])
+      let record label = atomicModifyIORef' orderRef (\xs -> (xs <> [label], ()))
+          hiddenReleases =
+            [ record "first"
+            , record "second" >> Exception.throwIO (RetrievalError httpExceptionFixture)
+            , record "third"
+            ]
+      releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv hiddenReleases)
+      -- Hidden releases run newest-to-oldest (reversed): "third", then
+      -- "second" (which throws, but is caught and discarded), then
+      -- "first" still runs regardless.
+      readIORef orderRef `shouldReturn` ["third", "second", "first"]
+
+    {- | Mutation check: if 'releaseAwsEnvAcquisition' instead let ANY
+    exception (not just 'AuthError') abort the remaining releases, this
+    test's "first" label would never be recorded, and the caught
+    exception below would be 'ThreadKilled' misreported as something
+    else, or simply never observed at all.
+    -}
+    it "a genuine non-AuthError exception still runs every remaining release, then is re-thrown as itself -- never as an AuthError" do
+      envNoAuth <- newEnvNoAuth
+      staticEnv <- fakeStaticEnv envNoAuth
+      orderRef <- newIORef ([] :: [Text])
+      let record label = atomicModifyIORef' orderRef (\xs -> (xs <> [label], ()))
+          hiddenReleases =
+            [ record "first"
+            , record "second" >> Exception.throwIO Exception.ThreadKilled
+            , record "third"
+            ]
+      outcome <-
+        Exception.try @Exception.AsyncException
+          (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv hiddenReleases))
+      case outcome of
+        Left Exception.ThreadKilled -> pure ()
+        _ -> expectationFailure "expected the genuine ThreadKilled to propagate as itself, not be swallowed or reclassified as an AuthError"
+      readIORef orderRef `shouldReturn` ["third", "second", "first"]
+
+    it "re-throws the FIRST genuine non-AuthError failure encountered (in actual release order), even when a later release also throws a different one" do
+      envNoAuth <- newEnvNoAuth
+      staticEnv <- fakeStaticEnv envNoAuth
+      -- 'AwsEnvAcquisition''s hidden-release list is oldest\/innermost
+      -- first, and 'releaseAwsEnvAcquisition' runs it reversed (newest
+      -- first): so the list's SECOND element here is the one that
+      -- actually executes FIRST, and its failure is the one that must
+      -- be re-thrown, matching how these labels are named below.
+      let hiddenReleases =
+            [ Exception.throwIO (userError "runs second, must not be the one re-thrown")
+            , Exception.throwIO (userError "runs first, must be the one re-thrown")
+            ]
+      outcome <-
+        Exception.try @Exception.IOException (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv hiddenReleases))
+      case outcome of
+        Left e -> show e `shouldContain` "runs first, must be the one re-thrown"
+        Right () -> expectationFailure "expected the first genuine (in execution order) failure to propagate"
 
   {- | Regression for the HIGH-severity finding that
   @Amazonka.Auth.InstanceProfile.fromNamedInstanceProfile@ (pinned source,
@@ -819,6 +1002,65 @@ spec = describe "AWS Env supervisor" do
       readIORef childReleasedRef `shouldReturn` True
       readIORef requestWorkerAffected `shouldReturn` False
       killThread requestWorkerTid
+      stopSupervisedEnv sup
+
+    {- | Regression for the per-generation thread-isolation redesign
+    itself (the structural fix underlying the whole HIGH-severity
+    cleanup-order finding): each generation now runs on its own,
+    disposable thread via 'Async.withAsync', rather than all generations
+    sharing one long-lived dispatcher thread as the sole
+    'Exception.throwTo' target. This proves two distinct generations
+    really do get two distinct threads, and that a stale/late
+    'Exception.throwTo' explicitly aimed at an OLD generation's
+    (by-then-terminated) thread can never be misdelivered to a NEWER
+    generation's live thread merely by virtue of it being "the current
+    supervisor" -- there is no such single shared target any more.
+
+    Mutation check: reverting 'startSupervisedEnv' to run every
+    generation as the dispatcher's own repeated body (the pre-fix design)
+    makes @gen1Tid@ and @gen2Tid@ compare equal here, since both
+    generations would then run on the very same thread.
+    -}
+    it "each generation runs on its own distinct thread, so a stale throwTo aimed at an old generation's thread can never reach a newer generation" do
+      gen1ThreadIdVar <- newEmptyMVar
+      gen2ThreadIdVar <- newEmptyMVar
+      generationRef <- newIORef (0 :: Int)
+      advanceGate <- newEmptyMVar
+      let acquire = do
+            n <- atomicModifyIORef' generationRef (\k -> (k + 1, k + 1))
+            pure (Right (TestResource n))
+          release _ = pure ()
+          awaitInvalidation (TestResource n) = do
+            tid <- myThreadId
+            case n of
+              1 -> putMVar gen1ThreadIdVar tid
+              2 -> putMVar gen2ThreadIdVar tid
+              _ -> pure ()
+            outcome <- Exception.try @AuthError (forever (threadDelay maxBound))
+            either (evaluate . classifyAuthErrorDiagnostic) absurd outcome
+      sup <- startSupervisedEnv (withRelease release acquire) awaitInvalidation (takeMVar advanceGate)
+      waitForSupervisedState sup \case SupervisedEnvReady (TestResource 1) -> True; _ -> False
+      gen1Tid <- takeMVar gen1ThreadIdVar
+      -- Invalidate generation 1 so a second generation can begin.
+      Exception.throwTo gen1Tid (RetrievalError httpExceptionFixture)
+      waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthRetrievalFailure)
+      -- Generation 1's own dedicated thread has, by now, already
+      -- returned from its generation body ('awaitInvalidation' above
+      -- already unblocked and returned the classified diagnostic) --
+      -- prove it is provably no longer running at all.
+      gen1Status <- waitUntilTerminated gen1Tid
+      gen1Status `shouldSatisfy` isTerminatedStatus
+      -- A late, stale throwTo explicitly targeting generation 1's own
+      -- (already-dead) thread: a safe no-op against a finished thread,
+      -- never capable of reaching generation 2's distinct, live thread.
+      Exception.throwTo gen1Tid Exception.ThreadKilled
+      putMVar advanceGate ()
+      waitForSupervisedState sup \case SupervisedEnvReady (TestResource 2) -> True; _ -> False
+      gen2Tid <- takeMVar gen2ThreadIdVar
+      gen2Tid `shouldNotBe` gen1Tid
+      -- Generation 2 is genuinely unaffected: still Ready, not
+      -- reclassified as Unavailable by the stale throwTo above.
+      readSupervisedEnv sup `shouldReturn` SupervisedEnvReady (TestResource 2)
       stopSupervisedEnv sup
 
     it "forces the classified diagnostic before publishing it, not deferring it as a thunk for a later reader to force" do

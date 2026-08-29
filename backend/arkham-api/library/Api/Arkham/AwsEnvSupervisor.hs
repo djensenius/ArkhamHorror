@@ -101,7 +101,7 @@ import Amazonka.EC2.Metadata hiding (region)
 import Amazonka.EC2.Metadata qualified as IdentityDocument (IdentityDocument (..))
 import Amazonka.Env (lookupRegion)
 import Arkham.Prelude
-import Control.Concurrent (killThread, threadDelay)
+import Control.Concurrent (ThreadId, killThread, threadDelay)
 import Control.Concurrent.Async qualified as Async
 import Control.Concurrent.STM (check, retry)
 import Control.Exception qualified as Exception
@@ -112,6 +112,7 @@ import Data.Ini qualified as INI
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as Text
 import Data.Void (Void, absurd)
+import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Network.HTTP.Types.Status (statusCode)
 import System.Directory qualified as Directory
 import System.Environment (lookupEnv)
@@ -228,10 +229,46 @@ never a request worker, to either observe a genuine refresh failure or
 (via this function) pre-emptively kill the thread that would otherwise
 raise it. 'Auth' (no expiration, e.g. static access keys) never started
 such a thread in the first place, so there is nothing to kill.
+
+'Exception.killThread'\/'Exception.throwTo' only block until the target
+thread has /begun/ handling the exception -- not until it has actually
+finished unwinding and become 'ThreadFinished'\/'ThreadDied' (see
+@base@'s own @Control.Exception@ Haddock on @throwTo@: \"the exception is
+not immediately raised in the target thread ... whatever work the target
+thread was doing when the exception was raised is not lost\"). A caller
+that immediately assumes the child is fully gone the instant 'killThread'
+returns can race a child that is still mid-unwind. This function polls
+'threadStatus' afterward, bounded, so 'releaseAwsEnvAcquisition' can rely
+on every child it releases being genuinely terminal by the time it
+returns -- never merely \"signalled\". The bound only guards against a
+genuinely stuck foreign call (e.g. 'killThread' targeting a thread
+currently blocked inside a non-interruptible foreign HTTP call can itself
+block until that call completes; this is a documented, accepted platform
+limitation, not something this function can or should work around) --
+it never substitutes for a real synchronization guarantee elsewhere.
 -}
 releaseAwsEnvChild :: Auth -> IO ()
 releaseAwsEnvChild (Auth _) = pure ()
-releaseAwsEnvChild (Ref refreshThreadId _) = killThread refreshThreadId
+releaseAwsEnvChild (Ref refreshThreadId _) = do
+  killThread refreshThreadId
+  awaitThreadTerminated refreshThreadId
+
+-- | Bounded poll for a 'ThreadId' to reach a genuinely terminal
+-- 'ThreadStatus' ('ThreadFinished' or 'ThreadDied'). See
+-- 'releaseAwsEnvChild' for why this is necessary at all, and why the
+-- bound is only a defensive guard, not a correctness mechanism.
+awaitThreadTerminated :: ThreadId -> IO ()
+awaitThreadTerminated tid = go maxAwaitPolls
+ where
+  maxAwaitPolls = 500 :: Int
+  awaitPollIntervalMicros = 1000
+  go remaining
+    | remaining <= 0 = pure ()
+    | otherwise = do
+        status <- threadStatus tid
+        if status == ThreadFinished || status == ThreadDied
+          then pure ()
+          else threadDelay awaitPollIntervalMicros >> go (remaining - 1)
 
 -- | See 'startSupervisedEnv''s @acquire@ parameter: the concrete release
 -- action for a generation whose entire 'Env' was acquired via a single,
@@ -250,18 +287,53 @@ them, plus whichever child is still directly reachable via @.auth@ itself.
 data AwsEnvAcquisition = AwsEnvAcquisition
   { awsEnvAcquisitionEnv :: Env
   , -- | Release actions for children hidden by an outer overwrite,
-    -- oldest\/innermost-acquired first. Always released newest-first (i.e.
-    -- reversed), then the still-visible @.auth@ itself, matching ordinary
-    -- bracket\/stack release discipline: whatever needed the child most
-    -- recently (a still-live outer @sts:AssumeRole@ refresh loop that
-    -- re-authenticates using it) is retired before what it depended on.
+    -- oldest\/innermost-acquired first. Released newest-first (i.e.
+    -- reversed) -- but only /after/ the still-visible @.auth@ itself,
+    -- which is released first of all (see 'releaseAwsEnvAcquisition').
+    -- Whatever needed a child most recently (a still-live outer
+    -- @sts:AssumeRole@ refresh loop that re-authenticates using it) is
+    -- retired before what it depended on, matching ordinary
+    -- bracket\/stack release discipline: the final, outermost,
+    -- most-dependent child (@.auth@ itself) is always the newest of all,
+    -- so it is released before any hidden child, and among the hidden
+    -- children themselves, newest\/most-recently-acquired first.
     awsEnvAcquisitionHiddenReleases :: [IO ()]
   }
 
+{- | Release every child a config-file (or single-provider) acquisition
+created, outermost\/newest first: the still-visible @.auth@ child itself,
+then every hidden child, newest-to-oldest (see 'AwsEnvAcquisition').
+
+Every child's release is attempted even if an earlier one fails: this
+generation's own children can only ever target /this generation's own/
+dedicated thread with a delayed refresh-failure 'AuthError' (see
+'startSupervisedEnv''s per-generation thread isolation for why that
+target can never be a different generation's thread, nor this module's
+long-lived dispatcher) -- so an 'AuthError' surfacing while releasing one
+child here is provably just that same self-inflicted, expected feedback
+from killing it mid-refresh, not a fresh failure, and is discarded rather
+than aborting the remaining releases or being misreported. Any other
+(non-'AuthError') exception -- e.g. a genuine external cancellation
+landing while a specific child's release was in flight -- is never
+swallowed: every remaining child's release is still attempted regardless,
+but the first such genuine exception seen is re-raised only once every
+child has at least been attempted, preserving the original
+caller-visible failure\/cancellation exactly as if this function's own
+cleanup work were transparent.
+-}
 releaseAwsEnvAcquisition :: AwsEnvAcquisition -> IO ()
 releaseAwsEnvAcquisition (AwsEnvAcquisition env hiddenReleases) = do
-  sequence_ (reverse hiddenReleases)
-  releaseAwsEnvChild (runIdentity env.auth)
+  let orderedReleases = releaseAwsEnvChild (runIdentity env.auth) : reverse hiddenReleases
+  firstGenuineFailure <- foldM attemptRelease Nothing orderedReleases
+  for_ firstGenuineFailure Exception.throwIO
+ where
+  attemptRelease :: Maybe Exception.SomeException -> IO () -> IO (Maybe Exception.SomeException)
+  attemptRelease firstGenuineFailure release =
+    Exception.try @Exception.SomeException release >>= \case
+      Right () -> pure firstGenuineFailure
+      Left e
+        | Just (_ :: AuthError) <- Exception.fromException e -> pure firstGenuineFailure
+        | otherwise -> pure (Just (fromMaybe e firstGenuineFailure))
 
 {- | A drop-in replacement for the pinned Amazonka fork's own
 @Amazonka.Auth.discover@, identical in every credential source it tries,
@@ -809,15 +881,50 @@ I\/O) is genuinely protected. 'Control.Exception.mask' is used rather than
 turn into an unkillable thread.
 
 The lifecycle itself is built entirely from the \"async\" package's
-high-level 'Async.async'\/'Async.cancel' rather than a hand-rolled
-@forkIO@\/@MVar@\/@mask@ protocol: 'Async.async' already wraps its action in
-a plain, unrestricted 'Control.Exception.try' internally (catching
-/every/ exception, synchronous or asynchronous, so its result @MVar@\/@STM@
-slot is always filled), and 'Async.cancel' both delivers an ordinary,
-interruptible @throwTo@ and synchronously waits for the target thread to
-actually finish before returning -- exactly the \"terminate and wait for
-completion\" protocol this module previously had to construct and debug
-by hand.
+high-level 'Async.async'\/'Async.withAsync'\/'Async.cancel' rather than a
+hand-rolled @forkIO@\/@MVar@\/@mask@ protocol: 'Async.async' already wraps
+its action in a plain, unrestricted 'Control.Exception.try' internally
+(catching /every/ exception, synchronous or asynchronous, so its result
+@MVar@\/@STM@ slot is always filled), and 'Async.cancel' both delivers an
+ordinary, interruptible @throwTo@ and synchronously waits for the target
+thread to actually finish before returning -- exactly the \"terminate and
+wait for completion\" protocol this module previously had to construct
+and debug by hand.
+
+/Per-generation thread isolation:/ each generation's entire @acquire@
+through @awaitInvalidation@ span (below, @runOneGeneration@) runs on its
+own freshly-forked thread, via 'Async.withAsync', rather than directly on
+this long-lived dispatcher thread. This closes a genuine cross-generation
+hazard found by direct audit: the pinned Amazonka fork's
+@Amazonka.Auth.Background.fetchAuthInBackground@ (see
+'releaseAwsEnvChild') always targets /whichever thread called @discover@/
+as its eventual delayed refresh-failure @throwTo@ target. If every
+generation's @acquire@ ran on the very same single dispatcher thread (as
+in an earlier version of this module), then killing an /old/ generation's
+child during release (see 'releaseAwsEnvAcquisition') could -- if that
+kill happens to land exactly while the child is mid-refresh-call -- cause
+the child to convert its own cancellation into a synthetic 'AuthError'
+and @throwTo@ it back at that shared thread, arbitrarily later: possibly
+while a /different/ child is being released, or even once a /newer/
+generation has already begun acquiring or monitoring. Giving every
+generation a distinct, disposable thread makes that structurally
+impossible: 'Control.Concurrent.ThreadId's are never reused or aliased,
+so a delayed @throwTo@ captured against one generation's thread can only
+ever be delivered to that exact (by then likely already-finished or
+finishing) thread -- never to the dispatcher, and never to any other
+generation's distinct thread, no matter how the two overlap in time. This
+is also precisely why 'releaseAwsEnvAcquisition' can safely treat an
+'AuthError' surfacing while releasing one of /this/ generation's own
+children as expected, self-inflicted feedback rather than a fresh
+failure: it can only ever have come from a child that belongs to this
+exact generation. 'Async.withAsync' additionally guarantees that if this
+dispatcher thread is itself asynchronously cancelled (e.g. by
+'stopSupervisedEnv') while waiting on the in-flight generation, that
+generation's thread is cancelled and awaited to completion /first/ --
+running its own @release@ via @runOneGeneration@'s 'finally' -- before the
+cancellation is allowed to finish unwinding the dispatcher itself; a stop
+can therefore never leave a generation thread, or the children it owns,
+orphaned.
 
 On every loop iteration: 'SupervisedEnvInitializing' is (re-)published
 first, then @acquire@ is attempted; a failure publishes
@@ -867,7 +974,16 @@ startSupervisedEnv acquire awaitInvalidation backoff = do
     forever loopOnce `finally` publish stateVar AwsAuthSupervisorTerminated
    where
     loopOnce = do
-      diag <- runGeneration
+      -- See the module Haddock ("Per-generation thread isolation"): each
+      -- generation's own acquire/monitor/release cycle runs on a fresh
+      -- thread, never this dispatcher thread itself, so a delayed
+      -- refresh-failure feedback from an old generation's child can
+      -- never land on a different (older, newer, or this dispatcher's
+      -- own) thread. 'Async.withAsync' also ensures that if this
+      -- dispatcher is cancelled while waiting here, the in-flight
+      -- generation is cancelled and awaited -- running its own release --
+      -- before the cancellation finishes unwinding this loop.
+      diag <- Async.withAsync runOneGeneration Async.wait
       publish stateVar diag
       backoff
 
@@ -895,9 +1011,11 @@ startSupervisedEnv acquire awaitInvalidation backoff = do
     -- own handler as the first action of its (as-yet-unforced) body, that
     -- pending exception could be delivered before that body ever begins
     -- running at all, skipping it entirely. See 'startSupervisedEnv''s
-    -- Haddock for the full explanation.
-    runGeneration :: IO AwsAuthErrorDiagnostic
-    runGeneration = mask $ \restore -> do
+    -- Haddock for the full explanation. This entire span runs on its own
+    -- fresh, disposable, per-generation thread -- see 'loopOnce' above --
+    -- rather than the dispatcher thread that forks it.
+    runOneGeneration :: IO AwsAuthErrorDiagnostic
+    runOneGeneration = mask $ \restore -> do
       atomically $ writeTVar stateVar SupervisedEnvInitializing
       acquired <- acquire
       case acquired of

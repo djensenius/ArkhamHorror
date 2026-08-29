@@ -1,4 +1,6 @@
 {-# LANGUAGE NoImplicitPrelude #-}
+{-# LANGUAGE RankNTypes #-}
+
 
 {- | Small, generic, dependency-injectable resource-ownership helpers.
 
@@ -22,15 +24,20 @@ module Api.Arkham.Lifecycle (
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
   shutdownThenDeliver,
-  proceedOnlyIfPreviousShutdownSucceeded,
+  proceedOnlyIfPreviousShutdownSucceededReplayable,
+  forkTransferringOwnership,
+  forkTransferringOwnershipUsing,
 ) where
 
-import Control.Concurrent.MVar (MVar, putMVar)
+import Control.Concurrent (ThreadId, forkIOWithUnmask)
+import Control.Concurrent.MVar (MVar, putMVar, readMVar, takeMVar)
 import Control.Exception (
   SomeException,
   bracket,
   bracketOnError,
+  mask,
   mask_,
+  onException,
   throwIO,
   try,
  )
@@ -87,14 +94,107 @@ shutdownThenDeliver shutdown done = do
   mask_ (putMVar done result)
 
 {- | Used by @app\/DevelMain.hs@'s @restartAppInNewThread@: given the
-outcome 'shutdownThenDeliver' delivered for the /previous/ generation's
-shutdown, only proceed to start a replacement generation on 'Right ()'.
-On 'Left', the previous shutdown failed or was interrupted -- its
-supervisor may not have actually stopped -- so no replacement is
-started at all (which would otherwise risk two live generations); the
-original exception is re-thrown instead of being swallowed, so the
-failure is visible to whoever called @update@\/@restart@.
+'MVar' 'shutdownThenDeliver' will (eventually) fill with the /previous/
+generation's shutdown outcome, only proceed to start a replacement
+generation once that outcome is 'Right ()' -- and do so /repeatably/,
+without ever consuming a 'Left' or leaving the cell permanently empty.
+
+This replaces an earlier, one-shot @Either SomeException () -> IO a ->
+IO a@ version that always 'takeMVar''d the outcome up front: on a
+failed/interrupted previous shutdown, that version still consumed the
+'Left' from the 'MVar' (leaving it empty) before re-throwing -- so this
+same one-shot 'MVar' cell (reused, per @DevelMain.hs@'s design, across
+every generation's own eventual shutdown) could never be filled again,
+and the /next/ restart attempt's own wait on it would block forever
+instead of observing the same failure immediately. This version instead:
+
+* Peeks the outcome with 'readMVar' (non-consuming) rather than
+  'takeMVar'. On 'Left', it is left untouched and re-thrown immediately
+  -- every subsequent call sees the exact same failure immediately,
+  without blocking, and without ever starting a replacement.
+* Only on 'Right ()' does it 'takeMVar' (finally consuming that success,
+  emptying the cell so the /next/ generation's own eventual shutdown can
+  fill it again) immediately before running @onSuccess@.
+* If @onSuccess@ itself then fails (e.g. starting the replacement
+  generation throws, synchronously or asynchronously, having already
+  consumed the previous 'Right'), the same failure is written back into
+  the now-empty cell as a 'Left' before being re-thrown -- so the cell is
+  never left permanently empty either, and every subsequent call
+  immediately observes that same failure rather than blocking on a cell
+  nothing will ever fill again.
 -}
-proceedOnlyIfPreviousShutdownSucceeded :: Either SomeException () -> IO a -> IO a
-proceedOnlyIfPreviousShutdownSucceeded (Left err) _onSuccess = throwIO err
-proceedOnlyIfPreviousShutdownSucceeded (Right ()) onSuccess = onSuccess
+proceedOnlyIfPreviousShutdownSucceededReplayable
+  :: MVar (Either SomeException ()) -> IO a -> IO a
+proceedOnlyIfPreviousShutdownSucceededReplayable done onSuccess = do
+  outcome <- readMVar done
+  case outcome of
+    Left err -> throwIO err
+    Right () -> do
+      _ <- takeMVar done
+      result <- try onSuccess
+      case result of
+        Left err -> do
+          putMVar done (Left err)
+          throwIO err
+        Right a -> pure a
+
+{- | Given an already-acquired resource whose remaining lifetime is meant
+to be owned by a newly-forked child thread (which runs @body res@
+unmasked, then runs @finalize res@ -- typically releasing @res@ --
+exactly once, regardless of how @body@ exits, matching
+'Control.Concurrent.forkFinally'), mask this thread from having @res@ in
+hand until the child is definitely spawned and has therefore definitely
+taken over that responsibility.
+
+Used by @app\/DevelMain.hs@'s @start@, around the already-acquired 'App'
+'Application.getApplicationRepl' returns (whose OWN acquisition already
+has separate, established exception-safety -- see
+'acquireTransferringOwnershipOnSuccess'): without this, an asynchronous
+exception landing in the narrow window between that 'App' being returned
+and 'Control.Concurrent.forkIOWithUnmask' actually spawning its child --
+or 'forkIOWithUnmask' itself throwing synchronously, however rare -- would
+leak the 'App' (and its AWS Env supervisor), since nothing would ever be
+left to call @shutdownApp@ on it. If forking itself fails, or this thread
+is asynchronously cancelled anywhere in this masked span, @release res@
+runs here instead; if forking succeeds, the child is (from that instant)
+unambiguously the sole owner of @res@'s eventual @finalize@.
+-}
+forkTransferringOwnership
+  :: res
+  -> (res -> IO ())
+  -> (res -> IO a)
+  -> (res -> Either SomeException a -> IO ())
+  -> IO ThreadId
+forkTransferringOwnership = forkTransferringOwnershipUsing forkIOWithUnmask
+
+{- | Test-injectable generalization of 'forkTransferringOwnership':
+@spawn@ stands in for 'Control.Concurrent.forkIOWithUnmask' itself
+(taking the same \"run this with async exceptions unmasked\" body and
+handing back a handle for whatever actually ran it), letting a
+regression test substitute a fake that deterministically synchronizes
+with a tester-driven cancellation at the exact moment that matters --
+after @res@ is already in hand, strictly before the spawn primitive
+itself has produced anything -- rather than relying on timing luck
+against a real 'Control.Concurrent.forkIOWithUnmask' call (which, having
+no interruptible operation of its own, essentially never actually loses
+that race in practice, making that race non-deterministic and hard to
+prove either way). 'onException' here is what actually matters: it
+guarantees @release res@ runs before propagating /any/ exception raised
+while acquiring the handle from @spawn@ -- including one delivered while
+@spawn@ itself is blocked on a genuinely interruptible operation, which
+even 'Control.Exception.mask' cannot defer (see
+'Control.Concurrent.MVar.takeMVar' and STM's @retry@, which remain
+interruptible by design even when masked) -- not merely one @spawn@
+raises synchronously and immediately.
+-}
+forkTransferringOwnershipUsing
+  :: (((forall a. IO a -> IO a) -> IO ()) -> IO handle)
+  -> res
+  -> (res -> IO ())
+  -> (res -> IO b)
+  -> (res -> Either SomeException b -> IO ())
+  -> IO handle
+forkTransferringOwnershipUsing spawn res release body finalize =
+  mask $ \_restore ->
+    spawn (\unmask -> try (unmask (body res)) >>= finalize res)
+      `onException` release res

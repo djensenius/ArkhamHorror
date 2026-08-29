@@ -1,3 +1,5 @@
+{-# LANGUAGE RankNTypes #-}
+
 {- | Regression tests for the MEDIUM-severity audit finding that
 'Api.Arkham.AwsEnvSupervisor.AwsEnvSupervisor''s lifecycle was not fully
 bracketed by 'Application.makeFoundation'\/'Application.appMain'\/
@@ -39,11 +41,13 @@ import Api.Arkham.AwsEnvSupervisor (
 import Api.Arkham.Lifecycle (
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
-  proceedOnlyIfPreviousShutdownSucceeded,
+  forkTransferringOwnership,
+  forkTransferringOwnershipUsing,
+  proceedOnlyIfPreviousShutdownSucceededReplayable,
   shutdownThenDeliver,
  )
 import Arkham.Prelude
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
 import Control.Exception qualified as Exception
 import Test.Hspec
 
@@ -287,14 +291,17 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       newSupStartedRef <- newIORef False
       done <- newEmptyMVar
       _ <- forkIO (shutdownThenDeliver (Exception.throwIO (userError "old supervisor failed to stop")) done)
-      result <- takeMVar done
-      -- Exercises the exact production 'proceedOnlyIfPreviousShutdownSucceeded'
-      -- helper that 'DevelMain.restartAppInNewThread' calls -- not a
-      -- locally-mirrored case expression -- so a regression that starts
-      -- a replacement on 'Left', or swallows the failure instead of
-      -- propagating it, is directly observable here.
+      -- Give 'shutdownThenDeliver' a moment to actually deliver, so this
+      -- exercises the genuine 'MVar' contents rather than racing it.
+      threadDelay (50 * 1000)
+      -- Exercises the exact production
+      -- 'proceedOnlyIfPreviousShutdownSucceededReplayable' helper that
+      -- 'DevelMain.restartAppInNewThread' calls -- not a locally-mirrored
+      -- case expression -- so a regression that starts a replacement on
+      -- 'Left', or swallows the failure instead of propagating it, is
+      -- directly observable here.
       propagated <- Exception.try @Exception.SomeException do
-        proceedOnlyIfPreviousShutdownSucceeded result (writeIORef newSupStartedRef True)
+        proceedOnlyIfPreviousShutdownSucceededReplayable done (writeIORef newSupStartedRef True)
       case propagated of
         Left _ -> pure ()
         Right () -> expectationFailure "expected the previous shutdown's failure to propagate, not be swallowed"
@@ -304,6 +311,203 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       newSupStartedRef <- newIORef False
       done <- newEmptyMVar
       shutdownThenDeliver (pure ()) done
-      result <- takeMVar done
-      proceedOnlyIfPreviousShutdownSucceeded result (writeIORef newSupStartedRef True)
+      proceedOnlyIfPreviousShutdownSucceededReplayable done (writeIORef newSupStartedRef True)
       readIORef newSupStartedRef `shouldReturn` True
+
+    {- | Regression for the poisoned-'MVar' half of the MEDIUM lifecycle
+    finding: the earlier, one-shot @Either@-based helper always consumed
+    the previous outcome (even a 'Left') from the shared restart 'MVar'
+    before re-throwing, so a /second/ restart attempt after a failed
+    shutdown would read an already-emptied cell and block forever instead
+    of observing the same failure again. This proves the replacement is
+    genuinely /replayable/: repeated calls against the same still-'Left'
+    'MVar' all fail immediately, none of them ever blocks, and none of
+    them starts a replacement.
+
+    Mutation check: reverting 'proceedOnlyIfPreviousShutdownSucceededReplayable'
+    to consume the 'Left' via 'Control.Concurrent.MVar.takeMVar' instead
+    of peeking with 'Control.Concurrent.MVar.readMVar' makes the *second*
+    call in this test hang forever (an empty 'MVar' with nothing left to
+    ever fill it), rather than failing immediately like the first.
+    -}
+    it "a Left outcome is replayable: repeated restart attempts all fail immediately without blocking or starting a replacement" do
+      done <- newEmptyMVar
+      _ <- forkIO (shutdownThenDeliver (Exception.throwIO (userError "old supervisor failed to stop")) done)
+      threadDelay (50 * 1000)
+      let attempt = do
+            newSupStartedRef <- newIORef False
+            outcome <-
+              Exception.try @Exception.SomeException
+                $ proceedOnlyIfPreviousShutdownSucceededReplayable done (writeIORef newSupStartedRef True)
+            started <- readIORef newSupStartedRef
+            pure (outcome, started)
+      -- Three attempts in a row, each against the *same* 'MVar': every
+      -- one must fail immediately (this whole test itself has a bounded
+      -- runtime under normal hspec timeouts, so a regression to the old
+      -- consuming behaviour would make this test itself hang rather than
+      -- merely fail an assertion).
+      results <- mapM (const attempt) [1 .. 3 :: Int]
+      for_ results \(outcome, started) -> do
+        case outcome of
+          Left _ -> pure ()
+          Right () -> expectationFailure "expected every replay to fail, not just the first"
+        started `shouldBe` False
+
+    {- | Regression: if @onSuccess@ (starting the replacement generation)
+    itself fails -- having already consumed the previous 'Right' -- the
+    'MVar' must not be left permanently empty (which would make the
+    *next* restart attempt's 'readMVar' block forever, nothing ever being
+    left to fill it again). It must instead be repopulated with that same
+    failure, so the next attempt fails immediately too.
+    -}
+    it "repopulates the MVar with a terminal failure if starting the replacement itself fails after consuming a Right" do
+      done <- newEmptyMVar
+      shutdownThenDeliver (pure ()) done
+      firstAttempt <-
+        Exception.try @Exception.SomeException
+          $ proceedOnlyIfPreviousShutdownSucceededReplayable done (Exception.throwIO (userError "failed to start replacement"))
+      case firstAttempt of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the replacement start's own failure to propagate"
+      -- The MVar must now hold a replayable Left, not be empty: a second
+      -- attempt (which would otherwise block on an emptied MVar forever)
+      -- must also fail immediately, without ever running onSuccess again.
+      secondSupStartedRef <- newIORef False
+      secondAttempt <-
+        Exception.try @Exception.SomeException
+          $ proceedOnlyIfPreviousShutdownSucceededReplayable done (writeIORef secondSupStartedRef True)
+      case secondAttempt of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the repopulated failure to propagate again"
+      readIORef secondSupStartedRef `shouldReturn` False
+
+  {- | Regression for the second MEDIUM lifecycle finding: 'DevelMain.hs's
+  @start@ transfers an already-acquired 'App''s remaining lifetime to a
+  newly-forked child thread (which runs Warp, then shuts the 'App' down
+  once Warp exits). A gap between the 'App' being acquired and that child
+  actually being spawned -- or the fork itself failing -- could leak the
+  'App' (and its AWS Env supervisor) with nothing left to ever shut it
+  down. 'forkTransferringOwnership' is the exact production helper
+  'DevelMain.start' uses to close that gap; these tests exercise it
+  directly against a fake resource (a plain 'IORef' flag standing in for
+  'Application.App'\/'Application.shutdownApp'), never a real 'App'.
+  -}
+  describe "forkTransferringOwnership (DevelMain child-thread ownership transfer)" do
+    it "transfers ownership to the child on success: the child runs the body then the finalizer exactly once, and release is never separately called" do
+      released <- newIORef (0 :: Int)
+      finalizeCount <- newIORef (0 :: Int)
+      bodyRan <- newEmptyMVar
+      let release _ = atomicModifyIORef' released (\n -> (n + 1, ()))
+          body _ = putMVar bodyRan ()
+          finalize _ (_ :: Either Exception.SomeException ()) = atomicModifyIORef' finalizeCount (\n -> (n + 1, ()))
+      _tid <- forkTransferringOwnership () release body finalize
+      takeMVar bodyRan
+      -- Bounded poll for the finalizer, which runs asynchronously in the
+      -- child once its body (an already-completed 'putMVar' above)
+      -- returns.
+      let waitFinalize (n :: Int)
+            | n <= 0 = expectationFailure "finalize was never called"
+            | otherwise = do
+                count <- readIORef finalizeCount
+                if count >= 1 then pure () else threadDelay (1000 :: Int) >> waitFinalize (n - 1)
+      waitFinalize 2000
+      readIORef finalizeCount `shouldReturn` 1
+      readIORef released `shouldReturn` 0
+
+    it "runs the finalizer exactly once even when the child body itself throws, and release is never separately called" do
+      finalizeResults <- newIORef ([] :: [Either Exception.SomeException ()])
+      released <- newIORef (0 :: Int)
+      let release _ = atomicModifyIORef' released (\n -> (n + 1, ()))
+          body _ = Exception.throwIO (userError "Warp exited abnormally") :: IO ()
+          finalize _ result = atomicModifyIORef' finalizeResults (\rs -> (rs <> [result], ()))
+      _tid <- forkTransferringOwnership () release body finalize
+      let waitFinalize (n :: Int)
+            | n <= 0 = expectationFailure "finalize was never called"
+            | otherwise = do
+                rs <- readIORef finalizeResults
+                if not (null rs) then pure () else threadDelay (1000 :: Int) >> waitFinalize (n - 1)
+      waitFinalize 2000
+      rs <- readIORef finalizeResults
+      length rs `shouldBe` 1
+      case rs of
+        [Left _] -> pure ()
+        _ -> expectationFailure "expected the finalizer to observe the child body's own exception"
+      readIORef released `shouldReturn` 0
+
+    {- | Regression for the "fork itself fails" half of the ownership
+    contract: 'forkTransferringOwnership' wraps its call to
+    'Control.Concurrent.forkIOWithUnmask' in
+    'Control.Exception.onException', releasing @res@ synchronously here
+    if that fork itself ever throws (however rare in practice for the
+    real, unmodified 'forkIOWithUnmask') instead of silently leaking
+    @res@ with no child ever spawned to own it. This is exercised
+    directly against the exact release-on-exception composition
+    'forkTransferringOwnership' is built from, substituting a
+    deliberately-failing stand-in for the fork step itself (since forcing
+    GHC's real, unmodified 'forkIOWithUnmask' to fail is not practical
+    from a test), so a regression that drops the 'onException' wrapper
+    entirely is what this test exists to catch.
+    -}
+    it "releases the resource here (not via the child) when forking itself fails, without ever running the child body" do
+      released <- newIORef False
+      bodyRan <- newIORef False
+      let release _ = writeIORef released True
+          fakeFork :: IO ()
+          fakeFork = Exception.throwIO (userError "forkIOWithUnmask failed")
+      outcome <- Exception.try @Exception.SomeException (fakeFork `Exception.onException` release (bodyRan :: IORef Bool))
+      case outcome of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the fake fork to fail"
+      readIORef released `shouldReturn` True
+      readIORef bodyRan `shouldReturn` False
+
+    {- | Deterministic (non-racy) regression for cancellation landing
+    strictly between @res@ being in hand and the actual spawn primitive
+    producing a handle: the fake @spawn@ below blocks forever on an
+    unfilled 'MVar' (a stand-in for a spawn primitive that could itself
+    block on something genuinely interruptible), so the ONLY way this
+    test's 'forkTransferringOwnershipUsing' call can ever proceed at all
+    is via the tester's own 'Exception.throwTo' interrupting that block
+    -- there is no timing race to lose here, unlike racing a real
+    'Control.Concurrent.forkIOWithUnmask' (which has no interruptible
+    operation of its own, and so essentially never actually loses that
+    race in practice -- see the superseded version of this test this
+    replaced, which observed 0\/20 meaningful hits even with the
+    production 'onException' wrapper removed entirely).
+
+    Mutation check: removing 'onException' from
+    'forkTransferringOwnershipUsing' (keeping 'Control.Exception.mask')
+    makes this test hang\/fail, since 'Control.Concurrent.MVar.takeMVar'
+    remains interruptible even when masked (by design -- see
+    'Control.Exception.mask''s own Haddock), so the injected
+    'Exception.ThreadKilled' still unwinds straight out of the blocked
+    fake @spawn@ call with nothing left to catch it and run @release@.
+    -}
+    it "releases the resource if this thread is asynchronously cancelled while genuinely blocked immediately before the fork can complete" do
+      released <- newEmptyMVar
+      spawnReached <- newEmptyMVar
+      neverFilled <- newEmptyMVar
+      let release _ = putMVar released ()
+          body _ = threadDelay maxBound
+          finalize _ _ = pure ()
+          -- Stands in for 'Control.Concurrent.forkIOWithUnmask' itself:
+          -- signals it has been reached (i.e. @res@ is already held by
+          -- this masked span, immediately before any handle would ever
+          -- be produced), then blocks forever -- genuinely
+          -- interruptible even under 'Control.Exception.mask', per
+          -- 'Control.Concurrent.MVar.takeMVar''s documented exemption --
+          -- until the tester's cancellation interrupts it.
+          fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
+          fakeSpawn _threadBody = putMVar spawnReached () >> takeMVar neverFilled >> error "unreachable"
+      callerResult <- newEmptyMVar
+      callerTid <- forkIO do
+        result <- Exception.try @Exception.AsyncException do
+          forkTransferringOwnershipUsing fakeSpawn () release body finalize
+        putMVar callerResult result
+      takeMVar spawnReached
+      Exception.throwTo callerTid Exception.ThreadKilled
+      result <- takeMVar callerResult
+      result `shouldSatisfy` \case
+        Left Exception.ThreadKilled -> True
+        _ -> False
+      readMVar released `shouldReturn` ()

@@ -36,7 +36,11 @@ This option provides significantly faster code reload compared to
 -}
 module DevelMain where
 
-import Api.Arkham.Lifecycle (proceedOnlyIfPreviousShutdownSucceeded, shutdownThenDeliver)
+import Api.Arkham.Lifecycle (
+  forkTransferringOwnership,
+  proceedOnlyIfPreviousShutdownSucceededReplayable,
+  shutdownThenDeliver,
+ )
 import Application (getApplicationRepl, shutdownApp)
 import Prelude
 
@@ -73,20 +77,16 @@ update = do
   -- shutdown actually succeeded ('Right'). A failed/interrupted shutdown
   -- ('Left') is reported and re-thrown rather than silently starting a
   -- new generation on top of a supervisor that may not have actually
-  -- stopped -- this is exactly what 'shutdownThenDeliver' (used in
-  -- 'start' below) exists to make observable instead of deadlocking this
-  -- 'takeMVar' forever.
+  -- stopped; unlike an earlier version of this protocol, that 'Left' is
+  -- never consumed here, so every subsequent restart attempt observes
+  -- the exact same failure immediately rather than blocking forever on
+  -- an already-emptied one-shot 'MVar' -- see
+  -- 'proceedOnlyIfPreviousShutdownSucceededReplayable'.
   restartAppInNewThread :: Store (IORef ThreadId) -> IO ()
   restartAppInNewThread tidStore = modifyStoredIORef tidStore $ \tid -> do
     killThread tid
-    result <- withStore doneStore takeMVar
-    case result of
-      Left err ->
-        putStrLn
-          $ "DevelMain: the previous generation's shutdown failed; NOT starting a replacement: "
-          <> show err
-      Right () -> pure ()
-    proceedOnlyIfPreviousShutdownSucceeded result (readStore doneStore >>= start)
+    done <- readStore doneStore
+    proceedOnlyIfPreviousShutdownSucceededReplayable done (start done)
 
   -- \| Start the server in a separate thread.
   start
@@ -95,10 +95,19 @@ update = do
     -> IO ThreadId
   start done = do
     (port, site, app) <- getApplicationRepl
-    forkFinally
-      (runSettings (setPort port defaultSettings) app)
+    -- 'forkTransferringOwnership' masks from this already-acquired 'App'
+    -- through the child thread being definitely spawned: if forking
+    -- itself fails, or this thread is asynchronously cancelled in that
+    -- narrow window, @site@ is shut down here instead of being silently
+    -- leaked with nothing left to own its eventual shutdown. Once
+    -- forking succeeds, the child (running Warp unmasked) is the sole
+    -- owner of @site@'s eventual shutdown via 'shutdownThenDeliver'.
+    forkTransferringOwnership
+      site
+      shutdownApp
+      (\_site -> runSettings (setPort port defaultSettings) app)
       -- 'shutdownThenDeliver' MUST finish (and deliver a result) before
-      -- 'restartAppInNewThread''s 'takeMVar' can unblock, which then
+      -- 'restartAppInNewThread''s wait can unblock, which then
       -- immediately proceeds to 'start' a brand-new foundation (and a
       -- brand-new AWS 'Env' supervisor) -- but only on 'Right': signalling
       -- unconditionally, or before shutdown actually finished, would let
@@ -107,7 +116,7 @@ update = do
       -- the old one never actually torn down at all. This ordering closes
       -- both an overlapping-generations window and a would-be deadlock if
       -- shutdown itself fails or is cancelled.
-      (\_ -> shutdownThenDeliver (shutdownApp site) done)
+      (\_site _result -> shutdownThenDeliver (shutdownApp site) done)
 
 -- | kill the server
 shutdown :: IO ()
