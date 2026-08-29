@@ -512,7 +512,15 @@ already does for a /later/ generation's own failed shutdown.
 publishTerminalFailureOnException :: MVar (Either SomeException ()) -> IO a -> IO a
 publishTerminalFailureOnException done action =
   action `catchAndPublish` \err -> do
-    _ <- tryPutMVar done (Left err)
+    -- 'mask_' (matching 'shutdownThenDeliver''s own identical guard):
+    -- without it, a second asynchronous exception landing in the
+    -- narrow window between catching @err@ and 'tryPutMVar' actually
+    -- completing could interrupt this non-blocking write itself,
+    -- leaving @done@ permanently empty -- recreating exactly the
+    -- deadlock this function exists to prevent, just one layer
+    -- earlier (before any child was ever spawned to eventually fill
+    -- it via 'shutdownThenDeliver').
+    mask_ (tryPutMVar done (Left err) >> pure ())
     throwIO err
  where
   catchAndPublish act handler = do
