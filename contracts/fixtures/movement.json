@@ -1,0 +1,27 @@
+{
+  "moveAdditionalEnterCosts": {
+    "tag": "Free"
+  },
+  "moveAfter": [],
+  "moveCancelable": true,
+  "moveDestination": {
+    "contents": "00000000-0000-0000-0000-00000000003d",
+    "tag": "ToLocation"
+  },
+  "moveForced": false,
+  "moveFromInPlay": true,
+  "moveId": "00000000-0000-0000-0000-00000000003e",
+  "moveMeans": {
+    "tag": "Direct"
+  },
+  "movePayAdditionalCosts": false,
+  "moveSkipEngagement": false,
+  "moveSource": {
+    "contents": "c01001",
+    "tag": "InvestigatorSource"
+  },
+  "moveTarget": {
+    "contents": "00000000-0000-0000-0000-00000000003c",
+    "tag": "LocationTarget"
+  }
+}

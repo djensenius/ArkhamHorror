@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/card-code-entity-map.schema.json",
+  "title": "CardCodeEntityMap",
+  "description": "Standalone validation vehicle for PublicGame's CardCode-keyed entity/history maps (see contracts/schemas/public-game.schema.json#/$defs/cardCodeEntityMap). Real production key types whose ToJSONKey is `deriving newtype` from CardCode (Arkham/Id.hs unless noted): StoryId (stories), ScarletKeyId (scarletKeys, Arkham/Campaigns/TheScarletKeys/Key/Id.hs), and InvestigatorId (roundHistory/phaseHistory/turnHistory, Map InvestigatorId History in Arkham/Game/Base.hs). Entity value shapes remain an intentionally broad object placeholder -- out of scope for this map-key slice.",
+  "$ref": "./public-game.schema.json#/$defs/cardCodeEntityMap"
+}

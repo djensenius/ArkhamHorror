@@ -1,0 +1,31 @@
+{
+  "assets": [],
+  "brazier": null,
+  "breaches": null,
+  "cardCode": "c10547",
+  "cardId": "00000000-0000-0000-0000-000000000033",
+  "cardsUnderneath": [],
+  "concealedCards": [],
+  "connectedLocations": [],
+  "enemies": [],
+  "enemyLocation": true,
+  "events": [],
+  "exhausted": false,
+  "floodLevel": null,
+  "id": "00000000-0000-0000-0000-000000000032",
+  "investigators": [],
+  "keys": [],
+  "label": "shapeless_cellar",
+  "modifiers": [],
+  "placement": null,
+  "revealed": true,
+  "scarletKeys": [],
+  "sealedChaosTokens": [],
+  "seals": [],
+  "shroud": {
+    "contents": 4,
+    "tag": "Static"
+  },
+  "tokens": [],
+  "treacheries": []
+}

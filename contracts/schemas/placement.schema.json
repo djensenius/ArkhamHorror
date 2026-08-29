@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/placement.schema.json",
+  "title": "Placement",
+  "description": "Where an entity currently sits on the board (Arkham.Placement). The tag set is closed and enumerated exactly as declared in the backend; 'contents' varies by tag (a location/investigator/enemy/etc id, a nested placement, a position, or nothing for the zero-argument tags) and is intentionally left broad since fully typing every payload shape is out of scope for this contract slice.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tag"
+  ],
+  "properties": {
+    "tag": {
+      "enum": [
+        "AtLocation",
+        "AttachedToLocation",
+        "InPlayArea",
+        "InThreatArea",
+        "FacedownInThreatArea",
+        "StillInHand",
+        "HiddenInHand",
+        "OnTopOfDeck",
+        "StillInDiscard",
+        "StillInEncounterDiscard",
+        "AttachedToEnemy",
+        "AttachedToTreachery",
+        "AttachedToAsset",
+        "AttachedToAct",
+        "AttachedToAgenda",
+        "NextToAgenda",
+        "NextToAct",
+        "InVehicle",
+        "AttachedToInvestigator",
+        "AsSwarm",
+        "Unplaced",
+        "Limbo",
+        "Global",
+        "OutOfPlay",
+        "Near",
+        "InTheShadows",
+        "OutOfGame",
+        "InPosition"
+      ]
+    },
+    "contents": true
+  }
+}

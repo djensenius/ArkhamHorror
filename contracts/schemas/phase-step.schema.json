@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/phase-step.schema.json",
+  "title": "PhaseStep",
+  "description": "The current step within the active phase (Arkham.Phase.PhaseStep). Null while gameState is not IsActive-with-a-running-phase (e.g. CampaignPhase or ResolutionPhase, which have no PhaseStep constructor). The four top-level tags are closed; each 'contents' value is a closed, non-additive enum naming a specific sub-step.",
+  "oneOf": [
+    {
+      "type": "null"
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "MythosPhaseStep"
+        },
+        "contents": {
+          "enum": [
+            "MythosPhaseBeginsStep",
+            "PlaceDoomOnAgendaStep",
+            "CheckDoomThresholdStep",
+            "EachInvestigatorDrawsEncounterCardStep",
+            "MythosPhaseWindow",
+            "MythosPhaseEndsStep"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigationPhaseStep"
+        },
+        "contents": {
+          "enum": [
+            "InvestigationPhaseBeginsStep",
+            "InvestigationPhaseBeginsWindow",
+            "NextInvestigatorsTurnBeginsStep",
+            "NextInvestigatorsTurnBeginsWindow",
+            "InvestigatorTakesActionStep",
+            "InvestigatorsTurnEndsStep",
+            "InvestigationPhaseEndsStep"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EnemyPhaseStep"
+        },
+        "contents": {
+          "enum": [
+            "EnemyPhaseBeginsStep",
+            "HunterEnemiesMoveStep",
+            "ResolveAttacksWindow",
+            "ResolveAttacksStep",
+            "AfterResolveAttacksWindow",
+            "EnemyPhaseEndsStep"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "UpkeepPhaseStep"
+        },
+        "contents": {
+          "enum": [
+            "UpkeepPhaseBeginsStep",
+            "UpkeepPhaseBeginsWindow",
+            "ResetActionsStep",
+            "ReadyExhaustedStep",
+            "DrawCardAndGainResourceStep",
+            "CheckHandSizeStep",
+            "UpkeepPhaseEndsStep"
+          ]
+        }
+      }
+    }
+  ]
+}

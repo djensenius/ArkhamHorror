@@ -3,6 +3,9 @@ node_modules
 dist/*
 !.keep
 
+__pycache__/
+*.pyc
+
 /tests/e2e/videos/
 /tests/e2e/screenshots/
 

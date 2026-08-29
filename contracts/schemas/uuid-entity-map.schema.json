@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/uuid-entity-map.schema.json",
+  "title": "UuidEntityMap",
+  "description": "Standalone validation vehicle for PublicGame's UUID-keyed entity maps (see contracts/schemas/public-game.schema.json#/$defs/uuidEntityMap). Real production key types whose ToJSONKey is `deriving newtype` from the wrapped UUID (Arkham/Id.hs unless noted): EnemyId (enemies), AssetId (assets), TreacheryId (treacheries), EventId (events), SkillId (skills), ConcealedCardId (concealed), PlayerId (question), and CardId (cards, Arkham/Card/Id.hs). Entity value shapes remain an intentionally broad object placeholder -- out of scope for this map-key slice.",
+  "$ref": "./public-game.schema.json#/$defs/uuidEntityMap"
+}
