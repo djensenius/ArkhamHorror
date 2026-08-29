@@ -9,6 +9,7 @@
 
 import copy
 import json
+import re
 from pathlib import Path
 
 from jsonschema import FormatChecker
@@ -133,20 +134,25 @@ def flatten_errors(errors):
 # ---------------------------------------------------------------------------
 
 
+_ARRAY_INDEX_RE = re.compile(r"^(?:0|[1-9][0-9]*)$")
+
+
 def _require_array_index(raw_token: str, *, length: int, allow_equal_length: bool) -> int:
     """Parse and bounds-check a JSON-Pointer array token per RFC 6901/6902.
 
     RFC 6901 array tokens must be either the literal "-" (RFC 6902 "add"
     only, meaning "append") or a non-negative base-10 integer with no
-    leading zero (except "0" itself). `allow_equal_length` distinguishes
-    RFC 6902 "add" (index may equal `length`, meaning append-at-end) from
-    every other op, where the index must reference an existing element
-    (`0 <= index < length`). Silently clamping or wrapping an out-of-range
-    index would let an invalid mutation pointer pass unnoticed.
+    leading zero (except "0" itself) -- notably, no sign character at all.
+    `allow_equal_length` distinguishes RFC 6902 "add" (index may equal
+    `length`, meaning append-at-end) from every other op, where the index
+    must reference an existing element (`0 <= index < length`). Silently
+    clamping or wrapping an out-of-range index would let an invalid
+    mutation pointer pass unnoticed.
     """
     require(
-        raw_token == "0" or (raw_token and raw_token[0] != "0" and raw_token.lstrip("-").isdigit()),
-        f"Array index token must be a non-negative integer (no leading zero): {raw_token!r}",
+        _ARRAY_INDEX_RE.fullmatch(raw_token) is not None,
+        f"Array index token must be a non-negative integer with no leading zero "
+        f"or sign character: {raw_token!r}",
     )
     index = int(raw_token)
     upper = length if allow_equal_length else length - 1
@@ -200,6 +206,10 @@ def apply_mutation(value, mutation: dict):
     used for top-level wrong-type negatives (e.g. a Movement object replaced
     outright by a bare string) -- and only supports op "replace".
     """
+    require(
+        isinstance(mutation, dict) and "op" in mutation and "pointer" in mutation,
+        f"Mutation descriptor must be an object with at least 'op' and 'pointer' keys: {mutation!r}",
+    )
     if mutation["pointer"] == "":
         require(mutation["op"] == "replace", "Root-pointer mutations must use op 'replace'")
         require("value" in mutation, "Mutation op 'replace' requires a 'value'")
@@ -530,6 +540,14 @@ def run_apply_mutation_self_test() -> None:
     _expect_rejected({"op": "remove", "pointer": "/items/3"}, "remove index (== length)")
     _expect_rejected({"op": "add", "pointer": "/items/01", "value": "X"}, "add index (leading zero)")
     _expect_rejected({"op": "add", "pointer": "/items/-1", "value": "X"}, "add index (negative)")
+    _expect_rejected({"op": "add", "pointer": "/items/-0", "value": "X"}, "add index (negative zero)")
+
+    # A malformed mutation descriptor (missing "op" and/or "pointer") must
+    # fail via require()/SystemExit rather than a raw KeyError, since these
+    # come from hand-authored manifest.json entries that could have a typo.
+    _expect_rejected({"pointer": "/items/0", "value": "X"}, "mutation missing 'op'", doc=base)
+    _expect_rejected({"op": "replace", "value": "X"}, "mutation missing 'pointer'", doc=base)
+    _expect_rejected("not-a-dict", "mutation that isn't an object", doc=base)
 
     # Missing object keys must fail deterministically via require()/SystemExit
     # (a controlled validation error), not leak a raw KeyError traceback.
