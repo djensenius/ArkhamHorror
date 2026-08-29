@@ -35,7 +35,8 @@
       ],
       "properties": {
         "These": {
-          "description": "Both an active Campaign and Scenario. Broad, out of scope for this contract slice."
+          "description": "Both an active Campaign and Scenario. Broad, out of scope for this contract slice.",
+          "type": "object"
         }
       }
     }

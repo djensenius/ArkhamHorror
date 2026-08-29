@@ -21,7 +21,7 @@ data ServerCapabilities = ServerCapabilities
 serverCapabilities :: ServerCapabilities
 serverCapabilities =
   ServerCapabilities
-    { schemaRevision = "0.1.15"
+    { schemaRevision = "0.1.16"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.0"

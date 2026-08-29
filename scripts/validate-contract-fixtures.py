@@ -330,9 +330,18 @@ def extract_branch_schema(schema: dict, branch):
     elif isinstance(branch, int):
         one_of = schema.get("oneOf")
         require(isinstance(one_of, list), "schemaBranch index requires a oneOf-rooted schema")
+        require(
+            not isinstance(branch, bool) and 0 <= branch < len(one_of),
+            f"schemaBranch index {branch!r} is out of range for a {len(one_of)}-branch oneOf",
+        )
         sub = one_of[branch]
     else:
         raise SystemExit(f"Unsupported schemaBranch type: {branch!r}")
+
+    require(
+        isinstance(sub, dict),
+        f"schemaBranch {branch!r} does not resolve to a JSON object sub-schema: {sub!r}",
+    )
     rebased = dict(sub)
     if "$id" in schema:
         rebased["$id"] = schema["$id"]
@@ -366,6 +375,11 @@ def diagnose_negative(schema: dict, branch, instance, expected_errors: list[dict
 
     if not errors:
         return False, "instance unexpectedly validated"
+
+    require(
+        isinstance(expected_errors, list),
+        f"expectedErrors must be a JSON array, got {expected_errors!r}",
+    )
 
     for expected_index, expected in enumerate(expected_errors):
         require_entry_keys(
@@ -492,6 +506,14 @@ for enum_boundary_index, check in enumerate(enum_boundary_checks):
     schema_path = check["schema"]
     schema_pointer = check["schemaPointer"]
     description = check.get("description", "no description")
+    require(
+        isinstance(check["validValues"], list),
+        f"enumBoundaryChecks ({description}): validValues must be a JSON array, got {check['validValues']!r}",
+    )
+    require(
+        isinstance(check["invalidValues"], list),
+        f"enumBoundaryChecks ({description}): invalidValues must be a JSON array, got {check['invalidValues']!r}",
+    )
     schema_document = require_schema_document(schema_path, entry_kind="enumBoundaryChecks")
 
     sub_schema = resolve_json_pointer(schema_document, schema_pointer)
@@ -590,6 +612,48 @@ def run_self_test() -> None:
             "Self-test failure: require_schema_document() must reject a registered .json document "
             "that loads as a JSON object but has no root '$schema' marker (contracts/route-inventory.json "
             "is not a JSON Schema, just a plain JSON object) via a controlled SystemExit."
+        )
+
+    one_of_schema = {"oneOf": [{"type": "object"}, {"type": "string"}]}
+    try:
+        extract_branch_schema(one_of_schema, 99)
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: extract_branch_schema() must reject an out-of-range oneOf index via "
+            "a controlled SystemExit, not raise a raw IndexError."
+        )
+
+    try:
+        extract_branch_schema(one_of_schema, -1)
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: extract_branch_schema() must reject a negative oneOf index via a "
+            "controlled SystemExit (Python's negative-index wraparound would otherwise silently "
+            "resolve to the last branch)."
+        )
+
+    try:
+        extract_branch_schema({"oneOf": ["not-an-object"]}, 0)
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: extract_branch_schema() must reject a oneOf branch that does not "
+            "resolve to a JSON object via a controlled SystemExit."
+        )
+
+    try:
+        diagnose_negative(schema, None, corrupted, "not-a-list")
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit(
+            "Self-test failure: diagnose_negative() must reject a non-list expectedErrors via a "
+            "controlled SystemExit, not raise a raw TypeError while iterating."
         )
 
 
