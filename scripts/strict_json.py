@@ -52,6 +52,7 @@ test importing it in isolation).
 from __future__ import annotations
 
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -62,6 +63,19 @@ from pathlib import Path
 # represent. Used only to *detect* exponent overflow exactly (via `Decimal`,
 # which never silently overflows), not as a parsing float itself.
 _FLOAT_MAX_MAGNITUDE = Decimal(sys.float_info.max)
+
+# `git commit-tree` refuses to run without a configured author/committer
+# identity, which a fresh CI runner never has (unlike most local developer
+# checkouts). Every self-test that creates a throwaway, never-referenced git
+# commit purely as internal plumbing (never actually attributed to a real
+# author) sets these explicitly via the subprocess environment, rather than
+# depending on the ambient git config of whatever machine happens to run it.
+THROWAWAY_GIT_COMMIT_ENV_OVERRIDES = {
+    "GIT_AUTHOR_NAME": "contract-tooling self-test",
+    "GIT_AUTHOR_EMAIL": "contract-tooling-self-test@example.invalid",
+    "GIT_COMMITTER_NAME": "contract-tooling self-test",
+    "GIT_COMMITTER_EMAIL": "contract-tooling-self-test@example.invalid",
+}
 
 
 class StrictJSONError(SystemExit):
@@ -675,7 +689,13 @@ def run_governed_path_self_tests(root: Path) -> None:
 
     # -- Historical/base side: real (throwaway, unreferenced) git objects ----
     def _git(args: list[str], input_bytes: bytes | None = None) -> str:
-        result = subprocess.run(args, cwd=root, capture_output=True, input=input_bytes)
+        result = subprocess.run(
+            args,
+            cwd=root,
+            capture_output=True,
+            input=input_bytes,
+            env={**os.environ, **THROWAWAY_GIT_COMMIT_ENV_OVERRIDES},
+        )
         if result.returncode != 0:
             raise SystemExit(
                 f"Self-test setup failure: {args!r} exited {result.returncode}: "

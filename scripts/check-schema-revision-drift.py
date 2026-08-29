@@ -418,7 +418,13 @@ def run_governed_json_strictness_self_tests() -> None:
     # resolve_base_ref's CI-resolved base ref is read through in the real
     # drift gate.
     def _git(args: list[str], input_bytes: bytes | None = None) -> str:
-        result = subprocess.run(args, cwd=ROOT, capture_output=True, input=input_bytes)
+        result = subprocess.run(
+            args,
+            cwd=ROOT,
+            capture_output=True,
+            input=input_bytes,
+            env={**os.environ, **strict_json.THROWAWAY_GIT_COMMIT_ENV_OVERRIDES},
+        )
         require(
             result.returncode == 0,
             f"Self-test setup failure: {args!r} exited {result.returncode}: "
