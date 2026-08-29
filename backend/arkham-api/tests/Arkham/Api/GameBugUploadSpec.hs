@@ -1,70 +1,23 @@
 module Arkham.Api.GameBugUploadSpec (spec) where
 
-import Amazonka (AuthEnv (..), Error (..), SerializeError (..))
-import Amazonka.Auth (Auth (..), AuthError (..))
+import Amazonka (Error (..))
 import Amazonka.Error (serviceError)
+import Api.Arkham.AwsEnvSupervisor (AwsErrorCategory (..), AwsErrorDiagnostic (..))
 import Api.Handler.Arkham.Game.Bug (
-  AwsAuthErrorDiagnostic (..),
-  AwsErrorCategory (..),
-  AwsErrorDiagnostic (..),
   BugUploadFailure (..),
   BugUploadOutcome (..),
   HeadObjectOutcome (..),
-  SupervisedEnv,
-  SupervisedEnvState (..),
-  classifyAuthErrorDiagnostic,
-  classifyErrorDiagnostic,
   classifyHeadObjectError,
-  readSupervisedEnv,
-  releaseAwsEnvChild,
   runBugUploadPolicy,
   runHeadObjectAction,
   runPutObjectAction,
-  startSupervisedEnv,
-  stopSupervisedEnv,
  )
 import Arkham.Prelude
-import Control.Concurrent (forkIO, killThread, myThreadId, threadDelay)
-import Control.Exception qualified as Exception
 import Data.Text qualified as T
-import Data.Void (absurd)
-import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Network.HTTP.Client qualified as Client
 import Network.HTTP.Types.Status (Status, status403, status404, status429, status500)
 import System.IO.Unsafe (unsafePerformIO)
 import Test.Hspec
-
--- | A minimal fake resource standing in for a real Amazonka 'Env' in the
--- generic 'startSupervisedEnv'\/'readSupervisedEnv'\/'stopSupervisedEnv'
--- lifecycle tests below, which exercise the supervisor protocol itself
--- and deliberately have no real AWS\/network dependency. The wrapped 'Int'
--- lets successive acquisition generations be told apart.
-newtype TestResource = TestResource Int
-  deriving stock (Eq, Show)
-
--- | An @awaitInvalidation@ action for supervisor tests that never expect
--- their generation to be invalidated at all (e.g. because the test stops
--- the supervisor explicitly before that would ever matter).
-neverInvalidate :: env -> IO AwsAuthErrorDiagnostic
-neverInvalidate _ = forever (threadDelay maxBound)
-
-{- | Poll 'readSupervisedEnv' until @predicate@ holds. This is only a
-bounded hang-guard against a genuinely stuck test suite: the actual
-ordering\/determinism each test proves comes from the 'MVar' gates its own
-fake @acquire@\/@awaitInvalidation@\/@backoff@ actions synchronize on, not
-from this loop's polling interval or bound.
--}
-waitForSupervisedState :: Show env => SupervisedEnv env -> (SupervisedEnvState env -> Bool) -> IO ()
-waitForSupervisedState sup predicate = go (200 :: Int)
- where
-  go 0 = do
-    s <- readSupervisedEnv sup
-    expectationFailure $ "supervisor state never satisfied the expected predicate; last seen: " <> show s
-  go n = do
-    s <- readSupervisedEnv sup
-    if predicate s
-      then pure ()
-      else threadDelay (10 * 1000) >> go (n - 1)
 
 {- | Wraps a value so that the *first* time it is forced (to WHNF), it
 records that fact into @ref@ before returning the value unchanged. Used to
@@ -94,10 +47,10 @@ serviceErrorWithStatus status = ServiceError $ serviceError "S3" status [] Nothi
 transportFailure :: Error
 transportFailure = TransportError httpExceptionFixture
 
--- | A bare HTTP transport exception, used both to build 'transportFailure'
--- and directly as 'RetrievalError's payload, without ever needing to
--- pattern-match back out of an existing 'Error'/'AuthError' value (which
--- would require a partial fallback for constructors that cannot occur).
+-- | A bare HTTP transport exception, used directly as 'transportFailure''s
+-- payload, without ever needing to pattern-match back out of an existing
+-- 'Error' value (which would require a partial fallback for constructors
+-- that cannot occur).
 httpExceptionFixture :: Client.HttpException
 httpExceptionFixture = Client.InvalidUrlException "https://arkham-horror-bugs.s3.amazonaws.com" "connection failure"
 
@@ -109,7 +62,10 @@ returning the public success URL regardless of what actually happened.
 
 'classifyHeadObjectError' and 'runBugUploadPolicy' are the exact functions
 the production handler now uses to classify HeadObject failures and to
-sequence the protected PUT. These tests exercise them directly.
+sequence the protected PUT. These tests exercise them directly. See
+'Arkham.Api.AwsEnvSupervisorSpec' for the AWS credential-supervisor
+lifecycle (acquisition, refresh-failure isolation, demand-gating) that
+the production handler now consults before ever reaching these actions.
 -}
 spec :: Spec
 spec = describe "bug report upload" do
@@ -234,227 +190,3 @@ spec = describe "bug report upload" do
       -- 'outcome'.
       readIORef forcedRef `shouldReturn` True
       outcome `shouldBe` Left (AwsServiceFailure 500 AwsCategoryServerError)
-
-  {- | Regression for the follow-up audit: the handler used to log
-  'tshow err'/'tshow authErr' directly. 'TransportError'/'RetrievalError'
-  wrap an 'HttpException' whose embedded 'Request' leaves the
-  @X-Amz-Security-Token@ header (used for temporary/session credentials)
-  unredacted, and 'SerializeError' carries the raw response body. Even
-  'ServiceError''s own symbolic error code and request id are
-  server-provided free-form text, so they are excluded too.
-  'classifyErrorDiagnostic'/'classifyAuthErrorDiagnostic' are the exact
-  functions the handler now logs instead: these tests prove the diagnostic
-  for every secret-bearing case is a bare, structurally secret-free
-  category (no wrapped exception, request, body, error code, or request id
-  reaches the diagnostic type at all), while a genuine service response
-  still yields the sanitized status and a status-derived-only category.
-  -}
-  describe "classifyErrorDiagnostic" do
-    it "extracts only a sanitized status and status-derived category from a genuine service error" do
-      let err = ServiceError $ serviceError "S3" status404 [] (Just "NoSuchKey") (Just "computer says no") (Just "req-123")
-      classifyErrorDiagnostic err `shouldBe` AwsServiceFailure 404 AwsCategoryNotFound
-
-    it "never carries the underlying exception for a transport failure" do
-      -- 'AwsTransportFailure' is nullary: this is a type-level guarantee,
-      -- not just a runtime one, that no 'HttpException' (and therefore no
-      -- unredacted request header) can reach the diagnostic.
-      classifyErrorDiagnostic transportFailure `shouldBe` AwsTransportFailure
-
-    it "drops the raw response body from a serialize error, keeping only the sanitized status/category" do
-      let err = SerializeError $ SerializeError' "S3" status500 (Just "<sensitive-looking-body>") "unexpected token"
-      classifyErrorDiagnostic err `shouldBe` AwsSerializeFailure 500 AwsCategoryServerError
-
-  describe "classifyAuthErrorDiagnostic" do
-    it "never carries the underlying exception for a credential retrieval failure" do
-      let authErr = RetrievalError httpExceptionFixture
-      classifyAuthErrorDiagnostic authErr `shouldBe` AwsAuthRetrievalFailure
-
-    it "drops the (potentially credential-bearing) message for a missing env var" do
-      classifyAuthErrorDiagnostic (MissingEnvError "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI") `shouldBe` AwsAuthMissingEnv
-
-    it "drops the message for a missing credentials file" do
-      classifyAuthErrorDiagnostic (MissingFileError "/root/.aws/credentials") `shouldBe` AwsAuthMissingFile
-
-    it "drops the message for an invalid credentials file (may echo file content)" do
-      classifyAuthErrorDiagnostic (InvalidFileError "parse error near line 3") `shouldBe` AwsAuthInvalidFile
-
-    it "drops the message for an invalid IAM/task-identity document (may echo response content)" do
-      classifyAuthErrorDiagnostic (InvalidIAMError "Error parsing Task Identity Document: ...") `shouldBe` AwsAuthInvalidIAM
-
-    it "reports credential chain exhaustion" do
-      classifyAuthErrorDiagnostic CredentialChainExhausted `shouldBe` AwsAuthCredentialChainExhausted
-
-    it "extracts only a sanitized status and status-derived category from an auth-layer service error" do
-      let err = serviceError "S3" status403 [] (Just "AccessDenied") Nothing Nothing
-      classifyAuthErrorDiagnostic (AuthServiceError err) `shouldBe` AwsAuthServiceFailure 403 AwsCategoryClientError
-
-    it "never carries the underlying arbitrary exception for an uncategorized auth failure" do
-      -- 'AwsAuthOtherFailure' is nullary: 'OtherAuthError' wraps an
-      -- unconstrained 'SomeException', so this is the only safe diagnostic.
-      classifyAuthErrorDiagnostic (OtherAuthError (toException (userError "boom"))) `shouldBe` AwsAuthOtherFailure
-
-  {- | Regression for the HIGH-severity async-credential-refresh audit: the
-  pinned Amazonka fork's background credential-refresh timer captures the
-  thread that called 'Amazonka.newEnv'/'discover' as its eventual
-  refresh-failure 'throwTo' target. 'releaseAwsEnvChild' kills that
-  target's associated 'Ref'-embedded refresh 'ThreadId' directly, before
-  it can ever reach its @throwTo@ line; see 'startSupervisedEnv' for how
-  this is composed with a single dedicated supervisor thread so that
-  target is always this same long-lived thread, never a per-request one.
-  -}
-  describe "releaseAwsEnvChild" do
-    it "does nothing for already-static credentials, without starting or touching any thread" do
-      releaseAwsEnvChild (Auth (AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing)) `shouldReturn` ()
-
-    it "kills the background refresh thread before it can act" do
-      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
-      ref <- newIORef authEnv
-      reachedRefresh <- newIORef False
-      -- Stands in for Amazonka's real background refresh-timer thread:
-      -- it sleeps briefly, then (if never killed first) would flip this
-      -- flag, standing in for its real 'Exception.throwTo' call.
-      refreshThreadId <- forkIO $ do
-        threadDelay (50 * 1000)
-        writeIORef reachedRefresh True
-      releaseAwsEnvChild (Ref refreshThreadId ref)
-      -- Long enough that, had the refresh thread not been killed above,
-      -- it would certainly have flipped the flag by now.
-      threadDelay (150 * 1000)
-      readIORef reachedRefresh `shouldReturn` False
-
-  {- | Regression\/design-verification for the application-lifetime
-  supervised-'Env' architecture that replaced the earlier per-request
-  @discoverFrozenEnv@\/@freezeAuth@\/@runOnDisposableWorker@ worker
-  protocol: exactly one dedicated thread -- the supervisor's own, started
-  once by 'startSupervisedEnv' and never restarted -- ever calls
-  @acquire@ (in production, 'acquireAwsEnv', i.e. @newEnv discover@), so
-  it is the only thread a delayed background-refresh 'AuthError' could
-  ever target; a Warp request thread only ever reads a strict, typed
-  snapshot via 'readSupervisedEnv' and never itself performs, or blocks
-  on, acquisition.
-
-  These tests exercise the generic protocol directly against fake, fully
-  test-controlled @acquire@\/@awaitInvalidation@\/@backoff@ actions -- no
-  real AWS\/network dependency is involved -- using 'MVar's as
-  synchronization gates so each assertion is deterministic rather than
-  timing-dependent. 'waitForSupervisedState' below is only a bounded
-  hang-guard against a genuinely stuck suite; it never substitutes for
-  the ordering guarantees each test's own gates establish.
-  -}
-  describe "startSupervisedEnv / readSupervisedEnv / stopSupervisedEnv" do
-    it "reports Initializing before the first acquisition completes, then Ready once it does, then terminal Unavailable once stopped" do
-      acquireGate <- newEmptyMVar
-      sup <- startSupervisedEnv (takeMVar acquireGate >> pure (Right (TestResource 1))) neverInvalidate (pure ())
-      readSupervisedEnv sup `shouldReturn` SupervisedEnvInitializing
-      putMVar acquireGate ()
-      waitForSupervisedState sup \case SupervisedEnvReady _ -> True; _ -> False
-      readSupervisedEnv sup `shouldReturn` SupervisedEnvReady (TestResource 1)
-      stopSupervisedEnv sup
-      -- A reader can never observe a stale 'SupervisedEnvReady' snapshot
-      -- once nothing is monitoring it any longer.
-      readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
-
-    it "also terminates cleanly, publishing terminal Unavailable, when stopped while still Initializing (acquisition never completes)" do
-      acquireStarted <- newEmptyMVar
-      sup <-
-        startSupervisedEnv
-          (putMVar acquireStarted () >> forever (threadDelay maxBound) :: IO (Either AwsAuthErrorDiagnostic TestResource))
-          neverInvalidate
-          (pure ())
-      takeMVar acquireStarted
-      readSupervisedEnv sup `shouldReturn` SupervisedEnvInitializing
-      stopSupervisedEnv sup
-      readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
-
-    it "publishes Unavailable with the acquire's diagnostic on failure, and does not retry until backoff completes (no retry storm)" do
-      attemptCountRef <- newIORef (0 :: Int)
-      backoffGate <- newEmptyMVar
-      let acquire = do
-            n <- atomicModifyIORef' attemptCountRef (\k -> (k + 1, k + 1))
-            pure $ if n == 1 then Left AwsAuthCredentialChainExhausted else Right (TestResource n)
-      sup <- startSupervisedEnv acquire neverInvalidate (takeMVar backoffGate)
-      waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthCredentialChainExhausted)
-      -- Backoff has not been released yet: no second attempt has happened.
-      threadDelay (50 * 1000)
-      readIORef attemptCountRef `shouldReturn` 1
-      putMVar backoffGate ()
-      waitForSupervisedState sup \case SupervisedEnvReady (TestResource 2) -> True; _ -> False
-      stopSupervisedEnv sup
-
-    {- | Regression for the HIGH-severity async-credential-refresh-escape
-    audit itself: a delayed invalidation (standing in for the pinned
-    Amazonka fork's real background refresh-timer 'Exception.throwTo')
-    can only ever land on the supervisor's own dedicated thread, never on
-    a separate thread standing in for a live Warp request worker -- and
-    the old generation's child resource is released (here, a flag flipped
-    by its own 'finally') strictly before the next generation's 'Ready' is
-    published.
-
-    Delivery uses plain, unwrapped 'Control.Exception.throwTo' carrying a
-    real 'AuthError' constructor, matching exactly how the pinned fork's
-    own background timer delivers it (see the module-level Haddock on
-    'runOnDisposableWorker'\/'releaseAwsEnvChild' history above for why
-    the plain, not "UnliftIO.Exception", functions are used here).
-    -}
-    it "a delayed invalidation lands only on the supervisor thread, never an unrelated request-worker stand-in, releasing the old generation's child before the next is published" do
-      supervisorTidVar <- newEmptyMVar
-      childReleasedRef <- newIORef False
-      generationRef <- newIORef (0 :: Int)
-      backoffGate <- newEmptyMVar
-      let acquire = do
-            n <- atomicModifyIORef' generationRef (\k -> (k + 1, k + 1))
-            pure (Right (TestResource n))
-          awaitInvalidation _ = do
-            tid <- myThreadId
-            putMVar supervisorTidVar tid
-            outcome <-
-              Exception.try @AuthError (forever (threadDelay maxBound) `finally` writeIORef childReleasedRef True)
-            either (evaluate . classifyAuthErrorDiagnostic) absurd outcome
-      -- A separate, unrelated thread standing in for a live Warp request
-      -- worker: it must never be affected by the delayed invalidation
-      -- below, however precisely it targets only the supervisor's thread.
-      requestWorkerAffected <- newIORef False
-      requestWorkerTid <-
-        forkIO $ Exception.catch (forever (threadDelay maxBound)) \(_ :: AuthError) -> writeIORef requestWorkerAffected True
-      sup <- startSupervisedEnv acquire awaitInvalidation (takeMVar backoffGate)
-      waitForSupervisedState sup \case SupervisedEnvReady (TestResource 1) -> True; _ -> False
-      supervisorTid <- takeMVar supervisorTidVar
-      supervisorTid `shouldNotBe` requestWorkerTid
-      Exception.throwTo supervisorTid (RetrievalError httpExceptionFixture)
-      waitForSupervisedState sup (== SupervisedEnvUnavailable AwsAuthRetrievalFailure)
-      readIORef childReleasedRef `shouldReturn` True
-      readIORef requestWorkerAffected `shouldReturn` False
-      killThread requestWorkerTid
-      stopSupervisedEnv sup
-
-    it "forces the classified diagnostic before publishing it, not deferring it as a thunk for a later reader to force" do
-      forcedRef <- newIORef False
-      let acquire = pure (Left (markForcedOnceEvaluated forcedRef AwsAuthCredentialChainExhausted)) :: IO (Either AwsAuthErrorDiagnostic ())
-      sup <- startSupervisedEnv acquire neverInvalidate (forever (threadDelay maxBound))
-      -- This predicate inspects only the outer constructor (a wildcard
-      -- binder for the wrapped diagnostic), never the diagnostic value
-      -- itself, so if 'forcedRef' is already 'True' once it is satisfied,
-      -- that can only be because 'startSupervisedEnv' forced the
-      -- diagnostic *before* publishing it -- not because this test's own
-      -- inspection forced it first.
-      waitForSupervisedState sup \case SupervisedEnvUnavailable _ -> True; _ -> False
-      readIORef forcedRef `shouldReturn` True
-      -- Only now does the test itself inspect the diagnostic's value.
-      readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthCredentialChainExhausted
-      stopSupervisedEnv sup
-
-    it "stopSupervisedEnv terminates the supervisor thread and releases (waits for) the current generation's live child" do
-      supervisorTidVar <- newEmptyMVar
-      childKilled <- newIORef False
-      let acquire = pure (Right (TestResource 1))
-          awaitInvalidation _ = do
-            tid <- myThreadId
-            putMVar supervisorTidVar tid
-            forever (threadDelay maxBound) `finally` writeIORef childKilled True
-      sup <- startSupervisedEnv acquire awaitInvalidation (pure ())
-      waitForSupervisedState sup \case SupervisedEnvReady _ -> True; _ -> False
-      supervisorTid <- takeMVar supervisorTidVar
-      stopSupervisedEnv sup
-      status <- threadStatus supervisorTid
-      status `shouldNotBe` ThreadRunning
-      readIORef childKilled `shouldReturn` True

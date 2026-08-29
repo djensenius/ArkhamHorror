@@ -21,6 +21,7 @@ module Application (
   db,
 ) where
 
+import Api.Arkham.AwsEnvSupervisor (newAwsEnvSupervisor, stopAwsEnvSupervisor)
 import Api.Arkham.Helpers (
   markPubSubAlive,
   pubSubHealthChannel,
@@ -130,6 +131,14 @@ makeFoundation appSettings = do
   appGameRooms <- newMVar mempty
   appEventRooms <- newMVar mempty
   appPubSubHealth <- newTVarIO =<< getCurrentTime
+
+  -- Constructed once, here -- before Warp is ever handed the application
+  -- and starts accepting requests -- never lazily on the first request.
+  -- Starts its dedicated thread immediately, but that thread performs no
+  -- credential discovery (and so contacts no environment/file/metadata
+  -- credential source) until a bug-report upload actually demands it; see
+  -- "Api.Arkham.AwsEnvSupervisor".
+  appAwsEnvSupervisor <- newAwsEnvSupervisor
 
   appMessageBroker <- case appRedisConnectionInfo appSettings of
     Nothing -> pure WebSocketBroker
@@ -318,7 +327,7 @@ getApplicationRepl = do
   pure (getPort wsettings, foundation, app1)
 
 shutdownApp :: App -> IO ()
-shutdownApp _ = pure ()
+shutdownApp app = stopAwsEnvSupervisor (appAwsEnvSupervisor app)
 
 ---------------------------------------------
 -- Functions for use in development with GHCi
