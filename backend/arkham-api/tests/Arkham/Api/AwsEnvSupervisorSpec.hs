@@ -8,10 +8,13 @@ import Api.Arkham.AwsEnvSupervisor (
   AwsErrorCategory (..),
   AwsErrorDiagnostic (..),
   AwsEnvAcquisition (..),
+  ChildReleaseOutcome (..),
+  ChildReleaseTimedOutException (..),
   ConfigProfileResolvers (..),
   DemandDrivenSupervisor,
   SupervisedEnv,
   SupervisedEnvState (..),
+  SupervisorStopOutcome (..),
   acquireRegionBeforeAuth,
   classifyAuthErrorDiagnostic,
   classifyErrorDiagnostic,
@@ -20,6 +23,7 @@ import Api.Arkham.AwsEnvSupervisor (
   releaseAwsEnvAcquisition,
   releaseAwsEnvChild,
   requestDemandDrivenReady,
+  requireChildReleased,
   safeEvalConfigProfile,
   startSupervisedEnv,
   stopDemandDrivenSupervisor,
@@ -180,7 +184,7 @@ unreachableConfigProfileResolvers :: ConfigProfileResolvers
 unreachableConfigProfileResolvers =
   ConfigProfileResolvers
     { resolveEnvironmentSource = \_ -> Exception.throwIO (userError "resolveEnvironmentSource: unexpectedly reached")
-    , resolveEc2Source = \_ -> Exception.throwIO (userError "resolveEc2Source: unexpectedly reached")
+    , resolveEc2Source = \_ _ -> Exception.throwIO (userError "resolveEc2Source: unexpectedly reached")
     , resolveEcsSource = \_ -> Exception.throwIO (userError "resolveEcsSource: unexpectedly reached")
     , resolveAssumedRole = \_ _ -> Exception.throwIO (userError "resolveAssumedRole: unexpectedly reached")
     , resolveWebIdentity = \_ _ _ _ -> Exception.throwIO (userError "resolveWebIdentity: unexpectedly reached")
@@ -285,7 +289,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     ec2CalledRef <- newIORef False
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveEc2Source = \env -> writeIORef ec2CalledRef True >> fst <$> fakeRefEnv env
+            { resolveEc2Source = \_ref env -> writeIORef ec2CalledRef True >> fst <$> fakeRefEnv env
             , resolveAssumedRole = \_roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
             }
     _ <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
@@ -697,7 +701,7 @@ spec = describe "AWS Env supervisor" do
   -}
   describe "releaseAwsEnvChild" do
     it "does nothing for already-static credentials, without starting or touching any thread" do
-      releaseAwsEnvChild (Auth (AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing)) `shouldReturn` ()
+      releaseAwsEnvChild (Auth (AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing)) `shouldReturn` ChildReleased
 
     it "kills the background refresh thread before it can act" do
       let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
@@ -709,7 +713,7 @@ spec = describe "AWS Env supervisor" do
       refreshThreadId <- forkIO $ do
         threadDelay (50 * 1000)
         writeIORef reachedRefresh True
-      releaseAwsEnvChild (Ref refreshThreadId ref)
+      releaseAwsEnvChild (Ref refreshThreadId ref) `shouldReturn` ChildReleased
       -- Long enough that, had the refresh thread not been killed above,
       -- it would certainly have flipped the flag by now.
       threadDelay (150 * 1000)
@@ -745,9 +749,68 @@ spec = describe "AWS Env supervisor" do
       refreshThreadId <- forkIO $ Exception.catch (putMVar readyGate () >> forever (threadDelay maxBound)) \Exception.ThreadKilled ->
         threadDelay (2 * 1000)
       takeMVar readyGate
-      releaseAwsEnvChild (Ref refreshThreadId ref)
+      releaseAwsEnvChild (Ref refreshThreadId ref) `shouldReturn` ChildReleased
       statusImmediatelyAfterReturn <- threadStatus refreshThreadId
       statusImmediatelyAfterReturn `shouldSatisfy` isTerminatedStatus
+
+    {- | Regression for the HIGH-severity \"release reports success with a
+    live child\" audit: a target that never reaches a terminal
+    'ThreadStatus' within the bounded poll (because it deliberately
+    ignores 'Exception.ThreadKilled' and keeps running) must make
+    'releaseAwsEnvChild' honestly report 'ChildReleaseTimedOut' -- never
+    silently return as if the child had actually terminated. This is
+    deterministic, not merely probabilistic: the fake child unconditionally
+    outlives the entire bounded poll (500 * 1ms = 500ms) by construction.
+
+    Mutation check: reverting 'awaitThreadTerminated' to its pre-fix
+    behaviour (returning @()@\/success unconditionally once the poll bound
+    is exhausted) makes this test fail, since it would then report
+    'ChildReleased' for a thread this test proves is still alive.
+    -}
+    it "honestly reports ChildReleaseTimedOut, never a false ChildReleased, for a child that outlives the bounded poll" do
+      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
+      ref <- newIORef authEnv
+      readyGate <- newEmptyMVar
+      -- Deliberately never terminates even once killed: stands in for a
+      -- genuinely non-interruptible foreign call (e.g. one of the four
+      -- opaque, pinned providers' refresh threads blocked inside
+      -- http-client) that this module's documented residual-scope
+      -- decision explicitly does not attempt to force.
+      refreshThreadId <- forkIO
+        $ Exception.catch
+          (putMVar readyGate () >> forever (threadDelay maxBound))
+          (\Exception.ThreadKilled -> forever (threadDelay maxBound))
+      takeMVar readyGate
+      releaseAwsEnvChild (Ref refreshThreadId ref) `shouldReturn` ChildReleaseTimedOut
+      statusAfterTimeout <- threadStatus refreshThreadId
+      statusAfterTimeout `shouldSatisfy` (not . isTerminatedStatus)
+      killThread refreshThreadId
+
+  describe "requireChildReleased" do
+    it "returns () when the child genuinely released" do
+      requireChildReleased (Auth (AuthEnv "AKIAEXAMPLE" "secret" Nothing Nothing)) `shouldReturn` ()
+
+    {- | Regression: 'requireChildReleased' must throw, never silently
+    succeed, when 'releaseAwsEnvChild' reports 'ChildReleaseTimedOut' --
+    this is what actually prevents 'releaseAwsEnvAcquisition'\/
+    'stopSupervisedEnv' from ever claiming a release succeeded while the
+    child is still alive.
+
+    Mutation check: replacing the 'ChildReleaseTimedOut' branch with
+    @pure ()@ (silently swallowing the timeout) makes this test fail.
+    -}
+    it "throws ChildReleaseTimedOutException rather than silently succeeding when the child outlives the bounded poll" do
+      let authEnv = AuthEnv "AKIAEXAMPLE" "secret" (Just "token") Nothing
+      ref <- newIORef authEnv
+      readyGate <- newEmptyMVar
+      refreshThreadId <- forkIO
+        $ Exception.catch
+          (putMVar readyGate () >> forever (threadDelay maxBound))
+          (\Exception.ThreadKilled -> forever (threadDelay maxBound))
+      takeMVar readyGate
+      requireChildReleased (Ref refreshThreadId ref)
+        `Exception.catch` (\(ChildReleaseTimedOutException tid) -> tid `shouldBe` refreshThreadId)
+      killThread refreshThreadId
 
   {- | Regression for the HIGH-severity cleanup-order audit's second half:
   'releaseAwsEnvAcquisition' must attempt every child's release even if
@@ -772,7 +835,7 @@ spec = describe "AWS Env supervisor" do
             , record "second" >> Exception.throwIO (RetrievalError httpExceptionFixture)
             , record "third"
             ]
-      releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv hiddenReleases)
+      releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv (pure ()) hiddenReleases)
       -- Hidden releases run newest-to-oldest (reversed): "third", then
       -- "second" (which throws, but is caught and discarded), then
       -- "first" still runs regardless.
@@ -796,7 +859,7 @@ spec = describe "AWS Env supervisor" do
             ]
       outcome <-
         Exception.try @Exception.AsyncException
-          (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv hiddenReleases))
+          (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv (pure ()) hiddenReleases))
       case outcome of
         Left Exception.ThreadKilled -> pure ()
         _ -> expectationFailure "expected the genuine ThreadKilled to propagate as itself, not be swallowed or reclassified as an AuthError"
@@ -815,7 +878,7 @@ spec = describe "AWS Env supervisor" do
             , Exception.throwIO (userError "runs first, must be the one re-thrown")
             ]
       outcome <-
-        Exception.try @Exception.IOException (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv hiddenReleases))
+        Exception.try @Exception.IOException (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv (pure ()) hiddenReleases))
       case outcome of
         Left e -> show e `shouldContain` "runs first, must be the one re-thrown"
         Right () -> expectationFailure "expected the first genuine (in execution order) failure to propagate"
@@ -923,7 +986,7 @@ spec = describe "AWS Env supervisor" do
       readIORef attemptCountRef `shouldReturn` 1
       putMVar backoffGate ()
       waitForSupervisedState sup \case SupervisedEnvReady (TestResource 2) -> True; _ -> False
-      stopSupervisedEnv sup
+      void (stopSupervisedEnv sup)
 
     {- | Regression for the review finding that 'SupervisedEnvInitializing'
     was only ever published once, at construction: after a failure, the
@@ -958,7 +1021,7 @@ spec = describe "AWS Env supervisor" do
       waitForSupervisedState sup (== SupervisedEnvInitializing)
       putMVar acquireGate ()
       waitForSupervisedState sup \case SupervisedEnvReady (TestResource 2) -> True; _ -> False
-      stopSupervisedEnv sup
+      void (stopSupervisedEnv sup)
 
     {- | Regression for the HIGH-severity async-credential-refresh-escape
     audit itself: a delayed invalidation (standing in for the pinned
@@ -1002,7 +1065,7 @@ spec = describe "AWS Env supervisor" do
       readIORef childReleasedRef `shouldReturn` True
       readIORef requestWorkerAffected `shouldReturn` False
       killThread requestWorkerTid
-      stopSupervisedEnv sup
+      void (stopSupervisedEnv sup)
 
     {- | Regression for the per-generation thread-isolation redesign
     itself (the structural fix underlying the whole HIGH-severity
@@ -1061,7 +1124,7 @@ spec = describe "AWS Env supervisor" do
       -- Generation 2 is genuinely unaffected: still Ready, not
       -- reclassified as Unavailable by the stale throwTo above.
       readSupervisedEnv sup `shouldReturn` SupervisedEnvReady (TestResource 2)
-      stopSupervisedEnv sup
+      void (stopSupervisedEnv sup)
 
     it "forces the classified diagnostic before publishing it, not deferring it as a thunk for a later reader to force" do
       forcedRef <- newIORef False
@@ -1077,7 +1140,7 @@ spec = describe "AWS Env supervisor" do
       readIORef forcedRef `shouldReturn` True
       -- Only now does the test itself inspect the diagnostic's value.
       readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthCredentialChainExhausted
-      stopSupervisedEnv sup
+      void (stopSupervisedEnv sup)
 
     it "stopSupervisedEnv terminates the supervisor thread and releases (waits for) the current generation's live child" do
       supervisorTidVar <- newEmptyMVar

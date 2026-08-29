@@ -39,6 +39,8 @@ import Api.Arkham.AwsEnvSupervisor (
   stopAwsEnvSupervisor,
  )
 import Api.Arkham.Lifecycle (
+  acquireThenForkTransferringOwnership,
+  acquireThenForkTransferringOwnershipUsing,
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
   forkTransferringOwnership,
@@ -48,7 +50,7 @@ import Api.Arkham.Lifecycle (
   shutdownThenDeliver,
  )
 import Arkham.Prelude
-import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
+import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId, threadDelay)
 import Control.Exception qualified as Exception
 import Test.Hspec
 
@@ -667,3 +669,185 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         Left Exception.ThreadKilled -> True
         _ -> False
       readMVar released `shouldReturn` ()
+
+  {- | Regression for the two MEDIUM findings against @app\/DevelMain.hs@'s
+  own @start@: (1) a gap between 'Application.getApplicationRepl'
+  returning an already-owned @App@ and 'forkTransferringOwnership' itself
+  beginning to protect it -- an ordinary @res <- acquire@ bind followed by
+  a *separate* ownership-transfer call, exactly as @start@ used to be
+  written -- and (2) the freshly-spawned child's handle being published
+  (into @DevelMain@'s 'Foreign.Store'-backed 'Data.IORef.IORef') only
+  *after* this whole call returns, rather than atomically as part of the
+  same masked span. 'acquireThenForkTransferringOwnership' closes both:
+  masking begins strictly before @acquire@ is even called (not merely
+  before a separate subsequent statement), and @publish@ runs -- still
+  masked -- immediately after the child is spawned and strictly before
+  this function returns, with @cancel@ (kill the just-spawned child, then
+  wait for its finalizer to have genuinely run) as the fallback if
+  @publish@ itself ever fails. @start@ now calls this directly around
+  'Application.getApplicationRepl', with no intervening bind. These tests
+  exercise it directly against fake acquire\/release\/body\/finalize\/
+  cancel\/publish steps, never a real @App@.
+  -}
+  describe "acquireThenForkTransferringOwnership (DevelMain acquisition-through-publish ownership transfer)" do
+    it "on success: acquires, spawns, publishes the handle before returning, and never calls cancel" do
+      released <- newIORef (0 :: Int)
+      finalizeCount <- newIORef (0 :: Int)
+      bodyRan <- newEmptyMVar
+      cancelCalled <- newIORef False
+      publishedWith <- newEmptyMVar
+      let acquire = pure ("acquired-resource" :: String)
+          release _ = atomicModifyIORef' released (\n -> (n + 1, ()))
+          body _ = putMVar bodyRan ()
+          finalize _ (_ :: Either Exception.SomeException ()) = atomicModifyIORef' finalizeCount (\n -> (n + 1, ()))
+          cancelChild _ = writeIORef cancelCalled True
+          publish tid = putMVar publishedWith tid
+      spawnedThreadId <- acquireThenForkTransferringOwnership acquire release body finalize cancelChild publish
+      -- 'publish' must have already run (with this exact handle) by the
+      -- time the call above returns -- not merely "eventually".
+      published <- takeMVar publishedWith
+      published `shouldBe` spawnedThreadId
+      takeMVar bodyRan
+      let waitFinalize (n :: Int)
+            | n <= 0 = expectationFailure "finalize was never called"
+            | otherwise = do
+                finalized <- readIORef finalizeCount
+                if finalized >= 1 then pure () else threadDelay (1000 :: Int) >> waitFinalize (n - 1)
+      waitFinalize 2000
+      readIORef finalizeCount `shouldReturn` 1
+      readIORef released `shouldReturn` 0
+      readIORef cancelCalled `shouldReturn` False
+
+    {- | Deterministic (non-racy), matching the equivalent
+    'forkTransferringOwnershipUsing' test above: the fake @spawn@ blocks
+    forever until the tester's own cancellation interrupts it, so this is
+    the only way the call can ever proceed at all -- no timing race
+    against a real, essentially-uninterruptible 'forkIOWithUnmask' to
+    lose. Proves the acquired resource is already protected (masked, with
+    @release@ installed) the instant @acquire@ returns, even though no
+    separate statement has run yet to say so.
+
+    Mutation check: removing the 'Control.Exception.onException' wrapper
+    around @spawn@ (keeping the outer 'Control.Exception.mask') makes this
+    hang\/fail, since 'Control.Concurrent.MVar.takeMVar' remains
+    interruptible even under 'mask', so the injected cancellation would
+    unwind straight out of the blocked fake @spawn@ with nothing left to
+    run @release@.
+    -}
+    it "releases the resource if this thread is asynchronously cancelled strictly between acquisition returning and the spawn producing a handle" do
+      released <- newEmptyMVar
+      spawnReached <- newEmptyMVar
+      neverFilled <- newEmptyMVar
+      let acquire = pure ("acquired-resource" :: String)
+          release _ = putMVar released ()
+          body _ = threadDelay maxBound
+          finalize _ (_ :: Either Exception.SomeException ()) = pure ()
+          cancelChild _ = expectationFailure "cancel should never run: spawn itself never produced a handle"
+          publish _ = expectationFailure "publish should never run: spawn itself never produced a handle"
+          fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
+          fakeSpawn _threadBody = putMVar spawnReached () >> takeMVar neverFilled >> error "unreachable"
+      callerResult <- newEmptyMVar
+      callerTid <- forkIO do
+        result <- Exception.try @Exception.AsyncException do
+          acquireThenForkTransferringOwnershipUsing fakeSpawn acquire release body finalize cancelChild publish
+        putMVar callerResult result
+      takeMVar spawnReached
+      Exception.throwTo callerTid Exception.ThreadKilled
+      result <- takeMVar callerResult
+      result `shouldSatisfy` \case
+        Left Exception.ThreadKilled -> True
+        _ -> False
+      readMVar released `shouldReturn` ()
+
+    {- | The other half of the acquisition-protection contract: an
+    exception raised by @acquire@ itself (standing in for
+    'Application.getApplicationRepl' failing, e.g. 'Network.Wai.Handler.Warp.getDevSettings'
+    throwing) must propagate with nothing to release (nothing was ever
+    successfully acquired) and the spawn step never reached at all.
+    -}
+    it "propagates an acquisition failure without calling release, spawn, cancel, or publish" do
+      spawnCalled <- newIORef False
+      releaseCalled <- newIORef False
+      let acquire = Exception.throwIO (userError "getApplicationRepl failed") :: IO String
+          release _ = writeIORef releaseCalled True
+          body _ = pure ()
+          finalize _ (_ :: Either Exception.SomeException ()) = pure ()
+          cancelChild _ = expectationFailure "cancel should never run: nothing was ever spawned"
+          publish _ = expectationFailure "publish should never run: nothing was ever spawned"
+          fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
+          fakeSpawn _ = writeIORef spawnCalled True >> myThreadId
+      outcome <-
+        Exception.try @Exception.SomeException do
+          acquireThenForkTransferringOwnershipUsing fakeSpawn acquire release body finalize cancelChild publish
+      case outcome of
+        Left _ -> pure ()
+        Right (_ :: ThreadId) -> expectationFailure "expected the acquisition failure to propagate"
+      readIORef spawnCalled `shouldReturn` False
+      readIORef releaseCalled `shouldReturn` False
+
+    {- | Regression for the "publish itself fails" half of the atomic-
+    publication contract: if durably recording the spawned handle throws
+    (e.g. a genuine asynchronous exception landing in that exact masked
+    window), the just-spawned child must be cancelled and awaited via
+    @cancel@ (which, by 'forkTransferringOwnershipUsing''s own contract
+    that this shares, only returns once @finalize@ -- typically releasing
+    the acquired resource -- has genuinely run) before the failure
+    propagates, so a failed publish can never leave an untracked,
+    still-running child (nor a leaked resource) behind.
+    -}
+    {- | Note on this test's own design: the just-spawned child is born
+    masked (per 'forkTransferringOwnershipUsing''s own documented
+    contract), so @cancel@'s 'killThread' can, in principle, deliver
+    'Control.Exception.ThreadKilled' to it before it ever reaches
+    @unmask (body res)@ -- in which case @body@'s own 'putMVar' side
+    effect never runs at all. This is not a bug to paper over: it is the
+    exact same race @cancel@ callers must already tolerate in production
+    (a slow-to-schedule child can be killed before doing anything
+    observable). What the composition guarantees /regardless/ of that
+    race is that @finalize@ still runs exactly once (the child's own
+    @try (unmask (body res)) >>= \\outcome -> mask_ (finalize res
+    outcome)@ calls @finalize@ unconditionally, with @outcome@ simply
+    reflecting whichever exception -- if any -- @body@ was interrupted
+    by), and @release@ is never separately invoked once a child exists.
+    This test therefore only asserts on @finalize@\/@release@\/@cancel@
+    having been reached, deliberately not on whether @body@'s own side
+    effect specifically got to run before cancellation -- asserting that
+    would make the test itself racy\/hang-prone, not the production code.
+    -}
+    it "cancels and awaits the just-spawned child, releasing the resource, if publish itself fails" do
+      released <- newIORef (0 :: Int)
+      finalizeCount <- newIORef (0 :: Int)
+      cancelledWith <- newEmptyMVar
+      let acquire = pure ("acquired-resource" :: String)
+          release _ = atomicModifyIORef' released (\n -> (n + 1, ()))
+          body _ = pure ()
+          finalize _ (_ :: Either Exception.SomeException ()) = atomicModifyIORef' finalizeCount (\n -> (n + 1, ()))
+          -- Mirrors 'DevelMain.hs's own @cancel@: kill the child, then
+          -- genuinely wait for its finalizer (here, a bounded poll on
+          -- @finalizeCount@ standing in for 'shutdownThenDeliver'\/
+          -- @readMVar done@) before returning.
+          cancelChild tid = do
+            putMVar cancelledWith tid
+            killThread tid
+            let waitFinalize (n :: Int)
+                  | n <= 0 = expectationFailure "finalize was never called by cancel's wait"
+                  | otherwise = do
+                      finalized <- readIORef finalizeCount
+                      if finalized >= 1 then pure () else threadDelay (1000 :: Int) >> waitFinalize (n - 1)
+            waitFinalize 2000
+          publish _ = Exception.throwIO (userError "publish failed")
+      outcome <-
+        Exception.try @Exception.SomeException do
+          acquireThenForkTransferringOwnership acquire release body finalize cancelChild publish
+      case outcome of
+        Left err -> show err `shouldContain` "publish failed"
+        Right (_ :: ThreadId) -> expectationFailure "expected the publish failure to propagate"
+      _ <- takeMVar cancelledWith
+      readIORef finalizeCount `shouldReturn` 1
+      -- 'release' is never separately called here: by this point the
+      -- child was definitely spawned and owns the resource's remaining
+      -- lifetime, so its own 'finalize' (not a bare 'release') is what
+      -- must have run -- matching 'forkTransferringOwnershipUsing''s own
+      -- "release is never separately called once the child exists"
+      -- contract.
+      readIORef released `shouldReturn` 0

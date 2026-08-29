@@ -28,11 +28,19 @@ module Api.Arkham.Lifecycle (
   proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
+  ManagedThread,
+  managedThreadId,
+  spawnManagedThread,
+  waitManagedThread,
+  cancelManagedThread,
+  acquireThenForkTransferringOwnership,
+  acquireThenForkTransferringOwnershipUsing,
 ) where
 
 import Control.Concurrent (ThreadId, forkIOWithUnmask)
-import Control.Concurrent.MVar (MVar, putMVar, readMVar, takeMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Exception (
+  AsyncException (ThreadKilled),
   SomeException,
   bracket,
   bracketOnError,
@@ -40,6 +48,7 @@ import Control.Exception (
   mask_,
   onException,
   throwIO,
+  throwTo,
   try,
  )
 import Prelude
@@ -84,15 +93,25 @@ failed\/interrupted one -- and can choose not to start a replacement
 generation on 'Left', avoiding both the deadlock and two live
 generations ever coexisting.
 
-The delivery itself ('putMVar') runs under 'mask_' so that once the
-shutdown outcome is known, nothing can prevent it from actually reaching
-the waiter -- there is no gap between "outcome decided" and "outcome
-delivered" for an asynchronous exception to land in.
+The delivery itself ('Control.Concurrent.MVar.tryPutMVar', not a
+blocking 'Control.Concurrent.MVar.putMVar') runs under 'mask_' so that
+once the shutdown outcome is known, nothing can prevent it from actually
+reaching the waiter -- there is no gap between "outcome decided" and
+"outcome delivered" for an asynchronous exception to land in.
+'Control.Concurrent.MVar.tryPutMVar' specifically (rather than
+'Control.Concurrent.MVar.putMVar') is what makes that delivery itself
+unconditionally non-blocking: every caller of this function hands it a
+freshly created, guaranteed-empty, single-writer @done@ (so in ordinary
+use the two are behaviourally identical), but a blocking @putMVar@ into
+an unexpectedly-already-full cell can still itself block -- even under
+'mask_' -- deadlocking this finalizer forever instead of merely losing a
+result nobody could have consumed anyway. @tryPutMVar@ can never block,
+so this finalizer always completes.
 -}
 shutdownThenDeliver :: IO () -> MVar (Either SomeException ()) -> IO ()
 shutdownThenDeliver shutdown done = do
   result <- try shutdown
-  mask_ (putMVar done result)
+  mask_ (tryPutMVar done result >> pure ())
 
 {- | Used by @app\/DevelMain.hs@'s @restartAppInNewThread@: given the
 'MVar' 'shutdownThenDeliver' will (eventually) fill with the /previous/
@@ -265,3 +284,171 @@ forkTransferringOwnershipUsing spawn res release body finalize =
   mask $ \_restore ->
     spawn (\unmask -> try (unmask (body res)) >>= \outcome -> mask_ (finalize res outcome))
       `onException` release res
+
+{- | A thread spawned with 'Control.Concurrent.forkIOWithUnmask' whose
+completion is genuinely, synchronously awaitable via an 'MVar' its own
+body fills exactly once (under 'mask_') on every exit path -- normal
+return, a synchronous exception, or an asynchronous cancellation --
+rather than only observable via the bounded, best-effort /poll/
+@base@ actually offers for an arbitrary thread this code did not itself
+spawn with its own completion signal ('GHC.Conc.Sync.threadStatus', which
+has no blocking \"wait until this thread is dead\" counterpart at all).
+
+Deliberately mirrors, but does not use, the \"async\" package's
+'Control.Concurrent.Async.Async': @async@\'s own 'Control.Concurrent.Async.withAsync'
+falls back to @Control.Concurrent.Async.uninterruptibleCancel@ internally
+whenever its own wait is itself asynchronously interrupted while a child
+is still running -- meaning a genuinely stuck child (e.g. blocked inside
+a non-interruptible foreign call) can make *that* cancellation, and
+therefore whatever enclosing cleanup depends on it completing (e.g.
+Foundation shutdown), unconditionally unkillable until the child
+eventually finishes, however long that takes. 'cancelManagedThread' below
+uses only ordinary, interruptible 'Control.Exception.throwTo' and
+'Control.Concurrent.MVar.takeMVar' -- so a caller of 'cancelManagedThread'
+can always still itself be interrupted (e.g. by an enclosing bounded
+wait), even against a managed thread that never responds; it never
+becomes uninterruptible no matter how stuck the target is, and it never
+lies about having stopped something it could not actually confirm was
+terminal.
+-}
+data ManagedThread a = ManagedThread
+  { managedThreadId :: ThreadId
+  , managedThreadDone :: MVar (Either SomeException a)
+  }
+
+{- | Spawn a 'ManagedThread': masked from before the fork through the
+completion 'MVar' existing, so there is no window in which the thread
+could exist but nothing could ever learn of its completion. The body
+itself still runs genuinely unmasked (via 'forkIOWithUnmask''s own
+callback -- see 'forkTransferringOwnershipUsing''s Haddock for exactly
+why that, and not this function's own 'mask'-provided @restore@, is what
+genuinely unmasks it), so it remains fully interruptible throughout;
+whatever it exits with -- a value, or any exception, synchronous or
+asynchronous -- is captured by the enclosing 'Control.Exception.try' and
+delivered, never lost, to 'waitManagedThread'\/'cancelManagedThread'.
+-}
+spawnManagedThread :: IO a -> IO (ManagedThread a)
+spawnManagedThread action = mask_ $ do
+  done <- newEmptyMVar
+  tid <- forkIOWithUnmask $ \unmask -> do
+    outcome <- try (unmask action)
+    mask_ (tryPutMVar done outcome >> pure ())
+  pure (ManagedThread tid done)
+
+-- | Block until a 'ManagedThread' has completed, then either re-raise
+-- whatever exception it exited with or return its result. An ordinary,
+-- interruptible 'Control.Concurrent.MVar.readMVar' -- never a poll, and
+-- never a destructive 'Control.Concurrent.MVar.takeMVar': the completion
+-- cell is written at most once (see 'spawnManagedThread'), and a later
+-- 'cancelManagedThread' call against the very same, already-finished
+-- thread (e.g. from an enclosing @`Exception.onException`@ handler
+-- triggered by this function's own re-thrown exception) must still be
+-- able to observe that same completion rather than block forever on an
+-- MVar this function has already drained.
+waitManagedThread :: ManagedThread a -> IO a
+waitManagedThread thread = readMVar (managedThreadDone thread) >>= either throwIO pure
+
+{- | Ordinary, interruptible cancellation: deliver 'Control.Exception.ThreadKilled'
+(a plain, interruptible 'Control.Exception.throwTo' -- never
+@Control.Concurrent.Async.uninterruptibleCancel@) and then genuinely
+/wait/ (an ordinary, blocking, non-destructive 'Control.Concurrent.MVar.readMVar'
+on the completion cell itself -- never a bounded 'GHC.Conc.Sync.threadStatus'
+poll, and never a timeout dressed up as success) for that thread to have
+actually, synchronously finished before returning. Using 'Control.Concurrent.MVar.readMVar'
+rather than 'Control.Concurrent.MVar.takeMVar' matters even beyond
+ordinary interruptibility: it lets this function be safely called *again*
+against a thread whose completion some other caller (e.g. 'waitManagedThread')
+has already observed -- exactly the case when this is invoked from an
+enclosing @`Exception.onException`@ handler triggered by that same
+'waitManagedThread' re-throwing the target's own captured exception (see
+'startSupervisedEnv''s @loopOnce@) -- without blocking forever on an MVar
+a prior 'takeMVar' would have left permanently empty.
+
+Deliberately does /not/ go through 'waitManagedThread' (which would
+re-throw whatever the target itself exited with via its own
+'Control.Exception.throwIO'): re-raising that from inside a @try
+\@SomeException@ here would be indistinguishable from -- and so would
+silently swallow -- an asynchronous exception delivered to /this/
+(cancelling) thread while it is itself still blocked waiting, which would
+incorrectly let this function return normally, claiming the target is
+terminal, when in fact its own wait was merely interrupted before ever
+observing that. Reading the completion 'MVar' directly avoids that
+ambiguity entirely: whatever the target thread itself exited with
+(including a genuine, unrelated failure that happened to race the
+cancellation) is deliberately discarded once genuinely observed here --
+callers that need to distinguish "cancelled cleanly" from "failed for an
+unrelated reason" should use 'waitManagedThread' directly instead -- but
+an exception delivered to /this/ thread before that value is ever
+observed is never caught here, and propagates exactly as an ordinary
+interruptible 'Control.Concurrent.MVar.readMVar' would: this can never
+itself become unkillable, nor can it ever falsely report the target as
+terminal, unlike @Async.withAsync@\/@uninterruptibleCancel@.
+-}
+cancelManagedThread :: ManagedThread a -> IO ()
+cancelManagedThread thread = do
+  throwTo (managedThreadId thread) ThreadKilled
+  _ <- readMVar (managedThreadDone thread)
+  pure ()
+
+{- | As 'forkTransferringOwnershipUsing', but additionally owns
+*acquiring* @res@ itself, rather than accepting an already-acquired
+value: @acquire@ runs via @restore@ (so it remains fully interruptible --
+if it throws, or this thread is asynchronously cancelled while it is
+still in flight, there is nothing yet to release), but the very instant
+it returns, this thread is already back in a masked state. This closes
+the exact gap an ordinary @res <- acquire@ bind followed by a *separate*
+call to 'forkTransferringOwnership' leaves open: an asynchronous
+exception landing in between those two statements -- after @acquire@ has
+already committed to returning ownership on success, but before this
+function's own protection has begun -- would otherwise leak @res@ with
+nothing left to release it. @DevelMain.hs@'s @start@ calls this directly
+around 'Application.getApplicationRepl' for exactly this reason: there is
+no intervening bind between acquiring the whole @(Int, App, Application)@
+tuple and this function taking over its ownership.
+
+Also accepts @publish@, run masked immediately after @spawn@ succeeds and
+strictly before this function returns to its own caller: used to durably
+record the spawned child's handle (e.g. into a
+'Foreign.Store.Store'\/'Data.IORef.IORef'-backed restart-state cell)
+before any asynchronous exception delivered to *this* (the acquiring)
+thread -- once it eventually returns to an unmasked context -- could ever
+have a chance to lose it. If @publish@ itself throws, @cancel@ is used to
+cancel the just-spawned child and wait for it to genuinely finish (which,
+by 'forkTransferringOwnershipUsing''s own contract, always runs
+@finalize@ -- typically releasing @res@ -- exactly once first) before
+that failure propagates, so a failed publish can never leave an
+untracked, still-running child (nor a leaked @res@) behind.
+-}
+acquireThenForkTransferringOwnershipUsing
+  :: (((forall a. IO a -> IO a) -> IO ()) -> IO handle)
+  -> IO res
+  -> (res -> IO ())
+  -> (res -> IO b)
+  -> (res -> Either SomeException b -> IO ())
+  -> (handle -> IO ())
+  -- ^ cancel: cancel the spawned child and wait for it to have
+  -- genuinely, synchronously finished -- used only if @publish@ itself
+  -- fails.
+  -> (handle -> IO ())
+  -- ^ publish: durably record @handle@ before this function returns.
+  -> IO handle
+acquireThenForkTransferringOwnershipUsing spawn acquire release body finalize cancel publish =
+  mask $ \restore -> do
+    res <- restore acquire
+    handle <-
+      spawn (\unmask -> try (unmask (body res)) >>= \outcome -> mask_ (finalize res outcome))
+        `onException` release res
+    publish handle `onException` cancel handle
+    pure handle
+
+-- | 'acquireThenForkTransferringOwnershipUsing', fixed to production's
+-- 'Control.Concurrent.forkIOWithUnmask'.
+acquireThenForkTransferringOwnership
+  :: IO res
+  -> (res -> IO ())
+  -> (res -> IO b)
+  -> (res -> Either SomeException b -> IO ())
+  -> (ThreadId -> IO ())
+  -> (ThreadId -> IO ())
+  -> IO ThreadId
+acquireThenForkTransferringOwnership = acquireThenForkTransferringOwnershipUsing forkIOWithUnmask

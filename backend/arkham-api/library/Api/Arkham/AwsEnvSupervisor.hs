@@ -45,6 +45,50 @@ demand. From that point on it behaves exactly like an eagerly-started
 supervisor: it never goes back to waiting, and every subsequent
 generation (after a failure, backoff, or invalidation) is reacquired
 immediately.
+
+= Managed credential refresh, and its residual scope
+
+@fetchAuthInBackground@'s only termination signal is a best-effort,
+GC-triggered @Weak@ finalizer -- there is no synchronous way for /any/
+caller, however carefully it is used, to genuinely wait for its
+background refresh thread to have actually stopped (see
+'releaseAwsEnvChild'\/'awaitThreadTerminated', which can therefore only
+ever bound how long it polls, never confirm termination). It also
+misclassifies ordinary cancellation: its refresh loop's own exception
+handler catches /everything/, including a @killThread@-delivered
+@ThreadKilled@, and reports it back to \"the thread that called
+@discover@\" as a synthetic 'AuthError' indistinguishable from a genuine
+credential failure.
+
+'managedFetchAuthInBackground' is a repository-owned replacement for the
+/one/ provider in this module's own code that calls @fetchAuthInBackground@
+directly -- the instance-profile provider ('safeNamedInstanceProfile'),
+reached both as the top-level fallback in 'discoverSafely' and, nested,
+as a config-file profile's @credential_source=Ec2InstanceMetadata@ (both
+share the exact same function, so both benefit identically). It is built
+on 'Api.Arkham.Lifecycle.ManagedThread' rather than @fetchAuthInBackground@
+itself: its release genuinely, synchronously awaits the refresh thread's
+own completion 'MVar' -- never a poll -- and a release-in-progress is
+recorded /before/ cancelling, so the refresh loop can correctly recognize
+its own expected shutdown and never misreport it as a genuine 'AuthError'.
+
+Every other role-based provider @discover@\/'discoverSafely' can reach --
+container credentials ('fromContainerEnv'), @sts:AssumeRole@
+('fromAssumedRole'), web identity ('fromWebIdentityEnv'\/'fromWebIdentity'),
+and SSO ('fromSSO') -- remains an opaque call into the pinned Amazonka
+fork, each internally still using @fetchAuthInBackground@ with no
+interception point short of a full reimplementation from lower-level
+service-client primitives (audited this round: @Amazonka.Auth.STS@
+exposes no lower-level one-shot fetch primitive at all, only the
+high-level @fromAssumedRole@\/@fromWebIdentity@; @Amazonka.Auth.SSO@ does
+expose some -- @readCachedAccessToken@, @roleCredentialsToAuthEnv@ -- but a
+full reimplementation was not undertaken this round). For exactly these
+four providers, release still falls back to 'releaseAwsEnvChild''s
+kill-then-bounded-poll, with the exact same non-genuine-termination and
+misclassification residual risk described above. This is a deliberate,
+documented, honest scope decision -- not a silent regression -- consistent
+with the constraint that no fourth repository or unreviewed personal
+dependency fork may be introduced to close it.
 -}
 module Api.Arkham.AwsEnvSupervisor (
   -- * AWS error diagnostics -- safe to cross IO boundaries and to log
@@ -55,11 +99,15 @@ module Api.Arkham.AwsEnvSupervisor (
   classifyAuthErrorDiagnostic,
 
   -- * Credential acquisition\/release primitives -- exposed for regression tests
+  ChildReleaseOutcome (..),
+  ChildReleaseTimedOutException (..),
   releaseAwsEnvChild,
+  requireChildReleased,
   releaseAwsEnvGeneration,
   acquireAwsEnv,
   acquireRegionBeforeAuth,
   awaitAwsEnvInvalidation,
+  managedFetchAuthInBackground,
 
   -- * Config-file credential provider graph -- exposed for regression tests
   AwsEnvAcquisition (..),
@@ -76,6 +124,7 @@ module Api.Arkham.AwsEnvSupervisor (
   SupervisedEnv,
   startSupervisedEnv,
   readSupervisedEnv,
+  SupervisorStopOutcome (..),
   stopSupervisedEnv,
 
   -- * Generic demand-driven wrapper -- exposed for regression tests
@@ -91,18 +140,23 @@ module Api.Arkham.AwsEnvSupervisor (
   stopAwsEnvSupervisor,
 ) where
 
-import Amazonka (Env, Env' (..), EnvNoAuth, Error (..), Region, SerializeError (..), ServiceError (..), newEnv)
+import Amazonka (AuthEnv, Env, Env' (..), EnvNoAuth, Error (..), ISO8601, Region, SerializeError (..), ServiceError (..), expiration, fromTime, newEnv)
 import Amazonka.Auth (Auth (..), AuthError (..), fromContainerEnv, fromKeysEnv, fromWebIdentityEnv, runCredentialChain)
-import Amazonka.Auth.Background (fetchAuthInBackground)
 import Amazonka.Auth.ConfigFile (ConfigProfile (..), CredentialSource (..), configPathRelative, mergeConfigs, parseConfigProfile)
 import Amazonka.Auth.SSO (fromSSO, relativeCachedTokenFile)
 import Amazonka.Auth.STS (fromAssumedRole, fromWebIdentity)
 import Amazonka.EC2.Metadata hiding (region)
 import Amazonka.EC2.Metadata qualified as IdentityDocument (IdentityDocument (..))
 import Amazonka.Env (lookupRegion)
+import Api.Arkham.Lifecycle (
+  ManagedThread,
+  cancelManagedThread,
+  managedThreadId,
+  spawnManagedThread,
+  waitManagedThread,
+ )
 import Arkham.Prelude
-import Control.Concurrent (ThreadId, killThread, threadDelay)
-import Control.Concurrent.Async qualified as Async
+import Control.Concurrent (ThreadId, killThread, myThreadId, threadDelay)
 import Control.Concurrent.STM (check, retry)
 import Control.Exception qualified as Exception
 import Data.ByteString.Char8 qualified as BS8
@@ -111,12 +165,12 @@ import Data.HashMap.Strict qualified as HashMap
 import Data.Ini qualified as INI
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TE
+import Data.Time (diffUTCTime)
 import Data.Void (Void, absurd)
 import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Network.HTTP.Types.Status (statusCode)
 import System.Directory qualified as Directory
 import System.Environment (lookupEnv)
-import UnliftIO.Timeout (timeout)
 
 {- | Non-secret, structured classification of a per-request 'Error', safe to
 log. Deliberately extracts only the numeric HTTP status, plus a category
@@ -210,6 +264,18 @@ classifyAuthErrorDiagnostic = \case
   AuthServiceError e -> let st = statusCode e.status in AwsAuthServiceFailure st (categorizeAwsStatus st)
   OtherAuthError _ -> AwsAuthOtherFailure
 
+{- | Whether 'releaseAwsEnvChild' genuinely confirmed the target thread's
+termination, or could only bound how long it waited. Never conflate the
+two: 'ChildReleaseTimedOut' must propagate as a release /failure/ (see
+'releaseAwsEnvAcquisition'\/'releaseAwsEnvGeneration'), never be silently
+treated as if the child were actually gone -- a caller that did so could
+believe a live background refresh thread had stopped when it had not,
+exactly the \"release reports success with a live child\" hazard this
+type exists to make structurally impossible to repeat.
+-}
+data ChildReleaseOutcome = ChildReleased | ChildReleaseTimedOut
+  deriving stock (Eq, Show)
+
 {- | Kill whatever background credential-refresh thread an already-acquired
 'Auth' value may own, without otherwise touching its credentials.
 
@@ -241,35 +307,185 @@ that immediately assumes the child is fully gone the instant 'killThread'
 returns can race a child that is still mid-unwind. This function polls
 'threadStatus' afterward, bounded, so 'releaseAwsEnvAcquisition' can rely
 on every child it releases being genuinely terminal by the time it
-returns -- never merely \"signalled\". The bound only guards against a
-genuinely stuck foreign call (e.g. 'killThread' targeting a thread
-currently blocked inside a non-interruptible foreign HTTP call can itself
-block until that call completes; this is a documented, accepted platform
-limitation, not something this function can or should work around) --
-it never substitutes for a real synchronization guarantee elsewhere.
+returns -- but, unlike an earlier version of this function, it no longer
+silently reports success ('()') once that bound is exhausted while the
+child is still alive: it honestly returns 'ChildReleaseTimedOut', which
+'releaseAwsEnvAcquisition'\/'releaseAwsEnvGeneration' then turn into a
+thrown failure rather than a false \"released\" claim. The bound only
+guards against a genuinely stuck foreign call (e.g. 'killThread' targeting
+a thread currently blocked inside a non-interruptible foreign HTTP call
+can itself block until that call completes; this is a documented,
+accepted platform limitation for these four opaque, pinned providers --
+see the module Haddock's \"Managed credential refresh\" section -- not
+something this function can or should silently paper over) -- it never
+substitutes for a real synchronization guarantee, and never lies about
+one either.
 -}
-releaseAwsEnvChild :: Auth -> IO ()
-releaseAwsEnvChild (Auth _) = pure ()
+releaseAwsEnvChild :: Auth -> IO ChildReleaseOutcome
+releaseAwsEnvChild (Auth _) = pure ChildReleased
 releaseAwsEnvChild (Ref refreshThreadId _) = do
   killThread refreshThreadId
   awaitThreadTerminated refreshThreadId
 
+{- | Exception thrown when a 'ChildReleaseOutcome' of 'ChildReleaseTimedOut'
+must be surfaced as a release failure (see 'releaseAwsEnvChild'). Not an
+'AuthError': it must never be discarded by 'releaseAwsEnvAcquisition''s
+own \"an 'AuthError' during release is just expected self-inflicted
+feedback\" tolerance, since a timeout here means the opposite of expected
+-- the child could not even be confirmed to have received\/finished
+handling the cancellation at all.
+-}
+newtype ChildReleaseTimedOutException = ChildReleaseTimedOutException ThreadId
+  deriving stock (Show)
+
+instance Exception.Exception ChildReleaseTimedOutException
+
 -- | Bounded poll for a 'ThreadId' to reach a genuinely terminal
 -- 'ThreadStatus' ('ThreadFinished' or 'ThreadDied'). See
--- 'releaseAwsEnvChild' for why this is necessary at all, and why the
--- bound is only a defensive guard, not a correctness mechanism.
-awaitThreadTerminated :: ThreadId -> IO ()
+-- 'releaseAwsEnvChild' for why this is necessary at all, why the bound is
+-- only a defensive guard, and why it now returns an honest
+-- 'ChildReleaseOutcome' rather than unconditionally succeeding.
+awaitThreadTerminated :: ThreadId -> IO ChildReleaseOutcome
 awaitThreadTerminated tid = go maxAwaitPolls
  where
   maxAwaitPolls = 500 :: Int
   awaitPollIntervalMicros = 1000
   go remaining
-    | remaining <= 0 = pure ()
+    | remaining <= 0 = pure ChildReleaseTimedOut
     | otherwise = do
         status <- threadStatus tid
         if status == ThreadFinished || status == ThreadDied
-          then pure ()
+          then pure ChildReleased
           else threadDelay awaitPollIntervalMicros >> go (remaining - 1)
+
+{- | 'releaseAwsEnvChild', but adapted to the plain @IO ()@\/throws-on-
+failure shape every release-action call site in this module needs (see
+'releaseAwsEnvGeneration'\/'AwsEnvAcquisition'): turns a
+'ChildReleaseTimedOut' outcome into a thrown 'ChildReleaseTimedOutException'
+instead of silently discarding it, so a caller relying on \"this action
+returned, therefore the child is released\" (exactly
+'releaseAwsEnvAcquisition''s\/'stopSupervisedEnv''s own assumption) can
+never be misled by this specific release step the way the pre-fix,
+always-succeeding 'awaitThreadTerminated' could mislead it.
+-}
+requireChildReleased :: Auth -> IO ()
+requireChildReleased authValue = do
+  outcome <- releaseAwsEnvChild authValue
+  case (outcome, authValue) of
+    (ChildReleased, _) -> pure ()
+    (ChildReleaseTimedOut, Ref tid _) -> Exception.throwIO (ChildReleaseTimedOutException tid)
+    (ChildReleaseTimedOut, Auth _) -> pure () -- unreachable: 'Auth' always yields 'ChildReleased'.
+
+{- | A repository-owned replacement for the pinned Amazonka fork's own
+@Amazonka.Auth.Background.fetchAuthInBackground@ (fetched and read in full
+against @lib/amazonka/src/Amazonka/Auth/Background.hs@ at
+@b562aa3f24845e34b95748daae671860017426be@ this round), used only by
+'safeNamedInstanceProfile' (see the module Haddock's \"Managed credential
+refresh\" section for exactly why only that one provider, and what
+remains on the opaque pinned implementation).
+
+Reproduces its exact scheduling semantics -- refresh within five minutes
+of expiry, or halfway through the remaining lifetime if sooner than that,
+biased 60 seconds early to account for execution time and clock skew (see
+'computeMicrosUntilRefreshDeadline', a direct, deliberately literal port
+of pinned @Background.loop@\/@diff@'s own arithmetic) -- and its exact
+failure reclassification (a 'RetrievalError' or 'AuthServiceError' is
+forwarded unchanged; anything else, including a plain 'OtherAuthError',
+is (re)wrapped as 'OtherAuthError'). It deliberately does /not/ replicate
+pinned @Background.timer@\/@loop@'s @System.Mem.Weak@-finalizer-triggered
+self-termination (killing itself once its 'IORef' becomes /unreachable/):
+this module's own supervisor always releases every generation
+explicitly and deterministically (see 'startSupervisedEnv'), so a
+GC-driven, non-deterministic fallback termination path is unnecessary
+here and would only complicate reasoning about when this thread stops.
+
+The one deliberate behavioral difference (and the entire reason this
+exists) is exception classification during release: pinned
+@Background.loop@'s own @Exception.try \@SomeException ma@ catches
+/everything/, including a @killThread@-delivered @ThreadKilled@ used to
+release it, and reports that back to the calling thread as if it were a
+genuine credential failure. Here, 'release' (returned as the second
+element of the pair) records that a stop was explicitly requested
+/before/ delivering that cancellation (via 'cancelManagedThread'); the
+refresh loop checks that flag before ever reporting a caught exception
+back to the thread that originally called this function, so an ordinary,
+expected release can never be misreported as an 'AuthError'. 'release'
+itself never returns until the refresh thread has /genuinely/ terminated
+('cancelManagedThread' -- an ordinary, interruptible wait on its own
+completion, never a poll or a timeout dressed up as success -- see
+'Api.Arkham.Lifecycle.cancelManagedThread').
+
+The returned 'Auth' is still an ordinary 'Ref' (or, for a non-expiring
+'AuthEnv', a static 'Auth' with no thread at all, exactly matching pinned
+behavior) -- Amazonka's own request-signing code reads through it exactly
+as it would credentials pinned @fetchAuthInBackground@ itself produced,
+so actual credential refresh visibility to outgoing requests is
+unaffected; only how release\/cancellation is observed and classified
+differs.
+-}
+managedFetchAuthInBackground :: IO AuthEnv -> IO (Auth, IO ())
+managedFetchAuthInBackground getAuthEnv = do
+  initial <- getAuthEnv
+  case initial.expiration of
+    Nothing -> pure (Auth initial, pure ())
+    Just _ -> do
+      callingThread <- myThreadId
+      credentialsRef <- newIORef initial
+      stopRequestedRef <- newIORef False
+      refreshThread <- spawnManagedThread (refreshLoop callingThread credentialsRef stopRequestedRef)
+      let release = do
+            -- Recorded *before* delivering cancellation (see
+            -- 'cancelManagedThread'), so a caught exception the refresh
+            -- loop observes as a *result* of this release can always be
+            -- correctly recognized as expected, never misreported.
+            writeIORef stopRequestedRef True
+            cancelManagedThread refreshThread
+      pure (Ref (managedThreadId refreshThread) credentialsRef, release)
+ where
+  refreshLoop
+    :: ThreadId
+    -> IORef AuthEnv
+    -> IORef Bool
+    -> IO ()
+  refreshLoop callingThread credentialsRef stopRequestedRef = go
+   where
+    go = do
+      current <- readIORef credentialsRef
+      for_ current.expiration $ \expiry -> do
+        threadDelay =<< computeMicrosUntilRefreshDeadline expiry
+        outcome <- Exception.try @Exception.SomeException getAuthEnv
+        case outcome of
+          Right refreshed -> writeIORef credentialsRef refreshed >> go
+          Left err -> do
+            stopRequested <- readIORef stopRequestedRef
+            unless stopRequested $ Exception.throwTo callingThread (reclassifyAsAuthError err)
+
+  reclassifyAsAuthError :: Exception.SomeException -> AuthError
+  reclassifyAsAuthError err
+    | Just authErr@(RetrievalError _) <- Exception.fromException err = authErr
+    | Just authErr@(AuthServiceError _) <- Exception.fromException err = authErr
+    | otherwise = OtherAuthError err
+
+{- | A direct, deliberately literal port of pinned
+@Amazonka.Auth.Background.loop@\/@diff@'s own refresh-scheduling
+arithmetic (see 'managedFetchAuthInBackground'): refresh within five
+minutes of @expiry@, or halfway through whatever time remains if sooner
+than that (so, as expiry nears, refresh attempts occur increasingly
+often rather than ever reaching or crossing it), biased 60 seconds early
+throughout to account for the refresh call's own execution time and
+clock skew. Never returns a delay below one microsecond, matching
+pinned's own floor.
+-}
+computeMicrosUntilRefreshDeadline :: ISO8601 -> IO Int
+computeMicrosUntilRefreshDeadline expiry = do
+  now <- getCurrentTime
+  let secondsUntilExpiryBiased = truncate (diffUTCTime (fromTime expiry) now) - 60 :: Integer
+      microsUntilExpiry = max 1 secondsUntilExpiryBiased * 1_000_000
+      fiveMinutesMicros = 5 * 60 * 1_000_000
+  pure . fromIntegral
+    $ if microsUntilExpiry > fiveMinutesMicros
+      then microsUntilExpiry - fiveMinutesMicros
+      else microsUntilExpiry `div` 2
 
 -- | See 'startSupervisedEnv''s @acquire@ parameter: the concrete release
 -- action for a generation whose entire 'Env' was acquired via a single,
@@ -277,7 +493,7 @@ awaitThreadTerminated tid = go maxAwaitPolls
 -- chain -- see 'AwsEnvAcquisition' for why the config-file chain needs
 -- more than this).
 releaseAwsEnvGeneration :: Env -> IO ()
-releaseAwsEnvGeneration env = releaseAwsEnvChild (runIdentity env.auth)
+releaseAwsEnvGeneration env = requireChildReleased (runIdentity env.auth)
 
 {- | One resolved 'Env' together with every background-refresh child that
 acquiring it created but which is no longer directly reachable via its
@@ -287,9 +503,30 @@ them, plus whichever child is still directly reachable via @.auth@ itself.
 -}
 data AwsEnvAcquisition = AwsEnvAcquisition
   { awsEnvAcquisitionEnv :: Env
+  , -- | The correct release for 'awsEnvAcquisitionEnv''s own,
+    -- currently-visible @.auth@. /Not always/ @releaseAwsEnvChild
+    -- (runIdentity env.auth)@: a provider that used
+    -- 'managedFetchAuthInBackground' (currently only the EC2\/instance-
+    -- profile provider, reached either as 'discoverSafely''s own
+    -- top-level fallback or, nested, via
+    -- @credential_source=Ec2InstanceMetadata@) supplies its own
+    -- genuinely-awaiting release here instead, since the naive
+    -- kill-then-bounded-poll derivation would otherwise race it: if that
+    -- naive release ran first (targeting the exact same 'ThreadId'
+    -- 'managedFetchAuthInBackground''s own worker uses), it would
+    -- deliver @killThread@ /before/ the managed worker's own \"a stop was
+    -- requested\" flag is set, reintroducing exactly the
+    -- expected-cancellation-misclassified-as-'AuthError' hazard
+    -- 'managedFetchAuthInBackground' exists to close. Every other
+    -- provider (opaque pinned @fromContainerEnv@\/@fromAssumedRole@\/
+    -- @fromWebIdentity(Env)@\/@fromSSO@, or a non-expiring static 'Auth')
+    -- has no such managed alternative, so this is simply
+    -- @releaseAwsEnvChild (runIdentity env.auth)@ for those, identical to
+    -- this field not existing at all.
+    awsEnvAcquisitionRelease :: IO ()
   , -- | Release actions for children hidden by an outer overwrite,
     -- oldest\/innermost-acquired first. Released newest-first (i.e.
-    -- reversed) -- but only /after/ the still-visible @.auth@ itself,
+    -- reversed) -- but only /after/ 'awsEnvAcquisitionRelease' itself,
     -- which is released first of all (see 'releaseAwsEnvAcquisition').
     -- Whatever needed a child most recently (a still-live outer
     -- @sts:AssumeRole@ refresh loop that re-authenticates using it) is
@@ -302,8 +539,8 @@ data AwsEnvAcquisition = AwsEnvAcquisition
   }
 
 {- | Release every child a config-file (or single-provider) acquisition
-created, outermost\/newest first: the still-visible @.auth@ child itself,
-then every hidden child, newest-to-oldest (see 'AwsEnvAcquisition').
+created, outermost\/newest first: 'awsEnvAcquisitionRelease' itself, then
+every hidden child, newest-to-oldest (see 'AwsEnvAcquisition').
 
 Every child's release is attempted even if an earlier one fails: this
 generation's own children can only ever target /this generation's own/
@@ -323,8 +560,8 @@ caller-visible failure\/cancellation exactly as if this function's own
 cleanup work were transparent.
 -}
 releaseAwsEnvAcquisition :: AwsEnvAcquisition -> IO ()
-releaseAwsEnvAcquisition (AwsEnvAcquisition env hiddenReleases) = do
-  let orderedReleases = releaseAwsEnvChild (runIdentity env.auth) : reverse hiddenReleases
+releaseAwsEnvAcquisition (AwsEnvAcquisition _env finalRelease hiddenReleases) = do
+  let orderedReleases = finalRelease : reverse hiddenReleases
   firstGenuineFailure <- foldM attemptRelease Nothing orderedReleases
   for_ firstGenuineFailure Exception.throwIO
  where
@@ -374,16 +611,20 @@ provider's own recursive chain produces -- see 'safeFileEnv' -- so that
 whichever provider in this list ultimately wins, 'acquireAwsEnv' can build
 a complete 'AwsEnvAcquisition' for it (an empty ledger for every provider
 except the config-file one simply means \"nothing hidden\", reducing to
-exactly the single-child release every other provider already had).
+exactly the single-child release every other provider already had). A
+second 'IORef', @finalReleaseRef@, similarly lets 'safeDefaultInstanceProfile'
+report a smarter, genuinely-awaiting release for @.auth@ itself when it
+wins outright (see 'AwsEnvAcquisition'); every other provider leaves it
+untouched, and 'acquireAwsEnv' then falls back to the naive derivation.
 -}
-discoverSafely :: IORef [IO ()] -> EnvNoAuth -> IO Env
-discoverSafely hiddenReleasesRef =
+discoverSafely :: IORef [IO ()] -> IORef (Maybe (IO ())) -> EnvNoAuth -> IO Env
+discoverSafely hiddenReleasesRef finalReleaseRef =
   runCredentialChain
     [ fromKeysEnv
     , safeFileEnv productionConfigProfileResolvers hiddenReleasesRef
     , fromWebIdentityEnv
     , fromContainerEnv
-    , safeDefaultInstanceProfile
+    , safeDefaultInstanceProfile finalReleaseRef
     ]
 
 
@@ -454,30 +695,45 @@ acquireRegionBeforeAuth env getRegion getAuth = do
 
 safeDefaultInstanceProfile ::
   (MonadIO m) =>
+  IORef (Maybe (IO ())) ->
   Env' withAuth ->
   m Env
-safeDefaultInstanceProfile env =
+safeDefaultInstanceProfile finalReleaseRef env =
   liftIO $ do
     ls <-
       Exception.try $ metadata (manager env) (IAM (SecurityCredentials Nothing))
     case BS8.lines <$> ls of
-      Right (x : _) -> safeNamedInstanceProfile (TE.decodeUtf8 x) env
+      Right (x : _) -> safeNamedInstanceProfile finalReleaseRef (TE.decodeUtf8 x) env
       Left e -> Exception.throwIO (RetrievalError e)
       _ ->
         Exception.throwIO
           $ InvalidIAMError "Unable to get default IAM Profile from EC2 metadata"
 
--- | See 'safeDefaultInstanceProfile'. Identical to the pinned source's
--- @fromNamedInstanceProfile@ except @getRegionFromIdentity@ is resolved
--- before @fetchAuthInBackground@, not after -- via 'acquireRegionBeforeAuth'.
+{- | See 'safeDefaultInstanceProfile'. Identical to the pinned source's
+@fromNamedInstanceProfile@ except @getRegionFromIdentity@ is resolved
+before @fetchAuthInBackground@, not after -- via 'acquireRegionBeforeAuth'
+-- and @fetchAuthInBackground@ itself is replaced with
+'managedFetchAuthInBackground', whose genuinely-awaiting release is
+recorded into @finalReleaseRef@ for 'acquireAwsEnv'\/'safeEvalConfigProfile'
+to pick up (see 'AwsEnvAcquisition'). Written only on success -- by
+construction, 'acquireRegionBeforeAuth' never runs @getAuth@ (and so never
+runs this write) unless @getRegion@ already succeeded, and this function
+as a whole only returns once both have.
+-}
 safeNamedInstanceProfile ::
   (MonadIO m) =>
+  IORef (Maybe (IO ())) ->
   Text ->
   Env' withAuth ->
   m Env
-safeNamedInstanceProfile name env@Env {manager} =
-  liftIO $ acquireRegionBeforeAuth env getRegionFromIdentity (fetchAuthInBackground getCredentials)
+safeNamedInstanceProfile finalReleaseRef name env@Env {manager} =
+  liftIO $ acquireRegionBeforeAuth env getRegionFromIdentity getAuth
  where
+  getAuth = do
+    (auth, release) <- managedFetchAuthInBackground getCredentials
+    writeIORef finalReleaseRef (Just release)
+    pure auth
+
   getCredentials =
     Exception.try (metadata manager (IAM . SecurityCredentials $ Just name))
       >>= handleErr (eitherDecode' . LBS8.fromStrict) invalidIAMErr
@@ -528,20 +784,32 @@ Returns the acquired 'Env' paired with its complete release action (see
 'AwsEnvAcquisition') rather than a bare 'Env': 'startSupervisedEnv' folds
 release into acquisition's own return value precisely because the
 config-file provider ('safeFileEnv') can acquire hidden children that are
-not recoverable from the published 'Env' value alone; deriving release
-from '.auth' the way 'releaseAwsEnvGeneration' does would silently miss
-them for every other provider this reduces to exactly that one release.
+not recoverable from the published 'Env' value alone, and the instance-
+profile provider ('safeDefaultInstanceProfile') can report a genuinely-
+awaiting 'managedFetchAuthInBackground' release that a naive '.auth'
+derivation would race unsafely -- deriving release from '.auth' the way
+an earlier version of this function did would silently miss both, for
+every other provider this reduces to exactly that one naive release.
 -}
 acquireAwsEnv :: IO (Either AwsAuthErrorDiagnostic (Env, IO ()))
 acquireAwsEnv = do
   hiddenReleasesRef <- newIORef []
-  outcome <- try @_ @AuthError (newEnv (discoverSafely hiddenReleasesRef))
+  finalReleaseRef <- newIORef Nothing
+  outcome <- try @_ @AuthError (newEnv (discoverSafely hiddenReleasesRef finalReleaseRef))
   case outcome of
     Left authErr -> Left <$> evaluate (classifyAuthErrorDiagnostic authErr)
     Right env -> do
       hiddenReleases <- readIORef hiddenReleasesRef
-      let acquisition = AwsEnvAcquisition {awsEnvAcquisitionEnv = env, awsEnvAcquisitionHiddenReleases = hiddenReleases}
+      finalRelease <- readIORef finalReleaseRef
+      let release = fromMaybe (requireChildReleased (runIdentity env.auth)) finalRelease
+          acquisition =
+            AwsEnvAcquisition
+              { awsEnvAcquisitionEnv = env
+              , awsEnvAcquisitionRelease = release
+              , awsEnvAcquisitionHiddenReleases = hiddenReleases
+              }
       pure $ Right (env, releaseAwsEnvAcquisition acquisition)
+
 
 {- | Every acquisition primitive 'safeEvalConfigProfile' needs for one
 \"leaf\" @ConfigProfile@\/@CredentialSource@ variant, factored out so tests
@@ -554,11 +822,14 @@ for how each is used and 'AwsEnvSupervisorSpec' for the fakes.
 data ConfigProfileResolvers = ConfigProfileResolvers
   { resolveEnvironmentSource :: forall withAuth. Env' withAuth -> IO Env
   -- ^ @credential_source=Environment@ \/ plain env-var credentials.
-  , resolveEc2Source :: forall withAuth. Env' withAuth -> IO Env
+  , resolveEc2Source :: forall withAuth. IORef (Maybe (IO ())) -> Env' withAuth -> IO Env
   -- ^ @credential_source=Ec2InstanceMetadata@ -- deliberately
   -- 'safeDefaultInstanceProfile', /not/ the pinned source's own
   -- @fromDefaultInstanceProfile@, which 'Amazonka.Auth.ConfigFile'
-  -- reaches directly and unsafely for this exact credential source.
+  -- reaches directly and unsafely for this exact credential source. The
+  -- 'IORef' lets it report a genuinely-awaiting
+  -- 'managedFetchAuthInBackground' release, exactly as the top-level
+  -- 'discoverSafely' entry does -- see 'resolveCredentialSourceAcquisition'.
   , resolveEcsSource :: forall withAuth. Env' withAuth -> IO Env
   -- ^ @credential_source=EcsContainer@.
   , resolveAssumedRole :: Text -> Env -> IO Env
@@ -657,25 +928,36 @@ safeEvalConfigProfile resolvers config seen profileName env =
     acquisition {awsEnvAcquisitionEnv = (awsEnvAcquisitionEnv acquisition) {region = r}}
 
   leaf :: IO Env -> IO AwsEnvAcquisition
-  leaf act = (\finalEnv -> AwsEnvAcquisition finalEnv []) <$> act
+  leaf act = do
+    finalEnv <- act
+    pure
+      AwsEnvAcquisition
+        { awsEnvAcquisitionEnv = finalEnv
+        , awsEnvAcquisitionRelease = requireChildReleased (runIdentity finalEnv.auth)
+        , awsEnvAcquisitionHiddenReleases = []
+        }
 
   -- | Resolve a source (recursively, or a leaf 'CredentialSource'), then
   -- wrap it with @wrap@ (@fromAssumedRole@). If @wrap@ throws or this
   -- thread is cancelled, release everything the source already
   -- accumulated (including its own now-to-be-hidden @.auth@) before
   -- propagating; on success, the source's own @.auth@ becomes hidden (no
-  -- longer reachable via the returned 'Env') and is appended to the
-  -- accumulated hidden-release list.
+  -- longer reachable via the returned 'Env') and its recorded
+  -- 'awsEnvAcquisitionRelease' (the correct release for that @.auth@,
+  -- whether naive or 'managedFetchAuthInBackground'-derived -- see
+  -- 'resolveCredentialSourceAcquisition') is appended to the accumulated
+  -- hidden-release list.
   assumeRoleOnto :: IO AwsEnvAcquisition -> (Env -> IO Env) -> IO AwsEnvAcquisition
   assumeRoleOnto acquireSource wrap = do
     sourceAcquisition <- acquireSource
     let sourceEnv = awsEnvAcquisitionEnv sourceAcquisition
-        sourceRelease = releaseAwsEnvChild (runIdentity sourceEnv.auth)
+        sourceRelease = awsEnvAcquisitionRelease sourceAcquisition
     ( do
         finalEnv <- wrap sourceEnv
         pure
           AwsEnvAcquisition
             { awsEnvAcquisitionEnv = finalEnv
+            , awsEnvAcquisitionRelease = requireChildReleased (runIdentity finalEnv.auth)
             , awsEnvAcquisitionHiddenReleases = awsEnvAcquisitionHiddenReleases sourceAcquisition <> [sourceRelease]
             }
       )
@@ -695,18 +977,38 @@ safeEvalConfigProfile resolvers config seen profileName env =
             (safeEvalConfigProfile resolvers config (sourceProfileName : seen) sourceProfileName env)
             (resolveAssumedRole resolvers roleArn)
     AssumeRoleFromCredentialSource roleArn source ->
-      assumeRoleOnto (leaf (resolveCredentialSource source)) (resolveAssumedRole resolvers roleArn)
+      assumeRoleOnto (resolveCredentialSourceAcquisition source) (resolveAssumedRole resolvers roleArn)
     AssumeRoleWithWebIdentity roleArn mSessionName tokenFile ->
       leaf $ resolveWebIdentity resolvers tokenFile roleArn mSessionName env
     AssumeRoleViaSSO startUrl ssoRegion accountId roleName -> do
       cachedTokenFile <- configPathRelative (relativeCachedTokenFile startUrl)
       leaf $ resolveSSO resolvers cachedTokenFile ssoRegion accountId roleName env
 
-  resolveCredentialSource :: CredentialSource -> IO Env
-  resolveCredentialSource = \case
-    Environment -> resolveEnvironmentSource resolvers env
-    Ec2InstanceMetadata -> resolveEc2Source resolvers env
-    EcsContainer -> resolveEcsSource resolvers env
+  -- | Resolve one leaf @CredentialSource@ into a full 'AwsEnvAcquisition'
+  -- (always then wrapped by 'assumeRoleOnto', per 'AssumeRoleFromCredentialSource'
+  -- -- @credential_source@ only ever appears paired with @role_arn@ in the
+  -- pinned config-file grammar, so this source's own @.auth@ is always
+  -- about to be hidden, never the final visible one). @Ec2InstanceMetadata@
+  -- gets its own fresh, per-call release ref so 'resolveEc2Source'
+  -- (production: 'safeDefaultInstanceProfile') can report a genuinely-
+  -- awaiting 'managedFetchAuthInBackground' release exactly as the
+  -- top-level 'discoverSafely' entry does, rather than the naive '.auth'
+  -- derivation 'leaf' uses for every other, non-managed source.
+  resolveCredentialSourceAcquisition :: CredentialSource -> IO AwsEnvAcquisition
+  resolveCredentialSourceAcquisition = \case
+    Environment -> leaf (resolveEnvironmentSource resolvers env)
+    Ec2InstanceMetadata -> do
+      sourceFinalReleaseRef <- newIORef Nothing
+      finalEnv <- resolveEc2Source resolvers sourceFinalReleaseRef env
+      sourceFinalRelease <- readIORef sourceFinalReleaseRef
+      pure
+        AwsEnvAcquisition
+          { awsEnvAcquisitionEnv = finalEnv
+          , awsEnvAcquisitionRelease =
+              fromMaybe (requireChildReleased (runIdentity finalEnv.auth)) sourceFinalRelease
+          , awsEnvAcquisitionHiddenReleases = []
+          }
+    EcsContainer -> leaf (resolveEcsSource resolvers env)
 
 {- | A safe reimplementation of the pinned Amazonka fork's own
 @Amazonka.Auth.ConfigFile.fromFileEnv@\/@fromFilePath@
@@ -820,7 +1122,7 @@ data SupervisedEnvState env
 -- reacquire lifecycle. See 'startSupervisedEnv'.
 data SupervisedEnv env = SupervisedEnv
   { supervisedEnvStateVar :: TVar (SupervisedEnvState env)
-  , supervisedEnvAsync :: Async.Async ()
+  , supervisedEnvThread :: ManagedThread ()
   }
 
 {- | Start a dedicated, single-thread supervisor that owns the entire
@@ -881,22 +1183,30 @@ I\/O) is genuinely protected. 'Control.Exception.mask' is used rather than
 'Control.Exception.uninterruptibleMask_' throughout, so this can never
 turn into an unkillable thread.
 
-The lifecycle itself is built entirely from the \"async\" package's
-high-level 'Async.async'\/'Async.withAsync'\/'Async.cancel' rather than a
-hand-rolled @forkIO@\/@MVar@\/@mask@ protocol: 'Async.async' already wraps
-its action in a plain, unrestricted 'Control.Exception.try' internally
-(catching /every/ exception, synchronous or asynchronous, so its result
-@MVar@\/@STM@ slot is always filled), and 'Async.cancel' both delivers an
-ordinary, interruptible @throwTo@ and synchronously waits for the target
-thread to actually finish before returning -- exactly the \"terminate and
-wait for completion\" protocol this module previously had to construct
-and debug by hand.
+The lifecycle itself is built from this module's own
+'Api.Arkham.Lifecycle.ManagedThread' rather than the \"async\" package's
+high-level 'Control.Concurrent.Async.Async': async-2.2.6's own
+'Control.Concurrent.Async.withAsync' falls back to
+@Control.Concurrent.Async.uninterruptibleCancel@ internally when its own
+wait is itself asynchronously interrupted while a child is still running
+-- meaning a genuinely stuck generation (e.g. blocked inside a
+non-interruptible foreign call while @acquire@\/@awaitInvalidation@ is
+running) could make *that* cancellation, and therefore this whole
+dispatcher's shutdown (ultimately 'stopSupervisedEnv', and everything
+that in turn waits on it, e.g. Foundation shutdown), unconditionally
+unkillable until the stuck generation eventually finishes, however long
+that takes -- an actual production hazard 'ManagedThread' avoids entirely
+by construction: it only ever uses ordinary, interruptible
+'Control.Exception.throwTo'\/'Control.Concurrent.MVar.takeMVar', never an
+uninterruptible cancellation, so a caller waiting to stop this supervisor
+can always itself still be interrupted (e.g. by an enclosing bounded
+wait), even against a stuck generation that never responds.
 
 /Per-generation thread isolation:/ each generation's entire @acquire@
 through @awaitInvalidation@ span (below, @runOneGeneration@) runs on its
-own freshly-forked thread, via 'Async.withAsync', rather than directly on
-this long-lived dispatcher thread. This closes a genuine cross-generation
-hazard found by direct audit: the pinned Amazonka fork's
+own freshly-spawned 'Api.Arkham.Lifecycle.ManagedThread', rather than
+directly on this long-lived dispatcher thread. This closes a genuine
+cross-generation hazard found by direct audit: the pinned Amazonka fork's
 @Amazonka.Auth.Background.fetchAuthInBackground@ (see
 'releaseAwsEnvChild') always targets /whichever thread called @discover@/
 as its eventual delayed refresh-failure @throwTo@ target. If every
@@ -918,14 +1228,14 @@ is also precisely why 'releaseAwsEnvAcquisition' can safely treat an
 'AuthError' surfacing while releasing one of /this/ generation's own
 children as expected, self-inflicted feedback rather than a fresh
 failure: it can only ever have come from a child that belongs to this
-exact generation. 'Async.withAsync' additionally guarantees that if this
-dispatcher thread is itself asynchronously cancelled (e.g. by
-'stopSupervisedEnv') while waiting on the in-flight generation, that
-generation's thread is cancelled and awaited to completion /first/ --
-running its own @release@ via @runOneGeneration@'s 'finally' -- before the
-cancellation is allowed to finish unwinding the dispatcher itself; a stop
-can therefore never leave a generation thread, or the children it owns,
-orphaned.
+exact generation. If this dispatcher thread is itself asynchronously
+cancelled (e.g. by 'stopSupervisedEnv') while waiting on the in-flight
+generation, @loopOnce@'s own 'Control.Exception.onException' guarantees
+that generation's thread is cancelled and awaited to completion /first/
+-- running its own @release@ via @runOneGeneration@'s 'finally' -- before
+the cancellation is allowed to finish unwinding the dispatcher itself; a
+stop can therefore never leave a generation thread, or the children it
+owns, orphaned.
 
 On every loop iteration: 'SupervisedEnvInitializing' is (re-)published
 first, then @acquire@ is attempted; a failure publishes
@@ -968,8 +1278,8 @@ startSupervisedEnv
   -> IO (SupervisedEnv env)
 startSupervisedEnv acquire awaitInvalidation backoff = do
   stateVar <- newTVarIO SupervisedEnvInitializing
-  supervisorAsync <- Async.async (supervise stateVar)
-  pure SupervisedEnv {supervisedEnvStateVar = stateVar, supervisedEnvAsync = supervisorAsync}
+  supervisorThread <- spawnManagedThread (supervise stateVar)
+  pure SupervisedEnv {supervisedEnvStateVar = stateVar, supervisedEnvThread = supervisorThread}
  where
   supervise stateVar =
     forever loopOnce `finally` publish stateVar AwsAuthSupervisorTerminated
@@ -977,14 +1287,17 @@ startSupervisedEnv acquire awaitInvalidation backoff = do
     loopOnce = do
       -- See the module Haddock ("Per-generation thread isolation"): each
       -- generation's own acquire/monitor/release cycle runs on a fresh
-      -- thread, never this dispatcher thread itself, so a delayed
-      -- refresh-failure feedback from an old generation's child can
-      -- never land on a different (older, newer, or this dispatcher's
-      -- own) thread. 'Async.withAsync' also ensures that if this
-      -- dispatcher is cancelled while waiting here, the in-flight
-      -- generation is cancelled and awaited -- running its own release --
-      -- before the cancellation finishes unwinding this loop.
-      diag <- Async.withAsync runOneGeneration Async.wait
+      -- 'ManagedThread', never this dispatcher thread itself, so a
+      -- delayed refresh-failure feedback from an old generation's child
+      -- can never land on a different (older, newer, or this
+      -- dispatcher's own) thread. The 'Exception.onException' here
+      -- mirrors 'Control.Concurrent.Async.withAsync''s own guarantee
+      -- that, if this dispatcher is cancelled while waiting, the
+      -- in-flight generation is cancelled and awaited first -- but,
+      -- unlike 'Control.Concurrent.Async.withAsync', using only ordinary
+      -- interruptible cancellation throughout (see 'ManagedThread').
+      generationThread <- spawnManagedThread runOneGeneration
+      diag <- waitManagedThread generationThread `Exception.onException` cancelManagedThread generationThread
       publish stateVar diag
       backoff
 
@@ -1035,40 +1348,88 @@ startSupervisedEnv acquire awaitInvalidation backoff = do
 readSupervisedEnv :: SupervisedEnv env -> IO (SupervisedEnvState env)
 readSupervisedEnv = readTVarIO . supervisedEnvStateVar
 
+{- | The observable, defined outcome of one 'stopSupervisedEnv' attempt.
+Never a bare @()@: a caller must be able to distinguish \"genuinely,
+confirmedly stopped\" from \"could not confirm that within a bounded
+wait\" and react accordingly -- e.g. 'stopDemandDrivenSupervisor'\/
+'stopAwsEnvSupervisor' below both treat 'SupervisorStopFailed' as a
+thrown exception, so that no caller (a restart helper, a test, a
+'Application.shutdownApp'\/'DevelMain' bracket) can ever mistake it for
+success and proceed to release dependencies or start a replacement.
+-}
+data SupervisorStopOutcome
+  = SupervisorStopped
+  | -- | The dedicated supervisor thread could not be confirmed terminal
+    -- within 'supervisorStopTimeoutMicros'. This can only genuinely arise
+    -- from a thread stuck inside a truly non-interruptible operation (see
+    -- 'awaitThreadTerminated'\/'releaseAwsEnvChild' for the same,
+    -- documented, accepted platform limitation elsewhere in this module)
+    -- -- an ordinary, cooperative Haskell thread, however deep inside
+    -- @acquire@\/@awaitInvalidation@\/@release@ it is blocked, responds to
+    -- an ordinary 'Control.Exception.throwTo' essentially immediately.
+    -- Deliberately does /not/ carry the dedicated thread's own eventual
+    -- exit value: by definition, this constructor means that value was
+    -- never observed within the bound.
+    SupervisorStopFailed
+  deriving stock (Eq, Show)
+
+-- | A generous, purely defensive bound (see 'SupervisorStopFailed'): in
+-- ordinary operation this is never reached, since 'cancelManagedThread'
+-- only blocks on genuinely interruptible operations. Not a correctness
+-- mechanism -- it exists only so a truly stuck dedicated thread produces
+-- an honest, typed, bounded failure instead of hanging 'stopSupervisedEnv'
+-- (and therefore, transitively, Foundation shutdown) forever.
+supervisorStopTimeoutMicros :: Int
+supervisorStopTimeoutMicros = 30 * 1000 * 1000
+
 {- | Explicitly stop a supervisor: terminate its dedicated thread and
-/wait/ for it to actually finish (via 'Async.cancel', see 'startSupervisedEnv')
--- which, per 'awaitInvalidation''s\/'awaitAwsEnvInvalidation''s own
-'finally', also releases the current generation's background resource
-(e.g. kills a live Amazonka refresh thread) before this returns. Used by
+/genuinely wait/ (via 'cancelManagedThread', see 'startSupervisedEnv') for
+it to actually finish -- which, per 'awaitInvalidation''s\/
+'awaitAwsEnvInvalidation''s own 'finally', also releases the current
+generation's background resource (e.g. kills a live Amazonka refresh
+thread, or, for a managed one, genuinely awaits its termination -- see
+'managedFetchAuthInBackground') before this returns. Used by
 'stopAwsEnvSupervisor' (in turn used by @Application.shutdownApp@ and
 deterministic tests), and directly by the generic-protocol tests below.
 
-After 'Async.cancel' returns, the dedicated thread is unconditionally
-finished -- 'Async.async' internally installs its own exception handler
-(a plain 'try') /before/ ever restoring to this thread's inherited,
-typically-unmasked state, so 'Async.cancel'\/'waitCatch' can never hang
-waiting for a thread that in fact already died. However, that outer
-'try' is a different, outer layer from this module's own 'finally'-based
-cleanup (the one that publishes 'AwsAuthSupervisorTerminated' and, once a
-generation has actually been acquired, releases its background resource):
-if a cancellation lands in the narrow instant between the dedicated
-thread's very first scheduled instruction and this module's own
-'forever'\/'finally' actually being entered -- which can only happen
-before any generation has ever been acquired, since nothing meaningful
-(no credentials, no background refresh child) exists yet at that point --
-the *inner* 'finally' can be skipped entirely, even though the *outer*
-'try' still faithfully reports the thread as finished. Explicitly
-publishing the terminal diagnostic again here, unconditionally, once
-'Async.cancel' has already confirmed the thread is dead, closes that gap
-without depending on GHC's exact exception-delivery timing at thread
-start: it can never race a live generation (the thread is provably no
-longer running by the time this executes) and is a no-op whenever the
-inner 'finally' already published the same value.
+'cancelManagedThread' uses only ordinary, interruptible cancellation --
+never 'Control.Exception.uninterruptibleMask'\/
+@Control.Concurrent.Async.uninterruptibleCancel@ -- so this function can
+always itself still be interrupted by an enclosing asynchronous
+exception. The 'UnliftIO.Timeout.timeout' wrapped around it exists solely
+to turn the one remaining, documented residual hazard (a truly
+non-interruptible foreign call somewhere in @acquire@\/@awaitInvalidation@\/
+@release@ that never actually responds to the delivered @throwTo@) into
+an honest, typed 'SupervisorStopFailed' rather than either an infinite
+hang or -- worse -- a false claim of success: on that path, this
+deliberately does /not/ publish 'AwsAuthSupervisorTerminated', so a reader
+can never be misled into believing the dedicated thread (and whatever
+background resource it may still hold) has actually stopped.
+
+Separately (independent of the timeout above): if a cancellation lands in
+the narrow instant between the dedicated thread's very first scheduled
+instruction and 'supervise''s own @forever@\/@finally@ actually being
+entered -- which can only happen before any generation has ever been
+acquired, since nothing meaningful (no credentials, no background refresh
+child) exists yet at that point -- 'ManagedThread''s own outer @try@ (in
+'Api.Arkham.Lifecycle.spawnManagedThread') still faithfully records the
+thread as terminated, but the /inner/ @finally@ that would otherwise
+publish 'AwsAuthSupervisorTerminated' itself can be skipped entirely.
+This function's own unconditional publish in the success branch below --
+performed only once 'cancelManagedThread' has already confirmed the
+thread is genuinely dead -- closes that gap without depending on GHC's
+exact exception-delivery timing at thread start: it can never race a
+live generation, and is a no-op whenever the inner @finally@ already
+published the same value.
 -}
-stopSupervisedEnv :: SupervisedEnv env -> IO ()
+stopSupervisedEnv :: SupervisedEnv env -> IO SupervisorStopOutcome
 stopSupervisedEnv sup = do
-  Async.cancel (supervisedEnvAsync sup)
-  atomically $ writeTVar (supervisedEnvStateVar sup) (SupervisedEnvUnavailable AwsAuthSupervisorTerminated)
+  outcome <- timeout supervisorStopTimeoutMicros (cancelManagedThread (supervisedEnvThread sup))
+  case outcome of
+    Nothing -> pure SupervisorStopFailed
+    Just () -> do
+      atomically $ writeTVar (supervisedEnvStateVar sup) (SupervisedEnvUnavailable AwsAuthSupervisorTerminated)
+      pure SupervisorStopped
 
 {- | A generic demand-driven wrapper around 'SupervisedEnv': its dedicated
 thread (via 'startSupervisedEnv') starts immediately, but the wrapped
@@ -1144,11 +1505,26 @@ requestDemandDrivenReady sup timeoutMicros = do
       maybe (readSupervisedEnv (demandDrivenSupervisorGeneric sup)) pure settled
     settledAlready -> pure settledAlready
 
--- | Explicitly stop a demand-driven supervisor: terminates its dedicated
--- thread and waits for it (and, if live, its current generation's
--- background resource) to actually finish. See 'stopSupervisedEnv'.
+{- | Explicitly stop a demand-driven supervisor: terminates its dedicated
+thread and waits for it (and, if live, its current generation's
+background resource) to actually finish. See 'stopSupervisedEnv'. Throws
+if 'stopSupervisedEnv' returns 'SupervisorStopFailed' -- this function's
+callers (production 'Application.shutdownApp', and every existing test
+call site, which are all bare, unused-return-value statements) rely on
+"returned without throwing" already meaning "genuinely, confirmedly
+stopped"; preserving that as a thrown exception, rather than silently
+changing this function's own return type, means every one of those call
+sites automatically inherits the new, honest failure signal (never
+silently proceeding to release dependencies or start a replacement) with
+no further changes required at any of them.
+-}
 stopDemandDrivenSupervisor :: DemandDrivenSupervisor env -> IO ()
-stopDemandDrivenSupervisor = stopSupervisedEnv . demandDrivenSupervisorGeneric
+stopDemandDrivenSupervisor sup =
+  stopSupervisedEnv (demandDrivenSupervisorGeneric sup) >>= \case
+    SupervisorStopped -> pure ()
+    SupervisorStopFailed ->
+      Exception.throwIO
+        $ Exception.ErrorCall "AwsEnvSupervisor: stopSupervisedEnv could not confirm the dedicated thread terminated"
 
 {- | The application's single, foundation-owned AWS 'Env' supervisor: a
 thin, production-facing instance of the generic 'DemandDrivenSupervisor',

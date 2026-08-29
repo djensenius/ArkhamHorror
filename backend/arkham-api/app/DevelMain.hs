@@ -37,7 +37,7 @@ This option provides significantly faster code reload compared to
 module DevelMain where
 
 import Api.Arkham.Lifecycle (
-  forkTransferringOwnership,
+  acquireThenForkTransferringOwnership,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
   shutdownThenDeliver,
  )
@@ -46,7 +46,6 @@ import Prelude
 
 import Control.Concurrent
 import Control.Exception (SomeException)
-import Control.Monad ((>=>))
 import Data.IORef
 import Foreign.Store
 import GHC.Word
@@ -63,49 +62,79 @@ update = do
     -- no server running
     Nothing -> do
       done <- storeAction doneStore newEmptyMVar
-      tid <- start done
-      _ <- storeAction (Store tidStoreNum) (newIORef tid)
-      pure ()
+      tidRef <- storeAction (Store tidStoreNum) (newIORef Nothing)
+      start tidRef done
     -- server is already running
-    Just tidStore -> restartAppInNewThread tidStore
+    Just tidStore -> withStore tidStore (`restartAppInNewThread` doneStore)
  where
   doneStore :: Store (MVar (Either SomeException ()))
   doneStore = Store 0
 
-  -- Shut the server down with killThread, wait for the previous
-  -- generation's shutdown result, and only start a replacement if that
-  -- shutdown actually succeeded ('Right'). A failed/interrupted shutdown
-  -- ('Left') is reported and re-thrown rather than silently starting a
-  -- new generation on top of a supervisor that may not have actually
+  -- Kill the previous generation's Warp thread, wait for its shutdown
+  -- result, and only start a replacement if that shutdown actually
+  -- succeeded ('Right'). A failed/interrupted shutdown ('Left') is
+  -- reported and re-thrown rather than silently starting a new
+  -- generation on top of a supervisor that may not have actually
   -- stopped; unlike an earlier version of this protocol, that 'Left' is
   -- never consumed here, so every subsequent restart attempt observes
   -- the exact same failure immediately rather than blocking forever on
   -- an already-emptied one-shot 'MVar' -- see
-  -- 'proceedOnlyIfPreviousShutdownSucceededReplayable'.
-  restartAppInNewThread :: Store (IORef ThreadId) -> IO ()
-  restartAppInNewThread tidStore = modifyStoredIORef tidStore $ \tid -> do
-    killThread tid
-    done <- readStore doneStore
-    proceedOnlyIfPreviousShutdownSucceededReplayable done (start done)
+  -- 'proceedOnlyIfPreviousShutdownSucceededReplayable'. @tidRef@ itself
+  -- is never cleared to 'Nothing' here: 'start' (via
+  -- 'acquireThenForkTransferringOwnership''s @publish@ callback) always
+  -- overwrites it with the new generation's 'ThreadId' before this
+  -- function's own caller (GHCi) could ever observe a stale one, and
+  -- 'proceedOnlyIfPreviousShutdownSucceededReplayable' guarantees that
+  -- overwrite is only even attempted once the previous shutdown
+  -- genuinely succeeded.
+  restartAppInNewThread :: IORef (Maybe ThreadId) -> Store (MVar (Either SomeException ())) -> IO ()
+  restartAppInNewThread tidRef doneStoreRef = do
+    done <- readStore doneStoreRef
+    mtid <- readIORef tidRef
+    maybe (pure ()) killThread mtid
+    proceedOnlyIfPreviousShutdownSucceededReplayable done (start tidRef done)
 
-  -- \| Start the server in a separate thread.
+  {- | Start the server in a separate thread, and durably publish its
+  'ThreadId' into @tidRef@ before returning.
+
+  Uses 'acquireThenForkTransferringOwnership' rather than a plain
+  @(port, site, app) <- getApplicationRepl@ bind followed by a
+  /separate/ ownership-transfer call: that would leave a genuine gap
+  between 'Application.getApplicationRepl' returning an already-owned
+  @App@ and this thread's own protection actually beginning -- an
+  asynchronous exception landing in exactly that window (or
+  'Control.Concurrent.forkIOWithUnmask' itself throwing, however rare)
+  would leak the returned @App@ (and its AWS Env supervisor), since
+  nothing would yet own its eventual 'Application.shutdownApp'.
+  'acquireThenForkTransferringOwnership' instead masks from *before*
+  'Application.getApplicationRepl' is even called through the child
+  being definitely spawned, so there is no such gap: this thread is
+  already back in a masked state the very instant acquisition returns.
+
+  The @publish@ callback (@writeIORef tidRef . Just@) runs -- still
+  masked -- immediately after the child is spawned and strictly before
+  this function returns to 'update'\/'restartAppInNewThread': without
+  this, an asynchronous exception landing between 'start' returning and
+  a *separate*, subsequent @writeIORef@ elsewhere could leave the freshly
+  spawned child (already running Warp) permanently untracked -- no
+  future 'update'\/'shutdown' call could ever find its 'ThreadId' to kill
+  it. If @publish@ itself somehow throws (only possible via a genuine
+  asynchronous exception landing in that exact masked window), @cancel@
+  kills the just-spawned child and waits for its finalizer
+  ('shutdownThenDeliver') to have genuinely run and recorded a result in
+  @done@, so a failed publish can never leave an untracked, still-running
+  child behind either.
+  -}
   start
-    :: MVar (Either SomeException ())
+    :: IORef (Maybe ThreadId)
+    -> MVar (Either SomeException ())
     -- \^ Written to (with the shutdown outcome) when the thread is killed.
-    -> IO ThreadId
-  start done = do
-    (port, site, app) <- getApplicationRepl
-    -- 'forkTransferringOwnership' masks from this already-acquired 'App'
-    -- through the child thread being definitely spawned: if forking
-    -- itself fails, or this thread is asynchronously cancelled in that
-    -- narrow window, @site@ is shut down here instead of being silently
-    -- leaked with nothing left to own its eventual shutdown. Once
-    -- forking succeeds, the child (running Warp unmasked) is the sole
-    -- owner of @site@'s eventual shutdown via 'shutdownThenDeliver'.
-    forkTransferringOwnership
-      site
-      shutdownApp
-      (\_site -> runSettings (setPort port defaultSettings) app)
+    -> IO ()
+  start tidRef done =
+    () <$ acquireThenForkTransferringOwnership
+      getApplicationRepl
+      (\(_, site, _) -> shutdownApp site)
+      (\(port, _site, app) -> runSettings (setPort port defaultSettings) app)
       -- 'shutdownThenDeliver' MUST finish (and deliver a result) before
       -- 'restartAppInNewThread''s wait can unblock, which then
       -- immediately proceeds to 'start' a brand-new foundation (and a
@@ -116,7 +145,9 @@ update = do
       -- the old one never actually torn down at all. This ordering closes
       -- both an overlapping-generations window and a would-be deadlock if
       -- shutdown itself fails or is cancelled.
-      (\_site _result -> shutdownThenDeliver (shutdownApp site) done)
+      (\(_, site, _) _result -> shutdownThenDeliver (shutdownApp site) done)
+      (\tid -> killThread tid >> (() <$ readMVar done))
+      (writeIORef tidRef . Just)
 
 -- | kill the server
 shutdown :: IO ()
@@ -126,13 +157,12 @@ shutdown = do
     -- no server running
     Nothing -> putStrLn "no Yesod app running"
     Just tidStore -> do
-      withStore tidStore $ readIORef >=> killThread
-      putStrLn "Yesod app is shutdown"
+      mtid <- withStore tidStore readIORef
+      case mtid of
+        Nothing -> putStrLn "no Yesod app running"
+        Just tid -> do
+          killThread tid
+          putStrLn "Yesod app is shutdown"
 
 tidStoreNum :: Word32
 tidStoreNum = 1
-
-modifyStoredIORef :: Store (IORef a) -> (a -> IO a) -> IO ()
-modifyStoredIORef store f = withStore store $ \ref -> do
-  v <- readIORef ref
-  f v >>= writeIORef ref
