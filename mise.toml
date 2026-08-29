@@ -4,11 +4,11 @@ python = "3.14.7"
 uv = "0.12.6"
 
 [tasks."contracts:fixtures"]
-description = "Validate contract manifests, golden JSON fixtures, negative regressions, and artifact hash bindings"
+description = "Validate contract manifests, golden JSON fixtures, and negative regressions"
 run = "uv run scripts/validate-contract-fixtures.py"
 
 [tasks."contracts:revision-drift"]
-description = "Enforce the schemaRevision monotonic-bump gate for governed contract artifacts"
+description = "Enforce the schemaRevision monotonic-bump gate and artifact hash bindings for governed contract artifacts"
 run = "uv run scripts/check-schema-revision-drift.py"
 
 [tasks."contracts:openapi"]

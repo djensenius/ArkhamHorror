@@ -401,8 +401,9 @@ fixture in `fixtures`, and the manifest's own descriptor content (including
 `negativeFixtures`/`enumBoundaryChecks`) — is immutable. `manifest.json`'s
 `artifactHashes` binds a SHA-256 of each governed artifact's real content
 (the manifest hashes itself too, canonicalized with `artifactHashes` zeroed
-out first, to avoid a circular self-hash); `contracts:fixtures` recomputes
-every hash and rejects a missing, extra (stale), or mismatched entry.
+out first, to avoid a circular self-hash); `contracts:revision-drift`
+recomputes every hash and rejects a missing, extra (stale), or mismatched
+entry.
 
 `contracts:revision-drift` (`scripts/check-schema-revision-drift.py`)
 enforces the actual bump rule: it recomputes the current governed-artifact
