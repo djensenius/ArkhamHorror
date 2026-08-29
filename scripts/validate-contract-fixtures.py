@@ -149,6 +149,31 @@ def resolve_json_pointer(document, pointer: str):
     return value
 
 
+def _require_array_index(raw_token: str, *, length: int, allow_equal_length: bool) -> int:
+    """Parse and bounds-check a JSON-Pointer array token per RFC 6901/6902.
+
+    RFC 6901 array tokens must be either the literal "-" (RFC 6902 "add"
+    only, meaning "append") or a non-negative base-10 integer with no
+    leading zero (except "0" itself). `allow_equal_length` distinguishes
+    RFC 6902 "add" (index may equal `length`, meaning append-at-end) from
+    every other op, where the index must reference an existing element
+    (`0 <= index < length`). Silently clamping or wrapping an out-of-range
+    index would let an invalid mutation pointer pass unnoticed.
+    """
+    require(
+        raw_token == "0" or (raw_token and raw_token[0] != "0" and raw_token.lstrip("-").isdigit()),
+        f"Array index token must be a non-negative integer (no leading zero): {raw_token!r}",
+    )
+    index = int(raw_token)
+    upper = length if allow_equal_length else length - 1
+    require(
+        0 <= index <= upper,
+        f"Array index {index} out of range for array of length {length} "
+        f"(allowed 0..{upper}): {raw_token!r}",
+    )
+    return index
+
+
 def apply_mutation(value, mutation: dict):
     """Apply a single {op, pointer[, value]} mutation to a deep copy of `value`.
 
@@ -168,19 +193,22 @@ def apply_mutation(value, mutation: dict):
     parent = mutated
     for raw_token in parent_tokens:
         token = raw_token.replace("~1", "/").replace("~0", "~")
-        parent = parent[int(token)] if isinstance(parent, list) else parent[token]
+        if isinstance(parent, list):
+            parent = parent[_require_array_index(token, length=len(parent), allow_equal_length=False)]
+        else:
+            parent = parent[token]
     last = last_raw.replace("~1", "/").replace("~0", "~")
 
     op = mutation["op"]
     if op == "remove":
         if isinstance(parent, list):
-            del parent[int(last)]
+            del parent[_require_array_index(last, length=len(parent), allow_equal_length=False)]
         else:
             del parent[last]
     elif op == "replace":
         require("value" in mutation, "Mutation op 'replace' requires a 'value'")
         if isinstance(parent, list):
-            parent[int(last)] = mutation["value"]
+            parent[_require_array_index(last, length=len(parent), allow_equal_length=False)] = mutation["value"]
         else:
             parent[last] = mutation["value"]
     elif op == "add":
@@ -190,10 +218,12 @@ def apply_mutation(value, mutation: dict):
             # element at the given index (shifting later elements right), or
             # append when the index is "-". This is intentionally distinct
             # from "replace", which overwrites the existing element in place.
+            # An index equal to len(parent) is valid (append-at-end); any
+            # index beyond that is an error rather than a silent append.
             if last == "-":
                 parent.append(mutation["value"])
             else:
-                parent.insert(int(last), mutation["value"])
+                parent.insert(_require_array_index(last, length=len(parent), allow_equal_length=True), mutation["value"])
         else:
             parent[last] = mutation["value"]
     else:
@@ -444,6 +474,32 @@ def run_apply_mutation_self_test() -> None:
         base["items"] == ["a", "b", "c"],
         "apply_mutation must not mutate its input value in place",
     )
+
+    # An "add" index equal to length is a valid append; beyond that must be
+    # rejected deterministically rather than silently appending regardless
+    # (Python's `list.insert` clamps out-of-range indices instead of
+    # raising, so this must be enforced explicitly).
+    end_insert = apply_mutation(base, {"op": "add", "pointer": "/items/3", "value": "END"})
+    require(
+        end_insert["items"] == ["a", "b", "c", "END"],
+        f"apply_mutation add at index == length must append; got {end_insert['items']!r}",
+    )
+
+    def _expect_rejected(mutation: dict, label: str) -> None:
+        try:
+            apply_mutation(base, mutation)
+        except SystemExit:
+            return
+        raise SystemExit(
+            f"Self-test failure: apply_mutation accepted an out-of-range/invalid {label} "
+            f"mutation instead of rejecting it: {mutation!r}"
+        )
+
+    _expect_rejected({"op": "add", "pointer": "/items/4", "value": "X"}, "add index (beyond length)")
+    _expect_rejected({"op": "replace", "pointer": "/items/3", "value": "X"}, "replace index (== length)")
+    _expect_rejected({"op": "remove", "pointer": "/items/3"}, "remove index (== length)")
+    _expect_rejected({"op": "add", "pointer": "/items/01", "value": "X"}, "add index (leading zero)")
+    _expect_rejected({"op": "add", "pointer": "/items/-1", "value": "X"}, "add index (negative)")
 
 
 run_apply_mutation_self_test()

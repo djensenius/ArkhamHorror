@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.14",
+  "schemaRevision": "0.1.15",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -363,11 +363,11 @@
     "contracts/schemas/name.schema.json": "0a04d31f01c47671c7529f4afacaa42d69dc9f9de222a10eac3a5ecc67ae71d6",
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
-    "contracts/schemas/public-game.schema.json": "971b342470b21f3017a08fd8bc1aa87a92e75806eedfc988ca2096ea70d61cac",
+    "contracts/schemas/public-game.schema.json": "28b7d5d69cf9bc14a24f035f55eabad850a4185a2513fd7c2c89f6ab99c16d0e",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/fixtures/account.json": "817fa6242dce030a9345ddc632ac223a43d264a6e3d75ddb6422da7f2c868099",
     "contracts/fixtures/achievements.json": "9323f78e201ced419f3ed843ef3bc3d375db24a2f376a25f7cf3e3a085483b83",
-    "contracts/fixtures/capabilities.json": "3df653aef23f6fd78786d7e2fd2224f8b227ea0f3edfa3ec1dd856dd172a1fb7",
+    "contracts/fixtures/capabilities.json": "35c3d7af286e4004ca01b305f3948247b060fc6acd9ebae136fc7a8d94dfe385",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
     "contracts/fixtures/game-lifecycle.json": "436fa9aea0e0e256b68b7f6038c15692e66af2677293b41bca25c691ab601204",
@@ -404,7 +404,7 @@
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-exchange-amounts.json": "358e6dbd9a75ddf0080df46954cc58dd0df538205375cab61bd882396bf84f9e",
     "contracts/fixtures/answer-campaign-step.json": "448ae784aa4b518ddfd5a8c71b997abdca327e55bd8a3d2ddf7ee862059eca76",
-    "contracts/manifest.json": "00e4e6516f01254a1d3d8257918459303f4f1ad7ecce91fdfaa80994420609e1"
+    "contracts/manifest.json": "2dd81a3b81285d47cd5a8a78b2c93a04b295273815de54cc98aecdaa7a7972e2"
   },
   "enumBoundaryChecks": [
     {

@@ -341,9 +341,9 @@
       "format": "uuid"
     },
     "cardCodeMapKey": {
-      "description": "Wire key for maps keyed by a CardCode-backed newtype (e.g. InvestigatorId, ActId, AgendaId, Arkham/Id.hs), whose ToJSONKey is CardCode's ToJSONKey (Arkham/Card/CardCode.hs): a literal 'c' prefix followed by the underlying code. Every one of the 815 real card codes in data/cards.json matches ^[0-9]{5}[a-z]?$; homebrew/unofficial content is not constrained by the CardCode type itself (it is plain Text), so this pattern may need broadening if homebrew forms diverge.",
+      "description": "Wire key for maps keyed by a CardCode-backed newtype (e.g. InvestigatorId, ActId, AgendaId, Arkham/Id.hs). CardCode itself (Arkham/Card/CardCode.hs) is `newtype CardCode = CardCode Text` with no character-class constraint at the type level; its ToJSONKey instance (`toJSONKeyText (T.cons 'c' . unCardCode)`) only ever prepends a literal 'c'. Constrained here to the same broad `^c[0-9a-z:._-]+$` grammar used by the `cardCode`/`id` fields elsewhere in these schemas (every one of the 815 real card codes in data/cards.json satisfies it), rather than the official 5-digit-plus-suffix form alone, since homebrew/unofficial codes are ordinary Text and are not required to follow that narrower shape.",
       "type": "string",
-      "pattern": "^c[0-9]{5}[a-z]?$"
+      "pattern": "^c[0-9a-z:._-]+$"
     },
     "objectArray": {
       "type": "array",
