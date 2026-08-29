@@ -28,12 +28,13 @@ lets us assert:
   failed;
 * an authorized, fully-present swap request -- including one naming its
   ordinals in descending order -- locks its two games in ascending
-  canonical @(ordinal, game id)@ order (see
-  "Arkham.Api.EpicGameLockOrderSpec" and "Arkham.Api.MainStreetSwapPlanSpec"
-  for the pure ordering function itself), then calls 'performMainStreetSwap'
-  exactly once, and reports 'MainStreetSwapCompleted' carrying a plan whose
-  'firstGameId'\/'secondGameId' are unchanged from the request regardless of
-  lock order;
+  'ArkhamGameId' order alone (see "Arkham.Api.EpicGameLockOrderSpec" and
+  "Arkham.Api.MainStreetSwapPlanSpec" for the pure ordering function
+  itself, and why ordinal plays no part in it), then calls
+  'performMainStreetSwap' exactly once, and reports
+  'MainStreetSwapCompleted' carrying a plan whose
+  'firstGameId'\/'secondGameId' are unchanged from the request regardless
+  of lock order;
 * a failure injected at either 'resolveSwapGame' call, either 'lockSwapGame'
   call, or 'performMainStreetSwap' itself can never produce a
   success-shaped ('MainStreetSwapCompleted', or any other) result, and no
@@ -290,7 +291,7 @@ spec = describe "planAndExecuteMainStreetSwap (Main Street swap decision sequenc
             (Map.fromList [(1, Just (fixtureGameId 1)), (2, Just (fixtureGameId 2))])
             (Map.fromList [(fixtureGameId 1, True), (fixtureGameId 2, True)])
         (result, log_) = run FailNever state_ 1 2
-        expectedPlan = mainStreetSwapPlan (1, fixtureGameId 1) (2, fixtureGameId 2)
+        expectedPlan = mainStreetSwapPlan (fixtureGameId 1) (fixtureGameId 2)
     result `shouldBe` Right (MainStreetSwapCompleted expectedPlan)
     log_
       `shouldBe` [ ResolvedGame 1 (Just (fixtureGameId 1))
@@ -306,7 +307,7 @@ spec = describe "planAndExecuteMainStreetSwap (Main Street swap decision sequenc
             (Map.fromList [(1, Just (fixtureGameId 1)), (2, Just (fixtureGameId 2))])
             (Map.fromList [(fixtureGameId 1, True), (fixtureGameId 2, True)])
         (result, log_) = run FailNever state_ 2 1
-        expectedPlan = mainStreetSwapPlan (2, fixtureGameId 2) (1, fixtureGameId 1)
+        expectedPlan = mainStreetSwapPlan (fixtureGameId 2) (fixtureGameId 1)
     result `shouldBe` Right (MainStreetSwapCompleted expectedPlan)
     expectedPlan.lockOrder `shouldBe` [fixtureGameId 1, fixtureGameId 2]
     expectedPlan.firstGameId `shouldBe` fixtureGameId 2

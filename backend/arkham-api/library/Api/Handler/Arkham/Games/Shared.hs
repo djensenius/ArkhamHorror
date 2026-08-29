@@ -5,7 +5,6 @@
 module Api.Handler.Arkham.Games.Shared where
 
 import Api.Arkham.Epic (
-  EpicGameLockRef (..),
   applyEpicDeltasLocked,
   canonicalEpicGameLockOrder,
   lookupGameEvent,
@@ -914,13 +913,20 @@ directly unit testable without a live database -- see
 -}
 data MainStreetSwapPlan = MainStreetSwapPlan
   { lockOrder :: [ArkhamGameId]
-  -- ^ Every DISTINCT game id among the two involved, in the ascending
-  -- @(group ordinal, game id)@ order both this swap and
-  -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' lock in -- computed
-  -- by the one shared 'canonicalEpicGameLockOrder' both delegate to, so
-  -- neither can independently drift into a different order. A degenerate
-  -- same-game-id request (see below) collapses to a single-element list
-  -- here: locking it once is exactly as sufficient as locking it twice, and
+  -- ^ Every DISTINCT game id among the two involved, ascending by
+  -- 'ArkhamGameId' 's own 'Ord' instance -- computed by the one shared
+  -- 'canonicalEpicGameLockOrder' both this swap and
+  -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' delegate to, so
+  -- neither can independently drift into a different order. Deliberately
+  -- NOT ordered by either group's ordinal: this swap only ever resolves
+  -- TWO of an event's linked games, while a full deletion locks every
+  -- linked game, and an ordinal-based order is not independent of which
+  -- subset of games a caller happens to have -- see
+  -- 'canonicalEpicGameLockOrder' 's Haddock for the concrete scenario
+  -- where that would let this swap and a deletion lock the same pair of
+  -- games in opposite orders. A degenerate same-game-id request (see
+  -- below) collapses to a single-element list here: locking it once is
+  -- exactly as sufficient as locking it twice, and
   -- 'canonicalEpicGameLockOrder' treats "lock each distinct linked game
   -- once" as its own invariant, not an accident of what happens to be
   -- harmless.
@@ -931,32 +937,31 @@ data MainStreetSwapPlan = MainStreetSwapPlan
   }
   deriving stock (Eq, Show)
 
-{- | Build a 'MainStreetSwapPlan' from each side's @(ordinal, game id)@. The
-lock order is always ascending by @(ordinal, game id)@ regardless of which
-one the caller called "first" -- matching the fixed order
+{- | Build a 'MainStreetSwapPlan' from each side's resolved game id. The lock
+order is always ascending by 'ArkhamGameId' itself -- regardless of which
+one the caller called "first", and regardless of either game's group
+ordinal -- matching the fixed order
 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' locks linked games in,
-so the two paths can never wait on each other in opposite orders. Both sides
-are handed to 'canonicalEpicGameLockOrder' -- the SAME pure ordering
+so the two paths can never wait on each other in opposite orders. Both game
+ids are handed to 'canonicalEpicGameLockOrder' -- the SAME pure ordering
 function 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' uses for its
-own lock plan, not an independently reimplemented sort here. The
-'firstGameId'\/'secondGameId' fields are copied straight from the input,
-UNSORTED, so the original request's first/second mapping -- which decides
-the actual swap semantics, not just lock order -- is always preserved
-regardless of how 'lockOrder' turned out. A degenerate request where both
-sides resolve to the same game id (which
+own lock plan, not an independently reimplemented sort here, and one that
+takes plain 'ArkhamGameId's, never an ordinal-carrying type, so an ordinal
+cannot be smuggled into the lock order by construction. The
+'firstGameId'\/'secondGameId' fields are copied straight from the
+arguments, UNSORTED, so the original request's first/second mapping --
+which decides the actual swap semantics, not just lock order -- is always
+preserved regardless of how 'lockOrder' turned out. A degenerate request
+where both sides resolve to the same game id (which
 'postApiV1ArkhamEventSwapMainStreetR' already rejects one level up, by
 ordinal) collapses to a single-element 'lockOrder': locking that one game
 once is all a same-transaction re-acquisition of its own lock would
 accomplish anyway.
 -}
-mainStreetSwapPlan :: (Int, ArkhamGameId) -> (Int, ArkhamGameId) -> MainStreetSwapPlan
-mainStreetSwapPlan (firstOrdinal, firstGameId) (secondOrdinal, secondGameId) =
+mainStreetSwapPlan :: ArkhamGameId -> ArkhamGameId -> MainStreetSwapPlan
+mainStreetSwapPlan firstGameId secondGameId =
   MainStreetSwapPlan
-    { lockOrder =
-        canonicalEpicGameLockOrder
-          [ EpicGameLockRef (GroupOrdinal firstOrdinal) firstGameId
-          , EpicGameLockRef (GroupOrdinal secondOrdinal) secondGameId
-          ]
+    { lockOrder = canonicalEpicGameLockOrder [firstGameId, secondGameId]
     , firstGameId
     , secondGameId
     }
@@ -1067,7 +1072,7 @@ planAndExecuteMainStreetSwap eventId firstOrdinal secondOrdinal = do
     (Just firstGameId, Just secondGameId)
       | firstGameId == secondGameId -> pure MainStreetSwapSameGame
       | otherwise -> do
-          let plan = mainStreetSwapPlan (firstOrdinal, firstGameId) (secondOrdinal, secondGameId)
+          let plan = mainStreetSwapPlan firstGameId secondGameId
           lockResults <- traverse lockSwapGame plan.lockOrder
           if and lockResults
             then do
@@ -1148,11 +1153,19 @@ swap with either ordinal named first (@firstOrdinal@ larger or smaller than
 first/second mapping used for the actual swap semantics and response,
 closes off a cross-path deadlock: without it, a reversed-order swap request
 (say, ordinals 2 then 1) would acquire its first update's implicit row lock
-on game 2 before game 1, while a concurrent deletion always locks in
-ascending order (game 1 before game 2) -- each transaction would then wait
-on the lock the other holds. Acquiring both locks up front, in the one
-fixed order every writer uses, means at most one of these transactions is
-ever waiting at a time.
+on whichever game ordinal 2 resolves to before whichever game ordinal 1
+resolves to. 'mainStreetSwapPlan' 's 'lockOrder' is ascending by
+'ArkhamGameId' ALONE -- never by ordinal, and never dependent on which two
+of an event's linked games this swap happened to resolve -- and
+'Api.Handler.Arkham.Events.deleteEpicEventAggregate' locks every linked
+game in that identical id-ascending order; both writers delegate to the
+one shared 'Api.Arkham.Epic.canonicalEpicGameLockOrder', so they can never
+disagree about which of any two games they have in common should lock
+first, regardless of which subset of an event's games each one resolved
+(see that function's Haddock for why an earlier, ordinal-based version of
+this order was NOT actually safe here). Acquiring both locks up front, in
+the one fixed order every writer uses, means at most one of these
+transactions is ever waiting at a time.
 -}
 swapMainStreetInvestigators :: ArkhamEpicEventId -> Int -> Int -> Handler ()
 swapMainStreetInvestigators eventId firstOrdinal secondOrdinal = do

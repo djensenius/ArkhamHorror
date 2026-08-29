@@ -41,61 +41,57 @@ lookupGameEvent gameId = do
     (evt, Value ordinal) : _ -> Just (evt, GroupOrdinal ordinal)
     [] -> Nothing
 
-{- | A reference to one Epic-linked 'ArkhamGame', for lock-ordering purposes
-only: its group ordinal, and its game id. This is the single ordering key
-shared by every production writer that must lock more than one linked game
-in the same transaction --
-'Api.Handler.Arkham.Events.deleteEpicEventAggregate' (which locks every
-linked game before the event) and
-'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' (which locks the two
-games involved in a Main Street swap) both build a list of these and hand it
-to 'canonicalEpicGameLockOrder' -- neither computes its own, independent
-sort. Only for feeding that one function; not persisted, not compared for
-anything other than its role in that sort.
--}
-data EpicGameLockRef = EpicGameLockRef
-  { epicGameLockRefOrdinal :: GroupOrdinal
-  , epicGameLockRefGameId :: ArkhamGameId
-  }
-  deriving stock (Eq, Show)
-
 {- | The one canonical lock order for a set of Epic-linked games: ascending by
-@(group ordinal, game id)@, with each distinct game id appearing exactly
-once, in that order, no matter how many times (or in what order) it appears
-in the input.
+'ArkhamGameId' itself -- Haskell's own 'Ord' instance for the id, NEVER a
+database @ORDER BY@/collation, and, critically, NEVER a group's ordinal --
+with duplicates collapsed to a single occurrence each.
 
-The game id only ever breaks a tie between two references that share the
-same ordinal. In practice that can't happen for two DIFFERENT games in the
-same event -- 'Entity.Arkham.Epic.ArkhamEpicGroup' 's
-@UniqueEpicGroupOrdinal@ constraint makes ordinals unique per event -- but
-this function does not depend on that database invariant to be safe or
-deterministic: it is included, and tested, purely so this ordering is total
-and reproducible from its OWN definition, not from an assumption about a
-constraint defined elsewhere.
+This must be independent of which SUBSET of an event's linked games a
+particular caller happens to have resolved, and independent of each game's
+group ordinal entirely. Two different production writers only ever see
+different, overlapping subsets of one event's linked games:
+'Api.Handler.Arkham.Events.deleteEpicEventAggregate' locks every game
+linked to an event, while
+'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' locks only the two
+games a single swap request resolved. An earlier version of this function
+ordered by @(group ordinal, game id)@, with game id only a tie-break -- that
+is NOT subset-independent: consider one event with three groups, ordinal 0
+and ordinal 2 both linked to game A, and ordinal 1 linked to a different
+game B. Deletion, handed all three refs, would sort by ordinal first and
+lock @[A, B]@ (A's lowest ordinal, 0, sorts before B's ordinal 1). A swap
+naming ordinals 2 and 1 -- a perfectly ordinary request, since it never
+sees ordinal 0 at all -- would sort ITS two refs by ordinal and lock
+@[B, A]@: B (ordinal 1) before A (ordinal 2). Same underlying pair of
+games, opposite lock order, a real cross-path deadlock. Ordering by the
+game id's OWN 'Ord' instance instead has no such dependency on which
+ordinals happen to be present in a given caller's subset: for any set of
+games, or any subset of them, the relative order of any two IDs that both
+appear is fixed by the ids alone, and can never disagree between callers
+that see different subsets of the same underlying games.
 
-Deduplication matters for both callers today, not just the two-game swap
-case: 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' can be handed
-refs for arbitrarily many linked games in one event, and nothing forbids
-two DIFFERENT groups (at different, non-adjacent ordinals, with some other
-game's group in between) from referencing the SAME game -- so
-deduplication must catch a repeated game id no matter how far apart its
-occurrences land after sorting, not merely when they happen to end up next
-to each other. 'nubOrd' below keeps only the first (i.e. lowest-ordinal)
-occurrence of each distinct game id and drops every later one, using an
-'Ord'-based set rather than a pairwise (and therefore adjacency-dependent)
-comparison, so this holds regardless of how the input is shaped. A
-redundant re-lock of an already-held row is harmless under PostgreSQL's
-semantics (a transaction re-locking a row it already holds is a no-op),
-but every distinct game should still appear exactly once here, as an
-explicit invariant of this function rather than an accident of what
-happens to be harmless: "lock each distinct linked game once, in canonical
-order" is what every caller actually wants.
+Ordinals remain meaningful elsewhere -- deciding WHICH group/game a request
+refers to, and (for a swap) which one is semantically "first" vs "second"
+for the actual swap and its response -- but never for deciding lock
+ACQUISITION order. See 'Api.Handler.Arkham.Events.selectLinkedGameIds' and
+'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan', both of which now
+extract and pass plain 'ArkhamGameId's to this function rather than a
+richer ordinal-carrying type, so a caller cannot accidentally reintroduce
+ordinal into the ordering by construction.
+
+'nubOrd' (an 'Ord'-based set, not a pairwise/adjacency-dependent scan) keeps
+only the first surviving occurrence of each distinct id and drops every
+later one, regardless of how far apart the duplicates land in the input --
+'deleteEpicEventAggregate' can be handed ids for arbitrarily many linked
+games in one event, and nothing forbids two different groups (however far
+apart their ordinals are) from referencing the SAME game. A redundant
+re-lock of an already-held row is harmless under PostgreSQL's semantics
+(re-locking a row a transaction already holds is a no-op), but every
+distinct game should still appear exactly once here, as an explicit
+invariant of this function, not an accident of what happens to be
+harmless.
 -}
-canonicalEpicGameLockOrder :: [EpicGameLockRef] -> [ArkhamGameId]
-canonicalEpicGameLockOrder =
-  nubOrd
-    . map (.epicGameLockRefGameId)
-    . sortOn (\ref -> (ref.epicGameLockRefOrdinal, ref.epicGameLockRefGameId))
+canonicalEpicGameLockOrder :: [ArkhamGameId] -> [ArkhamGameId]
+canonicalEpicGameLockOrder = sort . nubOrd
 
 {- | Build a per-action 'EpicEnv': the current shared state in an 'IORef' plus an
 empty delta buffer that the run loop appends to.

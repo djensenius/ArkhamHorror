@@ -6,98 +6,99 @@ sort. Testing it here, once, directly -- rather than only indirectly through
 each caller's own tests -- is what makes "genuinely one shared function," not
 "two functions that happen to agree today," a checked property.
 
+An earlier version of this function ordered by @(group ordinal, game id)@,
+with game id only a tie-break. That is NOT subset-independent: a full
+deletion sees every one of an event's linked games, while a Main Street swap
+only ever sees the two it resolved, and an ordinal-based order can put the
+same pair of games in OPPOSITE relative order depending on which other
+ordinals happen to be in a caller's particular subset (see this module's
+final test, and 'canonicalEpicGameLockOrder' 's own Haddock, for the
+concrete scenario). Ordering by 'ArkhamGameId' 's own 'Ord' instance alone
+has no such dependency: the relative order of any two ids that both appear
+in ANY subset is fixed by the ids themselves.
+
 These tests prove:
 
-* the result is sorted ascending by @(group ordinal, game id)@, the primary
-  key being the ordinal -- an input whose game ids are NOT in the same order
-  as their ordinals still comes out ordinal-first, proving ordinal (not game
-  id) is the primary sort key;
-* two refs that share the same ordinal but have DISTINCT game ids (which
-  cannot happen for two different games under
-  'Entity.Arkham.Epic.ArkhamEpicGroup' \'s @UniqueEpicGroupOrdinal@
-  constraint today, but which this function does not rely on that database
-  invariant to order deterministically) are ordered by game id as a
-  tie-break;
-* duplicate refs (the same game id appearing more than once, whether at the
-  same ordinal or different ones) collapse to a single occurrence of that
-  game id, in its correct sorted position -- "lock each distinct linked game
-  once, in canonical order" holds regardless of how many times, or in what
-  order, a caller's input repeats a game;
+* the result is sorted ascending by 'ArkhamGameId' alone;
+* duplicate ids (the same game appearing more than once in the input)
+  collapse to a single occurrence, whether the duplicates are adjacent or
+  separated by other distinct ids after sorting;
 * an already-sorted input, an empty input, and a single-element input are
-  all handled without incident (the empty/singleton cases matter for
-  'dedupeSorted' \'s own totality, exercised here as an end-to-end property of
-  the exported function rather than only as an internal implementation
-  detail).
+  all handled without incident;
+* the ordering is genuinely subset-independent: handed the FULL set of ids
+  a deletion would see (including a repeated id, aliased across two
+  ordinals) versus just the SUBSET of two ids a Main Street swap resolved,
+  this function returns the SAME relative order for any pair of ids common
+  to both -- exercised directly against 'mainStreetSwapPlan' 's actual
+  'lockOrder' field, not merely re-derived, with fixture ids chosen so
+  their OWN numeric order deliberately conflicts with any "the game
+  mentioned first/at the lowest ordinal locks first" assumption, so this
+  test cannot pass by coincidence.
 -}
 module Arkham.Api.EpicGameLockOrderSpec (spec) where
 
-import Api.Arkham.Epic (EpicGameLockRef (..), canonicalEpicGameLockOrder)
-import Arkham.Epic.Types (GroupOrdinal (..))
+import Api.Arkham.Epic (canonicalEpicGameLockOrder)
+import Api.Handler.Arkham.Games.Shared (MainStreetSwapPlan (..), mainStreetSwapPlan)
 import Arkham.Prelude
 import Data.UUID qualified as UUID
 import Entity.Arkham.Game qualified as GameEntity
 import Test.Hspec
 
--- | A game id distinguished only by its numeric tag -- deliberately
--- unrelated to any ordinal a test pairs it with, so a test that gives a
--- game id numeric order different from its ordinal order proves ordinal,
--- not game id, is the primary sort key.
+-- | A game id distinguished only by its numeric tag.
 fixtureGameId :: Int -> GameEntity.ArkhamGameId
 fixtureGameId tag = GameEntity.ArkhamGameKey $ UUID.fromWords 0 0 0 (fromIntegral tag)
 
-ref :: Int -> GameEntity.ArkhamGameId -> EpicGameLockRef
-ref ordx = EpicGameLockRef (GroupOrdinal ordx)
-
 spec :: Spec
 spec = describe "canonicalEpicGameLockOrder (shared Epic game lock-order seam)" do
-  it "sorts an already-ordinal-ordered input unchanged" do
-    canonicalEpicGameLockOrder [ref 0 (fixtureGameId 0), ref 1 (fixtureGameId 1), ref 2 (fixtureGameId 2)]
+  it "sorts an already-sorted input unchanged" do
+    canonicalEpicGameLockOrder [fixtureGameId 0, fixtureGameId 1, fixtureGameId 2]
       `shouldBe` [fixtureGameId 0, fixtureGameId 1, fixtureGameId 2]
 
-  it "sorts an unsorted (descending-ordinal) input into ascending ordinal order" do
-    canonicalEpicGameLockOrder [ref 2 (fixtureGameId 2), ref 0 (fixtureGameId 0), ref 1 (fixtureGameId 1)]
+  it "sorts an unsorted input into ascending ArkhamGameId order" do
+    canonicalEpicGameLockOrder [fixtureGameId 2, fixtureGameId 0, fixtureGameId 1]
       `shouldBe` [fixtureGameId 0, fixtureGameId 1, fixtureGameId 2]
 
-  it "orders by ordinal, not by game id, when a game id's own numeric order differs from its ordinal's" do
-    -- Ordinal 0 is paired with the numerically LARGEST game id and ordinal 2
-    -- with the SMALLEST -- if this function sorted by game id instead of
-    -- ordinal, the result would come out reversed.
-    canonicalEpicGameLockOrder [ref 0 (fixtureGameId 99), ref 1 (fixtureGameId 50), ref 2 (fixtureGameId 1)]
-      `shouldBe` [fixtureGameId 99, fixtureGameId 50, fixtureGameId 1]
-
-  it "breaks a tie between two refs sharing the same ordinal by ascending game id" do
-    -- Not a case the database's own UniqueEpicGroupOrdinal constraint can
-    -- produce for two DIFFERENT games in the same event today, but this
-    -- function is deterministic and total on its own terms, independent of
-    -- that (or any other) external invariant.
-    canonicalEpicGameLockOrder [ref 0 (fixtureGameId 7), ref 0 (fixtureGameId 3)]
-      `shouldBe` [fixtureGameId 3, fixtureGameId 7]
-
-  it "collapses a game id repeated at the SAME ordinal to a single occurrence" do
-    canonicalEpicGameLockOrder [ref 0 (fixtureGameId 1), ref 0 (fixtureGameId 1)]
+  it "collapses a game id repeated adjacently (after sorting) to a single occurrence" do
+    canonicalEpicGameLockOrder [fixtureGameId 1, fixtureGameId 1]
       `shouldBe` [fixtureGameId 1]
 
-  it "collapses a game id repeated at DIFFERENT ordinals to a single occurrence, in its sorted position" do
-    canonicalEpicGameLockOrder
-      [ref 2 (fixtureGameId 5), ref 0 (fixtureGameId 1), ref 1 (fixtureGameId 5)]
-      `shouldBe` [fixtureGameId 1, fixtureGameId 5]
-
-  it "collapses a game id repeated at NON-ADJACENT ordinals -- with a different game's group in between -- to a single occurrence" do
-    -- Ordinal 0 and ordinal 2 both resolve to game 9, with ordinal 1
-    -- resolving to a DIFFERENT game (4) in between them. After sorting by
-    -- ordinal, the two game-9 occurrences are NOT next to each other in
-    -- the intermediate game-id list ([9, 4, 9]) -- only an adjacency-based
-    -- dedup would miss this and wrongly leave both. This is a real,
-    -- reachable shape for 'Api.Handler.Arkham.Events.deleteEpicEventAggregate':
-    -- nothing prevents two different groups of the same event from
-    -- referencing the same game, with some other group's game ordinally
-    -- between them.
-    canonicalEpicGameLockOrder
-      [ref 0 (fixtureGameId 9), ref 1 (fixtureGameId 4), ref 2 (fixtureGameId 9)]
-      `shouldBe` [fixtureGameId 9, fixtureGameId 4]
+  it "collapses a game id repeated at NON-ADJACENT positions in the input -- with a different id in between -- to a single occurrence" do
+    -- After sorting, the two occurrences of game 9 are separated by game 4
+    -- ([9, 4, 9] in input order) -- only a global (not merely adjacency-based)
+    -- dedup collapses both correctly. This is a real, reachable shape for
+    -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate': nothing prevents
+    -- two different groups of the same event from referencing the same
+    -- game, with some other group's game between them.
+    canonicalEpicGameLockOrder [fixtureGameId 9, fixtureGameId 4, fixtureGameId 9]
+      `shouldBe` [fixtureGameId 4, fixtureGameId 9]
 
   it "handles an empty input" do
     canonicalEpicGameLockOrder [] `shouldBe` ([] :: [GameEntity.ArkhamGameId])
 
   it "handles a single-element input" do
-    canonicalEpicGameLockOrder [ref 0 (fixtureGameId 1)] `shouldBe` [fixtureGameId 1]
+    canonicalEpicGameLockOrder [fixtureGameId 1] `shouldBe` [fixtureGameId 1]
+
+  it "is subset-independent: a full deletion-shaped input (with an aliased game repeated at two ordinals) and a swap-shaped two-element subset agree on the SAME pair's lock order, with fixture ids that deliberately conflict with ordinal/position order" do
+    -- Models one event with three groups: ordinal 0 and ordinal 2 both
+    -- linked to the SAME game (numeric tag 9, deliberately the LARGER of
+    -- the two ids involved), and ordinal 1 linked to a DIFFERENT game
+    -- (numeric tag 3, deliberately the SMALLER). A full deletion would see
+    -- all three refs (in whatever order a query returns them; here,
+    -- ordinal order: game 9, game 3, game 9). A Main Street swap naming
+    -- ordinals 2 and 1 only ever resolves the SUBSET {game 9, game 3} --
+    -- it never even sees ordinal 0. If lock order depended on ordinal (as
+    -- an earlier, buggy version of this function did), deletion would put
+    -- game 9 (lowest ordinal, 0) before game 3 (ordinal 1), while this
+    -- swap would put game 3 (ordinal 1) before game 9 (ordinal 2) -- the
+    -- OPPOSITE order for the same pair of games, a real cross-path
+    -- deadlock. Both must actually agree: ascending by id, [game 3, game 9].
+    let gameAtOrdinal0And2 = fixtureGameId 9
+        gameAtOrdinal1 = fixtureGameId 3
+        deletionFullRefs = [gameAtOrdinal0And2, gameAtOrdinal1, gameAtOrdinal0And2]
+        deletionLockOrder = canonicalEpicGameLockOrder deletionFullRefs
+        -- The swap request names ordinal 2 first, ordinal 1 second --
+        -- exactly mirroring "a request that never sees ordinal 0 at all".
+        swapPlan = mainStreetSwapPlan gameAtOrdinal0And2 gameAtOrdinal1
+    deletionLockOrder `shouldBe` [fixtureGameId 3, fixtureGameId 9]
+    swapPlan.lockOrder `shouldBe` [fixtureGameId 3, fixtureGameId 9]
+    swapPlan.lockOrder `shouldBe` deletionLockOrder

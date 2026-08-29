@@ -36,7 +36,6 @@ module Api.Handler.Arkham.Events (
 ) where
 
 import Api.Arkham.Epic (
-  EpicGameLockRef (..),
   applyEpicDeltasLocked,
   canonicalEpicGameLockOrder,
   modifySharedStateLocked,
@@ -916,9 +915,11 @@ data EventDeletionOutcome
     -- unauthorized/probing caller.
     EventDeletionForbidden
   | -- | The event and every one of its linked group games were deleted in
-    -- this transaction. Carries the committed game ids, in ordinal order, so
-    -- the caller can run room cleanup for exactly those games once 'runDB'
-    -- returns.
+    -- this transaction. Carries the committed game ids, in ascending
+    -- 'ArkhamGameId' lock order (see 'canonicalEpicGameLockOrder' -- NOT
+    -- ordinal order, which is not subset-independent, see that function's
+    -- Haddock), so the caller can run room cleanup for exactly those games
+    -- once 'runDB' returns.
     EventDeletionDeleted [ArkhamGameId]
   deriving stock (Eq, Show)
 
@@ -988,18 +989,21 @@ class Monad m => MonadEpicEventDeletion m where
   -- membership could change concurrently. Neither call takes a lock, so
   -- neither changes the game-before-event lock order above.
   isEventOrganizer :: ArkhamEpicEventId -> UserId -> m Bool
-  -- | Every linked, non-null group game, as an 'EpicGameLockRef' (its
-  -- ordinal and game id). A plain read -- no lock is taken here; see
-  -- 'lockLinkedGame'. Deliberately returned unsorted from this method's own
-  -- point of view -- 'deleteEpicEventAggregate' is the one place that
-  -- decides the actual lock order, by handing every ref to
+  -- | Every linked, non-null group game id. A plain read -- no lock is
+  -- taken here; see 'lockLinkedGame'. Deliberately returned in whatever
+  -- order a real query happens to return (an @ORDER BY ordinal@ hint is
+  -- harmless, but irrelevant) -- 'deleteEpicEventAggregate' is the one
+  -- place that decides the actual lock order, by handing every id to
   -- 'canonicalEpicGameLockOrder', the SAME function
-  -- 'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' delegates to. A
-  -- production instance may still add a harmless @ORDER BY@ hint to its
-  -- query, but must not rely on that hint alone to be the actual lock
-  -- order: only 'canonicalEpicGameLockOrder' is that order, for both
-  -- writers.
-  selectLinkedGameRefs :: ArkhamEpicEventId -> m [EpicGameLockRef]
+  -- 'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' delegates to.
+  -- Deliberately a plain 'ArkhamGameId', never a richer ordinal-carrying
+  -- type: 'canonicalEpicGameLockOrder' orders by the game id's own 'Ord'
+  -- instance alone, and a group's ordinal must never influence that order
+  -- (see that function's Haddock for why -- ordinal-based ordering is not
+  -- independent of which subset of an event's games a caller resolved,
+  -- and that is exactly the cross-path deadlock this method's signature
+  -- now makes impossible to reintroduce by construction).
+  selectLinkedGameIds :: ArkhamEpicEventId -> m [ArkhamGameId]
   -- | Row-lock one linked game ('FOR UPDATE' in production) and report
   -- whether it is still present. Called once per id from
   -- 'canonicalEpicGameLockOrder'\'s output, in that order, strictly before
@@ -1042,12 +1046,22 @@ class Monad m => MonadEpicEventDeletion m where
    lock-contention/DoS surface this path must not open up. A second
    non-locking read narrows the disclosure window without ever blocking (or
    being blocked by) a concurrent gameplay transaction.
-3. Every linked game is read as an 'EpicGameLockRef' (its ordinal and game
-   id), then handed to 'canonicalEpicGameLockOrder' -- the SAME pure
-   ordering function 'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan'
-   delegates to for its own two-game lock plan -- and locked ('FOR UPDATE')
-   one at a time in exactly that order. Games are ALWAYS locked before the
-   event, matching the lock order live gameplay uses, so a deletion can
+3. Every linked game id is read (plain, unlocked), then handed to
+   'canonicalEpicGameLockOrder' -- the SAME pure ordering function
+   'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' delegates to for its
+   own two-game lock plan -- and locked ('FOR UPDATE') one at a time in
+   exactly that order. That order is ascending by 'ArkhamGameId' alone, NOT
+   by any group's ordinal: ordinal-based ordering is not independent of
+   which subset of an event's linked games a caller happens to have
+   resolved (a full deletion sees every linked game; a Main Street swap
+   only ever sees the two it resolved), and two callers who compute
+   "ascending order" from different, overlapping subsets can disagree about
+   which of a shared pair of games comes first -- see
+   'Api.Arkham.Epic.canonicalEpicGameLockOrder' 's Haddock for the concrete
+   scenario. Ordering by the id's own 'Ord' instance has no such
+   dependency: for any two games that both appear in ANY subset, their
+   relative order is fixed by the ids alone. Games are ALWAYS locked before
+   the event, matching the lock order live gameplay uses, so a deletion can
    never deadlock against a concurrent action on one of its games; and
    because both writers compute their lock order from the one shared
    function, neither can ever independently drift into a different order
@@ -1094,13 +1108,16 @@ deleteEpicEventAggregate eid userId = do
           pure $
             if stillExists then EventDeletionForbidden else EventDeletionMissing
         else do
-          gameRefs <- selectLinkedGameRefs eid
+          gameIds0 <- selectLinkedGameIds eid
           -- Canonical order is decided by 'canonicalEpicGameLockOrder', the
           -- one function this and 'mainStreetSwapPlan' both delegate to --
-          -- never an independently reimplemented sort. Lock every
-          -- still-present linked game, in that order, BEFORE the event --
-          -- never the reverse (see the class Haddock above).
-          let gameIds = canonicalEpicGameLockOrder gameRefs
+          -- ascending by game id ALONE, never by ordinal (see that
+          -- function's Haddock for why ordinal-based ordering is not
+          -- subset-independent) -- never an independently reimplemented
+          -- sort. Lock every still-present linked game, in that order,
+          -- BEFORE the event -- never the reverse (see the class Haddock
+          -- above).
+          let gameIds = canonicalEpicGameLockOrder gameIds0
           presentGameIds <- filterM lockLinkedGame gameIds
           eventStillPresent <- lockEpicEvent eid
           if not eventStillPresent
@@ -1127,18 +1144,16 @@ instance MonadEpicEventDeletion (SqlPersistT Handler) where
       , ArkhamEpicMemberUserId P.==. uid
       , ArkhamEpicMemberRole P.==. Organizer
       ]
-  selectLinkedGameRefs eid = do
+  selectLinkedGameIds eid = do
     rows <- select do
       grp <- from $ table @ArkhamEpicGroup
       where_ $ grp.arkhamEpicEventId ==. val eid
       -- Harmless hint only: 'canonicalEpicGameLockOrder' (not this
-      -- 'ORDER BY') is what actually decides the lock order below.
+      -- 'ORDER BY') is what actually decides the lock order below, and it
+      -- ignores ordinal entirely -- see that function's Haddock.
       orderBy [asc grp.ordinal]
-      pure (grp.ordinal, grp.arkhamGameId)
-    pure
-      [ EpicGameLockRef (GroupOrdinal ordinal) gid
-      | (Value ordinal, Value (Just gid)) <- rows
-      ]
+      pure grp.arkhamGameId
+    pure [gid | Value (Just gid) <- rows]
   lockLinkedGame gid = do
     locked <- select do
       g <- from $ table @ArkhamGame
