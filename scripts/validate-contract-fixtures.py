@@ -174,12 +174,23 @@ def resolve_json_pointer(document, pointer: str):
     return value
 
 
-def _require_object_key(parent: dict, key: str, *, pointer: str) -> None:
-    """Require `key` to exist in `parent`, else fail deterministically via
-    `require()`/`SystemExit` instead of leaking a raw `KeyError` traceback
-    for an invalid/typo'd mutation pointer.
+def _require_object_key(parent, key: str, *, pointer: str, must_exist: bool) -> None:
+    """Require `parent` to actually be a JSON object (not some other scalar
+    reached via an invalid/typo'd mutation pointer), and, for ops where the
+    member must already be present (`remove`/`replace`), require `key` to
+    exist in it. Fails deterministically via `require()`/`SystemExit`
+    instead of leaking a raw `TypeError`/`KeyError` traceback. RFC 6902
+    "add" on an object sets the member whether or not it already existed,
+    so `must_exist=False` skips the existence check for that op while
+    still guarding against a non-dict parent.
     """
-    require(key in parent, f"JSON Pointer segment {key!r} not found (pointer {pointer!r})")
+    require(
+        isinstance(parent, dict),
+        f"Cannot apply an object-keyed mutation to a non-object value at "
+        f"pointer {pointer!r} (parent is {type(parent).__name__})",
+    )
+    if must_exist:
+        require(key in parent, f"JSON Pointer segment {key!r} not found (pointer {pointer!r})")
 
 
 def apply_mutation(value, mutation: dict):
@@ -204,7 +215,7 @@ def apply_mutation(value, mutation: dict):
         if isinstance(parent, list):
             parent = parent[_require_array_index(token, length=len(parent), allow_equal_length=False)]
         elif isinstance(parent, dict):
-            _require_object_key(parent, token, pointer=pointer)
+            _require_object_key(parent, token, pointer=pointer, must_exist=True)
             parent = parent[token]
         else:
             raise SystemExit(f"Cannot descend into scalar with pointer segment {token!r} ({pointer!r})")
@@ -215,14 +226,14 @@ def apply_mutation(value, mutation: dict):
         if isinstance(parent, list):
             del parent[_require_array_index(last, length=len(parent), allow_equal_length=False)]
         else:
-            _require_object_key(parent, last, pointer=pointer)
+            _require_object_key(parent, last, pointer=pointer, must_exist=True)
             del parent[last]
     elif op == "replace":
         require("value" in mutation, "Mutation op 'replace' requires a 'value'")
         if isinstance(parent, list):
             parent[_require_array_index(last, length=len(parent), allow_equal_length=False)] = mutation["value"]
         else:
-            _require_object_key(parent, last, pointer=pointer)
+            _require_object_key(parent, last, pointer=pointer, must_exist=True)
             parent[last] = mutation["value"]
     elif op == "add":
         require("value" in mutation, "Mutation op 'add' requires a 'value'")
@@ -240,7 +251,10 @@ def apply_mutation(value, mutation: dict):
         else:
             # RFC 6902 "add" on an object sets the member whether or not it
             # already existed, so (unlike remove/replace) no key-existence
-            # check is required here.
+            # check is required here -- but the parent must still actually
+            # be an object, not some other scalar reached via an invalid
+            # pointer.
+            _require_object_key(parent, last, pointer=pointer, must_exist=False)
             parent[last] = mutation["value"]
     else:
         raise SystemExit(f"Unknown mutation op: {op!r}")
@@ -501,9 +515,9 @@ def run_apply_mutation_self_test() -> None:
         f"apply_mutation add at index == length must append; got {end_insert['items']!r}",
     )
 
-    def _expect_rejected(mutation: dict, label: str) -> None:
+    def _expect_rejected(mutation: dict, label: str, doc=None) -> None:
         try:
-            apply_mutation(base, mutation)
+            apply_mutation(base if doc is None else doc, mutation)
         except SystemExit:
             return
         raise SystemExit(
@@ -520,8 +534,12 @@ def run_apply_mutation_self_test() -> None:
     # Missing object keys must fail deterministically via require()/SystemExit
     # (a controlled validation error), not leak a raw KeyError traceback.
     obj_base = {"nested": {"present": 1}}
-    _expect_rejected({"op": "remove", "pointer": "/missing"}, "remove (missing top-level key)")
-    _expect_rejected({"op": "replace", "pointer": "/missing", "value": "X"}, "replace (missing top-level key)")
+    _expect_rejected({"op": "remove", "pointer": "/missing"}, "remove (missing top-level key)", doc=obj_base)
+    _expect_rejected(
+        {"op": "replace", "pointer": "/missing", "value": "X"},
+        "replace (missing top-level key)",
+        doc=obj_base,
+    )
     require(
         apply_mutation(obj_base, {"op": "remove", "pointer": "/nested/present"})["nested"] == {},
         "apply_mutation remove of a present key should still succeed",
@@ -544,6 +562,22 @@ def run_apply_mutation_self_test() -> None:
     require(
         added.get("brandNew") == "X" and "brandNew" not in obj_base,
         "apply_mutation add on an object must set a new key without mutating the input",
+    )
+
+    # Every object-keyed op (remove/replace/add) must reject a scalar parent
+    # deterministically (e.g. a pointer that descends one segment too far,
+    # landing on a string/int/bool/null) rather than raising a raw TypeError.
+    scalar_parent_base = {"leaf": "a string, not an object"}
+    _expect_rejected(
+        {"op": "remove", "pointer": "/leaf/nested"}, "remove (scalar parent)", doc=scalar_parent_base
+    )
+    _expect_rejected(
+        {"op": "replace", "pointer": "/leaf/nested", "value": "X"},
+        "replace (scalar parent)",
+        doc=scalar_parent_base,
+    )
+    _expect_rejected(
+        {"op": "add", "pointer": "/leaf/nested", "value": "X"}, "add (scalar parent)", doc=scalar_parent_base
     )
 
 
