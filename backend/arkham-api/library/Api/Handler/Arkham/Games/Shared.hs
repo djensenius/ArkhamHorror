@@ -951,12 +951,17 @@ cannot be smuggled into the lock order by construction. The
 'firstGameId'\/'secondGameId' fields are copied straight from the
 arguments, UNSORTED, so the original request's first/second mapping --
 which decides the actual swap semantics, not just lock order -- is always
-preserved regardless of how 'lockOrder' turned out. A degenerate request
-where both sides resolve to the same game id (which
-'postApiV1ArkhamEventSwapMainStreetR' already rejects one level up, by
-ordinal) collapses to a single-element 'lockOrder': locking that one game
-once is all a same-transaction re-acquisition of its own lock would
-accomplish anyway.
+preserved regardless of how 'lockOrder' turned out. This function itself
+stays total for a degenerate same-game-id call, collapsing to a
+single-element 'lockOrder' (locking that one game once is all a
+same-transaction re-acquisition of its own lock would accomplish anyway);
+in production such a call never actually happens, because
+'planAndExecuteMainStreetSwap' already reports 'MainStreetSwapSameGame' --
+before this function is ever built -- for two DIFFERENT ordinals resolving
+to the same game id. That is a distinct, later check from the handler's
+own ordinal-equality guard in
+'Api.Handler.Arkham.Events.postApiV1ArkhamEventSwapMainStreetR', which only
+rejects requesting the exact same ordinal twice.
 -}
 mainStreetSwapPlan :: ArkhamGameId -> ArkhamGameId -> MainStreetSwapPlan
 mainStreetSwapPlan firstGameId secondGameId =

@@ -30,12 +30,19 @@ These tests prove:
   the actual swap semantics: whose investigator moves where, and the
   response) still reflect exactly what the caller asked, UNCHANGED by the
   sort;
-* a degenerate request where both sides resolve to the same game id (which
-  'Api.Handler.Arkham.Events.postApiV1ArkhamEventSwapMainStreetR' already
-  rejects one level up, by ordinal) still produces a well-defined plan --
-  a single-element lock order, since 'canonicalEpicGameLockOrder' locks
-  each distinct linked game exactly once -- never a crash and never a
-  redundant double-lock of the same row.
+* a degenerate request where both sides resolve to the same game id still
+  produces a well-defined plan from 'mainStreetSwapPlan' itself -- a
+  single-element lock order, since 'canonicalEpicGameLockOrder' locks each
+  distinct linked game exactly once -- never a crash and never a redundant
+  double-lock of the same row. In production this specific call never
+  actually happens, because
+  'Api.Handler.Arkham.Games.Shared.planAndExecuteMainStreetSwap' already
+  reports 'Api.Handler.Arkham.Games.Shared.MainStreetSwapSameGame' one
+  level up -- for two DIFFERENT ordinals resolving to the same game id --
+  before 'mainStreetSwapPlan' is ever built. That is a distinct, later
+  check from the handler's own ordinal-equality guard in
+  'Api.Handler.Arkham.Events.postApiV1ArkhamEventSwapMainStreetR', which
+  only rejects requesting the exact same ordinal twice.
 
 See "Arkham.Api.EpicGameLockOrderSpec" for the direct, cross-path proof
 that 'mainStreetSwapPlan' and 'Api.Handler.Arkham.Events.deleteEpicEventAggregate'
