@@ -23,6 +23,7 @@ resource-ownership plumbing.
 module Api.Arkham.Lifecycle (
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
+  releaseAll,
   shutdownThenDeliver,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
   proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
@@ -77,6 +78,27 @@ each ad-hoc GHCi\/REPL 'Foundation').
 -}
 acquireWithUnconditionalRelease :: IO res -> (res -> IO ()) -> (res -> IO a) -> IO a
 acquireWithUnconditionalRelease = bracket
+
+{- | Run every release action in the list, even if an earlier one throws:
+an earlier failure must never cause a later release to be skipped. If
+one or more actions failed, re-raise the first such failure only once
+every action in the list has actually been attempted; if all succeed,
+this is silent.
+
+Used by 'Application.shutdownApp' to release every foundation-owned
+resource (the AWS supervisor, the room-heartbeat thread, the optional
+pub\/sub-supervisor thread, the Redis connection, and the database
+connection pool) unconditionally, rather than an ordinary sequence of
+plain statements where a single throwing release would abandon every
+release after it -- exactly the "unbounded across restarts" leak this
+guards against.
+-}
+releaseAll :: [IO ()] -> IO ()
+releaseAll actions = do
+  results <- traverse (try @SomeException) actions
+  case [e | Left e <- results] of
+    (e : _) -> throwIO e
+    [] -> pure ()
 
 {- | Run a shutdown action, capturing /any/ exception it raises --
 synchronous, or asynchronous delivered while it is blocked on its own

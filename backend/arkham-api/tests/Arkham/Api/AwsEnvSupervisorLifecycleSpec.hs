@@ -47,6 +47,7 @@ import Api.Arkham.Lifecycle (
   forkTransferringOwnershipUsing,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
   proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
+  releaseAll,
   shutdownThenDeliver,
  )
 import Arkham.Prelude
@@ -851,3 +852,64 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       -- "release is never separately called once the child exists"
       -- contract.
       readIORef released `shouldReturn` 0
+
+  {- | 'Application.shutdownApp' releases every foundation-owned resource
+  (the AWS supervisor, the room-heartbeat thread, the optional
+  pub/sub-supervisor thread, the Redis connection, and the connection
+  pool) via 'releaseAll' rather than a plain sequence of statements, so
+  that an earlier release throwing can never cause a later one to be
+  skipped -- otherwise a single misbehaving release would leave every
+  resource after it leaking on every subsequent 'DevelMain' restart or
+  'Application.handler' call. These tests exercise 'releaseAll' itself
+  (the exact combinator 'shutdownApp' calls), not a locally-duplicated
+  mirror of it.
+  -}
+  describe "releaseAll (Application.shutdownApp resource release, attempt-every-release-even-if-one-throws)" do
+    it "runs every action, in order, when all succeed" do
+      order <- newIORef []
+      let recordOrder n = atomicModifyIORef' order (\xs -> (xs <> [n :: Int], ()))
+      releaseAll [recordOrder 1, recordOrder 2, recordOrder 3]
+      readIORef order `shouldReturn` [1, 2, 3]
+
+    it "still runs every later action even when an earlier one throws, and re-raises that failure" do
+      ranAfterFailure <- newIORef False
+      result <-
+        Exception.try @Exception.SomeException
+          $ releaseAll
+            [ Exception.throwIO (userError "first release failed")
+            , atomicModifyIORef' ranAfterFailure (const (True, ()))
+            ]
+      readIORef ranAfterFailure `shouldReturn` True
+      case result of
+        Left err -> show err `shouldContain` "first release failed"
+        Right () -> expectationFailure "expected the first failure to propagate"
+
+    it "runs every action even when several throw, and surfaces only the first failure" do
+      thirdRan <- newIORef False
+      result <-
+        Exception.try @Exception.SomeException
+          $ releaseAll
+            [ Exception.throwIO (userError "first release failed")
+            , Exception.throwIO (userError "second release failed")
+            , atomicModifyIORef' thirdRan (const (True, ()))
+            ]
+      readIORef thirdRan `shouldReturn` True
+      case result of
+        Left err -> show err `shouldContain` "first release failed"
+        Right () -> expectationFailure "expected the first failure to propagate"
+
+    it "is silent and a no-op for an empty release list" do
+      releaseAll []
+
+    it "mutation check: without attempt-every-release, a later release would be skipped after an earlier failure" do
+      -- Proves the test above is load-bearing: the naive alternative
+      -- (`sequence_`, which abandons every later action once one throws)
+      -- would fail this exact assertion.
+      ranAfterFailure <- newIORef False
+      _ <-
+        Exception.try @Exception.SomeException @()
+          $ sequence_
+            [ Exception.throwIO (userError "first release failed")
+            , atomicModifyIORef' ranAfterFailure (const (True, ()))
+            ]
+      readIORef ranAfterFailure `shouldReturn` False

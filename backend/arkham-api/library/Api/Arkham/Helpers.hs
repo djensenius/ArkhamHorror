@@ -393,15 +393,23 @@ sweepStaleRooms conn gameIds = for_ (nonEmpty $ map roomField gameIds) \fields -
 {- | Background heartbeat: every 'roomHeartbeatSeconds' refresh the seen
 timestamp for every game this pod still has live subscribers for. This
 keeps active games out of the staleness sweep even when nothing else
-(subscribe / unsubscribe) is writing to Redis. Run once per pod via
-'forkIO' from 'makeFoundation'.
+(subscribe / unsubscribe) is writing to Redis. Run once per pod, tracked
+via 'Api.Arkham.Lifecycle.spawnManagedThread' from 'Application.makeFoundation'
+and cancelled\/awaited by 'Application.shutdownApp'.
+
+Deliberately takes the broker and room registry directly rather than a
+whole 'App': 'Application.makeFoundation' needs to spawn this (and
+durably record its 'Api.Arkham.Lifecycle.ManagedThread' handle as
+'appRoomHeartbeatThread') before the 'App' value it would otherwise read
+from exists, and this avoids the self-referential construction that
+would otherwise require.
 -}
-roomHeartbeat :: App -> IO ()
-roomHeartbeat app = case appMessageBroker app of
+roomHeartbeat :: MessageBroker -> MVar (Map ArkhamGameId Room) -> IO ()
+roomHeartbeat broker gameRooms = case broker of
   WebSocketBroker -> pure ()
   RedisBroker conn _ -> forever do
     threadDelay (roomHeartbeatSeconds * 1000000)
-    rooms <- MVar.readMVar (appGameRooms app)
+    rooms <- MVar.readMVar gameRooms
     active <- catMaybes <$> traverse keepIfActive (Map.toList rooms)
     unless (null active) do
       now <- currentEpoch

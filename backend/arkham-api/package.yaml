@@ -111,6 +111,7 @@ library:
     - random-shuffle
     - regex-posix
     - relude
+    - resource-pool
     - safe
     - semialign
     - some
