@@ -91,6 +91,7 @@ import Control.Monad.Except (ExceptT, MonadError, runExceptT, throwError)
 import Control.Monad.State.Strict (MonadState, State, gets, modify, runState)
 import Data.Either (isLeft)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.UUID qualified as UUID
 import Database.Persist.Sql (toSqlKey)
 import Entity.Arkham.Epic qualified as Epic
@@ -206,12 +207,16 @@ fixtureUserId = toSqlKey . fromIntegral
 
 {- | A synthetic 'Entity.Arkham.Player.ArkhamPlayer' row for one swap
 participant -- shaped exactly like what 'lockSwapPlayer' returns in
-production (see 'validateSwapPlayer').
+production (see 'validateSwapPlayer'). Takes an explicit 'User.UserId' (see
+'MainStreetSwapSameUser'\/'MainStreetSwapDestinationOccupied': a swap's two
+participants MUST be distinct users for a "valid" fixture to be realistic
+-- callers use DISTINCT ids for the two sides of an authorized swap, and
+only deliberately share one to build the SAME-user rejection fixture).
 -}
-fixtureArkhamPlayer :: GameEntity.ArkhamGameId -> InvestigatorId -> ArkhamPlayer
-fixtureArkhamPlayer gid iid =
+fixtureArkhamPlayer :: User.UserId -> GameEntity.ArkhamGameId -> InvestigatorId -> ArkhamPlayer
+fixtureArkhamPlayer userId gid iid =
   ArkhamPlayer
-    { arkhamPlayerUserId = fixtureUserId 1
+    { arkhamPlayerUserId = userId
     , arkhamPlayerArkhamGameId = gid
     , arkhamPlayerInvestigatorId = coerce iid
     }
@@ -253,6 +258,9 @@ data Step
   | -- | one participant's 'Entity.Arkham.Player.ArkhamPlayer' row was locked
     -- ('FOR UPDATE'), and whether it was still present
     LockedPlayer PlayerId Bool
+  | -- | one destination game was probed for a pre-existing occupant of the
+    -- given user, and whether one was found
+    CheckedDestinationOccupant GameEntity.ArkhamGameId User.UserId Bool
   | -- | the swap itself was performed, for this plan
     PerformedSwap MainStreetSwapPlan
   deriving stock (Eq, Show)
@@ -298,12 +306,19 @@ is attempted, regardless of what 'relations' resolved it to.
 row -- keyed by 'PlayerId', mirroring how 'lockSwapPlayer' looks one up in
 production -- an absent key (or one mapped to 'Nothing') is "no such row, or
 it vanished concurrently."
+
+'destinationOccupants' models a PRE-EXISTING, unrelated
+'Entity.Arkham.Player.ArkhamPlayer' row occupying @(gameId, userId)@ --
+keyed exactly like 'lookupSwapDestinationOccupant' looks one up in
+production -- a present @(gameId, userId)@ key mapped to 'True' is "yes,
+some OTHER row already occupies this destination for this user."
 -}
 data TestState = TestState
   { steps :: [Step]
   , relations :: Map Int (Maybe GameEntity.ArkhamGameId)
   , gamePresence :: Map GameEntity.ArkhamGameId Bool
   , playerRows :: Map PlayerId (Maybe ArkhamPlayer)
+  , destinationOccupants :: Map (GameEntity.ArkhamGameId, User.UserId) Bool
   , resolveCallCount :: Int
   , lockCallCount :: Int
   , playerLockCallCount :: Int
@@ -319,21 +334,26 @@ fixtureTestState relations gamePresence =
     , relations
     , gamePresence
     , playerRows = mempty
+    , destinationOccupants = mempty
     , resolveCallCount = 0
     , lockCallCount = 0
     , playerLockCallCount = 0
     }
 
+
 -- | State for the 'lockAndValidateSwapPlayers' persistence-seam tests below:
--- only 'playerRows' is relevant, since that function never calls
--- 'resolveSwapGame', 'lockSwapGame', or 'performMainStreetSwap'.
-fixturePlayerTestState :: Map PlayerId (Maybe ArkhamPlayer) -> TestState
-fixturePlayerTestState playerRows =
+-- only 'playerRows' and 'destinationOccupants' are relevant, since that
+-- function never calls 'resolveSwapGame', 'lockSwapGame', or
+-- 'performMainStreetSwap'.
+fixturePlayerTestState
+  :: Map PlayerId (Maybe ArkhamPlayer) -> Map (GameEntity.ArkhamGameId, User.UserId) Bool -> TestState
+fixturePlayerTestState playerRows destinationOccupants =
   TestState
     { steps = []
     , relations = mempty
     , gamePresence = mempty
     , playerRows
+    , destinationOccupants
     , resolveCallCount = 0
     , lockCallCount = 0
     , playerLockCallCount = 0
@@ -395,6 +415,11 @@ instance MonadMainStreetSwap TestDB where
     mPlayer <- gets (Map.findWithDefault Nothing pid . (.playerRows))
     recordStep (LockedPlayer pid (isJust mPlayer))
     pure mPlayer
+
+  lookupSwapDestinationOccupant gid userId _excludedPid = do
+    occupied <- gets (Map.findWithDefault False (gid, userId) . (.destinationOccupants))
+    recordStep (CheckedDestinationOccupant gid userId occupied)
+    pure occupied
 
   performMainStreetSwap plan _firstRaw _secondRaw = do
     failIfConfigured FailAtPerform
@@ -721,6 +746,14 @@ swapPreconditionHelpersSpec = describe "swap precondition helpers (production-us
           entities = fixtureEntitiesWithInvestigator daisyId investigator
       resolveSwapInvestigator rolandId entities `shouldBe` Left MainStreetSwapInvestigatorMissing
 
+    it "a map key that does not match the resolved investigator's own internal id (a stale/corrupt keying, however it could arise) reports InvestigatorKeyMismatch, not a successful resolution under the wrong identity" do
+      -- Genuinely construct an investigator whose OWN internal id is daisyId,
+      -- then store it under the UNRELATED key rolandId: the map lookup by
+      -- rolandId succeeds, but the resolved investigator's own id disagrees.
+      let mismatched = fixtureInvestigator daisyId (fixturePlayerId 1) (fixtureLocationId 1)
+          entities = fixtureEntitiesWithInvestigator rolandId mismatched
+      resolveSwapInvestigator rolandId entities `shouldBe` Left MainStreetSwapInvestigatorKeyMismatch
+
   describe "validateSwapPlacement" do
     it "an investigator still at the expected destination validates successfully" do
       let destination = fixtureLocationId 1
@@ -831,7 +864,7 @@ validateSwapPlayerSpec = describe "validateSwapPlayer (locked ArkhamPlayer row c
       otherGid = fixtureGameId 2
 
   it "a present row matching both the expected source game and investigator validates successfully" do
-    let player = fixtureArkhamPlayer gid rolandId
+    let player = fixtureArkhamPlayer (fixtureUserId 1) gid rolandId
     case validateSwapPlayer gid rolandId (Just player) of
       Right validated -> do
         arkhamPlayerArkhamGameId validated `shouldBe` gid
@@ -844,13 +877,13 @@ validateSwapPlayerSpec = describe "validateSwapPlayer (locked ArkhamPlayer row c
       other -> expectationFailure $ "expected PlayerMissing, got: " <> show other
 
   it "a present row linked to a DIFFERENT game than expected reports PlayerWrongGame" do
-    let player = fixtureArkhamPlayer otherGid rolandId
+    let player = fixtureArkhamPlayer (fixtureUserId 1) otherGid rolandId
     case validateSwapPlayer gid rolandId (Just player) of
       Left MainStreetSwapPlayerWrongGame -> pure ()
       other -> expectationFailure $ "expected PlayerWrongGame, got: " <> show other
 
   it "a present row in the right game but recorded under a DIFFERENT investigator reports PlayerMismatch" do
-    let player = fixtureArkhamPlayer gid daisyId
+    let player = fixtureArkhamPlayer (fixtureUserId 1) gid daisyId
     case validateSwapPlayer gid rolandId (Just player) of
       Left MainStreetSwapPlayerMismatch -> pure ()
       other -> expectationFailure $ "expected PlayerMismatch, got: " <> show other
@@ -910,6 +943,18 @@ swapInvestigatorStateEndToEndSpec =
               arrivedDaisy = Map.lookup daisyId (entitiesInvestigators (gameEntities transform.firstGame'))
           (attr investigatorPlacement <$> arrivedRoland) `shouldBe` Just (AtLocation locB)
           (attr investigatorPlacement <$> arrivedDaisy) `shouldBe` Just (AtLocation locA)
+          -- Every remaining investigator's map key exactly matches its own
+          -- internal id, and gamePlayerOrder contains exactly those same
+          -- ids -- proving the transform never re-keys under a caller-
+          -- supplied id (see 'MainStreetSwapInvestigatorKeyMismatch').
+          let keysMatchOwnIds entities =
+                all (\(k, v) -> v.id == k) (Map.toList (entitiesInvestigators entities))
+          keysMatchOwnIds (gameEntities transform.firstGame') `shouldBe` True
+          keysMatchOwnIds (gameEntities transform.secondGame') `shouldBe` True
+          Map.keysSet (entitiesInvestigators (gameEntities transform.firstGame'))
+            `shouldBe` Set.fromList (gamePlayerOrder transform.firstGame')
+          Map.keysSet (entitiesInvestigators (gameEntities transform.secondGame'))
+            `shouldBe` Set.fromList (gamePlayerOrder transform.secondGame')
 
     it "the reported transform's game/player-id fields are exactly computeMainStreetSwap's own (Game, Game, PlayerId, PlayerId), embedded unchanged" do
       case swapInvestigatorState game1 game2 of
@@ -934,6 +979,24 @@ swapInvestigatorStateEndToEndSpec =
     it "a source-game membership inconsistency (investigator present in entities, but absent from gamePlayerOrder) reports ParticipantInconsistent, before any transform" do
       let brokenGame1 = game1 {gamePlayerOrder = []}
       swapInvestigatorState brokenGame1 game2 `shouldBe` Left MainStreetSwapParticipantInconsistent
+
+    it "a stale/corrupt \"mainStreetReady\" key resolving to an investigator recorded under a DIFFERENT internal id reports InvestigatorKeyMismatch (not a swap under the wrong identity), even when the destination independently already contains that other internal id, with no partial swap" do
+      -- readyIid is rolandId, but the entities map stores it under that key
+      -- holding an investigator whose OWN internal id is actually daisyId --
+      -- a stale/corrupt keying, however it could arise in persisted state.
+      let mismatched = fixtureInvestigator daisyId pid1 locA
+          brokenGame1 = fixtureReadyGameWith locA rolandId [(rolandId, mismatched)]
+      -- game2 (daisyAtB, above) already independently contains daisyId as
+      -- its OWN distinct, unrelated ready investigator.
+      swapInvestigatorState brokenGame1 game2 `shouldBe` Left MainStreetSwapInvestigatorKeyMismatch
+
+    it "the same stale/corrupt key/id mismatch reports InvestigatorKeyMismatch even when the destination does NOT otherwise contain that internal id" do
+      let mismatched = fixtureInvestigator daisyId pid1 locA
+          brokenGame1 = fixtureReadyGameWith locA rolandId [(rolandId, mismatched)]
+          skidsId = InvestigatorId (CardCode "01003")
+          destWithoutDaisy = fixtureReadyGame locB skidsId (fixtureInvestigator skidsId pid2 locB)
+      swapInvestigatorState brokenGame1 destWithoutDaisy `shouldBe` Left MainStreetSwapInvestigatorKeyMismatch
+
 
 fixtureTransform :: InvestigatorId -> PlayerId -> InvestigatorId -> PlayerId -> MainStreetSwapTransform
 fixtureTransform firstIid firstPid secondIid secondPid =
@@ -964,13 +1027,17 @@ lockAndValidateSwapPlayersSpec =
         gid2 = fixtureGameId 2
         pid1 = fixturePlayerId 10
         pid2 = fixturePlayerId 20
+        user1 = fixtureUserId 1
+        user2 = fixtureUserId 2
         transform = fixtureTransform rolandId pid1 daisyId pid2
-        run failAt rows = runTestDB failAt (fixturePlayerTestState rows) (lockAndValidateSwapPlayers gid1 gid2 transform)
+        run failAt rows = runTestDB failAt (fixturePlayerTestState rows mempty) (lockAndValidateSwapPlayers gid1 gid2 transform)
+        runWithOccupants failAt rows occupants =
+          runTestDB failAt (fixturePlayerTestState rows occupants) (lockAndValidateSwapPlayers gid1 gid2 transform)
 
-    it "both participant rows present and valid locks in ascending PlayerId order and validates successfully" do
+    it "both participant rows present and valid, DISTINCT users, locks in ascending PlayerId order and validates successfully" do
       let rows =
             Map.fromList
-              [(pid1, Just (fixtureArkhamPlayer gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer gid2 daisyId))]
+              [(pid1, Just (fixtureArkhamPlayer user1 gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
           (result, log_) = run FailNever rows
       case result of
         Right (Right (p1, p2)) -> do
@@ -979,19 +1046,27 @@ lockAndValidateSwapPlayersSpec =
           arkhamPlayerArkhamGameId p2 `shouldBe` gid2
           arkhamPlayerInvestigatorId p2 `shouldBe` coerce daisyId
         other -> expectationFailure $ "expected a successful validated pair, got: " <> show other
-      log_ `shouldBe` [LockedPlayer pid1 True, LockedPlayer pid2 True]
+      log_ `shouldBe` [LockedPlayer pid1 True, LockedPlayer pid2 True, CheckedDestinationOccupant gid1 user2 False, CheckedDestinationOccupant gid2 user1 False]
 
     it "requested pids out of ascending order still lock in canonical ascending PlayerId order" do
       let descendingTransform = fixtureTransform daisyId pid2 rolandId pid1
           rows =
             Map.fromList
-              [(pid1, Just (fixtureArkhamPlayer gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer gid2 daisyId))]
-          (_, log_) =
-            runTestDB FailNever (fixturePlayerTestState rows) (lockAndValidateSwapPlayers gid2 gid1 descendingTransform)
-      log_ `shouldBe` [LockedPlayer pid1 True, LockedPlayer pid2 True]
+              [(pid1, Just (fixtureArkhamPlayer user1 gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
+          (result, log_) =
+            runTestDB FailNever (fixturePlayerTestState rows mempty) (lockAndValidateSwapPlayers gid2 gid1 descendingTransform)
+      case result of
+        Right (Right _) -> pure ()
+        other -> expectationFailure $ "expected a successful validated pair, got: " <> show other
+      log_
+        `shouldBe` [ LockedPlayer pid1 True
+                   , LockedPlayer pid2 True
+                   , CheckedDestinationOccupant gid1 user2 False
+                   , CheckedDestinationOccupant gid2 user1 False
+                   ]
 
     it "the FIRST canonically-ordered player row being absent reports PlayerMissing, but BOTH locks are still attempted" do
-      let rows = Map.fromList [(pid2, Just (fixtureArkhamPlayer gid2 daisyId))]
+      let rows = Map.fromList [(pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
           (result, log_) = run FailNever rows
       case result of
         Right (Left MainStreetSwapPlayerMissing) -> pure ()
@@ -999,7 +1074,7 @@ lockAndValidateSwapPlayersSpec =
       log_ `shouldBe` [LockedPlayer pid1 False, LockedPlayer pid2 True]
 
     it "the SECOND canonically-ordered player row being absent reports PlayerMissing, proving the first was genuinely locked first" do
-      let rows = Map.fromList [(pid1, Just (fixtureArkhamPlayer gid1 rolandId))]
+      let rows = Map.fromList [(pid1, Just (fixtureArkhamPlayer user1 gid1 rolandId))]
           (result, log_) = run FailNever rows
       case result of
         Right (Left MainStreetSwapPlayerMissing) -> pure ()
@@ -1009,7 +1084,7 @@ lockAndValidateSwapPlayersSpec =
     it "a failure locking the FIRST canonically-ordered player row cannot produce a success-shaped result, and the second is never attempted" do
       let rows =
             Map.fromList
-              [(pid1, Just (fixtureArkhamPlayer gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer gid2 daisyId))]
+              [(pid1, Just (fixtureArkhamPlayer user1 gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
           (result, log_) = run (FailAtLockPlayer 0) rows
       result `shouldSatisfy` isLeft
       log_ `shouldBe` []
@@ -1017,7 +1092,7 @@ lockAndValidateSwapPlayersSpec =
     it "a failure locking the SECOND canonically-ordered player row proves the first was genuinely locked first" do
       let rows =
             Map.fromList
-              [(pid1, Just (fixtureArkhamPlayer gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer gid2 daisyId))]
+              [(pid1, Just (fixtureArkhamPlayer user1 gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
           (result, log_) = run (FailAtLockPlayer 1) rows
       result `shouldSatisfy` isLeft
       log_ `shouldBe` [LockedPlayer pid1 True]
@@ -1025,7 +1100,7 @@ lockAndValidateSwapPlayersSpec =
     it "a locked row present but linked to the WRONG game reports PlayerWrongGame, with both locks already attempted" do
       let rows =
             Map.fromList
-              [(pid1, Just (fixtureArkhamPlayer gid2 rolandId)), (pid2, Just (fixtureArkhamPlayer gid2 daisyId))]
+              [(pid1, Just (fixtureArkhamPlayer user1 gid2 rolandId)), (pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
           (result, log_) = run FailNever rows
       case result of
         Right (Left MainStreetSwapPlayerWrongGame) -> pure ()
@@ -1035,9 +1110,53 @@ lockAndValidateSwapPlayersSpec =
     it "a locked row present in the right game but recorded under the WRONG investigator reports PlayerMismatch" do
       let rows =
             Map.fromList
-              [(pid1, Just (fixtureArkhamPlayer gid1 daisyId)), (pid2, Just (fixtureArkhamPlayer gid2 daisyId))]
+              [(pid1, Just (fixtureArkhamPlayer user1 gid1 daisyId)), (pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
           (result, log_) = run FailNever rows
       case result of
         Right (Left MainStreetSwapPlayerMismatch) -> pure ()
         other -> expectationFailure $ "expected PlayerMismatch, got: " <> show other
       log_ `shouldBe` [LockedPlayer pid1 True, LockedPlayer pid2 True]
+
+    it "both participants sharing the SAME user reports SameUser, before any destination-occupancy probe or write" do
+      let rows =
+            Map.fromList
+              [(pid1, Just (fixtureArkhamPlayer user1 gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer user1 gid2 daisyId))]
+          (result, log_) = run FailNever rows
+      case result of
+        Right (Left MainStreetSwapSameUser) -> pure ()
+        other -> expectationFailure $ "expected SameUser, got: " <> show other
+      log_ `shouldBe` [LockedPlayer pid1 True, LockedPlayer pid2 True]
+
+    it "the incoming user for gid1's destination already holding an unrelated seat there (e.g. a pre-existing member/spectator row) reports DestinationOccupied, with BOTH destinations still probed" do
+      let rows =
+            Map.fromList
+              [(pid1, Just (fixtureArkhamPlayer user1 gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
+          -- user2 is arriving in gid1 (pid2's owner swaps into gid1); some OTHER row already occupies it.
+          occupants = Map.fromList [((gid1, user2), True)]
+          (result, log_) = runWithOccupants FailNever rows occupants
+      case result of
+        Right (Left MainStreetSwapDestinationOccupied) -> pure ()
+        other -> expectationFailure $ "expected DestinationOccupied, got: " <> show other
+      log_
+        `shouldBe`
+          [ LockedPlayer pid1 True
+          , LockedPlayer pid2 True
+          , CheckedDestinationOccupant gid1 user2 True
+          , CheckedDestinationOccupant gid2 user1 False
+          ]
+
+    it "the incoming user for gid2's destination already holding an unrelated seat there reports DestinationOccupied, proving BOTH probes are still attempted in canonical (ascending destination game id) order" do
+      let rows =
+            Map.fromList
+              [(pid1, Just (fixtureArkhamPlayer user1 gid1 rolandId)), (pid2, Just (fixtureArkhamPlayer user2 gid2 daisyId))]
+          -- user1 is arriving in gid2 (pid1's owner swaps into gid2); some OTHER row already occupies it.
+          occupants = Map.fromList [((gid2, user1), True)]
+          (result, log_) = runWithOccupants FailNever rows occupants
+      case result of
+        Right (Left MainStreetSwapDestinationOccupied) -> pure ()
+        other -> expectationFailure $ "expected DestinationOccupied, got: " <> show other
+      log_
+        `shouldBe`
+          -- gid1 (ascending) is still probed FIRST (and reports no conflict there), before the
+          -- gid2 probe that actually finds one.
+          [LockedPlayer pid1 True, LockedPlayer pid2 True, CheckedDestinationOccupant gid1 user2 False, CheckedDestinationOccupant gid2 user1 True]

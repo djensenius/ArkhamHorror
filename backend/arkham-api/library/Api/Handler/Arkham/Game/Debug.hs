@@ -8,14 +8,20 @@ module Api.Handler.Arkham.Game.Debug (
   getApiV1ArkhamGameReloadR,
   getApiV1ArkhamGameOpenSeatsR,
   postApiV1ArkhamGameClaimSeatR,
+  ClaimSeatFailure (..),
+  ClaimSeatOutcome (..),
+  MonadClaimSeat (..),
+  planAndExecuteClaimSeat,
 ) where
 
+import Api.Arkham.Epic (lookupGameEvent)
 import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game (ClaimSeatPost (..))
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Card.CardCode
+import Arkham.Epic.Types (EpicRole (GroupPlayer), GroupOrdinal (..))
 import Arkham.Game
 import Arkham.Id
 import Codec.Compression.GZip qualified as GZip
@@ -275,29 +281,196 @@ getApiV1ArkhamGameOpenSeatsR gameId = do
         pure players.investigatorId
     pure $ filter (`notElem` assignedInvestigators) allInvestigators
 
+{- | Every distinct reason a game-seat claim is rejected, decided in the
+fixed order 'planAndExecuteClaimSeat' checks them, all AFTER the target
+game is already locked (see 'lockClaimSeatGame') -- so a concurrent Main
+Street swap that has already locked this same game (see
+'Api.Handler.Arkham.Games.Shared.lockSwapGame') can never be interleaved
+with any of these checks or the eventual player insert\/remap. Mirrors
+'Api.Handler.Arkham.Events.EventDeletionOutcome' and
+'Api.Handler.Arkham.Games.Shared.MainStreetSwapOutcome': the handler maps
+each reason to a distinct, non-leaking HTTP outcome.
+-}
+data ClaimSeatFailure
+  = -- | No such game, or one that vanished concurrently before this lock.
+    ClaimSeatMissingGame
+  | -- | The locked game is not a "WithFriends" multiplayer game.
+    ClaimSeatNotMultiplayer
+  | -- | The requested investigator id is not part of this game at all.
+    ClaimSeatInvalidInvestigator
+  | -- | The requesting user already holds a 'GroupPlayer' membership row
+    -- for this game's Epic event under a DIFFERENT group ordinal --
+    -- the existing "one event group per user" restriction (see
+    -- 'Api.Handler.Arkham.PendingGames.putApiV1ArkhamPendingGameR'), reused
+    -- here rather than duplicated, but checked AFTER this game's own row is
+    -- already locked, unlike that endpoint's own (separately raced) check.
+    ClaimSeatEventMembershipConflict
+  | -- | Some OTHER player already occupies this investigator slot in this
+    -- game.
+    ClaimSeatTaken
+  | -- | This user already holds a seat (any investigator) in this game.
+    ClaimSeatAlreadyJoined
+  deriving stock (Eq, Show)
+
+{- | The result of attempting to plan and execute a game-seat claim, decided
+entirely inside one transaction that locks the target game FIRST (see
+'planAndExecuteClaimSeat'). Only 'ClaimSeatClaimed' means a player row was
+actually inserted.
+-}
+data ClaimSeatOutcome
+  = ClaimSeatRejected ClaimSeatFailure
+  | ClaimSeatClaimed
+  deriving stock (Eq, Show)
+
+{- | Abstract persistence steps needed to plan and execute a game-seat claim.
+Mirrors 'Api.Handler.Arkham.Games.Shared.MonadMainStreetSwap' and
+'Api.Handler.Arkham.Events.MonadEpicEventDeletion': a small set of typed,
+individually testable steps, threaded by 'planAndExecuteClaimSeat' into the
+exact sequencing production runs.
+
+Do not write an instance that catches a write failure inside
+'insertClaimSeatPlayer' and converts it into an ordinary return value of
+this class: as with the sibling classes above, 'runDB' only rolls back on
+an actual uncaught exception, so silently turning one into a normal result
+here would defeat the rollback guarantee.
+-}
+class Monad m => MonadClaimSeat m where
+  -- | Row-lock the target game ('FOR UPDATE' in production) and return its
+  -- CURRENT row if still present, or 'Nothing' if it never existed or
+  -- vanished concurrently. The FIRST mutable database action this flow
+  -- performs, and the ONLY lock it ever takes -- establishing the same
+  -- game-before-player order Main Street swap\/event deletion already use
+  -- (see 'Api.Handler.Arkham.Games.Shared.lockSwapGame'), so this endpoint
+  -- can never insert a player row (or observe a game's state) before that
+  -- lock is held, and can never be reversed relative to those other
+  -- writers.
+  lockClaimSeatGame :: ArkhamGameId -> m (Maybe ArkhamGame)
+  -- | Resolve whether the LOCKED game belongs to an Epic event and, if so,
+  -- which group ordinal it is. A plain, non-locking read (mirrors
+  -- 'lookupGameEvent'), safe here because the game itself is already
+  -- locked by the time 'planAndExecuteClaimSeat' calls this.
+  lookupClaimSeatEvent :: ArkhamGameId -> m (Maybe (ArkhamEpicEventId, Int))
+  -- | The user's existing 'GroupPlayer' membership ordinal for this event,
+  -- if any -- the same restriction
+  -- 'Api.Handler.Arkham.PendingGames.putApiV1ArkhamPendingGameR' already
+  -- enforces for its own (different) join flow.
+  lookupClaimSeatEventMembership :: ArkhamEpicEventId -> UserId -> m (Maybe Int)
+  -- | Whether some OTHER player already occupies this investigator slot in
+  -- this game.
+  isClaimSeatTaken :: ArkhamGameId -> Text -> m Bool
+  -- | Whether this user already holds ANY seat in this game.
+  isClaimSeatAlreadyJoined :: UserId -> ArkhamGameId -> m Bool
+  -- | Insert the new 'Entity.Arkham.Player.ArkhamPlayer' row and remap its
+  -- investigator's stored player UUID. Called from exactly ONE place:
+  -- after every check above has passed, using the SAME locked game this
+  -- whole flow has held throughout.
+  insertClaimSeatPlayer :: UserId -> ArkhamGameId -> Text -> m ()
+
+{- | The game-seat claim decision:
+
+1. Lock the target game FIRST (see 'lockClaimSeatGame'). A missing\/vanished
+   game reports 'ClaimSeatMissingGame' before any other check.
+2. Reject a non-"WithFriends" game ('ClaimSeatNotMultiplayer') and an
+   investigator id not part of this game ('ClaimSeatInvalidInvestigator'),
+   both read from the locked snapshot.
+3. Reject a pre-existing 'GroupPlayer' membership under a DIFFERENT Epic
+   group ordinal ('ClaimSeatEventMembershipConflict') -- checked only now,
+   with the game already locked, so this decision can never be raced by a
+   concurrent claim into (or swap out of) the SAME game.
+4. Reject an already-taken investigator slot ('ClaimSeatTaken') or an
+   already-held seat for this user ('ClaimSeatAlreadyJoined').
+5. Otherwise, insert the player row and remap it (see
+   'insertClaimSeatPlayer'), reporting 'ClaimSeatClaimed'.
+
+This is the single seam production and tests both exercise directly,
+mirroring 'Api.Handler.Arkham.Games.Shared.planAndExecuteMainStreetSwap' and
+'Api.Handler.Arkham.Events.deleteEpicEventAggregate'.
+-}
+planAndExecuteClaimSeat :: MonadClaimSeat m => ArkhamGameId -> UserId -> Text -> m ClaimSeatOutcome
+planAndExecuteClaimSeat gameId userId investigatorId = do
+  mGame <- lockClaimSeatGame gameId
+  case mGame of
+    Nothing -> pure (ClaimSeatRejected ClaimSeatMissingGame)
+    Just game -> do
+      let gameInvestigatorIds =
+            map (normalizeJsonInvestigatorId . unCardCode . unInvestigatorId) $ gamePlayerOrder game.currentData
+      if game.multiplayerVariant /= WithFriends
+        then pure (ClaimSeatRejected ClaimSeatNotMultiplayer)
+        else
+          if investigatorId `notElem` gameInvestigatorIds
+            then pure (ClaimSeatRejected ClaimSeatInvalidInvestigator)
+            else do
+              conflict <- claimSeatEventMembershipConflict gameId userId
+              if conflict
+                then pure (ClaimSeatRejected ClaimSeatEventMembershipConflict)
+                else do
+                  taken <- isClaimSeatTaken gameId investigatorId
+                  if taken
+                    then pure (ClaimSeatRejected ClaimSeatTaken)
+                    else do
+                      joined <- isClaimSeatAlreadyJoined userId gameId
+                      if joined
+                        then pure (ClaimSeatRejected ClaimSeatAlreadyJoined)
+                        else do
+                          insertClaimSeatPlayer userId gameId investigatorId
+                          pure ClaimSeatClaimed
+
+-- | Whether the requesting user already holds a 'GroupPlayer' membership
+-- for this game's Epic event under a DIFFERENT ordinal than this game's
+-- own group -- see 'ClaimSeatEventMembershipConflict'.
+claimSeatEventMembershipConflict :: MonadClaimSeat m => ArkhamGameId -> UserId -> m Bool
+claimSeatEventMembershipConflict gameId userId = do
+  mEvent <- lookupClaimSeatEvent gameId
+  case mEvent of
+    Nothing -> pure False
+    Just (eventId, requestedOrdinal) -> do
+      mExistingOrdinal <- lookupClaimSeatEventMembership eventId userId
+      pure $ case mExistingOrdinal of
+        Just existingOrdinal -> existingOrdinal /= requestedOrdinal
+        Nothing -> False
+
+instance MonadClaimSeat (SqlPersistT Handler) where
+  lockClaimSeatGame gid = do
+    locked <- select do
+      g <- from $ table @ArkhamGame
+      where_ $ g.id ==. val gid
+      locking forUpdate
+      pure g
+    pure $ entityVal <$> listToMaybe locked
+  lookupClaimSeatEvent gid = fmap (\(e, GroupOrdinal o) -> (entityKey e, o)) <$> lookupGameEvent gid
+  lookupClaimSeatEventMembership eid userId = do
+    mMembership <-
+      Persist.selectFirst
+        [ ArkhamEpicMemberArkhamEpicEventId Persist.==. eid
+        , ArkhamEpicMemberUserId Persist.==. userId
+        , ArkhamEpicMemberRole Persist.==. GroupPlayer
+        ]
+        []
+    pure $ arkhamEpicMemberGroupOrdinal . entityVal =<< mMembership
+  isClaimSeatTaken gid investigatorId = do
+    mTaken <- selectOne do
+      players <- from $ table @ArkhamPlayer
+      where_ $ players.arkhamGameId ==. val gid
+      where_ $ players.investigatorId ==. val investigatorId
+      pure players
+    pure $ isJust mTaken
+  isClaimSeatAlreadyJoined userId gid = isJust <$> getBy (UniquePlayer userId gid)
+  insertClaimSeatPlayer userId gid investigatorId = do
+    newPlayerId <- insert $ ArkhamPlayer userId gid investigatorId
+    remapInvestigatorUUID gid investigatorId newPlayerId
+
 postApiV1ArkhamGameClaimSeatR :: ArkhamGameId -> Handler ()
 postApiV1ArkhamGameClaimSeatR gameId = do
   userId <- getRequestUserId
   ClaimSeatPost {investigatorId = rawId} <- requireCheckJsonBody
   let investigatorId = normalizeJsonInvestigatorId rawId
-  runDB do
-    g <- get404 gameId
-    when (g.multiplayerVariant /= WithFriends) do
-      lift $ permissionDenied "This game is not a multiplayer game"
-    let allInvestigators =
-          map (normalizeJsonInvestigatorId . unCardCode . unInvestigatorId)
-            $ gamePlayerOrder g.currentData
-    unless (investigatorId `elem` allInvestigators) do
-      lift $ invalidArgs ["Invalid investigator for this game"]
-    mTaken <- selectOne do
-      players <- from $ table @ArkhamPlayer
-      where_ $ players.arkhamGameId ==. val gameId
-      where_ $ players.investigatorId ==. val investigatorId
-      pure players
-    when (isJust mTaken) do
-      lift $ permissionDenied "This seat is already taken"
-    mAlreadyJoined <- getBy $ UniquePlayer userId gameId
-    when (isJust mAlreadyJoined) do
-      lift $ permissionDenied "You already have a seat in this game"
-    newPlayerId <- insert $ ArkhamPlayer userId gameId investigatorId
-    remapInvestigatorUUID gameId investigatorId newPlayerId
+  outcome <- runDB $ planAndExecuteClaimSeat gameId userId investigatorId
+  case outcome of
+    ClaimSeatRejected ClaimSeatMissingGame -> notFound
+    ClaimSeatRejected ClaimSeatNotMultiplayer -> permissionDenied "This game is not a multiplayer game"
+    ClaimSeatRejected ClaimSeatInvalidInvestigator -> invalidArgs ["Invalid investigator for this game"]
+    ClaimSeatRejected ClaimSeatEventMembershipConflict ->
+      permissionDenied "You already occupy a seat in another group in this event"
+    ClaimSeatRejected ClaimSeatTaken -> permissionDenied "This seat is already taken"
+    ClaimSeatRejected ClaimSeatAlreadyJoined -> permissionDenied "You already have a seat in this game"
+    ClaimSeatClaimed -> pure ()
