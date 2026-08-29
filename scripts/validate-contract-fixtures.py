@@ -312,6 +312,22 @@ def apply_mutation(value, mutation: dict):
     return mutated
 
 
+def preserve_schema_dialect(parent: dict, sub: dict) -> dict:
+    """Return a copy of `sub` carrying `parent`'s explicit `$schema` draft
+    marker, unless `sub` already declares its own. Any standalone schema
+    fragment extracted out of a larger document (a `oneOf` branch, a `$defs`
+    entry, an isolated enum sub-schema for boundary checks, ...) must be
+    validated under the same JSON Schema draft as its parent document;
+    otherwise `validator_for()` picks a dialect from jsonschema-library
+    defaults instead of the contract's explicit draft (2020-12), which can
+    silently change validation behavior across jsonschema versions.
+    """
+    rebased = dict(sub)
+    if "$schema" in parent and "$schema" not in rebased:
+        rebased["$schema"] = parent["$schema"]
+    return rebased
+
+
 def extract_branch_schema(schema: dict, branch):
     """Extract a single `oneOf` branch (by $defs name or by array index) as
     its own standalone schema, rebased onto the parent schema's own $id so
@@ -347,7 +363,7 @@ def extract_branch_schema(schema: dict, branch):
         rebased["$id"] = schema["$id"]
     if "$defs" in schema and "$defs" not in rebased:
         rebased["$defs"] = schema["$defs"]
-    return rebased
+    return preserve_schema_dialect(schema, rebased)
 
 
 def make_validator(schema: dict):
@@ -518,7 +534,7 @@ for enum_boundary_index, check in enumerate(enum_boundary_checks):
 
     sub_schema = resolve_json_pointer(schema_document, schema_pointer)
     require(isinstance(sub_schema, dict) and "enum" in sub_schema, f"{schema_path}{schema_pointer} is not an enum sub-schema")
-    validator = make_validator(sub_schema)
+    validator = make_validator(preserve_schema_dialect(schema_document, sub_schema))
 
     for value in check["validValues"]:
         errors = list(validator.iter_errors(value))
@@ -655,6 +671,76 @@ def run_self_test() -> None:
             "Self-test failure: diagnose_negative() must reject a non-list expectedErrors via a "
             "controlled SystemExit, not raise a raw TypeError while iterating."
         )
+
+    # Prove extract_branch_schema() actually propagates the parent's explicit
+    # $schema dialect marker onto the extracted branch -- not merely that the
+    # key is copied, but that it changes which validator class is selected
+    # (jsonschema's own default dialect, absent an explicit $schema, would
+    # otherwise silently take over for a bare extracted branch).
+    draft07_one_of_schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "oneOf": [{"type": "object"}, {"type": "string"}],
+    }
+    branch_with_dialect = extract_branch_schema(draft07_one_of_schema, 0)
+    require(
+        branch_with_dialect.get("$schema") == "http://json-schema.org/draft-07/schema#",
+        "Self-test failure: extract_branch_schema() must copy the parent schema's $schema dialect "
+        f"marker onto the extracted branch; got {branch_with_dialect.get('$schema')!r}.",
+    )
+    require(
+        validator_for(branch_with_dialect) is validator_for(draft07_one_of_schema),
+        "Self-test failure: extract_branch_schema()'s branch must resolve to the same validator "
+        "class (dialect) as its parent schema, not a jsonschema-library default.",
+    )
+
+    draft07_defs_schema = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "$defs": {"named": {"type": "object"}},
+    }
+    named_branch_with_dialect = extract_branch_schema(draft07_defs_schema, "named")
+    require(
+        named_branch_with_dialect.get("$schema") == "http://json-schema.org/draft-07/schema#",
+        "Self-test failure: extract_branch_schema() must copy $defs's parent $schema dialect marker "
+        f"onto a named $defs branch too; got {named_branch_with_dialect.get('$schema')!r}.",
+    )
+
+    branch_with_own_dialect = extract_branch_schema(
+        {
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "oneOf": [{"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object"}],
+        },
+        0,
+    )
+    require(
+        branch_with_own_dialect.get("$schema") == "https://json-schema.org/draft/2020-12/schema",
+        "Self-test failure: extract_branch_schema() must not overwrite a branch's own already-declared "
+        f"$schema with its parent's; got {branch_with_own_dialect.get('$schema')!r}.",
+    )
+
+    # Prove preserve_schema_dialect() itself -- the helper `enumBoundaryChecks`
+    # relies on directly (not through extract_branch_schema()) -- both copies
+    # a missing dialect marker and resolves to the parent's validator class.
+    draft07_enum_document = {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {"side": {"enum": ["A", "B"]}},
+    }
+    isolated_enum_sub_schema = draft07_enum_document["properties"]["side"]
+    rebased_enum_sub_schema = preserve_schema_dialect(draft07_enum_document, isolated_enum_sub_schema)
+    require(
+        rebased_enum_sub_schema.get("$schema") == "http://json-schema.org/draft-07/schema#",
+        "Self-test failure: preserve_schema_dialect() must copy the parent document's $schema onto an "
+        f"isolated enum sub-schema; got {rebased_enum_sub_schema.get('$schema')!r}.",
+    )
+    require(
+        validator_for(rebased_enum_sub_schema) is validator_for(draft07_enum_document),
+        "Self-test failure: preserve_schema_dialect()'s rebased enum sub-schema must resolve to the "
+        "same validator class (dialect) as its parent document, not a jsonschema-library default.",
+    )
+    require(
+        "$schema" not in isolated_enum_sub_schema,
+        "Self-test failure: preserve_schema_dialect() must not mutate the original sub-schema in "
+        "place.",
+    )
 
 
 def run_apply_mutation_self_test() -> None:
