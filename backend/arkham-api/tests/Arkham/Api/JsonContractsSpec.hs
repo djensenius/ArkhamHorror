@@ -12,7 +12,10 @@ import Arkham.Achievement.Types
   , NightOfTheZealotAchievement (TheZealotsRevenge)
   , TheDunwichLegacyAchievement (TheGangsAllHere)
   )
+import Arkham.Act (lookupAct)
 import Arkham.Asset.Cards qualified as AssetCards
+import Arkham.EnemyLocation (lookupEnemyLocation)
+import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
 import Arkham.Campaign.Option (CampaignOption (..))
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
@@ -24,6 +27,7 @@ import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending)
 import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
 import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Investigator.Cards qualified as InvestigatorCards
+import Arkham.Movement (Destination (ToLocation), Movement (..), MovementMeans (Direct))
 import Arkham.Name (mkName)
 import Arkham.Scenario.Types (Scenario)
 import Arkham.UltimatumsAndBoons.Types
@@ -97,6 +101,30 @@ loadFixtureField fileName fieldName = do
         <> ": "
         <> err
     Aeson.Success value -> pure value
+
+-- | Look up an object key, erroring (via a pure partial function; only used
+-- against fixtures we control) if it is missing or the value is not an object.
+lookupValue :: Text -> Aeson.Value -> Aeson.Value
+lookupValue k (Aeson.Object fields) =
+  fromMaybe
+    (error $ "Missing key " <> Text.unpack k)
+    (AesonKeyMap.lookup (AesonKey.fromText k) fields)
+lookupValue k _ = error $ "Expected an object when looking up " <> Text.unpack k
+
+-- | Override just the @turn@ field of a real @mode.schema.json@-shaped
+-- @{"That": {...}}@ value, used to prove a turn-zero encoding is otherwise
+-- identical to an already schema-validated mode fixture.
+setModeTurn :: Aeson.Value -> Int -> Aeson.Value
+setModeTurn (Aeson.Object outer) turn =
+  case AesonKeyMap.lookup "That" outer of
+    Just (Aeson.Object inner) ->
+      Aeson.Object
+        $ AesonKeyMap.insert
+          "That"
+          (Aeson.Object $ AesonKeyMap.insert "turn" (Aeson.toJSON turn) inner)
+          outer
+    _ -> Aeson.Object outer
+setModeTurn v _ = v
 
 fixtureGameId :: ArkhamGame.ArkhamGameId
 fixtureGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 3
@@ -233,6 +261,109 @@ buildFixtureBoardGame = do
 
 fixtureGame :: Game
 fixtureGame = fixtureBoardGame
+
+{- | A minimal 'TestApp' wired to run pure @HasGame@ helpers (e.g.
+'withActMetadata', 'withEnemyLocationAsLocationData') against an already-built
+game, without repeating scenario setup. Used by small, narrowly-scoped
+fixtures below that only need to prove a single field's real wire shape.
+-}
+runAgainstFixtureBoardGame :: TestAppT a -> IO a
+runAgainstFixtureBoardGame action = do
+  gameRef <- newIORef fixtureBoardGame
+  queueRef <- newQueue []
+  genRef <- newIORef $ mkStdGen fixtureBoardSeed
+  debugLevelRef <- newIORef 0
+  let testApp = TestApp gameRef queueRef genRef Nothing (pure . const ()) debugLevelRef
+  runTestApp testApp action
+
+{- | A second board built by omitting 'EndSetup' (whose handler is what queues
+the real 'BeginRound' message that increments 'ScenarioAttrs.scenarioTurn'
+from its initial 0 -- Scenario/Types.hs and Scenario/Runner.hs). This proves
+the real production turn-zero encoding (issue: mode.schema.json's @turn@
+minimum previously rejected the valid initial value 0).
+-}
+buildFixtureBoardGameAtTurnZero :: IO Game
+buildFixtureBoardGameAtTurnZero = do
+  baseGame <- newGame fixtureBoardScenario fixtureBoardInvestigator
+  let
+    game =
+      baseGame
+        { gameSeed = fixtureBoardSeed
+        , gameInitialSeed = fixtureBoardSeed
+        , gameGitRevision = "contract-fixture"
+        }
+  gameRef <- newIORef game
+  queueRef <- newQueue []
+  genRef <- newIORef $ mkStdGen fixtureBoardSeed
+  debugLevelRef <- newIORef 0
+  let testApp = TestApp gameRef queueRef genRef Nothing (pure . const ()) debugLevelRef
+  runReaderT (overGameM preloadModifiers) testApp
+  runTestApp testApp do
+    pushAndRunAll [StandaloneSetup, Setup]
+    chooseOnlyOption "advance past The Gathering's setup introduction"
+    chooseOnlyOption "reveal and enter the starting location"
+    getGame
+
+fixtureBoardGameAtTurnZero :: Game
+fixtureBoardGameAtTurnZero = unsafePerformIO buildFixtureBoardGameAtTurnZero
+{-# NOINLINE fixtureBoardGameAtTurnZero #-}
+
+{- | The real production @Arkham.EnemyLocation.Cards.shapelessCellar@
+(card code 10547) instantiated via the same pure 'lookupEnemyLocation' that
+handles the real @PlaceEnemyLocation@ message (Game/Runner.hs), then run
+through the real 'withEnemyLocationAsLocationData' encoder (Game.hs) -- the
+distinct, disjoint view PublicGame emits for enemy-location pseudo-locations,
+as opposed to ordinary 'LocationAttrs'.
+-}
+fixtureEnemyLocationView :: Aeson.Value
+fixtureEnemyLocationView = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let
+    enemyLocationId = LocationId $ UUID.fromWords 0 0 0 50
+    enemyLocationCardId = unsafeMakeCardId $ UUID.fromWords 0 0 0 51
+    enemyLocation =
+      lookupEnemyLocation
+        (toCardCode EnemyLocationCards.shapelessCellar)
+        enemyLocationId
+        enemyLocationCardId
+  withEnemyLocationAsLocationData enemyLocation
+{-# NOINLINE fixtureEnemyLocationView #-}
+
+{- | A real, non-random 'Movement' value (Arkham/Movement.hs), built with the
+same production constructors 'move' itself uses, but with fixed ids so the
+fixture is deterministic. Proves 'investigatorMovement :: Maybe Movement'
+(Investigator/Types.hs) is a real object when present, not a bare location-id
+string.
+-}
+fixtureMovement :: Movement
+fixtureMovement =
+  Movement
+    { moveSource = InvestigatorSource (InvestigatorId "01001")
+    , moveTarget = LocationTarget (LocationId $ UUID.fromWords 0 0 0 60)
+    , moveDestination = ToLocation (LocationId $ UUID.fromWords 0 0 0 61)
+    , moveMeans = Direct
+    , moveCancelable = True
+    , movePayAdditionalCosts = False
+    , moveAfter = []
+    , moveAdditionalEnterCosts = Free
+    , moveSkipEngagement = False
+    , moveId = MovementId $ UUID.fromWords 0 0 0 62
+    , moveForced = False
+    , moveFromInPlay = True
+    }
+
+{- | The real "Hot on Your Tail" act (All Or Nothing, card code 90014), the
+production act whose 'actAdvanceCost' is genuinely 'Nothing' (its registered
+'act (2, A) HotOnYourTail Cards.hotOnYourTail Nothing' builder --
+Act/Cards/AllOrNothing/HotOnYourTail.hs), run through the real
+'withActMetadata' encoder. Proves 'ActAttrs.actAdvanceCost :: Maybe Cost'
+(Act/Types.hs) really does encode as JSON null, not an object, when absent.
+-}
+fixtureActNoAdvanceCost :: Aeson.Value
+fixtureActNoAdvanceCost = unsafePerformIO $ runAgainstFixtureBoardGame do
+  case lookupAct (ActId "90014") 1 (unsafeMakeCardId $ UUID.fromWords 0 0 0 70) of
+    Left err -> liftIO $ IOError.ioError $ IOError.userError $ "Could not look up act 90014: " <> show err
+    Right act' -> Aeson.toJSON <$> withActMetadata act'
+{-# NOINLINE fixtureActNoAdvanceCost #-}
 
 fixturePublicGame :: PublicGame ArkhamGame.ArkhamGameId
 fixturePublicGame =
@@ -488,6 +619,32 @@ spec = describe "Native client contract fixtures" do
     fixture <- loadFixture "get-game.json"
 
     Aeson.toJSON fixtureGetGame `shouldBe` fixture
+
+  it "matches the real get-game mode encoder at turn zero (issue: mode.schema.json's turn minimum previously rejected the valid initial value 0, since ScenarioAttrs.scenarioTurn starts at 0 -- Scenario/Types.hs -- and is only incremented by EndSetup's queued BeginRound -- Scenario/Runner.hs)" do
+    getGameFixture <- loadFixture "get-game.json"
+    let
+      embeddedMode = lookupValue "mode" $ lookupValue "game" getGameFixture
+      turnZeroMode = Aeson.toJSON $ gameMode fixtureBoardGameAtTurnZero
+
+    -- The real turn genuinely is 0 (not just schema-permitted).
+    lookupValue "turn" (lookupValue "That" turnZeroMode) `shouldBe` Aeson.Number 0
+    -- Every other field of the real production encoding is identical to the
+    -- already schema-validated get-game.json fixture's mode -- this is a
+    -- targeted single-field (turn) regression, not a second copy of the
+    -- fixture's ~5KB scenario payload.
+    setModeTurn embeddedMode (0 :: Int) `shouldBe` turnZeroMode
+
+  it "matches the real enemy-location view encoder (issue: location.schema.json needed a disjoint oneOf for the enemyLocation:true view Game.hs's withEnemyLocationAsLocationData emits, distinct from ordinary LocationAttrs)" do
+    fixture <- loadFixture "location-enemy-view.json"
+    fixtureEnemyLocationView `shouldBe` fixture
+
+  it "matches the real Movement encoder (issue: investigatorMovement is Maybe Movement, a real object, not a bare location-id string)" do
+    fixture <- loadFixture "movement.json"
+    Aeson.toJSON fixtureMovement `shouldBe` fixture
+
+  it "matches the real act encoder for an act with no advance cost (issue: actAdvanceCost :: Maybe Cost encodes Nothing as null, not an object)" do
+    fixture <- loadFixture "act-no-advance-cost.json"
+    fixtureActNoAdvanceCost `shouldBe` fixture
 
   it "decodes the real password-reset request" do
     request <-

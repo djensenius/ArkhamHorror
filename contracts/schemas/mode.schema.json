@@ -349,8 +349,9 @@
           "type": "array"
         },
         "turn": {
+          "description": "ScenarioAttrs.scenarioTurn (Arkham/Scenario/Types.hs). Initializes at 0 before the scenario's first turn begins.",
           "type": "integer",
-          "minimum": 1
+          "minimum": 0
         },
         "useHardExpertReference": {
           "type": "boolean"

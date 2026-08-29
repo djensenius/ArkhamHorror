@@ -87,7 +87,11 @@ Haskell source is itself closed:
   `decksLayout`/`locationLayout` topology strings, and `difficulty`. The
   campaign-only (`This`) and campaign+scenario (`These`) branches remain
   broad: no fixture exercises them yet, so their shape is asserted only by
-  Haskell's `These` wrapper, not by direct evidence.
+  Haskell's `These` wrapper, not by direct evidence. `turn`
+  (`ScenarioAttrs.scenarioTurn`) has `minimum: 0` (not 1), since a scenario
+  genuinely initializes at turn 0 before its first turn begins; a Haskell
+  assertion proves the real turn-zero encoding is identical to the
+  already-validated `get-game.json` fixture except for that one field.
 - `phaseStep`: the 4-tag `PhaseStep` union, each tag's `contents` a closed
   sub-step enum taken directly from `Arkham.Phase`.
 - `chaosBag` / chaos tokens: all 8 `ChaosBag` fields and all 5 `ChaosToken`
@@ -120,13 +124,47 @@ Known, deliberate scope limits carried by this fixture:
   of the investigators' starting locations are `setAside` cards, not placed
   entities. `connectedLocations`/`directions`/`connectsTo` are therefore
   correctly typed but empty in this fixture — not a fabricated topology.
-- `contracts/manifest.json` has no hash/checksum mechanism to recompute;
-  schema and fixture integrity is enforced entirely by
-  `scripts/validate-contract-fixtures.py`'s registry-based JSON Schema
-  validation, which this slice extends with `negativeFixtures` (missing
-  required fields, wrong tags, malformed IDs, nullability violations, and
-  structural drift) so a schema regression fails loudly instead of silently
-  widening.
+- `location.schema.json` is `oneOf` an ordinary location (all of the above)
+  or the distinct enemy-location view `Arkham.Game.withEnemyLocationAsLocationData`
+  emits (`enemyLocation: true`, `exhausted`, and several ordinary fields
+  omitted entirely) for enemies that occupy their own board position rather
+  than a placed `Location` entity; `fixtures/location-enemy-view.json` is a
+  real production encoding of that second branch (`shapelessCellar`).
+- `investigator.schema.json`'s `movement` is `Maybe Movement`
+  (`InvestigatorAttrs.investigatorMovement`): `null` while no move is
+  mid-resolution, or the full `Movement` object while one is.
+  `fixtures/movement.json` is a real production `Movement` value (an
+  in-progress `Direct` move to a location); `fixtures/get-game.json`'s
+  investigator demonstrates the `null` branch.
+- `act.schema.json`'s `advanceCost` is `Maybe Cost`, encoded as `null` when an
+  act has none (most acts, including every First Night act in this scenario).
+  `fixtures/act-no-advance-cost.json` is the real production encoding of
+  `HotOnYourTail`, an act with no advance cost.
+- Act/agenda `sequence` "side" fields are the closed, all-nullary Haskell
+  unions `Arkham.Act.Sequence.ActSide` (`A`..`H`) and
+  `Arkham.Agenda.Sequence.AgendaSide` (`A`..`D`); the schemas enumerate them
+  exactly. `manifest.json`'s `enumBoundaryChecks` prove both boundary members
+  (e.g. `A`/`H`) validate and an invented member (`Z`) does not, directly
+  against the isolated enum sub-schema — this closed-set risk is fully
+  retired by the Haskell ADT declaration itself, not by needing one JSON
+  sample per letter.
+- `public-game.schema.json` constrains `propertyNames` for every in-scope
+  entity map keyed by a confirmed newtype: `locations` (`LocationId`, UUID,
+  per `Arkham/Id.hs`'s `deriving newtype ToJSONKey`) and
+  `investigators`/`otherInvestigators`/`killedInvestigators`/`acts`/`agendas`
+  (`InvestigatorId`/`ActId`/`AgendaId`, `CardCode`-backed). `CardCode`'s
+  `ToJSONKey` instance always prepends a literal `c`
+  (`Arkham/Card/CardCode.hs`); empirically, every one of the 815 real card
+  codes in `data/cards.json` matches `^[0-9]{5}[a-z]?$`, so the wire key
+  pattern is `^c[0-9]{5}[a-z]?$`. This checkout has no homebrew card data to
+  verify homebrew key forms further, so that is documented as an explicit
+  caveat rather than assumed. The remaining, intentionally out-of-scope
+  entity maps (enemies/assets/treacheries/events/cards/concealed/skills/
+  stories/scarletKeys) are not constrained, since their *value* schemas stay
+  broad.
+- Every governed schema/fixture/document is bound to a recomputed SHA-256 in
+  `manifest.json`'s `artifactHashes`; see "Release immutability and
+  `schemaRevision`" below for the enforcement rule.
 
 Discrepancies found against the Vue native client while grounding this slice
 (cited here per the source-of-truth backend wire output, not fixed, since
@@ -320,14 +358,61 @@ alone.
 mise run contracts:validate
 ```
 
-`contracts:fixtures` also asserts a small set of `manifest.json`
-`negativeFixtures` (`fixtures/invalid/*.json`) fail validation for their
-declared reason: each entry's `expectedError` names the exact instance path,
-JSON Schema keyword, and message substring that must appear somewhere in the
-(recursively flattened) validation error tree, covering a missing required
-field, a wrong closed-union tag, a malformed ID, a nullability violation, and
-structural drift. This catches a schema regression that fails for the wrong
-reason, not just "any failure", alongside the positive fixtures.
+`contracts:fixtures` (`scripts/validate-contract-fixtures.py`) validates
+every schema and positive fixture, then asserts every `manifest.json`
+`negativeFixtures` entry fails validation for exactly its declared reason.
+Each entry is a *single deterministic mutation* (one JSON-Pointer
+`remove`/`replace`/`add` operation) applied to a value looked up, also by
+JSON Pointer, inside an already-validated positive fixture (`basePositiveFixture`
++ `basePointer`) — never a hand-copied duplicate payload. `expectedErrors` is
+matched as an *exact* set against the flattened, normalized error list (every
+declared expectation must be satisfied by exactly one real error, and no
+unexplained extra errors may remain), which catches a regression that fails
+for the wrong reason or fails "more than expected" — not just "any failure".
+For a schema whose root is `oneOf` (e.g. `location.schema.json`,
+`phase-step.schema.json`, `mode.schema.json`), `schemaBranch` (a `$defs` name
+or a `oneOf` array index) scopes the exact-error check to the one production
+branch being tested, while a supplementary check still confirms the full,
+unscoped root schema also rejects the mutated instance overall (proving the
+`oneOf`-wrapper diagnostic without enumerating unrelated sibling-branch
+noise). A self-test (run automatically on every invocation) proves this
+exact-match comparison is actually discriminating: adding one extra,
+undeclared mutation on top of a real registered negative fixture must make
+the comparison fail, even though the originally-expected error is still
+present among the larger error set.
+
+`manifest.json`'s `enumBoundaryChecks` separately prove a handful of closed,
+all-nullary Haskell enums (e.g. act/agenda sequence sides) accept their
+boundary members and reject an invented one, validated directly against the
+isolated enum sub-schema located by JSON Pointer into the *schema* document
+itself — these intentionally make no claim of being production-fixture JSON,
+since the enum's members are already authoritatively fixed by the Haskell
+ADT declaration cited in each schema's description.
+
+### Release immutability and `schemaRevision`
+
+Once a `schemaRevision` has been merged to `main`, every governed artifact at
+that revision — every document in `manifest.json`'s `documents` array, every
+fixture in `fixtures`, and the manifest's own descriptor content (including
+`negativeFixtures`/`enumBoundaryChecks`) — is immutable. `manifest.json`'s
+`artifactHashes` binds a SHA-256 of each governed artifact's real content
+(the manifest hashes itself too, canonicalized with `artifactHashes` zeroed
+out first, to avoid a circular self-hash); `contracts:fixtures` recomputes
+every hash and rejects a missing, extra (stale), or mismatched entry.
+
+`contracts:revision-drift` (`scripts/check-schema-revision-drift.py`)
+enforces the actual bump rule: it recomputes the current governed-artifact
+hash set, recomputes the same hash set as of a resolved base ref (trying, in
+order, `CONTRACT_BASE_REF`, `fork/main`, `origin/main`, `main`, and finally
+the commit this contract effort was originally branched from, as a
+last-resort deterministic pin — all via local `git show <ref>:path`, never a
+network call), and requires `schemaRevision` to have strictly, numerically
+increased whenever that diff is non-empty. A human updating only the hash or
+only the version number is not sufficient; the gate cross-checks both. Its
+comparison logic (`evaluate_drift`) is pure and is proven separately by a set
+of small, fully in-memory self-tests with no git or filesystem dependency,
+demonstrating a same-revision artifact change fails the gate while a
+strictly higher revision passes it — deterministic in any environment.
 
 Contract changes must remain backward compatible with the Vue client. Runtime
 changes belong in separate, small pull requests so they can be contributed

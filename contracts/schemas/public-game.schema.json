@@ -103,24 +103,36 @@
     },
     "locations": {
       "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/uuidMapKey"
+      },
       "additionalProperties": {
         "$ref": "./location.schema.json"
       }
     },
     "investigators": {
       "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
       "additionalProperties": {
         "$ref": "./investigator.schema.json"
       }
     },
     "otherInvestigators": {
       "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
       "additionalProperties": {
         "$ref": "./investigator.schema.json"
       }
     },
     "killedInvestigators": {
       "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
       "additionalProperties": {
         "$ref": "./investigator.schema.json"
       }
@@ -133,12 +145,18 @@
     },
     "acts": {
       "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
       "additionalProperties": {
         "$ref": "./act.schema.json"
       }
     },
     "agendas": {
       "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
       "additionalProperties": {
         "$ref": "./agenda.schema.json"
       }
@@ -316,6 +334,16 @@
       "additionalProperties": {
         "type": "object"
       }
+    },
+    "uuidMapKey": {
+      "description": "Wire key for maps keyed by a UUID-backed newtype (e.g. LocationId, Arkham/Id.hs), whose ToJSONKey is the underlying UUID's textual form.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "cardCodeMapKey": {
+      "description": "Wire key for maps keyed by a CardCode-backed newtype (e.g. InvestigatorId, ActId, AgendaId, Arkham/Id.hs), whose ToJSONKey is CardCode's ToJSONKey (Arkham/Card/CardCode.hs): a literal 'c' prefix followed by the underlying code. Every one of the 815 real card codes in data/cards.json matches ^[0-9]{5}[a-z]?$; homebrew/unofficial content is not constrained by the CardCode type itself (it is plain Text), so this pattern may need broadening if homebrew forms diverge.",
+      "type": "string",
+      "pattern": "^c[0-9]{5}[a-z]?$"
     },
     "objectArray": {
       "type": "array",

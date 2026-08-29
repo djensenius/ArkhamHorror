@@ -1,0 +1,19 @@
+{
+  "advanceCost": null,
+  "breaches": null,
+  "cardId": "00000000-0000-0000-0000-000000000046",
+  "cardsUnderneath": [],
+  "deckId": 1,
+  "flipped": false,
+  "id": "c90014",
+  "keys": [],
+  "meta": null,
+  "modifiers": [],
+  "sequence": [
+    2,
+    "A"
+  ],
+  "tokens": [],
+  "treacheries": [],
+  "usedWheelOfFortuneX": false
+}

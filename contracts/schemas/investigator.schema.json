@@ -318,10 +318,10 @@
       "type": "array"
     },
     "movement": {
-      "description": "The location id this investigator is mid-move toward, if any.",
-      "type": [
-        "string",
-        "null"
+      "description": "InvestigatorAttrs.investigatorMovement (Maybe Movement): the in-progress move this investigator is currently mid-resolving, if any.",
+      "oneOf": [
+        { "$ref": "./movement.schema.json" },
+        { "type": "null" }
       ]
     },
     "mulligansTaken": {

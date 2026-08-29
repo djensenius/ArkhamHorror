@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/cost.schema.json",
+  "title": "Cost",
+  "description": "Arkham.Cost.Cost, derived with Aeson's default sum encoding (backend/arkham-api/library/Arkham/Cost.hs: 'deriveToJSON defaultOptions ''Cost'). Because Cost has constructors with arguments, 'allNullaryToStringTag' does not apply: every constructor -- including nullary ones like 'Free' -- encodes as a TaggedObject ('{\"tag\": ...}', with a 'contents' key added for constructors that carry data). Verified against the real encoder: 'Free' encodes as {\"tag\":\"Free\"}, never a bare string. This is a broad tagged union (dozens of constructors covering action/resource/clue/discard/matcher-driven costs) and stays intentionally out of scope for this contract slice beyond asserting this top-level wire shape -- do not narrow further without dedicated fixture evidence for a specific constructor.",
+  "type": "object",
+  "required": ["tag"],
+  "properties": {
+    "tag": {
+      "type": "string"
+    }
+  }
+}
+

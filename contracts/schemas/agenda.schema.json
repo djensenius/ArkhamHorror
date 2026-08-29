@@ -39,7 +39,9 @@
       ],
       "properties": {
         "agendaSequenceSide": {
-          "type": "string"
+          "description": "Arkham.Agenda.Sequence.AgendaSide (Agenda/Sequence.hs), nullary-only so aeson's allNullaryToStringTag applies and it encodes as a bare string tag.",
+          "type": "string",
+          "enum": ["A", "B", "C", "D"]
         },
         "agendaSequenceStep": {
           "type": "integer"
