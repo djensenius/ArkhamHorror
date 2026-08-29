@@ -109,7 +109,7 @@ for path in sorted(CONTRACTS.rglob("*.json")):
 
 registry = Registry()
 schema_ids: dict[str, str] = {}
-schemas_by_path: dict[str, dict] = {}
+schemas_by_path: dict[str, object] = {}
 for relative_path in documents:
     if not relative_path.endswith(".json"):
         continue
