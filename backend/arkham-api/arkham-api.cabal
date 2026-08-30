@@ -8218,6 +8218,7 @@ library
     , foreign-store
     , hashable
     , hedis
+    , hspec
     , http-api-data
     , http-client
     , http-client-tls

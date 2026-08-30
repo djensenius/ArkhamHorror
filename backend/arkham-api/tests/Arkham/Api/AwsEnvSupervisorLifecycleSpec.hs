@@ -56,6 +56,8 @@ import Api.Arkham.Lifecycle (
 import Arkham.Prelude
 import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay)
 import Control.Exception qualified as Exception
+import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty qualified as NE
 import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Test.Hspec
 
@@ -324,13 +326,16 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     conflated with the (safe-to-retry-immediately) 'StartFailed' case
     above: the acquired resource's own teardown may not have completed,
     so a later caller must not be allowed to silently proceed as if
-    nothing were live. Mutation check: reverting 'StartCleanupFailed'
-    (collapsing it back into 'StartFailed' whenever @release@ itself
-    throws) makes this fail, because 'stopManagedGeneration' would then
-    report 'NothingWasRunning' and reset the lock to 'NotStarted' below,
-    instead of 'StopFailed' leaving it exactly as it was.
+    nothing were live -- 'restartManagedGenerationUsing' itself must
+    refuse to spawn a fresh generation on top of it. Mutation check:
+    reverting 'StartCleanupFailed' (collapsing it back into
+    'StartFailed' whenever @release@ itself throws, or discarding its
+    retained retry capability) makes this fail, because
+    'stopManagedGeneration' would then report 'NothingWasRunning' /
+    silently succeed instead of genuinely retrying the exact retained
+    @release@ action.
     -}
-    it "a failed spawn whose compensating release ALSO fails publishes StartCleanupFailed, not StartFailed, and refuses to retry" do
+    it "a failed spawn whose compensating release ALSO fails publishes StartCleanupFailed carrying a retriable release, and refuses to start a new generation" do
       lock <- newMVar NotStarted
       let spawnErr = userError "spawn failed"
           cleanupErr = userError "release failed too"
@@ -349,9 +354,9 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         Right () -> expectationFailure "expected the release failure to propagate"
       afterFailure <- readMVar lock
       case afterFailure of
-        StartCleanupFailed observedSpawnErr observedCleanupErr -> do
+        StartCleanupFailed observedSpawnErr observedCleanupErrs _retryRelease -> do
           show observedSpawnErr `shouldBe` show spawnErr
-          show observedCleanupErr `shouldBe` show cleanupErr
+          show (NE.head observedCleanupErrs) `shouldBe` show cleanupErr
         _ -> expectationFailure "expected the lock to read StartCleanupFailed, not StartFailed"
       -- Unlike 'StartFailed', a subsequent attempt must refuse to
       -- proceed on top of the possibly-still-held resource: it re-raises
@@ -369,28 +374,197 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       readIORef secondAcquireCalled `shouldReturn` False
       stillUnresolved <- readMVar lock
       case stillUnresolved of
-        StartCleanupFailed _ _ -> pure ()
+        StartCleanupFailed _ _ _ -> pure ()
         _ -> expectationFailure "expected the lock to still read StartCleanupFailed, never reset by a mere retry attempt"
 
     {- | 'stopManagedGeneration''s own side of the same fix: unlike
     'StartFailed' (where nothing is live, so 'stopManagedGeneration'
     safely resets to 'NotStarted' and reports 'NothingWasRunning'),
-    'StartCleanupFailed' must report 'StopFailed' and leave the lock
-    exactly as it was -- there is nothing confirmed released for
-    @shutdown@ to truthfully claim as \"stopped\" or \"nothing running\".
+    'StartCleanupFailed' retains an opaque, retriable release capability
+    that 'stopManagedGeneration' is now the ONE place that actually
+    retries -- see 'Api.Arkham.Lifecycle.stopManagedGeneration''s own
+    Haddock. This covers all three outcomes deterministically: the
+    retained release genuinely succeeding (lock clears to 'NotStarted',
+    'StoppedCleanly' reported); genuinely failing again synchronously
+    (lock keeps 'StartCleanupFailed' with the new failure prepended to
+    its history, 'StopFailed' reported, the SAME capability retained for
+    a further retry); and being asynchronously interrupted mid-retry
+    (lock is restored to the exact prior 'StartCleanupFailed' untouched,
+    and the interrupting exception is rethrown rather than mistaken for
+    a retry failure). Mutation check: reverting to discarding the
+    retained release (e.g. 'const (pure ())' -> always \"succeeds\"
+    without truly retrying, or unconditionally reporting 'StopFailed'
+    without ever clearing the lock on genuine success) makes one of
+    these three cases fail.
     -}
-    it "stopManagedGeneration reports StopFailed (never NothingWasRunning) and never resets a StartCleanupFailed lock" do
+    it "stopManagedGeneration retries the retained release: success clears the lock, sync failure keeps it (with the same capability), async interruption restores it untouched" do
       let spawnErr = userError "spawn failed"
           cleanupErr = userError "release failed too"
-      lock <- newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr))
-      outcome <- stopManagedGeneration lock (\_ -> expectationFailure "cancel should never run: nothing is live")
-      case outcome of
-        StopFailed err -> show err `shouldBe` show cleanupErr
-        _ -> expectationFailure ("expected StopFailed, got " <> show outcome)
-      afterStop <- readMVar lock
-      case afterStop of
-        StartCleanupFailed _ _ -> pure ()
-        _ -> expectationFailure "expected the lock to still read StartCleanupFailed, never reset to NotStarted"
+
+      -- Case 1: retained release genuinely succeeds on retry.
+      succeedingRetryCalls <- newIORef (0 :: Int)
+      let succeedingRetry = modifyIORef' succeedingRetryCalls (+ 1)
+      lockSucceeds <-
+        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) succeedingRetry)
+      outcomeSucceeds <- stopManagedGeneration lockSucceeds (\_ -> expectationFailure "cancel should never run: nothing is live")
+      case outcomeSucceeds of
+        StoppedCleanly -> pure ()
+        _ -> expectationFailure ("expected StoppedCleanly once the retained release genuinely succeeds, got " <> show outcomeSucceeds)
+      readIORef succeedingRetryCalls `shouldReturn` 1
+      afterSuccess <- readMVar lockSucceeds
+      case afterSuccess of
+        NotStarted -> pure ()
+        _ -> expectationFailure "expected the lock to clear to NotStarted once the retained release genuinely succeeded"
+
+      -- Case 2: retained release fails again (synchronously): the SAME
+      -- capability is retained (never replaced by a no-op), and the new
+      -- failure is prepended to the history.
+      let retryErr = userError "release failed again on retry"
+          failingRetry = Exception.throwIO retryErr
+      lockFailsAgain <-
+        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) failingRetry)
+      outcomeFailsAgain <- stopManagedGeneration lockFailsAgain (\_ -> expectationFailure "cancel should never run: nothing is live")
+      case outcomeFailsAgain of
+        StopFailed err -> show err `shouldBe` show retryErr
+        _ -> expectationFailure ("expected StopFailed carrying the new retry failure, got " <> show outcomeFailsAgain)
+      afterFailsAgain <- readMVar lockFailsAgain
+      case afterFailsAgain of
+        StartCleanupFailed _ observedHistory retainedRetry -> do
+          NE.head observedHistory `shouldSatisfy` (\e -> show e == show retryErr)
+          -- the exact same capability must still be retained, callable again
+          retainedRetry `shouldThrow` (\e -> show (e :: SomeException) == show retryErr)
+        _ -> expectationFailure "expected the lock to still read StartCleanupFailed, retaining the exact retry capability"
+
+      -- Case 3: the retry attempt is itself asynchronously interrupted
+      -- mid-retry -- the capability must not be consumed, and the lock
+      -- must be restored to the exact prior state. This is made fully
+      -- deterministic (no timing race): the stopper thread only signals
+      -- 'retryStarted' once it is genuinely blocked inside the retained
+      -- capability, and the main thread only reads the lock after
+      -- blocking on the stopper's own completion ('stopperFinished'),
+      -- never after a fixed sleep.
+      retryStarted <- newEmptyMVar
+      stopperFinished <- newEmptyMVar
+      let blockingRetry = putMVar retryStarted () >> forever (threadDelay 1000)
+      lockInterrupted <-
+        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) blockingRetry)
+      stopperTid <- forkIO do
+        outcome <-
+          Exception.try @Exception.AsyncException
+            (stopManagedGeneration lockInterrupted (\_ -> expectationFailure "cancel should never run: nothing is live"))
+        putMVar stopperFinished outcome
+      takeMVar retryStarted
+      Exception.throwTo stopperTid Exception.ThreadKilled
+      stopperOutcome <- takeMVar stopperFinished
+      case stopperOutcome of
+        Left Exception.ThreadKilled -> pure ()
+        _ -> expectationFailure ("expected the interrupted retry itself to rethrow ThreadKilled, got " <> show stopperOutcome)
+      afterInterrupted <- readMVar lockInterrupted
+      case afterInterrupted of
+        StartCleanupFailed observedSpawnErr' observedHistory' _retainedRetry -> do
+          show observedSpawnErr' `shouldBe` show spawnErr
+          show (NE.head observedHistory') `shouldBe` show cleanupErr
+        _ -> expectationFailure "expected the lock to be restored to the exact StartCleanupFailed it held before the interrupted retry"
+
+    {- | Deterministic (barrier-based, not timing-based) proof that
+    concurrent 'stopManagedGeneration' callers against a shared
+    'StartCleanupFailed' lock are genuinely serialized by the underlying
+    'MVar' (never two retries running at once, never lost history):
+    each of several concurrent callers barrier-waits for the others via
+    'QSemN' before racing 'stopManagedGeneration' together against a
+    retry that fails deterministically for the first N-1 observed
+    attempts, then succeeds on the Nth. Exactly one caller must observe
+    'StoppedCleanly' (the lock finally clearing to 'NotStarted'), and
+    the retained release itself must only ever run once at a time
+    (never re-entered), proving 'stopManagedGeneration''s own 'mask'
+    genuinely excludes overlapping retries rather than merely racing
+    reads of a shared 'IORef'.
+    -}
+    it "concurrent stopManagedGeneration callers against a StartCleanupFailed lock serialize the retained retry: never re-entered, exactly one genuine success" do
+      let spawnErr = userError "spawn failed"
+          cleanupErr = userError "release failed too"
+          callerCount = 8 :: Int
+          succeedOnAttempt = 5 :: Int
+      inFlight <- newIORef (0 :: Int)
+      maxObservedInFlight <- newIORef (0 :: Int)
+      attemptCounter <- newIORef (0 :: Int)
+      let retry = do
+            n <- atomicModifyIORef' inFlight (\c -> (c + 1, c + 1))
+            atomicModifyIORef' maxObservedInFlight (\m -> (max m n, ()))
+            attemptNum <- atomicModifyIORef' attemptCounter (\c -> (c + 1, c + 1))
+            -- Give any (incorrectly) concurrent retry a real chance to
+            -- overlap before this one finishes.
+            threadDelay 5000
+            atomicModifyIORef' inFlight (\c -> (c - 1, ()))
+            when (attemptNum < succeedOnAttempt) (Exception.throwIO (userError ("retry attempt " <> show attemptNum <> " deliberately fails")))
+      lock <- newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) retry)
+      resultsVar <- newMVar ([] :: [StopOutcome])
+      let runCaller = do
+            outcome <- stopManagedGeneration lock (\_ -> expectationFailure "cancel should never run: nothing is live")
+            modifyMVar_ resultsVar (pure . (outcome :))
+      finished <- mapM (const newEmptyMVar) [1 .. callerCount]
+      forM_ finished \doneVar ->
+        void (forkIO (runCaller `Exception.finally` putMVar doneVar ()))
+      mapM_ takeMVar finished
+      readIORef maxObservedInFlight >>= (`shouldSatisfy` (<= (1 :: Int)))
+      results <- readMVar resultsVar
+      let isStoppedCleanly outcome = case outcome of
+            StoppedCleanly -> True
+            _ -> False
+      length (filter isStoppedCleanly results) `shouldBe` 1
+      length results `shouldBe` callerCount
+      finalState <- readMVar lock
+      case finalState of
+        NotStarted -> pure ()
+        _ -> expectationFailure "expected the lock to have cleared to NotStarted once the retained release genuinely succeeded exactly once"
+
+    {- | Root-cause regression for the companion (nested-acquisition)
+    finding: when a nested 'acquireTransferringOwnershipOnSuccess' call
+    (as production nests AWS supervisor -> Redis connection -> pub/sub
+    thread -> DB pool inside 'Application.makeFoundation') has its OWN
+    compensating cleanup fail (because ITS OWN body/use step failed),
+    the resulting 'AcquisitionCleanupFailed' escapes as the outer
+    @acquire@ action itself throwing -- never as a spawn failure. This
+    must be distinguished from an ordinary \"nothing was ever created\"
+    acquisition failure: 'restartManagedGenerationUsing' must map it to
+    the very same 'StartCleanupFailed' (never a plain retryable
+    'StartFailed'), preserving the nested exception's own original
+    failure, its cleanup history, and its exact composed retry
+    capability. Mutation check: collapsing this 'acquire'-side
+    'AcquisitionCleanupFailed' into a plain 'AcquireFailed' (as if
+    nothing were left to clean up) makes this fail, because a
+    subsequent 'stopManagedGeneration' would then report
+    'NothingWasRunning' instead of genuinely retrying the retained
+    inner release.
+    -}
+    it "a nested acquireTransferringOwnershipOnSuccess whose own compensating cleanup fails, thrown from @acquire@ itself, composes into StartCleanupFailed, not StartFailed" do
+      lock <- newMVar NotStarted
+      let innerCleanupErr = userError "inner (Redis) release failed"
+          innerBodyErr = userError "inner nested acquisition's own body failed"
+          acquire :: IO String
+          acquire =
+            acquireTransferringOwnershipOnSuccess
+              (pure ("inner-resource" :: String))
+              (\_ -> Exception.throwIO innerCleanupErr)
+              (\_innerRes -> Exception.throwIO innerBodyErr)
+          release _ = expectationFailure "release should never run: acquire itself failed before any handle to release existed"
+          body _ = pure ()
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
+          cancelChild _ = expectationFailure "cancel should never run: no previous generation existed"
+          fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
+          fakeSpawn _ = expectationFailure "spawn should never run: acquire itself must fail first" >> myThreadId
+      result <-
+        Exception.try @SomeException
+          (restartManagedGenerationUsing lock fakeSpawn cancelChild acquire release body finalize)
+      case result of
+        Left err -> show err `shouldBe` show innerCleanupErr
+        Right () -> expectationFailure "expected the nested cleanup failure to propagate"
+      afterFailure <- readMVar lock
+      case afterFailure of
+        StartCleanupFailed observedOriginal cleanupErrs _retryRelease -> do
+          show observedOriginal `shouldBe` show innerBodyErr
+          NE.head cleanupErrs `shouldSatisfy` (\e -> show e == show innerCleanupErr)
+        _ -> expectationFailure "expected the nested cleanup failure to publish StartCleanupFailed, not StartFailed"
 
     {- | Deterministic (non-racy), matching the equivalent
     'forkTransferringOwnershipUsing' test: the fake @spawn@ blocks forever

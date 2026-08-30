@@ -22,6 +22,7 @@ resource-ownership plumbing.
 -}
 module Api.Arkham.Lifecycle (
   acquireTransferringOwnershipOnSuccess,
+  AcquisitionCleanupFailed (..),
   acquireWithUnconditionalRelease,
   releaseAll,
   shutdownThenDeliver,
@@ -46,10 +47,11 @@ import Control.Concurrent (ThreadId, forkIOWithUnmask)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Exception (
   AsyncException (ThreadKilled),
+  Exception,
   SomeException,
   bracket,
-  bracketOnError,
   finally,
+  fromException,
   mask,
   mask_,
   onException,
@@ -57,23 +59,106 @@ import Control.Exception (
   throwTo,
   try,
  )
+import Data.List.NonEmpty (NonEmpty (..))
+import Data.List.NonEmpty qualified as NE
 import DevelStoreLock qualified
 import Foreign.Store (Store)
 import Prelude
+import UnliftIO.Exception qualified as UE
+
+{- | Thrown by 'acquireTransferringOwnershipOnSuccess' /instead of/
+either individual failure whenever BOTH its own guarded body throws --
+including this thread being asynchronously cancelled while running it --
+AND the compensating release meant to tear down the already-acquired
+resource in response ALSO then fails. Plain 'Control.Exception.bracketOnError'
+cannot represent this: its own compensating cleanup is run for effect
+only, via 'Control.Exception.onException', and if that cleanup itself
+throws, THAT exception silently REPLACES the original one that
+triggered it, with no way for any caller to learn the resource may
+still be live, let alone retry tearing it down -- exactly the MEDIUM
+finding this type fixes (nested Foundation acquisition, e.g. the AWS
+supervisor \/ Redis connection \/ pub\/sub thread \/ database pool chain
+built by 'Application.makeFoundation', whose own compensating release
+can itself throw after a partial construction).
+
+Preserves the /entire/ chronological history of cleanup failures (newest
+first) across however many nested 'acquireTransferringOwnershipOnSuccess'
+layers are involved -- if the body that failed was itself another nested
+call whose own compensating cleanup had already failed (i.e. its own
+exception was already an 'AcquisitionCleanupFailed'), this layer's own
+history is appended, not wrapped, and its own retry capability is
+composed /after/ the inner one's (retrying the innermost-acquired,
+still-outstanding resource first, then this layer's own -- the exact
+reverse of acquisition order, matching every other release ordering in
+this module). The 'acquisitionCleanupFailedOriginal' field always names
+the ORIGINAL failure that started this chain, not a wrapped
+'AcquisitionCleanupFailed' from some deeper layer.
+
+'acquisitionCleanupFailedRetry' is the /exact/, still-outstanding release
+capability: nothing besides the attempt(s) already recorded in
+'acquisitionCleanupFailedDuringCleanup' has actually run it, so it
+remains genuinely safe to retry, any number of times, from anywhere that
+holds this value -- see 'Api.Arkham.Lifecycle.StartCleanupFailed', which
+retains exactly this capability so 'stopManagedGeneration' can actually
+retry it, rather than only ever being able to report the same stale
+failure forever.
+-}
+data AcquisitionCleanupFailed = AcquisitionCleanupFailed
+  { acquisitionCleanupFailedOriginal :: SomeException
+  , acquisitionCleanupFailedDuringCleanup :: NonEmpty SomeException
+  , acquisitionCleanupFailedRetry :: IO ()
+  }
+
+instance Show AcquisitionCleanupFailed where
+  show (AcquisitionCleanupFailed original duringCleanup _) =
+    "AcquisitionCleanupFailed { acquisitionCleanupFailedOriginal = "
+      <> show original
+      <> ", acquisitionCleanupFailedDuringCleanup = "
+      <> show (NE.toList duringCleanup)
+      <> " }"
+
+instance Exception AcquisitionCleanupFailed
 
 {- | Acquire a resource whose ownership transfers to the caller on
 success, but which must never leak: if the body throws, or this thread
 is asynchronously cancelled, after acquisition but before the body
 returns, the resource is released before that exception propagates.
-Exactly 'Control.Exception.bracketOnError' -- used by
-'Application.makeFoundation' (around 'Api.Arkham.AwsEnvSupervisor.newAwsEnvSupervisor',
-so a later Redis\/database initialization failure cannot leak the
-supervisor) and by 'Application.getApplicationRepl' (around
-'Application.makeFoundation' itself, so a later 'Network.Wai.Handler.Warp.getDevSettings'\/
+Used by 'Application.makeFoundation' (around
+'Api.Arkham.AwsEnvSupervisor.newAwsEnvSupervisor', so a later
+Redis\/database initialization failure cannot leak the supervisor) and
+by 'Application.getApplicationRepl' (around 'Application.makeFoundation'
+itself, so a later 'Network.Wai.Handler.Warp.getDevSettings'\/
 'Application.makeApplication' failure cannot leak the whole 'App').
+
+Deliberately hand-rolled rather than plain 'Control.Exception.bracketOnError'
+-- see 'AcquisitionCleanupFailed' for exactly why: when the compensating
+release this function runs in response to the body failing (or this
+thread being cancelled) ITSELF then also fails, this throws
+'AcquisitionCleanupFailed' (carrying both the original failure and the
+exact, still-retriable release capability) instead of letting the
+release's own exception silently discard the original and everything a
+caller would need to retry it.
 -}
 acquireTransferringOwnershipOnSuccess :: IO res -> (res -> IO ()) -> (res -> IO a) -> IO a
-acquireTransferringOwnershipOnSuccess = bracketOnError
+acquireTransferringOwnershipOnSuccess acquire release use = mask $ \restore -> do
+  res <- acquire
+  outcome <- try @SomeException (restore (use res))
+  case outcome of
+    Right a -> pure a
+    Left bodyErr -> do
+      cleanupOutcome <- try @SomeException (release res)
+      case cleanupOutcome of
+        Right () -> throwIO bodyErr
+        Left cleanupErr -> do
+          let (originalErr, priorCleanupErrs, innerRetry) = case fromException bodyErr of
+                Just (AcquisitionCleanupFailed orig prior retry') -> (orig, NE.toList prior, retry')
+                Nothing -> (bodyErr, [], pure ())
+          throwIO
+            AcquisitionCleanupFailed
+              { acquisitionCleanupFailedOriginal = originalErr
+              , acquisitionCleanupFailedDuringCleanup = cleanupErr :| priorCleanupErrs
+              , acquisitionCleanupFailedRetry = innerRetry >> release res
+              }
 
 {- | Acquire a resource and unconditionally release it once the body
 returns, whether it succeeded, threw, or was cancelled -- there is no
@@ -475,12 +560,25 @@ data RestartState handle
     -- clear, e.g. after confirming out-of-band that no resources were
     -- actually leaked.
     RetireFailed handle SomeException
-  | -- | Acquiring the replacement generation's resource itself genuinely
-    -- succeeded (unlike 'StartFailed', where nothing was ever created),
-    -- but @spawn@ then failed, /and/ the compensating @release@ run to
-    -- clean up that already-acquired resource ITSELF also failed. The
-    -- first field is the original @spawn@ failure; the second is that
-    -- @release@'s own failure.
+  | -- | Acquiring (or spawning) the replacement generation's resource
+    -- genuinely failed, /and/ so did every attempt made so far at the
+    -- compensating cleanup meant to tear down whatever was actually
+    -- created before this instead safely retire it. The first field is
+    -- the original failure that triggered cleanup in the first place
+    -- (whether @spawn@ failing at this exact layer, or @acquire@ itself
+    -- throwing 'AcquisitionCleanupFailed' from a failed compensating
+    -- release somewhere inside a /nested/
+    -- 'acquireTransferringOwnershipOnSuccess' -- e.g. the AWS supervisor
+    -- \/ Redis connection \/ pub\/sub thread \/ database pool chain built
+    -- by 'Application.makeFoundation'). The second field is the
+    -- complete, newest-first history of every cleanup attempt's own
+    -- failure (at least one, by construction). The third field is the
+    -- /exact/, still-outstanding release capability: nothing besides the
+    -- attempt(s) recorded in the second field has actually run it, so it
+    -- remains genuinely safe to retry -- see 'stopManagedGeneration',
+    -- which is the only place that ever invokes it, always still
+    -- serialized through the same @lock@ this constructor lives in, and
+    -- always exactly once at a time.
     --
     -- Deliberately distinct from 'StartFailed': that constructor's own
     -- \"safe to treat exactly like 'NotStarted'\" guarantee depends
@@ -488,16 +586,19 @@ data RestartState handle
     -- itself failed), or whatever @acquire@ /did/ create having since
     -- been genuinely, successfully released (@spawn@ failed, but
     -- @release@ then succeeded) -- both cases leave nothing live for a
-    -- subsequent attempt to collide with. Here neither holds: @release@
-    -- itself is the thing that failed, so the resource it was meant to
-    -- tear down may still be fully or partially held. Every production
-    -- gate therefore refuses to treat this as \"safe to retry
-    -- immediately\" the way 'StartFailed' is -- exactly paralleling
-    -- 'RetireFailed' (which this constructor otherwise mirrors, except
-    -- there is no @handle@ here at all: @spawn@ never produced one).
-    -- Recovery is deliberately not automatic, for the same reason as
-    -- 'RetireFailed''s own Haddock.
-    StartCleanupFailed SomeException SomeException
+    -- subsequent attempt to collide with. Here neither holds: cleanup
+    -- itself is the thing that (so far) has failed, so the resource it
+    -- was meant to tear down may still be fully or partially held. Every
+    -- production /start/ gate therefore refuses to treat this as \"safe
+    -- to retry immediately\" the way 'StartFailed' is -- exactly
+    -- paralleling 'RetireFailed' (which this constructor otherwise
+    -- mirrors, except there is no @handle@ here at all). Explicit
+    -- recovery, however, unlike 'RetireFailed', IS possible here: the
+    -- retained capability lets 'stopManagedGeneration' genuinely retry
+    -- the exact same release, any number of times, clearing this state
+    -- (to 'NotStarted') only once one such retry genuinely succeeds --
+    -- see its own Haddock.
+    StartCleanupFailed SomeException (NonEmpty SomeException) (IO ())
 
 {- | The truthful outcome of 'stopManagedGeneration', replacing a plain
 'Bool' (which could only ever distinguish \"something was running\" from
@@ -681,15 +782,17 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
           -- left live for @lock@ to describe.
           putMVar lock (StartFailed spawnErr)
           throwIO spawnErr
-        SpawnFailedUncleanly spawnErr cleanupErr -> do
-          -- @spawn@ failed, and the compensating @release@ run to clean
-          -- up the resource @acquire@ already created ITSELF also
-          -- failed: unlike the case above, that resource's own teardown
-          -- may not actually have completed. Never treat this as \"safe
-          -- to retry immediately\" the way 'StartFailed' is -- see
+        FailedUncleanly originalErr cleanupErrs retryRelease -> do
+          -- Either @spawn@ failed and the compensating @release@ run to
+          -- clean up the resource @acquire@ already created ITSELF also
+          -- failed, or @acquire@ itself threw 'AcquisitionCleanupFailed'
+          -- from a nested compensating-cleanup failure further inside:
+          -- unlike the case above, that resource's own teardown may not
+          -- actually have completed. Never treat this as \"safe to retry
+          -- immediately\" the way 'StartFailed' is -- see
           -- 'StartCleanupFailed''s own Haddock.
-          putMVar lock (StartCleanupFailed spawnErr cleanupErr)
-          throwIO cleanupErr
+          putMVar lock (StartCleanupFailed originalErr cleanupErrs retryRelease)
+          throwIO (NE.head cleanupErrs)
  where
   -- | Retire whatever @priorState@ describes, returning the previous
   -- generation's own teardown outcome (never discarding it -- see this
@@ -708,7 +811,8 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
     NotStarted -> pure (Right ())
     StartFailed _ -> pure (Right ())
     RetireFailed priorHandle err -> pure (Left (RetireFailed priorHandle err, err))
-    StartCleanupFailed spawnErr cleanupErr -> pure (Left (StartCleanupFailed spawnErr cleanupErr, cleanupErr))
+    StartCleanupFailed originalErr cleanupErrs retryRelease ->
+      pure (Left (StartCleanupFailed originalErr cleanupErrs retryRelease, NE.head cleanupErrs))
     Running priorHandle priorDone -> do
       cancel priorHandle
       outcome <- readMVar priorDone
@@ -724,7 +828,16 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
   attemptAcquireAndSpawn restore = do
     acquireResult <- try @SomeException (restore acquire)
     case acquireResult of
-      Left err -> pure (AcquireFailed err)
+      Left err -> pure $ case fromException err of
+        -- @acquire@ was itself a (possibly nested)
+        -- 'acquireTransferringOwnershipOnSuccess' whose own compensating
+        -- cleanup already failed further inside: that failure, and its
+        -- exact retriable capability, is preserved and carried through
+        -- unchanged rather than being flattened into a plain,
+        -- retryable 'AcquireFailed'.
+        Just (AcquisitionCleanupFailed originalErr cleanupErrs retryRelease) ->
+          FailedUncleanly originalErr cleanupErrs retryRelease
+        Nothing -> AcquireFailed err
       Right res -> do
         newDone <- newEmptyMVar
         spawnResult <-
@@ -736,19 +849,24 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
             releaseResult <- try @SomeException (release res)
             pure $ case releaseResult of
               Right () -> SpawnFailedCleanly spawnErr
-              Left cleanupErr -> SpawnFailedUncleanly spawnErr cleanupErr
+              Left cleanupErr -> FailedUncleanly spawnErr (cleanupErr :| []) (release res)
 
 -- | The exact outcome of 'attemptAcquireAndSpawn' (a purely local helper
 -- of 'restartManagedGenerationUsing'): never conflates \"nothing was ever
 -- created\" or \"created, but fully cleaned up\" (both safe to retry
 -- immediately) with \"created, and the cleanup meant to tear it down
--- itself failed\" (never safe to retry immediately -- see
--- 'StartCleanupFailed').
+-- itself failed, at this layer or a nested one\" (never safe to retry
+-- immediately -- see 'StartCleanupFailed').
 data StartAttemptOutcome handle
   = Started handle (MVar (Either SomeException ()))
   | AcquireFailed SomeException
   | SpawnFailedCleanly SomeException
-  | SpawnFailedUncleanly SomeException SomeException
+  | -- | The original failure (@spawn@ failing at this exact layer, or
+    -- @acquire@ itself throwing 'AcquisitionCleanupFailed' from a nested
+    -- layer further inside), the complete newest-first history of every
+    -- cleanup attempt's own failure so far, and the exact, still-
+    -- outstanding release capability.
+    FailedUncleanly SomeException (NonEmpty SomeException) (IO ())
 
 -- | 'restartManagedGenerationUsing', fixed to production's
 -- 'Control.Concurrent.forkIOWithUnmask'.
@@ -794,6 +912,28 @@ failed), @lock@ is set to 'RetireFailed' -- never silently 'NotStarted'
 later 'restartManagedGenerationUsing'\/'stopManagedGeneration' call sees
 that 'RetireFailed' and refuses to silently treat it as \"nothing
 running\" either (see 'RetireFailed''s own Haddock).
+
+If @lock@ instead holds 'StartCleanupFailed', this is the ONE place that
+actually retries its retained release capability -- never merely
+replaying the same stale failure forever (see 'StartCleanupFailed''s own
+Haddock for why the earlier version of this function, which did exactly
+that, was itself a MEDIUM finding): the exact same capability is
+attempted again, serialized against every other caller (concurrent or
+sequential 'stopManagedGeneration'\/'restartManagedGenerationUsing'
+call) via the same @lock@, so at most one retry ever runs at a time and
+each sees the latest history. If this retry genuinely succeeds, @lock@
+is finally cleared to 'NotStarted' and 'StoppedCleanly' is reported --
+the only way out of 'StartCleanupFailed' there is. If it fails again
+(synchronously -- see 'UnliftIO.Exception.tryAny'), the new failure is
+prepended to the retained history and the exact same, still-untouched
+capability is kept for a later retry; 'StopFailed' is returned. If this
+retry attempt is itself asynchronously interrupted (this thread being
+cancelled while blocked inside the capability, mid-retry), the
+capability has not been consumed -- it is a plain, repeatable 'IO' value,
+never mutated in place -- so @lock@ is restored to the exact
+'StartCleanupFailed' it held before this call, with its retry
+capability fully intact for the next caller, and the interrupting
+exception is rethrown rather than being mistaken for a retry failure.
 -}
 stopManagedGeneration :: MVar (RestartState handle) -> (handle -> IO ()) -> IO StopOutcome
 stopManagedGeneration lock cancel = mask $ \restore -> do
@@ -802,7 +942,22 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
     NotStarted -> putMVar lock NotStarted >> pure NothingWasRunning
     StartFailed _ -> putMVar lock NotStarted >> pure NothingWasRunning
     RetireFailed _ err -> putMVar lock priorState >> pure (StopFailed err)
-    StartCleanupFailed _ cleanupErr -> putMVar lock priorState >> pure (StopFailed cleanupErr)
+    StartCleanupFailed originalErr cleanupErrs retryRelease -> do
+      -- The outer 'try' only ever fires for a genuinely asynchronous
+      -- interruption of THIS retry attempt: 'UE.tryAny' (inside)
+      -- already catches every synchronous failure @retryRelease@ itself
+      -- can raise into a plain 'Either', so it can never itself escape
+      -- as a 'Left' here.
+      retryOutcome <- try @SomeException (UE.tryAny (restore retryRelease))
+      case retryOutcome of
+        Left asyncErr -> do
+          putMVar lock priorState
+          throwIO asyncErr
+        Right (Right ()) -> putMVar lock NotStarted >> pure StoppedCleanly
+        Right (Left newCleanupErr) -> do
+          let cleanupErrs' = NE.cons newCleanupErr cleanupErrs
+          putMVar lock (StartCleanupFailed originalErr cleanupErrs' retryRelease)
+          pure (StopFailed newCleanupErr)
     Running priorHandle priorDone -> do
       result <- try @SomeException (cancel priorHandle >> restore (readMVar priorDone))
       case result of
