@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.20",
+  "schemaRevision": "0.1.21",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -8,6 +8,7 @@
     "contracts/route-inventory.json",
     "contracts/schemas/account.schema.json",
     "contracts/schemas/achievements.schema.json",
+    "contracts/schemas/basic-choice-question.schema.json",
     "contracts/schemas/capabilities.schema.json",
     "contracts/schemas/catalog.schema.json",
     "contracts/schemas/client-answer.schema.json",
@@ -28,6 +29,7 @@
     "contracts/schemas/mode.schema.json",
     "contracts/schemas/movement.schema.json",
     "contracts/schemas/name.schema.json",
+    "contracts/schemas/non-negative-int64.schema.json",
     "contracts/schemas/phase-step.schema.json",
     "contracts/schemas/placement.schema.json",
     "contracts/schemas/public-game.schema.json",
@@ -75,6 +77,18 @@
     {
       "path": "contracts/fixtures/get-game.json",
       "schema": "contracts/schemas/get-game.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-choose-one.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-player-window-choose-one.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-window-choose-one.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
       "path": "contracts/fixtures/mode-campaign-only.json",
@@ -221,6 +235,77 @@
     "webClient": "unchanged",
     "nativeClientMinimumRevision": "0.1.0"
   },
+  "canonicalIntegerChecks": [
+    {
+      "description": "Native question choice/version fields use canonical non-negative signed-64 JSON integer tokens.",
+      "schema": "contracts/schemas/non-negative-int64.schema.json",
+      "validBoundaryValues": [
+        0,
+        9223372036854775807
+      ],
+      "invalidBoundaryValues": [
+        -1,
+        9223372036854775808
+      ],
+      "invalidTokenSpellings": [
+        "3.0",
+        "3e0",
+        "3E+0",
+        "-0"
+      ],
+      "fixtureFields": [
+        {
+          "path": "contracts/fixtures/answer-question.json",
+          "pointers": [
+            "/contents/choice",
+            "/contents/questionVersion"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/answer-payment-amounts.json",
+          "pointers": [
+            "/contents/questionVersion"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/answer-amounts.json",
+          "pointers": [
+            "/contents/questionVersion"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/get-game.json",
+          "pointers": [
+            "/game/scenarioSteps"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/game-update.json",
+          "pointers": [
+            "/contents/scenarioSteps"
+          ]
+        }
+      ]
+    }
+  ],
+  "forwardCompatibilityChecks": [
+    {
+      "description": "PublicGame keeps an unknown future Question constructor as opaque object data while the standalone native slice rejects it.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/00000000-0000-0000-0000-000000000001",
+        "value": {
+          "tag": "FutureQuestion",
+          "contents": {
+            "engineOwned": true
+          }
+        }
+      }
+    }
+  ],
   "negativeFixtures": [
     {
       "description": "Location entity missing required shroud field (single 'remove' mutation of the real The Gathering starting location, scoped to the ordinaryLocation oneOf branch).",
@@ -485,6 +570,377 @@
           "messageContains": "does not match '^c[0-9a-z:._-]+$'"
         }
       ]
+    },
+    {
+      "description": "An unknown Question constructor must not be normalized into a supported native action.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "playerWindowChooseOneQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-player-window-choose-one.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "ChooseSome"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "was expected"
+        }
+      ]
+    },
+    {
+      "description": "A supported Question missing its ordered choices cannot become an answerable native prompt.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-choose-one.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'choices' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "An unknown choice-label constructor must remain unsupported rather than becoming a selectable legal action.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "componentLabel",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-player-window-choose-one.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "RawMessageButton"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "was expected"
+        }
+      ]
+    },
+    {
+      "description": "An EndTurnButton missing its opaque messages payload is malformed and cannot be selected.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "endTurnButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-choose-one.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/messages"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'messages' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "An EndTurnButton with a malformed investigator card-code identifier is rejected.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "endTurnButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-choose-one.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/investigatorId",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "investigatorId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "An unknown action-bearing AbilityLabel shape must not be normalized into the supported CORE Investigate action.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "abilityLabel",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-player-window-choose-one.json",
+      "basePointer": "/choices/3",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/ability/type/actions/contents",
+        "value": "Teleport"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "ability",
+            "type",
+            "actions",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "was expected"
+        }
+      ]
+    },
+    {
+      "description": "The native Answer branch requires questionVersion so omission cannot bypass the stale-question guard.",
+      "schema": "contracts/schemas/client-answer.schema.json",
+      "schemaBranch": 0,
+      "basePositiveFixture": "contracts/fixtures/answer-question.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents/questionVersion"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "required",
+          "messageContains": "'questionVersion' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "The native Answer branch rejects uppercase UUID spelling even when format:uuid accepts the same UUID value.",
+      "schema": "contracts/schemas/client-answer.schema.json",
+      "schemaBranch": 0,
+      "basePositiveFixture": "contracts/fixtures/answer-question.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/playerId",
+        "value": "00000000-0000-0000-0000-00000000000A"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "playerId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match"
+        }
+      ]
+    },
+    {
+      "description": "A choice index above signed-64/backend Int maximum is rejected.",
+      "schema": "contracts/schemas/client-answer.schema.json",
+      "schemaBranch": 0,
+      "basePositiveFixture": "contracts/fixtures/answer-question.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/choice",
+        "value": 9223372036854775808
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "choice"
+          ],
+          "keyword": "maximum",
+          "messageContains": "is greater than the maximum"
+        }
+      ]
+    },
+    {
+      "description": "A questionVersion above signed-64/backend Int maximum is rejected.",
+      "schema": "contracts/schemas/client-answer.schema.json",
+      "schemaBranch": 0,
+      "basePositiveFixture": "contracts/fixtures/answer-question.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/questionVersion",
+        "value": 9223372036854775808
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "questionVersion"
+          ],
+          "keyword": "maximum",
+          "messageContains": "is greater than the maximum"
+        }
+      ]
+    },
+    {
+      "description": "PublicGame scenarioSteps above signed-64/backend Int maximum is rejected without constraining unrelated integer fields.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/scenarioSteps",
+        "value": 9223372036854775808
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "scenarioSteps"
+          ],
+          "keyword": "maximum",
+          "messageContains": "is greater than the maximum"
+        }
+      ]
+    },
+    {
+      "description": "A recognized ChooseOne question is closed and rejects an unrelated root amount field.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-choose-one.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/amount",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'amount' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "A hybrid EndTurnButton carrying an AbilityLabel-only ability field is rejected by the closed, disjoint choice union.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "endTurnButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-choose-one.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/ability",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'ability' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "A canonical investigatorId plus its investigatorID alias is rejected rather than ambiguously accepted.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "endTurnButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-choose-one.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/investigatorID",
+        "value": "c01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'investigatorID' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "A scalar string cannot stand in for a production Message constructor object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "message",
+      "rejectionSchemaBranch": "message",
+      "basePositiveFixture": "contracts/fixtures/question-choose-one.json",
+      "basePointer": "/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "ChooseEndTurn"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "JSON null cannot stand in for a production Message constructor object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "message",
+      "rejectionSchemaBranch": "message",
+      "basePositiveFixture": "contracts/fixtures/question-choose-one.json",
+      "basePointer": "/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "ComponentLabel is closed and rejects omission of its variant-defining component field.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "componentLabel",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-player-window-choose-one.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/component"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'component' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "InvestigatorDeckComponent rejects the tokenType field owned by InvestigatorComponent, keeping component variants disjoint.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "investigatorDeckComponent",
+      "rejectionSchemaBranch": "component",
+      "basePositiveFixture": "contracts/fixtures/question-player-window-choose-one.json",
+      "basePointer": "/choices/1/component",
+      "mutation": {
+        "op": "add",
+        "pointer": "/tokenType",
+        "value": "ResourceToken"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'tokenType' was unexpected"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -501,11 +957,11 @@
     "contracts/fixtures/answer-exchange-amounts.json": "358e6dbd9a75ddf0080df46954cc58dd0df538205375cab61bd882396bf84f9e",
     "contracts/fixtures/answer-payment-amounts.json": "d55055b00a8d4d7c93ca121af1d870367dd110ae95e271b47770b14bcf12bd1e",
     "contracts/fixtures/answer-pick-destiny.json": "711e45c443be781868e7f30fde1d45c8b659bae6a53d9537cc021a5c2eccc8a0",
-    "contracts/fixtures/answer-question.json": "3342d5ad44ffd41cc45a286e0fa8470c5c4c703cecc13520b0d948414a9188c2",
+    "contracts/fixtures/answer-question.json": "b6d6b4d70acadd6d11d7c30fd67d052085384c478a00520d68c5c2f4d1b18fa7",
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities.json": "0e34f06a60fe095d0927b0be7a2825b135d499719ae273b46fa890276a152d19",
+    "contracts/fixtures/capabilities.json": "7c27701c91616e6e76c93f76cdeb2a8dca78741bd68e666e869456115cd68208",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -532,21 +988,25 @@
     "contracts/fixtures/mode-campaign-scenario.json": "36a77bcf41059ca4a5d2c0e5bbd4d9ff3b429da2f6ddbc35d7fb1e1491e88c89",
     "contracts/fixtures/mode-turn-zero.json": "acc0cb8613b61d0bbb65ecdaefbae433276996fe8412b76046c4c90b3c933b71",
     "contracts/fixtures/movement.json": "c284c0b4244024a072ee7a486c5907db4981c6ff4fed1d55cbe33046fb0b63dc",
+    "contracts/fixtures/question-choose-one.json": "854d6a2891155ff4da9e075224d4cd5a7519e4e4cb2ec659a740c872f8b799fc",
+    "contracts/fixtures/question-player-window-choose-one.json": "1a10e17e87e2e77b728484443934e3147ea14d5cdee077cf236fc5efb8334eaf",
+    "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "1023a837dbb64f14a7f1c80e0509144306412328680e4080cffdf2fbb4124b8b",
+    "contracts/manifest.json": "e539d6bbfae4d77fee8ac6f8216b587a07138f5e4d2338e54a9c5ec99f42deb2",
     "contracts/openapi.yaml": "825a681fa2ba583e7284fe72e0ad6e79f9a4e6b6546e72c300d57da9db5299d8",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
+    "contracts/schemas/basic-choice-question.schema.json": "4a2e20fb4bb05da11a4e12e05ef5f4a3ff508735a662ca568072320a7122144f",
     "contracts/schemas/capabilities.schema.json": "7086eff0abe304b7084bc37c455dfc519de11015fd13fbebbd8e40130843104e",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
     "contracts/schemas/chaos-bag.schema.json": "45c9a42563b5e13d054f5689a8acf578df81f45746445020628335794fce4339",
     "contracts/schemas/chaos-token.schema.json": "f68258413e13898c655769f7bec6047898d9e02723c794782846d0a0fef7f137",
-    "contracts/schemas/client-answer.schema.json": "a83e998e32499cf45adfc10b29421d029cf04cce0d38d22564c12d3ccf701e81",
+    "contracts/schemas/client-answer.schema.json": "8a84dfb16190c3902415e8efda4a14b0540b468f01d8891abad7dd61eb9c5aff",
     "contracts/schemas/cost.schema.json": "8dd749848f54b39edbcd432968d4f22c4f10e8ee7c94d16be0737e5c5c2859ef",
     "contracts/schemas/decks.schema.json": "6e1e4bd7d5245c63d38a1f78b0c72541d20d36aa571cd3b5b060be6f8d9354ce",
     "contracts/schemas/game-lifecycle.schema.json": "894ce38d078fe0857e824033578972bacab4744595ca1741250c2813f2fd682d",
@@ -560,9 +1020,10 @@
     "contracts/schemas/mode.schema.json": "d20070b73bed7a30803699a9cda0e3c094385e4a8ed28561795719b27c972417",
     "contracts/schemas/movement.schema.json": "d9fff125d71f701d3b665c03fb0feb7454fd069083e109fcb252d54564120923",
     "contracts/schemas/name.schema.json": "0a04d31f01c47671c7529f4afacaa42d69dc9f9de222a10eac3a5ecc67ae71d6",
+    "contracts/schemas/non-negative-int64.schema.json": "c869ad7885d3be1f548cb1d415cc5c5c7e44271a02f8ee326af88defdad29110",
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
-    "contracts/schemas/public-game.schema.json": "5904a95f1f44504fdf988c61b60a9bf5d6c598c0f876d2c2e734690926c1a7ef",
+    "contracts/schemas/public-game.schema.json": "b7f974060d346dfec20b2fdd7ebf6ec2022c9de71d7219a6de6ef7e396b3bc56",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6"
   },

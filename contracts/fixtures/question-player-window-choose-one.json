@@ -1,0 +1,183 @@
+{
+  "tag": "PlayerWindowChooseOne",
+  "choices": [
+    {
+      "tag": "ComponentLabel",
+      "component": {
+        "tag": "InvestigatorComponent",
+        "investigatorId": "c01001",
+        "tokenType": "ResourceToken"
+      },
+      "messages": [
+        {
+          "tag": "TakeResources",
+          "contents": [
+            "c01001",
+            1,
+            {
+              "tag": "ResourceSource",
+              "contents": "c01001"
+            },
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "ComponentLabel",
+      "component": {
+        "tag": "InvestigatorDeckComponent",
+        "investigatorId": "c01001"
+      },
+      "messages": [
+        {
+          "tag": "DrawCards",
+          "contents": [
+            "c01001",
+            {
+              "cardDrawSource": {
+                "tag": "InvestigatorSource",
+                "contents": "c01001"
+              },
+              "cardDrawDeck": {
+                "tag": "InvestigatorDeck",
+                "contents": "c01001"
+              },
+              "cardDrawAmount": 1,
+              "cardDrawState": {
+                "tag": "UnresolvedCardDraw"
+              },
+              "cardDrawTarget": null,
+              "cardDrawAction": true,
+              "cardDrawKind": "StandardCardDraw",
+              "cardDrawPosition": "DrawFromTop",
+              "cardDrawRules": [],
+              "cardDrawAndThen": null,
+              "cardDrawAlreadyDrawn": [],
+              "cardDrawDiscard": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "EndTurnButton",
+      "investigatorId": "c01001",
+      "messages": [
+        {
+          "tag": "ChooseEndTurn",
+          "contents": "c01001"
+        }
+      ]
+    },
+    {
+      "tag": "AbilityLabel",
+      "investigatorId": "c01001",
+      "ability": {
+        "source": {
+          "tag": "LocationSource",
+          "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+        },
+        "cardCode": "c01111",
+        "index": 103,
+        "type": {
+          "tag": "ActionAbility",
+          "actions": {
+            "contents": "Investigate",
+            "tag": "SingleAction"
+          },
+          "skillTypes": {
+            "tag": "AbilitySkill",
+            "contents": "SkillIntellect"
+          },
+          "cost": {
+            "tag": "ActionCost",
+            "contents": 1
+          }
+        },
+        "limit": {
+          "tag": "NoLimit"
+        },
+        "window": {
+          "tag": "DuringYourAction",
+          "contents": {
+            "tag": "You"
+          }
+        },
+        "metadata": null,
+        "criteria": {
+          "tag": "Criteria",
+          "contents": [
+            {
+              "tag": "OnLocation",
+              "contents": {
+                "tag": "LocationWithId",
+                "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+              }
+            },
+            {
+              "tag": "LocationExists",
+              "contents": {
+                "tag": "LocationMatchAll",
+                "contents": [
+                  {
+                    "tag": "LocationWithId",
+                    "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+                  },
+                  {
+                    "tag": "InvestigatableLocation"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "tooltip": null,
+        "canBeCancelled": true,
+        "displayAs": null,
+        "delayAdditionalCosts": null,
+        "basic": true,
+        "additionalCosts": [],
+        "requestor": {
+          "tag": "LocationSource",
+          "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+        },
+        "triggersSkillTest": true,
+        "wantsSkillTest": null,
+        "target": null,
+        "highlightFromWindow": false,
+        "skipForAll": false,
+        "ignoreAllCosts": false,
+        "fightCriteriaOverride": null,
+        "evadeCriteriaOverride": null
+      },
+      "windows": [
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "DuringTurn",
+            "contents": "c01001"
+          },
+          "windowBatchId": null
+        },
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "FastPlayerWindow"
+          },
+          "windowBatchId": null
+        },
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "NonFast"
+          },
+          "windowBatchId": null
+        }
+      ],
+      "before": [],
+      "messages": []
+    }
+  ]
+}
