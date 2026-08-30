@@ -59,8 +59,9 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(f"locale-catalog serving: {message}")
 
 
-def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(command, capture_output=True, text=True, check=False, **kwargs)
+def run(command: list[str], *, capture_output: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    text = kwargs.pop("text", capture_output)
+    return subprocess.run(command, capture_output=capture_output, text=text, check=False, **kwargs)
 
 
 def tool(name: str) -> str:
@@ -211,7 +212,27 @@ REVALIDATE = "public, max-age=0, must-revalidate"
 NO_STORE = "no-store"
 
 
-def check_status_matrix(manifest: dict, label: str) -> None:
+def brotli_decompress(payload: bytes) -> bytes:
+    """Inflates a brotli body with Node's zlib (the stdlib has no brotli)."""
+    scratch = WORK / "brotli-body"
+    scratch.write_bytes(payload)
+    result = run(
+        [
+            tool("node"),
+            "-e",
+            "const {readFileSync}=require('node:fs');"
+            "process.stdout.write(require('node:zlib').brotliDecompressSync(readFileSync(process.argv[1])));",
+            str(scratch),
+        ],
+        capture_output=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    require(result.returncode == 0, f"the brotli body did not inflate: {result.stderr!r}")
+    return result.stdout
+
+
+def check_status_matrix(manifest: dict, label: str, static_root: Path) -> None:
     chunk = manifest["locales"][0]["chunks"][0]
     path = chunk["path"]
 
@@ -253,7 +274,15 @@ def check_status_matrix(manifest: dict, label: str) -> None:
     status, headers, brotli_body = request(path, headers={"Accept-Encoding": "br"})
     require(status == 200, f"{label} brotli request returned {status}")
     require(headers.get("content-encoding") == "br", f"{label} did not serve the brotli sibling")
-    require(brotli_body != body, f"{label} brotli response was not compressed")
+    stored = static_root / path.lstrip("/")
+    require(
+        brotli_body == stored.with_name(f"{stored.name}.br").read_bytes(),
+        f"{label} brotli response is not the stored .br sibling",
+    )
+    require(
+        brotli_decompress(brotli_body) == body,
+        f"{label} brotli body does not inflate to the identity payload",
+    )
     # nginx's `if` block re-declares these headers because add_header does not
     # inherit into a nested context; the response must still carry exactly one
     # of each.
@@ -445,11 +474,11 @@ def main() -> None:
     )
 
     with Nginx(ROOT / "prod.nginxconf", root_a, "arkham-catalog-a"):
-        check_status_matrix(manifest_a, "revision A")
+        check_status_matrix(manifest_a, "revision A", root_a)
         check_rolling_deploy(manifest_b, "new manifest against old static root", differing)
 
     with Nginx(ROOT / "prod.nginxconf", root_b, "arkham-catalog-b"):
-        check_status_matrix(manifest_b, "revision B")
+        check_status_matrix(manifest_b, "revision B", root_b)
         check_rolling_deploy(manifest_a, "old manifest against new static root", differing)
 
     offline_conf = render_offline_conf(root_a, WORK / "offline")
