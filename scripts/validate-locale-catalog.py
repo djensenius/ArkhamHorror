@@ -589,6 +589,12 @@ def validate_deployment_wiring(manifest: dict) -> None:
         'add_header Vary "Accept-Encoding" always;' in block,
         "the catalog location does not vary on Accept-Encoding when serving brotli",
     )
+    # Every other encoding is covered by gzip_vary at the http level; without
+    # it a shared cache could hand a gzip body to a client that cannot read it.
+    require(
+        re.search(r"^\s*gzip_vary\s+on;", nginx, re.MULTILINE) is not None,
+        "prod.nginxconf must keep `gzip_vary on` so non-brotli responses also vary",
+    )
     for directive in (
         "auth_basic",
         "auth_request",

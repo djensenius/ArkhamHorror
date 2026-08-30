@@ -18,7 +18,7 @@
 // a success-shaped partial catalog.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { canonicalJson, sha256Hex } from './canonical.mjs'
@@ -387,7 +387,10 @@ export function writeCatalog(files, outputDir) {
   rmSync(outputDir, { recursive: true, force: true })
   for (const [path, bytes] of files) {
     const target = join(outputDir, path)
-    if (!resolve(target).startsWith(`${resolve(outputDir)}/`)) fail(`refusing to write outside ${outputDir}`)
+    const inside = relative(resolve(outputDir), resolve(target))
+    if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+      fail(`refusing to write outside ${outputDir}`)
+    }
     mkdirSync(dirname(target), { recursive: true })
     writeFileSync(target, bytes)
   }
@@ -401,7 +404,8 @@ export function writeCatalog(files, outputDir) {
 export function assertReplaceableOutputDir(outputDir) {
   const target = resolve(outputDir)
   const repoRoot = resolve(REPO_ROOT)
-  if (target === repoRoot || repoRoot.startsWith(`${target}/`)) {
+  const fromTarget = relative(target, repoRoot)
+  if (!fromTarget.startsWith('..') && !isAbsolute(fromTarget)) {
     fail(`refusing to replace ${outputDir}: it contains the repository`)
   }
   if (!existsSync(target)) return

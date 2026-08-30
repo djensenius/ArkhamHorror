@@ -157,6 +157,10 @@ http {
     #
     # `^~` (not a regex) so an unknown path under /locale-catalog/ 404s instead
     # of falling through to the SPA shell and answering a JSON fetch with HTML.
+    #
+    # `Vary: Accept-Encoding` is set here on the brotli branch and by the
+    # http-level `gzip_vary on` (which covers gzip_static) on every other
+    # response, so a shared cache never reuses one encoding for another.
     location ^~ /locale-catalog/ {
       default_type application/json;
       gzip off;
