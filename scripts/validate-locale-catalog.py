@@ -137,6 +137,30 @@ def load_schemas() -> dict[str, object]:
             f"{name} schema is missing its versioned $id",
         )
         schemas[name] = validator_cls(schema)
+
+    raw = {
+        name: strict_json.strict_json_load_path(SCHEMA_DIR / f"{name}.schema.json")
+        for name in ("manifest", "chunk")
+    }
+    constraints = {"type", "pattern", "maxLength"}
+    require(
+        {
+            key: value
+            for key, value in raw["manifest"]["$defs"]["messageKey"].items()
+            if key in constraints
+        }
+        == {
+            key: value
+            for key, value in raw["chunk"]["$defs"]["messageKey"].items()
+            if key in constraints
+        },
+        "the manifest and chunk schemas disagree on the message-key grammar",
+    )
+    require(
+        raw["manifest"]["properties"]["provenance"]["properties"]["requiredKeys"]["items"]
+        == {"$ref": "#/$defs/messageKey"},
+        "required keys must be typed by the shared message-key grammar",
+    )
     return schemas
 
 
