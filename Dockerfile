@@ -12,6 +12,9 @@ WORKDIR /opt/arkham/src/frontend
 COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js ./frontend/eslint.config.js ./frontend/package-lock.json /opt/arkham/src/frontend/
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY ./frontend /opt/arkham/src/frontend
+# The locale-catalog generator (run by npm's prebuild) derives its required-key
+# set from the governed contract fixtures, so they have to be in the image.
+COPY ./contracts /opt/arkham/src/contracts
 ENV VITE_ASSET_HOST=${ASSET_HOST}
 RUN npm run build
 

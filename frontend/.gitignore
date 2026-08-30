@@ -3,6 +3,7 @@ node_modules
 dist/*
 !dist/.gitkeep
 public/cards/
+public/locale-catalog/
 
 
 # local env files

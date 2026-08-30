@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/schemas/locale-catalog/v1/manifest.schema.json",
+  "title": "Arkham Horror locale catalog manifest (v1)",
+  "description": "Index of the published locale catalog. Served unauthenticated at <basePath>/manifest.json and, byte-identically, at the immutable revision path. Every chunk is pinned by size and SHA-256, so a client can verify what it downloaded against what this manifest promised.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "catalogRevision",
+    "basePath",
+    "manifestPath",
+    "revisionManifestPath",
+    "digestAlgorithm",
+    "defaultLocale",
+    "languageResolution",
+    "locales",
+    "totals",
+    "provenance"
+  ],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "catalogRevision": {
+      "description": "Deterministic content revision: '1.' plus the first 32 hex characters of provenance.sha256.",
+      "type": "string",
+      "pattern": "^1\\.[0-9a-f]{32}$"
+    },
+    "basePath": { "$ref": "#/$defs/absolutePath" },
+    "manifestPath": { "$ref": "#/$defs/absolutePath" },
+    "revisionManifestPath": { "$ref": "#/$defs/absolutePath" },
+    "digestAlgorithm": { "const": "sha256" },
+    "defaultLocale": { "$ref": "#/$defs/locale" },
+    "languageResolution": {
+      "description": "How the production web client resolves BCP-47 tags to catalog locales, so native clients match it exactly.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tag", "locale"],
+        "properties": {
+          "tag": { "type": "string", "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$" },
+          "locale": { "$ref": "#/$defs/locale" }
+        }
+      }
+    },
+    "locales": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["locale", "fallback", "chunks", "keys", "bytes"],
+        "properties": {
+          "locale": { "$ref": "#/$defs/locale" },
+          "fallback": { "oneOf": [{ "$ref": "#/$defs/locale" }, { "type": "null" }] },
+          "keys": { "$ref": "#/$defs/count" },
+          "bytes": { "$ref": "#/$defs/count" },
+          "chunks": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["pack", "path", "bytes", "sha256", "keys", "unsupportedKeys"],
+              "properties": {
+                "pack": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+                "path": {
+                  "description": "Immutable, content-addressed absolute path. Its bytes can never change behind this URL.",
+                  "type": "string",
+                  "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*\\.json$",
+                  "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+                },
+                "bytes": { "$ref": "#/$defs/count" },
+                "sha256": { "$ref": "#/$defs/sha256" },
+                "keys": { "$ref": "#/$defs/count" },
+                "unsupportedKeys": { "$ref": "#/$defs/count" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locales", "chunks", "bytes", "keys", "unsupportedKeys"],
+      "properties": {
+        "locales": { "$ref": "#/$defs/count" },
+        "chunks": { "$ref": "#/$defs/count" },
+        "bytes": { "$ref": "#/$defs/count" },
+        "keys": { "$ref": "#/$defs/count" },
+        "unsupportedKeys": { "$ref": "#/$defs/count" }
+      }
+    },
+    "provenance": {
+      "description": "Binds this revision to the exact bytes it was generated from: locale sources, schemas, generator, and the contract fixtures that define the required key set.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "generator",
+        "contractRevision",
+        "requiredKeys",
+        "localeSourceFiles",
+        "localeSourcesSha256",
+        "schemasSha256",
+        "generatorSha256"
+      ],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "generator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "const": "arkham-locale-catalog" },
+            "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+          }
+        },
+        "contractRevision": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$" },
+        "requiredKeys": {
+          "description": "Keys taken from the governed contract fixtures that this revision guarantees resolve in the default locale.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*(\\.[A-Za-z0-9_][A-Za-z0-9_-]*)*$" }
+        },
+        "localeSourceFiles": { "$ref": "#/$defs/count" },
+        "localeSourcesSha256": { "$ref": "#/$defs/sha256" },
+        "schemasSha256": { "$ref": "#/$defs/sha256" },
+        "generatorSha256": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  },
+  "$defs": {
+    "absolutePath": {
+      "type": "string",
+      "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "locale": { "type": "string", "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "count": { "type": "integer", "minimum": 0 }
+  }
+}

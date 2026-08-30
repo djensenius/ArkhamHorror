@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite dev",
     "serve": "vite serve",
-    "prebuild": "node ./scripts/slim-cards.cjs",
+    "prebuild": "node ./scripts/slim-cards.cjs && npm run locale-catalog",
     "build": "vite build",
     "postbuild": "node ./scripts/precompress.cjs",
     "precompress": "node ./scripts/precompress.cjs",
@@ -16,10 +16,13 @@
     "format": "prettier --write \"src/**/*.{ts,vue}\"",
     "format:check": "prettier --check \"src/**/*.{ts,vue}\"",
     "test": "node --test tests/**/*.test.mjs",
+    "test:locale-catalog": "node --test tests/localeCatalog*.test.mjs",
     "digest": "node ./scripts/digest.cjs",
     "fetch-card-data": "node ./scripts/fetch-card-data.cjs --slim",
     "import-zh-cn-cards": "node ./scripts/import-card-translations.cjs --source-locale zh-cn --output-lang zh-cn --slim",
-    "slim-cards": "node ./scripts/slim-cards.cjs"
+    "slim-cards": "node ./scripts/slim-cards.cjs",
+    "locale-catalog": "node ./scripts/locale-catalog/generate.mjs",
+    "locale-catalog:check": "node ./scripts/locale-catalog/generate.mjs --check"
   },
   "dependencies": {
     "@fortawesome/fontawesome-svg-core": "^7.1.0",
@@ -45,6 +48,7 @@
     "vue-toastification": "^2.0.0-rc.5"
   },
   "devDependencies": {
+    "@intlify/message-compiler": "11.1.12",
     "@rushstack/eslint-patch": "^1.13.0",
     "@tsconfig/node18": "^18.2.4",
     "@types/node": "^24.6.2",
@@ -55,6 +59,7 @@
     "eslint": "^9.37.0",
     "eslint-plugin-vue": "^10.5.0",
     "npm-run-all": "^4.1.5",
+    "parse5": "^8.0.1",
     "prettier": "^3.6.2",
     "rollup": "^4.52.4",
     "sass-embedded": "^1.93.2",

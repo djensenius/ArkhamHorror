@@ -1,0 +1,227 @@
+// Loads the exact locale message trees the Vue build produces, plus the
+// production helpers the catalog's semantics are derived from.
+//
+// The catalog must be generated from the same committed snapshot Vue bundles,
+// so nothing here re-implements module composition: it runs the project's own
+// bundler (Vite, in SSR mode, with the project's `@`/`@homebrew` aliases) over
+// `src/locales/messages.ts`'s production `loadLocaleMessages`. Locale `.ts`
+// composition, `.json` imports and the `import.meta.glob` homebrew discovery
+// therefore behave identically to `npm run build`.
+
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { join, posix, relative, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const VIRTUAL_ENTRY = '\0locale-catalog-entry'
+
+// Source trees whose bytes decide the catalog's content. Every file under
+// them is hashed into the catalog revision.
+const SOURCE_DIRECTORIES = ['src/locales']
+const SOURCE_GLOB_ROOTS = [{ root: 'homebrew', match: /\/(?:locales\/.*\.json|icons\.json)$/ }]
+
+// Production modules whose behavior the normalizer mirrors (icon/escape
+// classification and the two asset-path variables). A change to any of them
+// must produce a new catalog revision even when no locale string changed.
+const SEMANTIC_SOURCES = [
+  'src/arkham/helpers.ts',
+  'src/arkham/homebrewAssets.ts',
+  'src/arkham/components/FormattedEntry.vue',
+]
+
+function walkFiles(directory) {
+  const out = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) out.push(...walkFiles(path))
+    else if (entry.isFile()) out.push(path)
+    else throw new Error(`locale-catalog: refusing to hash non-regular source file ${path}`)
+  }
+  return out
+}
+
+function toPosix(path) {
+  return path.split(sep).join(posix.sep)
+}
+
+/** Every committed file the generated catalog is derived from, path-sorted. */
+export function collectSourceFiles(frontendDir) {
+  const files = []
+  for (const directory of SOURCE_DIRECTORIES) files.push(...walkFiles(join(frontendDir, directory)))
+  for (const { root, match } of SOURCE_GLOB_ROOTS) {
+    for (const file of walkFiles(join(frontendDir, root))) {
+      if (match.test(toPosix(relative(frontendDir, file)))) files.push(file)
+    }
+  }
+  for (const source of SEMANTIC_SOURCES) files.push(join(frontendDir, source))
+
+  return files
+    .map((file) => {
+      if (!statSync(file).isFile()) throw new Error(`locale-catalog: ${file} is not a regular file`)
+      return {
+        path: toPosix(relative(frontendDir, file)),
+        sha256: createHash('sha256').update(readFileSync(file)).digest('hex'),
+      }
+    })
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+}
+
+function readPackageJson(frontendDir, name) {
+  const path = join(frontendDir, 'node_modules', ...name.split('/'), 'package.json')
+  if (!existsSync(path)) throw new Error(`locale-catalog: ${name} is not installed (run npm ci)`)
+  return JSON.parse(readFileSync(path, 'utf8'))
+}
+
+/**
+ * The message parser has to be the exact one vue-i18n compiles messages with,
+ * otherwise the catalog could interpret a placeholder differently from the web
+ * client. This asserts that, fails closed on any mismatch or duplicate
+ * install, and returns the versions so a parser upgrade produces a new catalog
+ * revision.
+ */
+export function toolchainVersions(frontendDir) {
+  const compiler = readPackageJson(frontendDir, '@intlify/message-compiler').version
+  const required = readPackageJson(frontendDir, '@intlify/core-base').dependencies?.[
+    '@intlify/message-compiler'
+  ]
+  if (required !== compiler) {
+    throw new Error(
+      `locale-catalog: @intlify/message-compiler ${compiler} is installed, but vue-i18n's ` +
+        `@intlify/core-base requires ${required}`,
+    )
+  }
+  for (const nested of ['vue-i18n', '@intlify/core-base']) {
+    const duplicate = join(
+      frontendDir,
+      'node_modules',
+      ...nested.split('/'),
+      'node_modules',
+      '@intlify',
+      'message-compiler',
+    )
+    if (existsSync(duplicate)) {
+      throw new Error(`locale-catalog: a second @intlify/message-compiler is installed under ${nested}`)
+    }
+  }
+
+  return {
+    parse5: readPackageJson(frontendDir, 'parse5').version,
+    '@intlify/message-compiler': compiler,
+  }
+}
+
+function entryModule() {
+  return `
+    export { uiLocales, uiLocaleFor, preferredLanguage } from '@/locales/language'
+    export { supportedLocales, loadLocaleMessages } from '@/locales/messages'
+    export { formatContent, replaceIcons } from '@/arkham/helpers'
+  `
+}
+
+/**
+ * Bundles and evaluates the production locale modules.
+ *
+ * Returns the composed message tree per supported locale plus the production
+ * `formatContent`/`replaceIcons`/locale-resolution functions, so the generator
+ * derives icon and fallback semantics from shipped code instead of copying
+ * lists into this toolchain.
+ */
+export async function loadLocaleSources(frontendDir) {
+  const { build } = await import('vite')
+  const outDir = join(frontendDir, 'node_modules', '.locale-catalog')
+  rmSync(outDir, { recursive: true, force: true })
+
+  await build({
+    configFile: false,
+    logLevel: 'error',
+    resolve: {
+      alias: {
+        '@': resolve(frontendDir, 'src'),
+        '@homebrew': resolve(frontendDir, 'homebrew'),
+      },
+    },
+    plugins: [
+      {
+        name: 'locale-catalog-entry',
+        resolveId: (id) => (id === 'locale-catalog-entry' ? VIRTUAL_ENTRY : null),
+        load: (id) => (id === VIRTUAL_ENTRY ? entryModule() : null),
+      },
+    ],
+    build: {
+      ssr: true,
+      minify: false,
+      outDir,
+      emptyOutDir: true,
+      write: true,
+      rollupOptions: {
+        input: { entry: 'locale-catalog-entry' },
+        output: { format: 'es', entryFileNames: '[name].mjs', chunkFileNames: '[name].mjs' },
+      },
+    },
+  })
+
+  const bundle = await import(pathToFileURL(join(outDir, 'entry.mjs')).href)
+
+  const locales = [...bundle.supportedLocales]
+  const messages = {}
+  for (const locale of locales) {
+    const loaded = await bundle.loadLocaleMessages(locale)
+    if (loaded.locale !== locale) {
+      throw new Error(`locale-catalog: ${locale} resolved to ${loaded.locale}`)
+    }
+    messages[locale] = loaded.messages
+  }
+
+  rmSync(outDir, { recursive: true, force: true })
+
+  return {
+    locales,
+    messages,
+    uiLocales: [...bundle.uiLocales],
+    uiLocaleFor: bundle.uiLocaleFor,
+    preferredLanguage: bundle.preferredLanguage,
+    formatContent: bundle.formatContent,
+    replaceIcons: bundle.replaceIcons,
+  }
+}
+
+/**
+ * Classifies a message placeholder by asking the production formatter what it
+ * would do with `{name}`, so the icon and literal-escape vocabularies are
+ * whatever `src/arkham/helpers.ts` currently defines — including homebrew
+ * icons discovered from `homebrew/*&#47;icons.json` — and can never drift from it.
+ */
+export function makeVariableClassifier({ formatContent, replaceIcons }, assetPathVariables) {
+  const cache = new Map()
+  return (name) => {
+    const cached = cache.get(name)
+    if (cached) return cached
+
+    let classification
+    const token = `{${name}}`
+    if (Object.hasOwn(assetPathVariables, name)) {
+      classification = { role: 'assetPath', base: assetPathVariables[name] }
+    } else if (replaceIcons(token) !== token) {
+      classification = { role: 'icon' }
+    } else if (/[*_]/.test(name)) {
+      // `formatContent`'s emphasis pass would pair against the probe token
+      // itself, so it cannot answer the literal-escape question for this name.
+      classification = { role: 'text' }
+    } else {
+      const formatted = formatContent(token)
+      if (formatted === token) {
+        classification = { role: 'text' }
+      } else if (/[<>]/.test(formatted)) {
+        throw new Error(
+          `locale-catalog: production formatContent() turned {${name}} into markup (${formatted}); ` +
+            'the catalog cannot classify it safely',
+        )
+      } else {
+        classification = { role: 'literal', text: formatted }
+      }
+    }
+
+    cache.set(name, classification)
+    return classification
+  }
+}

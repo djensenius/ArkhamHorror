@@ -446,6 +446,30 @@ will tighten each nested schema without changing the top-level envelope.
   intentionally leaving complex matcher, criterion, action, keyword, and
   customization payloads broad until their dedicated domain slices.
 
+## Locale catalog (frontend-owned, v1)
+
+Story content crosses the wire as opaque `I18nEntry` keys and typed variables,
+so a native client also needs the server's message catalog. That catalog is
+published as deployment-owned static JSON at `/locale-catalog/manifest.json`
+plus immutable, content-addressed chunks, and is documented in
+[`docs/locale-catalog.md`](../docs/locale-catalog.md).
+
+Its schemas are deliberately **not** governed artifacts in `manifest.json`:
+every document listed there is bound to the backend's real Aeson encoders in
+`backend/arkham-api/tests/Arkham/Api/JsonContractsSpec.hs`, while the locale
+catalog is generated from `frontend/src/locales/**` by the frontend build and
+never touches the backend. It is therefore versioned independently by its own
+`schemaVersion` (`frontend/schemas/locale-catalog/v1/`) and revisioned by a
+digest of its sources; revision `0.1.22` of this contract is unchanged by it.
+
+The two boundaries are still bound to each other mechanically: the catalog's
+required key set is extracted from `fixtures/question-read.json` and
+`fixtures/question-read-with-cards.json`, and its manifest records those
+fixtures' SHA-256 digests together with this manifest's `schemaRevision`, so a
+catalog can always be traced to the contract revision it was generated for.
+When the backend starts advertising the catalog, it needs only the stable
+manifest URL and `catalogRevision` from that manifest.
+
 ## Achievements
 
 - Achievement operations require authentication. The account-wide list returns

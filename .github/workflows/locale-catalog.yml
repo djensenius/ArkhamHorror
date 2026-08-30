@@ -1,0 +1,53 @@
+name: Locale catalog
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: locale-catalog-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  catalog:
+    name: Generation, schema, and provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - run: mise run locale-catalog:validate
+
+  frontend:
+    name: Frontend build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - run: mise run locale-catalog:test
+      # The catalog is deployment-owned output: it must fall out of the real
+      # production build (npm prebuild) and land in the static root nginx
+      # serves, not just out of the generator invoked directly.
+      - name: Build the frontend
+        run: npm run build
+        working-directory: frontend
+      - name: Verify the catalog ships in the build output
+        run: node scripts/locale-catalog/verify-dist.mjs
+        working-directory: frontend

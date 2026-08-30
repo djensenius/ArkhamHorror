@@ -24,6 +24,7 @@ http {
     "~^/assets/"       "public, max-age=31536000, immutable";
     "~^/img/"          "public, max-age=2592000";
     "~^/audio/"        "public, max-age=2592000";
+    "~^/locale-catalog/r/" "public, max-age=31536000, immutable";
   }
 
   # Does this client accept brotli? Matched as a whole word so it can't be
@@ -131,6 +132,46 @@ http {
       }
 
       add_header Cache-Control $cache_control always;
+    }
+
+    # The public locale catalog (see docs/locale-catalog.md). Two shapes:
+    #
+    #   /locale-catalog/manifest.json    the index a client starts from. Its
+    #                                    bytes change whenever the catalog is
+    #                                    regenerated, so it revalidates by ETag
+    #                                    like index.html does.
+    #   /locale-catalog/r/<rev>/...      content-addressed chunks and the
+    #                                    immutable copy of the same manifest.
+    #                                    The revision and the chunk's digest
+    #                                    are both in the path, so those bytes
+    #                                    can never change behind the URL. The
+    #                                    $cache_control map gives that prefix a
+    #                                    year and `immutable`; everything else
+    #                                    here revalidates.
+    #
+    # Both are unauthenticated static JSON: no cookies, no tokens, nothing
+    # request-specific is served or logged. `nosniff` matters more here than on
+    # /cards because native clients fetch these directly.
+    #
+    # `^~` (not a regex) so an unknown path under /locale-catalog/ 404s instead
+    # of falling through to the SPA shell and answering a JSON fetch with HTML.
+    location ^~ /locale-catalog/ {
+      default_type application/json;
+      gzip off;
+
+      set $br "";
+      if ($accepts_br) { set $br "y"; }
+      if (-f "$request_filename.br") { set $br "${br}f"; }
+      if ($br = "yf") {
+        add_header Cache-Control $cache_control always;
+        add_header Vary "Accept-Encoding" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Content-Encoding "br" always;
+        rewrite ^(.*)$ $1.br break;
+      }
+
+      add_header Cache-Control $cache_control always;
+      add_header X-Content-Type-Options "nosniff" always;
     }
 
     location / {

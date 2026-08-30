@@ -32,3 +32,11 @@ depends = [
   "contracts:asyncapi",
   "contracts:routes",
 ]
+
+[tasks."locale-catalog:test"]
+description = "Run the locale-catalog render-AST and generator tests"
+run = "npm --prefix frontend run test:locale-catalog"
+
+[tasks."locale-catalog:validate"]
+description = "Generate the public locale catalog and verify its schemas, digests, provenance, clean-clone reproducibility, and deploy seam"
+run = "uv run scripts/validate-locale-catalog.py"
