@@ -1307,6 +1307,56 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
             ]
       readIORef ranAfterFailure `shouldReturn` False
 
+    {- | Regression for the MEDIUM finding that 'releaseAll' previously used
+    plain 'Control.Exception.try' (which catches /any/ exception,
+    synchronous or asynchronous): if 'Application.shutdownApp' were
+    cancelled (e.g. 'Exception.ThreadKilled') while blocked inside one of
+    the release actions in the list, the old code recorded the
+    cancellation as an ordinary release "failure" and carried on running
+    every later release in the list before finally re-raising it --
+    exactly the "effectively uninterruptible shutdown" the reviewer
+    flagged, since a slow or hung later release could then delay the
+    cancellation indefinitely. 'releaseAll' now uses 'UE.try' (the
+    "safe-exceptions"-style variant already used elsewhere in this
+    module), which only catches synchronous exceptions and immediately
+    rethrows anything asynchronous -- so cancellation aborts the whole
+    'releaseAll' call right away, running no further releases in the
+    list, rather than merely being queued behind them.
+
+    This test injects a genuine 'Exception.throwTo' from a second thread,
+    synchronized via an 'MVar' gate so there is no timing race to lose:
+    the first release action signals @firstReached@ the instant it is
+    running and then blocks on @neverFilled@ (a stand-in for a real
+    release that is itself doing interruptible work, e.g. awaiting a
+    supervised thread), so the tester's cancellation can only ever land
+    while genuinely inside that first release action, not by racing
+    'forkIO' startup.
+
+    Mutation check: reverting 'releaseAll' to plain 'Control.Exception.try'
+    makes this test fail deterministically -- the second release's
+    @secondRan@ flag would end up 'True' (plain 'try' catches the
+    'Exception.ThreadKilled', "succeeds" in registering it as this
+    release's failure, and moves on to run the second release before
+    ultimately re-raising), where this test requires it stay 'False'.
+    -}
+    it "propagates an asynchronous cancellation immediately, without running any later release in the list" do
+      firstReached <- newEmptyMVar
+      neverFilled <- newEmptyMVar
+      secondRan <- newIORef False
+      let firstRelease = putMVar firstReached () >> takeMVar neverFilled >> error "unreachable"
+          secondRelease = atomicModifyIORef' secondRan (const (True, ()))
+      callerResult <- newEmptyMVar
+      callerTid <- forkIO do
+        result <- Exception.try @Exception.SomeException (releaseAll [firstRelease, secondRelease])
+        putMVar callerResult result
+      takeMVar firstReached
+      Exception.throwTo callerTid Exception.ThreadKilled
+      result <- takeMVar callerResult
+      case result of
+        Left err -> Exception.fromException err `shouldBe` Just Exception.ThreadKilled
+        Right () -> expectationFailure "expected the injected ThreadKilled to propagate out of releaseAll"
+      readIORef secondRan `shouldReturn` False
+
   {- | Regression for the HIGH-severity finding that 'Api.Arkham.Helpers.pubSubSupervisor'
   used @UnliftIO.Async.race_@ (built on @Control.Concurrent.Async.withAsync@,
   whose own cleanup is @uninterruptibleCancel@): a slow-to-respond losing

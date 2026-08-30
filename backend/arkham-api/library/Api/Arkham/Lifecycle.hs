@@ -171,11 +171,21 @@ each ad-hoc GHCi\/REPL 'Foundation').
 acquireWithUnconditionalRelease :: IO res -> (res -> IO ()) -> (res -> IO a) -> IO a
 acquireWithUnconditionalRelease = bracket
 
-{- | Run every release action in the list, even if an earlier one throws:
-an earlier failure must never cause a later release to be skipped. If
-one or more actions failed, re-raise the first such failure only once
-every action in the list has actually been attempted; if all succeed,
-this is silent.
+{- | Run every release action in the list, even if an earlier one throws
+a /synchronous/ exception: an earlier failure must never cause a later
+release to be skipped. If one or more actions failed, re-raise the first
+such failure only once every action in the list has actually been
+attempted; if all succeed, this is silent.
+
+Catches only synchronous exceptions ('UE.try', in the \"safe-exceptions\"
+style, rather than the plain 'Control.Exception.try' this used
+previously): an /asynchronous/ exception delivered while a release
+action is running (e.g. 'System.Timeout.timeout' or 'ThreadKilled' from
+a cancelled shutdown) is not recorded as an ordinary release failure and
+must not let the remaining releases in the list keep running regardless
+-- it propagates immediately out of 'releaseAll', so cancellation can
+promptly abort cleanup instead of this becoming, in effect,
+uninterruptible.
 
 Used by 'Application.shutdownApp' to release every foundation-owned
 resource (the AWS supervisor, the room-heartbeat thread, the optional
@@ -187,7 +197,7 @@ guards against.
 -}
 releaseAll :: [IO ()] -> IO ()
 releaseAll actions = do
-  results <- traverse (try @SomeException) actions
+  results <- traverse (UE.try :: IO () -> IO (Either SomeException ())) actions
   case [e | Left e <- results] of
     (e : _) -> throwIO e
     [] -> pure ()
