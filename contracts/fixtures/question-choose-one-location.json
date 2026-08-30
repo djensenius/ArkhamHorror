@@ -1,0 +1,31 @@
+{
+  "tag": "ChooseOne",
+  "choices": [
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "LocationTarget",
+        "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+      },
+      "messages": [
+        {
+          "tag": "RevealLocation",
+          "contents": [
+            null,
+            "d5a66e84-c729-4066-8475-d8a155609025"
+          ]
+        },
+        {
+          "tag": "PlaceInvestigator",
+          "contents": [
+            "c01001",
+            {
+              "tag": "AtLocation",
+              "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

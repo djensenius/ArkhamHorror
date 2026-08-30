@@ -32,6 +32,11 @@ import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending)
 import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
 import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Investigator.Cards qualified as InvestigatorCards
+import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
+import Arkham.Message qualified as Msg (storyWithCards)
+import Arkham.Message.Lifted.Choose (chooseTargetM)
+import Arkham.Message.Lifted.Location (unsafeReveal)
+import Arkham.Message.Lifted.Move (placeAllAt)
 import Arkham.Movement (Destination (ToLocation), Movement (..), MovementMeans (Direct))
 import Arkham.Name (mkName)
 import Arkham.Scenario.Types (Scenario)
@@ -340,6 +345,176 @@ buildFixtureBoardGame = do
 fixtureGame :: Game
 fixtureGame = fixtureBoardGame
 
+{- | The exact production 'Read'\/'BasicReadChoices' setup-intro prompt and the
+'ChooseOne'\/'TargetLabel(LocationTarget)' 'startAt' prompt that follows it --
+the same two questions 'buildFixtureBoardGame' above already dismisses via
+'chooseOnlyOption' on its way to the fully-set-up board, captured here
+instead of dismissed. This rebuilds the identical deterministic sequence
+(same 'fixtureBoardScenario'\/'fixtureBoardInvestigator'\/'fixtureBoardSeed',
+the same real 'StandaloneSetup'\/'Setup'\/'EndSetup' production handlers) so
+both questions are read directly off 'gameQuestion' at the exact points a
+real player would see them, rather than being reconstructed in parallel.
+
+- The first is queued by 'setupTheGathering's own opening 'setup $ ul do
+  ...' block (Scenarios\/NightOfTheZealot\/TheGathering.hs), which routes
+  through 'Arkham.Helpers.FlavorText.setup' -> 'flavor' -> 'Arkham.Message.story'
+  -- the exact 'Read flavorText (BasicReadChoices [Label "$continue" []])
+  Nothing' shape 'storyWithContinue'\/'story' both build (Message.hs).
+- The second is 'startAt's own 'chooseOneM lead $ targeting lid $ reveal lid
+  >> placeAllAt lid' (Scenario\/Setup.hs), reached only once the first
+  question is dismissed, revealing/entering the single starting location
+  ("Study", the real 'd5a66e84-c729-4066-8475-d8a155609025' from
+  get-game.json).
+-}
+buildFixtureOpeningQuestions :: IO (Question Message, Question Message)
+buildFixtureOpeningQuestions = do
+  baseGame <- newGame fixtureBoardScenario fixtureBoardInvestigator
+  let
+    game =
+      baseGame
+        { gameSeed = fixtureBoardSeed
+        , gameInitialSeed = fixtureBoardSeed
+        , gameGitRevision = "contract-fixture"
+        }
+  gameRef <- newIORef game
+  queueRef <- newQueue []
+  genRef <- newIORef $ mkStdGen fixtureBoardSeed
+  debugLevelRef <- newIORef 0
+  let testApp = TestApp gameRef queueRef genRef Nothing (pure . const ()) debugLevelRef
+  runReaderT (overGameM preloadModifiers) testApp
+  runTestApp testApp do
+    pushAndRunAll [StandaloneSetup, Setup, EndSetup]
+    introQuestion <- lookupFixturePlayerQuestion "buildFixtureOpeningQuestions (setup intro)"
+    chooseOnlyOption "advance past The Gathering's setup introduction"
+    startAtQuestion <- lookupFixturePlayerQuestion "buildFixtureOpeningQuestions (startAt)"
+    pure (introQuestion, startAtQuestion)
+ where
+  lookupFixturePlayerQuestion label = do
+    questionMap <- gameQuestion <$> getGame
+    case Map.lookup fixturePlayerId questionMap of
+      Just question -> pure question
+      Nothing ->
+        liftIO
+          $ IOError.ioError
+          $ IOError.userError
+          $ label
+          <> ": fixture player has no active question"
+
+fixtureOpeningQuestions :: (Question Message, Question Message)
+fixtureOpeningQuestions = unsafePerformIO buildFixtureOpeningQuestions
+{-# NOINLINE fixtureOpeningQuestions #-}
+
+-- | The setup-intro 'Read'\/'BasicReadChoices' continue prompt; see
+-- 'buildFixtureOpeningQuestions'.
+fixtureIntroReadQuestion :: Question Message
+fixtureIntroReadQuestion = fst fixtureOpeningQuestions
+
+-- | The 'startAt' 'ChooseOne'\/'TargetLabel(LocationTarget)' prompt with the
+-- single real "Study" starting location; see 'buildFixtureOpeningQuestions'.
+fixtureStartAtChooseOneQuestion :: Question Message
+fixtureStartAtChooseOneQuestion = snd fixtureOpeningQuestions
+
+{- | The non-null 'readCards' branch of the exact same production 'Read'
+constructor, built via the real (pure, no 'ReverseQueue' needed)
+'Arkham.Message.storyWithCards' -- the sibling of 'story' (which
+'setupTheGathering's own setup-intro prompt above uses, always with
+'readCards = Nothing') that supplies 'Just' a card-code list, e.g. a
+scenario's "cards added to the encounter deck" story beat. Reuses the real
+'EnemyCards.swarmOfRats' card def already used by 'fixtureUuidEntityMap'
+above and a sanitized, non-narrative flavor body ('Arkham.Text.ft', which
+builds the real 'BasicEntry' 'FlavorTextEntry' constructor) purely to prove
+the wire shape; no official card or scenario text is reproduced.
+-}
+fixtureReadWithCardsQuestion :: Question Message
+fixtureReadWithCardsQuestion =
+  case Msg.storyWithCards
+    [EnemyCards.swarmOfRats]
+    [fixturePlayerId]
+    (ft "Contract fixture flavor text.") of
+    AskMap askMap ->
+      fromMaybe
+        (error "fixtureReadWithCardsQuestion: fixture player has no active question")
+        (Map.lookup fixturePlayerId askMap)
+    other -> error $ "fixtureReadWithCardsQuestion: expected AskMap, got " <> show other
+
+{- | Three real "The Gathering" location cards (Attic, Hallway, Parlor --
+Location\/CardDefs\/NightOfTheZealot\/TheGathering.hs, the exact same
+'setupTheGathering' encounter set 'fixtureBoardGame' itself draws from) used
+only to prove that a real production 'ChooseOne'\/'TargetLabel(LocationTarget)'
+prompt with /multiple/ choices preserves backend order -- something The
+Gathering's own single-location 'startAt' can never by itself demonstrate.
+-}
+fixtureMultiLocationCardDefs :: [CardDef]
+fixtureMultiLocationCardDefs = [Locations.attic, Locations.hallway, Locations.parlor]
+
+{- | Fixed, out-of-range 'UUID.fromWords' ids (the same convention
+'fixtureUuidEntityMap'\/'fixtureCardCodeEntityMap' above use for their
+enemy\/card ids) for 'fixtureMultiLocationCardDefs', paired one-to-one and in
+order. Fixed rather than random (unlike 'Arkham.Message.Lifted.Location.placeLocationCard',
+whose 'genCard'\/'getRandom' draw is not reproducible for a bare 'TestAppT'
+action run outside the real 'GameT' engine dispatch that seeds
+'Arkham.GameEnv.instance MonadRandom GameT' from 'HasStdGen'; a real handler
+resolves through that path, but a fixture built by calling a "Lifted"
+combinator directly, as below, does not) so this fixture is exactly
+reproducible.
+-}
+fixtureMultiLocationIds :: [LocationId]
+fixtureMultiLocationIds = [LocationId (UUID.fromWords 0 0 0 n) | n <- [920, 921, 922]]
+
+{- | Real production 'Location' entities (built via the exact 'createLocation'
+constructor 'PlaceLocation''s handler uses, Location.hs) for
+'fixtureMultiLocationCardDefs' at 'fixtureMultiLocationIds', inserted
+directly into a fresh 'fixtureBoardGame' clone's real entity map so the
+'Ask' validity check (Game.hs: a 'TargetLabel(LocationTarget)' choice is only
+ever parked if its location genuinely exists) finds them, without going
+through 'getRandom' at all.
+-}
+fixtureMultiLocationEntities :: Map LocationId Location
+fixtureMultiLocationEntities =
+  Map.fromList
+    [ (lid, createLocation (lookupCard def (unsafeMakeCardId (UUID.fromWords 0 0 0 cardN))) lid)
+    | (lid, def, cardN) <- zip3 fixtureMultiLocationIds fixtureMultiLocationCardDefs [940, 941, 942 :: Word32]
+    ]
+
+{- | A real production 'ChooseOne'\/'TargetLabel(LocationTarget)' prompt with
+three ordered choices, generalizing 'startAt' (Scenario\/Setup.hs) from its
+single real starting location to 'fixtureMultiLocationIds' via the exact
+same shared production combinators 'startAt' itself is built from:
+'chooseTargetM'\/'targeting' (Message\/Lifted\/Choose.hs), 'unsafeReveal'
+(Message\/Lifted\/Location.hs -- the same unconditional branch 'reveal' takes
+whenever 'getInSetup' is true, exactly as it is for every real call inside
+'setupTheGathering'), and 'placeAllAt' (Message\/Lifted\/Move.hs). Run inside
+'runQueueT' against a fresh clone of the already fully set-up
+'fixtureBoardGame' (via 'runAgainstFixtureBoardGame', never the shared
+'fixtureBoardGame' value itself) after inserting
+'fixtureMultiLocationEntities' directly into that clone's real 'Entities'.
+-}
+fixtureMultiLocationChooseOne :: Question Message
+fixtureMultiLocationChooseOne = unsafePerformIO $ runAgainstFixtureBoardGame do
+  testApp <- get
+  liftIO $ atomicModifyIORef' (game testApp) \g ->
+    ( g
+        { gameEntities =
+            (gameEntities g)
+              { entitiesLocations = entitiesLocations (gameEntities g) <> fixtureMultiLocationEntities
+              }
+        }
+    , ()
+    )
+  runQueueT
+    $ chooseTargetM (InvestigatorId "01001") fixtureMultiLocationIds \lid -> do
+      unsafeReveal lid
+      placeAllAt lid
+  runMessages
+  questionMap <- gameQuestion <$> getGame
+  case Map.lookup fixturePlayerId questionMap of
+    Just question -> pure question
+    Nothing ->
+      liftIO
+        $ IOError.ioError
+        $ IOError.userError "fixtureMultiLocationChooseOne: fixture player has no active question"
+{-# NOINLINE fixtureMultiLocationChooseOne #-}
+
 {- | A minimal 'TestApp' wired to run pure @HasGame@ helpers (e.g.
 'withActMetadata', 'withEnemyLocationAsLocationData') against an already-built
 game, without repeating scenario setup. Used by small, narrowly-scoped
@@ -549,6 +724,21 @@ fixtureBasicChoiceQuestions =
   [ ("question-choose-one.json", ChooseOne [fixtureEndTurnChoice])
   , ("question-player-window-choose-one.json", PlayerWindowChooseOne fixtureBasicChoiceChoices)
   , ("question-window-choose-one.json", WindowChooseOne [fixtureEndTurnChoice])
+  ]
+
+{- | The Gathering's opening 'Read'\/'ChooseOne(LocationTarget)' prompt slice
+(issue #50): the setup-intro continue prompt, the real single-location
+'startAt' prompt, the non-null 'readCards' 'Read' branch, and the
+multi-location 'ChooseOne' order-preservation proof. Every fixture here is
+bound the same way 'fixtureBasicChoiceQuestions' above is: to both
+'Aeson.toJSON' and the real 'Aeson.encode'\/'toEncoding' wire path.
+-}
+fixtureOpeningQuestionFixtures :: [(FilePath, Question Message)]
+fixtureOpeningQuestionFixtures =
+  [ ("question-read.json", fixtureIntroReadQuestion)
+  , ("question-choose-one-location.json", fixtureStartAtChooseOneQuestion)
+  , ("question-read-with-cards.json", fixtureReadWithCardsQuestion)
+  , ("question-choose-one-location-multiple.json", fixtureMultiLocationChooseOne)
   ]
 
 serverMessageFixtures :: [(FilePath, ApiResponse)]
@@ -794,6 +984,40 @@ spec = describe "Native client contract fixtures" do
       -- carries the same PublicGame as GetGame below) agree with toJSON
       -- rather than only ever exercising the naive path.
       viaWireEncoding response `shouldBe` fixture
+
+  for_ fixtureOpeningQuestionFixtures \(fileName, question) ->
+    it ("matches the real Read/ChooseOne(LocationTarget) opening-prompt encoder for " <> fileName) do
+      fixture <- loadFixture fileName
+
+      Aeson.toJSON question `shouldBe` fixture
+      viaWireEncoding question `shouldBe` fixture
+
+  it "keeps The Gathering's setup-intro Read continue choice singular and unconditionally opaque" do
+    case fixtureIntroReadQuestion of
+      Read _ (BasicReadChoices [Label "$continue" []]) Nothing -> pure ()
+      other -> expectationFailure $ "Expected the governed BasicReadChoices continue shape, got " <> show other
+
+  it "keeps startAt's single real Study location choice and its zero-based answer index stable" do
+    case fixtureStartAtChooseOneQuestion of
+      ChooseOne [TargetLabel (LocationTarget lid) _] ->
+        Aeson.toJSON lid `shouldBe` Aeson.String "d5a66e84-c729-4066-8475-d8a155609025"
+      other -> expectationFailure $ "Expected a single TargetLabel(LocationTarget) choice, got " <> show other
+
+  it "preserves backend order and zero-based answer indices across multiple LocationTarget choices (high-risk: reindexing)" do
+    case fixtureMultiLocationChooseOne of
+      ChooseOne choices -> do
+        length choices `shouldBe` 3
+        let
+          targets = [t | TargetLabel t _ <- choices]
+          expected = map LocationTarget fixtureMultiLocationIds
+        targets `shouldBe` expected
+        -- The real Answer.choice index into this exact array must select the
+        -- corresponding real location, matching production's `qs !!? qrChoice
+        -- response` (Entity/Answer.hs) -- not a client-side reconstruction.
+        case (choices !!? 1, fixtureMultiLocationIds !!? 1) of
+          (Just (TargetLabel t _), Just lid) -> t `shouldBe` LocationTarget lid
+          other -> expectationFailure $ "Expected index 1 to resolve on both sides, got " <> show other
+      other -> expectationFailure $ "Expected a multi-choice ChooseOne, got " <> show other
 
   it "matches the real game-list encoder" do
     fixture <- loadFixture "game-list.json"
