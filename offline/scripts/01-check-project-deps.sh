@@ -2,7 +2,7 @@
 # =============================================================================
 # 01-check-project-deps.sh - Install project dependencies
 # Versions are kept strictly aligned with docker-compose.yml:
-#   GHC 9.14.1 / PostgreSQL 14.15 / Node.js 22 LTS / Stack latest
+#   GHC 9.14.1 / PostgreSQL 14.15 / Node.js 26 / Stack latest
 #
 # Installation strategy:
 #   - Download prebuilt binaries for GHC / Stack / Node.js from the official sites
@@ -129,7 +129,7 @@ install_ghc_and_stack() {
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 2. Node.js 22 LTS (prebuilt binary)
+# 2. Node.js 26 (prebuilt binary)
 # ═════════════════════════════════════════════════════════════════════════════
 
 install_nodejs() {

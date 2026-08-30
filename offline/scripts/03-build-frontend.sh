@@ -18,7 +18,11 @@ FRONTEND_OUTPUT="${DEPS_DIR}/frontend"        # Unified output location: offline
 FRONTEND_BUILT_MARKER="${DEPS_DIR}/stamp_frontend_built"
 
 # ── Compute a hash of frontend source contents (to decide whether a rebuild is needed) ─
-# Includes: all files under src/ + package-lock.json + the index.html template
+# Includes: everything the build output depends on — all files under src/,
+#   package.json/package-lock.json, index.html, vite.config.js, and the locale
+#   catalog's provenance inputs (homebrew locales and icon maps, the generator,
+#   its schemas, the governed contract fixtures, the backend emitted-key
+#   registry) plus the Node version the catalog revision is bound to.
 # Excludes: node_modules/ (only dependency declarations matter, not installed files)
 # macOS ships `shasum` but not `sha256sum`; pick whichever is available.
 if has_cmd sha256sum; then

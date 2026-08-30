@@ -28,7 +28,10 @@ asserts the response status, headers, and bytes for:
     must fail *uncacheably* so the client can recover by re-fetching the
     manifest.
 
-Nothing here is skipped when a tool is missing: docker and node are required.
+Nothing here is skipped when a tool is missing: docker (to run nginx), node
+(to build a second revision and to compress/inflate fixtures), git (to assemble
+the tracked-sources clone) and bash (to render the offline packager's config)
+are all required, and their absence fails the gate.
 """
 
 import hashlib
