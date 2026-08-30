@@ -53,6 +53,10 @@ library:
         - -fwarn-tabs
         - -O2
         - +RTS -V0 -RTS
+    - condition: flag(internal-test-hooks)
+      cpp-options: -DINTERNAL_TEST_HOOKS
+      dependencies:
+        - hspec
   dependencies:
     - MonadRandom
     - aeson
@@ -94,7 +98,6 @@ library:
     - foreign-store
     - hashable
     - hedis
-    - hspec
     - http-api-data
     - http-client
     - http-client-tls
@@ -190,6 +193,20 @@ flags:
     description: Turn on development settings, like auto-reload templates.
     manual: false
     default: false
+  internal-test-hooks:
+    description: >
+      Include this library's internal white-box regression Spec (e.g.
+      Api.Arkham.AwsEnvSupervisor's awsEnvSupervisorInternalSpec, which
+      exercises credential-acquisition primitives this module
+      deliberately never exports otherwise) and its Test.Hspec
+      dependency in the library component itself. Defaults on so an
+      ordinary `stack build`/`stack test` (as used by this repository's
+      own CI and local development) needs no extra flag to build and
+      run the test suite. A genuine production/deployment build (see
+      Dockerfile) explicitly disables this flag so the shipped library
+      never depends on hspec.
+    manual: true
+    default: true
 
 tests:
   spec:

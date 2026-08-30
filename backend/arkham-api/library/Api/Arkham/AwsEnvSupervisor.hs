@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {- | The application-lifetime, foundation-owned AWS 'Env' supervisor.
 
 This module is deliberately independent of 'Import'\/'Foundation' (it only
@@ -178,9 +179,15 @@ module Api.Arkham.AwsEnvSupervisor (
   deconstruct, or mismatch any of them. This is the only remaining way
   they are exercised at all outside 'newAwsEnvSupervisor'\/
   'requestAwsEnvReady'\/'stopAwsEnvSupervisor'\/'startSupervisedEnvUsing''s
-  own already-safe test seam.
+  own already-safe test seam. Only exported (and only defined at all)
+  when the @internal-test-hooks@ Cabal flag is enabled -- see this
+  module's own top-of-file note and @package.yaml@ -- so a genuine
+  production\/deployment build of this library never depends on
+  'Test.Hspec' at all.
   -}
+#ifdef INTERNAL_TEST_HOOKS
   awsEnvSupervisorInternalSpec,
+#endif
 ) where
 
 import Amazonka (AuthEnv (..), Env, Env' (..), EnvNoAuth, Error (..), ISO8601, Region (..), SerializeError (..), ServiceError (..), Time (..), expiration, fromTime, newEnv, newEnvNoAuth, runResourceT, send, sendUnsigned, sendUnsignedEither)
@@ -223,7 +230,9 @@ import Network.HTTP.Types.Status (status403, status404, status500, statusCode)
 import System.Directory qualified as Directory
 import System.Environment (lookupEnv, setEnv, unsetEnv)
 import System.IO.Unsafe (unsafePerformIO)
+#ifdef INTERNAL_TEST_HOOKS
 import Test.Hspec
+#endif
 
 {- | Non-secret, structured classification of a per-request 'Error', safe to
 log. Deliberately extracts only the numeric HTTP status, plus a category
@@ -2396,6 +2405,7 @@ stopAwsEnvSupervisor (AwsEnvSupervisor sup) = stopDemandDrivenSupervisor sup
 -- construction, not merely by convention -- there is no export list
 -- entry an external module could ever import to reach any of them.
 ----------------------------------------------------------------------
+#ifdef INTERNAL_TEST_HOOKS
 -- | A minimal fake resource standing in for a real Amazonka 'Env' in the
 -- generic 'startSupervisedEnv'\/'readSupervisedEnv'\/'stopSupervisedEnv'
 -- lifecycle tests below, which exercise the supervisor protocol itself
@@ -4108,9 +4118,10 @@ awsEnvSupervisorInternalSpec = describe "AWS Env supervisor" do
       let waitStopThreadBlockedDeliveringCancellation (attemptsLeft :: Int)
             | attemptsLeft <= 0 =
                 expectationFailure
-                  "the forked stopSupervisedEnv attempt never reached a \
-                  \genuinely blocked state trying to deliver its \
-                  \cancellation to the dispatcher"
+                  ( "the forked stopSupervisedEnv attempt never reached a "
+                      <> "genuinely blocked state trying to deliver its "
+                      <> "cancellation to the dispatcher"
+                  )
             | otherwise = do
                 status <- threadStatus stopThreadId
                 case status of
@@ -4561,3 +4572,5 @@ awsEnvSupervisorInternalSpec = describe "AWS Env supervisor" do
       waitForDemandDrivenState sup \case SupervisedEnvReady _ -> True; _ -> False
       stopDemandDrivenSupervisor sup
       readIORef childKilled `shouldReturn` True
+
+#endif
