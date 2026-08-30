@@ -104,7 +104,8 @@ class Nginx:
                 return self
             except (urllib.error.URLError, ConnectionError):
                 time.sleep(0.25)
-        logs = run([docker, "logs", self.name]).stderr
+        logs_result = run([docker, "logs", self.name])
+        logs = f"{logs_result.stdout}{logs_result.stderr}"
         self.__exit__(None, None, None)
         raise SystemExit(f"locale-catalog serving: nginx did not become ready\n{logs}")
 

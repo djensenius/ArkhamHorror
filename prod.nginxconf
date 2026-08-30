@@ -153,14 +153,13 @@ http {
     #                                    bytes change whenever the catalog is
     #                                    regenerated, so it revalidates by ETag
     #                                    like index.html does.
-    #   /locale-catalog/r/<rev>/...      content-addressed chunks and the
-    #                                    immutable copy of the same manifest.
-    #                                    The revision and the chunk's digest
-    #                                    are both in the path, so those bytes
-    #                                    can never change behind the URL. The
-    #                                    $cache_control map gives that prefix a
-    #                                    year and `immutable`; everything else
-    #                                    here revalidates.
+    #   /locale-catalog/c/<sha256>.json  a chunk, addressed purely by the
+    #                                    digest of its own bytes.
+    #   /locale-catalog/r/<rev>/...      the immutable copy of the manifest for
+    #                                    one revision.
+    #
+    # Neither can ever change behind its URL, so the $cache_control map gives
+    # both prefixes a year and `immutable`; everything else here revalidates.
     #
     # Both are unauthenticated static JSON: no cookies, no tokens, no
     # per-request data in the response, and the same default access logging as

@@ -133,8 +133,9 @@ the reason is one of a closed set: `message-syntax-error`,
 `unsupported-message-syntax`, `html-parse-error`, `unsupported-element`,
 `unsupported-attribute`, `placeholder-in-attribute`,
 `asset-variable-outside-image`, `unsupported-image-source`,
-`image-path-escape`, `invalid-style-token`, `misplaced-list-item`,
-`unresolved-link`, `conflicting-variable-role`.
+`image-path-escape`, `invalid-style-token`, `invalid-style-declaration`,
+`misplaced-list-item`, `unresolved-link`, `unsupported-link-target`,
+`link-cycle`, `conflicting-variable-role`.
 
 At the revision this was written that is 19 of 38,603 entries (0.05%), and
 **none of them is a key the backend emits**: 9 `html-parse-error` (malformed
