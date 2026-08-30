@@ -24,7 +24,20 @@ http {
     "~^/assets/"       "public, max-age=31536000, immutable";
     "~^/img/"          "public, max-age=2592000";
     "~^/audio/"        "public, max-age=2592000";
+    "~^/locale-catalog/c/" "public, max-age=31536000, immutable";
     "~^/locale-catalog/r/" "public, max-age=31536000, immutable";
+  }
+
+  # Cache policy for the locale catalog, chosen by *response status*, not by
+  # path alone. A 404 or 405 under an immutable prefix would otherwise be
+  # cached for a year — poisoning every client that raced a rolling deploy —
+  # so only a real payload (200/206) or a revalidation (304) may be cached,
+  # and every other status is explicitly non-storable.
+  map $status $catalog_cache_control {
+    default "no-store";
+    200     $cache_control;
+    206     $cache_control;
+    304     $cache_control;
   }
 
   # Does this client accept brotli? Matched as a whole word so it can't be
@@ -161,6 +174,12 @@ http {
     # `Vary: Accept-Encoding` is set here on the brotli branch and by the
     # http-level `gzip_vary on` (which covers gzip_static) on every other
     # response, so a shared cache never reuses one encoding for another.
+    #
+    # Chunk URLs under /locale-catalog/c/ carry only a content digest, so a
+    # pack that did not change keeps its URL across revisions and remains
+    # available from replicas running either revision during a rolling deploy.
+    # A client that does hit a missing chunk gets an uncacheable 404 and can
+    # re-fetch the manifest (see docs/locale-catalog.md).
     location ^~ /locale-catalog/ {
       default_type application/json;
       gzip off;
@@ -169,15 +188,32 @@ http {
       if ($accepts_br) { set $br "y"; }
       if (-f "$request_filename.br") { set $br "${br}f"; }
       if ($br = "yf") {
-        add_header Cache-Control $cache_control always;
+        add_header Cache-Control $catalog_cache_control always;
         add_header Vary "Accept-Encoding" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header Content-Encoding "br" always;
         rewrite ^(.*)$ $1.br break;
       }
 
-      add_header Cache-Control $cache_control always;
+      add_header Cache-Control $catalog_cache_control always;
       add_header X-Content-Type-Options "nosniff" always;
+      # Stated unconditionally rather than left to gzip_vary, so the guarantee
+      # holds for a native client even on a response nginx did not negotiate.
+      add_header Vary "Accept-Encoding" always;
+
+      # nginx's range filter runs *after* the header filter, so a 416 would
+      # otherwise still carry the immutable policy computed for the 200 it
+      # started as. Routing it through a named location re-writes the headers
+      # once the status is final.
+      error_page 416 = @locale_catalog_error;
+    }
+
+    location @locale_catalog_error {
+      internal;
+      default_type application/json;
+      add_header Cache-Control "no-store" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      return 416;
     }
 
     location / {

@@ -67,7 +67,13 @@ CLEAN_CLONE_PREFIXES = (
     "frontend/schemas/",
     "contracts/",
 )
-CLEAN_CLONE_FILES = ("frontend/package.json",)
+CLEAN_CLONE_FILES = (
+    "frontend/package.json",
+    "frontend/package-lock.json",
+    "backend/arkham-api/i18n-emitted-keys.json",
+)
+BACKEND_KEYS = "backend/arkham-api/i18n-emitted-keys.json"
+BACKEND_EXTRACTOR = "scripts/extract-backend-i18n-keys.py"
 
 # Production modules the normalizer mirrors (icon/literal classification and
 # the asset-path variables). Their bytes change catalog semantics, so they must
@@ -174,7 +180,9 @@ def load_schemas() -> dict[str, object]:
         "the manifest and chunk schemas disagree on the message-key grammar",
     )
     require(
-        raw["manifest"]["properties"]["provenance"]["properties"]["requiredKeys"]["items"]
+        raw["manifest"]["properties"]["provenance"]["properties"]["fixtureKeys"]["items"]
+        == {"$ref": "#/$defs/messageKey"}
+        and raw["manifest"]["properties"]["backend"]["properties"]["untranslatedKeys"]["items"]
         == {"$ref": "#/$defs/messageKey"},
         "required keys must be typed by the shared message-key grammar",
     )
@@ -243,6 +251,10 @@ def validate_catalog(files: dict[str, bytes], schemas) -> dict:
         manifest["manifestPath"][len(manifest["basePath"]) + 1 :] in files,
         "manifestPath does not address a generated file",
     )
+    require(
+        manifest["chunkPathPrefix"] == f"{manifest['basePath']}/c/",
+        "chunkPathPrefix is not the content-addressed prefix",
+    )
 
     revision_manifest = f"r/{revision}/manifest.json"
     require(revision_manifest in files, "the immutable revision manifest was not generated")
@@ -275,10 +287,12 @@ def validate_catalog(files: dict[str, bytes], schemas) -> dict:
         locale_keys = 0
         locale_bytes = 0
         for descriptor in locale_entry["chunks"]:
-            prefix = f"{manifest['basePath']}/r/{revision}/{locale}/"
+            # Chunk URLs carry only the content digest, so an unchanged pack
+            # keeps its URL across revisions and stays reachable from a replica
+            # of either revision mid-rollout.
             require(
-                descriptor["path"].startswith(prefix) and descriptor["path"].endswith(".json"),
-                f"{descriptor['path']} is not an immutable revision path",
+                descriptor["path"] == f"{manifest['chunkPathPrefix']}{descriptor['sha256']}.json",
+                f"{descriptor['path']} is not addressed by its content digest",
             )
             require(descriptor["path"] not in seen_paths, f"duplicate chunk path {descriptor['path']}")
             seen_paths.add(descriptor["path"])
@@ -295,10 +309,7 @@ def validate_catalog(files: dict[str, bytes], schemas) -> dict:
             require(len(content) <= MAX_CHUNK_BYTES, f"{descriptor['path']} exceeds the chunk size bound")
             digest = sha256_hex(content)
             require(digest == descriptor["sha256"], f"{descriptor['path']} digest mismatch")
-            require(
-                relative.endswith(f"{descriptor['pack']}.{digest[:16]}.json"),
-                f"{descriptor['path']} is not content-addressed",
-            )
+            require(relative == f"c/{digest}.json", f"{descriptor['path']} is not content-addressed")
 
             chunk = strict_json.strict_json_loads(content, source=descriptor["path"])
             chunk_errors = sorted(schemas["chunk"].iter_errors(chunk), key=lambda error: str(list(error.path)))
@@ -307,7 +318,10 @@ def validate_catalog(files: dict[str, bytes], schemas) -> dict:
                 f"{descriptor['path']} does not satisfy the v1 chunk schema: "
                 + "; ".join(f"{list(error.path)}: {error.message}" for error in chunk_errors[:5]),
             )
-            require(chunk["catalogRevision"] == revision, f"{descriptor['path']} revision mismatch")
+            require(
+                "catalogRevision" not in chunk,
+                f"{descriptor['path']} names a revision, which would break cross-revision reuse",
+            )
             require(chunk["locale"] == locale, f"{descriptor['path']} locale mismatch")
             require(chunk["fallback"] == expected_fallback, f"{descriptor['path']} fallback mismatch")
             require(chunk["pack"] == descriptor["pack"], f"{descriptor['path']} pack mismatch")
@@ -367,8 +381,8 @@ def validate_required_keys(files: dict[str, bytes], manifest: dict) -> None:
         )
     require(expected, "the contract fixtures declared no required I18n keys")
     require(
-        sorted(expected) == sorted(manifest["provenance"]["requiredKeys"]),
-        "the manifest's required key set does not match the contract fixtures",
+        sorted(expected) == sorted(manifest["provenance"]["fixtureKeys"]),
+        "the manifest's fixture key set does not match the contract fixtures",
     )
 
     default_locale = manifest["defaultLocale"]
@@ -449,12 +463,105 @@ def collect_node_kinds(nodes: list) -> tuple[set[str], list[dict]]:
     return kinds, images
 
 
-def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]) -> None:
-    provenance = strict_json.strict_json_load_path(provenance_path)
+def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> None:
+    """The catalog must satisfy the backend's machine-derived emitted-key set.
+
+    The registry is re-derived here (a drift check on the committed artifact),
+    every emitted key the default locale translates must be published and
+    renderable, and the gaps the generator reported must be exactly the gaps
+    that actually exist — so a newly added backend key with no translation, or
+    a message that needs a variable the backend does not send, cannot slip in
+    unnoticed.
+    """
+    result = subprocess.run(
+        [shutil.which("uv") or "uv", "run", str(ROOT / BACKEND_EXTRACTOR), "--check"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     require(
-        sha256_hex(canonical_bytes(provenance)) == manifest["provenance"]["sha256"],
+        result.returncode == 0,
+        f"the backend emitted-key artifact is stale: {result.stdout.strip()} {result.stderr.strip()}",
+    )
+
+    artifact = strict_json.strict_json_load_path(ROOT / BACKEND_KEYS)
+    emitted = {entry["key"]: {v["name"] for v in entry["variables"]} for entry in artifact["keys"]}
+    require(len(emitted) > 1000, f"the backend registry only lists {len(emitted)} keys")
+
+    backend = manifest["backend"]
+    require(
+        backend["artifactSha256"] == sha256_hex(read_source_bytes(BACKEND_KEYS)),
+        "the manifest records a different backend registry than the committed one",
+    )
+    require(
+        backend["sourceSha256"] == artifact["source"]["sha256"],
+        "the manifest records a different backend source digest than the registry",
+    )
+    require(backend["emittedKeys"] == len(emitted), "the manifest miscounts the backend's emitted keys")
+
+    default_locale = manifest["defaultLocale"]
+    entries: dict[str, dict] = {}
+    for locale_entry in manifest["locales"]:
+        if locale_entry["locale"] != default_locale:
+            continue
+        for descriptor in locale_entry["chunks"]:
+            chunk = strict_json.strict_json_loads(
+                files[descriptor["path"][len(manifest["basePath"]) + 1 :]], source=descriptor["path"]
+            )
+            entries.update(chunk["entries"])
+
+    translated = {key for key in emitted if key in entries}
+    untranslated = sorted(key for key in emitted if key not in entries)
+    require(
+        backend["requiredKeys"] == len({*manifest["provenance"]["fixtureKeys"], *translated}),
+        "the manifest miscounts its required keys",
+    )
+    require(
+        backend["untranslatedKeys"] == untranslated,
+        "the manifest's untranslated-key list does not match the catalog",
+    )
+
+    for key in sorted(translated):
+        entry = entries[key]
+        require(
+            entry["form"] != "unsupported",
+            f"backend-emitted key {key} is unsupported ({entry.get('reason')}): it cannot be optional",
+        )
+
+    gaps = []
+    for key in sorted(translated):
+        entry = entries[key]
+        needed = {
+            variable["name"]
+            for variable in entry["variables"]
+            if variable["source"] == "named" and variable["role"] == "text"
+        }
+        missing = sorted(needed - emitted[key])
+        if missing:
+            gaps.append({"key": key, "missing": missing, "resolved": bool(emitted[key])})
+    require(
+        gaps == manifest["backend"]["variableGaps"],
+        "the manifest's variable-gap report does not match the catalog "
+        f"({len(gaps)} computed, {len(manifest['backend']['variableGaps'])} reported)",
+    )
+
+
+def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]) -> None:
+    record = strict_json.strict_json_load_path(provenance_path)
+    require(
+        sha256_hex(canonical_bytes(record)) == manifest["provenance"]["sha256"],
         "the manifest's provenance digest does not match the generator's provenance record",
     )
+    require(
+        record["output"]["sha256"] == manifest["provenance"]["outputSha256"],
+        "the manifest's output digest does not match the generator's record",
+    )
+    require(
+        manifest["catalogRevision"] == f"1.{manifest['provenance']['sha256'][:32]}",
+        "the revision is not derived from the provenance digest",
+    )
+    provenance = record["provenance"]
     for field, value in (
         ("localeSourcesSha256", provenance["localeSources"]),
         ("schemasSha256", provenance["schemas"]),
@@ -467,6 +574,20 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
     require(
         manifest["provenance"]["localeSourceFiles"] == len(provenance["localeSources"]),
         "manifest provenance source count mismatch",
+    )
+
+    require(
+        provenance["backend"]["sha256"] == manifest["backend"]["artifactSha256"],
+        "the provenance record and the manifest disagree about the backend registry",
+    )
+    require(
+        len(provenance["lockfile"]) == 1
+        and provenance["lockfile"][0]["path"] == "frontend/package-lock.json",
+        "the resolved dependency closure is not part of the catalog provenance",
+    )
+    require(
+        provenance["toolchain"]["node"] == str(sys.version_info[0] * 0 + int(provenance["toolchain"]["node"])),
+        "the provenance record does not pin a Node major version",
     )
 
     contract_manifest = strict_json.strict_json_loads(
@@ -484,6 +605,8 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
         (provenance["schemas"], ""),
         (provenance["generator"]["sources"], ""),
         (provenance["contract"]["fixtures"], ""),
+        (provenance["lockfile"], ""),
+        ([{"path": provenance["backend"]["path"], "sha256": provenance["backend"]["sha256"]}], ""),
     ):
         for record in group:
             hashed.append((f"{prefix}{record['path']}", record["sha256"]))
@@ -549,32 +672,85 @@ def validate_clean_clone(tracked: set[str], manifest: dict, files: dict[str, byt
 
 
 def validate_fail_closed(clone: Path, manifest: dict) -> None:
-    """Removing a required key from the clean clone must fail generation."""
-    required = manifest["provenance"]["requiredKeys"]
-    base = clone / "frontend" / "src" / "locales" / "en" / "base.json"
-    messages = strict_json.strict_json_load_path(base)
-    victim = next((key for key in required if key in messages), None)
-    require(
-        victim is not None,
-        "no required key lives in en/base.json, so this fail-closed probe needs a new victim file",
-    )
-    del messages[victim]
-    base.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
+    """Every gate must have teeth: each mutation below has to stop the build."""
+    original = {}
 
+    def remember(path: Path) -> Path:
+        original[path] = path.read_bytes()
+        return path
+
+    def restore() -> None:
+        for path, content in original.items():
+            path.write_bytes(content)
+        original.clear()
+
+    base = clone / "frontend" / "src" / "locales" / "en" / "base.json"
+
+    # 1. A duplicate key inside one raw locale file (JSON.parse would silently
+    #    keep the last one).
+    remember(base)
+    text = base.read_text(encoding="utf-8")
+    injected = text.replace("{", '{\n  "setup": "shadowed",', 1)
+    base.write_text(injected, encoding="utf-8")
+    result = run_generator(["--out", str(clone / "out")], frontend=clone / "frontend", expect_success=False)
+    restore()
+    require(
+        result.returncode != 0 and "duplicate key" in result.stderr,
+        f"a duplicate locale key did not fail generation:\n{result.stdout}\n{result.stderr}",
+    )
+
+    # 2. Markup a native client cannot render, on a key the backend emits.
+    emitted_key = manifest["backend"]["untranslatedKeys"]
+    gathering = clone / "frontend" / "src" / "locales" / "en" / "nightOfTheZealot" / "scenarios" / "theGathering.json"
+    remember(gathering)
+    messages = strict_json.strict_json_load_path(gathering)
+    messages["setup"]["gatherSets"] = '<a href="https://example.test">gather</a>'
+    gathering.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
+    result = run_generator(["--out", str(clone / "out")], frontend=clone / "frontend", expect_success=False)
+    restore()
+    require(
+        result.returncode != 0 and "is unsupported" in result.stderr,
+        f"unsupported markup on a required key did not fail generation:\n{result.stderr}",
+    )
+
+    # 3. A link cycle must be refused rather than published.
+    remember(base)
+    messages = strict_json.strict_json_load_path(base)
+    messages["setup"] = "@:continue"
+    messages["continue"] = "@:setup"
+    base.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
+    result = run_generator(["--out", str(clone / "out")], frontend=clone / "frontend", expect_success=False)
+    restore()
+    require(
+        result.returncode != 0 and ("link-cycle" in result.stderr or "is unsupported" in result.stderr),
+        f"a link cycle did not fail generation:\n{result.stderr}",
+    )
+
+    # 4. A contract-required key removed entirely. `gatherSets` is declared in
+    #    exactly one file, so deleting it really does remove the key.
+    remember(gathering)
+    messages = strict_json.strict_json_load_path(gathering)
+    victim = "gatherSets"
+    require(victim in messages["setup"], "the fail-closed probe needs a new victim key")
+    del messages["setup"][victim]
+    gathering.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
     result = run_generator(
         ["--out", str(clone / "out")], frontend=clone / "frontend", expect_success=False
     )
+    restore()
     require(
-        result.returncode != 0 and f"required key {victim} is missing" in result.stderr,
-        f"generation succeeded after removing required key {victim}",
+        result.returncode != 0 and "is missing from en" in result.stderr,
+        f"generation succeeded after removing required key {victim}:\n{result.stderr}",
     )
 
-    # A malformed locale source must fail too, rather than emitting a partial
-    # catalog.
+    # 5. A malformed locale source must fail too, rather than emitting a
+    #    partial catalog.
+    remember(base)
     base.write_text("{ not json", encoding="utf-8")
     result = run_generator(
         ["--out", str(clone / "out")], frontend=clone / "frontend", expect_success=False
     )
+    restore()
     require(result.returncode != 0, "generation succeeded with malformed locale JSON")
 
 
@@ -600,17 +776,70 @@ def validate_stale_detection(directory: Path, manifest: dict) -> None:
     victim.write_bytes(original)
 
 
+def validate_revision_sensitivity(clone: Path, manifest: dict) -> None:
+    """The revision must move when any input that can change the bytes moves:
+    the locale content itself, the resolved dependency closure, and the
+    generator's own output."""
+    out = clone / "out-revision"
+    baseline = strict_json.strict_json_loads(
+        run_and_read(clone, out), source="clean clone"
+    )["catalogRevision"]
+    require(baseline == manifest["catalogRevision"], "the clean clone drifted from the worktree build")
+
+    lockfile = clone / "frontend" / "package-lock.json"
+    original_lock = lockfile.read_bytes()
+    mutated = json.loads(original_lock)
+    mutated["packages"][""]["devDependencies"]["parse5"] = "^8.0.2"
+    lockfile.write_text(json.dumps(mutated, indent=2) + "\n", encoding="utf-8")
+    lock_revision = strict_json.strict_json_loads(run_and_read(clone, out), source="lock mutation")[
+        "catalogRevision"
+    ]
+    lockfile.write_bytes(original_lock)
+    require(
+        lock_revision != baseline,
+        "changing the resolved dependency closure did not change the catalog revision",
+    )
+
+    base = clone / "frontend" / "src" / "locales" / "en" / "base.json"
+    original_messages = base.read_bytes()
+    messages = strict_json.strict_json_load_path(base)
+    key = next(key for key, value in messages.items() if isinstance(value, str))
+    messages[key] = f"{messages[key]} (revision probe)"
+    base.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
+    content_revision = strict_json.strict_json_loads(
+        run_and_read(clone, out), source="content mutation"
+    )["catalogRevision"]
+    base.write_bytes(original_messages)
+    require(
+        content_revision != baseline,
+        "changing published content did not change the catalog revision",
+    )
+
+    require(
+        strict_json.strict_json_loads(run_and_read(clone, out), source="restored")["catalogRevision"]
+        == baseline,
+        "restoring the sources did not restore the revision",
+    )
+    shutil.rmtree(out, ignore_errors=True)
+
+
+def run_and_read(clone: Path, out: Path) -> bytes:
+    run_generator(["--out", str(out)], frontend=clone / "frontend")
+    return (out / "manifest.json").read_bytes()
+
+
 def validate_deployment_wiring(manifest: dict) -> None:
     base = manifest["basePath"]
     nginx = (ROOT / "prod.nginxconf").read_text(encoding="utf-8")
-    require(
-        re.search(
-            rf'"~\^{re.escape(base)}/r/"\s+"public,\s*max-age=31536000,\s*immutable"\s*;?',
-            nginx,
+    for prefix in ("c", "r"):
+        require(
+            re.search(
+                rf'"~\^{re.escape(base)}/{prefix}/"\s+"public,\s*max-age=31536000,\s*immutable"\s*;?',
+                nginx,
+            )
+            is not None,
+            f"prod.nginxconf does not cache {base}/{prefix}/ immutably",
         )
-        is not None,
-        "prod.nginxconf does not cache revision-addressed catalog paths immutably",
-    )
     # One `^~` prefix location, so an unknown catalog path 404s instead of
     # being answered with the SPA shell.
     marker = f"location ^~ {base}/ {{"
@@ -622,8 +851,27 @@ def validate_deployment_wiring(manifest: dict) -> None:
         "the catalog location does not set nosniff",
     )
     require(
-        "add_header Cache-Control $cache_control always;" in block,
-        "the catalog location sets no cache policy",
+        "add_header Cache-Control $catalog_cache_control always;" in block,
+        "the catalog location does not use the status-aware cache policy",
+    )
+    # The status map is what keeps an immutable year off a 404/405/416.
+    require(
+        re.search(r"map\s+\$status\s+\$catalog_cache_control\s*\{", nginx) is not None,
+        "prod.nginxconf does not select the catalog cache policy by response status",
+    )
+    status_map = nginx.split("map $status $catalog_cache_control {", 1)[1].split("}", 1)[0]
+    require(
+        re.search(r'default\s+"no-store"', status_map) is not None,
+        "prod.nginxconf does not make catalog error responses non-storable",
+    )
+    for status in ("200", "206", "304"):
+        require(
+            re.search(rf"^\s*{status}\s+\$cache_control;", status_map, re.MULTILINE) is not None,
+            f"prod.nginxconf does not cache {status} catalog responses by path policy",
+        )
+    require(
+        "error_page 416 = @locale_catalog_error;" in nginx,
+        "prod.nginxconf does not re-header a 416, whose status nginx finalizes after add_header",
     )
     require(
         'add_header Vary "Accept-Encoding" always;' in block,
@@ -669,6 +917,37 @@ def validate_deployment_wiring(manifest: dict) -> None:
             dependency in declared,
             f"{dependency} must be a declared dependency of the generator",
         )
+
+    offline_nginx = (ROOT / "offline" / "scripts" / "05-package.sh").read_text(encoding="utf-8")
+    require(
+        f"location ^~ {base}/ {{" in offline_nginx,
+        "the offline package does not publish the catalog on its own route",
+    )
+    for needle in (
+        "map \\$status \\$catalog_cache_control",
+        'default "no-store"',
+        'add_header X-Content-Type-Options "nosniff" always;',
+        "default_type application/json;",
+    ):
+        require(needle in offline_nginx, f"the offline nginx config is missing {needle!r}")
+
+    offline_build = (ROOT / "offline" / "scripts" / "03-build-frontend.sh").read_text(encoding="utf-8")
+    for needle in ("scripts/locale-catalog", "homebrew", "i18n-emitted-keys.json", "node --version", "verify-dist.mjs"):
+        require(
+            needle in offline_build,
+            f"the offline frontend build does not account for {needle!r} in its cache key or verification",
+        )
+
+    offline_deps = (ROOT / "offline" / "scripts" / "01-check-project-deps.sh").read_text(encoding="utf-8")
+    mise = (ROOT / "mise.toml").read_text(encoding="utf-8")
+    node_major = strict_json.strict_json_load_path(FRONTEND / "package.json")["engines"]["node"]
+    major = re.search(r"(\d+)", node_major).group(1)
+    require(f'node = "{major}.' in mise, f"mise.toml does not pin Node {major}.x")
+    require(f'node_ver="{major}.' in offline_deps, f"the offline build does not install Node {major}.x")
+    require(
+        f"FROM node:{major}." in (ROOT / "Dockerfile").read_text(encoding="utf-8"),
+        f"the container build does not use Node {major}.x",
+    )
 
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     require(
@@ -738,9 +1017,11 @@ def main() -> None:
 
     manifest = validate_catalog(files, schemas)
     validate_required_keys(files, manifest)
+    validate_backend_requirements(files, manifest)
     validate_provenance(provenance_path, manifest, tracked)
     validate_stale_detection(first, manifest)
     clone = validate_clean_clone(tracked, manifest, files)
+    validate_revision_sensitivity(clone, manifest)
     validate_fail_closed(clone, manifest)
     validate_deployment_wiring(manifest)
 
@@ -751,6 +1032,9 @@ def main() -> None:
         f"{manifest['totals']['locales']} locales, {manifest['totals']['chunks']} files, "
         f"{manifest['totals']['keys']} keys "
         f"({manifest['totals']['unsupportedKeys']} explicitly unsupported), "
+        f"{manifest['backend']['requiredKeys']} backend-required "
+        f"({len(manifest['backend']['untranslatedKeys'])} emitted keys untranslated, "
+        f"{len(manifest['backend']['variableGaps'])} variable gaps), "
         f"{manifest['totals']['bytes'] / 1024 / 1024:.2f} MB"
     )
 

@@ -33,6 +33,18 @@ depends = [
   "contracts:routes",
 ]
 
+[tasks."locale-catalog:backend-keys"]
+description = "Re-derive the backend's emitted i18n key registry from the Haskell sources"
+run = "uv run scripts/extract-backend-i18n-keys.py"
+
+[tasks."locale-catalog:backend-keys-check"]
+description = "Fail if the committed backend emitted-key registry has drifted from the Haskell sources"
+run = "uv run scripts/extract-backend-i18n-keys.py --check"
+
+[tasks."locale-catalog:serving"]
+description = "Boot prod.nginxconf and the offline package's nginx config and verify catalog status, cache, MIME and rolling-deploy behavior"
+run = "uv run scripts/validate-catalog-serving.py"
+
 [tasks."locale-catalog:test"]
 description = "Run the locale-catalog render-AST and generator tests"
 run = "npm --prefix frontend run test:locale-catalog"

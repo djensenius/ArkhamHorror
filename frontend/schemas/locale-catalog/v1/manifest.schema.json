@@ -11,11 +11,13 @@
     "basePath",
     "manifestPath",
     "revisionManifestPath",
+    "chunkPathPrefix",
     "digestAlgorithm",
     "defaultLocale",
     "languageResolution",
     "locales",
     "totals",
+    "backend",
     "provenance"
   ],
   "properties": {
@@ -28,6 +30,11 @@
     "basePath": { "$ref": "#/$defs/absolutePath" },
     "manifestPath": { "$ref": "#/$defs/absolutePath" },
     "revisionManifestPath": { "$ref": "#/$defs/absolutePath" },
+    "chunkPathPrefix": {
+      "description": "Prefix of every content-addressed chunk URL. Chunk paths carry only the content digest, so an unchanged pack keeps its URL across revisions and stays available from replicas of either revision during a rolling deploy.",
+      "type": "string",
+      "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*/$"
+    },
     "digestAlgorithm": { "const": "sha256" },
     "defaultLocale": { "$ref": "#/$defs/locale" },
     "languageResolution": {
@@ -93,15 +100,62 @@
         "unsupportedKeys": { "$ref": "#/$defs/count" }
       }
     },
+    "backend": {
+      "description": "What the running backend actually emits, taken from the machine-derived registry in backend/arkham-api/i18n-emitted-keys.json. Every emitted key the default locale translates is published and renderable; the rest are reported here rather than hidden.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactPath",
+        "artifactSha256",
+        "sourceSha256",
+        "emittedKeys",
+        "requiredKeys",
+        "untranslatedKeys",
+        "variableGaps",
+        "dynamicSites"
+      ],
+      "properties": {
+        "artifactPath": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.json$" },
+        "artifactSha256": { "$ref": "#/$defs/sha256" },
+        "sourceSha256": { "$ref": "#/$defs/sha256" },
+        "emittedKeys": { "$ref": "#/$defs/count" },
+        "requiredKeys": { "$ref": "#/$defs/count" },
+        "untranslatedKeys": {
+          "description": "Keys the backend emits that no default-locale message translates. Clients render these as unavailable; the gate fails when the list changes without the artifact being regenerated.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/messageKey" }
+        },
+        "variableGaps": {
+          "description": "Required keys whose message needs a substitution the extracted backend record does not list. `resolved` marks the cases where the extractor did resolve that key's variables, so the mismatch is a genuine contradiction rather than an unresolved call site.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "missing", "resolved"],
+            "properties": {
+              "key": { "$ref": "#/$defs/messageKey" },
+              "missing": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z0-9_]{1,64}$" } },
+              "resolved": { "type": "boolean" }
+            }
+          }
+        },
+        "dynamicSites": {
+          "description": "Emission sites in the backend whose key or scope is not statically resolvable, as counted by the extractor.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
     "provenance": {
-      "description": "Binds this revision to the exact bytes it was generated from: locale sources, schemas, generator, and the contract fixtures that define the required key set.",
+      "description": "Binds this revision to the exact bytes it was generated from: locale sources, schemas, generator, toolchain, the resolved dependency closure, the backend registry, and the rendered output itself.",
       "type": "object",
       "additionalProperties": false,
       "required": [
         "sha256",
+        "outputSha256",
         "generator",
         "contractRevision",
-        "requiredKeys",
+        "fixtureKeys",
         "localeSourceFiles",
         "localeSourcesSha256",
         "schemasSha256",
@@ -109,6 +163,10 @@
       ],
       "properties": {
         "sha256": { "$ref": "#/$defs/sha256" },
+        "outputSha256": {
+          "description": "Digest of the rendered catalog content before it was addressed, so the revision changes when the output changes even if the inputs look the same.",
+          "$ref": "#/$defs/sha256"
+        },
         "generator": {
           "type": "object",
           "additionalProperties": false,
@@ -119,7 +177,7 @@
           }
         },
         "contractRevision": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$" },
-        "requiredKeys": {
+        "fixtureKeys": {
           "description": "Keys taken from the governed contract fixtures that this revision guarantees resolve in the default locale.",
           "type": "array",
           "minItems": 1,

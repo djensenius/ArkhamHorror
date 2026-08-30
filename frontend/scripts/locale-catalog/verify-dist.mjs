@@ -12,7 +12,13 @@ import { fileURLToPath } from 'node:url'
 import { sha256Hex } from './canonical.mjs'
 
 const FRONTEND_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
-const DIST_CATALOG = join(FRONTEND_DIR, 'dist', 'locale-catalog')
+
+// `--dist <dir>` lets the offline packager point at its own build output; the
+// default is the directory prod.nginxconf serves.
+const distIndex = process.argv.indexOf('--dist')
+const DIST_ROOT =
+  distIndex === -1 ? join(FRONTEND_DIR, 'dist') : resolve(process.argv[distIndex + 1] ?? '')
+const DIST_CATALOG = join(DIST_ROOT, 'locale-catalog')
 
 // scripts/precompress.cjs skips anything smaller than one MTU's worth of bytes.
 const PRECOMPRESS_MIN_BYTES = 1024

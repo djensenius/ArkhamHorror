@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.14"
+# ///
+
+"""Serving gate for the published locale catalog, run against real nginx.
+
+The catalog's cache policy is a correctness property, not a formatting detail:
+an immutable year on a 404 poisons every client that raced a rolling deploy,
+and a JSON fetch answered with the SPA shell breaks native clients silently.
+Neither can be proven by reading the config, so this gate boots the actual
+`prod.nginxconf` (and the config the offline packager generates) in nginx and
+asserts the response status, headers, and bytes for:
+
+  * 200 (chunk and manifest), 206 and 304 — cacheable, with the policy their
+    path deserves;
+  * 404 (missing chunk, unknown path), 405 (bad method) and 416 (bad range) —
+    never stored;
+  * JSON content type, `nosniff`, `Vary: Accept-Encoding`, and byte-exact
+    payloads that match the manifest's SHA-256;
+  * a rolling deploy in both directions: the manifest of one revision fetched
+    against the static root of the other. Chunk URLs are content-addressed, so
+    every pack that did not change must still resolve; a pack that did change
+    must fail *uncacheably* so the client can recover by re-fetching the
+    manifest.
+
+Nothing here is skipped when a tool is missing: docker and node are required.
+"""
+
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+FRONTEND = ROOT / "frontend"
+WORK = FRONTEND / "node_modules" / ".locale-catalog-serving"
+NGINX_IMAGE = "nginx:1.27-alpine"
+PORT = int(os.environ.get("LOCALE_CATALOG_TEST_PORT", "38199"))
+
+CLEAN_CLONE_PREFIXES = ("frontend/src/", "frontend/homebrew/", "frontend/scripts/", "frontend/schemas/", "contracts/", "backend/arkham-api/i18n-emitted-keys.json")
+CLEAN_CLONE_FILES = ("frontend/package.json", "frontend/package-lock.json")
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise SystemExit(f"locale-catalog serving: {message}")
+
+
+def run(command: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(command, capture_output=True, text=True, check=False, **kwargs)
+
+
+def tool(name: str) -> str:
+    path = shutil.which(name)
+    require(path is not None, f"{name} is required to verify catalog serving")
+    return path
+
+
+def request(path: str, *, method: str = "GET", headers: dict[str, str] | None = None):
+    url = f"http://127.0.0.1:{PORT}{path}"
+    message = urllib.request.Request(url, method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(message) as response:
+            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
+    except urllib.error.HTTPError as error:
+        return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read()
+
+
+class Nginx:
+    """Runs one nginx container over a given config and static root."""
+
+    def __init__(self, config: Path, static_root: Path, name: str):
+        self.config = config
+        self.static_root = static_root
+        self.name = name
+        self.container = None
+
+    def __enter__(self):
+        docker = tool("docker")
+        run([docker, "rm", "-f", self.name])
+        result = run(
+            [
+                docker, "run", "-d", "--rm", "--name", self.name,
+                "-p", f"{PORT}:3000",
+                "-v", f"{self.config}:/etc/nginx/nginx.conf:ro",
+                "-v", f"{self.static_root}:/opt/arkham/src/frontend/dist:ro",
+                NGINX_IMAGE,
+            ]
+        )
+        require(result.returncode == 0, f"could not start nginx: {result.stderr.strip()}")
+        self.container = result.stdout.strip()
+
+        for _ in range(60):
+            try:
+                request("/locale-catalog/manifest.json")
+                return self
+            except (urllib.error.URLError, ConnectionError):
+                time.sleep(0.25)
+        logs = run([docker, "logs", self.name]).stderr
+        self.__exit__(None, None, None)
+        raise SystemExit(f"locale-catalog serving: nginx did not become ready\n{logs}")
+
+    def __exit__(self, *_):
+        if self.container is not None:
+            run([tool("docker"), "rm", "-f", self.name])
+            self.container = None
+        return False
+
+
+def build_catalog(frontend: Path, out: Path) -> dict:
+    result = run([tool("node"), str(frontend / "scripts" / "locale-catalog" / "generate.mjs"), "--out", str(out)], cwd=frontend)
+    require(result.returncode == 0, f"generation failed: {result.stdout}\n{result.stderr}")
+
+    # The production build precompresses everything it publishes; mirror that
+    # so gzip_static has something to serve here too.
+    import gzip
+
+    for path in out.rglob("*.json"):
+        path.with_suffix(".json.gz").write_bytes(gzip.compress(path.read_bytes(), 9))
+    return json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+
+
+def clean_clone(destination: Path) -> Path:
+    """A scratch frontend built only from git-tracked sources."""
+    git = tool("git")
+    tracked = run([git, "-C", str(ROOT), "ls-files", "-z"]).stdout.split("\0")
+    for relative in tracked:
+        if not relative:
+            continue
+        if not (relative.startswith(CLEAN_CLONE_PREFIXES) or relative in CLEAN_CLONE_FILES):
+            continue
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    (destination / "frontend" / "node_modules").symlink_to(FRONTEND / "node_modules")
+    return destination / "frontend"
+
+
+def mutate_one_locale_string(frontend: Path) -> str:
+    """Changes exactly one pack's content, so one chunk digest changes."""
+    path = frontend / "src" / "locales" / "en" / "base.json"
+    messages = json.loads(path.read_text(encoding="utf-8"))
+    key = next(key for key, value in messages.items() if isinstance(value, str))
+    messages[key] = f"{messages[key]} (serving-gate mutation)"
+    path.write_text(json.dumps(messages, ensure_ascii=False, indent=2), encoding="utf-8")
+    return "core"
+
+
+def assert_headers(label: str, status: int, headers: dict[str, str], *, expect_status: int, cache: str, json_type: bool = True):
+    require(status == expect_status, f"{label}: expected {expect_status}, got {status}")
+    require(
+        headers.get("cache-control") == cache,
+        f"{label}: expected Cache-Control {cache!r}, got {headers.get('cache-control')!r}",
+    )
+    require(
+        headers.get("x-content-type-options") == "nosniff",
+        f"{label}: missing nosniff (got {headers.get('x-content-type-options')!r})",
+    )
+    if json_type:
+        require(
+            (headers.get("content-type") or "").startswith("application/json"),
+            f"{label}: expected JSON content type, got {headers.get('content-type')!r}",
+        )
+
+
+IMMUTABLE = "public, max-age=31536000, immutable"
+REVALIDATE = "public, max-age=0, must-revalidate"
+NO_STORE = "no-store"
+
+
+def check_status_matrix(manifest: dict, label: str) -> None:
+    chunk = manifest["locales"][0]["chunks"][0]
+    path = chunk["path"]
+
+    status, headers, body = request(path)
+    assert_headers(f"{label} chunk", status, headers, expect_status=200, cache=IMMUTABLE)
+    require(
+        hashlib.sha256(body).hexdigest() == chunk["sha256"],
+        f"{label} chunk bytes do not match the manifest digest",
+    )
+    require(
+        headers.get("vary", "").lower().find("accept-encoding") != -1,
+        f"{label} chunk does not vary on Accept-Encoding",
+    )
+    etag = headers.get("etag")
+    require(etag is not None, f"{label} chunk has no ETag")
+
+    status, headers, _ = request(path, method="HEAD")
+    assert_headers(f"{label} chunk HEAD", status, headers, expect_status=200, cache=IMMUTABLE)
+
+    status, headers, partial = request(path, headers={"Range": "bytes=0-31"})
+    assert_headers(f"{label} chunk range", status, headers, expect_status=206, cache=IMMUTABLE)
+    require(partial == body[:32], f"{label} range returned the wrong bytes")
+
+    status, headers, _ = request(path, headers={"If-None-Match": etag})
+    assert_headers(f"{label} chunk revalidation", status, headers, expect_status=304, cache=IMMUTABLE, json_type=False)
+
+    status, headers, _ = request(path, headers={"Range": "bytes=99999999-"})
+    assert_headers(f"{label} unsatisfiable range", status, headers, expect_status=416, cache=NO_STORE, json_type=False)
+
+    status, headers, _ = request(path, method="POST")
+    assert_headers(f"{label} bad method", status, headers, expect_status=405, cache=NO_STORE, json_type=False)
+
+    for missing in ("/locale-catalog/c/0000000000000000000000000000000000000000000000000000000000000000.json", "/locale-catalog/nope.json", "/locale-catalog/r/1.deadbeef/manifest.json"):
+        status, headers, _ = request(missing)
+        assert_headers(f"{label} missing {missing}", status, headers, expect_status=404, cache=NO_STORE, json_type=False)
+        require(
+            b"<!DOCTYPE" not in _[:200].upper() if isinstance(_, bytes) else True,
+            f"{label}: a missing catalog path was answered with the SPA shell",
+        )
+
+    status, headers, manifest_body = request(manifest["manifestPath"])
+    assert_headers(f"{label} manifest", status, headers, expect_status=200, cache=REVALIDATE)
+    require(
+        json.loads(manifest_body)["catalogRevision"] == manifest["catalogRevision"],
+        f"{label} manifest served a different revision",
+    )
+
+    status, headers, revision_body = request(manifest["revisionManifestPath"])
+    assert_headers(f"{label} revision manifest", status, headers, expect_status=200, cache=IMMUTABLE)
+    require(revision_body == manifest_body, f"{label} revision manifest differs from the stable one")
+
+
+def check_rolling_deploy(other: dict, label: str, changed_packs: set[str]) -> None:
+    """Fetches one revision's chunk URLs against the other revision's replica."""
+    unchanged_hits = 0
+    for locale in other["locales"]:
+        for chunk in locale["chunks"]:
+            status, headers, body = request(chunk["path"])
+            if status == 200:
+                require(
+                    hashlib.sha256(body).hexdigest() == chunk["sha256"],
+                    f"{label}: {chunk['path']} served the wrong bytes",
+                )
+                require(headers.get("cache-control") == IMMUTABLE, f"{label}: {chunk['path']} cache policy")
+                unchanged_hits += 1
+                continue
+            require(status == 404, f"{label}: {chunk['path']} returned {status}")
+            require(
+                headers.get("cache-control") == NO_STORE,
+                f"{label}: a missing chunk was cacheable ({headers.get('cache-control')!r})",
+            )
+            require(
+                (locale["locale"], chunk["pack"]) in changed_packs,
+                f"{label}: {locale['locale']}/{chunk['pack']} is missing even though its content did not change",
+            )
+    require(unchanged_hits > 0, f"{label}: no chunk survived the deploy skew")
+
+
+def render_offline_conf(static_root: Path, destination: Path) -> Path:
+    """Renders the config the offline packager generates, without packaging."""
+    lines = (ROOT / "offline" / "scripts" / "05-package.sh").read_text(encoding="utf-8").splitlines()
+    try:
+        start = lines.index("generate_nginx_conf() {")
+    except ValueError:
+        raise SystemExit("locale-catalog serving: generate_nginx_conf not found in offline/scripts/05-package.sh")
+    # The function body contains a heredoc whose lines start with `}`, so the
+    # end of the function is the first bare `}` after the heredoc terminator.
+    terminator = next(i for i in range(start, len(lines)) if lines[i].strip() == "NGINX_EOF")
+    end = next(i for i in range(terminator, len(lines)) if lines[i] == "}")
+    body = "\n".join(lines[start + 1 : end])
+
+    harness = destination / "render.sh"
+    config_dir = destination / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "mime.types").write_text("types { application/json json; text/html html; }\n", encoding="utf-8")
+    (destination / "frontend").mkdir(exist_ok=True)
+    if not (destination / "frontend" / "dist").exists():
+        (destination / "frontend" / "dist").symlink_to(static_root)
+
+    harness.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                f'SCRIPT_DIR="{destination}"',
+                'NGINX_PID="/tmp/nginx.pid"',
+                'NGINX_LOG_DIR="/var/log/nginx"',
+                'DATA_DIR="/tmp"',
+                "NGINX_PORT=3000",
+                'API_PORT=3000',
+                "detect_resolvers() { echo '127.0.0.11'; }",
+                "generate_nginx_conf() {",
+                body,
+                "}",
+                "generate_nginx_conf",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    result = run([tool("bash"), str(harness)])
+    require(result.returncode == 0, f"offline nginx config could not be rendered: {result.stderr}")
+    conf = config_dir / "nginx.conf"
+    require(conf.is_file(), "offline nginx config was not written")
+
+    # The packaged config points at the packaged tree; the container mounts the
+    # static root at the same place prod.nginxconf uses.
+    text = conf.read_text(encoding="utf-8")
+    text = text.replace(f"{destination}/frontend/dist", "/opt/arkham/src/frontend/dist")
+    text = text.replace(f'include "{config_dir}/mime.types"', "include /etc/nginx/mime.types")
+    text = text.replace('error_log "/var/log/nginx/error.log" warn;', "error_log /var/log/nginx/error.log warn;")
+    text = text.replace('access_log "/var/log/nginx/access.log";', "access_log /var/log/nginx/access.log;")
+    text = re.sub(r'pid "[^"]*";', "pid /tmp/nginx.pid;", text)
+    conf.write_text(text, encoding="utf-8")
+    return conf
+
+
+def check_offline_serving(manifest: dict) -> None:
+    chunk = manifest["locales"][0]["chunks"][0]
+
+    status, headers, body = request(chunk["path"])
+    assert_headers("offline chunk", status, headers, expect_status=200, cache=IMMUTABLE)
+    require(hashlib.sha256(body).hexdigest() == chunk["sha256"], "offline chunk bytes differ from the manifest digest")
+
+    status, headers, _ = request(manifest["manifestPath"])
+    assert_headers("offline manifest", status, headers, expect_status=200, cache=REVALIDATE)
+
+    status, headers, body = request("/locale-catalog/c/0000.json")
+    require(status == 404, f"offline: a missing chunk returned {status}, not 404")
+    require(b"<!DOCTYPE" not in body.upper(), "offline: a missing chunk was answered with the SPA shell")
+    require(
+        headers.get("x-content-type-options") == "nosniff",
+        "offline: a missing chunk response is missing nosniff",
+    )
+
+
+def main() -> None:
+    tool("docker")
+    tool("node")
+    require((FRONTEND / "node_modules" / "parse5").is_dir(), "frontend dependencies are not installed (npm ci)")
+
+    shutil.rmtree(WORK, ignore_errors=True)
+    WORK.mkdir(parents=True)
+
+    # Revision A: the current sources.
+    root_a = WORK / "static-a"
+    (root_a).mkdir()
+    (root_a / "index.html").write_text("<!DOCTYPE html><title>spa</title>", encoding="utf-8")
+    manifest_a = build_catalog(FRONTEND, root_a / "locale-catalog")
+
+    # Revision B: the same sources with one pack's content changed.
+    clone = clean_clone(WORK / "clone")
+    changed_pack = mutate_one_locale_string(clone)
+    root_b = WORK / "static-b"
+    root_b.mkdir()
+    (root_b / "index.html").write_text("<!DOCTYPE html><title>spa</title>", encoding="utf-8")
+    manifest_b = build_catalog(clone, root_b / "locale-catalog")
+    require(
+        manifest_a["catalogRevision"] != manifest_b["catalogRevision"],
+        "changing a locale string did not change the catalog revision",
+    )
+
+    changed = {("en", changed_pack)}
+    packs_a = {(l["locale"], c["pack"]): c["sha256"] for l in manifest_a["locales"] for c in l["chunks"]}
+    packs_b = {(l["locale"], c["pack"]): c["sha256"] for l in manifest_b["locales"] for c in l["chunks"]}
+    differing = {key for key in packs_a.keys() | packs_b.keys() if packs_a.get(key) != packs_b.get(key)}
+    require(
+        differing == changed,
+        f"expected exactly the mutated pack to change digest, got {sorted(differing)}",
+    )
+
+    with Nginx(ROOT / "prod.nginxconf", root_a, "arkham-catalog-a"):
+        check_status_matrix(manifest_a, "revision A")
+        check_rolling_deploy(manifest_b, "new manifest against old static root", differing)
+
+    with Nginx(ROOT / "prod.nginxconf", root_b, "arkham-catalog-b"):
+        check_status_matrix(manifest_b, "revision B")
+        check_rolling_deploy(manifest_a, "old manifest against new static root", differing)
+
+    offline_conf = render_offline_conf(root_a, WORK / "offline")
+    with Nginx(offline_conf, root_a, "arkham-catalog-offline"):
+        check_offline_serving(manifest_a)
+
+    shutil.rmtree(WORK, ignore_errors=True)
+    print(
+        "locale-catalog serving: verified status/cache/MIME matrix, rolling-deploy skew in both "
+        f"directions ({len(packs_a)} chunks), and the offline package's nginx route"
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

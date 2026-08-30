@@ -27,6 +27,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
         working-directory: frontend
+      - run: mise run locale-catalog:backend-keys-check
       - run: mise run locale-catalog:validate
 
   frontend:
@@ -51,3 +52,20 @@ jobs:
       - name: Verify the catalog ships in the build output
         run: node scripts/locale-catalog/verify-dist.mjs
         working-directory: frontend
+
+  serving:
+    name: Serving and rollout behavior
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      # Boots real nginx over prod.nginxconf and over the config the offline
+      # packager generates: status/cache/MIME matrix plus a rolling deploy in
+      # both directions.
+      - run: mise run locale-catalog:serving

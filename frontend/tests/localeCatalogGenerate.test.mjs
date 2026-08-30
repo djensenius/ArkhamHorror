@@ -32,6 +32,7 @@ const NODE_TYPES = new Set([
   'paragraph',
   'heading',
   'group',
+  'cardRef',
   'emphasis',
   'list',
   'image',
@@ -70,6 +71,10 @@ function chunkFor(files, manifest, locale, key) {
   const bytes = files.get(descriptor.path.slice(`${BASE_PATH}/`.length))
   return JSON.parse(bytes.toString('utf8'))
 }
+
+const backendRegistry = JSON.parse(
+  readFileSync(join(REPO_ROOT, 'backend/arkham-api/i18n-emitted-keys.json'), 'utf8'),
+)
 
 test('a repeated build is byte-for-byte identical', async () => {
   const second = await buildCatalog({})
@@ -112,7 +117,7 @@ test('the contract fixtures\u2019 required keys all resolve', () => {
     )
   }
   assert.ok(required.size >= 6)
-  assert.deepEqual([...required].sort(), [...built.manifest.provenance.requiredKeys].sort())
+  assert.deepEqual([...required].sort(), [...built.manifest.provenance.fixtureKeys].sort())
 
   for (const key of required) {
     const entry = chunkFor(built.files, built.manifest, 'en', key)?.entries[key]
@@ -126,6 +131,46 @@ test('the contract fixtures\u2019 required keys all resolve', () => {
       if (entry) assert.notEqual(entry.form, 'unsupported', `${locale}/${key}`)
     }
   }
+})
+
+test('every backend-emitted key the default locale translates renders', () => {
+  const emitted = backendRegistry.keys.map((entry) => entry.key)
+  assert.ok(emitted.length > 1000, 'the backend registry looks empty')
+
+  const entries = new Map()
+  for (const locale of built.manifest.locales) {
+    if (locale.locale !== built.manifest.defaultLocale) continue
+    for (const chunk of locale.chunks) {
+      const parsed = JSON.parse(built.files.get(chunk.path.slice(`${BASE_PATH}/`.length)).toString('utf8'))
+      for (const [key, entry] of Object.entries(parsed.entries)) entries.set(key, entry)
+    }
+  }
+
+  const translated = emitted.filter((key) => entries.has(key))
+  const unsupported = translated.filter((key) => entries.get(key).form === 'unsupported')
+  assert.deepEqual(unsupported, [], 'backend-emitted keys may never be unsupported')
+  assert.equal(built.manifest.backend.emittedKeys, emitted.length)
+  assert.deepEqual(
+    built.manifest.backend.untranslatedKeys,
+    emitted.filter((key) => !entries.has(key)).sort(),
+  )
+
+  // The two keys the independent review cited as silently optional: both are
+  // emitted by production Haskell and both must now render.
+  for (const key of [
+    'childrenOfBlood.additionalRulesAndClarifications.bloodTokens',
+    'edgeOfTheEarth.checkpoint2.theAttack3.body',
+  ]) {
+    assert.ok(emitted.includes(key), `${key} should be in the backend registry`)
+    const entry = entries.get(key)
+    assert.ok(entry, `${key} should be published`)
+    assert.notEqual(entry.form, 'unsupported', `${key} must render`)
+  }
+
+  const gathering = entries.get('childrenOfBlood.additionalRulesAndClarifications.bloodTokens')
+  const kinds = new Set()
+  walkNodes(gathering.nodes, (node) => kinds.add(node.type))
+  assert.ok(kinds.has('image'), 'the blood-token entry keeps its token image reference')
 })
 
 test('rich fixture content keeps its instructions, images, and emphasis', () => {
@@ -207,6 +252,9 @@ test('the published AST is closed, safe, and fully declared', () => {
         'misplaced-list-item',
         'unresolved-link',
         'conflicting-variable-role',
+        'invalid-style-declaration',
+        'unsupported-link-target',
+        'link-cycle',
       ].includes(reason),
       reason,
     )
@@ -239,7 +287,9 @@ test('the manifest pins every chunk by size and digest', () => {
   for (const locale of built.manifest.locales) {
     for (const chunk of locale.chunks) {
       chunks += 1
-      assert.ok(chunk.path.startsWith(`${BASE_PATH}/r/${built.manifest.catalogRevision}/${locale.locale}/`))
+      // Content-addressed, not revision-addressed: an unchanged pack keeps its
+      // URL across revisions so a rolling deploy can still serve it.
+      assert.equal(chunk.path, `${BASE_PATH}/c/${chunk.sha256}.json`)
       assert.ok(!seen.has(chunk.path), `duplicate chunk path ${chunk.path}`)
       seen.add(chunk.path)
 
@@ -247,11 +297,10 @@ test('the manifest pins every chunk by size and digest', () => {
       assert.ok(bytes, `${chunk.path} was not generated`)
       assert.equal(bytes.length, chunk.bytes)
       assert.equal(sha256Hex(bytes), chunk.sha256)
-      assert.ok(chunk.path.includes(chunk.sha256.slice(0, 16)), 'chunk URLs are content-addressed')
       assert.ok(chunk.bytes <= 8 * 1024 * 1024)
 
       const parsed = JSON.parse(bytes.toString('utf8'))
-      assert.equal(parsed.catalogRevision, built.manifest.catalogRevision)
+      assert.ok(!('catalogRevision' in parsed), 'a chunk must not name its revision')
       assert.equal(parsed.locale, locale.locale)
       assert.equal(parsed.fallback, locale.fallback)
       assert.equal(Object.keys(parsed.entries).length, chunk.keys)

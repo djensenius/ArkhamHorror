@@ -97,6 +97,82 @@ test('lists keep item order, nesting, and style hints', () => {
   ])
 })
 
+test('inline CSS becomes structured, non-executable declarations', () => {
+  const result = normalize("<p class='basic' style='--at: 12%; text-align:center'>x</p>")
+  assert.deepEqual(result.nodes, [
+    {
+      type: 'paragraph',
+      styles: ['basic'],
+      style: [
+        { property: '--at', value: '12%' },
+        { property: 'text-align', value: 'center' },
+      ],
+      children: [{ type: 'text', value: 'x' }],
+    },
+  ])
+})
+
+test('a class built from a placeholder becomes a declared style variable', () => {
+  const result = normalize("<ul><li class='{restfulNight3Status}'>x</li></ul>")
+  assert.deepEqual(result.nodes[0].items[0], {
+    styles: [],
+    styleVars: [{ name: 'restfulNight3Status', source: 'named' }],
+    children: [{ type: 'text', value: 'x' }],
+  })
+  assert.deepEqual(result.variables, [
+    { name: 'restfulNight3Status', source: 'named', role: 'text' },
+  ])
+})
+
+test('card references keep the card code, never an image', () => {
+  const result = normalize("<span data-image-id='07150'>The Wellspring</span>")
+  assert.deepEqual(result.nodes, [
+    {
+      type: 'cardRef',
+      code: '07150',
+      styles: [],
+      children: [{ type: 'text', value: 'The Wellspring' }],
+    },
+  ])
+})
+
+test('images carry bounded width and alignment hints', () => {
+  const result = normalize("<img src='{setImgPath}/rats.png' width='320' align='center' />")
+  assert.deepEqual(result.nodes, [
+    { type: 'image', role: 'encounterSet', assetPath: 'encounter-sets/rats.png', styles: [], width: 320, align: 'center' },
+  ])
+})
+
+test('stray list content is attached rather than dropped', () => {
+  const stray = normalize('<ul>first bullet</li><li>second</li></ul>')
+  assert.deepEqual(stray.nodes[0].items[0].children, [{ type: 'text', value: 'first bullet' }])
+  assert.deepEqual(stray.nodes[0].items[1].children, [{ type: 'text', value: 'second' }])
+
+  const inline = normalize('<ul><li>one</li><strong>note</strong></ul>')
+  assert.deepEqual(inline.nodes[0].items[0].children.at(-1), {
+    type: 'emphasis',
+    style: 'bold',
+    children: [{ type: 'text', value: 'note' }],
+  })
+
+  const orphan = normalize('<li>a</li><li>b</li>')
+  assert.equal(orphan.nodes.length, 1)
+  assert.equal(orphan.nodes[0].type, 'list')
+  assert.equal(orphan.nodes[0].implicit, true)
+  assert.equal(orphan.nodes[0].items.length, 2)
+})
+
+test('a list nested directly in a list is attached to the preceding item', () => {
+  const result = normalize('<ul><li>One</li><ul><li>One.a</li></ul></ul>')
+  assert.equal(result.nodes[0].items.length, 1)
+  assert.deepEqual(result.nodes[0].items[0].children[1], {
+    type: 'list',
+    ordered: false,
+    styles: [],
+    items: [{ styles: [], children: [{ type: 'text', value: 'One.a' }] }],
+  })
+})
+
 test('elements refuse attributes their node cannot carry', () => {
   for (const input of [
     "<b class='x'>bold</b>",
@@ -204,16 +280,19 @@ test('unsupported and unsafe input is refused, never partially rendered', () => 
     ['<a href="https://example.test">link</a>', 'unsupported-element'],
     ['<a href="javascript:alert(1)">link</a>', 'unsupported-element'],
     ['<p onclick="steal()">x</p>', 'unsupported-attribute'],
-    ["<div style='position:fixed'>x</div>", 'unsupported-attribute'],
+    ['<div style="background:url(https://evil.test/x.png)">x</div>', 'unsupported-image-source'],
+    ['<div style="background:url(/etc/passwd.png)">x</div>', 'unsupported-image-source'],
+    ['<div style="content:\'</div><script>\'">x</div>', 'invalid-style-declaration'],
+    ["<div style='--at:12%;--b:1;--c:2;--d:3;--e:4;--f:5;--g:6;--h:7;--i:8'>x</div>", 'invalid-style-declaration'],
+    ['<span data-image-id="../../etc/passwd">x</span>', 'unsupported-attribute'],
+    ['<img src="{setImgPath}/rats.png" width="99999" />', 'unsupported-attribute'],
+    ['<img src="{setImgPath}/rats.png" align="middle-ish" />', 'unsupported-attribute'],
     ['<img src="https://evil.test/pixel.png" />', 'unsupported-image-source'],
     ['<img src="data:image/png;base64,AAAA" />', 'unsupported-image-source'],
     ["<img src='{setImgPath}/../../../../etc/passwd.png' />", 'image-path-escape'],
     ["<img src='{name}.png' />", 'placeholder-in-attribute'],
-    ["<p class='{bonusClass}'>x</p>", 'placeholder-in-attribute'],
     ['{setImgPath}/loose.png', 'asset-variable-outside-image'],
     ['<table><tr><td>x</td></tr></table>', 'unsupported-element'],
-    ['<ul>stray</ul>', 'misplaced-list-item'],
-    ['<li>orphan</li>', 'misplaced-list-item'],
     ['<p a"b=c>x</p>', 'html-parse-error'],
     ['@.bogus:other.key', 'unsupported-message-syntax'],
     ['\uE0000\uE001', 'message-syntax-error'],
@@ -241,8 +320,8 @@ test('non-string values are refused', () => {
 test('placeholders may only appear in an image source, never another attribute', () => {
   for (const input of [
     "<img src='{setImgPath}/rats.png' alt='{name}' />",
-    "<p class='{bonusClass}'>x</p>",
-    "<li class='{status}'>x</li>",
+    "<p style='width:{name}'>x</p>",
+    "<span data-image-id='{name}'>x</span>",
   ]) {
     const result = normalize(input)
     assert.equal(result.form, 'unsupported', input)

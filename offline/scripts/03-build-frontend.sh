@@ -34,8 +34,18 @@ compute_frontend_hash() {
         find src -type f | sort | xargs _hash_cmd 2>/dev/null
         # A package-lock.json change means dependency declarations may have changed
         _hash_cmd package-lock.json 2>/dev/null || true
+        _hash_cmd package.json 2>/dev/null || true
         # Rebuild when the index.html template changes as well
         _hash_cmd index.html 2>/dev/null || true
+        _hash_cmd vite.config.js 2>/dev/null || true
+        # Everything the locale catalog is generated from. `src` above covers
+        # src/locales; these are the rest of its provenance inputs, so a stale
+        # _deps/frontend can never be reused after one of them changes.
+        find homebrew -type f \( -name '*.json' -path '*/locales/*' -o -name 'icons.json' \) | sort | xargs _hash_cmd 2>/dev/null
+        find scripts/locale-catalog schemas -type f | sort | xargs _hash_cmd 2>/dev/null
+        (cd "$PROJECT_ROOT" && find contracts/fixtures contracts/manifest.json backend/arkham-api/i18n-emitted-keys.json -type f | sort | xargs _hash_cmd 2>/dev/null)
+        # The runtime the catalog revision is bound to.
+        node --version 2>/dev/null || true
     ) | _hash_cmd | cut -d' ' -f1
 }
 
@@ -174,7 +184,15 @@ build_frontend() {
 
     popd > /dev/null
 
-    # 3. Verify artifacts
+    # 3. Verify the published locale catalog really is in this build output
+    #    (npm prebuild generates it; a stale cached dist would fail here).
+    substep "Verifying the locale catalog in ${FRONTEND_OUTPUT}"
+    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "${FRONTEND_OUTPUT}"); then
+        rm -rf "$FRONTEND_OUTPUT" "$FRONTEND_BUILT_MARKER"
+        die "  ✗ The offline build output does not contain a valid locale catalog"
+    fi
+
+    # 4. Verify artifacts
     if [ -d "$FRONTEND_OUTPUT" ]; then
         local dist_files
         dist_files="$(find "${FRONTEND_OUTPUT}" -type f | wc -l | tr -d ' ')"

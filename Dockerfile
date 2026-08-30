@@ -1,4 +1,4 @@
-FROM node:24.7.0-alpine AS frontend
+FROM node:26.7.0-alpine AS frontend
 
 # Frontend
 

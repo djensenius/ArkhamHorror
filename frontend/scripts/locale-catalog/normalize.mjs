@@ -104,24 +104,95 @@ const HEADING_ELEMENTS = new Map([
 // Attributes are allowlisted per element, not globally: an attribute an
 // element's AST node cannot carry (a `src` on a paragraph, an `alt` on a list
 // item) is refused rather than parsed and dropped.
-const STYLE_ATTRIBUTES = new Set(['class'])
-const IMAGE_ATTRIBUTES = new Set(['class', 'src', 'alt'])
+const STYLE_ATTRIBUTES = new Set(['class', 'style'])
+const GROUP_ATTRIBUTES = new Set(['class', 'style', 'data-image-id'])
+const IMAGE_ATTRIBUTES = new Set(['class', 'style', 'src', 'alt', 'width', 'align'])
 const NO_ATTRIBUTES = new Set()
 
 function allowedAttributesFor(tagName) {
   if (tagName === 'img') return IMAGE_ATTRIBUTES
   if (tagName === 'br' || tagName === 'hr' || EMPHASIS_ELEMENTS.has(tagName)) return NO_ATTRIBUTES
+  if (GROUP_ELEMENTS.has(tagName)) return GROUP_ATTRIBUTES
   if (
     tagName === 'p' ||
     tagName === 'ul' ||
     tagName === 'ol' ||
     tagName === 'li' ||
-    HEADING_ELEMENTS.has(tagName) ||
-    GROUP_ELEMENTS.has(tagName)
+    HEADING_ELEMENTS.has(tagName)
   ) {
     return STYLE_ATTRIBUTES
   }
   return null
+}
+
+// Inline CSS is kept as structured, non-executable declarations rather than a
+// raw string: a native client can map or ignore them, and nothing here can
+// carry a URL, a script, or markup.
+const STYLE_PROPERTY_PATTERN = /^(?:--)?[A-Za-z][A-Za-z0-9-]{0,31}$/
+const STYLE_VALUE_PATTERN = /^[A-Za-z0-9 .,%#()/_-]{1,64}$/
+const MAX_STYLE_DECLARATIONS = 8
+const CARD_CODE_PATTERN = /^:?[A-Za-z0-9][A-Za-z0-9:_-]{1,31}$/
+const IMAGE_ALIGNMENTS = new Set(['left', 'right', 'center', 'justify'])
+const MAX_IMAGE_WIDTH = 4096
+
+function styleDeclarations(attributes, tagName, placeholders) {
+  const raw = attributes.get('style')
+  if (raw === undefined) return []
+
+  const declarations = []
+  // Split on `;` outside parentheses so `clamp(1px, 2cqw, 3px)` stays intact.
+  let depth = 0
+  let chunk = ''
+  const chunks = []
+  for (const character of raw) {
+    if (character === '(') depth += 1
+    else if (character === ')') depth = Math.max(0, depth - 1)
+    if (character === ';' && depth === 0) {
+      chunks.push(chunk)
+      chunk = ''
+      continue
+    }
+    chunk += character
+  }
+  chunks.push(chunk)
+
+  for (const entry of chunks) {
+    const trimmed = entry.trim()
+    if (trimmed === '') continue
+    const separator = trimmed.indexOf(':')
+    if (separator === -1) throw unsupported('invalid-style-declaration', `${tagName}: ${trimmed}`)
+    const property = trimmed.slice(0, separator).trim()
+    const value = trimmed.slice(separator + 1).trim()
+    if (!STYLE_PROPERTY_PATTERN.test(property)) {
+      throw unsupported('invalid-style-declaration', `${tagName}: ${trimmed}`)
+    }
+
+    // A `url(...)` is only ever kept as a resolved semantic asset reference —
+    // never as a URL a client could fetch blindly, and never external.
+    const urlMatch = value.match(/^url\(\s*([^)]*?)\s*\)$/i)
+    if (urlMatch) {
+      declarations.push({ property, asset: assetReference(urlMatch[1], placeholders, tagName) })
+      continue
+    }
+    if (SENTINEL_PATTERN.test(value)) throw unsupported('placeholder-in-attribute', `${tagName}[style]`)
+    if (!STYLE_VALUE_PATTERN.test(value) || /expression\s*\(|[a-z]+:\/\//i.test(value)) {
+      throw unsupported('invalid-style-declaration', `${tagName}: ${trimmed}`)
+    }
+    declarations.push({ property, value })
+  }
+
+  if (declarations.length > MAX_STYLE_DECLARATIONS) {
+    throw unsupported('invalid-style-declaration', `${tagName}: ${declarations.length} declarations`)
+  }
+  return declarations
+}
+
+/** Adds `style`/`styleVars` to a node only when the source carried them. */
+function withPresentation(node, attributes, tagName, styleVariables, placeholders) {
+  const declarations = styleDeclarations(attributes, tagName, placeholders)
+  if (declarations.length > 0) node.style = declarations
+  if (styleVariables !== undefined && styleVariables.length > 0) node.styleVars = styleVariables
+  return node
 }
 
 export const UNSUPPORTED_REASONS = Object.freeze([
@@ -138,6 +209,9 @@ export const UNSUPPORTED_REASONS = Object.freeze([
   'misplaced-list-item',
   'unresolved-link',
   'conflicting-variable-role',
+  'invalid-style-declaration',
+  'unsupported-link-target',
+  'link-cycle',
 ])
 
 class Unsupported extends Error {
@@ -286,9 +360,10 @@ function parseHtml(html) {
   return fragment
 }
 
-// Only `src` may legitimately hold a placeholder (the asset-path variables);
-// anywhere else a placeholder in an attribute is data this AST cannot carry.
-const PLACEHOLDER_ATTRIBUTES = new Set(['src'])
+// `src` holds the asset-path variables, `class` may hold a style variable, and
+// `style` may hold an asset URL; a placeholder anywhere else is data this AST
+// cannot carry. Each of those three validates its own placeholders strictly.
+const PLACEHOLDER_ATTRIBUTES = new Set(['src', 'class', 'style'])
 const MAX_ATTRIBUTE_LENGTH = 240
 
 function attributeMap(element, allowed) {
@@ -309,19 +384,36 @@ function attributeMap(element, allowed) {
   return attributes
 }
 
-function styleTokens(attributes, tagName) {
+/**
+ * Class tokens become presentation hints. A class built from a placeholder
+ * (`class='{restfulNight3Status}'`) becomes a declared style *variable* rather
+ * than being dropped: the client substitutes the same value the backend sends.
+ */
+function styleTokens(attributes, tagName, placeholders) {
   const raw = attributes.get('class')
-  if (raw === undefined) return []
-  if (SENTINEL_PATTERN.test(raw)) throw unsupported('placeholder-in-attribute', `${tagName}[class]`)
-  const tokens = raw.split(/\s+/).filter((token) => token.length > 0)
-  for (const token of tokens) {
+  if (raw === undefined) return { tokens: [], variables: [] }
+
+  const tokens = []
+  const variables = []
+  for (const token of raw.split(/\s+/).filter((entry) => entry.length > 0)) {
+    const placeholderMatch = token.match(
+      new RegExp(`^${SENTINEL_OPEN}(\\d+)${SENTINEL_CLOSE}$`, 'u'),
+    )
+    if (placeholderMatch) {
+      const placeholder = placeholders?.[Number(placeholderMatch[1])]
+      if (placeholder?.kind !== 'variable') {
+        throw unsupported('placeholder-in-attribute', `${tagName}[class]`)
+      }
+      variables.push({ name: placeholder.name, source: placeholder.source })
+      continue
+    }
+    if (SENTINEL_PATTERN.test(token)) throw unsupported('placeholder-in-attribute', `${tagName}[class]`)
     if (!STYLE_TOKEN_PATTERN.test(token)) {
       throw unsupported('invalid-style-token', `${tagName}.${token}`)
     }
+    tokens.push(token)
   }
-  // Presentation hints only: closed to a safe token charset, never CSS, never
-  // markup, and safe for a client to ignore entirely.
-  return [...new Set(tokens)].sort()
+  return { tokens: [...new Set(tokens)].sort(), variables }
 }
 
 /** Resolves `a/b/../c` without ever letting the result escape the asset root. */
@@ -345,9 +437,10 @@ function resolveAssetPath(base, relative) {
   return assetPath
 }
 
-function imageNode(attributes, placeholders) {
-  const src = attributes.get('src')
-  if (src === undefined || src === '') throw unsupported('unsupported-image-source', 'missing src')
+/** Resolves an image source (or a CSS `url(...)`) to a semantic asset. */
+function assetReference(source, placeholders, tagName) {
+  const src = source.replace(/^['"]|['"]$/g, '')
+  if (src === '') throw unsupported('unsupported-image-source', `${tagName} empty source`)
 
   const match = src.match(new RegExp(`^${SENTINEL_OPEN}(\\d+)${SENTINEL_CLOSE}(.*)$`, 'u'))
   let base
@@ -366,14 +459,36 @@ function imageNode(attributes, placeholders) {
     throw unsupported('unsupported-image-source', src)
   }
 
-  if (SENTINEL_PATTERN.test(relative)) throw unsupported('placeholder-in-attribute', 'src')
+  if (SENTINEL_PATTERN.test(relative)) throw unsupported('placeholder-in-attribute', `${tagName} source`)
 
   const assetPath = resolveAssetPath(base, relative)
-  const role = IMAGE_ROLES.get(assetPath.split('/')[0]) ?? 'other'
+  return { role: IMAGE_ROLES.get(assetPath.split('/')[0]) ?? 'other', assetPath }
+}
+
+function imageNode(attributes, placeholders) {
+  const { role, assetPath } = assetReference(attributes.get('src') ?? '', placeholders, 'img')
+  const { tokens, variables } = styleTokens(attributes, 'img', placeholders)
+  const node = { type: 'image', role, assetPath, styles: tokens }
   const alt = attributes.get('alt')
-  const node = { type: 'image', role, assetPath, styles: styleTokens(attributes, 'img') }
   if (alt !== undefined && alt !== '') node.alt = alt
-  return node
+
+  const width = attributes.get('width')
+  if (width !== undefined) {
+    if (!/^[0-9]{1,4}$/.test(width) || Number(width) < 1 || Number(width) > MAX_IMAGE_WIDTH) {
+      throw unsupported('unsupported-attribute', `img[width=${width}]`)
+    }
+    node.width = Number(width)
+  }
+
+  const align = attributes.get('align')
+  if (align !== undefined) {
+    if (!IMAGE_ALIGNMENTS.has(align.toLowerCase())) {
+      throw unsupported('unsupported-attribute', `img[align=${align}]`)
+    }
+    node.align = align.toLowerCase()
+  }
+
+  return withPresentation(node, attributes, 'img', variables, placeholders)
 }
 
 function textNodes(value, placeholders, out) {
@@ -406,27 +521,67 @@ function textNodes(value, placeholders, out) {
 function convertChildren(parent, placeholders) {
   const out = []
   for (const child of parent.childNodes ?? []) {
+    // A bare `<li>` outside any list still renders as a list item in every
+    // browser; consecutive ones become one implicit list rather than an error.
+    if (child.nodeName !== '#text' && child.tagName === 'li') {
+      const attributes = attributeMap(child, STYLE_ATTRIBUTES)
+      const item = styleTokens(attributes, 'li', placeholders)
+      const entry = withPresentation(
+        { styles: item.tokens, children: convertChildren(child, placeholders) },
+        attributes,
+        'li',
+        item.variables,
+        placeholders,
+      )
+      const last = out[out.length - 1]
+      if (last !== undefined && last.type === 'list' && last.implicit === true) {
+        last.items.push(entry)
+      } else {
+        out.push({ type: 'list', ordered: false, implicit: true, styles: [], items: [entry] })
+      }
+      continue
+    }
     convertNode(child, placeholders, out)
   }
   return out
 }
 
-function listNode(element, placeholders, ordered, styles) {
+function listNode(element, placeholders, ordered, styles, styleVariables, attributes) {
   const items = []
   for (const child of element.childNodes ?? []) {
     if (child.nodeName === '#text') {
-      if (child.value.trim() !== '') throw unsupported('misplaced-list-item', 'text in list')
+      if (child.value.trim() === '') continue
+      const stray = []
+      textNodes(child.value, placeholders, stray)
+      if (items.length === 0) items.push({ styles: [], children: [] })
+      items[items.length - 1].children.push(...stray)
       continue
     }
     if (child.nodeName === '#comment') continue
-    if (child.tagName !== 'li') throw unsupported('misplaced-list-item', child.tagName ?? child.nodeName)
-    const attributes = attributeMap(child, STYLE_ATTRIBUTES)
-    items.push({
-      styles: styleTokens(attributes, 'li'),
-      children: convertChildren(child, placeholders),
-    })
+
+    // Content that is not an `<li>` — a nested list written directly under the
+    // `<ul>`, an inline `<strong>`, or a first bullet whose `<li>` is missing —
+    // is rendered by browsers alongside the preceding item. It is attached
+    // there rather than refused, so no instruction is lost.
+    if (child.tagName !== 'li') {
+      const stray = []
+      convertNode(child, placeholders, stray)
+      if (items.length === 0) items.push({ styles: [], children: [] })
+      items[items.length - 1].children.push(...stray)
+      continue
+    }
+    const itemAttributes = attributeMap(child, STYLE_ATTRIBUTES)
+    const item = styleTokens(itemAttributes, 'li', placeholders)
+    items.push(
+      withPresentation(
+        { styles: item.tokens, children: convertChildren(child, placeholders) },
+        itemAttributes,
+        'li',
+        item.variables,
+      ),
+    )
   }
-  return { type: 'list', ordered, styles, items }
+  return withPresentation({ type: 'list', ordered, styles, items }, attributes, ordered ? 'ol' : 'ul', styleVariables)
 }
 
 function convertNode(node, placeholders, out) {
@@ -457,24 +612,38 @@ function convertNode(node, placeholders, out) {
     return
   }
   if (tagName === 'p') {
-    out.push({ type: 'paragraph', styles: styleTokens(attributes, tagName), children: convertChildren(node, placeholders) })
+    const { tokens, variables } = styleTokens(attributes, tagName, placeholders)
+    out.push(
+      withPresentation(
+        { type: 'paragraph', styles: tokens, children: convertChildren(node, placeholders) },
+        attributes,
+        tagName,
+        variables,
+      ),
+    )
     return
   }
   if (HEADING_ELEMENTS.has(tagName)) {
-    out.push({
-      type: 'heading',
-      level: HEADING_ELEMENTS.get(tagName),
-      styles: styleTokens(attributes, tagName),
-      children: convertChildren(node, placeholders),
-    })
+    const { tokens, variables } = styleTokens(attributes, tagName, placeholders)
+    out.push(
+      withPresentation(
+        {
+          type: 'heading',
+          level: HEADING_ELEMENTS.get(tagName),
+          styles: tokens,
+          children: convertChildren(node, placeholders),
+        },
+        attributes,
+        tagName,
+        variables,
+      ),
+    )
     return
   }
   if (tagName === 'ul' || tagName === 'ol') {
-    out.push(listNode(node, placeholders, tagName === 'ol', styleTokens(attributes, tagName)))
+    const { tokens, variables } = styleTokens(attributes, tagName, placeholders)
+    out.push(listNode(node, placeholders, tagName === 'ol', tokens, variables, attributes))
     return
-  }
-  if (tagName === 'li') {
-    throw unsupported('misplaced-list-item', 'li outside list')
   }
   if (EMPHASIS_ELEMENTS.has(tagName)) {
     out.push({
@@ -485,11 +654,29 @@ function convertNode(node, placeholders, out) {
     return
   }
   if (GROUP_ELEMENTS.has(tagName)) {
-    out.push({
-      type: 'group',
-      styles: styleTokens(attributes, tagName),
-      children: convertChildren(node, placeholders),
-    })
+    const { tokens, variables } = styleTokens(attributes, tagName, placeholders)
+    const children = convertChildren(node, placeholders)
+
+    // `data-image-id` marks text that names a specific card; the web client
+    // uses it to show that card's art on hover. The catalog keeps it as a
+    // semantic card reference — a code, never an image.
+    const cardCode = attributes.get('data-image-id')
+    if (cardCode !== undefined) {
+      if (!CARD_CODE_PATTERN.test(cardCode)) {
+        throw unsupported('unsupported-attribute', `${tagName}[data-image-id=${cardCode}]`)
+      }
+      out.push(
+        withPresentation(
+          { type: 'cardRef', code: cardCode, styles: tokens, children },
+          attributes,
+          tagName,
+          variables,
+        ),
+      )
+      return
+    }
+
+    out.push(withPresentation({ type: 'group', styles: tokens, children }, attributes, tagName, variables))
     return
   }
   // Unreachable while allowedAttributesFor() and this dispatch agree; kept so
@@ -520,6 +707,9 @@ function declareVariable(into, declaration) {
 
 function collectVariables(nodes, into) {
   for (const node of nodes) {
+    for (const variable of node.styleVars ?? []) {
+      declareVariable(into, { name: variable.name, source: variable.source, role: 'text' })
+    }
     if (node.type === 'var') {
       declareVariable(into, { name: node.name, source: node.source, role: node.role })
     } else if (node.type === 'linked') {
@@ -531,7 +721,12 @@ function collectVariables(nodes, into) {
         })
       }
     } else if (node.type === 'list') {
-      for (const item of node.items) collectVariables(item.children, into)
+      for (const item of node.items) {
+        for (const variable of item.styleVars ?? []) {
+          declareVariable(into, { name: variable.name, source: variable.source, role: 'text' })
+        }
+        collectVariables(item.children, into)
+      }
     } else if (Array.isArray(node.children)) {
       collectVariables(node.children, into)
     }
@@ -589,6 +784,11 @@ function walkNodes(nodes, visit) {
   }
 }
 
+/** Every variable a normalized node tree references, including style variables. */
+export function walkAllNodes(nodes, visit) {
+  walkNodes(nodes, visit)
+}
+
 /** Every statically-referenced linked key in a normalized entry. */
 export function staticLinkTargets(entry) {
   const targets = new Set()
@@ -604,6 +804,22 @@ export function staticLinkTargets(entry) {
 export function referencedVariables(entry) {
   const referenced = new Map()
   const visit = (node) => {
+    for (const variable of node.styleVars ?? []) {
+      referenced.set(`${variable.source}:${variable.name}`, {
+        name: variable.name,
+        source: variable.source,
+        role: 'text',
+      })
+    }
+    for (const item of node.items ?? []) {
+      for (const variable of item.styleVars ?? []) {
+        referenced.set(`${variable.source}:${variable.name}`, {
+          name: variable.name,
+          source: variable.source,
+          role: 'text',
+        })
+      }
+    }
     if (node.type === 'var') {
       referenced.set(`${node.source}:${node.name}`, { name: node.name, source: node.source, role: node.role })
     } else if (node.type === 'linked' && node.target.kind === 'variable') {

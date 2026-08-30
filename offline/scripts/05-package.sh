@@ -846,6 +846,18 @@ http {
   client_body_temp_path "$DATA_DIR/nginx_temp";
   proxy_temp_path       "$DATA_DIR/nginx_temp";
   map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
+  # Locale-catalog cache policy: immutable only for the content-addressed and
+  # revision-addressed paths, and only on a status that carries a payload.
+  map \$uri \$catalog_path_cache {
+    default                    "public, max-age=0, must-revalidate";
+    "~^/locale-catalog/[cr]/"  "public, max-age=31536000, immutable";
+  }
+  map \$status \$catalog_cache_control {
+    default "no-store";
+    200     \$catalog_path_cache;
+    206     \$catalog_path_cache;
+    304     \$catalog_path_cache;
+  }
   server {
     listen $NGINX_PORT;
     server_name localhost;
@@ -853,6 +865,28 @@ http {
     location / {
       root "$frontend_root";
       try_files \$uri \$uri/ /index.html;
+    }
+    # The published locale catalog, with the same guarantees as the hosted
+    # deployment: JSON MIME, nosniff, immutable caching for content-addressed
+    # and revision paths, revalidation for the mutable manifest, and — because
+    # `^~` beats the SPA catch-all — a real 404 for anything missing instead of
+    # index.html. Error statuses are never storable (see the \$status map),
+    # so a client that races a package upgrade cannot cache a 404.
+    location ^~ /locale-catalog/ {
+      root "$frontend_root";
+      default_type application/json;
+      gzip_static on;
+      add_header Cache-Control \$catalog_cache_control always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header Vary "Accept-Encoding" always;
+      error_page 416 = @locale_catalog_error;
+    }
+    location @locale_catalog_error {
+      internal;
+      default_type application/json;
+      add_header Cache-Control "no-store" always;
+      add_header X-Content-Type-Options "nosniff" always;
+      return 416;
     }
     # Card image routing:
     # 1. user cards/

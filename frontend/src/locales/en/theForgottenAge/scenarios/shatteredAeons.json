@@ -1,9 +1,5 @@
 {
   "heading": "Scenario VIII",
-  "label": {
-    "ichtacaSetAgainst": "Ichtaca is set against you. Add 3 {'{'}tablet{'}'} tokens to the chaos bag.",
-    "alejandroSetAgainst": "Alejandro is set against you. Add 3 {'{'}cultist{'}'} tokens to the chaos bag."
-  },
   "tokens": {
     "easyStandard": {
       "skull": "-2 (-4 instead if the Relic of Ages is at your location).",
@@ -19,6 +15,8 @@
     }
   },
   "label": {
+    "ichtacaSetAgainst": "Ichtaca is set against you. Add 3 {'{'}tablet{'}'} tokens to the chaos bag.",
+    "alejandroSetAgainst": "Alejandro is set against you. Add 3 {'{'}cultist{'}'} tokens to the chaos bag.",
     "standaloneIchtacaSetAgainst": "Ichtaca is set against you. Add 3 {'{'}tablet{'}'} tokens to the chaos bag.",
     "standaloneAlejandroSetAgainst": "Alejandro is set against you. Add 3 {'{'}cultist{'}'} tokens to the chaos bag.",
     "standaloneBothSetAgainst": "Ichtaca is set against you. Alejandro is set against you. Add 2 {'{'}elderThing{'}'} tokens to the chaos bag. Choose this option for the ultimate challenge.",
@@ -34,7 +32,6 @@
     "unknowablePast": {
       "reveal": "Reveal 4 chaos tokens. For each {'{'}skull{'}'}, {'{'}cultist{'}'}, {'{'}tablet{'}'}, {'{'}elderThing{'}'}, or {'{'}autoFail{'}'} symbol revealed, take 1 damage and 1 horror.",
       "discard": "Choose and discard 1 card from your hand and shuffle Unknowable Past into the exploration deck. You cannot choose this option if Unknowable Past was drawn from the exploration deck."
-
     },
     "checkSupplies": "Check supplies"
   },

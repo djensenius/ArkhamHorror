@@ -22,6 +22,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { canonicalJson, sha256Hex } from './canonical.mjs'
+import { findCompositionLosses, findDuplicateKeys } from './inventory.mjs'
 import {
   ASSET_PATH_VARIABLES,
   KEY_SEGMENT_PATTERN,
@@ -60,6 +61,11 @@ const REQUIRED_KEY_FIXTURES = [
   'contracts/fixtures/question-read-with-cards.json',
 ]
 const CONTRACT_MANIFEST = 'contracts/manifest.json'
+
+// The machine-derived statement of what the backend actually emits, produced
+// by scripts/extract-backend-i18n-keys.py from the Haskell sources. Every
+// emitted key the default locale translates has to render.
+const BACKEND_KEYS = 'backend/arkham-api/i18n-emitted-keys.json'
 
 // Bounds, so a client's worst case stays predictable and a runaway source tree
 // fails the build instead of the deployment.
@@ -144,6 +150,80 @@ function collectRequiredKeys() {
   return [...keys].sort()
 }
 
+/**
+ * Fails on any content the sources lose before the catalog ever sees it: a key
+ * declared twice inside one JSON file (JSON.parse keeps the last silently), or
+ * a contributor whose keys the `.ts` spread composition overrode.
+ */
+function assertSourceIntegrity(frontendDir, sourceFiles, sources) {
+  const duplicates = []
+  for (const { path } of sourceFiles) {
+    if (!path.endsWith('.json')) continue
+    const text = readFileSync(join(frontendDir, path), 'utf8')
+    for (const duplicate of findDuplicateKeys(text, path)) duplicates.push(duplicate)
+  }
+  if (duplicates.length > 0) {
+    const detail = duplicates
+      .slice(0, 8)
+      .map((d) => `${d.file}:${d.second.line}:${d.second.column} duplicates ${d.key} (first at ${d.first.line}:${d.first.column})`)
+      .join('; ')
+    fail(`${duplicates.length} duplicate key(s) in locale sources: ${detail}`)
+  }
+
+  const files = sources.fileTrees.map(({ path, tree }) => ({
+    path: path.replace(/^\/?(src\/locales|homebrew)\//, (match) => match.replace(/^\//, '')),
+    tree,
+  }))
+  // Mirrors homebrewMessages(): `homebrew/<campaign>/locales/en/*.json` is
+  // merged into the camelCased campaign scope, and only into the locales whose
+  // composed tree actually has that scope.
+  const homebrewScope = (path) => {
+    const campaign = path.match(/^homebrew\/([^/]+)\/locales\//)?.[1]
+    if (campaign === undefined) return null
+    const [head, ...rest] = campaign.split('-')
+    return head + rest.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('')
+  }
+
+  const losses = []
+  for (const locale of sources.locales) {
+    const composed = sources.messages[locale]
+    const owned = files.filter((file) => {
+      if (file.path.startsWith(`src/locales/${locale}/`)) return true
+      const scope = homebrewScope(file.path)
+      return scope !== null && Object.hasOwn(composed, scope)
+    })
+    const ownedPaths = new Set(
+      owned.filter((file) => file.path.startsWith(`src/locales/${locale}/`)).map((file) => file.path),
+    )
+    for (const loss of findCompositionLosses(sources.messages[locale], owned, ownedPaths)) {
+      losses.push({ locale, ...loss })
+    }
+  }
+  if (losses.length > 0) {
+    const detail = losses
+      .slice(0, 6)
+      .map(
+        (loss) =>
+          `${loss.locale}:${loss.file} mounted at ${loss.mount} lost ${loss.missingCount} and had ${loss.overriddenCount} overridden (${[...loss.missing, ...loss.overridden].slice(0, 3).join(', ')})`,
+      )
+      .join('; ')
+    fail(`locale composition dropped contributor content: ${detail}`)
+  }
+}
+
+/** The backend's machine-derived emitted-key registry. */
+function loadBackendKeys() {
+  const bytes = readRepoFile(BACKEND_KEYS)
+  const artifact = JSON.parse(bytes.toString('utf8'))
+  const keys = new Map()
+  for (const entry of artifact.keys) {
+    keys.set(entry.key, {
+      variables: new Map(entry.variables.map((variable) => [variable.name, variable.type])),
+    })
+  }
+  return { artifact, keys, sha256: sha256Hex(bytes) }
+}
+
 function flattenMessages(value, prefix, out) {
   if (typeof value === 'string') {
     if (out.has(prefix)) fail(`duplicate normalized key ${prefix}`)
@@ -205,20 +285,85 @@ function normalizeLocale(messages, classifyVariable) {
 }
 
 /**
- * Links resolve against the entry's own locale first and the fallback locale
- * second, matching vue-i18n. A link that resolves to nothing is downgraded to
- * an explicitly unsupported entry rather than published as a dangling
- * reference.
+ * Resolves the whole link graph before anything is classified as publishable.
+ *
+ * A `@:other.key` reference resolves against its own locale first and the
+ * fallback locale second, exactly as vue-i18n does, so the graph spans both.
+ * Existence alone is not enough: a link into an unsupported entry, a link into
+ * nothing, and a link that eventually returns to its own starting point all
+ * make the referring entry unrenderable. Each is propagated transitively —
+ * with the offending path recorded — so an entry is only published when every
+ * chain it starts is resolvable end to end.
  */
-function resolveLinks(entries, fallbackEntries) {
-  for (const [key, entry] of entries) {
-    if (entry.form === 'unsupported') continue
-    for (const target of staticLinkTargets(entry)) {
-      if (entries.has(target) || fallbackEntries?.has(target)) continue
-      entries.set(key, { form: 'unsupported', reason: 'unresolved-link', detail: target.slice(0, 120) })
-      break
+function resolveLinkGraph(normalized, defaultLocale) {
+  const nodeId = (locale, key) => `${locale}\u0000${key}`
+  const entryOf = (locale, key) => {
+    const own = normalized.get(locale)?.get(key)
+    if (own !== undefined) return { locale, entry: own }
+    if (locale !== defaultLocale) {
+      const fallback = normalized.get(defaultLocale)?.get(key)
+      if (fallback !== undefined) return { locale: defaultLocale, entry: fallback }
+    }
+    return null
+  }
+
+  // 0 = unvisited, 1 = on the current path, 2 = settled.
+  const state = new Map()
+  const failure = new Map()
+
+  const settle = (locale, key, problem) => {
+    failure.set(nodeId(locale, key), problem)
+    state.set(nodeId(locale, key), 2)
+    return problem
+  }
+
+  const visit = (locale, key, path) => {
+    const id = nodeId(locale, key)
+    const known = state.get(id)
+    if (known === 2) return failure.get(id) ?? null
+    if (known === 1) {
+      return { reason: 'link-cycle', detail: [...path, key].slice(-6).join(' -> ') }
+    }
+
+    const resolved = entryOf(locale, key)
+    if (resolved === null) return settle(locale, key, { reason: 'unresolved-link', detail: key })
+    if (resolved.entry.form === 'unsupported') {
+      return settle(locale, key, {
+        reason: 'unsupported-link-target',
+        detail: `${key} (${resolved.entry.reason})`,
+      })
+    }
+
+    state.set(id, 1)
+    for (const target of staticLinkTargets(resolved.entry)) {
+      const problem = visit(resolved.locale, target, [...path, key])
+      if (problem !== null) {
+        return settle(locale, key, {
+          reason: problem.reason === 'link-cycle' ? 'link-cycle' : problem.reason,
+          detail: problem.detail,
+        })
+      }
+    }
+    state.set(id, 2)
+    return null
+  }
+
+  let downgraded = 0
+  for (const [locale, entries] of normalized) {
+    for (const [key, entry] of entries) {
+      if (entry.form === 'unsupported') continue
+      const problem = visit(locale, key, [])
+      if (problem !== null) {
+        entries.set(key, {
+          form: 'unsupported',
+          reason: problem.reason,
+          detail: String(problem.detail).slice(0, 120),
+        })
+        downgraded += 1
+      }
     }
   }
+  return downgraded
 }
 
 function chunkEntries(entries) {
@@ -243,7 +388,8 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
   const sources = await loadLocaleSources(frontendDir)
   const classifyVariable = makeVariableClassifier(sources, ASSET_PATH_VARIABLES)
 
-  const requiredKeys = collectRequiredKeys()
+  const fixtureKeys = collectRequiredKeys()
+  const backend = loadBackendKeys()
   const provenance = {
     schemaVersion: SCHEMA_VERSION,
     generator: { name: GENERATOR_NAME, version: GENERATOR_VERSION, sources: generatorSourceDigests() },
@@ -252,33 +398,63 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
     contract: {
       schemaRevision: JSON.parse(readRepoFile(CONTRACT_MANIFEST).toString('utf8')).schemaRevision,
       fixtures: digestRepoFiles(REQUIRED_KEY_FIXTURES),
-      requiredKeys,
+      fixtureKeys,
+    },
+    backend: {
+      path: BACKEND_KEYS,
+      sha256: backend.sha256,
+      artifactVersion: backend.artifact.artifactVersion,
+      sourceSha256: backend.artifact.source.sha256,
+      emittedKeys: backend.keys.size,
     },
     localeSources: collectSourceFiles(frontendDir),
+    // The exact resolved dependency closure, integrity hashes included.
+    lockfile: digestRepoFiles(['frontend/package-lock.json']),
   }
-  const provenanceSha256 = sha256Hex(Buffer.from(canonicalJson(provenance), 'utf8'))
-  const catalogRevision = `1.${provenanceSha256.slice(0, 32)}`
-  const revisionPrefix = `${BASE_PATH}/r/${catalogRevision}`
-
   const defaultLocale = sources.uiLocaleFor('')
   if (!sources.locales.includes(defaultLocale)) fail(`default locale ${defaultLocale} is not supported`)
+
+  assertSourceIntegrity(frontendDir, provenance.localeSources, sources)
 
   const normalized = new Map()
   for (const locale of sources.locales) {
     if (!LOCALE_PATTERN.test(locale)) fail(`unsafe locale id ${JSON.stringify(locale)}`)
     normalized.set(locale, normalizeLocale(sources.messages[locale], classifyVariable))
   }
-  for (const [locale, entries] of normalized) {
-    resolveLinks(entries, locale === defaultLocale ? null : normalized.get(defaultLocale))
+  // A downgrade can invalidate an entry that linked to it, so the graph is
+  // re-resolved until it stops changing.
+  for (let pass = 0; pass < 8; pass += 1) {
+    if (resolveLinkGraph(normalized, defaultLocale) === 0) break
+    if (pass === 7) fail('link graph did not stabilize')
   }
 
-  // Required keys must resolve in the default locale, and in every other
-  // locale that ships its own copy of the key.
-  for (const key of requiredKeys) {
-    const fallbackEntry = normalized.get(defaultLocale).get(key)
+  // Required = the keys the governed contract fixtures reference, plus every
+  // key the backend actually emits that the default locale translates. The
+  // fixtures must resolve outright; an emitted key with no translation at all
+  // is a content gap in the locale sources (reported, and gated against
+  // growth by the validator), but an emitted key that *is* translated must
+  // render.
+  const defaultEntries = normalized.get(defaultLocale)
+  const untranslated = []
+  const requiredKeys = new Set(fixtureKeys)
+  for (const key of backend.keys.keys()) {
+    if (defaultEntries.has(key)) requiredKeys.add(key)
+    else untranslated.push(key)
+  }
+  untranslated.sort()
+
+  for (const key of fixtureKeys) {
+    if (!defaultEntries.has(key)) fail(`contract fixture key ${key} is missing from ${defaultLocale}`)
+  }
+
+  for (const key of [...requiredKeys].sort()) {
+    const fallbackEntry = defaultEntries.get(key)
     if (fallbackEntry === undefined) fail(`required key ${key} is missing from ${defaultLocale}`)
     if (fallbackEntry.form === 'unsupported') {
-      fail(`required key ${key} is unsupported in ${defaultLocale} (${fallbackEntry.reason})`)
+      fail(
+        `required key ${key} is unsupported in ${defaultLocale} ` +
+          `(${fallbackEntry.reason}: ${fallbackEntry.detail}) — it is emitted by the backend, so it cannot be optional`,
+      )
     }
     for (const [locale, entries] of normalized) {
       const entry = entries.get(key)
@@ -288,6 +464,59 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
     }
   }
 
+  // Variable coverage: a message that needs a substitution the backend never
+  // sends renders with a hole. Where the extractor resolved a key's variables,
+  // a contradiction is a hard failure; where it resolved none, the pairing is
+  // reported rather than guessed at (the extractor states its own dynamic
+  // coverage in the artifact).
+  const variableGaps = []
+  for (const key of [...requiredKeys].sort()) {
+    const record = backend.keys.get(key)
+    if (record === undefined) continue
+    const entry = defaultEntries.get(key)
+    if (entry.form === 'unsupported') continue
+    const needed = entry.variables
+      .filter((variable) => variable.source === 'named' && variable.role === 'text')
+      .map((variable) => variable.name)
+    const missing = needed.filter((name) => !record.variables.has(name))
+    if (missing.length === 0) continue
+    if (record.variables.size > 0) {
+      variableGaps.push({ key, missing, declared: [...record.variables.keys()].sort(), resolved: true })
+    } else {
+      variableGaps.push({ key, missing, declared: [], resolved: false })
+    }
+  }
+
+  // Phase 1: the catalog's content, with no revision and no URLs in it yet.
+  const bodies = []
+  for (const locale of [...sources.locales].sort()) {
+    const entries = normalized.get(locale)
+    const fallback = locale === defaultLocale ? null : defaultLocale
+    const packs = chunkEntries(entries)
+    if (packs.size > MAX_CHUNKS_PER_LOCALE) fail(`${locale} produced ${packs.size} chunks`)
+    for (const pack of [...packs.keys()].sort()) {
+      bodies.push({
+        locale,
+        fallback,
+        pack,
+        entries: Object.fromEntries(
+          [...packs.get(pack).entries()].sort(([a], [b]) => (a < b ? -1 : 1)),
+        ),
+      })
+    }
+  }
+
+  // Phase 2: bind the revision to *both* the inputs and the exact content they
+  // produced, so a change in either — a locale byte, the generator, a
+  // dependency, the Node major, or the rendered output itself — is a new
+  // revision, and identical inputs always reproduce the same one.
+  const outputSha256 = sha256Hex(Buffer.from(canonicalJson({ bodies }), 'utf8'))
+  const revisionInput = { provenance, output: { sha256: outputSha256, chunks: bodies.length } }
+  const provenanceSha256 = sha256Hex(Buffer.from(canonicalJson(revisionInput), 'utf8'))
+  const catalogRevision = `1.${provenanceSha256.slice(0, 32)}`
+  const revisionPrefix = `${BASE_PATH}/r/${catalogRevision}`
+
+  // Phase 3: materialize the addressed files now that the revision is known.
   const files = new Map()
   const locales = []
   let totalBytes = 0
@@ -295,35 +524,39 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
   let totalUnsupported = 0
 
   for (const locale of [...sources.locales].sort()) {
-    const entries = normalized.get(locale)
+    const localeBodies = bodies.filter((body) => body.locale === locale)
     const fallback = locale === defaultLocale ? null : defaultLocale
-    const packs = chunkEntries(entries)
-    if (packs.size > MAX_CHUNKS_PER_LOCALE) fail(`${locale} produced ${packs.size} chunks`)
+    const entries = normalized.get(locale)
 
     const chunks = []
     let localeBytes = 0
-    for (const pack of [...packs.keys()].sort()) {
-      const packEntries = packs.get(pack)
+    for (const body of localeBodies) {
+      const pack = body.pack
+      const packEntries = new Map(Object.entries(body.entries))
+      // A chunk deliberately does not name its revision: its bytes depend only
+      // on its content, so a pack that did not change keeps the same URL from
+      // one revision to the next. During a rolling deploy an old replica can
+      // therefore still serve most of what a new manifest points at.
       const chunk = {
         schemaVersion: SCHEMA_VERSION,
-        catalogRevision,
         locale,
         fallback,
         pack,
-        entries: Object.fromEntries([...packEntries.entries()].sort(([a], [b]) => (a < b ? -1 : 1))),
+        entries: body.entries,
       }
       const bytes = Buffer.from(canonicalJson(chunk), 'utf8')
       const sha256 = sha256Hex(bytes)
       if (bytes.length > MAX_CHUNK_BYTES) fail(`${locale}/${pack} chunk is ${bytes.length} bytes`)
 
-      const filePath = `r/${catalogRevision}/${locale}/${pack}.${sha256.slice(0, 16)}.json`
-      if (files.has(filePath)) fail(`duplicate chunk path ${filePath}`)
+      const filePath = `c/${sha256}.json`
+      const existing = files.get(filePath)
+      if (existing !== undefined && !existing.equals(bytes)) fail(`chunk digest collision at ${filePath}`)
       files.set(filePath, bytes)
 
       const unsupportedKeys = [...packEntries.values()].filter((entry) => entry.form === 'unsupported').length
       chunks.push({
         pack,
-        path: `${revisionPrefix}/${locale}/${pack}.${sha256.slice(0, 16)}.json`,
+        path: `${BASE_PATH}/${filePath}`,
         bytes: bytes.length,
         sha256,
         keys: packEntries.size,
@@ -352,6 +585,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
     basePath: BASE_PATH,
     manifestPath: `${BASE_PATH}/manifest.json`,
     revisionManifestPath: `${revisionPrefix}/manifest.json`,
+    chunkPathPrefix: `${BASE_PATH}/c/`,
     digestAlgorithm: 'sha256',
     defaultLocale,
     languageResolution: localeResolutionTable(sources),
@@ -363,11 +597,26 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
       keys: totalKeys,
       unsupportedKeys: totalUnsupported,
     },
+    backend: {
+      artifactPath: BACKEND_KEYS,
+      artifactSha256: backend.sha256,
+      sourceSha256: backend.artifact.source.sha256,
+      emittedKeys: backend.keys.size,
+      requiredKeys: requiredKeys.size,
+      untranslatedKeys: untranslated,
+      variableGaps: variableGaps.map((gap) => ({
+        key: gap.key,
+        missing: gap.missing,
+        resolved: gap.resolved,
+      })),
+      dynamicSites: backend.artifact.dynamicSites.total,
+    },
     provenance: {
       sha256: provenanceSha256,
+      outputSha256,
       generator: { name: GENERATOR_NAME, version: GENERATOR_VERSION },
       contractRevision: provenance.contract.schemaRevision,
-      requiredKeys,
+      fixtureKeys,
       localeSourceFiles: provenance.localeSources.length,
       localeSourcesSha256: sha256Hex(Buffer.from(canonicalJson(provenance.localeSources), 'utf8')),
       schemasSha256: sha256Hex(Buffer.from(canonicalJson(provenance.schemas), 'utf8')),
@@ -385,7 +634,13 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
     }
   }
 
-  return { manifest, manifestSha256: sha256Hex(manifestBytes), files, catalogRevision, provenance }
+  return {
+    manifest,
+    manifestSha256: sha256Hex(manifestBytes),
+    files,
+    catalogRevision,
+    provenance: revisionInput,
+  }
 }
 
 export function writeCatalog(files, outputDir) {
@@ -417,7 +672,7 @@ export function assertReplaceableOutputDir(outputDir) {
   if (!existsSync(target)) return
   if (!statSync(target).isDirectory()) fail(`${outputDir} is not a directory`)
   for (const entry of readdirSync(target)) {
-    if (entry !== 'manifest.json' && entry !== 'r') {
+    if (entry !== 'manifest.json' && entry !== 'r' && entry !== 'c') {
       fail(`refusing to replace ${outputDir}: it holds ${entry}, which no catalog build wrote`)
     }
   }
@@ -491,6 +746,7 @@ async function main(argv) {
     `locale-catalog: revision ${catalogRevision} (manifest sha256 ${manifestSha256})\n` +
       `  ${manifest.totals.locales} locales, ${manifest.totals.chunks} files, ` +
       `${manifest.totals.keys} keys (${manifest.totals.unsupportedKeys} unsupported), ` +
+      `${manifest.backend.requiredKeys} backend-required, ` +
       `${(manifest.totals.bytes / 1024 / 1024).toFixed(2)} MB -> ${relative(REPO_ROOT, outputDir)}`,
   )
 }

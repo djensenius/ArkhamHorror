@@ -12,15 +12,25 @@ catalog moves nothing into a client repository.
 
 ## What is published
 
-    /locale-catalog/manifest.json                       index (revalidates)
-    /locale-catalog/r/<revision>/manifest.json          identical bytes, immutable
-    /locale-catalog/r/<revision>/<locale>/<pack>.<digest16>.json
+    /locale-catalog/manifest.json                index (revalidates by ETag)
+    /locale-catalog/r/<revision>/manifest.json   identical bytes, immutable
+    /locale-catalog/c/<sha256>.json              chunks, content-addressed
 
-`<revision>` is `1.` plus the first 32 hex characters of the provenance digest;
-`<digest16>` is the first 16 hex characters of the chunk's SHA-256. Both are in
-the path, so the bytes behind a revision URL can never change — they are served
-with `Cache-Control: public, max-age=31536000, immutable`, while the stable
-manifest URL revalidates by ETag.
+`<revision>` is `1.` plus the first 32 hex characters of the provenance digest.
+A chunk's URL carries **only its content digest** — no revision — so a pack
+whose content did not change keeps the same URL from one revision to the next.
+That is what makes a rolling deploy safe: a client holding the new manifest can
+still fetch every unchanged pack from a replica that is still serving the old
+build.
+
+Immutable paths (`/c/` and `/r/`) are served `Cache-Control: public,
+max-age=31536000, immutable`; the stable manifest URL revalidates. Crucially,
+that policy is chosen by **response status**: only 200, 206 and 304 are
+cacheable, and every 4xx/5xx — a missing chunk, a wrong method, an
+unsatisfiable range — is `no-store`. A client that does race a deploy and gets
+a 404 for a changed pack must re-fetch `manifest.json` and retry; because the
+404 was never cached, the retry succeeds as soon as it reaches a replica of the
+newer build. Deployments should still swap the static root atomically.
 
 A chunk is one locale/pack slice, where the pack is a message key's first
 dotted segment (`nightOfTheZealot`, `theScarletKeys`, …) and top-level keys
@@ -64,12 +74,21 @@ plural branch, and both declare every variable they reference in `variables`.
 | `emphasis` | `bold`, `italic`, `underline`, `strikethrough`, `small`, `smallCaps` |
 | `list` | `ordered`, `styles`, and `items[]` (each with `styles` and `children`); nested lists nest |
 | `break`, `rule` | `<br>`, `<hr>` |
-| `image` | semantic asset reference: `role` (`encounterSet`, `card`, `token`, `chaosToken`, `campaign`, `homebrew`, `extra`, `other`), `assetPath` relative to `/img/arkham/`, `styles`, and optional `alt` |
+| `image` | semantic asset reference: `role` (`encounterSet`, `card`, `token`, `chaosToken`, `campaign`, `homebrew`, `extra`, `other`), `assetPath` relative to `/img/arkham/`, `styles`, and optional `alt`, `width`, `align` |
+| `cardRef` | text that names a card (`code`) plus its `children`; the web client shows that card's art on hover |
 
 `styles` are the source `class` tokens, restricted to `[A-Za-z][A-Za-z0-9-]*`.
 They are hints only: a client may ignore any token without losing an
 instruction. An element whose node type has no `styles` field (`emphasis`,
 `break`, `rule`) refuses a `class` attribute rather than dropping it.
+
+Inline CSS becomes `style`: a bounded list of `{property, value}` declarations
+with a closed charset — never a raw string, never a URL. A `url(...)` is only
+kept when it resolves inside `/img/arkham/`, and then as `{property, asset}`
+with the same semantic asset reference an image node carries. A class built
+from a placeholder (`class='{restfulNight3Status}'`) becomes a declared
+`styleVars` entry, so the hint survives as a typed variable instead of being
+dropped.
 
 Variables are **never interpolated at generation time**. The backend's
 `I18nEntry.variables` are substituted by the client, exactly as vue-i18n does
@@ -81,6 +100,29 @@ Image nodes carry no bytes and no URL. `{setImgPath}/rats.png` becomes
 `{"role": "encounterSet", "assetPath": "encounter-sets/rats.png"}`; relative
 `../` segments are resolved during generation and a path that escapes
 `img/arkham/` is refused. No official card, mat, or set artwork is embedded.
+
+### Backend-emitted keys are not optional
+
+`scripts/extract-backend-i18n-keys.py` parses every backend module with
+tree-sitter's Haskell grammar and resolves each key-emitting call site
+(`ikey`, `i18n`, `i18nWithTitle`, the flavor-text DSL, `labeled'`, literal
+`"$key"` tokens, …) together with the scope stack `scope`/`campaignI18n`/
+`scenarioI18n`/`unscoped` put it in, and the variables `countVar`/`withXp`/
+`nameVar`/… attach. Helper functions whose scope comes from their caller are
+resolved through their call sites; anything still not statically resolvable is
+recorded as a `dynamic` site with its location, so the artifact states its own
+coverage instead of implying completeness.
+
+The result is committed as `backend/arkham-api/i18n-emitted-keys.json` and is
+re-derived in CI (`mise run locale-catalog:backend-keys-check`), so adding a new
+`ikey` to the backend fails until the registry is regenerated. The catalog
+build consumes it and **fails** if any emitted key that the default locale
+translates is unsupported — those keys are gameplay content, not decoration.
+Keys the backend emits that no locale translates at all are a content gap in
+the locale sources, not a rendering failure: they are listed in the manifest's
+`backend.untranslatedKeys` and the gate fails if that list changes without the
+registry being regenerated. `backend.variableGaps` reports required keys whose
+message needs a substitution the extracted record does not list.
 
 ### Unsupported entries
 
@@ -94,16 +136,17 @@ the reason is one of a closed set: `message-syntax-error`,
 `image-path-escape`, `invalid-style-token`, `misplaced-list-item`,
 `unresolved-link`, `conflicting-variable-role`.
 
-At the revision this was written that is 103 of 38,582 entries (0.27%):
-41 `unsupported-attribute` (inline `style=`, `data-*`, `width`, `align`), 22
-`misplaced-list-item` (stray markup inside `<ul>`), 15 `html-parse-error`
-(malformed source strings — duplicate attributes, an unclosed tag, a `<` that
-starts no tag), 13 `placeholder-in-attribute` (a variable used as a CSS class),
-6 `unresolved-link` (a linked key that exists in no locale), 5
-`unsupported-element` (`<a>`, `<table>`), and 1 `message-syntax-error` (a
-`<style>` block whose CSS braces are not valid vue-i18n message syntax). A
-client should show these as unavailable rather than blank. Keys the contract
-requires may never be unsupported — that fails the build.
+At the revision this was written that is 19 of 38,603 entries (0.05%), and
+**none of them is a key the backend emits**: 9 `html-parse-error` (malformed
+prose markup in strings the backend never sends), 5 `unsupported-element`
+(`<a href>` on the About page, one `<table>`), 4 `unsupported-attribute`
+(`data-count` on a vote counter) and 1 `message-syntax-error` (a `<style>`
+block whose CSS braces are not valid vue-i18n message syntax). Several source
+typos that used to swallow prose in the web client too — `<p.`/`<li.`/`<pSon`
+instead of a closed tag, a `<ul>` whose first `<li>` was missing, and a linked
+key with a misspelled target — were fixed in the locale sources rather than
+papered over here. A client should show any remaining unsupported entry as
+unavailable rather than blank.
 
 ## Generation and provenance
 
@@ -122,21 +165,46 @@ exactly as in the Vue build. Message parsing uses `@intlify/message-compiler`
 Icon and literal-escape classification is derived by asking production
 `formatContent()`/`replaceIcons()` what they would do with `{name}`.
 
-`catalogRevision` is a digest over: every hashed locale source file, the
+`catalogRevision` is derived in two phases, so it cannot miss a change in
+either direction. First the catalog's content is rendered with no revision and
+no URLs in it and hashed (`provenance.outputSha256`). Then that digest is
+hashed together with the complete provenance — every locale source file, the
 production modules whose semantics are mirrored, the generator sources, both
-schemas, the versions of the tools that decide the output bytes (Vite,
-vue-i18n/`@intlify`, parse5), and the contract fixtures that define the
-required key set. Identical
+schemas, the backend emitted-key registry, the exact `package-lock.json`
+(integrity hashes included), the pinned Node major, the versions of Vite,
+vue-i18n/`@intlify`, parse5 and jsonc-parser, and the contract fixtures — and
+the result becomes the revision. A dependency bump, a Node major change, a
+locale byte, or a change in the rendered output alone therefore all produce a
+new revision, and identical inputs always reproduce the same one.
+
+Node is pinned to one major across `mise.toml`, `frontend/package.json`
+(`engines`), the `Dockerfile` and the offline installer; the generator refuses
+to run on a different major rather than silently producing different bytes. Identical
 inputs therefore always produce identical bytes, and any input change is a new
 revision. The manifest's `provenance` block republishes those digests, and the
 manifest pins every chunk's size and SHA-256, so a client can verify what it
 downloaded against what it was promised.
 
-Generation fails — rather than publishing a partial catalog — on a duplicate
-normalized key, an unsafe key/pack/locale identifier, a non-string leaf, an
-undeclared variable, a required key that is missing or unsupported, a chunk or
-catalog that exceeds its size/count bound, or an output path that escapes the
-output directory.
+Before any of that, the sources themselves are checked for content that would
+be lost silently:
+
+* **Duplicate keys.** Every raw locale JSON file is parsed with `jsonc-parser`
+  and any key declared twice in the same object — including keys that are only
+  equal after unescaping — fails the build with both locations. `JSON.parse`,
+  and therefore Vite and the Vue build, would simply have kept the last one.
+* **Composition collisions.** Each contributor file is compared against the
+  composed tree it was merged into; a file whose keys were overridden by
+  another spread, or whose content is not in the tree at all (a translated file
+  no module imports), fails the build naming the owning file and its mount.
+
+Generation then fails — rather than publishing a partial catalog — on an unsafe
+key/pack/locale identifier, a key longer than the schema's bound, a non-string
+leaf, an undeclared variable, a variable whose declared role contradicts its
+use, a link that cannot be resolved (missing target, unsupported target, or a
+cycle — the whole link graph is resolved with fallbacks before anything is
+published), a required key that is missing or unsupported, a chunk or catalog
+that exceeds its size/count bound, or an output path that escapes the output
+directory.
 
 ## Serving
 
@@ -151,8 +219,10 @@ can be logged or leaked by these routes.
 
 ## Verification
 
-    mise run locale-catalog:test        # render-AST and generator tests
-    mise run locale-catalog:validate    # schemas, digests, provenance, deploy seam
+    mise run locale-catalog:test                 # render-AST, source-integrity and generator tests
+    mise run locale-catalog:backend-keys-check   # backend emitted-key registry drift
+    mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
+    mise run locale-catalog:serving              # real nginx: status, cache, MIME, rollout
 
 `scripts/validate-locale-catalog.py` regenerates the catalog twice, rebuilds it
 in a scratch tree whose sources are only git-tracked files (reusing the
@@ -161,9 +231,24 @@ same revision byte for byte, validates the manifest and every chunk against the 
 re-derives the provenance digests from the hashed sources, proves `--check`
 detects stale output, proves generation fails when a required key is removed or
 a locale file is malformed, and checks the nginx/container/build wiring.
-`frontend/scripts/locale-catalog/verify-dist.mjs` then proves the built
-`dist/` really contains the catalog with matching digests and precompressed
-siblings. Both run in the `Locale catalog` GitHub Actions workflow.
+It also proves the gates have teeth by mutating the scratch clone: a duplicate
+key, unsupported markup on a backend-emitted key, a link cycle, a removed
+required key and malformed JSON must each fail generation, and changing the
+lockfile or the published content must change the revision.
+
+`scripts/validate-catalog-serving.py` boots real nginx over `prod.nginxconf`
+and over the config the offline packager generates, and asserts the full status
+matrix (200/206/304/404/405/416), JSON MIME, `nosniff`, `Vary`, byte-exact
+payloads against the manifest digests, that a missing catalog path is never
+answered with the SPA shell, and that a rolling deploy works in both directions
+(new manifest against old static root and vice versa).
+
+`frontend/scripts/locale-catalog/verify-dist.mjs` proves the built `dist/`
+really contains the catalog with matching digests and precompressed siblings;
+the offline build runs the same check against its own output and hashes every
+catalog provenance input into its cache key, so a stale `_deps/frontend` can
+never be reused. All of it runs in the `Locale catalog` GitHub Actions
+workflow.
 
 ## Ownership
 
