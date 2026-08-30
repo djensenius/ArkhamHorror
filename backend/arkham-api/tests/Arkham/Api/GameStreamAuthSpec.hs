@@ -75,7 +75,11 @@ record effects step = modifyIORef' effects.steps (<> [step])
 -- | Stand-in for the real 'Api.Handler.Arkham.Games.Shared.gameStream':
 -- performs every one of its observable effects, in the same order gameStream
 -- performs them (join, then count, then at least one snapshot, then an
--- answer if submitted).
+-- answer). Unlike the real 'gameStream', which only submits an answer if
+-- the client actually sends one, this stand-in always records
+-- @"answerSubmitted"@ -- it exists to prove that a non-member is blocked
+-- from *all* of these effects, so always including the answer step (the
+-- strictest case) only strengthens that guarantee.
 attemptUpgrade :: StreamEffects -> IO ()
 attemptUpgrade effects = do
   record effects "roomJoined"
@@ -195,10 +199,13 @@ spec = describe "gameParticipantGate (participant game-stream authorization gate
 
       -- Issue #46's acceptance criteria requires an unauthenticated caller
       -- to be rejected before any upgrade is attempted, not merely a
-      -- non-member one; that rejection is `getRequestUserId`, which must
-      -- still run at the top of the handler's body (its own body, not
-      -- merely somewhere in the module) for this guarantee to hold.
-      T.count "getRequestUserId" getApiV1ArkhamGameRBody `shouldSatisfy` (> 0)
+      -- non-member one; that rejection is `userId <- getRequestUserId`,
+      -- which must still bind the caller's user id at the top of the
+      -- handler's own body for this guarantee to hold. Matching this
+      -- specific binding snippet, rather than the bare identifier
+      -- `getRequestUserId`, avoids a false pass from an unrelated mention
+      -- in a comment or string literal within the sliced body.
+      T.isInfixOf "userId <- getRequestUserId" getApiV1ArkhamGameRBody `shouldBe` True
       T.count "withGameParticipant" getApiV1ArkhamGameRBody `shouldSatisfy` (> 0)
       T.count "webSocketsOptions" getApiV1ArkhamGameRBody `shouldBe` 0
       T.count "gameStream" getApiV1ArkhamGameRBody `shouldBe` 0
