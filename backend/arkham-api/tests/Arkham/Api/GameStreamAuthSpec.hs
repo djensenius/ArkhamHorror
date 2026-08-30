@@ -33,11 +33,13 @@ This spec:
 * proves this exact function, unmodified, would fail a run reproducing the
   original bug's observable shape (upgrade attempted for a non-member); and
 * statically confirms, by inspecting the actual source of
-  "Api.Handler.Arkham.Games", that 'getApiV1ArkhamGameR' delegates
-  exclusively to 'withGameParticipant' for its entire body, and that
-  'webSocketsOptions' \/ @gameStream@ occur nowhere in this module except
-  inside 'withGameParticipant', so a future edit cannot reintroduce an
-  unguarded upgrade without this test failing.
+  "Api.Handler.Arkham.Games", that 'getApiV1ArkhamGameR' still calls
+  'getRequestUserId' (so an unauthenticated caller is still rejected before
+  any upgrade is attempted) and delegates the rest of its body exclusively
+  to 'withGameParticipant', and that 'webSocketsOptions' \/ @gameStream@
+  occur nowhere in this module except inside 'withGameParticipant', so a
+  future edit cannot reintroduce an unguarded or unauthenticated upgrade
+  without this test failing.
 -}
 module Arkham.Api.GameStreamAuthSpec (spec) where
 
@@ -167,6 +169,12 @@ spec = describe "gameParticipantGate (participant game-stream authorization gate
           withGameParticipantBody = sliceBetween "withGameParticipant" "gameParticipantGate"
           getApiV1ArkhamGameRBody = sliceBetween "getApiV1ArkhamGameR " "getApiV1ArkhamGameSpectateR"
 
+      -- Issue #46's acceptance criteria requires an unauthenticated caller
+      -- to be rejected before any upgrade is attempted, not merely a
+      -- non-member one; that rejection is `getRequestUserId`, which must
+      -- still run at the top of the handler's body (its own body, not
+      -- merely somewhere in the module) for this guarantee to hold.
+      T.count "getRequestUserId" getApiV1ArkhamGameRBody `shouldSatisfy` (> 0)
       T.count "withGameParticipant" getApiV1ArkhamGameRBody `shouldSatisfy` (> 0)
       T.count "webSocketsOptions" getApiV1ArkhamGameRBody `shouldBe` 0
       T.count "gameStream" getApiV1ArkhamGameRBody `shouldBe` 0
@@ -179,6 +187,10 @@ spec = describe "gameParticipantGate (participant game-stream authorization gate
       -- is distinct from the deliberately-untouched spectator route's own
       -- "spectatorGameStream gameId" (capital @G@, a different function);
       -- it appears exactly once in the whole module, and only inside
-      -- withGameParticipant's slice.
-      T.count "gameStream gameId" src `shouldBe` 1
-      T.isInfixOf "gameStream gameId" withGameParticipantBody `shouldBe` True
+      -- withGameParticipant's slice. Whitespace is normalized (all runs of
+      -- spaces/newlines collapsed to a single space) before this specific
+      -- check so a harmless line-wrap or extra space between "gameStream"
+      -- and "gameId" can't make this test noisily fail.
+      let normalizeWhitespace = T.unwords . T.words
+      T.count "gameStream gameId" (normalizeWhitespace src) `shouldBe` 1
+      T.isInfixOf "gameStream gameId" (normalizeWhitespace withGameParticipantBody) `shouldBe` True
