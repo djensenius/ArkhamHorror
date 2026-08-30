@@ -524,8 +524,8 @@ def validate_clean_clone(tracked: set[str], manifest: dict, files: dict[str, byt
 
     (clone / "frontend" / "node_modules").symlink_to(FRONTEND / "node_modules")
     out = clone / "out"
-    result = run_generator(["--out", str(out)], frontend=clone / "frontend")
-    require("revision" in result.stdout, f"unexpected generator output: {result.stdout}")
+    run_generator(["--out", str(out)], frontend=clone / "frontend")
+    require((out / "manifest.json").is_file(), "the clean-clone build wrote no manifest")
 
     clone_files = read_generated(out)
     require(
@@ -657,9 +657,10 @@ def validate_deployment_wiring(manifest: dict) -> None:
         package["scripts"]["locale-catalog"].endswith("scripts/locale-catalog/generate.mjs"),
         "the locale-catalog npm script does not run the generator",
     )
+    declared = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
     for dependency in ("parse5", "@intlify/message-compiler"):
         require(
-            dependency in package["devDependencies"],
+            dependency in declared,
             f"{dependency} must be a declared dependency of the generator",
         )
 
