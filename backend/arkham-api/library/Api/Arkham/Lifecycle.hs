@@ -741,4 +741,3 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
         Right (Right ()) -> putMVar lock NotStarted >> pure StoppedCleanly
         Right (Left teardownErr) -> putMVar lock (RetireFailed priorHandle teardownErr) >> pure (StopFailed teardownErr)
         Left cancelErr -> putMVar lock priorState >> throwIO cancelErr
-
