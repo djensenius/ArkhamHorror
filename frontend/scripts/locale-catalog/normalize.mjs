@@ -164,17 +164,24 @@ function assertSentinelFree(raw) {
   }
 }
 
+// One parser for the whole run: it holds no state between parses, and the
+// catalog compiles tens of thousands of messages.
+let parseErrors = []
+const messageParser = createParser({
+  location: false,
+  onError: (error) => parseErrors.push(error),
+})
+
 function parseMessage(raw) {
-  const errors = []
-  const parser = createParser({ location: false, onError: (error) => errors.push(error) })
+  parseErrors = []
   let ast
   try {
-    ast = parser.parse(raw)
+    ast = messageParser.parse(raw)
   } catch (error) {
     throw unsupported('message-syntax-error', error.message ?? 'parse failed')
   }
-  if (errors.length > 0) {
-    throw unsupported('message-syntax-error', errors[0].message ?? String(errors[0].code))
+  if (parseErrors.length > 0) {
+    throw unsupported('message-syntax-error', parseErrors[0].message ?? String(parseErrors[0].code))
   }
   return ast
 }

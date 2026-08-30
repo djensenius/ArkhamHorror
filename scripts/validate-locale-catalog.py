@@ -391,14 +391,47 @@ def validate_required_keys(files: dict[str, bytes], manifest: dict) -> None:
                 f"required key {key} is unsupported in {locale}: {entry.get('reason')}",
             )
 
-    # The rich required entry keeps its instructions: emphasis, the
-    # encounter-set section, and semantic image references (never bytes/URLs).
-    gather = chunks[("en", "nightOfTheZealot")]["entries"][
-        "nightOfTheZealot.theGathering.setup.gatherSets"
-    ]
-    images = []
-    stack = list(gather["nodes"])
-    kinds = set()
+    # At least one required entry must still carry the rich content this
+    # catalog exists to deliver: emphasis plus semantic encounter-set image
+    # references (never bytes, never URLs). The entry is discovered, not
+    # hard-coded, so a fixture or default-locale change fails with a message
+    # rather than a KeyError.
+    rich_key = None
+    for key in sorted(expected):
+        pack = key.split(".")[0] if "." in key else "core"
+        chunk = chunks.get((default_locale, pack))
+        entry = None if chunk is None else chunk["entries"].get(key)
+        if entry is None or entry["form"] != "message":
+            continue
+        kinds, images = collect_node_kinds(entry["nodes"])
+        if "emphasis" in kinds and images:
+            rich_key = key
+            for image in images:
+                require(
+                    image["role"] == "encounterSet",
+                    f"{key} image reference lost its role ({image['role']})",
+                )
+                require(
+                    re.fullmatch(r"encounter-sets/[a-z0-9-]+\.png", image["assetPath"]) is not None,
+                    f"{key} has unexpected asset path {image['assetPath']}",
+                )
+                require(
+                    "src" not in image and "url" not in image,
+                    f"{key} image is not a semantic reference",
+                )
+            break
+
+    require(
+        rich_key is not None,
+        "no required key carries emphasis and encounter-set image references; "
+        "the catalog would ship only plain text for the contract's rich content",
+    )
+
+
+def collect_node_kinds(nodes: list) -> tuple[set[str], list[dict]]:
+    kinds: set[str] = set()
+    images: list[dict] = []
+    stack = list(nodes)
     while stack:
         node = stack.pop()
         kinds.add(node["type"])
@@ -407,14 +440,7 @@ def validate_required_keys(files: dict[str, bytes], manifest: dict) -> None:
         stack.extend(node.get("children", []))
         for item in node.get("items", []):
             stack.extend(item["children"])
-    require("emphasis" in kinds, "the required rich entry lost its emphasis")
-    require(len(images) == 6, f"the required rich entry has {len(images)} encounter-set icons")
-    for image in images:
-        require(image["role"] == "encounterSet", "encounter-set icons lost their role")
-        require(
-            re.fullmatch(r"encounter-sets/[a-z0-9-]+\.png", image["assetPath"]) is not None,
-            f"unexpected asset path {image['assetPath']}",
-        )
+    return kinds, images
 
 
 def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]) -> None:
