@@ -7,43 +7,27 @@ non-participant could reach 'Api.Handler.Arkham.Games.Shared.gameStream'
 (join its room, increment its member count, receive full-game snapshots,
 and submit answers) without ever being a recorded player of that game.
 
-The handler now delegates its entire body to 'withGameParticipant', whose
-own body is nothing but a @getBy (UniquePlayer userId gameId)@ lookup of
-the same row the REST branch has always required (previously via
-@getBy404@, which threw immediately on a miss; now via plain @getBy@, so
-the @Maybe@ result can be branched on explicitly), followed immediately by
-a call to 'gameParticipantGate' with that lookup's result and the
-(still-unevaluated) WebSocket-upgrade action. 'gameParticipantGate' is the
-/only/ place in this module that ever runs the @attemptUpgrade@ action it
-is handed, and it does so exclusively in the @Just@ branch, strictly before
-the REST continuation. 'webSocketsOptions' and
-'Api.Handler.Arkham.Games.Shared.gameStream' appear nowhere else in
-"Api.Handler.Arkham.Games", so there is no other path by which
-'getApiV1ArkhamGameR' can reach them.
+The handler delegates its body to 'withGameParticipant', which supplies the
+real lookup and WebSocket-upgrade effects to 'withGameParticipantIn'.
+'withGameParticipantIn' owns their sequencing: it executes the lookup first,
+then passes its result and the still-unevaluated upgrade action to
+'gameParticipantGate'.  The gate runs the upgrade only for a participant,
+strictly before the REST continuation.
 
 This spec:
 
-* exercises 'gameParticipantGate' itself -- the exact function that owns the
-  lookup-result branch and the upgrade\/continuation ordering -- against
-  concrete, already-looked-up @Maybe (Entity ArkhamPlayer)@ fixture values
-  (real 'ArkhamPlayer' rows, not opaque IO stand-ins), proving a non-member
-  ('Nothing') blocks the upgrade action and the REST continuation
-  unconditionally, and a member ('Just') runs the upgrade strictly before
-  the continuation with the correct 'ArkhamPlayerId';
-* proves this exact function, unmodified, would fail a run reproducing the
-  original bug's observable shape (upgrade attempted for a non-member); and
-* statically confirms, by inspecting the actual source of
-  "Api.Handler.Arkham.Games", that 'getApiV1ArkhamGameR' still calls
-  'getRequestUserId' (so an unauthenticated caller is still rejected before
-  any upgrade is attempted) and delegates the rest of its body exclusively
-  to 'withGameParticipant', and that 'webSocketsOptions' \/ @gameStream@
-  occur nowhere in this module except inside 'withGameParticipant', so a
-  future edit cannot reintroduce an unguarded or unauthenticated upgrade
-  without this test failing.
+* executes 'withGameParticipantIn' with recording effects, proving the
+  membership lookup happens first and a missing participant blocks every
+  upgrade and continuation effect;
+* exercises 'gameParticipantGate' against concrete @ArkhamPlayer@ entities,
+  proving member identity and upgrade\/continuation ordering; and
+* narrowly checks the real route still authenticates, delegates to the gate,
+  contains no direct stream upgrade, and uses the authorized participant id
+  for multiplayer projection.
 -}
 module Arkham.Api.GameStreamAuthSpec (spec) where
 
-import Api.Handler.Arkham.Games (gameParticipantGate)
+import Api.Handler.Arkham.Games (gameParticipantGate, withGameParticipantIn)
 import Arkham.Prelude
 import Data.List qualified as List
 import Data.Text qualified as T
@@ -97,6 +81,7 @@ attemptUpgrade effects = do
 readGamesHsSource :: IO Text
 readGamesHsSource = go candidatePaths
  where
+  candidatePaths :: [FilePath]
   candidatePaths =
     [ "library/Api/Handler/Arkham/Games.hs"
     , "backend/arkham-api/library/Api/Handler/Arkham/Games.hs"
@@ -126,66 +111,85 @@ fixturePlayer =
       }
 
 spec :: Spec
-spec = describe "gameParticipantGate (participant game-stream authorization gate, #46)" do
-  it "blocks the upgrade attempt and the REST continuation for an authenticated non-member" do
-    effects <- newStreamEffects
-    continuationRan <- newIORef False
-    rejectRan <- newIORef False
-    gameParticipantGate
-      Nothing
-      (attemptUpgrade effects)
-      (writeIORef rejectRan True)
-      (\_playerId -> record effects "continuation" >> writeIORef continuationRan True)
-    readIORef effects.steps `shouldReturn` []
-    readIORef continuationRan `shouldReturn` False
-    readIORef rejectRan `shouldReturn` True
+spec = do
+  describe "withGameParticipantIn (participant lookup and stream gate, #46)" do
+    it "looks up membership before rejecting a non-member without attempting the upgrade" do
+      effects <- newStreamEffects
+      withGameParticipantIn
+        (record effects "membershipLookup" >> pure Nothing)
+        (attemptUpgrade effects)
+        (record effects "rejected")
+        (\_playerId -> record effects "continuation")
+      readIORef effects.steps `shouldReturn` ["membershipLookup", "rejected"]
 
-  it "attempts the upgrade strictly before the REST continuation, and reuses the looked-up playerId, for a member" do
-    effects <- newStreamEffects
-    rejectRan <- newIORef False
-    receivedPlayerId <- newIORef Nothing
-    gameParticipantGate
-      (Just fixturePlayer)
-      (attemptUpgrade effects)
-      (writeIORef rejectRan True)
-      (\playerId -> record effects "continuation" >> writeIORef receivedPlayerId (Just playerId))
-    readIORef effects.steps
-      `shouldReturn` ["roomJoined", "memberCountIncremented", "snapshotDelivered", "answerSubmitted", "continuation"]
-    readIORef rejectRan `shouldReturn` False
-    readIORef receivedPlayerId `shouldReturn` Just fixturePlayer.id
+    it "looks up membership before upgrading and passes the authorized participant id onward" do
+      effects <- newStreamEffects
+      receivedPlayerId <- newIORef Nothing
+      withGameParticipantIn
+        (record effects "membershipLookup" >> pure (Just fixturePlayer))
+        (attemptUpgrade effects)
+        (record effects "rejected")
+        (\playerId -> record effects "continuation" >> writeIORef receivedPlayerId (Just playerId))
+      readIORef effects.steps
+        `shouldReturn`
+          [ "membershipLookup"
+          , "roomJoined"
+          , "memberCountIncremented"
+          , "snapshotDelivered"
+          , "answerSubmitted"
+          , "continuation"
+          ]
+      readIORef receivedPlayerId `shouldReturn` Just fixturePlayer.id
 
-  it "reproduces the original bug's observable shape only when fed a non-member result through the pre-fix (unconditional-upgrade) ordering, and this exact function does not do that" do
-    -- Modelled directly on the real bug: the old handler ran the WebSocket
-    -- upgrade unconditionally, regardless of what the membership lookup
-    -- would have found, with the lookup only reachable afterwards in a REST
-    -- branch a successful upgrade never reaches.
-    let oldUnsafeOrdering
-          :: Maybe (Entity ArkhamPlayer) -> IO () -> IO () -> (ArkhamPlayerId -> IO ()) -> IO ()
-        oldUnsafeOrdering _mPlayer attemptUpgrade' _reject _onAuthorized = attemptUpgrade'
+  describe "gameParticipantGate (participant game-stream authorization gate, #46)" do
+    it "blocks the upgrade attempt and the REST continuation for an authenticated non-member" do
+      effects <- newStreamEffects
+      continuationRan <- newIORef False
+      rejectRan <- newIORef False
+      gameParticipantGate
+        Nothing
+        (attemptUpgrade effects)
+        (writeIORef rejectRan True)
+        (\_playerId -> record effects "continuation" >> writeIORef continuationRan True)
+      readIORef effects.steps `shouldReturn` []
+      readIORef continuationRan `shouldReturn` False
+      readIORef rejectRan `shouldReturn` True
 
-    effectsOld <- newStreamEffects
-    oldUnsafeOrdering Nothing (attemptUpgrade effectsOld) (pure ()) (const $ pure ())
-    readIORef effectsOld.steps `shouldReturn` ["roomJoined", "memberCountIncremented", "snapshotDelivered", "answerSubmitted"] -- old shape: non-member still got in
+    it "attempts the upgrade strictly before the REST continuation, and reuses the looked-up playerId, for a member" do
+      effects <- newStreamEffects
+      rejectRan <- newIORef False
+      receivedPlayerId <- newIORef Nothing
+      gameParticipantGate
+        (Just fixturePlayer)
+        (attemptUpgrade effects)
+        (writeIORef rejectRan True)
+        (\playerId -> record effects "continuation" >> writeIORef receivedPlayerId (Just playerId))
+      readIORef effects.steps
+        `shouldReturn` ["roomJoined", "memberCountIncremented", "snapshotDelivered", "answerSubmitted", "continuation"]
+      readIORef rejectRan `shouldReturn` False
+      readIORef receivedPlayerId `shouldReturn` Just fixturePlayer.id
 
-    -- 'gameParticipantGate' -- the function actually wired into
-    -- 'Api.Handler.Arkham.Games.withGameParticipant' -- does not exhibit
-    -- this: the same non-member lookup result blocks every effect.
-    effectsNew <- newStreamEffects
-    gameParticipantGate Nothing (attemptUpgrade effectsNew) (pure ()) (const $ pure ())
-    readIORef effectsNew.steps `shouldReturn` []
+    it "does not reproduce the original unconditional-upgrade ordering for a non-member" do
+      let oldUnsafeOrdering
+            :: Maybe (Entity ArkhamPlayer) -> IO () -> IO () -> (ArkhamPlayerId -> IO ()) -> IO ()
+          oldUnsafeOrdering _mPlayer attemptUpgrade' _reject _onAuthorized = attemptUpgrade'
+
+      effectsOld <- newStreamEffects
+      oldUnsafeOrdering Nothing (attemptUpgrade effectsOld) (pure ()) (const $ pure ())
+      readIORef effectsOld.steps
+        `shouldReturn` ["roomJoined", "memberCountIncremented", "snapshotDelivered", "answerSubmitted"]
+
+      effectsNew <- newStreamEffects
+      withGameParticipantIn
+        (record effectsNew "membershipLookup" >> pure Nothing)
+        (attemptUpgrade effectsNew)
+        (record effectsNew "rejected")
+        (const $ record effectsNew "continuation")
+      readIORef effectsNew.steps `shouldReturn` ["membershipLookup", "rejected"]
 
   describe "static structure of Api.Handler.Arkham.Games" do
-    it "getApiV1ArkhamGameR delegates its entire body to withGameParticipant, which is the only place webSocketsOptions/gameStream are used" do
+    it "authenticates, delegates participant authorization, and preserves the authorized multiplayer identity" do
       src <- readGamesHsSource
-      -- Every top-level declaration in this file starts at column 0 (a
-      -- signature/equation line is never indented), so the first line
-      -- starting with a given top-level name marks that declaration's
-      -- start, and slicing up to the first line starting with the *next*
-      -- top-level name (in source order: withGameParticipant,
-      -- gameParticipantGate, getApiV1ArkhamGameR, then
-      -- getApiV1ArkhamGameSpectateR) isolates exactly that declaration --
-      -- independent of blank lines or comment formatting, so harmless
-      -- reformatting of this file cannot make this test noisily fail.
       let ls = T.lines src
           firstLineStartingWith prefix = case List.findIndex (prefix `T.isPrefixOf`) ls of
             Just i -> i
@@ -194,37 +198,11 @@ spec = describe "gameParticipantGate (participant game-stream authorization gate
             let start = firstLineStartingWith startName
                 end = firstLineStartingWith endName
             in T.unlines $ take (end - start) $ drop start ls
-          withGameParticipantBody = sliceBetween "withGameParticipant" "gameParticipantGate"
           getApiV1ArkhamGameRBody = sliceBetween "getApiV1ArkhamGameR " "getApiV1ArkhamGameSpectateR"
+          normalizedHandler = T.unwords $ T.words getApiV1ArkhamGameRBody
 
-      -- Issue #46's acceptance criteria requires an unauthenticated caller
-      -- to be rejected before any upgrade is attempted, not merely a
-      -- non-member one; that rejection is `userId <- getRequestUserId`,
-      -- which must still bind the caller's user id at the top of the
-      -- handler's own body for this guarantee to hold. Matching this
-      -- specific binding snippet, rather than the bare identifier
-      -- `getRequestUserId`, avoids a false pass from an unrelated mention
-      -- in a comment or string literal within the sliced body.
-      T.isInfixOf "userId <- getRequestUserId" getApiV1ArkhamGameRBody `shouldBe` True
-      T.count "withGameParticipant" getApiV1ArkhamGameRBody `shouldSatisfy` (> 0)
+      T.isInfixOf "userId <- getRequestUserId" normalizedHandler `shouldBe` True
+      T.isInfixOf "withGameParticipant userId gameId \\playerId ->" normalizedHandler `shouldBe` True
       T.count "webSocketsOptions" getApiV1ArkhamGameRBody `shouldBe` 0
       T.count "gameStream" getApiV1ArkhamGameRBody `shouldBe` 0
-
-      T.count "webSocketsOptions" withGameParticipantBody `shouldSatisfy` (> 0)
-      T.count "gameStream" withGameParticipantBody `shouldSatisfy` (> 0)
-      T.count "gameParticipantGate" withGameParticipantBody `shouldSatisfy` (> 0)
-
-      -- The participant upgrade call ("gameStream gameId", lower-case @g@)
-      -- is distinct from the deliberately-untouched spectator route's own
-      -- "spectatorGameStream gameId" (capital @G@, a different function);
-      -- it appears exactly once in the whole module, and only inside
-      -- withGameParticipant's slice. Before this specific check, `$` and
-      -- parentheses are erased (in addition to collapsing all whitespace
-      -- runs to a single space), so this still matches semantically
-      -- equivalent call-syntax variants -- e.g. a harmless line-wrap,
-      -- extra space, `gameStream $ gameId`, or `gameStream (gameId)` --
-      -- rather than only the one literal spacing currently in the source.
-      let normalizeCallSyntax =
-            T.unwords . T.words . T.replace "$" " " . T.replace "(" " " . T.replace ")" " "
-      T.count "gameStream gameId" (normalizeCallSyntax src) `shouldBe` 1
-      T.isInfixOf "gameStream gameId" (normalizeCallSyntax withGameParticipantBody) `shouldBe` True
+      T.isInfixOf "WithFriends -> coerce playerId" normalizedHandler `shouldBe` True

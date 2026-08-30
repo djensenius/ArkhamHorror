@@ -13,7 +13,7 @@ module Api.Handler.Arkham.Games (
   deleteApiV1ArkhamGameR,
   putApiV1ArkhamGameRawR,
   postApiV1ArkhamGamePlayabilityR,
-  withGameParticipant,
+  withGameParticipantIn,
   gameParticipantGate,
 ) where
 
@@ -86,13 +86,28 @@ regardless of how the REST continuation below is written.
 -}
 withGameParticipant
   :: UserId -> ArkhamGameId -> (ArkhamPlayerId -> Handler a) -> Handler a
-withGameParticipant userId gameId onAuthorized = do
-  mPlayer <- runDB $ getBy (UniquePlayer userId gameId)
-  gameParticipantGate
-    mPlayer
+withGameParticipant userId gameId =
+  withGameParticipantIn
+    (runDB $ getBy (UniquePlayer userId gameId))
     (websocketConnectionOptions >>= \wsOptions -> webSocketsOptions wsOptions $ gameStream gameId)
     notFound
-    onAuthorized
+
+{- | Execute the participant lookup before deciding whether the stream upgrade
+or the authorized REST continuation may run.
+
+The effect-parameterized boundary is shared by production and tests so ordering
+is verified without depending on the source layout of this module.
+-}
+withGameParticipantIn
+  :: Monad m
+  => m (Maybe (Entity ArkhamPlayer))
+  -> m ()
+  -> m a
+  -> (ArkhamPlayerId -> m a)
+  -> m a
+withGameParticipantIn lookupParticipant attemptUpgrade reject onAuthorized = do
+  mPlayer <- lookupParticipant
+  gameParticipantGate mPlayer attemptUpgrade reject onAuthorized
 
 {- | The exact branch 'withGameParticipant' takes once it has (or hasn't)
 found the caller's 'ArkhamPlayer' row, isolated from 'Handler' so it can be
