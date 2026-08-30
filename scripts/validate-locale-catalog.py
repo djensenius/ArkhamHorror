@@ -521,7 +521,11 @@ def validate_fail_closed(clone: Path, manifest: dict) -> None:
     required = manifest["provenance"]["requiredKeys"]
     base = clone / "frontend" / "src" / "locales" / "en" / "base.json"
     messages = strict_json.strict_json_load_path(base)
-    victim = next(key for key in required if key in messages)
+    victim = next((key for key in required if key in messages), None)
+    require(
+        victim is not None,
+        "no required key lives in en/base.json, so this fail-closed probe needs a new victim file",
+    )
     del messages[victim]
     base.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
 
@@ -568,7 +572,11 @@ def validate_deployment_wiring(manifest: dict) -> None:
     base = manifest["basePath"]
     nginx = (ROOT / "prod.nginxconf").read_text(encoding="utf-8")
     require(
-        f'"~^{base}/r/" "public, max-age=31536000, immutable"' in nginx,
+        re.search(
+            rf'"~\^{re.escape(base)}/r/"\s+"public,\s*max-age=31536000,\s*immutable"\s*;?',
+            nginx,
+        )
+        is not None,
         "prod.nginxconf does not cache revision-addressed catalog paths immutably",
     )
     # One `^~` prefix location, so an unknown catalog path 404s instead of
