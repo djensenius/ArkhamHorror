@@ -315,11 +315,17 @@ def check_status_matrix(manifest: dict, label: str, static_root: Path) -> None:
     status, headers, _ = request(path, method="POST")
     assert_headers(f"{label} bad method", status, headers, expect_status=405, cache=NO_STORE, json_type=False)
 
-    for missing in ("/locale-catalog/c/0000000000000000000000000000000000000000000000000000000000000000.json", "/locale-catalog/nope.json", "/locale-catalog/r/1.deadbeef/manifest.json"):
-        status, headers, _ = request(missing)
-        assert_headers(f"{label} missing {missing}", status, headers, expect_status=404, cache=NO_STORE, json_type=False)
+    for missing in (
+        "/locale-catalog/c/0000000000000000000000000000000000000000000000000000000000000000.json",
+        "/locale-catalog/nope.json",
+        "/locale-catalog/r/1.deadbeef/manifest.json",
+    ):
+        status, headers, error_body = request(missing)
+        assert_headers(
+            f"{label} missing {missing}", status, headers, expect_status=404, cache=NO_STORE, json_type=False
+        )
         require(
-            b"<!DOCTYPE" not in _[:200].upper() if isinstance(_, bytes) else True,
+            b"<!DOCTYPE" not in error_body[:200].upper(),
             f"{label}: a missing catalog path was answered with the SPA shell",
         )
 
@@ -335,7 +341,7 @@ def check_status_matrix(manifest: dict, label: str, static_root: Path) -> None:
     require(revision_body == manifest_body, f"{label} revision manifest differs from the stable one")
 
 
-def check_rolling_deploy(other: dict, label: str, changed_packs: set[str]) -> None:
+def check_rolling_deploy(other: dict, label: str, changed_packs: set[tuple[str, str]]) -> None:
     """Fetches one revision's chunk URLs against the other revision's replica."""
     unchanged_hits = 0
     for locale in other["locales"]:
