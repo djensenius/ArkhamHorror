@@ -124,7 +124,9 @@ Icon and literal-escape classification is derived by asking production
 
 `catalogRevision` is a digest over: every hashed locale source file, the
 production modules whose semantics are mirrored, the generator sources, both
-schemas, and the contract fixtures that define the required key set. Identical
+schemas, the versions of the tools that decide the output bytes (Vite,
+vue-i18n/`@intlify`, parse5), and the contract fixtures that define the
+required key set. Identical
 inputs therefore always produce identical bytes, and any input change is a new
 revision. The manifest's `provenance` block republishes those digests, and the
 manifest pins every chunk's size and SHA-256, so a client can verify what it
