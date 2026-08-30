@@ -79,10 +79,11 @@ branch has always required (previously via @getBy404@, which threw
 immediately on a miss; here via @getBy@, so the @Maybe@ result can be
 branched on explicitly by 'gameParticipantGate'), and that result is the
 /only/ input 'gameParticipantGate' -- the real decision logic -- ever sees;
-there is no other exported entry point in this module through which
-'getApiV1ArkhamGameR' can reach 'webSocketsOptions' \/ 'gameStream', so a
-caller who is not a recorded player of @gameId@ cannot attempt the upgrade
-regardless of how the REST continuation below is written.
+'getApiV1ArkhamGameR' calls this module-private helper only after
+'getRequestUserId', and the helper delegates both effects to
+'withGameParticipantIn', so a caller who is not a recorded player of @gameId@
+cannot attempt the upgrade regardless of how the REST continuation below is
+written.
 -}
 withGameParticipant
   :: UserId -> ArkhamGameId -> (ArkhamPlayerId -> Handler a) -> Handler a
