@@ -95,15 +95,15 @@ the reason is one of a closed set: `message-syntax-error`,
 `unresolved-link`, `conflicting-variable-role`.
 
 At the revision this was written that is 103 of 38,582 entries (0.27%):
-46 `unsupported-attribute` (inline `style=`, `data-*`, `<a href>`, `width`,
-`align`), 22 `misplaced-list-item` (stray markup inside `<ul>`), 15
-`html-parse-error` (malformed source strings — duplicate attributes, an
-unclosed tag, a `<` that starts no tag), 13 `placeholder-in-attribute` (a
-variable used as a CSS class), 6 `unresolved-link` (a linked key that exists in
-no locale), and 1 `message-syntax-error` (a `<style>` block whose CSS braces
-are not valid vue-i18n message syntax). A client should show these as
-unavailable rather than blank. Keys the contract requires may never be
-unsupported — that fails the build.
+41 `unsupported-attribute` (inline `style=`, `data-*`, `width`, `align`), 22
+`misplaced-list-item` (stray markup inside `<ul>`), 15 `html-parse-error`
+(malformed source strings — duplicate attributes, an unclosed tag, a `<` that
+starts no tag), 13 `placeholder-in-attribute` (a variable used as a CSS class),
+6 `unresolved-link` (a linked key that exists in no locale), 5
+`unsupported-element` (`<a>`, `<table>`), and 1 `message-syntax-error` (a
+`<style>` block whose CSS braces are not valid vue-i18n message syntax). A
+client should show these as unavailable rather than blank. Keys the contract
+requires may never be unsupported — that fails the build.
 
 ## Generation and provenance
 

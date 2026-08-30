@@ -97,11 +97,19 @@ test('lists keep item order, nesting, and style hints', () => {
   ])
 })
 
-test('inline elements refuse style hints they cannot carry', () => {
-  for (const input of ["<b class='x'>bold</b>", "<br class='x'>", "<hr class='x'>"]) {
+test('elements refuse attributes their node cannot carry', () => {
+  for (const input of [
+    "<b class='x'>bold</b>",
+    "<br class='x'>",
+    "<hr class='x'>",
+    "<p src='{setImgPath}/rats.png'>x</p>",
+    "<div alt='x'>y</div>",
+    '<ul><li alt="x">y</li></ul>',
+    '<span src="x">y</span>',
+  ]) {
     const result = normalize(input)
     assert.equal(result.form, 'unsupported', input)
-    assert.equal(result.reason, 'unsupported-attribute')
+    assert.equal(result.reason, 'unsupported-attribute', input)
   }
 })
 
@@ -193,8 +201,8 @@ test('unsupported and unsafe input is refused, never partially rendered', () => 
     ['<script>alert(1)</script>', 'unsupported-element'],
     ['<style>p{color:red}</style>', 'message-syntax-error'],
     ['<style>p:hover</style>', 'unsupported-element'],
-    ['<a href="https://example.test">link</a>', 'unsupported-attribute'],
-    ['<a href="javascript:alert(1)">link</a>', 'unsupported-attribute'],
+    ['<a href="https://example.test">link</a>', 'unsupported-element'],
+    ['<a href="javascript:alert(1)">link</a>', 'unsupported-element'],
     ['<p onclick="steal()">x</p>', 'unsupported-attribute'],
     ["<div style='position:fixed'>x</div>", 'unsupported-attribute'],
     ['<img src="https://evil.test/pixel.png" />', 'unsupported-image-source'],

@@ -99,7 +99,28 @@ const HEADING_ELEMENTS = new Map([
   ['h6', 6],
 ])
 
-const ALLOWED_ATTRIBUTES = new Set(['class', 'src', 'alt'])
+// Attributes are allowlisted per element, not globally: an attribute an
+// element's AST node cannot carry (a `src` on a paragraph, an `alt` on a list
+// item) is refused rather than parsed and dropped.
+const STYLE_ATTRIBUTES = new Set(['class'])
+const IMAGE_ATTRIBUTES = new Set(['class', 'src', 'alt'])
+const NO_ATTRIBUTES = new Set()
+
+function allowedAttributesFor(tagName) {
+  if (tagName === 'img') return IMAGE_ATTRIBUTES
+  if (tagName === 'br' || tagName === 'hr' || EMPHASIS_ELEMENTS.has(tagName)) return NO_ATTRIBUTES
+  if (
+    tagName === 'p' ||
+    tagName === 'ul' ||
+    tagName === 'ol' ||
+    tagName === 'li' ||
+    HEADING_ELEMENTS.has(tagName) ||
+    GROUP_ELEMENTS.has(tagName)
+  ) {
+    return STYLE_ATTRIBUTES
+  }
+  return null
+}
 
 export const UNSUPPORTED_REASONS = Object.freeze([
   'message-syntax-error',
@@ -261,11 +282,11 @@ function parseHtml(html) {
 const PLACEHOLDER_ATTRIBUTES = new Set(['src'])
 const MAX_ATTRIBUTE_LENGTH = 240
 
-function attributeMap(element) {
+function attributeMap(element, allowed) {
   const attributes = new Map()
   for (const attribute of element.attrs) {
     const name = attribute.name.toLowerCase()
-    if (!ALLOWED_ATTRIBUTES.has(name) || attribute.prefix !== undefined || attribute.namespace !== undefined) {
+    if (!allowed.has(name) || attribute.prefix !== undefined || attribute.namespace !== undefined) {
       throw unsupported('unsupported-attribute', `${element.tagName}[${attribute.prefix ? `${attribute.prefix}:` : ''}${name}]`)
     }
     if (!PLACEHOLDER_ATTRIBUTES.has(name) && SENTINEL_PATTERN.test(attribute.value)) {
@@ -277,11 +298,6 @@ function attributeMap(element) {
     attributes.set(name, attribute.value)
   }
   return attributes
-}
-
-/** For elements whose AST node carries no style hints, a class would be data loss. */
-function requireNoStyles(attributes, tagName) {
-  if (attributes.has('class')) throw unsupported('unsupported-attribute', `${tagName}[class]`)
 }
 
 function styleTokens(attributes, tagName) {
@@ -395,7 +411,7 @@ function listNode(element, placeholders, ordered, styles) {
     }
     if (child.nodeName === '#comment') continue
     if (child.tagName !== 'li') throw unsupported('misplaced-list-item', child.tagName ?? child.nodeName)
-    const attributes = attributeMap(child)
+    const attributes = attributeMap(child, STYLE_ATTRIBUTES)
     items.push({
       styles: styleTokens(attributes, 'li'),
       children: convertChildren(child, placeholders),
@@ -415,15 +431,15 @@ function convertNode(node, placeholders, out) {
   }
 
   const tagName = node.tagName
-  const attributes = attributeMap(node)
+  const allowed = allowedAttributesFor(tagName)
+  if (allowed === null) throw unsupported('unsupported-element', tagName)
+  const attributes = attributeMap(node, allowed)
 
   if (tagName === 'br') {
-    requireNoStyles(attributes, tagName)
     out.push({ type: 'break' })
     return
   }
   if (tagName === 'hr') {
-    requireNoStyles(attributes, tagName)
     out.push({ type: 'rule' })
     return
   }
@@ -452,7 +468,6 @@ function convertNode(node, placeholders, out) {
     throw unsupported('misplaced-list-item', 'li outside list')
   }
   if (EMPHASIS_ELEMENTS.has(tagName)) {
-    requireNoStyles(attributes, tagName)
     out.push({
       type: 'emphasis',
       style: EMPHASIS_ELEMENTS.get(tagName),
@@ -468,6 +483,8 @@ function convertNode(node, placeholders, out) {
     })
     return
   }
+  // Unreachable while allowedAttributesFor() and this dispatch agree; kept so
+  // adding a tag to one without the other fails closed.
   throw unsupported('unsupported-element', tagName)
 }
 

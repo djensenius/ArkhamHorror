@@ -575,10 +575,20 @@ def validate_deployment_wiring(manifest: dict) -> None:
         'add_header Vary "Accept-Encoding" always;' in block,
         "the catalog location does not vary on Accept-Encoding when serving brotli",
     )
-    require(
-        "auth" not in block and "proxy_pass" not in block and "try_files" not in block,
-        "the catalog location is not plain, unauthenticated static delivery",
-    )
+    for directive in (
+        "auth_basic",
+        "auth_request",
+        "auth_jwt",
+        "auth_delay",
+        "satisfy",
+        "proxy_pass",
+        "try_files",
+        "return",
+    ):
+        require(
+            re.search(rf"^\s*{directive}\b", block, re.MULTILINE) is None,
+            f"the catalog location must not use `{directive}`; it is plain, unauthenticated static delivery",
+        )
     require(
         nginx.count(f"location ^~ {base}") == 1 and f"location ~* ^{base}" not in nginx,
         "expected exactly one locale-catalog nginx location",
