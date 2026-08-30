@@ -240,11 +240,15 @@ required key and malformed JSON must each fail generation, and changing the
 lockfile or the published content must change the revision.
 
 `scripts/validate-catalog-serving.py` boots real nginx over `prod.nginxconf`
-and over the config the offline packager generates, and asserts the full status
-matrix (200/206/304/404/405/416), JSON MIME, `nosniff`, `Vary`, byte-exact
-payloads against the manifest digests, that a missing catalog path is never
-answered with the SPA shell, and that a rolling deploy works in both directions
-(new manifest against old static root and vice versa).
+and over the config the offline packager generates, and asserts the status
+matrix these paths can actually produce — 200, 304, 404 and 405, plus a `Range`
+request returning the whole file as a 200 (ranges are disabled, so 206 and 416
+never occur) — along with JSON MIME, `nosniff`, `Vary`, gzip and brotli
+negotiation (each response carrying exactly one of each header, and the brotli
+body inflating to the identity payload), byte-exact payloads against the
+manifest digests, that a missing catalog path is never answered with the SPA
+shell, and that a rolling deploy works in both directions (new manifest against
+old static root and vice versa).
 
 `frontend/scripts/locale-catalog/verify-dist.mjs` proves the built `dist/`
 really contains the catalog with matching digests and precompressed siblings;
