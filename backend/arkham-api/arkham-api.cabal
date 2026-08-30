@@ -8383,6 +8383,7 @@ test-suite spec
       Arkham.Api.Events.EventListSpec
       Arkham.Api.Events.EventStreamAuthSpec
       Arkham.Api.GameDecksSpec
+      Arkham.Api.GameStreamAuthSpec
       Arkham.Api.GameStreamSpec
       Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
@@ -8787,6 +8788,7 @@ test-suite spec
     , base
     , bytestring
     , containers
+    , directory
     , exceptions
     , hspec
     , hspec-expectations-lifted

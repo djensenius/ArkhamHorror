@@ -192,6 +192,7 @@ tests:
       - aeson
       - aeson-diff
       - bytestring
+      - directory
       - exceptions
       - hspec
       - hspec-expectations-lifted
