@@ -34,7 +34,7 @@
             "questionVersion": {
               "type": "integer",
               "minimum": 0,
-              "description": "Optional optimistic-concurrency guard for the active question."
+              "description": "Optional for legacy backend compatibility. Native clients MUST send the authoritative PublicGame.scenarioSteps value from the snapshot that supplied the active question."
             }
           }
         }

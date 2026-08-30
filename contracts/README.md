@@ -258,6 +258,45 @@ this contract does not change runtime behavior):
   the wire `eliminated` field is ignored entirely in favor of a
   client-computed `defeated || resigned`.
 
+### Native basic-choice questions
+
+`schemas/basic-choice-question.schema.json` is the deliberately small
+native-renderable slice for `ChooseOne`, `PlayerWindowChooseOne`, and
+`WindowChooseOne`. It is **not** referenced from `PublicGame.question`:
+that UUID-keyed map remains broad so every other engine question/message
+variant remains valid. A client may apply this standalone schema to its own
+player's map value; any unknown question or choice-label tag is unsupported,
+not a legal action to normalize or guess.
+
+The production-generated
+`question-player-window-choose-one.json` golden is the active CORE fixture
+prompt, in its authoritative array order: resource `ComponentLabel`, deck
+`ComponentLabel`, `EndTurnButton`, then `AbilityLabel`. The two compact sibling
+goldens reuse its real `EndTurnButton` value under the production `ChooseOne`
+and `WindowChooseOne` encoders. Backend tests bind every golden independently
+to both `Aeson.toJSON` and the actual `Aeson.encode`/`toEncoding` wire path.
+
+Native rendering uses the label/component tags, investigator/card identity,
+token type, and ability display identity. Nested messages, criteria, windows,
+sources, costs, and additive ability fields are losslessly preserved opaque
+engine data: clients must not evaluate them, execute them, or derive new legal
+actions from them. Selecting a choice sends its zero-based array index.
+
+For this slice, native clients send:
+
+```json
+{"tag":"Answer","contents":{"choice":2,"playerId":"00000000-0000-0000-0000-000000000001","questionVersion":3}}
+```
+
+`playerId` is the canonical UUID map key and `questionVersion` **must** equal
+the authoritative `PublicGame.scenarioSteps` from the snapshot that supplied
+the question. The backend decoder keeps both fields optional only for legacy
+web-client compatibility; native clients must send them. The paired
+`answer-question.json` golden decodes through the real `Entity.Answer`
+`FromJSON` instance, and backend tests prove choice `2` selects the third
+(`EndTurnButton`) CORE option and version `3` equals that snapshot's
+`scenarioSteps`.
+
 ## Game creation and multiplayer lobbies
 
 - Creating a game requires authentication and at least one non-null

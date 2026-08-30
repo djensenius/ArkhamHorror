@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
+  "title": "BasicChoiceQuestion",
+  "description": "The native-renderable ChooseOne question slice. The choices array index is the zero-based Answer.choice; nested engine values are opaque data and are never client-side rules.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "tag",
+    "choices"
+  ],
+  "properties": {
+    "tag": {
+      "enum": [
+        "ChooseOne",
+        "PlayerWindowChooseOne",
+        "WindowChooseOne"
+      ]
+    },
+    "choices": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/choiceLabel"
+      }
+    }
+  },
+  "$defs": {
+    "opaqueEngineValue": {
+      "description": "Losslessly preserved engine-owned JSON. Native clients must not execute, interpret, or synthesize legal actions from this value."
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/opaqueEngineValue"
+      },
+      "description": "Engine messages are preserved for forward-compatible decoding only; selecting a choice sends its array index, never these messages."
+    },
+    "choiceLabel": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "enum": [
+            "ComponentLabel",
+            "EndTurnButton",
+            "AbilityLabel"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "tag": {
+                "const": "ComponentLabel"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "component",
+              "messages"
+            ],
+            "properties": {
+              "component": {
+                "$ref": "#/$defs/component"
+              },
+              "messages": {
+                "$ref": "#/$defs/messages"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tag": {
+                "const": "EndTurnButton"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "investigatorId",
+              "messages"
+            ],
+            "properties": {
+              "investigatorId": {
+                "$ref": "#/$defs/investigatorId"
+              },
+              "messages": {
+                "$ref": "#/$defs/messages"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tag": {
+                "const": "AbilityLabel"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "investigatorId",
+              "ability",
+              "windows",
+              "before",
+              "messages"
+            ],
+            "properties": {
+              "investigatorId": {
+                "$ref": "#/$defs/investigatorId"
+              },
+              "ability": {
+                "$ref": "#/$defs/abilityDisplay"
+              },
+              "windows": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/opaqueEngineValue"
+                }
+              },
+              "before": {
+                "$ref": "#/$defs/messages"
+              },
+              "messages": {
+                "$ref": "#/$defs/messages"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "enum": [
+            "InvestigatorComponent",
+            "InvestigatorDeckComponent"
+          ]
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        },
+        "tokenType": {
+          "const": "ResourceToken"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "tag": {
+                "const": "InvestigatorComponent"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "tokenType"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "tag": {
+                "const": "InvestigatorDeckComponent"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "tokenType"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "abilityDisplay": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "source",
+        "cardCode",
+        "index",
+        "type"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/opaqueEngineValue"
+        },
+        "cardCode": {
+          "$ref": "#/$defs/cardCode",
+          "description": "Card code used with source/type/index as display metadata; it does not authorize or execute an ability."
+        },
+        "index": {
+          "type": "integer"
+        },
+        "type": {
+          "$ref": "#/$defs/abilityTypeDisplay"
+        }
+      },
+      "description": "Stable display identity plus losslessly preserved engine fields. Criteria, costs, windows, sources, and other additions remain server-owned data."
+    },
+    "abilityTypeDisplay": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag",
+        "actions"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ActionAbility"
+        },
+        "actions": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "SingleAction"
+            },
+            "contents": {
+              "const": "Investigate"
+            }
+          },
+          "description": "The CORE fixture's stable action label/icon semantic. Additional action data remains opaque."
+        }
+      },
+      "description": "Only the CORE ActionAbility display semantic is supported. Cost and skill fields remain opaque engine data."
+    },
+    "investigatorId": {
+      "$ref": "#/$defs/cardCode"
+    },
+    "cardCode": {
+      "type": "string",
+      "pattern": "^c[0-9a-z:._-]+$"
+    }
+  }
+}
