@@ -53,6 +53,7 @@ import Database.Persist.Sql (Entity (..), toSqlKey)
 import Entity.Arkham.Game qualified as GameEntity
 import Entity.Arkham.Player (ArkhamPlayer (..), ArkhamPlayerId)
 import Entity.Arkham.Player qualified as PlayerEntity
+import System.Directory (doesFileExist)
 import Test.Hspec
 
 -- | Everything 'Api.Handler.Arkham.Games.Shared.gameStream' does once a
@@ -81,6 +82,29 @@ attemptUpgrade effects = do
   record effects "memberCountIncremented"
   record effects "snapshotDelivered"
   record effects "answerSubmitted"
+
+-- | Read the real source of "Api.Handler.Arkham.Games", for the static
+-- structure assertions below. @stack test@\/@cabal test@ always run with
+-- the package directory (@backend\/arkham-api@) as the working directory,
+-- but tries a couple of other plausible working directories too (repo
+-- root, and @backend\/@) so this test doesn't spuriously fail if it is
+-- ever invoked a different way, instead of silently trusting a single
+-- hard-coded relative path.
+readGamesHsSource :: IO Text
+readGamesHsSource = go candidatePaths
+ where
+  candidatePaths =
+    [ "library/Api/Handler/Arkham/Games.hs"
+    , "backend/arkham-api/library/Api/Handler/Arkham/Games.hs"
+    , "arkham-api/library/Api/Handler/Arkham/Games.hs"
+    ]
+  go [] =
+    error
+      $ "GameStreamAuthSpec: could not find Games.hs under any of the candidate paths (tried relative to cwd): "
+      <> show candidatePaths
+  go (path : rest) = do
+    exists <- doesFileExist path
+    if exists then T.readFile path else go rest
 
 -- | Fixture 'ArkhamPlayer' row for a real participant of a game, built the
 -- same way existing specs (e.g. "Arkham.Api.Events.EventCreationSpec")
@@ -148,7 +172,7 @@ spec = describe "gameParticipantGate (participant game-stream authorization gate
 
   describe "static structure of Api.Handler.Arkham.Games" do
     it "getApiV1ArkhamGameR delegates its entire body to withGameParticipant, which is the only place webSocketsOptions/gameStream are used" do
-      src <- T.readFile "library/Api/Handler/Arkham/Games.hs"
+      src <- readGamesHsSource
       -- Every top-level declaration in this file starts at column 0 (a
       -- signature/equation line is never indented), so the first line
       -- starting with a given top-level name marks that declaration's
