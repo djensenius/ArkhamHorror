@@ -319,6 +319,79 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         StartFailed _ -> pure ()
         _ -> expectationFailure "expected the lock to read StartFailed after a failed spawn"
 
+    {- | Root-cause regression for the MEDIUM finding that a failed
+    @spawn@ whose compensating @release@ ITSELF also fails must never be
+    conflated with the (safe-to-retry-immediately) 'StartFailed' case
+    above: the acquired resource's own teardown may not have completed,
+    so a later caller must not be allowed to silently proceed as if
+    nothing were live. Mutation check: reverting 'StartCleanupFailed'
+    (collapsing it back into 'StartFailed' whenever @release@ itself
+    throws) makes this fail, because 'stopManagedGeneration' would then
+    report 'NothingWasRunning' and reset the lock to 'NotStarted' below,
+    instead of 'StopFailed' leaving it exactly as it was.
+    -}
+    it "a failed spawn whose compensating release ALSO fails publishes StartCleanupFailed, not StartFailed, and refuses to retry" do
+      lock <- newMVar NotStarted
+      let spawnErr = userError "spawn failed"
+          cleanupErr = userError "release failed too"
+          acquire = pure ("acquired-resource" :: String)
+          release _ = Exception.throwIO cleanupErr
+          body _ = pure ()
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
+          cancelChild _ = expectationFailure "cancel should never run: no previous generation existed"
+          fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
+          fakeSpawn _ = Exception.throwIO spawnErr
+      result <-
+        Exception.try @SomeException
+          (restartManagedGenerationUsing lock fakeSpawn cancelChild acquire release body finalize)
+      case result of
+        Left err -> show err `shouldBe` show cleanupErr
+        Right () -> expectationFailure "expected the release failure to propagate"
+      afterFailure <- readMVar lock
+      case afterFailure of
+        StartCleanupFailed observedSpawnErr observedCleanupErr -> do
+          show observedSpawnErr `shouldBe` show spawnErr
+          show observedCleanupErr `shouldBe` show cleanupErr
+        _ -> expectationFailure "expected the lock to read StartCleanupFailed, not StartFailed"
+      -- Unlike 'StartFailed', a subsequent attempt must refuse to
+      -- proceed on top of the possibly-still-held resource: it re-raises
+      -- the exact same cleanup failure rather than trying (and
+      -- potentially spawning a second generation over unreleased
+      -- resources).
+      secondAcquireCalled <- newIORef False
+      let secondAcquire = writeIORef secondAcquireCalled True >> pure ("should never be reached" :: String)
+      retryResult <-
+        Exception.try @SomeException
+          (restartManagedGenerationUsing lock fakeSpawn cancelChild secondAcquire release body finalize)
+      case retryResult of
+        Left err -> show err `shouldBe` show cleanupErr
+        Right () -> expectationFailure "expected the retry to re-raise the same unresolved cleanup failure"
+      readIORef secondAcquireCalled `shouldReturn` False
+      stillUnresolved <- readMVar lock
+      case stillUnresolved of
+        StartCleanupFailed _ _ -> pure ()
+        _ -> expectationFailure "expected the lock to still read StartCleanupFailed, never reset by a mere retry attempt"
+
+    {- | 'stopManagedGeneration''s own side of the same fix: unlike
+    'StartFailed' (where nothing is live, so 'stopManagedGeneration'
+    safely resets to 'NotStarted' and reports 'NothingWasRunning'),
+    'StartCleanupFailed' must report 'StopFailed' and leave the lock
+    exactly as it was -- there is nothing confirmed released for
+    @shutdown@ to truthfully claim as \"stopped\" or \"nothing running\".
+    -}
+    it "stopManagedGeneration reports StopFailed (never NothingWasRunning) and never resets a StartCleanupFailed lock" do
+      let spawnErr = userError "spawn failed"
+          cleanupErr = userError "release failed too"
+      lock <- newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr))
+      outcome <- stopManagedGeneration lock (\_ -> expectationFailure "cancel should never run: nothing is live")
+      case outcome of
+        StopFailed err -> show err `shouldBe` show cleanupErr
+        _ -> expectationFailure ("expected StopFailed, got " <> show outcome)
+      afterStop <- readMVar lock
+      case afterStop of
+        StartCleanupFailed _ _ -> pure ()
+        _ -> expectationFailure "expected the lock to still read StartCleanupFailed, never reset to NotStarted"
+
     {- | Deterministic (non-racy), matching the equivalent
     'forkTransferringOwnershipUsing' test: the fake @spawn@ blocks forever
     until the tester's own cancellation interrupts it, so this is the

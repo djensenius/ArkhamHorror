@@ -39,6 +39,7 @@ module DevelMain where
 import Api.Arkham.Lifecycle (
   RestartState (..),
   StopOutcome (..),
+  getExistingStore,
   getOrCreateStore,
   restartManagedGeneration,
   shutdownThenDeliver,
@@ -81,12 +82,11 @@ update = do
 -- | kill the server
 shutdown :: IO ()
 shutdown = do
-  mlockStore <- lookupStore restartLockStoreNum
-  case mlockStore of
+  mlock <- getExistingStore restartLockStore
+  case mlock of
     -- no server running
     Nothing -> putStrLn "no Yesod app running"
-    Just lockStore -> do
-      lock <- readStore lockStore
+    Just lock -> do
       outcome <- stopManagedGeneration lock killThread
       case outcome of
         NothingWasRunning -> putStrLn "no Yesod app running"
@@ -130,9 +130,29 @@ otherwise provide entirely (including for genuinely concurrent callers,
 who would each fabricate and publish their own independent lock).
 'getOrCreateStore' retrieves the existing lock if one is already
 published, and is itself safe to call concurrently (see its own
-Haddock's 'Api.Arkham.Lifecycle.foreignStoreInitLock' -- a process-global
-lock defined in that /compiled library/ module, which GHCi's own
-@:r@\/@:l@ never reloads, unlike this module).
+Haddock, and 'DevelStoreLock.getOrCreateStore''s: the actual
+process-global serializer this delegates to lives in the @devel-store-lock@
+package -- a genuinely separate Cabal component from @arkham-api@, not
+merely another module within it, so it is pre-compiled object code and
+is /never/ subject to GHCi's own @:r@\/@:l@ re-interpretation of this
+module or 'Api.Arkham.Lifecycle' themselves. An earlier version of this
+fix instead defined the serializing lock as a plain top-level CAF inside
+'Api.Arkham.Lifecycle' -- a normal, reloadable home-package library
+module -- so a live GHCi session that had reloaded that module (e.g.
+because /its/ own source changed, or transitively via some other edit)
+could end up with two distinct incarnations of that lock, letting an
+old and a new incarnation of @update@\/@shutdown@ each serialize only
+against their own copy while racing the other. Moving the lock itself
+into @devel-store-lock@ removes that possibility structurally, rather
+than relying on the two calls happening to run before any such
+reload.
+
+@shutdown@ now retrieves this exact same cell via
+'Api.Arkham.Lifecycle.getExistingStore' (also delegating to
+@devel-store-lock@) instead of its own prior direct, unsynchronized
+'Foreign.Store.lookupStore'\/'Foreign.Store.readStore' calls, so
+@update@ and @shutdown@ are guaranteed to observe and serialize through
+the exact same lock, never two independently-raced ones.
 
 @103@ is a fresh slot, never used by any prior version of this module
 (which used @1@\/@0@ in the original Yesod scaffold, then @100@\/@101@

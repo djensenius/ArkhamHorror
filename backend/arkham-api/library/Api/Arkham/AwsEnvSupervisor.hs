@@ -168,7 +168,12 @@ module Api.Arkham.AwsEnvSupervisor (
   acquireAwsEnv,
   acquireRegionBeforeAuth,
   awaitAwsEnvInvalidation,
-  managedFetchAuthInBackground,
+  -- Note: 'managedFetchAuthInBackground' is deliberately NOT exported
+  -- (see its own Haddock, and 'ManagedEnvAcquisition''s): it is the sole
+  -- primitive capable of producing a separable @(Auth, IO ())@ pair, and
+  -- 'managedEnvAcquisition' is the only sanctioned way to use it,
+  -- installing the exact resulting 'Auth' into the exact 'Env' template
+  -- supplied, with the exact matching release, in one indivisible step.
   ManagedEnvAcquisition,
   managedEnvAcquisition,
   staticEnvAcquisition,
@@ -605,34 +610,58 @@ managedFetchAuthInBackground getAuthEnv = do
           -- thread is a documented no-op) discards only that specific,
           -- recognized, sibling-feedback exception type and keeps
           -- waiting until @refreshThread@'s own completion cell is
-          -- genuinely observed; any *other* exception arriving here
-          -- (e.g. a genuine external cancellation of this release
-          -- itself) is never swallowed and propagates immediately,
-          -- honestly reporting that release did not complete.
+          -- genuinely observed.
+          --
+          -- Any *other* exception arriving here -- including a genuine
+          -- external cancellation of this release itself (e.g.
+          -- 'Control.Exception.ThreadKilled' delivered to /this/
+          -- releasing thread by an outer timeout\/shutdown) -- is never
+          -- swallowed, but it is also never allowed to make this
+          -- function return\/throw /before/ @refreshThread@'s own
+          -- termination is genuinely observed: an earlier version threw
+          -- it immediately here, which let 'releaseAwsEnvAcquisition'
+          -- (see its own Haddock) proceed to release this generation's
+          -- *dependencies* (e.g. an outer @sts:AssumeRole@ chain's own
+          -- source credentials) while @refreshThread@ itself might still
+          -- be alive and still reading them. Instead, any such exception
+          -- is /preserved/ (only the first one seen, matching ordinary
+          -- \"outermost cancellation wins\" semantics) and this keeps
+          -- retrying 'cancelManagedThread' -- exactly as it already does
+          -- for a recognized 'AuthError' -- until that exact call
+          -- genuinely returns without throwing, i.e. until
+          -- @refreshThread@'s own completion cell is truly, successfully
+          -- observed. Only then is the preserved exception finally
+          -- rethrown (if there was one); this function therefore never
+          -- returns, and never throws anything /other/ than that
+          -- preserved exception, without @refreshThread@ having already,
+          -- provably terminated first.
           --
           -- The retry itself runs under one continuous
           -- 'Control.Exception.mask', restoring only around
           -- 'cancelManagedThread' -- never as an ordinary unmasked
-          -- recursive retry. Without this, a *fresh* flooded 'AuthError'
+          -- recursive retry. Without this, a *fresh* flooded exception
           -- can be delivered in the narrow, unmasked gap between an
-          -- earlier one being caught\/recognized and the retry actually
-          -- re-entering 'cancelManagedThread''s own protection (e.g.
-          -- while merely re-running 'atomicWriteIORef' or during the
-          -- handler-to-retry tail call itself), escaping uncaught here
-          -- and misreported by 'releaseAwsEnvAcquisition' as a genuine
-          -- release failure even though @refreshThread@ was never
-          -- actually left unreleased. Masking closes that gap: any such
-          -- exception arriving outside 'restore' is deferred until the
-          -- next 'restore'd 'cancelManagedThread' call, where it is
-          -- classified exactly as before.
+          -- earlier one being caught and the retry actually re-entering
+          -- 'cancelManagedThread''s own protection (e.g. while merely
+          -- re-running 'atomicWriteIORef' or during the handler-to-retry
+          -- tail call itself), escaping uncaught here and misreported by
+          -- 'releaseAwsEnvAcquisition' as a genuine release failure even
+          -- though @refreshThread@ was never actually left unreleased.
+          -- Masking closes that gap: any such exception arriving outside
+          -- 'restore' is deferred until the next 'restore'd
+          -- 'cancelManagedThread' call, where it is classified exactly
+          -- as before.
           release = Exception.mask $ \restore ->
-            let awaitReleased = do
+            let awaitReleased :: Maybe Exception.SomeException -> IO ()
+                awaitReleased pending = do
                   atomicWriteIORef stopRequestedRef True
-                  restore (cancelManagedThread refreshThread) `Exception.catch` \e ->
-                    case Exception.fromException e of
-                      Just (_ :: AuthError) -> awaitReleased
-                      Nothing -> Exception.throwIO (e :: Exception.SomeException)
-             in awaitReleased
+                  outcome <- Exception.try @Exception.SomeException (restore (cancelManagedThread refreshThread))
+                  case outcome of
+                    Right () -> for_ pending Exception.throwIO
+                    Left e -> case Exception.fromException e of
+                      Just (_ :: AuthError) -> awaitReleased pending
+                      Nothing -> awaitReleased (pending <|> Just e)
+             in awaitReleased Nothing
       pure (Ref (managedThreadId refreshThread) credentialsRef, release)
  where
   refreshLoop
@@ -697,34 +726,53 @@ data ManagedEnvAcquisition = ManagedEnvAcquisition
 
 {- | The only way to obtain a 'ManagedEnvAcquisition' backed by a live,
 expiring managed refresh worker: this atomically starts that /exact/
-worker (via 'managedFetchAuthInBackground'), builds the resulting 'Env'
-from its freshly resolved 'Auth' via @withAuth@, and pairs that /exact/
-'Env' with that /same/ worker's own genuinely-awaiting release -- all in
-one indivisible expression. Every current provider ('safeNamedInstanceProfile',
-'safeContainer', 'safeAssumedRole', 'safeWebIdentity', 'safeSSO') uses
-@withAuth@ only to set @auth@ (and, for the instance-profile provider,
-also @region@) on an otherwise-already-complete template 'Env'; nothing
-here lets a caller supply an 'Auth'\/'Env' obtained from one call and a
-release obtained from another, unlike a former design's separately
-exported @managedRelease@\/@polledRelease@\/@pairManagedAcquisition@ (see
-'ManagedEnvAcquisition''s own Haddock for the exact spoofing this
-replaces). Test doubles standing in for a real dynamic provider (see
-'Arkham.Api.AwsEnvSupervisorSpec.fakeRefEnv') go through this exact same
-factory -- there is no separate, weaker \"test-only\" pairing primitive
-either.
+worker (via 'managedFetchAuthInBackground'), and installs its freshly
+resolved 'Auth' into @envTemplate@ itself -- there is no caller-supplied
+callback anywhere in between. Every current provider
+('safeNamedInstanceProfile', 'safeContainer', 'safeAssumedRole',
+'safeWebIdentity', 'safeSSO') passes an otherwise-already-complete
+template 'Env' (every field except @.auth@ already resolved; the
+instance-profile provider resolves its own @region@ into that template
+/before/ calling this, since @region@ never depends on @.auth@ at all --
+see 'safeNamedInstanceProfile''s own call site), and this function's own
+single, hardcoded @envTemplate {auth = Identity auth}@ is the only place
+@.auth@ is ever set on the result.
+
+An earlier version instead took a caller-supplied @withAuth :: Auth ->
+Env@ callback and applied it to the worker's genuine 'Auth'. That
+type-checked, but nothing prevented @withAuth@ from simply /ignoring/ its
+argument and returning an unrelated, already-live 'Env' instead (e.g.
+one referencing a 'Ref' obtained from a completely different,
+independently created worker) -- since 'managedFetchAuthInBackground' is
+itself exported for this module's own regression tests (see its own
+Haddock), a caller could obtain a second, genuine @(Auth, IO ())@ pair
+from a second worker and have @withAuth@ return an 'Env' built from
+/that/ pair's 'Auth' while this function still paired the result with
+the /first/ worker's own release -- exactly the same class of
+'Env'\/release mismatch 'ManagedEnvAcquisition''s own Haddock already
+describes for the former @pairManagedAcquisition@, just reintroduced one
+layer up. Taking an 'Env' template directly, with no callback at all,
+makes that structurally unrepresentable: there is no argument here a
+caller could ever supply that determines what @.auth@ becomes other than
+this function's own freshly created worker.
 -}
 managedEnvAcquisition
   :: (MonadIO m)
-  => (Auth -> Env)
-  -- ^ withAuth: build the final 'Env' from the worker's freshly resolved
-  -- 'Auth'.
+  => Env' withAuth
+  -- ^ envTemplate: every field except @.auth@ already fully resolved;
+  -- this function's own record update is the only place @.auth@ is ever
+  -- set, always to the exact freshly created worker's own 'Auth'.
   -> IO AuthEnv
   -- ^ getAuthEnv: how the worker should re-fetch credentials on each
   -- refresh cycle (see 'managedFetchAuthInBackground').
   -> m ManagedEnvAcquisition
-managedEnvAcquisition withAuth getAuthEnv = liftIO $ do
+managedEnvAcquisition envTemplate getAuthEnv = liftIO $ do
   (auth, release) <- managedFetchAuthInBackground getAuthEnv
-  pure ManagedEnvAcquisition {managedEnvAcquisitionEnv = withAuth auth, managedEnvAcquisitionRelease = release}
+  pure
+    ManagedEnvAcquisition
+      { managedEnvAcquisitionEnv = envTemplate {auth = Identity auth}
+      , managedEnvAcquisitionRelease = release
+      }
 
 {- | The only way to obtain a release-free 'ManagedEnvAcquisition':
 checks, at construction time, that the given 'Env''s current @.auth@ is
@@ -1058,7 +1106,7 @@ safeNamedInstanceProfile ::
 safeNamedInstanceProfile name env@Env {manager} =
   liftIO $ do
     region <- getRegionFromIdentity
-    managedEnvAcquisition (\auth -> env {auth = Identity auth, region}) getCredentials
+    managedEnvAcquisition (env {region}) getCredentials
  where
   getCredentials =
     Exception.try (metadata manager (IAM . SecurityCredentials $ Just name))
@@ -1126,7 +1174,7 @@ safeContainer ::
 safeContainer url env =
   liftIO $ do
     req <- Client.parseUrlThrow $ Text.unpack url
-    managedEnvAcquisition (\auth -> env {auth = Identity auth}) (renew req)
+    managedEnvAcquisition env (renew req)
  where
   renew :: Client.Request -> IO AuthEnv
   renew req = do
@@ -1209,7 +1257,7 @@ safeAssumedRole ::
   Env ->
   IO ManagedEnvAcquisition
 safeAssumedRole roleArn roleSessionName env =
-  managedEnvAcquisition (\auth -> env {auth = Identity auth}) getCredentials
+  managedEnvAcquisition env getCredentials
  where
   getCredentials = do
     let assumeRole = STS.newAssumeRole roleArn roleSessionName
@@ -1241,7 +1289,7 @@ safeWebIdentity ::
   IO ManagedEnvAcquisition
 safeWebIdentity tokenFile roleArn mSessionName env = do
   sessionName <- maybe (UUID.toText <$> UUID.nextRandom) pure mSessionName
-  managedEnvAcquisition (\auth -> env {auth = Identity auth}) (getCredentials sessionName)
+  managedEnvAcquisition env (getCredentials sessionName)
  where
   getCredentials sessionName = do
     token <- TextIO.readFile tokenFile
@@ -1304,7 +1352,7 @@ safeSSO ::
   Env' withAuth ->
   IO ManagedEnvAcquisition
 safeSSO cachedTokenFile ssoRegion accountId roleName env =
-  managedEnvAcquisition (\auth -> env {auth = Identity auth}) getCredentials
+  managedEnvAcquisition env getCredentials
  where
   getCredentials = do
     cachedToken <- readCachedAccessToken cachedTokenFile
@@ -1647,11 +1695,29 @@ safeFileEnv resolvers hiddenReleasesRef finalReleaseRef env = do
   configIni <- tolerateMissingOrInvalid (safeLoadIniFile configPath)
   let config = mergeConfigs credentialsIni configIni
   acquisition <- safeEvalConfigProfile resolvers config [] profileName env
-  regionOverride <- lookupRegion
-  let resolvedEnv = maybe id (\r e -> e {region = r}) regionOverride (awsEnvAcquisitionEnv acquisition)
-  writeIORef hiddenReleasesRef (awsEnvAcquisitionHiddenReleases acquisition)
-  writeIORef finalReleaseRef (Just (awsEnvAcquisitionRelease acquisition))
-  pure resolvedEnv
+  -- 'acquisition' is now a fully live, real resource (it may already
+  -- hold a genuine, running background-refresh worker). Everything from
+  -- here on -- resolving the region override, then recording
+  -- 'acquisition''s own release into the two ledgers 'acquireAwsEnv'
+  -- reads back once this function returns -- is one continuous,
+  -- exception-safe transfer: if anything in this window throws, or an
+  -- asynchronous exception lands in it, 'acquisition' is released here,
+  -- symmetrically, before ever propagating, rather than silently
+  -- becoming unreachable with its worker still live and its release
+  -- never recorded anywhere 'acquireAwsEnv' could find it. An earlier
+  -- version performed 'lookupRegion' (itself fallible\/interruptible)
+  -- and both ledger writes as three independent, unguarded statements
+  -- after 'acquisition' was already obtained -- exactly the gap this
+  -- closes.
+  Exception.mask $ \restore ->
+    ( do
+        regionOverride <- restore lookupRegion
+        let resolvedEnv = maybe id (\r e -> e {region = r}) regionOverride (awsEnvAcquisitionEnv acquisition)
+        writeIORef hiddenReleasesRef (awsEnvAcquisitionHiddenReleases acquisition)
+        writeIORef finalReleaseRef (Just (awsEnvAcquisitionRelease acquisition))
+        pure resolvedEnv
+    )
+      `Exception.onException` releaseAwsEnvAcquisition acquisition
  where
   tolerateMissingOrInvalid = Exception.handle (\(_ :: AuthError) -> pure HashMap.empty)
 

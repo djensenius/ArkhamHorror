@@ -82,6 +82,7 @@ library:
     - dependent-map
     - dependent-sum
     - dependent-sum-template
+    - devel-store-lock
     - directory
     - email-validate
     - errors
@@ -203,8 +204,10 @@ tests:
       - amazonka-core
       - bytestring
       - containers
+      - devel-store-lock
       - directory
       - exceptions
+      - foreign-store
       - hspec
       - hspec-expectations-lifted
       - http-client

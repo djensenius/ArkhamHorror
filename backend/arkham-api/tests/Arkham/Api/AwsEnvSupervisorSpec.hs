@@ -19,7 +19,6 @@ import Api.Arkham.AwsEnvSupervisor (
   classifyAuthErrorDiagnostic,
   classifyErrorDiagnostic,
   managedEnvAcquisition,
-  managedFetchAuthInBackground,
   newDemandDrivenSupervisor,
   readSupervisedEnv,
   releaseAwsEnvAcquisition,
@@ -177,7 +176,7 @@ fakeRefEnv env = do
   farFuture <- (\now -> Time (addUTCTime 3600 now)) <$> getCurrentTime
   acquisition <-
     managedEnvAcquisition
-      (\auth -> env {auth = Identity auth})
+      env
       (pure (AuthEnv "AKIAFAKE" "secret" Nothing (Just farFuture)))
   tid <- case runIdentity (fst (runManagedEnvAcquisition acquisition)).auth of
     Ref t _ -> pure t
@@ -769,6 +768,170 @@ safeFileEnvSpec = describe "safeFileEnv (config-file bridge: threading finalRele
             -- it must not throw.
             finalRelease
 
+  {- | Root-cause regression for the MEDIUM finding that the span between
+  'safeEvalConfigProfile' returning a live 'acquisition' and both
+  ledgers ('hiddenReleasesRef', 'finalReleaseRef') actually recording its
+  release was three independent, unguarded statements (resolving a
+  region override via the fallible\/interruptible 'lookupRegion', then
+  two separate 'writeIORef' calls): an exception or asynchronous
+  cancellation landing anywhere in that window left 'acquisition' -- a
+  live, already-running background-refresh worker -- referenced by
+  nothing 'acquireAwsEnv' could ever find, permanently orphaning it.
+
+  This repeatedly delivers a genuine asynchronous exception to the
+  calling thread (standing in for any outer cancellation\/timeout, e.g.
+  Warp\/Foundation shutdown racing 'Application.makeFoundation''s own
+  acquisition), timed to land somewhere in 'safeFileEnv''s own
+  post-acquisition window, via the exact same real, on-disk
+  @source_profile@\/@sts:AssumeRole@ config-file fixture the test above
+  uses (so the resolved profile really does produce a genuine, live
+  worker via 'fakeRefEnv', not a fake stand-in for this specific
+  invariant). Whether or not any particular run's flood actually lands
+  in that narrow window, this proves the same two invariants every time:
+  (1) if 'safeFileEnv' is interrupted, the worker it had already created
+  is genuinely released (its own thread reaches a terminal status), and
+  neither ledger is left half-populated; (2) if it completes normally
+  instead, both ledgers are populated exactly as the passing test above
+  already proves. Never both \"worker still live\" and \"nothing
+  references it\" at once.
+
+  Mutation check: reverting the 'Control.Exception.mask'\/@onException@
+  wrapper (letting the three post-acquisition statements run unguarded
+  again) makes this fail intermittently, since a flooded exception can
+  then land after 'acquisition' is obtained but before its release is
+  ever recorded anywhere, leaving the worker's own thread alive
+  (non-terminal) with 'safeFileEnv' having already propagated its
+  exception.
+  -}
+  it "never orphans the resolved profile's own live worker: any exception between acquisition and ledger-write releases it symmetrically" do
+    envNoAuth <- newEnvNoAuth
+    let fixtureDir = "safefileenv-cancellation-fixture"
+        credentialsPath = fixtureDir <> "/credentials"
+        configPath = fixtureDir <> "/config"
+        withSavedEnvVar name action =
+          Exception.bracket
+            (lookupEnv name)
+            (\prior -> maybe (unsetEnv name) (setEnv name) prior)
+            (const action)
+    Exception.bracket_
+      ( do
+          Directory.createDirectoryIfMissing True fixtureDir
+          writeFile credentialsPath "[source]\naws_access_key_id = AKIASOURCE\naws_secret_access_key = secretsource\n"
+          writeFile configPath "[profile target]\nrole_arn = arn:aws:iam::123456789012:role/TestRole\nsource_profile = source\n"
+      )
+      (Directory.removeDirectoryRecursive fixtureDir)
+      $ withSavedEnvVar "AWS_PROFILE"
+      $ withSavedEnvVar "AWS_CONFIG_FILE"
+      $ withSavedEnvVar "AWS_SHARED_CREDENTIALS_FILE"
+      $ do
+        setEnv "AWS_PROFILE" "target"
+        setEnv "AWS_CONFIG_FILE" configPath
+        setEnv "AWS_SHARED_CREDENTIALS_FILE" credentialsPath
+        hiddenReleasesRef <- newIORef []
+        finalReleaseRef <- newIORef Nothing
+        workerTidRef <- newIORef Nothing
+        workerReadyGate <- newEmptyMVar
+        let resolvers =
+              unreachableConfigProfileResolvers
+                { resolveAssumedRole = \_ sourceEnv -> do
+                    (acquisition, tid) <- fakeRefEnv sourceEnv
+                    writeIORef workerTidRef (Just tid)
+                    putMVar workerReadyGate ()
+                    pure acquisition
+                }
+        myTid <- myThreadId
+        floodStopRef <- newIORef False
+        floodDoneGate <- newEmptyMVar
+        floodConfirmedStopped <- newIORef False
+        let floodIterations = 200 :: Int
+            flood n
+              | n >= floodIterations = pure ()
+              | otherwise = do
+                  stop <- readIORef floodStopRef
+                  unless stop $ do
+                    Exception.throwTo myTid Exception.ThreadKilled
+                    threadDelay 1_000
+                    flood (n + 1)
+        _ <-
+          forkIO $ do
+            -- Only start pressing once the resolver has genuinely been
+            -- reached and returned its (already-live) worker: pressing
+            -- any earlier almost always lands during ordinary file
+            -- loading\/parsing, long before the narrow post-acquisition
+            -- transfer window this test targets. This mirrors the
+            -- established @200@-iterations\/@1ms@-spacing convention
+            -- used by the other flooding tests in this module: dense
+            -- enough to usually land inside the target window over the
+            -- course of a run, without being so dense that draining the
+            -- flood afterwards becomes disproportionately likely to hit
+            -- the (separate, narrow) 'Exception.catch' install\/teardown
+            -- gap discussed below.
+            takeMVar workerReadyGate
+            flood 0
+            putMVar floodDoneGate ()
+        outcome <- Exception.try @Exception.AsyncException (safeFileEnv resolvers hiddenReleasesRef finalReleaseRef envNoAuth)
+        -- 'safeFileEnv' has now returned (or thrown) and 'outcome' is
+        -- already captured, so from this point on any further
+        -- 'Exception.ThreadKilled' landing on this thread can only ever
+        -- be a stray, already-in-flight flood iteration -- never new
+        -- information about the behaviour under test. Both draining the
+        -- flood AND the assertions that follow are racy against exactly
+        -- that hazard: 'Exception.catch' installs\/removes its handler
+        -- around only the *inside* of the action it wraps, so a stray
+        -- exception timed to land exactly as one is installing, or
+        -- exactly as the wrapped action completes and its handler is
+        -- being torn down, can bypass that particular 'catch' entirely
+        -- (see the AuthError-flooding release test above for the same
+        -- observation). The only genuinely deterministic answer is to
+        -- retry the entire remaining tail from the outside whenever this
+        -- exact, recognized, self-inflicted noise escapes: every step
+        -- below is a pure read or an idempotent drain, so redoing all of
+        -- it from scratch on a stray 'ThreadKilled' is always safe, and
+        -- the flood is strictly bounded, so only finitely many retries
+        -- can ever be needed.
+        let awaitFloodStopped = do
+              already <- readIORef floodConfirmedStopped
+              unless already
+                $ writeIORef floodStopRef True
+                >> takeMVar floodDoneGate
+                >> writeIORef floodConfirmedStopped True
+            runTail = do
+              awaitFloodStopped
+              mWorkerTid <- readIORef workerTidRef
+              case mWorkerTid of
+                Nothing -> expectationFailure "expected the assume-role resolver to have been reached and recorded a worker ThreadId"
+                Just workerTid -> case outcome of
+                  Left Exception.ThreadKilled -> do
+                    -- Interrupted: the worker 'safeFileEnv' had already
+                    -- created must be genuinely released, never left live
+                    -- with nothing referencing it, and neither ledger must
+                    -- be left half-populated (both empty, exactly as if
+                    -- 'acquisition' had never been obtained at all).
+                    status <- threadStatus workerTid
+                    status `shouldSatisfy` isTerminatedStatus
+                    hidden <- readIORef hiddenReleasesRef
+                    length hidden `shouldBe` 0
+                    maybeFinal <- readIORef finalReleaseRef
+                    case maybeFinal of
+                      Nothing -> pure ()
+                      Just _ -> expectationFailure "expected finalReleaseRef to remain unpopulated after a cancelled safeFileEnv"
+                  Left other -> expectationFailure ("expected only ThreadKilled to ever propagate, got " <> show other)
+                  Right _finalEnv -> do
+                    -- Completed normally despite the flood: both ledgers
+                    -- must be populated exactly as the passing test above
+                    -- proves.
+                    hidden <- readIORef hiddenReleasesRef
+                    length hidden `shouldBe` 1
+                    maybeFinal <- readIORef finalReleaseRef
+                    case maybeFinal of
+                      Just _ -> pure ()
+                      Nothing -> expectationFailure "expected finalReleaseRef to be populated after a completed safeFileEnv"
+            guardedTail =
+              runTail `Exception.catch` \e -> case e of
+                Exception.ThreadKilled -> guardedTail
+                other -> Exception.throwIO other
+        guardedTail
+
 {- | Regression\/design-verification for the application-lifetime
 supervised-'Env' architecture that replaced the earlier per-request
 @discoverFrozenEnv@\/@freezeAuth@\/@runOnDisposableWorker@ worker protocol,
@@ -1050,9 +1213,20 @@ spec = describe "AWS Env supervisor" do
     -}
     it "the target worker's release keeps retrying, never reporting success, until its own thread is genuinely confirmed terminated -- even while continuously interrupted by correctly-classified AuthError feedback landing on the very same calling thread" do
       farFuture <- (\now -> Time (addUTCTime 60 now)) <$> getCurrentTime
-      (targetAuth, releaseTarget) <-
-        managedFetchAuthInBackground (pure (AuthEnv "AKIAEXAMPLE" "secret" Nothing (Just farFuture)))
-      case targetAuth of
+      -- Goes through 'managedEnvAcquisition' -- the same single atomic
+      -- factory every real dynamic provider uses, and the only way
+      -- (since 'managedFetchAuthInBackground' itself is no longer
+      -- exported -- see the module Haddock's \"Structural release
+      -- ownership\") this test can still obtain a genuine, live worker's
+      -- own 'Ref'\/release to exercise 'releaseAwsEnvAcquisition' with
+      -- directly, below.
+      targetEnvNoAuth <- newEnvNoAuth
+      targetAcquisition <-
+        managedEnvAcquisition
+          targetEnvNoAuth
+          (pure (AuthEnv "AKIAEXAMPLE" "secret" Nothing (Just farFuture)))
+      let (targetEnv, releaseTarget) = runManagedEnvAcquisition targetAcquisition
+      case runIdentity targetEnv.auth of
         Ref targetTid _ -> do
           envNoAuth <- newEnvNoAuth
           staticEnv <- fakeStaticEnv envNoAuth
@@ -1133,7 +1307,7 @@ spec = describe "AWS Env supervisor" do
           guardedAttempt
           status <- threadStatus targetTid
           status `shouldSatisfy` isTerminatedStatus
-        _ -> expectationFailure "expected managedFetchAuthInBackground to return a Ref for a far-future expiration, not a static Auth"
+        _ -> expectationFailure "expected managedEnvAcquisition to produce a Ref for a far-future expiration, not a static Auth"
 
     {- | Mutation check: if 'releaseAwsEnvAcquisition' instead let ANY
     exception (not just 'AuthError') abort the remaining releases, this
@@ -1202,7 +1376,14 @@ spec = describe "AWS Env supervisor" do
               then pure (AuthEnv "AKIAEXAMPLE" "secret" Nothing (Just alreadyExpired))
               else Exception.throwIO (RetrievalError httpExceptionFixture)
       outcome <- Exception.try @AuthError $ do
-        (_auth, _release) <- managedFetchAuthInBackground getAuthEnv
+        envNoAuth <- newEnvNoAuth
+        -- 'managedFetchAuthInBackground' itself is no longer exported
+        -- (see the module Haddock's \"Structural release ownership\"):
+        -- this goes through 'managedEnvAcquisition', the only remaining
+        -- way to start a genuine worker, discarding the resulting
+        -- 'ManagedEnvAcquisition' entirely, exactly as this test
+        -- previously discarded @_auth@\/@_release@ directly.
+        _acquisition <- managedEnvAcquisition envNoAuth getAuthEnv
         -- No release is ever called here: the refresh loop is left free
         -- to run and observe the already-past expiry, attempt an
         -- immediate refresh, and correctly report its own genuine
@@ -1258,7 +1439,9 @@ spec = describe "AWS Env supervisor" do
                     then pure (AuthEnv "AKIAEXAMPLE" "secret" Nothing (Just alreadyExpired))
                     else Exception.throwIO (RetrievalError httpExceptionFixture)
             outcome <- Exception.try @AuthError $ do
-              (_auth, release) <- managedFetchAuthInBackground getAuthEnv
+              envNoAuth <- newEnvNoAuth
+              acquisition <- managedEnvAcquisition envNoAuth getAuthEnv
+              let (_env, release) = runManagedEnvAcquisition acquisition
               -- No gate, no delay: release is issued immediately,
               -- deliberately racing whatever the freshly-spawned refresh
               -- loop is doing at that exact moment.
@@ -1268,6 +1451,92 @@ spec = describe "AWS Env supervisor" do
               Right () -> pure ()
       replicateM_ iterations oneTrial
       readIORef strayCountRef `shouldReturn` 0
+
+    {- | Root-cause regression for the MEDIUM finding that release's
+    retry loop previously only tolerated a recognized 'AuthError' arriving
+    mid-cancellation: ANY other exception (including one genuinely
+    targeting this releasing thread, e.g. an outer shutdown timeout)
+    escaped 'release' immediately, /before/ the refresh child's own
+    completion was ever genuinely observed -- letting
+    'releaseAwsEnvAcquisition' proceed to release this generation's
+    dependencies (e.g. an outer @sts:AssumeRole@ chain's own source
+    credentials) while the child might still be alive reading them.
+
+    This repeatedly delivers a genuine, non-'AuthError' exception
+    (a plain 'IOException', standing in for any such unrelated signal)
+    directly to the releasing thread, timed to land during 'release''s
+    own retrying wait, and proves both halves of the fix: (1) it is never
+    silently swallowed or discarded -- it is eventually rethrown by
+    'release' itself as the exact same exception, not reclassified; and
+    (2) it is never rethrown /before/ the target refresh thread has
+    genuinely, verifiably terminated -- proven by checking the target's
+    own 'GHC.Conc.Sync.threadStatus' is already terminal at the moment
+    'release' finally throws, never merely \"probably done by now\".
+
+    Mutation check: reverting the 'Data.Maybe.Maybe' \"preserve and keep
+    retrying\" accumulator back to immediately rethrowing any non-'AuthError'
+    exception makes this fail, because the target's own 'threadStatus'
+    would not yet reliably be terminal at the moment of that immediate,
+    premature rethrow.
+    -}
+    it "release preserves a genuine non-AuthError exception delivered mid-cancellation, rethrowing it only once the worker's own termination is genuinely confirmed" do
+      farFuture <- (\now -> Time (addUTCTime 60 now)) <$> getCurrentTime
+      envNoAuth <- newEnvNoAuth
+      acquisition <- managedEnvAcquisition envNoAuth (pure (AuthEnv "AKIAEXAMPLE" "secret" Nothing (Just farFuture)))
+      let (env, release) = runManagedEnvAcquisition acquisition
+      case runIdentity env.auth of
+        Ref targetTid _ -> do
+          myTid <- myThreadId
+          floodStopRef <- newIORef False
+          floodDoneGate <- newEmptyMVar
+          deliveryCount <- newIORef (0 :: Int)
+          let probe = userError "genuine unrelated exception, e.g. an outer shutdown timeout"
+              floodIterations = 200 :: Int
+              flood n
+                | n >= floodIterations = pure ()
+                | otherwise = do
+                    stop <- readIORef floodStopRef
+                    unless stop $ do
+                      -- 'Control.Exception.throwTo' blocks until the
+                      -- exception has actually been delivered (not
+                      -- merely queued) -- so a successful return here is
+                      -- itself confirmation this exact probe genuinely
+                      -- reached the releasing thread at some interruptible
+                      -- point, letting the assertions below distinguish
+                      -- "the race never landed this run" (never a
+                      -- failure -- see 'deliveryCount' below) from "it
+                      -- landed but was mishandled" (always a failure).
+                      Exception.throwTo myTid probe
+                      atomicModifyIORef' deliveryCount (\n -> (n + 1, ()))
+                      threadDelay 1_000
+                      flood (n + 1)
+          _ <- forkIO (flood 0 >> putMVar floodDoneGate ())
+          outcome <- Exception.try @Exception.IOException release
+          -- The flood may still have in-flight iterations queued after
+          -- 'release' itself has already returned/thrown (it stops
+          -- retrying the instant 'cancelManagedThread' genuinely
+          -- succeeds, which can happen before the flood's own bounded
+          -- 200 iterations are exhausted) -- drain it so a later test
+          -- can never observe a stray delivery from this one.
+          writeIORef floodStopRef True
+          takeMVar floodDoneGate
+          delivered <- readIORef deliveryCount
+          -- Only assert on the exception itself when at least one probe
+          -- is confirmed to have actually landed (see 'deliveryCount'
+          -- above): with 200 iterations spaced 1ms apart racing this
+          -- generation's own genuine (typically sub-millisecond)
+          -- cancellation, this is true in practice on every run, but
+          -- this test must never itself flake merely because the race
+          -- happened not to land on some particular run.
+          when (delivered > 0) $ case outcome of
+            Left e -> show e `shouldBe` show probe
+            Right () -> expectationFailure "a probe was confirmed delivered, yet release swallowed it instead of rethrowing it"
+          -- This holds unconditionally, whether or not the race landed:
+          -- 'release' never returns\/throws until 'cancelManagedThread'
+          -- has genuinely observed the target's own completion.
+          status <- threadStatus targetTid
+          status `shouldSatisfy` isTerminatedStatus
+        _ -> expectationFailure "expected managedEnvAcquisition to produce a Ref for a far-future expiration, not a static Auth"
 
   {- | Regression for the HIGH-severity finding that
   @Amazonka.Auth.InstanceProfile.fromNamedInstanceProfile@ (pinned source,

@@ -8206,6 +8206,7 @@ library
     , dependent-map
     , dependent-sum
     , dependent-sum-template
+    , devel-store-lock
     , directory
     , email-validate
     , errors
@@ -8756,6 +8757,7 @@ test-suite spec
       Arkham.UltimatumsAndBoons.UltimatumOfTheSpiralSpec
       Arkham.UltimatumsAndBoons.UltimatumOfUltimatumsSpec
       Auth.JWTSpec
+      DevelStoreLockSpec
       Entity.AnswerSpec
       Helpers.Achievements
       Helpers.Message
@@ -8805,8 +8807,10 @@ test-suite spec
     , base
     , bytestring
     , containers
+    , devel-store-lock
     , directory
     , exceptions
+    , foreign-store
     , hspec
     , hspec-expectations-lifted
     , http-client

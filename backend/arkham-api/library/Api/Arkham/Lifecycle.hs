@@ -39,10 +39,11 @@ module Api.Arkham.Lifecycle (
   restartManagedGenerationUsing,
   stopManagedGeneration,
   getOrCreateStore,
+  getExistingStore,
 ) where
 
 import Control.Concurrent (ThreadId, forkIOWithUnmask)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, putMVar, readMVar, takeMVar, tryPutMVar, withMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Exception (
   AsyncException (ThreadKilled),
   SomeException,
@@ -56,8 +57,8 @@ import Control.Exception (
   throwTo,
   try,
  )
-import Foreign.Store (Store (..), lookupStore, readStore, writeStore)
-import System.IO.Unsafe (unsafePerformIO)
+import DevelStoreLock qualified
+import Foreign.Store (Store)
 import Prelude
 
 {- | Acquire a resource whose ownership transfers to the caller on
@@ -474,6 +475,29 @@ data RestartState handle
     -- clear, e.g. after confirming out-of-band that no resources were
     -- actually leaked.
     RetireFailed handle SomeException
+  | -- | Acquiring the replacement generation's resource itself genuinely
+    -- succeeded (unlike 'StartFailed', where nothing was ever created),
+    -- but @spawn@ then failed, /and/ the compensating @release@ run to
+    -- clean up that already-acquired resource ITSELF also failed. The
+    -- first field is the original @spawn@ failure; the second is that
+    -- @release@'s own failure.
+    --
+    -- Deliberately distinct from 'StartFailed': that constructor's own
+    -- \"safe to treat exactly like 'NotStarted'\" guarantee depends
+    -- entirely on either nothing ever having been created (@acquire@
+    -- itself failed), or whatever @acquire@ /did/ create having since
+    -- been genuinely, successfully released (@spawn@ failed, but
+    -- @release@ then succeeded) -- both cases leave nothing live for a
+    -- subsequent attempt to collide with. Here neither holds: @release@
+    -- itself is the thing that failed, so the resource it was meant to
+    -- tear down may still be fully or partially held. Every production
+    -- gate therefore refuses to treat this as \"safe to retry
+    -- immediately\" the way 'StartFailed' is -- exactly paralleling
+    -- 'RetireFailed' (which this constructor otherwise mirrors, except
+    -- there is no @handle@ here at all: @spawn@ never produced one).
+    -- Recovery is deliberately not automatic, for the same reason as
+    -- 'RetireFailed''s own Haddock.
+    StartCleanupFailed SomeException SomeException
 
 {- | The truthful outcome of 'stopManagedGeneration', replacing a plain
 'Bool' (which could only ever distinguish \"something was running\" from
@@ -515,32 +539,30 @@ its own independent lock\/state, defeating the mutual exclusion
 'restartManagedGenerationUsing'\/'stopManagedGeneration' otherwise
 provide entirely).
 
-'Foreign.Store' itself performs no synchronization whatsoever of its own
-(its own Haddock: \"Not thread-safe\") -- composing a lookup with a
-conditional write is therefore only safe here because every caller is
-first serialized through 'foreignStoreInitLock', a single process-global
-'Control.Concurrent.MVar.MVar' defined via
-'System.IO.Unsafe.unsafePerformIO' with an explicit @NOINLINE@ pragma in
-/this/ module: a compiled library module GHC only ever loads once per
-process, unlike @app\/DevelMain.hs@ itself, which GHCi's own
-\`:r\`\/\`:l\` reloads on every edit -- a lock defined there would be
-silently reinitialized (forgetting any in-progress caller) on every such
-reload, reopening exactly the race this function exists to close.
+A thin re-export of 'DevelStoreLock.getOrCreateStore' -- see that
+module's own Haddock for exactly why the composed
+'Foreign.Store.lookupStore'\/'Foreign.Store.writeStore' this performs is
+guarded by a lock living in a genuinely separate, never-reloaded Cabal
+package rather than a plain CAF defined directly in /this/ module (an
+earlier version of this function did exactly that, and was found, under
+independent review, to reopen the very race it existed to close: this
+module itself is reachable, transitively, from @app\/DevelMain.hs@'s own
+documented @stack ghci arkham-api:lib@ \/ @:l app\/DevelMain.hs@
+workflow, and is therefore just as reloadable as @DevelMain.hs@ itself
+whenever its own source changes during a live session).
 -}
 getOrCreateStore :: Store a -> IO a -> IO a
-getOrCreateStore store@(Store slot) mkDefault =
-  withMVar foreignStoreInitLock $ \() -> do
-    mExisting <- lookupStore slot
-    case mExisting of
-      Just existing -> readStore existing
-      Nothing -> do
-        fresh <- mkDefault
-        writeStore store fresh
-        pure fresh
+getOrCreateStore = DevelStoreLock.getOrCreateStore
 
-{-# NOINLINE foreignStoreInitLock #-}
-foreignStoreInitLock :: MVar ()
-foreignStoreInitLock = unsafePerformIO (newMVar ())
+-- | A thin re-export of 'DevelStoreLock.getExistingStore', for a caller
+-- (production: @DevelMain.shutdown@) that only ever wants to observe an
+-- existing published value, never create one -- sharing the exact same
+-- lock as 'getOrCreateStore' (and therefore genuinely serialized against
+-- it), unlike an earlier version of @shutdown@'s own direct,
+-- unsynchronized 'Foreign.Store.lookupStore'\/'Foreign.Store.readStore'
+-- calls.
+getExistingStore :: Store a -> IO (Maybe a)
+getExistingStore = DevelStoreLock.getExistingStore
 
 {- | Start (or restart) a managed generation, fully serialized against
 every other call (including concurrent ones) via @lock@: if a previous
@@ -628,56 +650,105 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
       -- is always safe.
       putMVar lock priorState
       throwIO cancelErr
-    Right (Left (retiredHandle, teardownErr)) -> do
-      -- The previous generation's own body already exited, and its
-      -- completion cell was genuinely read, but teardown itself failed:
-      -- never silently start a replacement on top of possibly-unreleased
-      -- resources. 'retirePrior' pairs the failing handle with its own
-      -- error directly, so there is no separate lookup (and no partial
-      -- match) needed to reconstruct which handle a 'RetireFailed'
-      -- should carry.
-      putMVar lock (RetireFailed retiredHandle teardownErr)
-      throwIO teardownErr
+    Right (Left (terminalState, terminalErr)) -> do
+      -- The previous generation's own outcome (or a still-unresolved
+      -- prior 'RetireFailed'\/'StartCleanupFailed') is already known to
+      -- be unsafe to silently proceed past: never start a replacement
+      -- on top of possibly-unreleased resources. 'retirePrior' pairs the
+      -- exact 'RestartState' @lock@ should now hold with its own
+      -- exception directly, so there is no separate lookup (and no
+      -- partial function) needed to reconstruct it -- this remains total
+      -- even for 'StartCleanupFailed', which (unlike 'RetireFailed') has
+      -- no @handle@ at all to pair.
+      putMVar lock terminalState
+      throwIO terminalErr
     Right (Right ()) -> do
-      startResult <- try @SomeException (acquireAndSpawn restore)
+      startResult <- attemptAcquireAndSpawn restore
       case startResult of
-        Right (handle, newDone) -> putMVar lock (Running handle newDone)
-        Left err -> do
-          -- The previous generation (if any) is already confirmed
-          -- cleanly retired; only starting its replacement failed, so
-          -- there is nothing live for @lock@ to describe.
+        Started handle newDone -> putMVar lock (Running handle newDone)
+        AcquireFailed err -> do
+          -- Nothing was ever created: the previous generation (if any)
+          -- is already confirmed cleanly retired, and this attempt never
+          -- got as far as acquiring anything new either, so there is
+          -- nothing live for @lock@ to describe.
           putMVar lock (StartFailed err)
           throwIO err
+        SpawnFailedCleanly spawnErr -> do
+          -- @acquire@ genuinely succeeded, but @spawn@ then failed --
+          -- and the compensating @release@ run to clean up that
+          -- already-acquired resource itself genuinely succeeded, so
+          -- (exactly as if @acquire@ had failed outright) nothing is
+          -- left live for @lock@ to describe.
+          putMVar lock (StartFailed spawnErr)
+          throwIO spawnErr
+        SpawnFailedUncleanly spawnErr cleanupErr -> do
+          -- @spawn@ failed, and the compensating @release@ run to clean
+          -- up the resource @acquire@ already created ITSELF also
+          -- failed: unlike the case above, that resource's own teardown
+          -- may not actually have completed. Never treat this as \"safe
+          -- to retry immediately\" the way 'StartFailed' is -- see
+          -- 'StartCleanupFailed''s own Haddock.
+          putMVar lock (StartCleanupFailed spawnErr cleanupErr)
+          throwIO cleanupErr
  where
   -- | Retire whatever @priorState@ describes, returning the previous
   -- generation's own teardown outcome (never discarding it -- see this
   -- function's own Haddock): 'Right' if there was nothing to retire, or
   -- retirement completed and its own completion cell held 'Right';
-  -- 'Left', paired with the exact handle a resulting 'RetireFailed'
-  -- should carry, if that completion cell held 'Left' (pairing the
-  -- handle directly with its own error here -- rather than
-  -- reconstructing it separately afterwards from @priorState@ -- makes
-  -- every case total by construction: there is no handle-less
-  -- 'RetireFailed' this function could ever be asked to produce). An
-  -- exception escaping this action (caught by the outer 'try') means
-  -- /this thread's own/ retirement attempt was itself interrupted, not
-  -- that the previous generation's teardown reported failure.
+  -- 'Left', paired with the exact 'RestartState' @lock@ should now hold
+  -- and the exact exception to re-raise, otherwise (pairing both
+  -- directly here -- rather than reconstructing them separately
+  -- afterwards from @priorState@ -- makes every case total by
+  -- construction, including 'StartCleanupFailed', which has no @handle@
+  -- for a 'RetireFailed'-shaped reconstruction to use). An exception
+  -- escaping this action (caught by the outer 'try') means /this
+  -- thread's own/ retirement attempt was itself interrupted, not that
+  -- the previous generation's teardown reported failure.
   retirePrior = \case
     NotStarted -> pure (Right ())
     StartFailed _ -> pure (Right ())
-    RetireFailed priorHandle err -> pure (Left (priorHandle, err))
+    RetireFailed priorHandle err -> pure (Left (RetireFailed priorHandle err, err))
+    StartCleanupFailed spawnErr cleanupErr -> pure (Left (StartCleanupFailed spawnErr cleanupErr, cleanupErr))
     Running priorHandle priorDone -> do
       cancel priorHandle
       outcome <- readMVar priorDone
-      pure (either (\err -> Left (priorHandle, err)) Right outcome)
+      pure $ case outcome of
+        Right () -> Right ()
+        Left err -> Left (RetireFailed priorHandle err, err)
 
-  acquireAndSpawn restore = do
-    res <- restore acquire
-    newDone <- newEmptyMVar
-    handle <-
-      spawn (\unmask -> try (unmask (body res)) >>= \outcome -> mask_ (finalize res outcome newDone))
-        `onException` release res
-    pure (handle, newDone)
+  -- | The exact outcome of attempting to acquire\/spawn a replacement
+  -- generation, distinguishing every way it can fail precisely enough
+  -- that the caller above never has to guess whether anything is still
+  -- live (see 'StartCleanupFailed''s own Haddock for why 'StartFailed'
+  -- alone cannot safely represent all of them).
+  attemptAcquireAndSpawn restore = do
+    acquireResult <- try @SomeException (restore acquire)
+    case acquireResult of
+      Left err -> pure (AcquireFailed err)
+      Right res -> do
+        newDone <- newEmptyMVar
+        spawnResult <-
+          try @SomeException
+            (spawn (\unmask -> try (unmask (body res)) >>= \outcome -> mask_ (finalize res outcome newDone)))
+        case spawnResult of
+          Right handle -> pure (Started handle newDone)
+          Left spawnErr -> do
+            releaseResult <- try @SomeException (release res)
+            pure $ case releaseResult of
+              Right () -> SpawnFailedCleanly spawnErr
+              Left cleanupErr -> SpawnFailedUncleanly spawnErr cleanupErr
+
+-- | The exact outcome of 'attemptAcquireAndSpawn' (a purely local helper
+-- of 'restartManagedGenerationUsing'): never conflates \"nothing was ever
+-- created\" or \"created, but fully cleaned up\" (both safe to retry
+-- immediately) with \"created, and the cleanup meant to tear it down
+-- itself failed\" (never safe to retry immediately -- see
+-- 'StartCleanupFailed').
+data StartAttemptOutcome handle
+  = Started handle (MVar (Either SomeException ()))
+  | AcquireFailed SomeException
+  | SpawnFailedCleanly SomeException
+  | SpawnFailedUncleanly SomeException SomeException
 
 -- | 'restartManagedGenerationUsing', fixed to production's
 -- 'Control.Concurrent.forkIOWithUnmask'.
@@ -731,6 +802,7 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
     NotStarted -> putMVar lock NotStarted >> pure NothingWasRunning
     StartFailed _ -> putMVar lock NotStarted >> pure NothingWasRunning
     RetireFailed _ err -> putMVar lock priorState >> pure (StopFailed err)
+    StartCleanupFailed _ cleanupErr -> putMVar lock priorState >> pure (StopFailed cleanupErr)
     Running priorHandle priorDone -> do
       result <- try @SomeException (cancel priorHandle >> restore (readMVar priorDone))
       case result of
