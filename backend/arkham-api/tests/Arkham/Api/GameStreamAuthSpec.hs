@@ -8,15 +8,18 @@ non-participant could reach 'Api.Handler.Arkham.Games.Shared.gameStream'
 and submit answers) without ever being a recorded player of that game.
 
 The handler now delegates its entire body to 'withGameParticipant', whose
-own body is nothing but the verbatim @getBy (UniquePlayer userId gameId)@
-lookup the REST branch has always used, followed immediately by a call to
-'gameParticipantGate' with that lookup's result and the (still-unevaluated)
-WebSocket-upgrade action. 'gameParticipantGate' is the /only/ place in this
-module that ever runs the @attemptUpgrade@ action it is handed, and it does
-so exclusively in the @Just@ branch, strictly before the REST continuation.
-'webSocketsOptions' and 'Api.Handler.Arkham.Games.Shared.gameStream' appear
-nowhere else in "Api.Handler.Arkham.Games", so there is no other path by
-which 'getApiV1ArkhamGameR' can reach them.
+own body is nothing but a @getBy (UniquePlayer userId gameId)@ lookup of
+the same row the REST branch has always required (previously via
+@getBy404@, which threw immediately on a miss; now via plain @getBy@, so
+the @Maybe@ result can be branched on explicitly), followed immediately by
+a call to 'gameParticipantGate' with that lookup's result and the
+(still-unevaluated) WebSocket-upgrade action. 'gameParticipantGate' is the
+/only/ place in this module that ever runs the @attemptUpgrade@ action it
+is handed, and it does so exclusively in the @Just@ branch, strictly before
+the REST continuation. 'webSocketsOptions' and
+'Api.Handler.Arkham.Games.Shared.gameStream' appear nowhere else in
+"Api.Handler.Arkham.Games", so there is no other path by which
+'getApiV1ArkhamGameR' can reach them.
 
 This spec:
 
@@ -144,28 +147,25 @@ spec = describe "gameParticipantGate (participant game-stream authorization gate
   describe "static structure of Api.Handler.Arkham.Games" do
     it "getApiV1ArkhamGameR delegates its entire body to withGameParticipant, which is the only place webSocketsOptions/gameStream are used" do
       src <- T.readFile "library/Api/Handler/Arkham/Games.hs"
-      -- Every top-level declaration in this file starts at column 0 and is
-      -- separated from its neighbours by at least one blank line, with no
-      -- blank lines inside a declaration's own body (Haddock, signature,
-      -- and equation together). Grouping consecutive non-blank lines finds
-      -- exactly the paragraph containing a given top-level name's own
-      -- signature/equation lines (which, being unindented, are the only
-      -- lines starting with that name at column 0) -- not merely a
-      -- Haddock cross-reference to it elsewhere, which never itself starts
-      -- a line.
+      -- Every top-level declaration in this file starts at column 0 (a
+      -- signature/equation line is never indented), so the first line
+      -- starting with a given top-level name marks that declaration's
+      -- start, and slicing up to the first line starting with the *next*
+      -- top-level name (in source order: withGameParticipant,
+      -- gameParticipantGate, getApiV1ArkhamGameR, then
+      -- getApiV1ArkhamGameSpectateR) isolates exactly that declaration --
+      -- independent of blank lines or comment formatting, so harmless
+      -- reformatting of this file cannot make this test noisily fail.
       let ls = T.lines src
-          isBlank l = T.null (T.strip l)
-          groupParagraphs :: [Text] -> [Text] -> [[Text]] -> [[Text]]
-          groupParagraphs [] cur acc = reverse (if null cur then acc else reverse cur : acc)
-          groupParagraphs (l : rest) cur acc
-            | isBlank l = groupParagraphs rest [] (if null cur then acc else reverse cur : acc)
-            | otherwise = groupParagraphs rest (l : cur) acc
-          paragraphs = map T.unlines (groupParagraphs ls [] [])
-          paragraphContainingTopLevel name = case List.find (any (name `T.isPrefixOf`) . T.lines) paragraphs of
-            Just p -> p
-            Nothing -> error $ "no paragraph found for top-level: " <> T.unpack name
-          getApiV1ArkhamGameRBody = paragraphContainingTopLevel "getApiV1ArkhamGameR "
-          withGameParticipantBody = paragraphContainingTopLevel "withGameParticipant"
+          firstLineStartingWith prefix = case List.findIndex (prefix `T.isPrefixOf`) ls of
+            Just i -> i
+            Nothing -> error $ "no line in Games.hs starts with: " <> T.unpack prefix
+          sliceBetween startName endName =
+            let start = firstLineStartingWith startName
+                end = firstLineStartingWith endName
+            in T.unlines $ take (end - start) $ drop start ls
+          withGameParticipantBody = sliceBetween "withGameParticipant" "gameParticipantGate"
+          getApiV1ArkhamGameRBody = sliceBetween "getApiV1ArkhamGameR " "getApiV1ArkhamGameSpectateR"
 
       T.count "withGameParticipant" getApiV1ArkhamGameRBody `shouldSatisfy` (> 0)
       T.count "webSocketsOptions" getApiV1ArkhamGameRBody `shouldBe` 0
@@ -179,6 +179,6 @@ spec = describe "gameParticipantGate (participant game-stream authorization gate
       -- is distinct from the deliberately-untouched spectator route's own
       -- "spectatorGameStream gameId" (capital @G@, a different function);
       -- it appears exactly once in the whole module, and only inside
-      -- withGameParticipant's paragraph.
+      -- withGameParticipant's slice.
       T.count "gameStream gameId" src `shouldBe` 1
       T.isInfixOf "gameStream gameId" withGameParticipantBody `shouldBe` True

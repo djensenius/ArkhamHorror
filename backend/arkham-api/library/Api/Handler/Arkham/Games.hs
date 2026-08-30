@@ -74,10 +74,12 @@ getApiV1ArkhamGameStepR gameId = do
 
 {- | Look up the caller's participant row for a game and gate the
 participant WebSocket upgrade attempt and the REST continuation behind it.
-This performs the exact same @getBy (UniquePlayer userId gameId)@ lookup
-the REST branch has always used, and its result is the /only/ input
-'gameParticipantGate' -- the real decision logic -- ever sees; there is no
-other exported entry point in this module through which
+This looks up the exact same @UniquePlayer userId gameId@ row the REST
+branch has always required (previously via @getBy404@, which threw
+immediately on a miss; here via @getBy@, so the @Maybe@ result can be
+branched on explicitly by 'gameParticipantGate'), and that result is the
+/only/ input 'gameParticipantGate' -- the real decision logic -- ever sees;
+there is no other exported entry point in this module through which
 'getApiV1ArkhamGameR' can reach 'webSocketsOptions' \/ 'gameStream', so a
 caller who is not a recorded player of @gameId@ cannot attempt the upgrade
 regardless of how the REST continuation below is written.
