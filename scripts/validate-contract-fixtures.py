@@ -1188,7 +1188,9 @@ print(
     f"Validated {len(documents)} contract documents, {len(fixtures)} fixtures, "
     f"{len(negative_fixtures)} negative regression fixtures (each derived from a real "
     f"positive fixture via a single mutation, plus a self-test proving exact-match precision), "
-    f"{len(canonical_integer_checks)} canonical-integer boundary/token check, "
-    f"{len(forward_compatibility_checks)} forward-compatibility check, "
+    f"{len(canonical_integer_checks)} canonical-integer boundary/token "
+    f"{'check' if len(canonical_integer_checks) == 1 else 'checks'}, "
+    f"{len(forward_compatibility_checks)} forward-compatibility "
+    f"{'check' if len(forward_compatibility_checks) == 1 else 'checks'}, "
     f"and {len(enum_boundary_checks)} closed-enum boundary checks."
 )
