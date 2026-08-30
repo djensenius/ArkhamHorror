@@ -92,7 +92,7 @@ the reason is one of a closed set: `message-syntax-error`,
 `unsupported-attribute`, `placeholder-in-attribute`,
 `asset-variable-outside-image`, `unsupported-image-source`,
 `image-path-escape`, `invalid-style-token`, `misplaced-list-item`,
-`unresolved-link`.
+`unresolved-link`, `conflicting-variable-role`.
 
 At the revision this was written that is 103 of 38,582 entries (0.27%):
 46 `unsupported-attribute` (inline `style=`, `data-*`, `<a href>`, `width`,

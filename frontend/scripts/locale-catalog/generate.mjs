@@ -177,11 +177,18 @@ function normalizeLocale(messages, classifyVariable) {
   for (const key of [...flattened.keys()].sort()) {
     const entry = normalizeMessage(flattened.get(key), { classifyVariable })
     if (entry.form !== 'unsupported') {
-      // Every variable a node references must be declared on the entry, so a
-      // client can never encounter an undeclared substitution slot.
-      const declared = new Set(entry.variables.map((variable) => `${variable.source}:${variable.name}`))
-      for (const [id] of referencedVariables(entry)) {
-        if (!declared.has(id)) fail(`undeclared variable ${id} in ${key}`)
+      // Every variable a node references must be declared on the entry, with
+      // the same role, so a client can never encounter an undeclared or
+      // contradictorily typed substitution slot.
+      const declared = new Map(
+        entry.variables.map((variable) => [`${variable.source}:${variable.name}`, variable]),
+      )
+      for (const [id, reference] of referencedVariables(entry)) {
+        const declaration = declared.get(id)
+        if (declaration === undefined) fail(`undeclared variable ${id} in ${key}`)
+        if (declaration.role !== reference.role) {
+          fail(`variable ${id} in ${key} is declared ${declaration.role} but referenced as ${reference.role}`)
+        }
       }
     } else if (!UNSUPPORTED_REASONS.includes(entry.reason)) {
       fail(`unknown unsupported reason ${entry.reason} for ${key}`)

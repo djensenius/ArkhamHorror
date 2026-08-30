@@ -209,6 +209,9 @@ test('unsupported and unsafe input is refused, never partially rendered', () => 
     ['<p a"b=c>x</p>', 'html-parse-error'],
     ['@.bogus:other.key', 'unsupported-message-syntax'],
     ['\uE0000\uE001', 'message-syntax-error'],
+    // `skull` is an icon placeholder here and a linked message key there:
+    // one declaration cannot describe both.
+    ['{skull} @:{skull}', 'conflicting-variable-role'],
   ]
 
   for (const [input, reason] of cases) {

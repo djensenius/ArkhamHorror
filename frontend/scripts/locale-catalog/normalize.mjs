@@ -114,6 +114,7 @@ export const UNSUPPORTED_REASONS = Object.freeze([
   'invalid-style-token',
   'misplaced-list-item',
   'unresolved-link',
+  'conflicting-variable-role',
 ])
 
 class Unsupported extends Error {
@@ -476,13 +477,28 @@ function sortedVariables(variables) {
   )
 }
 
+/**
+ * Declares one variable, refusing the entry outright if the same name is used
+ * in two incompatible ways (say an icon placeholder that is also a linked
+ * message key) rather than letting the last occurrence win and publishing a
+ * declaration that contradicts the nodes.
+ */
+function declareVariable(into, declaration) {
+  const id = `${declaration.source}:${declaration.name}`
+  const existing = into.get(id)
+  if (existing !== undefined && existing.role !== declaration.role) {
+    throw unsupported('conflicting-variable-role', `${id} is both ${existing.role} and ${declaration.role}`)
+  }
+  into.set(id, declaration)
+}
+
 function collectVariables(nodes, into) {
   for (const node of nodes) {
     if (node.type === 'var') {
-      into.set(`${node.source}:${node.name}`, { name: node.name, source: node.source, role: node.role })
+      declareVariable(into, { name: node.name, source: node.source, role: node.role })
     } else if (node.type === 'linked') {
       if (node.target.kind === 'variable') {
-        into.set(`${node.target.source}:${node.target.name}`, {
+        declareVariable(into, {
           name: node.target.name,
           source: node.target.source,
           role: 'text',

@@ -97,7 +97,8 @@
                 "image-path-escape",
                 "invalid-style-token",
                 "misplaced-list-item",
-                "unresolved-link"
+                "unresolved-link",
+                "conflicting-variable-role"
               ]
             },
             "detail": { "type": "string", "maxLength": 120 }

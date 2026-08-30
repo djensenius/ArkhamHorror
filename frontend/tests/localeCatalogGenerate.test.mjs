@@ -206,6 +206,7 @@ test('the published AST is closed, safe, and fully declared', () => {
         'invalid-style-token',
         'misplaced-list-item',
         'unresolved-link',
+        'conflicting-variable-role',
       ].includes(reason),
       reason,
     )
