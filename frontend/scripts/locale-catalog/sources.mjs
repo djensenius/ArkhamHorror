@@ -259,7 +259,8 @@ async function bundleLocaleSources(build, frontendDir, outDir) {
  * Classifies a message placeholder by asking the production formatter what it
  * would do with `{name}`, so the icon and literal-escape vocabularies are
  * whatever `src/arkham/helpers.ts` currently defines — including homebrew
- * icons discovered from `homebrew/*&#47;icons.json` — and can never drift from it.
+ * icons discovered from each `homebrew/<campaign>/icons.json` — and can never
+ * drift from it.
  */
 export function makeVariableClassifier({ formatContent, replaceIcons }, assetPathVariables) {
   const cache = new Map()
