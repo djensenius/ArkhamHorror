@@ -149,9 +149,11 @@ http {
     #                                    year and `immutable`; everything else
     #                                    here revalidates.
     #
-    # Both are unauthenticated static JSON: no cookies, no tokens, nothing
-    # request-specific is served or logged. `nosniff` matters more here than on
-    # /cards because native clients fetch these directly.
+    # Both are unauthenticated static JSON: no cookies, no tokens, no
+    # per-request data in the response, and the same default access logging as
+    # every other static asset — a catalog request records nothing an /assets
+    # or /cards request would not. `nosniff` matters more here than on /cards
+    # because native clients fetch these directly.
     #
     # `^~` (not a regex) so an unknown path under /locale-catalog/ 404s instead
     # of falling through to the SPA shell and answering a JSON fetch with HTML.

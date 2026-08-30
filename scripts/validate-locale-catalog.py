@@ -567,12 +567,19 @@ def validate_deployment_wiring(manifest: dict) -> None:
     ignore = (FRONTEND / ".gitignore").read_text(encoding="utf-8")
     require("public/locale-catalog/" in ignore, "generated catalog output is not git-ignored")
 
+    # Checked against paths *inside* the output directory: a trailing-slash
+    # gitignore pattern only matches a directory that exists, so asking about
+    # the bare directory would pass locally (where a build left it behind) and
+    # fail on a clean checkout.
     git = shutil.which("git")
-    result = subprocess.run(
-        [git, "-C", str(ROOT), "check-ignore", "-q", "frontend/public/locale-catalog"],
-        check=False,
-    )
-    require(result.returncode == 0, "frontend/public/locale-catalog is not ignored by git")
+    for path in (
+        "frontend/public/locale-catalog/manifest.json",
+        "frontend/public/locale-catalog/r/1.0/en/core.0000000000000000.json",
+    ):
+        result = subprocess.run(
+            [git, "-C", str(ROOT), "check-ignore", "-q", path], check=False
+        )
+        require(result.returncode == 0, f"{path} is not ignored by git")
 
 
 def main() -> None:

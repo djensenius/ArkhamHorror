@@ -18,7 +18,13 @@ const VIRTUAL_ENTRY = '\0locale-catalog-entry'
 // Source trees whose bytes decide the catalog's content. Every file under
 // them is hashed into the catalog revision.
 const SOURCE_DIRECTORIES = ['src/locales']
-const SOURCE_GLOB_ROOTS = [{ root: 'homebrew', match: /\/(?:locales\/.*\.json|icons\.json)$/ }]
+
+// Per homebrew campaign, only these feed the catalog: the locale messages
+// `homebrew.ts` globs in, and the icon map production `replaceIcons` builds
+// from. Their campaign directories also hold artwork, which is deliberately
+// not walked.
+const HOMEBREW_ROOT = 'homebrew'
+const HOMEBREW_SOURCES = { directories: ['locales'], files: ['icons.json'] }
 
 // Production modules whose behavior the normalizer mirrors (icon/escape
 // classification and the two asset-path variables). A change to any of them
@@ -44,15 +50,28 @@ function toPosix(path) {
   return path.split(sep).join(posix.sep)
 }
 
+function homebrewSourceFiles(frontendDir) {
+  const root = join(frontendDir, HOMEBREW_ROOT)
+  const files = []
+  for (const campaign of readdirSync(root, { withFileTypes: true })) {
+    if (!campaign.isDirectory()) continue
+    for (const directory of HOMEBREW_SOURCES.directories) {
+      const path = join(root, campaign.name, directory)
+      if (existsSync(path)) files.push(...walkFiles(path))
+    }
+    for (const file of HOMEBREW_SOURCES.files) {
+      const path = join(root, campaign.name, file)
+      if (existsSync(path)) files.push(path)
+    }
+  }
+  return files
+}
+
 /** Every committed file the generated catalog is derived from, path-sorted. */
 export function collectSourceFiles(frontendDir) {
   const files = []
   for (const directory of SOURCE_DIRECTORIES) files.push(...walkFiles(join(frontendDir, directory)))
-  for (const { root, match } of SOURCE_GLOB_ROOTS) {
-    for (const file of walkFiles(join(frontendDir, root))) {
-      if (match.test(toPosix(relative(frontendDir, file)))) files.push(file)
-    }
-  }
+  files.push(...homebrewSourceFiles(frontendDir))
   for (const source of SEMANTIC_SOURCES) files.push(join(frontendDir, source))
 
   return files
