@@ -25,6 +25,7 @@ module Api.Arkham.Lifecycle (
   AcquisitionCleanupFailed (..),
   acquireWithUnconditionalRelease,
   releaseAll,
+  ReleaseAllFailed (..),
   shutdownThenDeliver,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
@@ -59,6 +60,7 @@ import Control.Exception (
   throwTo,
   try,
  )
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import DevelStoreLock qualified
@@ -102,6 +104,21 @@ holds this value -- see 'Api.Arkham.Lifecycle.StartCleanupFailed', which
 retains exactly this capability so 'stopManagedGeneration' can actually
 retry it, rather than only ever being able to report the same stale
 failure forever.
+
+Root-cause fix for a MEDIUM-severity finding: this capability used to be
+built as plain @innerRetry >> release res@, stored unchanged across every
+retry. If a retry ever made @innerRetry@ (the nested, more-deeply-
+acquired resource's own release) genuinely succeed while @release res@
+(this layer's own) kept failing, the very next retry re-ran the SAME,
+already-succeeded @innerRetry@ all over again before even reaching
+@release res@ -- a double-release risk for any non-idempotent resource,
+and (via @>>@'s short-circuiting) one that could also starve @release
+res@ of ever being attempted again for as long as @innerRetry@ kept
+failing. 'acquisitionCleanupFailedRetry' is now built via
+'retryableCleanup', which permanently forgets each step (here: first
+@innerRetry@, then @release res@) the instant it completes without
+throwing, so calling it any number of times can never re-run a step
+already confirmed successful.
 -}
 data AcquisitionCleanupFailed = AcquisitionCleanupFailed
   { acquisitionCleanupFailedOriginal :: SomeException
@@ -153,12 +170,52 @@ acquireTransferringOwnershipOnSuccess acquire release use = mask $ \restore -> d
           let (originalErr, priorCleanupErrs, innerRetry) = case fromException bodyErr of
                 Just (AcquisitionCleanupFailed orig prior retry') -> (orig, NE.toList prior, retry')
                 Nothing -> (bodyErr, [], pure ())
+          retryAction <- retryableCleanup (innerRetry :| [release res])
           throwIO
             AcquisitionCleanupFailed
               { acquisitionCleanupFailedOriginal = originalErr
               , acquisitionCleanupFailedDuringCleanup = cleanupErr :| priorCleanupErrs
-              , acquisitionCleanupFailedRetry = innerRetry >> release res
+              , acquisitionCleanupFailedRetry = retryAction
               }
+
+{- | Compose an ordered sequence of independent cleanup steps into a
+single retryable action that permanently forgets each step the instant
+it completes without throwing an exception -- so calling the returned
+action any number of times (as 'stopManagedGeneration' does against a
+retained 'StartCleanupFailed'\/'RetireFailed' capability) can never
+re-run, and therefore never double-release, a step already confirmed to
+have succeeded on an earlier call. Steps are attempted strictly in
+order, and a failure (synchronous, or this thread being asynchronously
+interrupted mid-step) stops the composed action right there, without
+attempting anything after it: unlike 'releaseAll', these steps are NOT
+independent of one another -- 'acquireTransferringOwnershipOnSuccess'
+uses this specifically because a more-deeply-nested resource must be
+released before the outer one that contains it, so, unlike 'releaseAll',
+a failure here deliberately does not let a later, dependent step run out
+of order.
+
+The returned action's progress is tracked in a private 'IORef' captured
+by this one call: every step still pending is recorded there, and a step
+is removed from it the instant -- and only the instant -- it returns
+without throwing, /before/ moving on to the next one. A step that itself
+throws (synchronously, or via an asynchronous interruption that escapes
+it) leaves that step, and everything after it, exactly as they were: the
+next call to the returned action resumes from precisely where the
+previous one stopped, having durably forgotten only what has genuinely,
+already succeeded.
+-}
+retryableCleanup :: NonEmpty (IO ()) -> IO (IO ())
+retryableCleanup steps = do
+  remainingRef <- newIORef (NE.toList steps)
+  let retry = do
+        remaining <- readIORef remainingRef
+        case remaining of
+          [] -> pure ()
+          (step : rest) -> do
+            step
+            writeIORef remainingRef rest
+            retry
+  pure retry
 
 {- | Acquire a resource and unconditionally release it once the body
 returns, whether it succeeded, threw, or was cancelled -- there is no
@@ -173,19 +230,34 @@ acquireWithUnconditionalRelease = bracket
 
 {- | Run every release action in the list, even if an earlier one throws
 a /synchronous/ exception: an earlier failure must never cause a later
-release to be skipped. If one or more actions failed, re-raise the first
-such failure only once every action in the list has actually been
-attempted; if all succeed, this is silent.
+release to be skipped. If one or more actions has not been confirmed to
+have completed successfully once every action that can be attempted has
+been, this throws 'ReleaseAllFailed' -- never a bare exception -- once
+every attemptable action has actually been attempted.
 
-Catches only synchronous exceptions ('UE.try', in the \"safe-exceptions\"
-style, rather than the plain 'Control.Exception.try' this used
-previously): an /asynchronous/ exception delivered while a release
-action is running (e.g. 'System.Timeout.timeout' or 'ThreadKilled' from
-a cancelled shutdown) is not recorded as an ordinary release failure and
-must not let the remaining releases in the list keep running regardless
--- it propagates immediately out of 'releaseAll', so cancellation can
+An /asynchronous/ exception delivered while a release action is running
+(e.g. 'System.Timeout.timeout' or 'ThreadKilled' from a cancelled
+shutdown) is not recorded as an ordinary release failure, and stops this
+call from attempting anything further immediately, so cancellation can
 promptly abort cleanup instead of this becoming, in effect,
-uninterruptible.
+uninterruptible -- but, unlike letting the bare asynchronous exception
+propagate, nothing is abandoned: 'ReleaseAllFailed' carries the /exact/,
+still-outstanding actions (the interrupted one, conservatively treated as
+not yet confirmed successful, plus everything after it in the list) as a
+retryable capability, so a caller (production: 'Api.Arkham.Lifecycle.RetireFailed',
+via 'stopManagedGeneration') can retain and eventually finish it rather
+than silently losing track of every foundation-owned resource after the
+interrupted one forever.
+
+Root-cause fix for a MEDIUM-severity finding: an earlier version of this
+function used 'UE.try' to stop attempting further releases immediately on
+an asynchronous interruption (correctly preserving prompt cancellation),
+but simply let that bare exception propagate with nothing retained
+anywhere -- silently abandoning every release after (and including) the
+interrupted one on every subsequent restart, with no way for anything to
+ever finish releasing them. This still stops immediately (the promptness
+is unchanged), but now retains exactly what is left via
+'ReleaseAllFailed' instead of discarding it.
 
 Used by 'Application.shutdownApp' to release every foundation-owned
 resource (the AWS supervisor, the room-heartbeat thread, the optional
@@ -197,10 +269,69 @@ guards against.
 -}
 releaseAll :: [IO ()] -> IO ()
 releaseAll actions = do
-  results <- traverse (UE.try :: IO () -> IO (Either SomeException ())) actions
-  case [e | Left e <- results] of
-    (e : _) -> throwIO e
-    [] -> pure ()
+  remainingRef <- newIORef actions
+  runReleaseAllPass remainingRef
+
+{- | Attempt every action currently recorded in @remainingRef@, in
+order, removing each one from it the instant -- and only the instant --
+it completes successfully, regardless of whether a /later/ action in
+this same pass still fails or this pass is cut short by an asynchronous
+interruption: a caller (production: 'releaseAll' itself, and, once
+retained inside 'ReleaseAllFailed', a later retry of the exact same
+@remainingRef@) can therefore call this any number of times without ever
+re-attempting, or double-releasing, an action already confirmed
+successful.
+-}
+runReleaseAllPass :: IORef [IO ()] -> IO ()
+runReleaseAllPass remainingRef = go []
+ where
+  go failuresAcc = do
+    remaining <- readIORef remainingRef
+    case remaining of
+      [] -> case NE.nonEmpty failuresAcc of
+        Nothing -> pure ()
+        Just failures -> throwIO (ReleaseAllFailed failures (runReleaseAllPass remainingRef))
+      (action : rest) -> do
+        outcome <- try @SomeException action
+        case outcome of
+          Right () -> writeIORef remainingRef rest >> go failuresAcc
+          Left err
+            | UE.isSyncException err -> do
+                writeIORef remainingRef rest
+                go (err : failuresAcc)
+            | otherwise ->
+                -- Asynchronous: stop attempting anything further right
+                -- away. @action@ itself is conservatively left in
+                -- @remainingRef@, un-popped -- it is not confirmed to
+                -- have completed -- alongside every action after it,
+                -- which was never even attempted this pass.
+                throwIO (ReleaseAllFailed (err :| failuresAcc) (runReleaseAllPass remainingRef))
+
+{- | Thrown by 'releaseAll' instead of a bare exception whenever at least
+one action in its list has not been confirmed to have completed
+successfully -- whether because it threw synchronously, or because an
+asynchronous exception interrupted the pass before every action had even
+been attempted. Retains both the complete, newest-first history of every
+failure recorded so far (an interrupting asynchronous exception counts as
+one), and the exact, narrowed retry action: attempting -- and only ever
+attempting -- the actions genuinely not yet confirmed successful, never
+one already known to have completed. Calling 'releaseAllFailedRetry' any
+number of times can therefore never re-run, and never double-release,
+anything 'releaseAll' has already, genuinely finished with -- see
+'Api.Arkham.Lifecycle.RetireFailed', which retains exactly this
+capability so 'stopManagedGeneration' can actually retry it, rather than
+abandoning it forever.
+-}
+data ReleaseAllFailed = ReleaseAllFailed
+  { releaseAllFailedFailures :: NonEmpty SomeException
+  , releaseAllFailedRetry :: IO ()
+  }
+
+instance Show ReleaseAllFailed where
+  show (ReleaseAllFailed failures _) =
+    "ReleaseAllFailed { releaseAllFailedFailures = " <> show (NE.toList failures) <> " }"
+
+instance Exception ReleaseAllFailed
 
 {- | Run a shutdown action, capturing /any/ exception it raises --
 synchronous, or asynchronous delivered while it is blocked on its own
@@ -562,14 +693,27 @@ data RestartState handle
     -- production gate therefore refuses to silently treat this the same
     -- as \"nothing to retire\": 'restartManagedGenerationUsing' re-raises
     -- the exact same recorded failure rather than proceeding to start a
-    -- replacement generation on top of possibly-still-held resources,
-    -- and 'stopManagedGeneration' reports 'StopFailed' rather than
-    -- claiming either \"stopped\" or \"nothing was running\". Recovery is
-    -- deliberately not automatic: an operator (or a future, more
-    -- specific recovery function) must explicitly decide this is safe to
-    -- clear, e.g. after confirming out-of-band that no resources were
-    -- actually leaked.
-    RetireFailed handle SomeException
+    -- replacement generation on top of possibly-still-held resources.
+    --
+    -- The second field is the complete, newest-first history of every
+    -- teardown attempt's own failure (at least one, by construction).
+    -- The third field is a retry capability, when one is actually known
+    -- to be safe: whenever the teardown failure came from 'releaseAll'
+    -- (production: always, since 'Application.shutdownApp' uses it
+    -- exclusively), this is 'Just' its exact, still-outstanding
+    -- 'releaseAllFailedRetry' -- attempting, and only ever attempting,
+    -- resources genuinely not yet confirmed released -- and
+    -- 'stopManagedGeneration' retries it (never merely replaying the
+    -- same stale failure forever, root-causing a MEDIUM-severity finding
+    -- that this constructor previously had nowhere at all to retain
+    -- such a capability, silently abandoning every not-yet-released
+    -- resource the instant an asynchronous cancellation interrupted
+    -- 'releaseAll' mid-shutdown). It is 'Nothing' only for a teardown
+    -- failure this module cannot itself prove safe to retry (some
+    -- caller's own @finalize@ not built from 'releaseAll' at all) --
+    -- exactly as unrecoverable-except-manually as this constructor was
+    -- before this fix, never regressing it.
+    RetireFailed handle (NonEmpty SomeException) (Maybe (IO ()))
   | -- | Acquiring (or spawning) the replacement generation's resource
     -- genuinely failed, /and/ so did every attempt made so far at the
     -- compensating cleanup meant to tear down whatever was actually
@@ -583,12 +727,14 @@ data RestartState handle
     -- by 'Application.makeFoundation'). The second field is the
     -- complete, newest-first history of every cleanup attempt's own
     -- failure (at least one, by construction). The third field is the
-    -- /exact/, still-outstanding release capability: nothing besides the
-    -- attempt(s) recorded in the second field has actually run it, so it
-    -- remains genuinely safe to retry -- see 'stopManagedGeneration',
-    -- which is the only place that ever invokes it, always still
-    -- serialized through the same @lock@ this constructor lives in, and
-    -- always exactly once at a time.
+    -- /exact/, still-outstanding release capability (built by
+    -- 'retryableCleanup', so it never re-runs an already-succeeded
+    -- nested step -- see 'acquireTransferringOwnershipOnSuccess'): only
+    -- the attempt(s) recorded in the second field have actually run it,
+    -- so it remains genuinely safe to retry -- see
+    -- 'stopManagedGeneration', which is the only place that ever
+    -- invokes it, always still serialized through the same @lock@ this
+    -- constructor lives in, and always exactly once at a time.
     --
     -- Deliberately distinct from 'StartFailed': that constructor's own
     -- \"safe to treat exactly like 'NotStarted'\" guarantee depends
@@ -820,7 +966,7 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
   retirePrior = \case
     NotStarted -> pure (Right ())
     StartFailed _ -> pure (Right ())
-    RetireFailed priorHandle err -> pure (Left (RetireFailed priorHandle err, err))
+    RetireFailed priorHandle failures maybeRetry -> pure (Left (RetireFailed priorHandle failures maybeRetry, NE.head failures))
     StartCleanupFailed originalErr cleanupErrs retryRelease ->
       pure (Left (StartCleanupFailed originalErr cleanupErrs retryRelease, NE.head cleanupErrs))
     Running priorHandle priorDone -> do
@@ -828,7 +974,9 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
       outcome <- readMVar priorDone
       pure $ case outcome of
         Right () -> Right ()
-        Left err -> Left (RetireFailed priorHandle err, err)
+        Left err ->
+          let (failures, maybeRetry) = classifyRetirementFailure err
+          in Left (RetireFailed priorHandle failures maybeRetry, err)
 
   -- | The exact outcome of attempting to acquire\/spawn a replacement
   -- generation, distinguishing every way it can fail precisely enough
@@ -921,7 +1069,13 @@ failed), @lock@ is set to 'RetireFailed' -- never silently 'NotStarted'
 -- and 'StopFailed' is returned, carrying the exact same failure; a
 later 'restartManagedGenerationUsing'\/'stopManagedGeneration' call sees
 that 'RetireFailed' and refuses to silently treat it as \"nothing
-running\" either (see 'RetireFailed''s own Haddock).
+running\" either (see 'RetireFailed''s own Haddock). Unlike an earlier
+version of this function, a 'RetireFailed' whose teardown failure
+carries a retry capability (production: always, via 'releaseAll') is not
+simply replayed forever: this retries it exactly the same way
+'StartCleanupFailed' is retried below, root-causing the MEDIUM finding
+that a generation whose shutdown was asynchronously cancelled mid-way
+had no path anywhere back to ever finishing releasing what was left.
 
 If @lock@ instead holds 'StartCleanupFailed', this is the ONE place that
 actually retries its retained release capability -- never merely
@@ -938,12 +1092,15 @@ the only way out of 'StartCleanupFailed' there is. If it fails again
 prepended to the retained history and the exact same, still-untouched
 capability is kept for a later retry; 'StopFailed' is returned. If this
 retry attempt is itself asynchronously interrupted (this thread being
-cancelled while blocked inside the capability, mid-retry), the
-capability has not been consumed -- it is a plain, repeatable 'IO' value,
-never mutated in place -- so @lock@ is restored to the exact
-'StartCleanupFailed' it held before this call, with its retry
-capability fully intact for the next caller, and the interrupting
-exception is rethrown rather than being mistaken for a retry failure.
+cancelled while blocked inside the capability, mid-retry), @lock@ is
+restored to the exact 'StartCleanupFailed'\/'RetireFailed' it held
+before this call, and the interrupting exception is rethrown rather than
+being mistaken for a retry failure -- this loses no progress even then,
+because the retained capability (built by 'retryableCleanup'\/'releaseAll'
+itself) durably records, in its own private state, exactly which of its
+steps have already succeeded, independent of how any individual call to
+it terminates; simply retaining the very same capability value
+unchanged is already fully progress-aware.
 -}
 stopManagedGeneration :: MVar (RestartState handle) -> (handle -> IO ()) -> IO StopOutcome
 stopManagedGeneration lock cancel = mask $ \restore -> do
@@ -951,7 +1108,21 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
   case priorState of
     NotStarted -> putMVar lock NotStarted >> pure NothingWasRunning
     StartFailed _ -> putMVar lock NotStarted >> pure NothingWasRunning
-    RetireFailed _ err -> putMVar lock priorState >> pure (StopFailed err)
+    RetireFailed priorHandle failuresSoFar maybeRetry -> case maybeRetry of
+      Nothing -> putMVar lock priorState >> pure (StopFailed (NE.head failuresSoFar))
+      Just retryAction -> do
+        -- Exactly mirrors the 'StartCleanupFailed' case below -- see
+        -- this function's own Haddock.
+        retryOutcome <- try @SomeException (UE.tryAny (restore retryAction))
+        case retryOutcome of
+          Left asyncErr -> do
+            putMVar lock priorState
+            throwIO asyncErr
+          Right (Right ()) -> putMVar lock NotStarted >> pure StoppedCleanly
+          Right (Left newErr) -> do
+            let failuresSoFar' = NE.cons newErr failuresSoFar
+            putMVar lock (RetireFailed priorHandle failuresSoFar' maybeRetry)
+            pure (StopFailed newErr)
     StartCleanupFailed originalErr cleanupErrs retryRelease -> do
       -- The outer 'try' only ever fires for a genuinely asynchronous
       -- interruption of THIS retry attempt: 'UE.tryAny' (inside)
@@ -972,5 +1143,22 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
       result <- try @SomeException (cancel priorHandle >> restore (readMVar priorDone))
       case result of
         Right (Right ()) -> putMVar lock NotStarted >> pure StoppedCleanly
-        Right (Left teardownErr) -> putMVar lock (RetireFailed priorHandle teardownErr) >> pure (StopFailed teardownErr)
+        Right (Left teardownErr) -> do
+          let (failures, maybeRetry) = classifyRetirementFailure teardownErr
+          putMVar lock (RetireFailed priorHandle failures maybeRetry) >> pure (StopFailed teardownErr)
         Left cancelErr -> putMVar lock priorState >> throwIO cancelErr
+
+{- | Classify a generation's own teardown failure (production: whatever
+'Application.shutdownApp' -- always 'releaseAll' -- raised) into the
+complete failure history and a safe retry capability, when one is known.
+A 'ReleaseAllFailed' names its own exact, narrowed, still-outstanding
+retry action directly, so that becomes 'Just'; anything else (some
+caller's own @finalize@ not built from 'releaseAll' at all) has no
+capability this module can itself prove safe to retry, so 'Nothing' --
+never fabricating one -- exactly as unrecoverable-except-manually as
+'RetireFailed' was before this fix, never regressing it.
+-}
+classifyRetirementFailure :: SomeException -> (NonEmpty SomeException, Maybe (IO ()))
+classifyRetirementFailure err = case fromException err of
+  Just (ReleaseAllFailed failures retryAction) -> (failures, Just retryAction)
+  Nothing -> (err :| [], Nothing)

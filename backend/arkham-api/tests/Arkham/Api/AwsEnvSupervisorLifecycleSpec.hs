@@ -40,6 +40,7 @@ import Api.Arkham.AwsEnvSupervisor (
  )
 import Api.Arkham.Helpers (tryRedis_)
 import Api.Arkham.Lifecycle (
+  ReleaseAllFailed (..),
   RestartState (..),
   StopOutcome (..),
   acquireTransferringOwnershipOnSuccess,
@@ -904,7 +905,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         _ -> expectationFailure ("expected StopFailed, got " <> show stopped)
       final <- readMVar lock
       case final of
-        RetireFailed observedTid _ | observedTid == tid -> pure ()
+        RetireFailed observedTid _ _ | observedTid == tid -> pure ()
         _ -> expectationFailure "expected the lock to read RetireFailed after a genuinely failed teardown"
       killThread tid
 
@@ -917,14 +918,14 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     it "re-reports the exact same StopFailed when the lock is already RetireFailed, without resetting to NotStarted" do
       tid <- forkIO (forever (threadDelay maxBound))
       let priorErr = Exception.toException (userError "already-recorded teardown failure")
-      lock <- newMVar (RetireFailed tid priorErr)
+      lock <- newMVar (RetireFailed tid (priorErr :| []) Nothing)
       stopped <- stopManagedGeneration lock killThread
       case stopped of
         StopFailed err -> show err `shouldBe` show priorErr
         _ -> expectationFailure ("expected StopFailed, got " <> show stopped)
       final <- readMVar lock
       case final of
-        RetireFailed observedTid _ | observedTid == tid -> pure ()
+        RetireFailed observedTid _ _ | observedTid == tid -> pure ()
         _ -> expectationFailure "expected the lock to still read RetireFailed, not reset to NotStarted"
       killThread tid
 
@@ -967,14 +968,14 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       acquireCalled `shouldBe` False
       final <- readMVar lock
       case final of
-        RetireFailed observedTid _ | observedTid == tid -> pure ()
+        RetireFailed observedTid _ _ | observedTid == tid -> pure ()
         _ -> expectationFailure "expected the lock to read RetireFailed, not a fresh replacement"
       killThread tid
 
     it "re-raises the exact same failure again, still without starting a replacement, when the lock is already RetireFailed" do
       tid <- forkIO (forever (threadDelay maxBound))
       let priorErr = Exception.toException (userError "already-recorded teardown failure")
-      lock <- newMVar (RetireFailed tid priorErr)
+      lock <- newMVar (RetireFailed tid (priorErr :| []) Nothing)
       acquireCalledRef <- newIORef False
       result <-
         Exception.try @SomeException
@@ -994,7 +995,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       acquireCalled `shouldBe` False
       final <- readMVar lock
       case final of
-        RetireFailed observedTid _ | observedTid == tid -> pure ()
+        RetireFailed observedTid _ _ | observedTid == tid -> pure ()
         _ -> expectationFailure "expected the lock to still read RetireFailed"
       killThread tid
 
@@ -1332,18 +1333,44 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     while genuinely inside that first release action, not by racing
     'forkIO' startup.
 
+    Unlike an earlier (rejected) version of this test, the interrupted
+    first release here is genuinely retriable rather than a dead end: it
+    is a stateful action (an 'IORef' call-counter) that blocks forever
+    only on its FIRST invocation and succeeds trivially on any later one
+    -- exactly like a real release whose underlying resource is still
+    live and can genuinely be torn down on a second attempt. This lets
+    the test prove BOTH halves of the fix at once: cancellation still
+    propagates immediately (the second release has not run right after
+    the injected 'Exception.ThreadKilled'), AND the 'ReleaseAllFailed'
+    thrown out of 'releaseAll' carries a retry action that, when
+    genuinely invoked, completes what was interrupted rather than
+    abandoning it forever (both releases have run once that retry
+    action returns) -- see 'Api.Arkham.Lifecycle.ReleaseAllFailed''s own
+    Haddock for why the prior version of this function, which offered no
+    such retry capability at all, was itself the MEDIUM \"cleanup
+    progress\" finding.
+
     Mutation check: reverting 'releaseAll' to plain 'Control.Exception.try'
-    makes this test fail deterministically -- the second release's
-    @secondRan@ flag would end up 'True' (plain 'try' catches the
-    'Exception.ThreadKilled', "succeeds" in registering it as this
-    release's failure, and moves on to run the second release before
-    ultimately re-raising), where this test requires it stay 'False'.
+    makes the cancellation-propagates assertion fail deterministically --
+    the second release's @secondRan@ flag would end up 'True' before the
+    retry is ever invoked (plain 'try' catches the 'Exception.ThreadKilled',
+    "succeeds" in registering it as this release's failure, and moves on
+    to run the second release before ultimately re-raising). Reverting
+    'releaseAll' to throw a bare exception instead of 'ReleaseAllFailed'
+    (abandoning the interrupted release rather than retaining it) makes
+    the retry-recovery assertion fail: there would be no
+    'releaseAllFailedRetry' capability to invoke at all.
     -}
-    it "propagates an asynchronous cancellation immediately, without running any later release in the list" do
+    it "propagates an asynchronous cancellation immediately, without running any later release, but retains a retry capability that later completes both" do
       firstReached <- newEmptyMVar
       neverFilled <- newEmptyMVar
+      firstCalls <- newIORef (0 :: Int)
       secondRan <- newIORef False
-      let firstRelease = putMVar firstReached () >> takeMVar neverFilled >> error "unreachable"
+      let firstRelease = do
+            n <- atomicModifyIORef' firstCalls (\c -> (c + 1, c + 1))
+            if n == 1
+              then putMVar firstReached () >> takeMVar neverFilled >> error "unreachable"
+              else pure ()
           secondRelease = atomicModifyIORef' secondRan (const (True, ()))
       callerResult <- newEmptyMVar
       callerTid <- forkIO do
@@ -1352,10 +1379,204 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       takeMVar firstReached
       Exception.throwTo callerTid Exception.ThreadKilled
       result <- takeMVar callerResult
-      case result of
-        Left err -> Exception.fromException err `shouldBe` Just Exception.ThreadKilled
-        Right () -> expectationFailure "expected the injected ThreadKilled to propagate out of releaseAll"
+      -- Cancellation propagated immediately: the second release never ran.
       readIORef secondRan `shouldReturn` False
+      case result of
+        Left err -> case Exception.fromException err of
+          Just (ReleaseAllFailed _failures retryAction) -> do
+            -- The retained retry capability, when genuinely invoked,
+            -- completes what cancellation interrupted -- never abandons
+            -- it. The first release's second invocation (this retry)
+            -- now takes the trivial-success branch, and the second
+            -- release finally runs too.
+            retryAction
+            readIORef firstCalls `shouldReturn` 2
+            readIORef secondRan `shouldReturn` True
+          Nothing -> expectationFailure ("expected a ReleaseAllFailed carrying a retry capability, got " <> show err)
+        Right () -> expectationFailure "expected the injected ThreadKilled to propagate out of releaseAll"
+
+    {- | End-to-end regression for the same MEDIUM finding, but through the
+    real production path: 'shutdownThenDeliver' (as @app\/DevelMain.hs@
+    uses it), a genuine 'Running' lock, and 'stopManagedGeneration'
+    itself -- rather than calling 'releaseAll' directly. Proves the
+    retained 'ReleaseAllFailed' capability set into 'RetireFailed' by
+    'stopManagedGeneration' (via 'classifyRetirementFailure') is
+    genuinely retried by a LATER 'stopManagedGeneration' call, not
+    silently abandoned: the first call observes 'StopFailed' with the
+    second release still not having run, and a second call completes the
+    interrupted release, reports 'StoppedCleanly', and clears the lock
+    to 'NotStarted'.
+
+    Mutation check: reverting 'RetireFailed''s retry field to always be
+    'Nothing' (or reverting 'stopManagedGeneration''s 'RetireFailed'
+    branch to unconditionally replay the stale failure, as it did before
+    this fix) makes the second 'stopManagedGeneration' call still report
+    'StopFailed' with @secondRan@ still 'False' forever, instead of
+    genuinely completing the release.
+    -}
+    it "stopManagedGeneration genuinely retries (never abandons) a RetireFailed capability produced by a real cancelled releaseAll shutdown" do
+      firstReached <- newEmptyMVar
+      neverFilled <- newEmptyMVar
+      firstCalls <- newIORef (0 :: Int)
+      secondRan <- newIORef False
+      let firstRelease = do
+            n <- atomicModifyIORef' firstCalls (\c -> (c + 1, c + 1))
+            if n == 1
+              then putMVar firstReached () >> takeMVar neverFilled >> error "unreachable"
+              else pure ()
+          secondRelease = atomicModifyIORef' secondRan (const (True, ()))
+      done <- newEmptyMVar
+      genTid <- forkIOWithUnmask \unmask ->
+        shutdownThenDeliver (unmask (releaseAll [firstRelease, secondRelease])) done
+      takeMVar firstReached
+      lock <- newMVar (Running genTid done)
+      -- First stop attempt: 'stopManagedGeneration''s OWN internal
+      -- @cancel priorHandle@ delivers the cancellation that genuinely
+      -- interrupts the still-blocked first release (rather than this
+      -- test pre-empting it manually, which would race
+      -- 'stopManagedGeneration''s own cancellation); the generation's
+      -- own teardown is thereby genuinely interrupted mid-release, and
+      -- the second release must not have run.
+      firstStop <- stopManagedGeneration lock killThread
+      case firstStop of
+        StopFailed _ -> pure ()
+        _ -> expectationFailure ("expected the first stop to report StopFailed, got " <> show firstStop)
+      readIORef secondRan `shouldReturn` False
+      afterFirstStop <- readMVar lock
+      case afterFirstStop of
+        RetireFailed _ _ (Just _) -> pure ()
+        RetireFailed _ _ Nothing -> expectationFailure "expected RetireFailed to carry a retriable capability, not Nothing"
+        _ -> expectationFailure "expected the lock to read RetireFailed after the interrupted teardown"
+      -- Second stop attempt: genuinely retries the SAME retained
+      -- capability, completing what was interrupted, rather than
+      -- replaying the stale failure forever.
+      secondStop <- stopManagedGeneration lock killThread
+      case secondStop of
+        StoppedCleanly -> pure ()
+        _ -> expectationFailure ("expected the second stop to genuinely complete the retry and report StoppedCleanly, got " <> show secondStop)
+      readIORef firstCalls `shouldReturn` 2
+      readIORef secondRan `shouldReturn` True
+      afterSecondStop <- readMVar lock
+      case afterSecondStop of
+        NotStarted -> pure ()
+        _ -> expectationFailure "expected the lock to clear to NotStarted once the retry genuinely completed"
+
+  {- | Root-cause regression, on 'acquireTransferringOwnershipOnSuccess'
+  itself, for the second MEDIUM \"cleanup-progress\" finding: the old
+  nested-retry composition (@innerRetry >> release res@) re-ran the
+  INNER resource's own release every time the retained retry capability
+  was invoked, even after that inner release had already genuinely
+  succeeded on an earlier retry -- so if the OUTER release kept failing,
+  a non-idempotent inner release (e.g. one that throws if called twice)
+  would make every subsequent retry fail forever on the outer release
+  alone, since the (already-doomed) inner release would always be
+  re-attempted first. 'retryableCleanup' fixes this by durably, and
+  permanently, dropping each step out of the retained retry action the
+  instant it succeeds, so a later retry only ever re-attempts what
+  genuinely still remains outstanding.
+
+  This drives the nested failure entirely through the real production
+  path -- 'restartManagedGenerationUsing' with a nested
+  'acquireTransferringOwnershipOnSuccess' inside its own @acquire@ (the
+  shape 'Api.Arkham.AwsEnvSupervisor' actually uses to acquire a
+  dependency's own dependency) -- and 'stopManagedGeneration' to drive
+  the retries, rather than calling 'acquireTransferringOwnershipOnSuccess'
+  directly, so a regression at either function is caught.
+
+  Mutation check: reverting the retry composition back to
+  @innerRetry >> release res@ makes the final assertion
+  (@innerReleaseCalls \`shouldReturn\` 2@ after the second retry) fail:
+  the inner release would be invoked a THIRD time (once it is genuinely
+  non-idempotent -- see @innerRelease@ below, which fails on any call
+  after its first) and the whole second retry would report 'StopFailed'
+  with the inner failure, never reaching the outer release at all, so
+  the outer release would never even get its final successful attempt
+  and the lock would never clear to 'NotStarted'.
+  -}
+  describe "acquireTransferringOwnershipOnSuccess nested-release retry never re-runs an already-succeeded inner release" do
+    it "the outer capability's retry only re-attempts what genuinely still remains, never a resource whose release already succeeded" do
+      innerReleaseCalls <- newIORef (0 :: Int)
+      outerReleaseCalls <- newIORef (0 :: Int)
+      let -- Inner release: fails on its first call, then succeeds
+          -- exactly once -- and, being non-idempotent, THROWS if ever
+          -- invoked again after that (this is what makes the mutation
+          -- above detectable: the old buggy composition would call it a
+          -- third time).
+          innerRelease _ = do
+            n <- atomicModifyIORef' innerReleaseCalls (\c -> (c + 1, c + 1))
+            case n of
+              1 -> Exception.throwIO (userError "inner release failed (1st attempt)")
+              2 -> pure ()
+              _ -> Exception.throwIO (userError "inner release called again after already succeeding!")
+          -- Outer release: fails its first two calls, succeeds on the
+          -- third (i.e. the second retry).
+          outerRelease _ = do
+            n <- atomicModifyIORef' outerReleaseCalls (\c -> (c + 1, c + 1))
+            when (n < 3) (Exception.throwIO (userError ("outer release failed (attempt " <> show n <> ")")))
+          -- Nested exactly the way 'Api.Arkham.AwsEnvSupervisor' acquires
+          -- a dependency's own dependency: the OUTER
+          -- 'acquireTransferringOwnershipOnSuccess''s own body performs a
+          -- second, INNER 'acquireTransferringOwnershipOnSuccess', whose
+          -- body always fails -- so the inner release runs (and fails)
+          -- first, then the outer release runs (and fails) too, and the
+          -- whole nested acquisition surfaces as a single
+          -- 'AcquisitionCleanupFailed' with both retained.
+          nestedAcquire :: IO Int
+          nestedAcquire =
+            acquireTransferringOwnershipOnSuccess
+              (pure (100 :: Int))
+              outerRelease
+              ( \_ ->
+                  acquireTransferringOwnershipOnSuccess
+                    (pure (0 :: Int))
+                    innerRelease
+                    (\_ -> Exception.throwIO (userError "inner body always fails"))
+              )
+          fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
+          fakeSpawn _ = Exception.throwIO Exception.ThreadKilled
+      lock <- newMVar NotStarted
+      firstResult <-
+        Exception.try @SomeException
+          ( restartManagedGenerationUsing
+              lock
+              fakeSpawn
+              (\_ -> expectationFailure "cancel should never run: no previous generation existed")
+              nestedAcquire
+              (\_ -> pure ())
+              (\_ -> pure ())
+              (\_ _ _ -> pure ())
+          )
+      case firstResult of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the nested acquire failure to propagate"
+      readIORef innerReleaseCalls `shouldReturn` 1
+      readIORef outerReleaseCalls `shouldReturn` 1
+      afterAcquire <- readMVar lock
+      case afterAcquire of
+        StartCleanupFailed _ _ _ -> pure ()
+        _ -> expectationFailure "expected the lock to read StartCleanupFailed after the nested acquire/release failure"
+      -- First retry (via stopManagedGeneration): inner now succeeds
+      -- (call 2), outer still fails (call 2) -> StopFailed, but the
+      -- inner step must never be attempted again from here on.
+      firstRetry <- stopManagedGeneration lock (\_ -> expectationFailure "cancel should never run: nothing is live")
+      case firstRetry of
+        StopFailed _ -> pure ()
+        _ -> expectationFailure ("expected the first retry to report StopFailed (outer still failing), got " <> show firstRetry)
+      readIORef innerReleaseCalls `shouldReturn` 2
+      readIORef outerReleaseCalls `shouldReturn` 2
+      -- Second retry: must NOT re-run the inner release (still 2); outer
+      -- finally succeeds (call 3) -> StoppedCleanly, lock clears.
+      secondRetry <- stopManagedGeneration lock (\_ -> expectationFailure "cancel should never run: nothing is live")
+      case secondRetry of
+        StoppedCleanly -> pure ()
+        _ -> expectationFailure ("expected the second retry to genuinely complete and report StoppedCleanly, got " <> show secondRetry)
+      readIORef innerReleaseCalls `shouldReturn` 2
+      readIORef outerReleaseCalls `shouldReturn` 3
+      final <- readMVar lock
+      case final of
+        NotStarted -> pure ()
+        _ -> expectationFailure "expected the lock to clear to NotStarted once the outer release genuinely completed"
+
 
   {- | Regression for the HIGH-severity finding that 'Api.Arkham.Helpers.pubSubSupervisor'
   used @UnliftIO.Async.race_@ (built on @Control.Concurrent.Async.withAsync@,
