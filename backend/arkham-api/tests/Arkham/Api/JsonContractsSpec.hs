@@ -52,7 +52,7 @@ import Data.Time (secondsToDiffTime)
 import Data.UUID qualified as UUID
 import Database.Persist qualified as Persist
 import Database.Persist.Sql (toSqlKey)
-import Entity.Answer (Answer (..))
+import Entity.Answer (Answer (..), QuestionResponse (..))
 import Entity.Arkham.Achievement qualified as AchievementEntity
 import Entity.Arkham.Deck qualified as DeckEntity
 import Entity.Arkham.Game qualified as ArkhamGame
@@ -520,6 +520,37 @@ fixturePublicGame =
     ["Contract fixture log entry."]
     fixtureGame
 
+{- | The active CORE prompt built by the deterministic production setup above.
+Its choices are reused verbatim for the sibling constructors so every golden
+is driven by the real @Question Message@ and @UI Message@ encoders rather than
+by a parallel fixture-only representation.
+-}
+fixtureBasicChoiceChoices :: [UI Message]
+fixtureBasicChoiceChoices =
+  case Map.lookup fixturePlayerId (gameQuestion fixtureBoardGame) of
+    Just (PlayerWindowChooseOne choices) -> choices
+    Just question ->
+      error
+        $ "fixtureBasicChoiceChoices: expected PlayerWindowChooseOne, got "
+        <> show question
+    Nothing -> error "fixtureBasicChoiceChoices: fixture player has no active question"
+
+fixtureEndTurnChoice :: UI Message
+fixtureEndTurnChoice =
+  case fixtureBasicChoiceChoices of
+    [_, _, choice@EndTurnButton {}, _] -> choice
+    choices ->
+      error
+        $ "fixtureEndTurnChoice: expected CORE EndTurnButton at zero-based index 2, got "
+        <> show choices
+
+fixtureBasicChoiceQuestions :: [(FilePath, Question Message)]
+fixtureBasicChoiceQuestions =
+  [ ("question-choose-one.json", ChooseOne [fixtureEndTurnChoice])
+  , ("question-player-window-choose-one.json", PlayerWindowChooseOne fixtureBasicChoiceChoices)
+  , ("question-window-choose-one.json", WindowChooseOne [fixtureEndTurnChoice])
+  ]
+
 serverMessageFixtures :: [(FilePath, ApiResponse)]
 serverMessageFixtures =
   [ ( "game-update.json"
@@ -781,6 +812,25 @@ spec = describe "Native client contract fixtures" do
     -- through toJSON.
     viaWireEncoding fixtureGetGame `shouldBe` fixture
 
+  for_ fixtureBasicChoiceQuestions \(fileName, question) ->
+    it ("matches the real basic-choice question encoder for " <> fileName) do
+      fixture <- loadFixture fileName
+
+      Aeson.toJSON question `shouldBe` fixture
+      viaWireEncoding question `shouldBe` fixture
+
+  it "keeps the CORE choice order and semantic labels stable" do
+    let tags = map (lookupValue "tag" . Aeson.toJSON) fixtureBasicChoiceChoices
+
+    zip ([0 ..] :: [Int]) tags
+      `shouldBe` [ (0, Aeson.String "ComponentLabel")
+                 , (1, Aeson.String "ComponentLabel")
+                 , (2, Aeson.String "EndTurnButton")
+                 , (3, Aeson.String "AbilityLabel")
+                 ]
+    Aeson.toJSON fixturePlayerId
+      `shouldBe` Aeson.String "00000000-0000-0000-0000-000000000001"
+
   it "proves viaWireEncoding actually exercises toEncoding, not toJSON twice (methodology self-test: if PublicGame's toEncoding ever silently drifted from its toJSON the way the historical bug documented on publicOtherInvestigators did, every viaWireEncoding assertion above would fail rather than pass silently)" do
     let driftProof = ToEncodingDriftProof "same-input"
 
@@ -1008,3 +1058,18 @@ spec = describe "Native client contract fixtures" do
       case Aeson.fromJSON fixture of
         Aeson.Error err -> expectationFailure $ "Could not decode " <> fileName <> ": " <> err
         Aeson.Success answer -> answerConstructor answer `shouldBe` expectedConstructor
+
+  it "pairs the native Answer with the authoritative CORE question version" do
+    fixture <- loadFixture "answer-question.json"
+
+    case Aeson.fromJSON fixture of
+      Aeson.Error err -> expectationFailure $ "Could not decode answer-question.json: " <> err
+      Aeson.Success (Answer (QuestionResponse choice playerId questionVersion)) -> do
+        choice `shouldBe` 2
+        playerId `shouldBe` Just fixturePlayerId
+        questionVersion `shouldBe` Just (gameScenarioSteps fixtureBoardGame)
+        case drop choice fixtureBasicChoiceChoices of
+          EndTurnButton {} : _ -> pure ()
+          _ -> expectationFailure "Answer.choice 2 must select the CORE EndTurnButton"
+      Aeson.Success answer ->
+        expectationFailure $ "Expected Answer QuestionResponse, got " <> show answer
