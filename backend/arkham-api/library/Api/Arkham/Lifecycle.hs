@@ -25,9 +25,6 @@ module Api.Arkham.Lifecycle (
   acquireWithUnconditionalRelease,
   releaseAll,
   shutdownThenDeliver,
-  consumePreviousShutdownReplayable,
-  consumePreviousShutdownReplayableUsing,
-  restartGateForPreviousGeneration,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
   ManagedThread,
@@ -36,12 +33,14 @@ module Api.Arkham.Lifecycle (
   waitManagedThread,
   cancelManagedThread,
   raceManaged_,
-  acquireThenForkTransferringOwnershipGuarded,
-  acquireThenForkTransferringOwnershipGuardedUsing,
+  RestartState (..),
+  restartManagedGeneration,
+  restartManagedGenerationUsing,
+  stopManagedGeneration,
 ) where
 
-import Control.Concurrent (ThreadId, forkIOWithUnmask, killThread)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, takeMVar, tryPutMVar)
+import Control.Concurrent (ThreadId, forkIOWithUnmask)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Exception (
   AsyncException (ThreadKilled),
   SomeException,
@@ -137,108 +136,6 @@ shutdownThenDeliver :: IO () -> MVar (Either SomeException ()) -> IO ()
 shutdownThenDeliver shutdown done = do
   result <- try shutdown
   mask_ (tryPutMVar done result >> pure ())
-
-{- | Used by @app\/DevelMain.hs@'s @restartAppInNewThread@: given the
-'MVar' 'shutdownThenDeliver' will (eventually) fill with the /previous/
-generation's shutdown outcome, only proceed to start a replacement
-generation once that outcome is 'Right ()' -- and do so /repeatably/,
-without ever consuming a 'Left' or leaving the cell permanently empty.
-
-This replaces an earlier, one-shot @Either SomeException () -> IO a ->
-IO a@ version that always 'takeMVar''d the outcome up front: on a
-failed/interrupted previous shutdown, that version still consumed the
-'Left' from the 'MVar' (leaving it empty) before re-throwing -- so this
-same one-shot 'MVar' cell (reused, per @DevelMain.hs@'s design, across
-every generation's own eventual shutdown) could never be filled again,
-and the /next/ restart attempt's own wait on it would block forever
-instead of observing the same failure immediately. This version instead
-peeks the outcome with 'readMVar' (non-consuming) rather than 'takeMVar':
-on 'Left', it is left untouched and re-thrown immediately -- every
-subsequent call sees the exact same failure immediately, without
-blocking, and without ever starting a replacement. Only on 'Right ()'
-does it 'takeMVar' (finally consuming that success, emptying the cell so
-the /next/ generation's own eventual shutdown can fill it again).
-
-Unlike an earlier version of this function, this is deliberately *not*
-itself a separate 'mask'\/'restore' boundary wrapping a caller-supplied
-@onSuccess@: composing two independently-scoped 'mask' calls (this one,
-restoring to call an entirely separate, later 'mask' inside what used to
-be @acquireThenForkTransferringOwnership@) left ordinary, ambient-masking
-Haskell code -- e.g. allocating a fresh ownership token -- running
-genuinely /unmasked/ in the gap between them: an asynchronous exception
-landing there, after this function's own 'takeMVar' had already consumed
-the previous 'Right ()', would propagate with @done@ left permanently
-empty, since no protection had even been installed yet to catch it. This
-function is now a plain gate with no @onSuccess@ parameter at all,
-designed to be called as the very first step /inside/
-'acquireThenForkTransferringOwnershipGuarded''s own single 'mask' (see
-its Haddock): 'readMVar'\/'takeMVar' remain genuinely interruptible even
-under an enclosing 'mask' (so a blocked wait can still be cancelled), but
-nothing is consumed unless 'readMVar' actually returns 'Right', and
-nothing this function does can itself throw except by re-throwing an
-already-recorded 'Left' -- so there is no window, masked or otherwise, in
-which this gate's own execution could lose track of @done@.
--}
-consumePreviousShutdownReplayable :: MVar (Either SomeException ()) -> IO ()
-consumePreviousShutdownReplayable = consumePreviousShutdownReplayableUsing (pure ())
-
-{- | As 'consumePreviousShutdownReplayable', parameterized over an extra
-hook run immediately after 'takeMVar' consumes the previous 'Right ()'.
-Production always passes @'pure' ()@ via
-'consumePreviousShutdownReplayable'; this seam exists purely so a test
-can observe (e.g. via 'Control.Exception.getMaskingState', with this
-called from inside 'acquireThenForkTransferringOwnershipGuarded''s own
-'mask') that this exact window is genuinely masked, deterministically and
-without racing any real exception delivery against it.
--}
-consumePreviousShutdownReplayableUsing :: IO () -> MVar (Either SomeException ()) -> IO ()
-consumePreviousShutdownReplayableUsing afterConsume done = do
-  outcome <- readMVar done
-  case outcome of
-    Left err -> throwIO err
-    Right () -> do
-      _ <- takeMVar done
-      afterConsume
-
-{- | Choose the correct restart gate for @app\/DevelMain.hs@'s @update@,
-given the previously-published generation handle read from its own
-durable 'Foreign.Store' -- or 'Nothing' if no generation has ever been
-durably published there.
-
-This is the fix for the finding that @DevelMain.hs@'s initial \"no server
-running\" branch published its durable @tidRef@\/@done@ 'Foreign.Store'
-slots (so a /later/ @update@ call would take the \"already running\"
-branch below) as two ordinary, unmasked statements, strictly before ever
-calling 'acquireThenForkTransferringOwnershipGuarded' (whose own single
-'mask' is what actually protects everything from that point on -- see its
-Haddock). An asynchronous exception landing in that narrow gap (after the
-'Foreign.Store' slot exists, publishing @tidRef = 'Nothing'@, but before a
-generation is ever actually spawned) used to leave that later @update@
-call unconditionally treating @tidRef = 'Nothing'@ as \"a previous
-generation exists and must be consulted\", calling
-'consumePreviousShutdownReplayable' on a @done@ 'Control.Concurrent.MVar.MVar'
-that no generation was ever going to fill -- deadlocking that
-'Control.Concurrent.MVar.readMVar' (and therefore every subsequent
-restart attempt) forever.
-
-The fix is this exact distinction: @tidRef@'s own content is the single
-source of truth for \"has a generation ever been durably published\",
-independent of whether the 'Foreign.Store' slot itself already exists.
-'Nothing' means exactly that -- whether because this is genuinely the
-very first start, or because an earlier attempt was interrupted before
-ever reaching a durable publish -- and in either case there is nothing
-to kill and nothing pending in @done@ to consume, so the correct gate is
-the same @'pure' ()@ used for a genuine first start. Only 'Just' means a
-previous generation was actually spawned and durably published, in which
-case it must be killed and its eventual result consumed exactly as
-before.
--}
-restartGateForPreviousGeneration :: Maybe ThreadId -> MVar (Either SomeException ()) -> IO ()
-restartGateForPreviousGeneration mPreviousThreadId done = case mPreviousThreadId of
-  Nothing -> pure ()
-  Just previousThreadId -> do
-    killThread previousThreadId
-    consumePreviousShutdownReplayable done
 
 {- | Given an already-acquired resource whose remaining lifetime is meant
 to be owned by a newly-forked child thread (which runs @body res@
@@ -498,128 +395,199 @@ raceManaged_ leftAction rightAction = mask $ \restore -> do
       (Right (), Left e) -> throwIO e
       (Right (), Right ()) -> pure ()
 
-{- | Combines 'consumePreviousShutdownReplayable' (or @'pure' ()@ for the
-very first start, which has no previous generation to consult),
-acquiring a resource whose ownership transfers to a newly-forked child,
-and durably publishing a terminal failure into @done@ if no child was
-ever actually spawned -- as a *single* masked transaction, with exactly
-one 'Control.Exception.mask'\/@restore@ boundary (around @acquire@
-alone). Used by @app\/DevelMain.hs@'s @start@ for both its initial \"no
-server running\" branch (gate @= 'pure' ()@) and its restart branch
-(gate @= 'consumePreviousShutdownReplayable' done@), so both get
-identical protection.
+{- | The single, authoritative state of @app\/DevelMain.hs@'s (or any
+similar restart protocol's) current generation, held in exactly one
+'Control.Concurrent.MVar.MVar' that itself serves as the serializing lock
+for every restart\/stop attempt (see 'restartManagedGenerationUsing'\/'stopManagedGeneration'
+below, the only ways this type is ever read or written).
 
-This replaces an earlier design that composed three separately-scoped
-combinators -- a gating @mask@ (this module's former
-@proceedOnlyIfPreviousShutdownSucceededReplayable@, restoring to call an
-entirely separate @onSuccess@), a wrapping @try@\/@transferred@-flag
-combinator (@publishTerminalFailureUnlessTransferred@), and
-@acquireThenForkTransferringOwnershipUsing@'s own, third, independent
-@mask@ -- glued together by ordinary, *unmasked* Haskell code in between
-(allocating a fresh ownership token, building the closure passed to the
-next combinator). An asynchronous exception landing in either of those
-unmasked gaps -- after the gate had already consumed the previous
-generation's recorded success, but strictly before the next combinator's
-own protection had even been installed -- would propagate with @done@
-left permanently empty, since nothing had yet been set up to catch it:
-every subsequent restart attempt would then block forever on
-'consumePreviousShutdownReplayable''s own 'Control.Concurrent.MVar.readMVar'
-against a cell nothing was ever going to fill again.
+This replaces an earlier design (@DevelMain.hs@'s two separate
+'Foreign.Store' slots, @tidStoreNum@\/@doneStore@, plus this module's
+former @restartGateForPreviousGeneration@\/@consumePreviousShutdownReplayable@\/
+@acquireThenForkTransferringOwnershipGuarded@) that was found, under
+independent review, to still be structurally unsound: those two slots
+were populated by two separate, unmasked statements (an ordinary
+async-exception gap between them), and -- more fundamentally -- every
+generation shared the /same/ @done@ 'MVar' across restarts. An initial
+acquisition\/spawn failure (which durably fills that shared @done@ with
+'Left' but never durably publishes a @tidRef@) left a /later/, entirely
+successful generation's own eventual shutdown result silently discarded
+by 'Control.Concurrent.MVar.tryPutMVar' (which can never overwrite an
+already-full cell) -- corrupting every /subsequent/ restart's view of
+\"did the previous generation actually stop cleanly\" with a stale,
+unrelated failure from a generation that was never even spawned.
 
-Folding @gate@, acquiring @res@, spawning the child, and publishing its
-handle into *one* 'mask' closes every one of those gaps completely, not
-merely narrows them: nothing between @gate@ running and @publish@
-committing is ever restored except @acquire@ itself (so @acquire@ alone
-remains genuinely interruptible, matching prior behavior exactly), and
-everything else -- allocating a token, if any; spawning; publishing --
-executes under an unbroken masked region an asynchronous exception simply
-cannot enter. This also makes the historical \"transferred ownership
-token\" this design used to need entirely unnecessary: because @publish@
-now always runs strictly inside the *same* mask as everything else (never
-crossing into a second, separately-scoped @mask@ an unmasked gap could
-sit between), the only way this function's own @try@ below can ever
-observe a 'Left' is if @publish@ itself never got the chance to durably
-commit a handle in the first place -- and if @publish@ /did/ commit (so a
-live child now exists), the only way to subsequently fail is via
-@cancel@, which (matching @DevelMain.hs@'s own @cancel@:
-@\\tid -> killThread tid >> (() \<$ readMVar done)@) itself already awaits
-that same child's own terminal delivery into @done@ before ever
-returning -- so by the time this function's own final
-'Control.Concurrent.MVar.tryPutMVar' below could run, @done@ is either
-still genuinely empty (no child ever existed) or has *already* been
-filled by that same cancelled child's own finalizer, and
-'Control.Concurrent.MVar.tryPutMVar' can never overwrite an already-full
-cell. There is therefore no remaining code path, mutation or otherwise,
-by which this function could durably publish a stale 'Left' over a live,
-untracked child: doing so would require a live child that is neither
-tracked by @done@'s own eventual filling nor ever cancelled\/awaited by
-this same transaction, which this function's own control flow does not
-admit.
+'Running' below closes this at its root: each live generation owns its
+*own*, freshly created @done@, never reused across restarts, so there is
+no cell for any other generation's outcome to ever collide with. There is
+also, by construction, exactly one 'MVar' anywhere describing \"what
+generation (if any) is currently running\" -- not two independently
+racing slots -- so every 'restartManagedGenerationUsing'\/'stopManagedGeneration'
+call is fully serialized against every other one, including concurrent
+callers, by ordinary 'Control.Concurrent.MVar.takeMVar'\/'Control.Concurrent.MVar.putMVar'
+mutual exclusion.
 -}
-acquireThenForkTransferringOwnershipGuardedUsing
-  :: IO ()
-  -- ^ gate: run first, still under this function's own single 'mask'.
-  -- Typically 'consumePreviousShutdownReplayable' @done@ (or
-  -- 'consumePreviousShutdownReplayableUsing' for the test-only masking
-  -- hook), or @'pure' ()@ when there is no previous generation to
-  -- consult at all. A 'Left' recorded by a previous failed shutdown
-  -- propagates immediately from here, untouched: no child has been
-  -- created yet in this attempt, so there is nothing for this function
-  -- to publish on its own behalf.
+data RestartState handle
+  = -- | No generation has ever been durably started -- either genuinely
+    -- the very first attempt, or (see 'StartFailed') functionally
+    -- equivalent to it: there is nothing live to cancel, and nothing
+    -- pending to consult.
+    NotStarted
+  | -- | A generation is currently running, identified by @handle@
+    -- (production: its 'Control.Concurrent.ThreadId'), with its own
+    -- dedicated, single-use completion cell that only *this* generation's
+    -- own eventual 'shutdownThenDeliver' call will ever fill.
+    Running handle (MVar (Either SomeException ()))
+  | -- | The most recent attempt to start a replacement generation itself
+    -- failed (acquisition or spawn threw) before any child was ever
+    -- created. Kept distinct from 'NotStarted' purely for introspection
+    -- (e.g. a caller reporting \"last start failed: ...\"); every
+    -- production gate treats it exactly like 'NotStarted' -- there is
+    -- nothing live to cancel, and no completion cell any other
+    -- generation could ever collide with, so the next attempt proceeds
+    -- immediately rather than replaying this stale failure forever.
+    StartFailed SomeException
+
+{- | Start (or restart) a managed generation, fully serialized against
+every other call (including concurrent ones) via @lock@: if a previous
+generation is 'Running', cancel it and genuinely await its own dedicated
+completion cell (never any other generation's); if 'NotStarted' or
+'StartFailed', there is nothing live to retire, so this proceeds
+immediately. Only then is @acquire@\/@spawn@\/publish attempted for the
+/new/ generation, exactly as 'acquireThenForkTransferringOwnershipGuardedUsing'
+(this function's structural predecessor) did -- but publishing now means
+storing @'Running' handle newDone@ into @lock@ itself, rather than two
+separately-scoped writes to two separate cells.
+
+Precisely two things can go wrong, and each has an exact, narrow recovery
+that restores @lock@ to a value describing reality, never a stale one:
+
+* Retiring the /previous/ generation (@cancel@, or awaiting its own
+  @done@) itself throws or is cancelled: @lock@ is restored to the exact
+  same 'Running' value it held before this call -- nothing has actually
+  changed yet (in production, @cancel@ has already sent
+  'Control.Exception.ThreadKilled', so a subsequent retry's own @cancel@
+  and @readMVar@ are simply repeated, both idempotent against an
+  already-dying\/already-terminated target and an already-filled
+  completion cell), so this is always safe to retry.
+* The previous generation (if any) was already confirmed retired, but
+  acquiring\/spawning the /replacement/ then fails or this thread is
+  cancelled: @lock@ is set to 'NotStarted' -- never the stale previous
+  'Running' value, which no longer describes anything live -- so a
+  subsequent attempt starts fresh rather than trying to re-retire a
+  generation that is already gone.
+
+Only 'restore acquire' itself ever runs unmasked (matching every prior
+version of this protocol): everything else -- consulting\/retiring the
+previous generation, spawning the replacement, and publishing its handle
+-- executes under one unbroken 'Control.Exception.mask', so there is no
+gap, masked or otherwise, in which an asynchronous exception could leave
+@lock@ describing something that is no longer true.
+-}
+restartManagedGenerationUsing
+  :: MVar (RestartState handle)
+  -- ^ lock: the single authoritative state cell. Also serves as the
+  -- mutual-exclusion lock serializing every caller of this function and
+  -- 'stopManagedGeneration' against each other.
   -> (((forall a. IO a -> IO a) -> IO ()) -> IO handle)
   -- ^ spawn: stands in for 'Control.Concurrent.forkIOWithUnmask' -- see
   -- 'forkTransferringOwnershipUsing' for why a test substitute matters.
-  -> MVar (Either SomeException ())
-  -- ^ done: filled with 'Left' here only if no child was ever spawned;
-  -- otherwise left for that child's own eventual 'shutdownThenDeliver'.
+  -> (handle -> IO ())
+  -- ^ cancel: deliver a cancellation signal to a previous generation
+  -- (production: 'Control.Concurrent.killThread'). Awaiting its actual
+  -- termination is this function's own job (via that generation's own
+  -- @done@, already held in @lock@) -- @cancel@ itself need only signal.
   -> IO res
+  -- ^ acquire: the new generation's resource (production:
+  -- 'Application.getApplicationRepl').
   -> (res -> IO ())
+  -- ^ release: run if @acquire@ succeeds but @spawn@ then fails.
   -> (res -> IO b)
-  -> (res -> Either SomeException b -> IO ())
-  -> (handle -> IO ())
-  -- ^ cancel: cancel the spawned child and wait for it to have
-  -- genuinely, synchronously finished (and, in production, for @done@
-  -- to have been filled by its finalizer) -- used only if @publish@
-  -- itself fails.
-  -> (handle -> IO ())
-  -- ^ publish: durably record @handle@ before this function returns.
-  -> IO handle
-acquireThenForkTransferringOwnershipGuardedUsing gate spawn done acquire release body finalize cancel publish =
-  mask $ \restore -> do
-    gate
-    outcome <- try @SomeException do
-      res <- restore acquire
-      handle <-
-        spawn (\unmask -> try (unmask (body res)) >>= \o -> mask_ (finalize res o))
-          `onException` release res
-      publish handle `onException` cancel handle
-      pure handle
-    case outcome of
-      Right handle -> pure handle
-      Left err -> do
-        -- 'tryPutMVar' never overwrites an already-full cell (see this
-        -- function's own Haddock): if @cancel@ above already delivered
-        -- a cancelled child's own terminal result into @done@, this is
-        -- a harmless no-op against an already-filled cell; if no child
-        -- was ever spawned, this is the one and only place that will
-        -- ever fill it. 'mask_' matches 'shutdownThenDeliver''s own
-        -- identical guard: without it, a second asynchronous exception
-        -- landing in the narrow window between catching @err@ and
-        -- 'tryPutMVar' actually completing could interrupt this
-        -- non-blocking write itself.
-        _ <- mask_ (tryPutMVar done (Left err))
-        throwIO err
+  -- ^ body: the new generation's own workload (production: running
+  -- Warp).
+  -> (res -> Either SomeException b -> MVar (Either SomeException ()) -> IO ())
+  -- ^ finalize: run (masked) once @body@ exits, for any reason, with
+  -- this generation's own freshly created completion cell -- typically
+  -- @\\res outcome newDone -> shutdownThenDeliver (release' res) newDone@.
+  -> IO ()
+restartManagedGenerationUsing lock spawn cancel acquire release body finalize = mask $ \restore -> do
+  priorState <- takeMVar lock
+  retireResult <- try @SomeException (retirePrior priorState)
+  case retireResult of
+    Left err -> do
+      -- Retiring the previous generation (if any) itself failed or was
+      -- cancelled: nothing has actually changed, so restore exactly what
+      -- was there -- see this function's own Haddock for why repeating
+      -- that retirement later is always safe.
+      putMVar lock priorState
+      throwIO err
+    Right () -> do
+      startResult <- try @SomeException (acquireAndSpawn restore)
+      case startResult of
+        Right (handle, newDone) -> putMVar lock (Running handle newDone)
+        Left err -> do
+          -- The previous generation (if any) is already confirmed
+          -- retired; only starting its replacement failed, so there is
+          -- nothing live for @lock@ to describe.
+          putMVar lock (StartFailed err)
+          throwIO err
+ where
+  retirePrior = \case
+    NotStarted -> pure ()
+    StartFailed _ -> pure ()
+    Running priorHandle priorDone -> do
+      cancel priorHandle
+      () <$ readMVar priorDone
 
--- | 'acquireThenForkTransferringOwnershipGuardedUsing', fixed to
--- production's 'Control.Concurrent.forkIOWithUnmask'.
-acquireThenForkTransferringOwnershipGuarded
-  :: IO ()
-  -> MVar (Either SomeException ())
+  acquireAndSpawn restore = do
+    res <- restore acquire
+    newDone <- newEmptyMVar
+    handle <-
+      spawn (\unmask -> try (unmask (body res)) >>= \outcome -> mask_ (finalize res outcome newDone))
+        `onException` release res
+    pure (handle, newDone)
+
+-- | 'restartManagedGenerationUsing', fixed to production's
+-- 'Control.Concurrent.forkIOWithUnmask'.
+restartManagedGeneration
+  :: MVar (RestartState ThreadId)
+  -> (ThreadId -> IO ())
   -> IO res
   -> (res -> IO ())
   -> (res -> IO b)
-  -> (res -> Either SomeException b -> IO ())
-  -> (ThreadId -> IO ())
-  -> (ThreadId -> IO ())
-  -> IO ThreadId
-acquireThenForkTransferringOwnershipGuarded gate = acquireThenForkTransferringOwnershipGuardedUsing gate forkIOWithUnmask
+  -> (res -> Either SomeException b -> MVar (Either SomeException ()) -> IO ())
+  -> IO ()
+restartManagedGeneration lock = restartManagedGenerationUsing lock forkIOWithUnmask
+
+{- | Cancel the currently running generation (if any), fully serialized
+against 'restartManagedGenerationUsing' via the same @lock@, leaving
+@lock@ as 'NotStarted' once genuinely confirmed stopped. Returns 'True'
+if there was a live generation to stop, 'False' if @lock@ was already
+'NotStarted'\/'StartFailed'.
+
+Used by @app\/DevelMain.hs@'s standalone @shutdown@, which (before this
+fix) read\/killed its 'Foreign.Store'-published 'ThreadId' entirely
+outside of @update@\/@restartAppInNewThread@'s own protection -- a
+concurrent @update@ call could race it. Serializing both through the
+same @lock@ closes that gap too.
+
+If cancelling\/awaiting the live generation is itself interrupted (this
+thread receives an asynchronous exception while blocked on the genuinely
+interruptible 'Control.Concurrent.MVar.readMVar' inside), @lock@ is
+restored to the exact 'Running' value it held before -- never silently
+marked 'NotStarted' while that generation might still, in fact, be alive
+-- so this caller can always itself still be interrupted, and a failed
+stop attempt never lets a live child's dependencies be released nor
+lets a later caller believe nothing is running.
+-}
+stopManagedGeneration :: MVar (RestartState handle) -> (handle -> IO ()) -> IO Bool
+stopManagedGeneration lock cancel = mask $ \restore -> do
+  priorState <- takeMVar lock
+  case priorState of
+    NotStarted -> putMVar lock NotStarted >> pure False
+    StartFailed _ -> putMVar lock NotStarted >> pure False
+    Running priorHandle priorDone -> do
+      result <- try @SomeException (cancel priorHandle >> restore (() <$ readMVar priorDone))
+      case result of
+        Right () -> putMVar lock NotStarted >> pure True
+        Left err -> putMVar lock priorState >> throwIO err

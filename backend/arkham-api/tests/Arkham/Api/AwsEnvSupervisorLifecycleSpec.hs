@@ -40,21 +40,20 @@ import Api.Arkham.AwsEnvSupervisor (
  )
 import Api.Arkham.Helpers (tryRedis_)
 import Api.Arkham.Lifecycle (
-  acquireThenForkTransferringOwnershipGuarded,
-  acquireThenForkTransferringOwnershipGuardedUsing,
+  RestartState (..),
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
-  consumePreviousShutdownReplayable,
-  consumePreviousShutdownReplayableUsing,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
   raceManaged_,
   releaseAll,
-  restartGateForPreviousGeneration,
+  restartManagedGeneration,
+  restartManagedGenerationUsing,
   shutdownThenDeliver,
+  stopManagedGeneration,
  )
 import Arkham.Prelude
-import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId, threadDelay)
+import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay)
 import Control.Exception qualified as Exception
 import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Test.Hspec
@@ -244,128 +243,106 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
   first generation (before any child is ever spawned to eventually fill
   @done@ via 'shutdownThenDeliver') left @done@ permanently empty, so
   /every/ later @update@ call would take the \"already running\" branch
-  and block forever inside 'consumePreviousShutdownReplayable''s own
-  'Control.Concurrent.MVar.readMVar' against a cell nothing was ever
-  going to fill -- deadlocking restart permanently.
+  and block forever waiting on a cell nothing was ever going to fill --
+  deadlocking restart permanently.
 
-  These tests exercise 'acquireThenForkTransferringOwnershipGuarded'\/
-  'acquireThenForkTransferringOwnershipGuardedUsing' directly -- the
-  *exact* single-masked-transaction combinator @DevelMain.hs@'s @start@
-  now calls, with an injected @gate@ (@'pure' ()@ for the very first
-  start, 'consumePreviousShutdownReplayable' @done@ for a restart) -- not
-  a locally-mirrored composition of separately-scoped combinators, so a
-  regression at either the gate or the acquire\/spawn\/publish transition
-  is caught here directly. See 'acquireThenForkTransferringOwnershipGuarded''s
-  own Haddock for why this single-mask design makes an earlier
-  @transferred@-flag-based version of this wrapper (and the HIGH-severity
-  stale-overwrite hazard it existed to close) structurally unnecessary
-  rather than merely narrower.
+  A /later/, independent review found the first fix for that
+  (@restartGateForPreviousGeneration@\/@consumePreviousShutdownReplayable@,
+  plus two separately-populated 'Foreign.Store' slots) was still
+  structurally unsound: every generation shared the exact same @done@
+  'Control.Concurrent.MVar.MVar' across restarts, so a first-generation
+  acquisition\/spawn failure (filling that shared cell with 'Left', but
+  never durably publishing a 'Control.Concurrent.ThreadId') left a
+  /later/, entirely successful generation's own eventual shutdown result
+  silently discarded by 'Control.Concurrent.MVar.tryPutMVar' (which can
+  never overwrite an already-full cell) -- corrupting every subsequent
+  restart's view of \"did the previous generation actually stop cleanly\"
+  with a stale, unrelated failure from a generation that was never even
+  spawned.
+
+  These tests exercise 'restartManagedGeneration'\/'restartManagedGenerationUsing'
+  directly -- the *exact* single-masked, single-lock transaction
+  @DevelMain.hs@'s @update@ now calls -- so a regression at the lock's own
+  state transitions, or the acquire\/spawn\/publish transition, is caught
+  here directly, not merely in a locally-mirrored composition.
   -}
-  describe "acquireThenForkTransferringOwnershipGuarded (DevelMain start: single-masked gate + acquire + spawn + publish)" do
-    it "a failed very-first start durably publishes Left, so every subsequent restart attempt fails immediately (never blocks) and never starts a replacement" do
-      done <- newEmptyMVar
-      replacementStartedRef <- newIORef False
+  describe "restartManagedGenerationUsing (DevelMain update: single-masked, single-lock RestartState transaction)" do
+    it "a failed very-first start publishes StartFailed (not NotStarted, but functionally identical), so a subsequent restart attempt retries immediately -- never blocks, never replays a stale failure" do
+      lock <- newMVar NotStarted
       acquireAttempted <- newIORef (0 :: Int)
       let failingAcquire = atomicModifyIORef' acquireAttempted (\n -> (n + 1, ())) >> Exception.throwIO (userError "initial acquisition failed") :: IO String
           release _ = pure ()
           body _ = pure ()
-          finalize _ (_ :: Either SomeException ()) = pure ()
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
           cancelChild _ = expectationFailure "cancel should never run: nothing was ever spawned"
-          publish _ = expectationFailure "publish should never run: nothing was ever spawned"
-      -- Mirrors 'DevelMain.update''s @Nothing@ branch exactly: @gate =
-      -- 'pure' ()@, since there is no previous generation to consult yet.
       result1 <-
         Exception.try @SomeException
-          (acquireThenForkTransferringOwnershipGuarded (pure ()) done failingAcquire release body finalize cancelChild publish)
+          (restartManagedGenerationUsing lock forkIOWithUnmask cancelChild failingAcquire release body finalize)
       case result1 of
         Left _ -> pure ()
-        Right (_ :: ThreadId) -> expectationFailure "expected the failing initial start to propagate"
+        Right () -> expectationFailure "expected the failing initial start to propagate"
       readIORef acquireAttempted `shouldReturn` 1
-      -- The cell is durably filled -- not left empty -- immediately after
-      -- the failure, with no need for any other thread to ever fill it.
-      filled <- readMVar done
-      case filled of
-        Left _ -> pure ()
-        Right () -> expectationFailure "expected done to be durably filled with Left after the failing initial start"
-      -- Mirrors 'DevelMain.update''s @Just@ branch on the *second* call:
-      -- gate = 'consumePreviousShutdownReplayable' done must fail
-      -- immediately (observing the same Left), never block, and never
-      -- reach @acquire@ (i.e. never start a replacement generation).
+      afterFirstFailure <- readMVar lock
+      case afterFirstFailure of
+        StartFailed _ -> pure ()
+        _ -> expectationFailure "expected the lock to read StartFailed after a failed very-first start"
+      -- A second attempt must retry immediately (StartFailed is gated
+      -- exactly like NotStarted), not replay the same failure forever.
       result2 <-
         Exception.try @SomeException
-          ( acquireThenForkTransferringOwnershipGuarded
-              (consumePreviousShutdownReplayable done)
-              done
-              (atomicModifyIORef' acquireAttempted (\n -> (n + 1, ())) >> writeIORef replacementStartedRef True >> pure ("acquired" :: String))
-              release
-              body
-              finalize
-              cancelChild
-              publish
-          )
+          (restartManagedGenerationUsing lock forkIOWithUnmask cancelChild failingAcquire release body finalize)
       case result2 of
         Left _ -> pure ()
-        Right (_ :: ThreadId) -> expectationFailure "expected the second restart attempt to observe the same durable failure"
-      readIORef replacementStartedRef `shouldReturn` False
-      readIORef acquireAttempted `shouldReturn` 1
-      -- A third attempt observes the exact same failure again, still
-      -- without blocking or starting a replacement -- the cell is never
-      -- silently drained by a failing read.
-      result3 <-
-        Exception.try @SomeException
-          (acquireThenForkTransferringOwnershipGuarded (consumePreviousShutdownReplayable done) done failingAcquire release body finalize cancelChild publish)
-      case result3 of
-        Left _ -> pure ()
-        Right (_ :: ThreadId) -> expectationFailure "expected the third restart attempt to observe the same durable failure"
-      readIORef replacementStartedRef `shouldReturn` False
+        Right () -> expectationFailure "expected the second attempt to also fail (it uses the same failing acquire), but it must have genuinely retried"
+      readIORef acquireAttempted `shouldReturn` 2
 
-    it "a failed spawn (not just a synchronous acquisition failure) is published identically, without ever reaching release/cancel/publish" do
-      done <- newEmptyMVar
+    it "a failed spawn (not just a synchronous acquisition failure) releases the acquired resource and publishes StartFailed" do
+      lock <- newMVar NotStarted
+      releaseCalled <- newIORef False
       let acquire = pure ("acquired-resource" :: String)
-          release _ = expectationFailure "release should never run: acquire succeeded, so it must be the spawned child's own finalize that owns cleanup, but spawn itself never produced a handle"
+          release _ = writeIORef releaseCalled True
           body _ = pure ()
-          finalize _ (_ :: Either SomeException ()) = pure ()
-          cancelChild _ = expectationFailure "cancel should never run: spawn itself never produced a handle"
-          publish _ = expectationFailure "publish should never run: spawn itself never produced a handle"
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
+          cancelChild _ = expectationFailure "cancel should never run: no previous generation existed"
           fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
           fakeSpawn _ = Exception.throwIO Exception.ThreadKilled
       result <-
         Exception.try @SomeException
-          (acquireThenForkTransferringOwnershipGuardedUsing (pure ()) fakeSpawn done acquire release body finalize cancelChild publish)
+          (restartManagedGenerationUsing lock fakeSpawn cancelChild acquire release body finalize)
       case result of
         Left _ -> pure ()
-        Right (_ :: ThreadId) -> expectationFailure "expected the failing spawn to propagate"
-      outcome <- readMVar done
-      case outcome of
-        Left _ -> pure ()
-        Right () -> expectationFailure "expected the failed spawn to be published as Left"
+        Right () -> expectationFailure "expected the failing spawn to propagate"
+      readIORef releaseCalled `shouldReturn` True
+      final <- readMVar lock
+      case final of
+        StartFailed _ -> pure ()
+        _ -> expectationFailure "expected the lock to read StartFailed after a failed spawn"
 
     {- | Deterministic (non-racy), matching the equivalent
-    'forkTransferringOwnershipUsing' test above: the fake @spawn@ blocks
-    forever until the tester's own cancellation interrupts it, so this is
-    the only way the call can ever proceed at all -- no timing race
-    against a real, essentially-uninterruptible 'forkIOWithUnmask' to
-    lose. Proves the acquired resource is already protected (masked, with
-    @release@ installed) the instant @acquire@ returns, even though no
-    separate statement has run yet to say so.
+    'forkTransferringOwnershipUsing' test: the fake @spawn@ blocks forever
+    until the tester's own cancellation interrupts it, so this is the
+    only way the call can ever proceed at all -- no timing race against a
+    real, essentially-uninterruptible 'forkIOWithUnmask' to lose. Proves
+    the acquired resource is already protected (masked, with @release@
+    installed) the instant @acquire@ returns, even though no separate
+    statement has run yet to say so.
     -}
     it "releases the resource if this thread is asynchronously cancelled strictly between acquisition returning and the spawn producing a handle" do
       released <- newEmptyMVar
       spawnReached <- newEmptyMVar
       neverFilled <- newEmptyMVar
-      done <- newEmptyMVar
+      lock <- newMVar NotStarted
       let acquire = pure ("acquired-resource" :: String)
           release _ = putMVar released ()
           body _ = threadDelay maxBound
-          finalize _ (_ :: Either SomeException ()) = pure ()
-          cancelChild _ = expectationFailure "cancel should never run: spawn itself never produced a handle"
-          publish _ = expectationFailure "publish should never run: spawn itself never produced a handle"
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
+          cancelChild _ = expectationFailure "cancel should never run: no previous generation existed"
           fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
           fakeSpawn _threadBody = putMVar spawnReached () >> takeMVar neverFilled >> error "unreachable"
       callerResult <- newEmptyMVar
       callerTid <- forkIO do
         result <- Exception.try @Exception.AsyncException do
-          acquireThenForkTransferringOwnershipGuardedUsing (pure ()) fakeSpawn done acquire release body finalize cancelChild publish
+          restartManagedGenerationUsing lock fakeSpawn cancelChild acquire release body finalize
         putMVar callerResult result
       takeMVar spawnReached
       Exception.throwTo callerTid Exception.ThreadKilled
@@ -375,167 +352,116 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         _ -> False
       readMVar released `shouldReturn` ()
 
-    it "propagates an acquisition failure without calling release, spawn, cancel, or publish" do
-      done <- newEmptyMVar
+    it "propagates an acquisition failure without calling release, spawn, or cancel" do
+      lock <- newMVar NotStarted
       spawnCalled <- newIORef False
       releaseCalled <- newIORef False
       let acquire = Exception.throwIO (userError "getApplicationRepl failed") :: IO String
           release _ = writeIORef releaseCalled True
           body _ = pure ()
-          finalize _ (_ :: Either SomeException ()) = pure ()
-          cancelChild _ = expectationFailure "cancel should never run: nothing was ever spawned"
-          publish _ = expectationFailure "publish should never run: nothing was ever spawned"
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
+          cancelChild _ = expectationFailure "cancel should never run: no previous generation existed"
           fakeSpawn :: ((forall a. IO a -> IO a) -> IO ()) -> IO ThreadId
           fakeSpawn _ = writeIORef spawnCalled True >> myThreadId
       outcome <-
         Exception.try @Exception.SomeException do
-          acquireThenForkTransferringOwnershipGuardedUsing (pure ()) fakeSpawn done acquire release body finalize cancelChild publish
+          restartManagedGenerationUsing lock fakeSpawn cancelChild acquire release body finalize
       case outcome of
         Left _ -> pure ()
-        Right (_ :: ThreadId) -> expectationFailure "expected the acquisition failure to propagate"
+        Right () -> expectationFailure "expected the acquisition failure to propagate"
       readIORef spawnCalled `shouldReturn` False
       readIORef releaseCalled `shouldReturn` False
 
-    {- | Structural (not flag-based) regression for the HIGH-severity
-    finding that a naive, unconditional \"any exception escaping @start@
-    means no child was created\" version of this wrapper would overwrite
-    @done@ with a stale, spurious 'Left' even when a live, already-tracked
-    child exists. Mirrors 'DevelMain.start''s exact @cancel@\/@finalize@
-    composition: @finalize@ delivers the child's own outcome into @done@
-    via 'shutdownThenDeliver' (exactly as @DevelMain@'s does), and
-    @cancel@ (@killThread tid >> (() <$ readMVar done)@, matching
-    @DevelMain.hs@'s own @cancel@ exactly) genuinely waits for that
-    delivery before returning -- so by the time this function's own final
-    'Control.Concurrent.MVar.tryPutMVar' could run (because @publish@
-    itself then throws), @done@ has *already* been filled by the
-    cancelled child's own finalizer, and 'Control.Concurrent.MVar.tryPutMVar'
-    can never overwrite it.
-
-    @publish@ below only throws /after/ observing (via @bodyFinished@)
-    that the spawned child's own @body@ has already run to completion --
-    without this, @killThread@ could instead race a still-in-flight
-    @body@ and genuinely interrupt it, delivering some cancellation-
-    classified 'Left' into @done@ rather than @body@'s own 'Right ()',
-    which is a fact about /which/ outcome the child genuinely produced,
-    not about whether that outcome can be overwritten (the actual subject
-    of this test) -- so this ordering exists purely to make the observed
-    outcome deterministic, not to influence the overwrite proof itself.
-
-    Mutation check: replacing @cancelChild@ with a version that merely
-    @killThread@s without ever waiting for @done@ to be filled (the
-    pre-fix hazard, reachable if 'acquireThenForkTransferringOwnershipGuardedUsing'
-    stopped awaiting @cancel@ before its own final 'tryPutMVar') makes
-    this test fail: it would then observe @done@ filled with the publish
-    failure's spurious 'Left', not the child's own genuine 'Right ()'.
+    {- | The structural fix itself, proven end-to-end: an earlier failed
+    /initial/ start (which never spawned any child) must never corrupt a
+    /later/, entirely successful generation's own eventual shutdown
+    result. Under the old shared-@done@ design, this exact sequence would
+    have left the later generation's own genuine 'Right ()' silently
+    discarded by a 'Control.Concurrent.MVar.tryPutMVar' racing an
+    already-full, stale cell. Here, each generation owns its own freshly
+    created completion cell (see 'Running'), so there is nothing left for
+    the two attempts to ever collide over.
     -}
-    it "does not overwrite done with a stale failure once cancel has already awaited the spawned child's own terminal delivery" do
-      done <- newEmptyMVar
-      finalizeCount <- newIORef (0 :: Int)
-      -- Deterministically sequences the race this test needs to prove
-      -- something about: 'publish' below only throws /after/ observing
-      -- that 'body' has already run to completion (its own last
-      -- statement, filling 'bodyFinished', has already executed) -- so
-      -- the spawned child's own 'try (unmask (body res))' is
-      -- overwhelmingly certain to have already recorded 'Right ()' by
-      -- the time 'publish''s exception can propagate out to 'cancel'
-      -- (which still requires several further stack frames to unwind on
-      -- this thread), rather than leaving the child's own outcome to an
-      -- unconstrained race against 'killThread'.
-      bodyFinished <- newEmptyMVar
-      let acquire = pure ("acquired-resource" :: String)
+    it "structural fix: a failed initial start never corrupts a later, successful generation's own completion cell" do
+      lock <- newMVar NotStarted
+      let failingAcquire = Exception.throwIO (userError "initial acquisition failed") :: IO String
           release _ = pure ()
-          body _ = putMVar bodyFinished ()
-          finalize _ (outcome :: Either SomeException ()) = do
-            atomicModifyIORef' finalizeCount (\n -> (n + 1, ()))
-            shutdownThenDeliver (either Exception.throwIO pure outcome) done
-          cancelChild tid = killThread tid >> (() <$ readMVar done)
-          publish _ = takeMVar bodyFinished >> Exception.throwIO (userError "publish failed")
-      result <-
-        Exception.try @Exception.SomeException do
-          acquireThenForkTransferringOwnershipGuarded (pure ()) done acquire release body finalize cancelChild publish
-      case result of
-        Left err -> show err `shouldContain` "publish failed"
-        Right (_ :: ThreadId) -> expectationFailure "expected the publish failure to propagate"
-      readIORef finalizeCount `shouldReturn` 1
-      delivered <- readMVar done
-      case delivered of
-        Right () -> pure ()
-        Left err -> expectationFailure ("expected the live child's own genuine outcome (Right ()) to have already filled done, not be overwritten by the publish failure; got Left " <> show err)
+          body _ = pure ()
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
+          cancelChild _ = expectationFailure "cancel should never run: nothing was ever spawned"
+      _ <-
+        Exception.try @SomeException
+          (restartManagedGenerationUsing lock forkIOWithUnmask cancelChild failingAcquire release body finalize)
+          :: IO (Either SomeException ())
+      -- Now start a genuinely successful generation, whose body blocks
+      -- forever (so it can be observed live) until explicitly finalized.
+      bodyStarted <- newEmptyMVar
+      let goodAcquire = pure ("acquired-resource" :: String)
+          goodBody _ = putMVar bodyStarted () >> forever (threadDelay maxBound)
+          goodFinalize _ (outcome :: Either SomeException ()) newDone = shutdownThenDeliver (either Exception.throwIO pure outcome) newDone
+      restartManagedGeneration lock killThread goodAcquire release goodBody goodFinalize
+      takeMVar bodyStarted
+      running <- readMVar lock
+      case running of
+        Running tid newDone -> do
+          -- Cancel this genuinely live generation and confirm ITS OWN
+          -- completion cell receives ITS OWN outcome (a cancellation,
+          -- not the earlier, unrelated initial failure).
+          killThread tid
+          delivered <- readMVar newDone
+          case delivered of
+            Left _ -> pure ()
+            Right () -> expectationFailure "expected the cancelled generation's own outcome (a Left), not a stale value"
+        _ -> expectationFailure "expected the lock to read Running after a successful start"
 
-    {- | Structural, non-probabilistic regression for the exact
-    async-exception-safety gap identified in independent review: the
-    entire span from @gate@ consulting @done@ through @publish@
-    committing must run under one continuous
+    {- | Structural, non-probabilistic regression for the async-exception-
+    safety gap identified in independent review: the entire span from
+    consulting a previous 'Running' generation through publishing the
+    replacement's own handle must run under one continuous
     'Control.Exception.mask'\/'restore' boundary (restoring only around
-    @acquire@ itself), never two independently-scoped masks with ordinary
-    unmasked bookkeeping code running in between. Rather than racing a
-    real exception against that window, this observes
-    'Control.Exception.getMaskingState' /from directly inside/ it via
-    'consumePreviousShutdownReplayableUsing''s test-only hook, called as
-    the injected @gate@: it must read as
-    'Control.Exception.MaskedInterruptible', never
-    'Control.Exception.Unmasked'.
-
-    Mutation check: reverting 'acquireThenForkTransferringOwnershipGuardedUsing'
-    to a design that calls @gate@ *before* entering its own 'mask' (e.g.
-    composing two separately-scoped combinators, as an earlier version of
-    this codebase did) makes this same hook observe
-    'Control.Exception.Unmasked' instead, failing deterministically.
+    @acquire@ itself), never with ordinary unmasked bookkeeping code in
+    between. Rather than racing a real exception against that window,
+    this observes 'Control.Exception.getMaskingState' /from directly
+    inside/ it, via the injected @cancel@ callback -- called exactly
+    while retiring a previous 'Running' generation, still inside
+    'restartManagedGenerationUsing''s own single 'mask'.
     -}
-    it "the entire gate-through-publish transaction is masked: the window immediately after consuming a previous success is genuinely protected" do
-      done <- newMVar (Right ())
-      maskingStateAfterConsume <- newEmptyMVar
-      let afterConsume = Exception.getMaskingState >>= putMVar maskingStateAfterConsume
+    it "the entire retire-through-publish transaction is masked: cancelling a previous generation happens under genuine protection" do
+      priorDone <- newMVar (Right ())
+      priorTid <- forkIO (forever (threadDelay maxBound))
+      lock <- newMVar (Running priorTid priorDone)
+      maskingStateDuringCancel <- newEmptyMVar
+      let cancelChild tid = do
+            Exception.getMaskingState >>= putMVar maskingStateDuringCancel
+            killThread tid
           acquire = pure ("acquired-resource" :: String)
           release _ = pure ()
           body _ = threadDelay maxBound
-          finalize _ (_ :: Either SomeException ()) = pure ()
-          cancelChild tid = killThread tid >> (() <$ readMVar done)
-          publish _ = pure ()
-      spawned <-
-        acquireThenForkTransferringOwnershipGuarded
-          (consumePreviousShutdownReplayableUsing afterConsume done)
-          done
-          acquire
-          release
-          body
-          finalize
-          cancelChild
-          publish
-      observed <- takeMVar maskingStateAfterConsume
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
+      restartManagedGeneration lock cancelChild acquire release body finalize
+      observed <- takeMVar maskingStateDuringCancel
       observed `shouldBe` Exception.MaskedInterruptible
       -- Ownership was durably transferred; clean it up like a genuine
       -- restart would.
-      killThread spawned
+      Running newTid _ <- readMVar lock
+      killThread newTid
 
     {- | Regression for the async-exception-safety gap identified in
-    independent review: after the gate's own 'takeMVar' consumes a
-    previous 'Right ()' but before @acquire@ genuinely begins, an
-    asynchronous exception targeting this thread must not be delivered in
-    that narrow window (which would abort the call with @done@ left
-    permanently empty, since nothing would ever catch it to write a
-    replayable 'Left' back). 'GHC.Conc.throwTo' blocks the calling thread
-    until the target thread actually receives the exception -- so, by
-    making @acquire@ itself the /only/ operation in this whole call that
-    can ever actually block (a 'takeMVar' on an 'MVar' nothing will ever
-    fill, which remains interruptible even under 'Control.Exception.mask'
-    by design), a successful, unblocked return from 'Exception.throwTo'
-    below can /only/ mean the exception was delivered there, at or after
-    @acquire@ genuinely began running -- never any earlier, during the
-    masked gate\/bookkeeping (which never blocks here, since @done@
-    already holds a value, and so is never itself an interruption point).
-
-    Mutation check: removing the 'Control.Exception.mask' spanning
-    @gate@ through @acquire@ (reverting to two separately-scoped masks
-    with unmasked bookkeeping in between) makes the canary exception's
-    delivery point non-deterministic -- it can arrive before @acquire@
-    ever begins, interrupting the gate's own bookkeeping itself, in which
-    case @done@ is left neither holding a replayable 'Left' nor its
-    original 'Right' having ever been restored -- exactly the leak this
-    fix closes.
+    independent review: after retiring a previous generation (here,
+    'NotStarted' -- nothing to retire) but before @acquire@ genuinely
+    begins, an asynchronous exception targeting this thread must not be
+    delivered in that narrow window (which would abort the call with the
+    lock left in an inconsistent state). By making @acquire@ itself the
+    /only/ operation in this whole call that can ever actually block (a
+    'Control.Concurrent.MVar.takeMVar' on an 'Control.Concurrent.MVar.MVar'
+    nothing will ever fill, which remains interruptible even under
+    'Control.Exception.mask' by design), a successful, unblocked return
+    from 'Control.Exception.throwTo' below can /only/ mean the exception
+    was delivered there, at or after @acquire@ genuinely began running --
+    never any earlier, during masked bookkeeping.
     -}
-    it "defers a canary asynchronous exception through the just-consumed-success bookkeeping, delivering it only once acquire is genuinely running, where it is caught and safely re-recorded rather than lost with done left empty" do
-      done <- newMVar (Right ())
+    it "defers a canary asynchronous exception through masked bookkeeping, delivering it only once acquire is genuinely running, where it is caught and safely re-recorded as StartFailed" do
+      lock <- newMVar NotStarted
       neverFilled <- newEmptyMVar
       caughtInsideAcquire <- newEmptyMVar
       resultVar <- newEmptyMVar
@@ -546,9 +472,8 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
                 Exception.throwIO e
           release _ = pure ()
           body _ = pure ()
-          finalize _ (_ :: Either SomeException ()) = pure ()
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
           cancelChild _ = expectationFailure "cancel should never run: nothing was ever spawned"
-          publish _ = expectationFailure "publish should never run: nothing was ever spawned"
       -- The forking thread is itself masked, so the child inherits
       -- 'Exception.MaskedInterruptible' at birth: this rules out the
       -- exception being delivered before the child has even reached its
@@ -559,7 +484,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         tid <- forkIO do
           result <-
             Exception.try @Exception.SomeException
-              (acquireThenForkTransferringOwnershipGuarded (consumePreviousShutdownReplayable done) done acquire release body finalize cancelChild publish)
+              (restartManagedGenerationUsing lock forkIOWithUnmask cancelChild acquire release body finalize)
           putMVar resultVar result
         Exception.throwTo tid (userError "canary")
       -- 'Exception.throwTo' above only returned because the canary was
@@ -569,14 +494,118 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       outcome <- takeMVar resultVar
       case outcome of
         Left err -> show err `shouldContain` "canary"
-        Right (_ :: ThreadId) -> expectationFailure "expected the delivered canary exception to propagate as this call's result"
-      -- 'done' must hold a replayable failure, never be left permanently
-      -- empty (which would deadlock every future restart attempt).
-      final <- tryTakeMVar done
+        Right () -> expectationFailure "expected the delivered canary exception to propagate as this call's result"
+      final <- readMVar lock
       case final of
-        Just (Left _) -> pure ()
-        Just (Right ()) -> expectationFailure "expected 'done' to be repopulated with Left, not left as the original Right"
-        Nothing -> expectationFailure "expected 'done' to hold a replayable Left, not be left permanently empty"
+        StartFailed _ -> pure ()
+        _ -> expectationFailure "expected the lock to read StartFailed, not be left describing something no longer true"
+
+    it "no overlap/replacement after a failed stop: if retiring the previous generation itself fails, the lock is restored unchanged, and a later retry succeeds" do
+      priorDone <- newEmptyMVar
+      priorTid <- forkIO (forever (threadDelay maxBound))
+      lock <- newMVar (Running priorTid priorDone)
+      cancelAttempts <- newIORef (0 :: Int)
+      let failingCancel _ = atomicModifyIORef' cancelAttempts (\n -> (n + 1, ())) >> Exception.throwIO (userError "cancel failed")
+          acquire = expectationFailure "acquire should never run: retiring the previous generation must fail first" >> pure ("unreachable" :: String)
+          release _ = pure ()
+          body _ = pure ()
+          finalize _ (_ :: Either SomeException ()) _done = pure ()
+      result <-
+        Exception.try @SomeException
+          (restartManagedGenerationUsing lock forkIOWithUnmask failingCancel acquire release body finalize)
+      case result of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the failing cancel to propagate"
+      readIORef cancelAttempts `shouldReturn` 1
+      -- The lock is restored to describe the exact same still-live
+      -- generation -- never silently marked as if it had been retired.
+      unchanged <- readMVar lock
+      case unchanged of
+        Running tid _ | tid == priorTid -> pure ()
+        _ -> expectationFailure "expected the lock to still read the exact same Running generation"
+      killThread priorTid
+      putMVar priorDone (Right ())
+
+    {- | Fully serialized through the shared lock: each concurrent attempt
+    retires whatever the lock currently holds (cancelling and awaiting it)
+    before spawning its own replacement, so no two attempts ever spawn
+    concurrently-live generations, however they interleave. Every attempt
+    must succeed (there is nothing for any of them to genuinely fail on),
+    and the lock must end up describing exactly one live generation --
+    never two, and never left in some torn intermediate state.
+    -}
+    it "concurrent restart attempts fully serialize through the same lock: every attempt succeeds and exactly one generation is left alive" do
+      lock <- newMVar NotStarted
+      let acquire = pure ("acquired-resource" :: String)
+          release _ = pure ()
+          body _ = forever (threadDelay maxBound)
+          finalize _ (outcome :: Either SomeException ()) newDone = shutdownThenDeliver (either Exception.throwIO pure outcome) newDone
+          attempt = Exception.try @SomeException (restartManagedGeneration lock killThread acquire release body finalize) :: IO (Either SomeException ())
+      barrier <- newEmptyMVar
+      resultVars <- mapM (const (newEmptyMVar :: IO (MVar (Either SomeException ())))) [1 .. 5 :: Int]
+      for_ resultVars \resultVar ->
+        void $ forkIO (takeMVar barrier >> attempt >>= putMVar resultVar)
+      mapM_ (const (putMVar barrier ())) [1 .. 5 :: Int]
+      results <- mapM takeMVar resultVars
+      for_ results \result -> case result of
+        Right () -> pure ()
+        Left err -> expectationFailure ("expected every concurrent attempt to succeed, got: " <> show err)
+      final <- readMVar lock
+      case final of
+        Running tid _ -> killThread tid
+        _ -> expectationFailure "expected the lock to read Running after 5 successful concurrent attempts"
+
+  describe "stopManagedGeneration (DevelMain shutdown: serialized against restartManagedGeneration via the same lock)" do
+    it "returns False and leaves the lock NotStarted when nothing has ever been started" do
+      lock <- newMVar NotStarted
+      stopped <- stopManagedGeneration lock killThread
+      stopped `shouldBe` False
+      final <- readMVar lock
+      case final of
+        NotStarted -> pure ()
+        _ -> expectationFailure "expected the lock to still read NotStarted"
+
+    it "returns False and resets StartFailed to NotStarted" do
+      lock <- newMVar (StartFailed (Exception.toException (userError "stale")))
+      stopped <- stopManagedGeneration lock killThread
+      stopped `shouldBe` False
+      final <- readMVar lock
+      case final of
+        NotStarted -> pure ()
+        _ -> expectationFailure "expected StartFailed to reset to NotStarted"
+
+    it "cancels and awaits a live generation, returning True and leaving the lock NotStarted" do
+      readyVar <- newEmptyMVar
+      tid <- forkIO (putMVar readyVar () >> forever (threadDelay maxBound))
+      takeMVar readyVar
+      done <- newEmptyMVar
+      _ <- forkIO (shutdownThenDeliver (pure ()) done)
+      lock <- newMVar (Running tid done)
+      stopped <- stopManagedGeneration lock killThread
+      stopped `shouldBe` True
+      finalAfterStop <- readMVar lock
+      case finalAfterStop of
+        NotStarted -> pure ()
+        _ -> expectationFailure "expected the lock to read NotStarted after a successful stop"
+      status <- waitUntilTerminated tid
+      status `shouldSatisfy` isTerminatedStatus
+
+    it "on a failed stop, restores the exact same Running value rather than reporting NotStarted while the generation might still be alive" do
+      done <- newEmptyMVar
+      tid <- forkIO (forever (threadDelay maxBound))
+      lock <- newMVar (Running tid done)
+      let failingCancel _ = Exception.throwIO (userError "cancel failed")
+      result <- Exception.try @SomeException (stopManagedGeneration lock failingCancel)
+      case result of
+        Left _ -> pure ()
+        Right (_ :: Bool) -> expectationFailure "expected the failing cancel to propagate"
+      unchanged <- readMVar lock
+      case unchanged of
+        Running observedTid _ | observedTid == tid -> pure ()
+        _ -> expectationFailure "expected the lock to still read the exact same Running generation after a failed stop"
+      killThread tid
+      putMVar done (Right ())
+
 
   {- | Regression for the exact @DevelMain.hs@ ordering bug: the old code
   signalled restart readiness (@putMVar done ()@, which unblocks
@@ -637,137 +666,6 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       stopAwsEnvSupervisor oldSup
       stopAwsEnvSupervisor newSup
 
-    it "does NOT start a replacement generation when the previous shutdown itself failed, matching restartAppInNewThread's Left branch" do
-      newSupStartedRef <- newIORef False
-      done <- newEmptyMVar
-      _ <- forkIO (shutdownThenDeliver (Exception.throwIO (userError "old supervisor failed to stop")) done)
-      -- Give 'shutdownThenDeliver' a moment to actually deliver, so this
-      -- exercises the genuine 'MVar' contents rather than racing it.
-      threadDelay (50 * 1000)
-      -- Exercises the exact production 'consumePreviousShutdownReplayable'
-      -- helper that 'DevelMain.restartAppInNewThread' passes as @gate@ to
-      -- 'acquireThenForkTransferringOwnershipGuarded' -- not a
-      -- locally-mirrored case expression -- so a regression that starts a
-      -- replacement on 'Left', or swallows the failure instead of
-      -- propagating it, is directly observable here.
-      propagated <- Exception.try @Exception.SomeException do
-        consumePreviousShutdownReplayable done
-        writeIORef newSupStartedRef True
-      case propagated of
-        Left _ -> pure ()
-        Right () -> expectationFailure "expected the previous shutdown's failure to propagate, not be swallowed"
-      readIORef newSupStartedRef `shouldReturn` False
-
-    it "DOES proceed past the gate when the previous shutdown succeeded, matching restartAppInNewThread's Right branch" do
-      newSupStartedRef <- newIORef False
-      done <- newEmptyMVar
-      shutdownThenDeliver (pure ()) done
-      consumePreviousShutdownReplayable done
-      writeIORef newSupStartedRef True
-      readIORef newSupStartedRef `shouldReturn` True
-
-    {- | Regression for the poisoned-'MVar' half of the MEDIUM lifecycle
-    finding: the earlier, one-shot @Either@-based helper always consumed
-    the previous outcome (even a 'Left') from the shared restart 'MVar'
-    before re-throwing, so a /second/ restart attempt after a failed
-    shutdown would read an already-emptied cell and block forever instead
-    of observing the same failure again. This proves the replacement is
-    genuinely /replayable/: repeated calls against the same still-'Left'
-    'MVar' all fail immediately, none of them ever blocks, and none of
-    them proceeds past the gate.
-
-    Mutation check: reverting 'consumePreviousShutdownReplayable' to
-    consume the 'Left' via 'Control.Concurrent.MVar.takeMVar' instead of
-    peeking with 'Control.Concurrent.MVar.readMVar' makes the *second*
-    call in this test hang forever (an empty 'MVar' with nothing left to
-    ever fill it), rather than failing immediately like the first.
-    -}
-    it "a Left outcome is replayable: repeated restart attempts all fail immediately without blocking or proceeding past the gate" do
-      done <- newEmptyMVar
-      _ <- forkIO (shutdownThenDeliver (Exception.throwIO (userError "old supervisor failed to stop")) done)
-      threadDelay (50 * 1000)
-      let attempt = do
-            newSupStartedRef <- newIORef False
-            outcome <-
-              Exception.try @Exception.SomeException do
-                consumePreviousShutdownReplayable done
-                writeIORef newSupStartedRef True
-            started <- readIORef newSupStartedRef
-            pure (outcome, started)
-      -- Three attempts in a row, each against the *same* 'MVar': every
-      -- one must fail immediately (this whole test itself has a bounded
-      -- runtime under normal hspec timeouts, so a regression to the old
-      -- consuming behaviour would make this test itself hang rather than
-      -- merely fail an assertion).
-      results <- mapM (const attempt) [1 .. 3 :: Int]
-      for_ results \(outcome, started) -> do
-        case outcome of
-          Left _ -> pure ()
-          Right () -> expectationFailure "expected every replay to fail, not just the first"
-        started `shouldBe` False
-
-  {- | Regression for the MEDIUM finding that @DevelMain.hs@'s @update@
-  durably publishes its 'Foreign.Store' slots for @tidRef@\/@done@ (so a
-  /later/ @update@ call takes the \"already running\" branch,
-  'restartAppInNewThread') as ordinary, unmasked statements, strictly
-  before ever calling @start@ (whose own single
-  'Control.Exception.mask', inside
-  'acquireThenForkTransferringOwnershipGuarded', is what actually
-  protects everything from that point on). An asynchronous exception
-  landing in that gap -- after the 'Foreign.Store' slot exists
-  (publishing @tidRef = 'Nothing'@) but before a generation is ever
-  actually spawned -- used to leave a /subsequent/ @update@ call reading
-  @tidRef = 'Nothing'@ and unconditionally treating that as \"a previous
-  generation exists and must be consulted\", calling
-  'consumePreviousShutdownReplayable' on a @done@ that no generation was
-  ever going to fill -- deadlocking every later restart attempt forever.
-  'restartGateForPreviousGeneration' is the exact production fix
-  'DevelMain.restartAppInNewThread' now uses in place of an unconditional
-  @'Control.Concurrent.killThread'@ + 'consumePreviousShutdownReplayable':
-  these tests exercise it directly.
-  -}
-  describe "restartGateForPreviousGeneration (DevelMain restartAppInNewThread's gate: recovers from a Nothing previously-published generation instead of blocking on it)" do
-    it "gates with an immediate no-op when no generation has ever been durably published (Nothing), even though 'done' would otherwise block forever" do
-      -- A permanently empty 'MVar': no generation was ever spawned to
-      -- fill it, so 'consumePreviousShutdownReplayable' called
-      -- unconditionally against it would block forever.
-      done <- newEmptyMVar
-      reached <- timeout (200 * 1000) (restartGateForPreviousGeneration Nothing done)
-      reached `shouldBe` Just ()
-
-    it "kills the previous generation and consumes its already-delivered Right result when one was durably published" do
-      readyVar <- newEmptyMVar
-      tid <- forkIO (putMVar readyVar () >> forever (threadDelay maxBound))
-      takeMVar readyVar
-      done <- newEmptyMVar
-      shutdownThenDeliver (pure ()) done
-      restartGateForPreviousGeneration (Just tid) done
-      status <- waitUntilTerminated tid
-      status `shouldSatisfy` isTerminatedStatus
-      -- 'consumePreviousShutdownReplayable' drains the 'Right' it
-      -- consumed: nothing is left behind for the next generation to
-      -- mistakenly observe.
-      stillEmpty <- timeout (50 * 1000) (readMVar done)
-      stillEmpty `shouldSatisfy` isNothing
-
-    it "propagates (not swallows) a previous generation's delivered Left failure, without killing/proceeding a second time" do
-      readyVar <- newEmptyMVar
-      tid <- forkIO (putMVar readyVar () >> forever (threadDelay maxBound))
-      takeMVar readyVar
-      done <- newEmptyMVar
-      shutdownThenDeliver (Exception.throwIO (userError "previous generation failed to stop")) done
-      outcome <- Exception.try @Exception.SomeException (restartGateForPreviousGeneration (Just tid) done)
-      case outcome of
-        Left err -> show err `shouldContain` "previous generation failed to stop"
-        Right () -> expectationFailure "expected the previous generation's failure to propagate"
-      killThread tid
-
-    it "mutation check: unconditionally consuming (ignoring Nothing/Just) would instead block forever on a Nothing previous generation" do
-      done <- newEmptyMVar
-      let unconditional :: Maybe ThreadId -> MVar (Either Exception.SomeException ()) -> IO ()
-          unconditional _ = consumePreviousShutdownReplayable
-      blocked <- timeout (200 * 1000) (unconditional Nothing done)
-      blocked `shouldBe` Nothing
   {- | Regression for the second MEDIUM lifecycle finding: 'DevelMain.hs's
   @start@ transfers an already-acquired 'App''s remaining lifetime to a
   newly-forked child thread (which runs Warp, then shuts the 'App' down
@@ -1030,8 +928,25 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
   describe "raceManaged_ (always-interruptible race_ replacement used by Api.Arkham.Helpers.pubSubSupervisor)" do
     it "returns the winner's own successful result, having already cancelled and genuinely awaited the loser before returning" do
       loserCleanedUp <- newIORef False
-      let winner = pure ()
-          loser = Exception.finally (forever (threadDelay maxBound)) (writeIORef loserCleanedUp True)
+      loserReady <- newEmptyMVar
+      let -- The winner deliberately waits for the loser's own readiness
+          -- signal (put from strictly *inside* 'Exception.finally''s own
+          -- protected region, once it is genuinely blocked in the
+          -- interruptible 'threadDelay') before completing, so
+          -- 'raceManaged_''s decision to cancel the loser can only ever
+          -- happen once the loser is already safely past the narrow,
+          -- unavoidable window (common to *any* freshly-unmasked thread,
+          -- not specific to 'raceManaged_') between a forked thread
+          -- first becoming interruptible and its own first protective
+          -- construct (here, 'Exception.finally') actually having run --
+          -- a bare, unsynchronized @winner = pure ()@ can race that
+          -- window and let a genuinely-delivered 'Exception.ThreadKilled'
+          -- land before 'Exception.finally' ever installs its own
+          -- handler, skipping the write below despite 'raceManaged_'
+          -- itself behaving correctly. This is a property of the
+          -- /test's/ own synchronization, not of 'raceManaged_'.
+          winner = takeMVar loserReady
+          loser = Exception.finally (putMVar loserReady () >> forever (threadDelay maxBound)) (writeIORef loserCleanedUp True)
       result <- raceManaged_ winner loser
       case result of
         Right () -> pure ()
@@ -1045,8 +960,14 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
 
     it "propagates the winner's own synchronous failure as Left, having already cancelled and awaited the loser first" do
       loserCleanedUp <- newIORef False
-      let winner = Exception.throwIO (userError "winning side failed synchronously")
-          loser = Exception.finally (forever (threadDelay maxBound)) (writeIORef loserCleanedUp True)
+      loserReady <- newEmptyMVar
+      let -- See the previous test's Haddock for exactly why the winner
+          -- must wait for the loser's own readiness signal, put from
+          -- inside 'Exception.finally''s protected region, rather than
+          -- completing (here, throwing) unconditionally and
+          -- unsynchronized.
+          winner = takeMVar loserReady >> Exception.throwIO (userError "winning side failed synchronously")
+          loser = Exception.finally (putMVar loserReady () >> forever (threadDelay maxBound)) (writeIORef loserCleanedUp True)
       result <- raceManaged_ winner loser
       case result of
         Left err -> show err `shouldContain` "winning side failed synchronously"

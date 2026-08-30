@@ -12,6 +12,7 @@ import Api.Arkham.AwsEnvSupervisor (
   ChildReleaseTimedOutException (..),
   ConfigProfileResolvers (..),
   DemandDrivenSupervisor,
+  ManagedEnvAcquisition,
   SupervisedEnv,
   SupervisedEnvState (..),
   acquireRegionBeforeAuth,
@@ -19,6 +20,8 @@ import Api.Arkham.AwsEnvSupervisor (
   classifyErrorDiagnostic,
   managedFetchAuthInBackground,
   newDemandDrivenSupervisor,
+  pairManagedAcquisition,
+  polledRelease,
   readSupervisedEnv,
   releaseAwsEnvAcquisition,
   releaseAwsEnvChild,
@@ -26,6 +29,7 @@ import Api.Arkham.AwsEnvSupervisor (
   requireChildReleased,
   safeEvalConfigProfile,
   safeFileEnv,
+  staticEnvAcquisition,
   startSupervisedEnv,
   startSupervisedEnvUsing,
   stopDemandDrivenSupervisor,
@@ -144,28 +148,30 @@ fakeStaticEnv env = pure env {auth = Identity (Auth (AuthEnv "AKIASTATIC" "secre
 credentials (assumed-role, web identity, SSO, ECS, EC2 instance profile):
 forks a real, killable thread and returns an 'Env' whose @.auth@ is
 'Ref'-shaped, exactly like the pinned real forker would for expiring
-credentials, paired with its release -- exactly the mandatory
-@(Env, IO ())@ shape every 'ConfigProfileResolvers' dynamic-provider
-field now returns (see the module Haddock, \"Structural release
-ownership\"): there is no 'IORef' side channel for a fake (or a real
-resolver) to forget. Returns the child's 'ThreadId' too so tests can
-assert on its liveness directly via 'threadStatus', independent of
-whichever 'Auth'\/'Env' value it ends up (or does not end up) reachable
-through.
+credentials, paired with its release as the opaque
+'ManagedEnvAcquisition' type -- exactly the shape every
+'ConfigProfileResolvers' dynamic-provider field now returns (see the
+module Haddock, \"Structural release ownership\"): there is no 'IORef'
+side channel, nor any forgeable @(Env, IO ())@ tuple, for a fake (or a
+real resolver) to forget or fake. Returns the child's 'ThreadId' too so
+tests can assert on its liveness directly via 'threadStatus', independent
+of whichever 'Auth'\/'Env' value it ends up (or does not end up)
+reachable through.
 
-Uses 'requireChildReleased' (not a bare 'killThread') so this fake's
-release genuinely blocks until the child is confirmed terminal, matching
-every real managed release's own contract -- tests that assert an exact
-multi-child release /order/ depend on this: a release that only signals
-without awaiting could let 'releaseAwsEnvAcquisition''s next release
-begin before this child's own handler has actually finished recording
-its effect.
+Uses 'polledRelease' (built on 'requireChildReleased', not a bare
+'killThread') so this fake's release genuinely blocks until the child is
+confirmed terminal, matching every real managed release's own contract
+-- tests that assert an exact multi-child release /order/ depend on
+this: a release that only signals without awaiting could let
+'releaseAwsEnvAcquisition''s next release begin before this child's own
+handler has actually finished recording its effect.
 -}
-fakeRefEnv :: Env' withAuth -> IO ((Env, IO ()), ThreadId)
+fakeRefEnv :: Env' withAuth -> IO (ManagedEnvAcquisition, ThreadId)
 fakeRefEnv env = do
   tid <- forkIO (forever (threadDelay maxBound))
   cell <- newIORef (AuthEnv "AKIAFAKE" "secret" Nothing Nothing)
-  pure ((env {auth = Identity (Ref tid cell)}, requireChildReleased (Ref tid cell)), tid)
+  let auth = Ref tid cell
+  pure (pairManagedAcquisition env {auth = Identity auth} (polledRelease auth), tid)
 
 {- | Whether a 'ThreadStatus' represents definite, final termination.
 Note a genuinely still-alive thread parked in @forever (threadDelay
@@ -240,27 +246,40 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
   {- | Structural regression for the MEDIUM-severity finding that the
   managed-release handshake was merely \"optional\": a bare, dynamic
   provider that could return a live, expiring 'Ref'-shaped 'Env' without
-  ever reporting its release used to be merely a /runtime/ hazard
-  (silently downgraded by the pre-fix 'deriveRelease' to the naive,
-  un-awaited kill-then-bounded-poll fallback). This module's redesign
-  (see 'Api.Arkham.AwsEnvSupervisor', \"Structural release ownership\")
+  ever reporting its release, or reporting a fake\/no-op release paired
+  with one via a plain @(Env, IO ())@ tuple, used to be merely a
+  /runtime/ hazard (silently downgraded by the pre-fix 'deriveRelease' to
+  the naive, un-awaited kill-then-bounded-poll fallback, or simply
+  believed at face value). This module's redesign (see
+  'Api.Arkham.AwsEnvSupervisor', \"Structural release ownership\")
   eliminates the entire class at the /type/ level instead: every
   dynamic-provider 'ConfigProfileResolvers' field now has result type
-  @IO (Env, IO ())@, not @IO Env@ -- there is no longer an 'IORef' side
-  channel a resolver could omit writing to. A \"bare expiring resolver\"
-  in the old sense is now not merely rejected at runtime but literally
-  unrepresentable: any attempt to write @resolveEcsSource = \\env -> pure
-  env {auth = Identity (Ref tid cell)}@ (returning a bare 'Env', as the
-  old buggy/forgetful shape did) is a /compile/-time type error, not
-  something this module could even attempt to run and catch. This is a
-  strictly stronger guarantee than the previous version of this test
-  (which merely proved a runtime 'ManagedReleaseInvariantViolated'
-  exception was thrown for such a value) could express, so no equivalent
-  executable test exists here: there is no longer any way to construct
-  the input the old test needed. 'ManagedReleaseInvariantViolated' itself
-  remains defined and reachable only as a defensive backstop at
-  'Api.Arkham.AwsEnvSupervisor.acquireAwsEnv''s outer boundary (see that
-  function's own Haddock), never from any 'ConfigProfileResolvers' field.
+  @IO 'ManagedEnvAcquisition'@, an opaque type whose only public
+  constructors are 'pairManagedAcquisition' (which requires an actual
+  'ManagedRelease' value, itself producible only by 'managedRelease' or
+  'polledRelease' wrapping a genuine, awaited managed-refresh handle) and
+  'staticEnvAcquisition' (which is itself runtime-checked to reject any
+  'Env' whose @.auth@ is 'Ref'-shaped). There is no longer an 'IORef'
+  side channel a resolver could omit writing to, nor a bare @(Env, IO
+  ())@ tuple a resolver could construct by hand with an arbitrary\/no-op
+  release. A \"bare expiring resolver\" in the old sense is now not
+  merely rejected at runtime but literally unrepresentable: any attempt
+  to write @resolveEcsSource = \\env -> pure env {auth = Identity (Ref tid
+  cell)}@ (returning a bare 'Env', as the old buggy/forgetful shape did),
+  or even @resolveEcsSource = \\env -> pairManagedAcquisition env {auth =
+  Identity (Ref tid cell)} (ManagedRelease (pure ()))@ (fabricating a
+  fake, non-awaiting release), is a /compile/-time type error or an
+  inaccessible-constructor error, not something this module could even
+  attempt to run and catch. This is a strictly stronger guarantee than
+  the previous version of this test (which merely proved a runtime
+  'ManagedReleaseInvariantViolated' exception was thrown for such a
+  value) could express, so no equivalent executable test exists here:
+  there is no longer any way to construct the input the old test needed.
+  'ManagedReleaseInvariantViolated' itself remains defined and reachable
+  only as a defensive backstop inside 'staticEnvAcquisition' and at
+  'Api.Arkham.AwsEnvSupervisor.acquireAwsEnv''s outer boundary (see those
+  functions' own Haddocks), never reachable from any correctly-typed
+  'ConfigProfileResolvers' field value.
   -}
 
   {- | A two-level @source_profile@ chain (@parent@ assumes a role from
@@ -357,7 +376,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
           unreachableConfigProfileResolvers
             { resolveWebIdentity = \tokenFile roleArn mSession env -> do
                 writeIORef capturedRef (Just (tokenFile, roleArn, mSession))
-                (,pure ()) <$> fakeStaticEnv env
+                staticEnvAcquisition =<< fakeStaticEnv env
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
     length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 0
@@ -382,7 +401,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
           unreachableConfigProfileResolvers
             { resolveSSO = \_cachedTokenFile ssoRegion accountId roleName env -> do
                 writeIORef capturedRef (Just (ssoRegion, accountId, roleName))
-                (,pure ()) <$> fakeStaticEnv env
+                staticEnvAcquisition =<< fakeStaticEnv env
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
     length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 0
@@ -412,9 +431,9 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
             { resolveAssumedRole = \roleArn sourceEnv ->
                 if roleArn == "arn:aws:iam::1:role/middle"
                   then do
-                    ((fakeEnv, release), tid) <- fakeRefEnv sourceEnv
+                    (acquisition, tid) <- fakeRefEnv sourceEnv
                     writeIORef middleThreadIdRef (Just tid)
-                    pure (fakeEnv, release)
+                    pure acquisition
                   else Exception.throwIO (InvalidIAMError "simulated outer assume-role failure")
             }
     result <- Exception.try @AuthError (safeEvalConfigProfile resolvers config [] "parent" envNoAuth)
@@ -467,9 +486,9 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
                     -- -- its resulting child is now fully known to
                     -- 'safeEvalConfigProfile' before "parent"'s own wrap
                     -- is even attempted.
-                    ((fakeEnv, release), tid) <- fakeRefEnv sourceEnv
+                    (acquisition, tid) <- fakeRefEnv sourceEnv
                     writeIORef middleThreadIdRef (Just tid)
-                    pure (fakeEnv, release)
+                    pure acquisition
                   else do
                     -- "parent"'s own wrap (of "middle"'s already-returned
                     -- child) never completes -- simulating cancellation
@@ -551,9 +570,9 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     let resolvers =
           unreachableConfigProfileResolvers
             { resolveAssumedRole = \roleArn sourceEnv -> do
-                ((fakeEnv, release), tid) <- fakeRefEnv sourceEnv
+                (acquisition, tid) <- fakeRefEnv sourceEnv
                 when (roleArn == "arn:aws:iam::1:role/middle") $ writeIORef middleThreadIdRef (Just tid)
-                pure (fakeEnv, release)
+                pure acquisition
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "parent" envNoAuth
     length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 2
@@ -629,11 +648,13 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
                       atomicModifyIORef' releaseOrderRef (\labels -> (labels <> [label], ()))
                 takeMVar readyGate
                 cell <- newIORef (AuthEnv "AKIAFAKE" "secret" Nothing Nothing)
-                -- 'requireChildReleased' (not a bare 'killThread'): the
-                -- exact release-order assertion below depends on each
-                -- release genuinely awaiting its own child's confirmed
-                -- termination before returning, not merely signalling it.
-                pure (sourceEnv {auth = Identity (Ref tid cell)}, requireChildReleased (Ref tid cell))
+                let auth = Ref tid cell
+                -- 'polledRelease' (built on 'requireChildReleased', not a
+                -- bare 'killThread'): the exact release-order assertion
+                -- below depends on each release genuinely awaiting its
+                -- own child's confirmed termination before returning,
+                -- not merely signalling it.
+                pure (pairManagedAcquisition sourceEnv {auth = Identity auth} (polledRelease auth))
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "c" envNoAuth
     -- Three hidden releases: root's own (a static, no-op release, since
@@ -1014,6 +1035,7 @@ spec = describe "AWS Env supervisor" do
           myTid <- myThreadId
           floodStopRef <- newIORef False
           floodDoneGate <- newEmptyMVar
+          floodConfirmedStopped <- newIORef False
           let floodIterations = 200 :: Int
               flood n
                 | n >= floodIterations = pure ()
@@ -1024,16 +1046,67 @@ spec = describe "AWS Env supervisor" do
                       threadDelay 1_000
                       flood (n + 1)
           _ <- forkIO (flood 0 >> putMVar floodDoneGate ())
-          result <-
-            timeout 5_000_000
-              $ Exception.try @Exception.SomeException
-                (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv releaseTarget []))
-          writeIORef floodStopRef True
-          takeMVar floodDoneGate
-          case result of
-            Nothing -> expectationFailure "releaseAwsEnvAcquisition did not return within the bounded timeout"
-            Just (Left (e :: Exception.SomeException)) -> Exception.throwIO e
-            Just (Right ()) -> pure ()
+          -- Stopping and awaiting the flood must itself tolerate a late,
+          -- already-in-flight flooded 'AuthError' landing on this very
+          -- thread strictly between 'writeIORef' and 'floodStopRef'
+          -- actually being observed by the flood loop -- otherwise this
+          -- bounded, deterministic test would itself flake on an
+          -- exception that has nothing to do with the behaviour under
+          -- test. Guarded by 'floodConfirmedStopped' so this remains
+          -- safe to call any number of times (including from the
+          -- outer retry below): a second call after the gate has
+          -- genuinely already been drained is a no-op rather than
+          -- blocking forever on an already-empty 'floodDoneGate'.
+          let awaitFloodStopped = do
+                already <- readIORef floodConfirmedStopped
+                unless already
+                  $ ( writeIORef floodStopRef True
+                        >> takeMVar floodDoneGate
+                        >> writeIORef floodConfirmedStopped True
+                    )
+                    `Exception.catch` \(_ :: AuthError) -> awaitFloodStopped
+              -- 'Exception.try'\/'Exception.catch' install and remove
+              -- their own handler around only the *inside* of the
+              -- action they wrap -- they add no masking of their own,
+              -- so an async exception timed to land in the vanishingly
+              -- narrow window exactly as one is *installing* its
+              -- handler, or exactly as the wrapped action completes and
+              -- its handler is being *torn down*, can still bypass that
+              -- particular 'try'\/'catch' entirely (this is true of
+              -- 'releaseAwsEnvAcquisition''s own internal 'try', of
+              -- 'timeout''s internal cleanup, and of any 'try' added
+              -- here). A continuously-flooding sibling gives this
+              -- vanishingly narrow window many, many chances to be hit
+              -- over the course of a single run, so no *finite* stack of
+              -- nested 'try'\/'catch' inside a single attempt can ever
+              -- be airtight against it. The only genuinely deterministic
+              -- fix is to retry the *entire* attempt (including
+              -- 'releaseAwsEnvAcquisition' itself) from the outside
+              -- whenever this exact, recognized, self-inflicted feedback
+              -- escapes -- which is always safe here regardless of
+              -- where escape occurred: 'releaseAwsEnvAcquisition' ->
+              -- 'cancelManagedThread' is idempotent (re-delivering
+              -- 'ThreadKilled' to an already-finished thread is a
+              -- documented no-op, and 'readMVar' -- never 'takeMVar' --
+              -- on the completion cell means re-observing it never
+              -- blocks). Since the flood is strictly bounded (@200@
+              -- iterations, 1ms apart), only finitely many retries can
+              -- ever be needed: once the flood has genuinely stopped
+              -- sending (observed via 'awaitFloodStopped' above), no
+              -- further escape is even possible, so this always
+              -- terminates.
+              attempt = do
+                result <-
+                  timeout 5_000_000
+                    $ Exception.try @Exception.SomeException
+                      (releaseAwsEnvAcquisition (AwsEnvAcquisition staticEnv releaseTarget []))
+                awaitFloodStopped
+                case result of
+                  Nothing -> expectationFailure "releaseAwsEnvAcquisition did not return within the bounded timeout"
+                  Just (Left (e :: Exception.SomeException)) -> Exception.throwIO e
+                  Just (Right ()) -> pure ()
+              guardedAttempt = attempt `Exception.catch` \(_ :: AuthError) -> guardedAttempt
+          guardedAttempt
           status <- threadStatus targetTid
           status `shouldSatisfy` isTerminatedStatus
         _ -> expectationFailure "expected managedFetchAuthInBackground to return a Ref for a far-future expiration, not a static Auth"
@@ -1342,27 +1415,44 @@ spec = describe "AWS Env supervisor" do
       -- paused there. A correct, genuinely masked dispatcher cannot
       -- possibly act on this yet.
       stopResultVar <- newEmptyMVar
-      _ <- forkIO (stopSupervisedEnv sup >>= putMVar stopResultVar)
-      -- Deterministic, not timing-based: GHC never delivers an
-      -- asynchronous exception to a masked thread, full stop -- not
-      -- "usually not within some bounded window", regardless of
-      -- scheduling, load, or how many context switches occur while
-      -- masked. So for a genuinely-fixed dispatcher, the forked
-      -- 'stopSupervisedEnv' call above -- whose own cancellation
-      -- ultimately has to reach this exact masked, busy-spinning
-      -- dispatcher thread -- cannot possibly have completed yet: this
-      -- 'System.Timeout.timeout' attempt can /never/ observe
-      -- @stopResultVar@ filled while the seam is held, for any bound,
-      -- however long. A regressed (unmasked-gap) dispatcher, by
-      -- contrast, lets the forked cancellation land on the dispatcher
-      -- itself almost immediately (microseconds), completing
-      -- 'stopSupervisedEnv' -- and so filling @stopResultVar@ -- long
-      -- before this bound elapses. Unlike the 'threadDelay'-based "give
-      -- it a chance" wait this replaces, there is no scheduling window in
-      -- which the correct implementation could be mistakenly observed as
-      -- already having stopped: this is an unambiguous, race-free
-      -- distinguishing signal, not merely a very likely one.
-      earlyStopResult <- timeout (200 * 1000) (takeMVar stopResultVar)
+      stopThreadId <- forkIO (stopSupervisedEnv sup >>= putMVar stopResultVar)
+      -- Deterministic cancellation-delivery handshake, not a wall-clock
+      -- guess: 'stopSupervisedEnv' -> 'cancelManagedThread' does
+      -- @throwTo dispatcherTid ThreadKilled@ *before* it ever reads the
+      -- dispatcher's completion cell, and per GHC's own semantics
+      -- 'throwTo' blocks the *calling* thread (@stopThreadId@ here)
+      -- until the exception is actually delivered to its target. While
+      -- the dispatcher is masked and busy-spinning at @afterSpawn@ (no
+      -- interruptible operation for the RTS to deliver at), delivery
+      -- cannot happen, so @stopThreadId@ itself must be observed
+      -- genuinely blocked (via 'GHC.Conc.Sync.threadStatus') trying to
+      -- deliver that exception -- there is no earlier blocking
+      -- operation in 'stopSupervisedEnv''s call chain this could be
+      -- confused with ('System.Timeout.timeout' only spawns its own
+      -- independent timer thread; it adds no blocking step of its own
+      -- around the wrapped action). Once observed blocked, we have
+      -- *proof* delivery is genuinely pending against the masked
+      -- dispatcher -- not an inference from elapsed wall-clock time --
+      -- so the immediately following non-blocking check of
+      -- @stopResultVar@ is race-free by construction, for any bound,
+      -- however short, and detects a regressed (unmasked-gap)
+      -- dispatcher deterministically: there, delivery succeeds
+      -- near-instantly, 'stopSupervisedEnv' completes, and
+      -- @stopThreadId@ is observed 'ThreadFinished' (not
+      -- 'ThreadBlocked') instead.
+      let waitStopThreadBlockedDeliveringCancellation (attemptsLeft :: Int)
+            | attemptsLeft <= 0 =
+                expectationFailure
+                  "the forked stopSupervisedEnv attempt never reached a \
+                  \genuinely blocked state trying to deliver its \
+                  \cancellation to the dispatcher"
+            | otherwise = do
+                status <- threadStatus stopThreadId
+                case status of
+                  ThreadBlocked _ -> pure ()
+                  _ -> threadDelay 1000 >> waitStopThreadBlockedDeliveringCancellation (attemptsLeft - 1)
+      waitStopThreadBlockedDeliveringCancellation 5000
+      earlyStopResult <- tryTakeMVar stopResultVar
       earlyStopResult `shouldBe` Nothing
       -- The generation thread must still be alive: for the fixed,
       -- genuinely masked dispatcher, the seam cannot yet have been

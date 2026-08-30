@@ -37,16 +37,15 @@ This option provides significantly faster code reload compared to
 module DevelMain where
 
 import Api.Arkham.Lifecycle (
-  acquireThenForkTransferringOwnershipGuarded,
-  restartGateForPreviousGeneration,
+  RestartState (..),
+  restartManagedGeneration,
   shutdownThenDeliver,
+  stopManagedGeneration,
  )
 import Application (getApplicationRepl, shutdownApp)
 import Prelude
 
 import Control.Concurrent
-import Control.Exception (SomeException)
-import Data.IORef
 import Foreign.Store
 import GHC.Word
 import Network.Wai.Handler.Warp
@@ -57,192 +56,74 @@ A Store holds onto some data across ghci reloads
 -}
 update :: IO ()
 update = do
-  mtidStore <- lookupStore tidStoreNum
-  case mtidStore of
-    -- no server running
-    Nothing -> do
-      done <- storeAction doneStore newEmptyMVar
-      tidRef <- storeAction (Store tidStoreNum) (newIORef Nothing)
-      -- 'start' (see its own Haddock) always durably manages @done@ on
-      -- its own -- via 'acquireThenForkTransferringOwnershipGuarded''s
-      -- own single 'Control.Exception.mask', not a separately-composed
-      -- wrapper -- whether it fails before ever spawning a child (an
-      -- ordinary acquisition\/spawn failure on this very first
-      -- generation, with no child ever created to otherwise fill @done@)
-      -- or after one is already durably tracked. There is no previous
-      -- generation to consult for this very first start, so @gate@ here
-      -- is simply @'pure' ()@ -- and if an asynchronous exception lands
-      -- in the gap between the two 'storeAction' calls above and 'start'
-      -- actually beginning (before 'start''s own 'mask' has begun
-      -- protecting anything), a /subsequent/ 'update' call takes the
-      -- \"server is already running\" branch below and finds @tidRef@
-      -- still reading 'Nothing' -- 'restartAppInNewThread''s own use of
-      -- 'restartGateForPreviousGeneration' (see its Haddock) is what
-      -- makes that safe: it recognises 'Nothing' as \"no generation was
-      -- ever durably published\" and gates with @'pure' ()@ too, rather
-      -- than blocking forever trying to consume a @done@ nothing was
-      -- ever going to fill.
-      start (pure ()) tidRef done
-    -- server is already running
-    Just tidStore -> withStore tidStore (`restartAppInNewThread` doneStore)
- where
-  {- | 'Foreign.Store' values persist across GHCi @:r@ reloads purely by
-  numeric slot, with no runtime type check at all -- reusing a slot
-  whose stored /type/ has changed (as this one has, historically: from a
-  bare @MVar ()@ in the original Yesod scaffold, to
-  @MVar (Either SomeException ())@ once 'shutdownThenDeliver' needed to
-  report failures) is memory-unsafe in an already-running GHCi session
-  that populated the slot under the old type: 'readStore'\/'withStore'
-  would reinterpret the old value as the new type rather than failing
-  loudly. @100@ is a fresh slot never used by any prior version of this
-  module, so a session that already has slot @0@ populated under the old
-  type is simply left with an inert, orphaned old store -- a full GHCi
-  restart (already the normal remedy whenever this module's own
-  persisted types change) picks up the new slot cleanly, and nothing
-  here silently misinterprets stale memory.
-  -}
-  doneStore :: Store (MVar (Either SomeException ()))
-  doneStore = Store 100
-
-  -- Kill the previous generation's Warp thread (if any was ever durably
-  -- published), wait for its shutdown result, and only start a
-  -- replacement if that shutdown actually succeeded ('Right'). A
-  -- failed/interrupted shutdown ('Left') is reported and re-thrown
-  -- rather than silently starting a new generation on top of a
-  -- supervisor that may not have actually stopped; unlike an earlier
-  -- version of this protocol, that 'Left' is never consumed here, so
-  -- every subsequent restart attempt observes the exact same failure
-  -- immediately rather than blocking forever on an already-emptied
-  -- one-shot 'MVar' -- see 'consumePreviousShutdownReplayable'.
-  --
-  -- 'restartGateForPreviousGeneration' (not an unconditional
-  -- @'killThread'@ + @'consumePreviousShutdownReplayable'@) is what
-  -- makes this function safe to reach even when @tidRef@ reads
-  -- 'Nothing' here -- which can genuinely happen: @update@'s own \"no
-  -- server running\" branch below durably publishes this function's
-  -- 'Foreign.Store' slots (so a /later/ @update@ takes this branch
-  -- instead) as ordinary, unmasked statements, strictly before ever
-  -- calling 'start' (whose own single 'Control.Exception.mask', inside
-  -- 'acquireThenForkTransferringOwnershipGuarded', is what actually
-  -- protects everything from that point on). An asynchronous exception
-  -- landing in that gap -- after the slot exists (publishing
-  -- @tidRef = 'Nothing'@) but before a generation is ever actually
-  -- spawned -- used to leave this function unconditionally treating
-  -- @tidRef = 'Nothing'@ as \"a previous generation exists\", calling
-  -- 'consumePreviousShutdownReplayable' on a @done@ that no generation
-  -- was ever going to fill, deadlocking every subsequent restart
-  -- forever. 'restartGateForPreviousGeneration' instead treats
-  -- @tidRef = 'Nothing'@ here exactly like a genuine first start (see
-  -- its own Haddock), recovering cleanly instead. @tidRef@ itself is
-  -- never cleared to 'Nothing' here: 'start' (via
-  -- 'acquireThenForkTransferringOwnershipGuarded''s @publish@ callback)
-  -- always overwrites it with the new generation's 'ThreadId' before
-  -- this function's own caller (GHCi) could ever observe a stale one.
-  -- Managing @done@ if 'start' itself then fails is 'start''s own
-  -- responsibility (see its Haddock), not
-  -- 'restartGateForPreviousGeneration''s.
-  restartAppInNewThread :: IORef (Maybe ThreadId) -> Store (MVar (Either SomeException ())) -> IO ()
-  restartAppInNewThread tidRef doneStoreRef = do
-    done <- readStore doneStoreRef
-    mtid <- readIORef tidRef
-    start (restartGateForPreviousGeneration mtid done) tidRef done
-
-  {- | Start the server in a separate thread, and durably publish its
-  'ThreadId' into @tidRef@ before returning. Used identically for the
-  very first generation ('update''s \"no server running\" branch, with
-  @gate = 'pure' ()@) and every replacement ('restartAppInNewThread',
-  with @gate = 'consumePreviousShutdownReplayable' done@), so both paths
-  get the exact same failure\/ownership handling.
-
-  Uses 'acquireThenForkTransferringOwnershipGuarded' rather than a plain
-  @(port, site, app) <- getApplicationRepl@ bind followed by a
-  /separate/ ownership-transfer call: that would leave a genuine gap
-  between 'Application.getApplicationRepl' returning an already-owned
-  @App@ and this thread's own protection actually beginning -- an
-  asynchronous exception landing in exactly that window (or
-  'Control.Concurrent.forkIOWithUnmask' itself throwing, however rare)
-  would leak the returned @App@ (and its AWS Env supervisor), since
-  nothing would yet own its eventual 'Application.shutdownApp'.
-  'acquireThenForkTransferringOwnershipGuarded' instead masks from
-  *before* @gate@ itself even runs, through
-  'Application.getApplicationRepl' being called, through the child being
-  definitely spawned and its 'ThreadId' durably published, all as one
-  single transaction -- so there is no such gap anywhere in this
-  sequence, and (unlike an earlier version of this function) no
-  additional @transferred@ token is needed either: see
-  'acquireThenForkTransferringOwnershipGuarded''s own Haddock for exactly
-  why folding everything into one 'mask' makes that token structurally
-  redundant rather than merely superfluous.
-
-  The @publish@ callback runs -- still masked -- immediately after the
-  child is spawned and strictly before
-  'acquireThenForkTransferringOwnershipGuarded' returns to this function:
-  without this, an asynchronous exception landing between the child
-  being spawned and a *separate*, subsequent @writeIORef@ elsewhere could
-  leave the freshly spawned child (already running Warp) permanently
-  untracked -- no future 'update'\/'shutdown' call could ever find its
-  'ThreadId' to kill it. If @publish@ itself somehow throws (only
-  possible via a genuine asynchronous exception landing in that exact
-  masked window, strictly before its one @writeIORef@), @cancel@ kills
-  the just-spawned child and waits for its finalizer
-  ('shutdownThenDeliver') to have genuinely run and recorded a result in
-  @done@, so a failed publish can never leave an untracked, still-running
-  child behind either.
-  -}
-  start
-    :: IO ()
-    -- \^ gate: consulted first, still under this call's own single
-    -- 'mask' -- see 'acquireThenForkTransferringOwnershipGuarded''s
-    -- Haddock. @'pure' ()@ for the very first generation;
-    -- 'consumePreviousShutdownReplayable' @done@ for every replacement.
-    -> IORef (Maybe ThreadId)
-    -> MVar (Either SomeException ())
-    -- \^ Written to (with the shutdown outcome) when the thread is killed.
-    -> IO ()
-  start gate tidRef done =
-    () <$ acquireThenForkTransferringOwnershipGuarded
-      gate
-      done
-      getApplicationRepl
-      (\(_, site, _) -> shutdownApp site)
-      (\(port, _site, app) -> runSettings (setPort port defaultSettings) app)
-      -- 'shutdownThenDeliver' MUST finish (and deliver a result) before
-      -- 'restartAppInNewThread''s wait can unblock, which then
-      -- immediately proceeds to 'start' a brand-new foundation (and a
-      -- brand-new AWS 'Env' supervisor) -- but only on 'Right': signalling
-      -- unconditionally, or before shutdown actually finished, would let
-      -- that new foundation's supervisor start running concurrently with
-      -- the old one still being torn down, or (if shutdown threw) with
-      -- the old one never actually torn down at all. This ordering closes
-      -- both an overlapping-generations window and a would-be deadlock if
-      -- shutdown itself fails or is cancelled.
-      (\(_, site, _) _result -> shutdownThenDeliver (shutdownApp site) done)
-      (\tid -> killThread tid >> (() <$ readMVar done))
-      (\h -> writeIORef tidRef (Just h))
+  lock <- storeAction restartLockStore (newMVar NotStarted)
+  restartManagedGeneration
+    lock
+    killThread
+    getApplicationRepl
+    (\(_, site, _) -> shutdownApp site)
+    (\(port, _site, app) -> runSettings (setPort port defaultSettings) app)
+    -- 'shutdownThenDeliver' MUST finish (and deliver a result) before a
+    -- /later/ 'update' call's own retirement of this same generation
+    -- (inside 'restartManagedGeneration', which awaits this exact
+    -- @newDone@ before ever attempting to start a replacement) can
+    -- unblock -- but only on 'Right': signalling unconditionally, or
+    -- before shutdown actually finished, would let a replacement
+    -- foundation's supervisor start running concurrently with this one
+    -- still being torn down, or (if shutdown threw) with this one never
+    -- actually torn down at all. This ordering closes both an
+    -- overlapping-generations window and a would-be deadlock if shutdown
+    -- itself fails or is cancelled.
+    (\(_, site, _) _result newDone -> shutdownThenDeliver (shutdownApp site) newDone)
 
 -- | kill the server
 shutdown :: IO ()
 shutdown = do
-  mtidStore <- lookupStore tidStoreNum
-  case mtidStore of
+  mlockStore <- lookupStore restartLockStoreNum
+  case mlockStore of
     -- no server running
     Nothing -> putStrLn "no Yesod app running"
-    Just tidStore -> do
-      mtid <- withStore tidStore readIORef
-      case mtid of
-        Nothing -> putStrLn "no Yesod app running"
-        Just tid -> do
-          killThread tid
-          putStrLn "Yesod app is shutdown"
+    Just lockStore -> do
+      lock <- readStore lockStore
+      stopped <- stopManagedGeneration lock killThread
+      if stopped
+        then putStrLn "Yesod app is shutdown"
+        else putStrLn "no Yesod app running"
 
-{- | See 'doneStore''s Haddock for why this is @101@, not the scaffold's
-original @1@: the stored type at this slot changed from a bare
-@IORef ThreadId@ to @IORef (Maybe ThreadId)@ (so it can be seeded before
-any generation has ever started, and durably published by
-'acquireThenForkTransferringOwnershipGuarded''s own masked @publish@ step), and
-'Foreign.Store' has no runtime type check to catch that mismatch in an
-already-running session -- a fresh slot avoids it rather than papering
-over it.
+{- | The single, authoritative 'Api.Arkham.Lifecycle.RestartState' cell:
+see its own Haddock for why this replaces the scaffold's original
+separate @tidStoreNum@\/@doneStore@ slots. Consolidating both into one
+'Control.Concurrent.MVar.MVar' (rather than two independently-populated
+'Foreign.Store' slots) closes two gaps a prior version of this module
+had: the two slots were populated by separate, unmasked statements (an
+async-exception gap between them, before 'restartManagedGeneration''s own
+'Control.Exception.mask' ever began protecting anything), and -- more
+fundamentally -- every generation shared the exact same @done@ 'MVar'
+across restarts, so a first-generation acquisition\/spawn failure (which
+durably filled that shared cell with 'Left', but never durably published
+a 'Control.Concurrent.ThreadId') left a /later/, entirely successful
+generation's own eventual shutdown result silently discarded, corrupting
+every subsequent restart's view of what had actually happened.
+
+'restartManagedGeneration'\/'stopManagedGeneration' now serialize every
+caller through this exact 'MVar' (which doubles as the mutual-exclusion
+lock, not just storage) and give each live generation its own, freshly
+created completion cell (see 'Api.Arkham.Lifecycle.Running'), so there is
+no shared cell left for any generation's outcome to ever collide with,
+and two concurrent 'update' calls can no longer independently populate
+two separate slots and spawn two untracked generations.
+
+@102@ is a fresh slot, never used by any prior version of this module
+(which used @1@\/@0@ in the original Yesod scaffold, then @100@\/@101@
+once 'shutdownThenDeliver' needed an @Either@): 'Foreign.Store' has no
+runtime type check at all, so reusing a slot whose stored type has
+changed is memory-unsafe in an already-running GHCi session that
+populated it under an old type -- a fresh slot avoids that rather than
+papering over it; a full GHCi restart (already the normal remedy whenever
+this module's own persisted types change) picks up the new slot cleanly.
 -}
-tidStoreNum :: Word32
-tidStoreNum = 101
+restartLockStore :: Store (MVar (RestartState ThreadId))
+restartLockStore = Store restartLockStoreNum
+
+restartLockStoreNum :: Word32
+restartLockStoreNum = 102
