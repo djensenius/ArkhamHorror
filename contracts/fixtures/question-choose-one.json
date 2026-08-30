@@ -1,0 +1,15 @@
+{
+  "tag": "ChooseOne",
+  "choices": [
+    {
+      "tag": "EndTurnButton",
+      "investigatorId": "c01001",
+      "messages": [
+        {
+          "tag": "ChooseEndTurn",
+          "contents": "c01001"
+        }
+      ]
+    }
+  ]
+}
