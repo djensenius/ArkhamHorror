@@ -419,6 +419,130 @@ def make_validator(schema: dict):
     return validator_class(schema, format_checker=FormatChecker(), registry=registry)
 
 
+# ---------------------------------------------------------------------------
+# Canonical signed-64 integer wire tokens
+#
+# JSON Schema intentionally treats 3, 3.0, and 3e0 as the same mathematical
+# integer. Native choice/version fields additionally promise canonical integer
+# token spelling, checked against governed fixture bytes before parsed values
+# erase that distinction. The shared schema separately owns the exact range.
+# ---------------------------------------------------------------------------
+
+canonical_integer_checks = manifest.get("canonicalIntegerChecks", [])
+for check_index, check in enumerate(canonical_integer_checks):
+    require_entry_keys(
+        check,
+        [
+            "schema",
+            "validBoundaryValues",
+            "invalidBoundaryValues",
+            "invalidTokenSpellings",
+            "fixtureFields",
+        ],
+        entry_kind="canonicalIntegerChecks",
+        index=check_index,
+    )
+    description = check.get("description", "no description")
+    schema = require_schema_document(
+        check["schema"], entry_kind="canonicalIntegerChecks"
+    )
+    validator = make_validator(schema)
+
+    for value in check["validBoundaryValues"]:
+        errors = list(validator.iter_errors(value))
+        require(
+            not errors,
+            f"canonicalIntegerChecks ({description}): valid boundary {value!r} "
+            f"failed {check['schema']}: {[error.message for error in errors]}",
+        )
+    for value in check["invalidBoundaryValues"]:
+        errors = list(validator.iter_errors(value))
+        expected_keyword = "minimum" if value < 0 else "maximum"
+        require(
+            len(errors) == 1 and errors[0].validator == expected_keyword,
+            f"canonicalIntegerChecks ({description}): invalid boundary {value!r} "
+            f"must fail exactly the {expected_keyword} bound in {check['schema']}, "
+            f"got {[(error.validator, error.message) for error in errors]}",
+        )
+
+    for field_index, field in enumerate(check["fixtureFields"]):
+        require_entry_keys(
+            field,
+            ["path", "pointers"],
+            entry_kind="canonicalIntegerChecks.fixtureFields",
+            index=field_index,
+        )
+        fixture_path = field["path"]
+        pointers = field["pointers"]
+        require(
+            any(
+                isinstance(fixture, dict) and fixture.get("path") == fixture_path
+                for fixture in fixtures
+            ),
+            f"canonicalIntegerChecks fixture is not registered: {fixture_path}",
+        )
+        require(
+            isinstance(pointers, list) and pointers,
+            f"canonicalIntegerChecks pointers must be a non-empty array: {pointers!r}",
+        )
+        content = strict_json.read_governed_worktree_bytes(ROOT, fixture_path)
+        strict_json.strict_json_loads_requiring_canonical_nonnegative_integers(
+            content,
+            pointers,
+            source=str(ROOT / fixture_path),
+        )
+
+    for raw in check["invalidTokenSpellings"]:
+        require(
+            isinstance(raw, str),
+            f"canonicalIntegerChecks invalid token spelling must be a string: {raw!r}",
+        )
+        try:
+            strict_json.strict_json_loads_requiring_canonical_nonnegative_integers(
+                '{"value":' + raw + "}",
+                ["/value"],
+                source=f"<canonicalIntegerChecks invalid spelling {raw!r}>",
+            )
+        except strict_json.StrictJSONError:
+            pass
+        else:
+            raise SystemExit(
+                f"canonicalIntegerChecks ({description}): non-canonical token "
+                f"{raw!r} unexpectedly validated"
+            )
+
+
+forward_compatibility_checks = manifest.get("forwardCompatibilityChecks", [])
+for check_index, check in enumerate(forward_compatibility_checks):
+    require_entry_keys(
+        check,
+        ["schema", "basePositiveFixture", "basePointer", "mutation"],
+        entry_kind="forwardCompatibilityChecks",
+        index=check_index,
+    )
+    description = check.get("description", "no description")
+    base_fixture = check["basePositiveFixture"]
+    require(
+        any(
+            isinstance(fixture, dict) and fixture.get("path") == base_fixture
+            for fixture in fixtures
+        ),
+        f"forwardCompatibilityChecks base fixture is not registered: {base_fixture}",
+    )
+    base_document = load_governed_json(base_fixture)
+    base_value = resolve_json_pointer(base_document, check["basePointer"])
+    instance = apply_mutation(base_value, check["mutation"])
+    schema = require_schema_document(
+        check["schema"], entry_kind="forwardCompatibilityChecks"
+    )
+    errors = list(make_validator(schema).iter_errors(instance))
+    require(
+        not errors,
+        f"forwardCompatibilityChecks ({description}) unexpectedly failed: "
+        f"{[error.message for error in errors]}",
+    )
+
+
 def normalize_errors(errors):
     return sorted(
         (tuple(map(str, error.absolute_path)), str(error.validator), error.message)
@@ -504,6 +628,7 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
     mutation = fixture["mutation"]
     expected_errors = fixture["expectedErrors"]
     schema_branch = fixture.get("schemaBranch")
+    rejection_schema_branch = fixture.get("rejectionSchemaBranch")
     description = fixture.get("description", "no description")
 
     require((ROOT / base_positive_fixture).is_file(), f"Missing base positive fixture: {base_positive_fixture}")
@@ -524,19 +649,28 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
     )
 
     # When scoped to a single oneOf branch, also confirm the *unscoped* root
-    # schema still genuinely rejects the mutated instance overall (the
-    # oneOf-wrapper diagnostic itself), without re-enumerating the sibling
-    # branches' inherent, unrelated "also doesn't match this disjoint shape"
-    # noise.
+    # (or an explicitly named containing union) still genuinely rejects the
+    # same mutated instance overall, without re-enumerating sibling noise in
+    # expectedErrors.
     if schema_branch is not None:
-        root_validator = make_validator(schema)
+        rejection_schema = (
+            extract_branch_schema(schema, rejection_schema_branch)
+            if rejection_schema_branch is not None
+            else schema
+        )
+        root_validator = make_validator(rejection_schema)
         root_errors = list(root_validator.iter_errors(mutated_instance))
         require(
             len(root_errors) > 0,
             f"Negative fixture ({description}) unexpectedly validated against the full "
-            f"oneOf-rooted {schema_path}",
+            f"rejection schema {schema_path}"
+            + (
+                f" $defs/{rejection_schema_branch}"
+                if rejection_schema_branch is not None
+                else ""
+            ),
         )
-        if "oneOf" in schema:
+        if "oneOf" in rejection_schema:
             require(
                 any(error.validator == "oneOf" for error in root_errors),
                 f"Negative fixture ({description}) failed {schema_path} for a reason other "
@@ -1054,5 +1188,7 @@ print(
     f"Validated {len(documents)} contract documents, {len(fixtures)} fixtures, "
     f"{len(negative_fixtures)} negative regression fixtures (each derived from a real "
     f"positive fixture via a single mutation, plus a self-test proving exact-match precision), "
+    f"{len(canonical_integer_checks)} canonical-integer boundary/token check, "
+    f"{len(forward_compatibility_checks)} forward-compatibility check, "
     f"and {len(enum_boundary_checks)} closed-enum boundary checks."
 )

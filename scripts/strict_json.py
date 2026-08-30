@@ -60,6 +60,7 @@ from __future__ import annotations
 import decimal
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -262,6 +263,28 @@ def _parse_int_or_reject_unsupported(raw: str, *, source: str) -> int:
         ) from exc
 
 
+class _JSONNumberToken:
+    __slots__ = ("raw", "value")
+
+    def __init__(self, raw: str, value):
+        self.raw = raw
+        self.value = value
+
+
+def _coerce_json_text(text_or_bytes, *, source: str) -> str:
+    if isinstance(text_or_bytes, (bytes, bytearray)):
+        try:
+            return text_or_bytes.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise StrictJSONError(f"{source}: not valid strict UTF-8: {exc}") from exc
+    if isinstance(text_or_bytes, str):
+        return text_or_bytes
+    raise StrictJSONError(
+        f"{source}: strict JSON parsing requires a str, bytes, or bytearray, got "
+        f"{type(text_or_bytes).__name__!r}."
+    )
+
+
 def strict_json_loads(text_or_bytes, *, source: str = "<string>"):
     """Parse `text_or_bytes` (a `str`, or `bytes`/`bytearray` decoded as
     strict UTF-8) as JSON, rejecting duplicate object keys at any nesting
@@ -279,18 +302,7 @@ def strict_json_loads(text_or_bytes, *, source: str = "<string>"):
     `SystemExit` this module always raises, rather than letting a raw
     `TypeError` escape from `json.loads` for a non-`str` argument.
     """
-    if isinstance(text_or_bytes, (bytes, bytearray)):
-        try:
-            text = text_or_bytes.decode("utf-8", errors="strict")
-        except UnicodeDecodeError as exc:
-            raise StrictJSONError(f"{source}: not valid strict UTF-8: {exc}") from exc
-    elif isinstance(text_or_bytes, str):
-        text = text_or_bytes
-    else:
-        raise StrictJSONError(
-            f"{source}: strict_json_loads requires a str, bytes, or bytearray, got "
-            f"{type(text_or_bytes).__name__!r}."
-        )
+    text = _coerce_json_text(text_or_bytes, source=source)
 
     try:
         return json.loads(
@@ -304,6 +316,95 @@ def strict_json_loads(text_or_bytes, *, source: str = "<string>"):
         raise
     except json.JSONDecodeError as exc:
         raise StrictJSONError(f"{source}: invalid JSON: {exc}") from exc
+
+
+def strict_json_loads_with_number_tokens(text_or_bytes, *, source: str = "<string>"):
+    """Strictly parse JSON while retaining each raw numeric token by RFC 6901
+    JSON Pointer.
+
+    JSON Schema validates parsed numeric values, so it deliberately treats
+    ``3``, ``3.0``, and ``3e0`` as the same mathematical integer. Wire fields
+    that promise a canonical integer token need the original spelling as well
+    as the parsed value. This parser uses the same duplicate-key, finite-number,
+    integer-size, UTF-8, and trailing-token guards as ``strict_json_loads``;
+    number wrappers exist only during parsing and are removed before return.
+    """
+    text = _coerce_json_text(text_or_bytes, source=source)
+    try:
+        wrapped = json.loads(
+            text,
+            object_pairs_hook=lambda pairs: _reject_duplicate_keys(pairs, source=source),
+            parse_constant=lambda constant_name: _reject_constant(constant_name, source=source),
+            parse_float=lambda raw: _JSONNumberToken(
+                raw, _parse_float_or_reject_overflow(raw, source=source)
+            ),
+            parse_int=lambda raw: _JSONNumberToken(
+                raw, _parse_int_or_reject_unsupported(raw, source=source)
+            ),
+        )
+    except StrictJSONError:
+        raise
+    except json.JSONDecodeError as exc:
+        raise StrictJSONError(f"{source}: invalid JSON: {exc}") from exc
+
+    number_tokens: dict[str, str] = {}
+
+    def pointer_token(value: str) -> str:
+        return value.replace("~", "~0").replace("/", "~1")
+
+    def unwrap(value, pointer: str):
+        if isinstance(value, _JSONNumberToken):
+            number_tokens[pointer] = value.raw
+            return value.value
+        if isinstance(value, dict):
+            return {
+                key: unwrap(child, pointer + "/" + pointer_token(key))
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [
+                unwrap(child, pointer + "/" + str(index))
+                for index, child in enumerate(value)
+            ]
+        return value
+
+    return unwrap(wrapped, ""), number_tokens
+
+
+_CANONICAL_NONNEGATIVE_INTEGER_TOKEN_RE = re.compile(r"^(?:0|[1-9][0-9]*)$")
+
+
+def strict_json_loads_requiring_canonical_nonnegative_integers(
+    text_or_bytes, pointers, *, source: str = "<string>"
+):
+    """Strictly parse JSON and require canonical non-negative integer tokens
+    at every exact JSON Pointer in ``pointers``.
+
+    Canonical spelling is ASCII digits only, with no sign, decimal point,
+    exponent, or leading zero. Numeric range remains the schema's job.
+    """
+    value, number_tokens = strict_json_loads_with_number_tokens(
+        text_or_bytes, source=source
+    )
+    for pointer in pointers:
+        if not isinstance(pointer, str) or not (pointer == "" or pointer.startswith("/")):
+            raise StrictJSONError(
+                f"{source}: canonical integer pointer must be an RFC 6901 JSON Pointer, "
+                f"got {pointer!r}."
+            )
+        raw = number_tokens.get(pointer)
+        if raw is None:
+            raise StrictJSONError(
+                f"{source}: canonical integer field {pointer or '<root>'} is missing "
+                "or is not encoded as a JSON number token."
+            )
+        if _CANONICAL_NONNEGATIVE_INTEGER_TOKEN_RE.fullmatch(raw) is None:
+            raise StrictJSONError(
+                f"{source}: canonical integer field {pointer or '<root>'} uses non-canonical "
+                f"token {raw!r}; expected non-negative digits without a sign, decimal point, "
+                "exponent, or leading zero."
+            )
+    return value
 
 
 def strict_json_load_path(path: Path):
@@ -884,6 +985,48 @@ def run_self_tests() -> None:
             "Self-test failure: strict_json_loads must parse ordinary finite "
             f"fractional/exponent numbers exactly like the stdlib default, got {ok3!r}."
         )
+
+    token_value, number_tokens = strict_json_loads_with_number_tokens(
+        '{"integer":3,"decimal":3.0,"exponent":3e0,"nested":[-0,4]}',
+        source="<selftest: raw number tokens>",
+    )
+    if token_value != {"integer": 3, "decimal": 3.0, "exponent": 3.0, "nested": [0, 4]}:
+        raise SystemExit(
+            "Self-test failure: raw-token parsing changed ordinary parsed numeric values: "
+            f"{token_value!r}."
+        )
+    expected_tokens = {
+        "/integer": "3",
+        "/decimal": "3.0",
+        "/exponent": "3e0",
+        "/nested/0": "-0",
+        "/nested/1": "4",
+    }
+    if number_tokens != expected_tokens:
+        raise SystemExit(
+            "Self-test failure: raw-token JSON Pointer capture drifted: "
+            f"expected {expected_tokens!r}, got {number_tokens!r}."
+        )
+
+    strict_json_loads_requiring_canonical_nonnegative_integers(
+        '{"value":0,"maximum":9223372036854775807}',
+        ["/value", "/maximum"],
+        source="<selftest: canonical integer tokens>",
+    )
+    for raw in ("3.0", "3e0", "3E+0", "-0"):
+        try:
+            strict_json_loads_requiring_canonical_nonnegative_integers(
+                '{"value":' + raw + "}",
+                ["/value"],
+                source=f"<selftest: non-canonical integer token {raw}>",
+            )
+        except StrictJSONError:
+            pass
+        else:
+            raise SystemExit(
+                "Self-test failure: canonical integer-token validation accepted "
+                f"non-canonical spelling {raw!r}."
+            )
 
     # Invalid UTF-8 bytes.
     _expect_rejected(b"{\"a\": 1, \xff\xfe}", "invalid UTF-8 bytes")

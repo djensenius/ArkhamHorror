@@ -266,7 +266,10 @@ native-renderable slice for `ChooseOne`, `PlayerWindowChooseOne`, and
 that UUID-keyed map remains broad so every other engine question/message
 variant remains valid. A client may apply this standalone schema to its own
 player's map value; any unknown question or choice-label tag is unsupported,
-not a legal action to normalize or guess.
+not a legal action to normalize or guess. Recognized question, choice-label,
+and component envelopes are closed and constructor-disjoint, so aliased,
+cross-variant, or otherwise impossible fields also fail rather than being
+silently normalized.
 
 The production-generated
 `question-player-window-choose-one.json` golden is the active CORE fixture
@@ -280,7 +283,9 @@ Native rendering uses the label/component tags, investigator/card identity,
 token type, and ability display identity. Nested messages, criteria, windows,
 sources, costs, and additive ability fields are losslessly preserved opaque
 engine data: clients must not evaluate them, execute them, or derive new legal
-actions from them. Selecting a choice sends its zero-based array index.
+actions from them. Message values are constrained only to their guaranteed
+production constructor-object outer shape (`tag` plus opaque/additive
+constructor data). Selecting a choice sends its zero-based array index.
 
 For this slice, native clients send:
 
@@ -290,12 +295,15 @@ For this slice, native clients send:
 
 `playerId` is the canonical UUID map key and `questionVersion` **must** equal
 the authoritative `PublicGame.scenarioSteps` from the snapshot that supplied
-the question. The backend decoder keeps both fields optional only for legacy
-web-client compatibility; native clients must send them. The paired
-`answer-question.json` golden decodes through the real `Entity.Answer`
-`FromJSON` instance, and backend tests prove choice `2` selects the third
-(`EndTurnButton`) CORE option and version `3` equals that snapshot's
-`scenarioSteps`.
+the question. The native `Answer` schema requires both fields; the backend
+decoder's optional legacy behavior is intentionally outside this native
+branch. UUID spelling is exactly lowercase and hyphenated. `choice`,
+`questionVersion`, and `scenarioSteps` share the non-negative signed-64 range
+`0...9223372036854775807` and use canonical raw JSON integer tokens: no sign,
+decimal point, exponent, or leading zero. The paired `answer-question.json`
+golden decodes through the real `Entity.Answer` `FromJSON` instance, and
+backend tests prove choice `2` selects the third (`EndTurnButton`) CORE option
+and version `3` equals that snapshot's `scenarioSteps`.
 
 ## Game creation and multiplayer lobbies
 

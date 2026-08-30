@@ -2,20 +2,66 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The native-renderable ChooseOne question slice. The choices array index is the zero-based Answer.choice; nested engine values are opaque data and are never client-side rules.",
-  "type": "object",
-  "additionalProperties": true,
-  "required": [
-    "tag",
-    "choices"
+  "description": "The closed native-renderable ChooseOne question slice. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices array index is the zero-based Answer.choice.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/chooseOneQuestion"
+    },
+    {
+      "$ref": "#/$defs/playerWindowChooseOneQuestion"
+    },
+    {
+      "$ref": "#/$defs/windowChooseOneQuestion"
+    }
   ],
-  "properties": {
-    "tag": {
-      "enum": [
-        "ChooseOne",
-        "PlayerWindowChooseOne",
-        "WindowChooseOne"
-      ]
+  "$defs": {
+    "chooseOneQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ChooseOne"
+        },
+        "choices": {
+          "$ref": "#/$defs/choices"
+        }
+      }
+    },
+    "playerWindowChooseOneQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "PlayerWindowChooseOne"
+        },
+        "choices": {
+          "$ref": "#/$defs/choices"
+        }
+      }
+    },
+    "windowChooseOneQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "WindowChooseOne"
+        },
+        "choices": {
+          "$ref": "#/$defs/choices"
+        }
+      }
     },
     "choices": {
       "type": "array",
@@ -23,134 +69,116 @@
       "items": {
         "$ref": "#/$defs/choiceLabel"
       }
-    }
-  },
-  "$defs": {
-    "opaqueEngineValue": {
-      "description": "Losslessly preserved engine-owned JSON. Native clients must not execute, interpret, or synthesize legal actions from this value."
-    },
-    "messages": {
-      "type": "array",
-      "items": {
-        "$ref": "#/$defs/opaqueEngineValue"
-      },
-      "description": "Engine messages are preserved for forward-compatible decoding only; selecting a choice sends its array index, never these messages."
     },
     "choiceLabel": {
-      "type": "object",
-      "additionalProperties": true,
-      "required": [
-        "tag"
-      ],
-      "properties": {
-        "tag": {
-          "enum": [
-            "ComponentLabel",
-            "EndTurnButton",
-            "AbilityLabel"
-          ]
-        }
-      },
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": {
-              "tag": {
-                "const": "ComponentLabel"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "component",
-              "messages"
-            ],
-            "properties": {
-              "component": {
-                "$ref": "#/$defs/component"
-              },
-              "messages": {
-                "$ref": "#/$defs/messages"
-              }
-            }
-          }
+          "$ref": "#/$defs/componentLabel"
         },
         {
-          "if": {
-            "properties": {
-              "tag": {
-                "const": "EndTurnButton"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "investigatorId",
-              "messages"
-            ],
-            "properties": {
-              "investigatorId": {
-                "$ref": "#/$defs/investigatorId"
-              },
-              "messages": {
-                "$ref": "#/$defs/messages"
-              }
-            }
-          }
+          "$ref": "#/$defs/endTurnButton"
         },
         {
-          "if": {
-            "properties": {
-              "tag": {
-                "const": "AbilityLabel"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "investigatorId",
-              "ability",
-              "windows",
-              "before",
-              "messages"
-            ],
-            "properties": {
-              "investigatorId": {
-                "$ref": "#/$defs/investigatorId"
-              },
-              "ability": {
-                "$ref": "#/$defs/abilityDisplay"
-              },
-              "windows": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/opaqueEngineValue"
-                }
-              },
-              "before": {
-                "$ref": "#/$defs/messages"
-              },
-              "messages": {
-                "$ref": "#/$defs/messages"
-              }
-            }
-          }
+          "$ref": "#/$defs/abilityLabel"
         }
       ]
     },
-    "component": {
+    "componentLabel": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
       "required": [
         "tag",
-        "investigatorId"
+        "component",
+        "messages"
       ],
       "properties": {
         "tag": {
-          "enum": [
-            "InvestigatorComponent",
-            "InvestigatorDeckComponent"
-          ]
+          "const": "ComponentLabel"
+        },
+        "component": {
+          "$ref": "#/$defs/component"
+        },
+        "messages": {
+          "$ref": "#/$defs/messages"
+        }
+      }
+    },
+    "endTurnButton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EndTurnButton"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        },
+        "messages": {
+          "$ref": "#/$defs/messages"
+        }
+      }
+    },
+    "abilityLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "ability",
+        "windows",
+        "before",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilityLabel"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        },
+        "ability": {
+          "$ref": "#/$defs/abilityDisplay"
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/engineObject"
+          }
+        },
+        "before": {
+          "$ref": "#/$defs/messages"
+        },
+        "messages": {
+          "$ref": "#/$defs/messages"
+        }
+      }
+    },
+    "component": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/investigatorComponent"
+        },
+        {
+          "$ref": "#/$defs/investigatorDeckComponent"
+        }
+      ]
+    },
+    "investigatorComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "tokenType"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorComponent"
         },
         "investigatorId": {
           "$ref": "#/$defs/investigatorId"
@@ -158,39 +186,49 @@
         "tokenType": {
           "const": "ResourceToken"
         }
-      },
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "tag": {
-                "const": "InvestigatorComponent"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "tokenType"
-            ]
-          }
+      }
+    },
+    "investigatorDeckComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorDeckComponent"
         },
-        {
-          "if": {
-            "properties": {
-              "tag": {
-                "const": "InvestigatorDeckComponent"
-              }
-            }
-          },
-          "then": {
-            "not": {
-              "required": [
-                "tokenType"
-              ]
-            }
-          }
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
         }
-      ]
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "description": "Guaranteed production Message constructor-object outer shape. Constructor-specific contents and additive fields are losslessly preserved engine-owned data, never client-side rules."
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/message"
+      },
+      "description": "Selecting a choice sends its array index. Native clients preserve these engine Message objects but never execute or synthesize actions from them."
+    },
+    "engineObject": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Explicit extension boundary for a nested engine-owned constructor object. Preserve all fields; do not interpret it as client-side game logic."
     },
     "abilityDisplay": {
       "type": "object",
@@ -203,11 +241,11 @@
       ],
       "properties": {
         "source": {
-          "$ref": "#/$defs/opaqueEngineValue"
+          "$ref": "#/$defs/engineObject"
         },
         "cardCode": {
           "$ref": "#/$defs/cardCode",
-          "description": "Card code used with source/type/index as display metadata; it does not authorize or execute an ability."
+          "description": "Card code used with source/type/index as display identity; it does not authorize or execute an ability."
         },
         "index": {
           "type": "integer"
@@ -216,7 +254,7 @@
           "$ref": "#/$defs/abilityTypeDisplay"
         }
       },
-      "description": "Stable display identity plus losslessly preserved engine fields. Criteria, costs, windows, sources, and other additions remain server-owned data."
+      "description": "Explicit engine-owned extension boundary. Stable display identity is modeled; criteria, limits, costs, sources, and future additive fields are preserved data."
     },
     "abilityTypeDisplay": {
       "type": "object",
@@ -244,10 +282,10 @@
               "const": "Investigate"
             }
           },
-          "description": "The CORE fixture's stable action label/icon semantic. Additional action data remains opaque."
+          "description": "The CORE fixture's stable action label/icon semantic. Additional engine-owned action data remains opaque."
         }
       },
-      "description": "Only the CORE ActionAbility display semantic is supported. Cost and skill fields remain opaque engine data."
+      "description": "Only the CORE ActionAbility display semantic is supported. Cost and skill fields remain opaque engine-owned data."
     },
     "investigatorId": {
       "$ref": "#/$defs/cardCode"
