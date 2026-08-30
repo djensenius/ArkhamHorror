@@ -107,8 +107,8 @@ spec = describe "withGameStreamMember (participant game-stream authorization gat
     -- reachable only afterwards, inside a REST branch a successful upgrade
     -- never reaches. Modelled here as running the protected action first and
     -- discarding whatever @authorize@ would have decided.
-    let oldUnsafeOrdering :: IO a -> (a -> IO ()) -> IO ()
-        oldUnsafeOrdering _authorize onAuthorized = onAuthorized undefined
+    let oldUnsafeOrdering :: IO FixturePlayer -> (FixturePlayer -> IO ()) -> IO ()
+        oldUnsafeOrdering _authorize onAuthorized = onAuthorized FixturePlayer
     effectsOld <- newStreamEffects
     oldUnsafeOrdering notAMember (const $ runProtectedGameStream effectsOld FixturePlayer)
     allEffects effectsOld `shouldReturn` [True, True, True, True] -- old shape: non-member still got in
