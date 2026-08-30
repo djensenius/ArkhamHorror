@@ -13,7 +13,8 @@ module Api.Handler.Arkham.Games (
   deleteApiV1ArkhamGameR,
   putApiV1ArkhamGameRawR,
   postApiV1ArkhamGamePlayabilityR,
-  withGameStreamMember,
+  withGameParticipant,
+  gameParticipantGate,
 ) where
 
 import Api.Arkham.Epic (lookupGameEvent)
@@ -71,51 +72,72 @@ getApiV1ArkhamGameStepR gameId = do
     Value step : _ -> pure $ GameStepJson step
     [] -> notFound
 
-{- | Gate the participant game stream (WebSocket upgrade) and the ordinary
-REST response behind a single nondisclosing membership decision.
-
-@authorize@ is the exact same @getBy404 (UniquePlayer userId gameId)@ lookup
-the REST branch has always used to build its response. If it throws (Yesod's
-'notFound' in production, for both a missing game and an authenticated
-non-member -- the two must stay indistinguishable) @onAuthorized@ never
-runs. Since @onAuthorized@ is what wraps both 'webSocketsOptions' \/
-'gameStream' /and/ the REST body, a caller who fails this check can no
-longer reach the WebSocket upgrade at all: no room join, no member-count
-increment, no snapshot delivery, and no answer submission, all of which
-only ever happen inside 'gameStream', downstream of this call.
-
-The polymorphic signature over @m@ and the authorized value @a@ lets tests
-exercise this exact sequencing guarantee -- including simulated
-room-join\/count\/snapshot\/answer side effects standing in for
-'gameStream' -- against plain 'IO', with no live database or Redis
-connection, while production wires in the real @getBy404@ lookup and the
-real 'webSocketsOptions' \/ REST continuation.
+{- | Look up the caller's participant row for a game and gate the
+participant WebSocket upgrade attempt and the REST continuation behind it.
+This performs the exact same @getBy (UniquePlayer userId gameId)@ lookup
+the REST branch has always used, and its result is the /only/ input
+'gameParticipantGate' -- the real decision logic -- ever sees; there is no
+other exported entry point in this module through which
+'getApiV1ArkhamGameR' can reach 'webSocketsOptions' \/ 'gameStream', so a
+caller who is not a recorded player of @gameId@ cannot attempt the upgrade
+regardless of how the REST continuation below is written.
 -}
-withGameStreamMember :: Monad m => m a -> (a -> m b) -> m b
-withGameStreamMember authorize onAuthorized = authorize >>= onAuthorized
+withGameParticipant
+  :: UserId -> ArkhamGameId -> (ArkhamPlayerId -> Handler a) -> Handler a
+withGameParticipant userId gameId onAuthorized = do
+  mPlayer <- runDB $ getBy (UniquePlayer userId gameId)
+  gameParticipantGate
+    mPlayer
+    (websocketConnectionOptions >>= \wsOptions -> webSocketsOptions wsOptions $ gameStream gameId)
+    notFound
+    onAuthorized
+
+{- | The exact branch 'withGameParticipant' takes once it has (or hasn't)
+found the caller's 'ArkhamPlayer' row, isolated from 'Handler' so it can be
+exercised directly by tests against plain, already-looked-up values -- no
+database required -- while still being the literal decision production
+runs, not a re-implementation of it.
+
+@Nothing@ -- an authenticated non-member, kept indistinguishable from a
+missing game -- always takes @reject@ (@notFound@ in production): neither
+@attemptUpgrade@ nor @onAuthorized@ ever runs, so there is no room join, no
+member-count increment, no snapshot delivery, and no answer submission.
+@Just@ always runs @attemptUpgrade@ (a no-op unless the request is actually
+a WebSocket handshake) before @onAuthorized@, with the real
+'ArkhamPlayerId', matching 'WithFriends' \/ 'Solo' player selection in the
+REST body.
+-}
+gameParticipantGate
+  :: Monad m
+  => Maybe (Entity ArkhamPlayer)
+  -> m ()
+  -> m a
+  -> (ArkhamPlayerId -> m a)
+  -> m a
+gameParticipantGate Nothing _attemptUpgrade reject _onAuthorized = reject
+gameParticipantGate (Just (Entity playerId _)) attemptUpgrade _reject onAuthorized = do
+  attemptUpgrade
+  onAuthorized playerId
 
 getApiV1ArkhamGameR :: ArkhamGameId -> Handler GetGameJson
 getApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
-  withGameStreamMember (runDB $ getBy404 (UniquePlayer userId gameId)) \(Entity playerId _) -> do
-    wsOptions <- websocketConnectionOptions
-    webSocketsOptions wsOptions $ gameStream gameId
-    runDB do
-      g <- get404 gameId
-      gameLog <- getGameLog gameId Nothing
-      let Game {..} = g.currentData
-      let
-        player =
-          case g.variant of
-            WithFriends -> coerce playerId
-            Solo -> gameActivePlayerId
-      mEvt <- lookupGameEvent gameId
-      pure
-        $ GetGameJson
-          (Just player)
-          g.variant
-          (PublicGame gameId g.name gameLog.entries g.currentData)
-          (entityKey . fst <$> mEvt)
+  withGameParticipant userId gameId \playerId -> runDB do
+    g <- get404 gameId
+    gameLog <- getGameLog gameId Nothing
+    let Game {..} = g.currentData
+    let
+      player =
+        case g.variant of
+          WithFriends -> coerce playerId
+          Solo -> gameActivePlayerId
+    mEvt <- lookupGameEvent gameId
+    pure
+      $ GetGameJson
+        (Just player)
+        g.variant
+        (PublicGame gameId g.name gameLog.entries g.currentData)
+        (entityKey . fst <$> mEvt)
 
 getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler GetGameJson
 getApiV1ArkhamGameSpectateR gameId = do
