@@ -13,6 +13,8 @@ module Api.Handler.Arkham.Games (
   deleteApiV1ArkhamGameR,
   putApiV1ArkhamGameRawR,
   postApiV1ArkhamGamePlayabilityR,
+  withGameParticipantIn,
+  gameParticipantGate,
 ) where
 
 import Api.Arkham.Epic (lookupGameEvent)
@@ -70,15 +72,77 @@ getApiV1ArkhamGameStepR gameId = do
     Value step : _ -> pure $ GameStepJson step
     [] -> notFound
 
+{- | Look up the caller's participant row for a game and gate the
+participant WebSocket upgrade attempt and the REST continuation behind it.
+This looks up the exact same @UniquePlayer userId gameId@ row the REST
+branch has always required (previously via @getBy404@, which threw
+immediately on a miss; here via @getBy@, so the @Maybe@ result can be
+branched on explicitly by 'gameParticipantGate'), and that result is the
+/only/ input 'gameParticipantGate' -- the real decision logic -- ever sees;
+'getApiV1ArkhamGameR' calls this module-private helper only after
+'getRequestUserId', and the helper delegates both effects to
+'withGameParticipantIn', so a caller who is not a recorded player of @gameId@
+cannot attempt the upgrade regardless of how the REST continuation below is
+written.
+-}
+withGameParticipant
+  :: UserId -> ArkhamGameId -> (ArkhamPlayerId -> Handler a) -> Handler a
+withGameParticipant userId gameId =
+  withGameParticipantIn
+    (runDB $ getBy (UniquePlayer userId gameId))
+    (websocketConnectionOptions >>= \wsOptions -> webSocketsOptions wsOptions $ gameStream gameId)
+    notFound
+
+{- | Execute the participant lookup before deciding whether the stream upgrade
+or the authorized REST continuation may run.
+
+The effect-parameterized boundary is shared by production and tests so ordering
+is verified without depending on the source layout of this module.
+-}
+withGameParticipantIn
+  :: Monad m
+  => m (Maybe (Entity ArkhamPlayer))
+  -> m ()
+  -> m a
+  -> (ArkhamPlayerId -> m a)
+  -> m a
+withGameParticipantIn lookupParticipant attemptUpgrade reject onAuthorized = do
+  mPlayer <- lookupParticipant
+  gameParticipantGate mPlayer attemptUpgrade reject onAuthorized
+
+{- | The exact branch 'withGameParticipant' takes once it has (or hasn't)
+found the caller's 'ArkhamPlayer' row, isolated from 'Handler' so it can be
+exercised directly by tests against plain, already-looked-up values -- no
+database required -- while still being the literal decision production
+runs, not a re-implementation of it.
+
+@Nothing@ -- an authenticated non-member, kept indistinguishable from a
+missing game -- always takes @reject@ (@notFound@ in production): neither
+@attemptUpgrade@ nor @onAuthorized@ ever runs, so there is no room join, no
+member-count increment, no snapshot delivery, and no answer submission.
+@Just@ always runs @attemptUpgrade@ (a no-op unless the request is actually
+a WebSocket handshake) before @onAuthorized@, with the real
+'ArkhamPlayerId', matching 'WithFriends' \/ 'Solo' player selection in the
+REST body.
+-}
+gameParticipantGate
+  :: Monad m
+  => Maybe (Entity ArkhamPlayer)
+  -> m ()
+  -> m a
+  -> (ArkhamPlayerId -> m a)
+  -> m a
+gameParticipantGate Nothing _attemptUpgrade reject _onAuthorized = reject
+gameParticipantGate (Just (Entity playerId _)) attemptUpgrade _reject onAuthorized = do
+  attemptUpgrade
+  onAuthorized playerId
+
 getApiV1ArkhamGameR :: ArkhamGameId -> Handler GetGameJson
 getApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
-  wsOptions <- websocketConnectionOptions
-  webSocketsOptions wsOptions $ gameStream gameId
-  runDB do
+  withGameParticipant userId gameId \playerId -> runDB do
     g <- get404 gameId
     gameLog <- getGameLog gameId Nothing
-    Entity playerId _ <- getBy404 (UniquePlayer userId gameId)
     let Game {..} = g.currentData
     let
       player =

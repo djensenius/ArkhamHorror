@@ -8397,6 +8397,7 @@ test-suite spec
       Arkham.Api.GameBugUploadSpec
       Arkham.Api.GameDecksSpec
       Arkham.Api.GameImportSpec
+      Arkham.Api.GameStreamAuthSpec
       Arkham.Api.GameStreamSpec
       Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
