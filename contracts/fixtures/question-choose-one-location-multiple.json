@@ -1,0 +1,83 @@
+{
+  "tag": "ChooseOne",
+  "choices": [
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "LocationTarget",
+        "contents": "00000000-0000-0000-0000-000000000398"
+      },
+      "messages": [
+        {
+          "tag": "RevealLocation",
+          "contents": [
+            null,
+            "00000000-0000-0000-0000-000000000398"
+          ]
+        },
+        {
+          "tag": "PlaceInvestigator",
+          "contents": [
+            "c01001",
+            {
+              "tag": "AtLocation",
+              "contents": "00000000-0000-0000-0000-000000000398"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "LocationTarget",
+        "contents": "00000000-0000-0000-0000-000000000399"
+      },
+      "messages": [
+        {
+          "tag": "RevealLocation",
+          "contents": [
+            null,
+            "00000000-0000-0000-0000-000000000399"
+          ]
+        },
+        {
+          "tag": "PlaceInvestigator",
+          "contents": [
+            "c01001",
+            {
+              "tag": "AtLocation",
+              "contents": "00000000-0000-0000-0000-000000000399"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "LocationTarget",
+        "contents": "00000000-0000-0000-0000-00000000039a"
+      },
+      "messages": [
+        {
+          "tag": "RevealLocation",
+          "contents": [
+            null,
+            "00000000-0000-0000-0000-00000000039a"
+          ]
+        },
+        {
+          "tag": "PlaceInvestigator",
+          "contents": [
+            "c01001",
+            {
+              "tag": "AtLocation",
+              "contents": "00000000-0000-0000-0000-00000000039a"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

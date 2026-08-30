@@ -29,9 +29,7 @@
               "description": "Zero-based index into the authoritative question choices array."
             },
             "playerId": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "$ref": "./uuid.schema.json",
               "description": "Required canonical lowercase, hyphenated UUID map key for the answering player."
             },
             "questionVersion": {

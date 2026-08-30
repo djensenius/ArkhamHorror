@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/uuid.schema.json",
+  "title": "CanonicalUuid",
+  "description": "The canonical wire representation of every UUID-backed newtype's ToJSON instance (deriving newtype from Data.UUID, Arkham/Id.hs -- e.g. LocationId, PlayerId): lowercase, hyphenated, 8-4-4-4-12 hex. Rejects uppercase spelling even though format:uuid alone would accept the same UUID value. Extracted so every governed schema that embeds a raw UUID string shares one canonical pattern instead of duplicating it.",
+  "type": "string",
+  "format": "uuid",
+  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+}
