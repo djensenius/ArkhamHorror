@@ -183,6 +183,11 @@ http {
       default_type application/json;
       gzip off;
 
+      # An `if` block is a nested configuration level, and add_header does not
+      # inherit into a level that declares its own — which is why the shared
+      # headers are repeated here rather than left to the block below. The
+      # response carries exactly one of each; scripts/validate-catalog-serving.py
+      # asserts that against real nginx.
       set $br "";
       if ($accepts_br) { set $br "y"; }
       if (-f "$request_filename.br") { set $br "${br}f"; }

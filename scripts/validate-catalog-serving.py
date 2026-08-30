@@ -12,10 +12,14 @@ Neither can be proven by reading the config, so this gate boots the actual
 `prod.nginxconf` (and the config the offline packager generates) in nginx and
 asserts the response status, headers, and bytes for:
 
-  * 200 (chunk and manifest), 206 and 304 — cacheable, with the policy their
-    path deserves;
-  * 404 (missing chunk, unknown path), 405 (bad method) and 416 (bad range) —
-    never stored;
+  * 200 (chunk and manifest) and 304 — cacheable, with the policy their path
+    deserves;
+  * 404 (missing chunk, unknown path) and 405 (bad method) — never stored,
+    and never answered with the SPA shell;
+  * `Range` requests — ranges are disabled for the catalog, so they return the
+    whole file as a 200 and no 416 can be produced;
+  * gzip and brotli negotiation, including that each response carries exactly
+    one Cache-Control, Vary, nosniff and Content-Encoding header;
   * JSON content type, `nosniff`, `Vary: Accept-Encoding`, and byte-exact
     payloads that match the manifest's SHA-256;
   * a rolling deploy in both directions: the manifest of one revision fetched
@@ -44,6 +48,7 @@ FRONTEND = ROOT / "frontend"
 WORK = FRONTEND / "node_modules" / ".locale-catalog-serving"
 NGINX_IMAGE = "nginx:1.27-alpine"
 PORT = int(os.environ.get("LOCALE_CATALOG_TEST_PORT", "38199"))
+REQUEST_TIMEOUT = 20
 
 CLEAN_CLONE_PREFIXES = ("frontend/src/", "frontend/homebrew/", "frontend/scripts/", "frontend/schemas/", "contracts/", "backend/arkham-api/i18n-emitted-keys.json")
 CLEAN_CLONE_FILES = ("frontend/package.json", "frontend/package-lock.json")
@@ -70,7 +75,9 @@ def request(path: str, *, method: str = "GET", headers: dict[str, str] | None = 
     url = f"http://127.0.0.1:{PORT}{path}"
     message = urllib.request.Request(url, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(message) as response:
+        # A container that accepts connections but never answers must fail the
+        # gate, not hang it.
+        with urllib.request.urlopen(message, timeout=REQUEST_TIMEOUT) as response:
             return response.status, Headers(response.headers.items()), response.read()
     except urllib.error.HTTPError as error:
         return error.code, Headers(error.headers.items()), error.read()
@@ -115,7 +122,7 @@ class Nginx:
             try:
                 request("/locale-catalog/manifest.json")
                 return self
-            except (urllib.error.URLError, ConnectionError):
+            except (urllib.error.URLError, ConnectionError, TimeoutError):
                 time.sleep(0.25)
         logs_result = run([docker, "logs", self.name])
         logs = f"{logs_result.stdout}{logs_result.stderr}"
