@@ -153,9 +153,23 @@ function entryModule() {
  */
 export async function loadLocaleSources(frontendDir) {
   const { build } = await import('vite')
-  const outDir = join(frontendDir, 'node_modules', '.locale-catalog')
+  // A fresh directory per call: Node caches ES modules by URL, so reusing one
+  // path would silently re-evaluate the first bundle on every later build in
+  // the same process — and a repeated-build determinism check would then
+  // compare a bundle against itself.
+  const outDir = join(frontendDir, 'node_modules', '.locale-catalog', `${process.pid}-${buildSerial++}`)
   rmSync(outDir, { recursive: true, force: true })
 
+  try {
+    return await bundleLocaleSources(build, frontendDir, outDir)
+  } finally {
+    rmSync(outDir, { recursive: true, force: true })
+  }
+}
+
+let buildSerial = 0
+
+async function bundleLocaleSources(build, frontendDir, outDir) {
   await build({
     configFile: false,
     logLevel: 'error',
@@ -196,8 +210,6 @@ export async function loadLocaleSources(frontendDir) {
     }
     messages[locale] = loaded.messages
   }
-
-  rmSync(outDir, { recursive: true, force: true })
 
   return {
     locales,
