@@ -261,15 +261,22 @@ this contract does not change runtime behavior):
 ### Native basic-choice questions
 
 `schemas/basic-choice-question.schema.json` is the deliberately small
-native-renderable slice for `ChooseOne`, `PlayerWindowChooseOne`, and
-`WindowChooseOne`. It is **not** referenced from `PublicGame.question`:
-that UUID-keyed map remains broad so every other engine question/message
-variant remains valid. A client may apply this standalone schema to its own
-player's map value; any unknown question or choice-label tag is unsupported,
-not a legal action to normalize or guess. Recognized question, choice-label,
-and component envelopes are closed and constructor-disjoint, so aliased,
-cross-variant, or otherwise impossible fields also fail rather than being
-silently normalized.
+native-renderable slice for `ChooseOne`, `PlayerWindowChooseOne`,
+`WindowChooseOne`, and `Read`. It is **not** referenced from
+`PublicGame.question`: that UUID-keyed map remains broad so every other
+engine question/message variant remains valid. A client may apply this
+standalone schema to its own player's map value; any unknown question or
+choice-label tag is unsupported, not a legal action to normalize or guess.
+Recognized question, choice-label, and component envelopes are closed and
+constructor-disjoint, so aliased, cross-variant, or otherwise impossible
+fields also fail rather than being silently normalized. If any single choice
+inside a real `choices`/`readChoices` array is an unsupported variant, the
+*whole* prompt fails this schema (the array is validated element-by-element,
+with no partial pass); `PublicGame.question` itself is untouched by this
+schema and keeps every entry -- known or unknown -- exactly as encoded, so a
+client falls back to an unsupported/update-required presentation for the
+entire prompt rather than silently dropping or renumbering just the
+unrecognized entry.
 
 The production-generated
 `question-player-window-choose-one.json` golden is the active CORE fixture
@@ -297,13 +304,58 @@ For this slice, native clients send:
 the authoritative `PublicGame.scenarioSteps` from the snapshot that supplied
 the question. The native `Answer` schema requires both fields; the backend
 decoder's optional legacy behavior is intentionally outside this native
-branch. UUID spelling is exactly lowercase and hyphenated. `choice`,
-`questionVersion`, and `scenarioSteps` share the non-negative signed-64 range
-`0...9223372036854775807` and use canonical raw JSON integer tokens: no sign,
-decimal point, exponent, or leading zero. The paired `answer-question.json`
-golden decodes through the real `Entity.Answer` `FromJSON` instance, and
-backend tests prove choice `2` selects the third (`EndTurnButton`) CORE option
-and version `3` equals that snapshot's `scenarioSteps`.
+branch. UUID spelling is exactly lowercase and hyphenated (`schemas/uuid.schema.json`,
+shared by every governed UUID-string field, including a `LocationTarget`'s
+`contents` below). `choice`, `questionVersion`, and `scenarioSteps` share the
+non-negative signed-64 range `0...9223372036854775807` and use canonical raw
+JSON integer tokens: no sign, decimal point, exponent, or leading zero. The
+paired `answer-question.json` golden decodes through the real
+`Entity.Answer` `FromJSON` instance, and backend tests prove choice `2`
+selects the third (`EndTurnButton`) CORE option and version `3` equals that
+snapshot's `scenarioSteps`.
+
+#### The Gathering's opening `Read`/`ChooseOne(LocationTarget)` prompts
+
+The same schema also covers the production-authentic opening prompt
+sequence for Night of the Zealot's "The Gathering": a `Read` setup-intro
+story beat, followed by the `startAt` starting-location `ChooseOne`.
+
+- `question-read.json` is the real `setupTheGathering` opening `Read`
+  (`Arkham.Helpers.FlavorText.setup` -> `flavor` -> `Arkham.Message.story`):
+  `BasicReadChoices` with exactly one semantic continue choice
+  (`{"tag":"Label","label":"$continue","messages":[]}`) and `readCards: null`.
+  Only this exact governed continue shape is modeled; `BasicReadChoicesN`,
+  `BasicReadChoicesUpToN`, and `LeadInvestigatorMustDecide` remain explicit
+  unsupported values. `flavorText` (`Arkham.Text.FlavorText`) is itself a
+  closed slice covering only the `BasicEntry`, `I18nEntry`, and `ListEntry`
+  constructors these fixtures exercise; every other `FlavorTextEntry`
+  constructor is likewise unsupported here (still opaque in `PublicGame`).
+  `title`/`I18nEntry.key` are literal i18n lookup keys, never rendered
+  narrative text -- the wire never carries actual scenario prose.
+- `question-read-with-cards.json` is the sibling non-null `readCards`
+  branch, built from the real (pure) `Arkham.Message.storyWithCards`, proving
+  the `Maybe [CardCode]` missing/null/value distinction and the `BasicEntry`
+  flavor-text constructor against the same schema.
+- `question-choose-one-location.json` is the real `startAt` prompt
+  (`Arkham.Scenario.Setup.startAt`) that follows: `ChooseOne` with a single
+  `TargetLabel(LocationTarget)` choice for the real starting location
+  ("Study", `d5a66e84-c729-4066-8475-d8a155609025`, matching `get-game.json`).
+  Only the `LocationTarget` variant of the much broader `Arkham.Target` sum
+  is modeled; every other `Target` constructor remains an explicit
+  unsupported value here while staying opaque inside the broader
+  `PublicGame.question` map (see the paired `forwardCompatibilityChecks`
+  entry proving a `TargetLabel(EnemyTarget)` choice there).
+- `question-choose-one-location-multiple.json` generalizes `startAt` to
+  three real "The Gathering" locations (Attic, Hallway, Parlor) via the
+  same shared `chooseTargetM`/`targeting`/`unsafeReveal`/`placeAllAt`
+  production combinators, proving backend choice order and each choice's
+  zero-based `Answer.choice` index are stable and never renumbered by an
+  unsupported sibling entry.
+
+No new capability string gates this slice; native clients gate it purely by
+the negotiated `schemaRevision`. The existing versioned `Answer` frame (above)
+remains sufficient to answer either prompt -- no new answer constructor was
+required.
 
 ## Game creation and multiplayer lobbies
 

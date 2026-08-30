@@ -1,0 +1,56 @@
+{
+  "tag": "Read",
+  "flavorText": {
+    "title": "$setup",
+    "body": [
+      {
+        "tag": "ListEntry",
+        "list": [
+          {
+            "entry": {
+              "tag": "I18nEntry",
+              "key": "nightOfTheZealot.theGathering.setup.gatherSets",
+              "variables": {}
+            },
+            "nested": []
+          },
+          {
+            "entry": {
+              "tag": "I18nEntry",
+              "key": "nightOfTheZealot.theGathering.setup.placeLocations",
+              "variables": {}
+            },
+            "nested": []
+          },
+          {
+            "entry": {
+              "tag": "I18nEntry",
+              "key": "nightOfTheZealot.theGathering.setup.setOutOfPlay",
+              "variables": {}
+            },
+            "nested": []
+          },
+          {
+            "entry": {
+              "tag": "I18nEntry",
+              "key": "shuffleRemainder",
+              "variables": {}
+            },
+            "nested": []
+          }
+        ]
+      }
+    ]
+  },
+  "readChoices": {
+    "tag": "BasicReadChoices",
+    "contents": [
+      {
+        "tag": "Label",
+        "label": "$continue",
+        "messages": []
+      }
+    ]
+  },
+  "readCards": null
+}

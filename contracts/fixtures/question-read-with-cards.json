@@ -1,0 +1,25 @@
+{
+  "tag": "Read",
+  "flavorText": {
+    "title": null,
+    "body": [
+      {
+        "tag": "BasicEntry",
+        "text": "Contract fixture flavor text."
+      }
+    ]
+  },
+  "readChoices": {
+    "tag": "BasicReadChoices",
+    "contents": [
+      {
+        "tag": "Label",
+        "label": "$continue",
+        "messages": []
+      }
+    ]
+  },
+  "readCards": [
+    "c01159"
+  ]
+}
