@@ -110,12 +110,18 @@ def canonical_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def run_generator(args: list[str], *, frontend: Path = FRONTEND, expect_success: bool = True):
+def run_generator(
+    args: list[str],
+    *,
+    frontend: Path = FRONTEND,
+    cwd: Path | None = None,
+    expect_success: bool = True,
+):
     node = shutil.which("node")
     require(node is not None, "node is required to validate the locale catalog")
     result = subprocess.run(
         [node, str(frontend / "scripts" / "locale-catalog" / "generate.mjs"), *args],
-        cwd=frontend,
+        cwd=cwd or frontend,
         capture_output=True,
         text=True,
         check=False,
@@ -718,6 +724,16 @@ def main() -> None:
     require(
         files == read_generated(second),
         "two generator runs produced different bytes",
+    )
+
+    # The deployment runs the generator from frontend/ (npm prebuild); a
+    # developer or script may run it from the repository root. Both must
+    # produce the same bytes.
+    from_repo_root = WORK_ROOT / "from-repo-root"
+    run_generator(["--out", str(from_repo_root)], cwd=ROOT)
+    require(
+        files == read_generated(from_repo_root),
+        "generation depends on the working directory it is invoked from",
     )
 
     manifest = validate_catalog(files, schemas)

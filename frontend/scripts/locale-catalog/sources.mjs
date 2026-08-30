@@ -171,6 +171,9 @@ let buildSerial = 0
 
 async function bundleLocaleSources(build, frontendDir, outDir) {
   await build({
+    // Pinned so the build never depends on the working directory the
+    // generator happens to be invoked from.
+    root: frontendDir,
     configFile: false,
     logLevel: 'error',
     resolve: {
