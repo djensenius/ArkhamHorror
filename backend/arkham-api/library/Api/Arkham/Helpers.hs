@@ -312,10 +312,31 @@ roomField = encodeUtf8 . gameIdToText
 currentEpoch :: IO Int
 currentEpoch = floor <$> getPOSIXTime
 
--- Best-effort wrapper: tracking room counts is observability, not
--- correctness, so we never let a Redis hiccup tear down a live session.
+{- | Best-effort wrapper: tracking room counts is observability, not
+correctness, so we never let a Redis hiccup tear down a live session.
+
+Uses 'UE.tryAny' (not 'Control.Exception.try' \@'SomeException'):
+every current call site is either directly on, or reachable from, a
+thread some other caller can legitimately deliver an asynchronous
+cancellation to -- most importantly 'pubSubSupervisor''s @watchdog@,
+which is one racer under 'Api.Arkham.Lifecycle.raceManaged_' and so
+must actually terminate on the 'Control.Exception.ThreadKilled' that
+function's own 'Api.Arkham.Lifecycle.cancelManagedThread' delivers to
+it; catching that here and looping again in @watchdog@\/@forever@'s
+next iteration would leave 'Api.Arkham.Lifecycle.cancelManagedThread''s
+'Control.Concurrent.MVar.readMVar' blocked forever, hanging
+'pubSubSupervisor' itself and, transitively, Foundation shutdown. The
+same reasoning applies to every other call site
+('releaseRoomIfEmpty', 'withRedis', the 'sweepStaleRooms' call inside
+'getRedisRoomCounts'): each already only ever wants to swallow a
+genuine, synchronous Redis\/network failure, never a caller's own
+cancellation (e.g. a WebSocket disconnect handler or admin request
+being torn down mid-flight). 'UE.tryAny' only ever catches genuinely
+synchronous exceptions; any asynchronous exception -- shutdown or
+otherwise -- always propagates unchanged.
+-}
 tryRedis_ :: MonadIO m => IO a -> m ()
-tryRedis_ action = void $ liftIO $ try @SomeException action
+tryRedis_ action = void $ liftIO $ UE.tryAny action
 
 -- Run a best-effort Redis action if a Redis broker is configured.
 withRedis :: (MonadIO m, HasApp m) => (Connection -> IO a) -> m ()

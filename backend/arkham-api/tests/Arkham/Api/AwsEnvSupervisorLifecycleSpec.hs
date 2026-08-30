@@ -47,7 +47,7 @@ import Api.Arkham.Lifecycle (
   forkTransferringOwnershipUsing,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
   proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
-  publishTerminalFailureOnException,
+  publishTerminalFailureUnlessTransferred,
   raceManaged_,
   releaseAll,
   shutdownThenDeliver,
@@ -245,31 +245,39 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
   and block forever inside
   'proceedOnlyIfPreviousShutdownSucceededReplayable''s own
   'Control.Concurrent.MVar.readMVar' against a cell nothing was ever
-  going to fill -- deadlocking restart permanently. The fix wraps that
-  initial @start@ call in 'publishTerminalFailureOnException', so an
-  exception escaping it is always durably published into @done@ as
-  @'Left'@ before propagating.
+  going to fill -- deadlocking restart permanently. The fix wraps every
+  production @start@ call (both @DevelMain.update@'s initial branch and
+  @restartAppInNewThread@'s restart branch) in
+  'publishTerminalFailureUnlessTransferred', so an exception escaping it
+  is durably published into @done@ as @'Left'@ before propagating --
+  /unless/ ownership was already durably transferred to a live child
+  first (see the final test below, covering the follow-up HIGH finding
+  that a naive unconditional version of this wrapper would instead
+  overwrite @done@ with a stale failure over a still-live, untracked
+  child).
 
   This test exercises the *exact* composition @DevelMain.update@ uses --
-  'publishTerminalFailureOnException' feeding the very same @done@ cell
-  that a subsequent restart attempt reads via
+  'publishTerminalFailureUnlessTransferred' feeding the very same @done@
+  cell that a subsequent restart attempt reads via
   'proceedOnlyIfPreviousShutdownSucceededReplayable' -- not a
   standalone, narrower test of either combinator alone, so a regression
   in how @DevelMain@ actually wires them together (not just in either
   combinator in isolation) would be caught here too.
 
-  Mutation check: removing the 'publishTerminalFailureOnException' wrapper
-  (reverting to a bare @start@ call, the pre-fix behavior) makes the
-  second 'proceedOnlyIfPreviousShutdownSucceededReplayable' call below
-  hang forever instead of immediately observing a repeated failure.
+  Mutation check: removing the 'publishTerminalFailureUnlessTransferred'
+  wrapper (reverting to a bare @start@ call, the pre-fix behavior) makes
+  the second 'proceedOnlyIfPreviousShutdownSucceededReplayable' call
+  below hang forever instead of immediately observing a repeated
+  failure.
   -}
-  describe "publishTerminalFailureOnException composed with proceedOnlyIfPreviousShutdownSucceededReplayable (DevelMain's exact initial-start/restart composition)" do
+  describe "publishTerminalFailureUnlessTransferred composed with proceedOnlyIfPreviousShutdownSucceededReplayable (DevelMain's exact initial-start/restart composition)" do
     it "a failed very-first start durably publishes Left, so every subsequent restart attempt fails immediately (never blocks) and never starts a replacement" do
       done <- newEmptyMVar
+      transferred <- newIORef False
       replacementStartedRef <- newIORef False
       let failingInitialStart = Exception.throwIO (userError "initial acquisition failed")
       -- Mirrors 'DevelMain.update''s @Nothing@ branch exactly.
-      result1 <- Exception.try @SomeException (publishTerminalFailureOnException done failingInitialStart)
+      result1 <- Exception.try @SomeException (publishTerminalFailureUnlessTransferred transferred done failingInitialStart)
       case result1 of
         Left _ -> pure ()
         Right () -> expectationFailure "expected the failing initial start to propagate"
@@ -302,11 +310,12 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
 
     it "a failed spawn/publish (not just a synchronous acquisition failure) is published identically, and a subsequently-successful start after that failure is never attempted automatically by this composition (the caller must explicitly retry only after fixing the underlying cause)" do
       done <- newEmptyMVar
+      transferred <- newIORef False
       spawnAttempted <- newIORef (0 :: Int)
       let failingSpawn = do
             atomicModifyIORef' spawnAttempted (\n -> (n + 1, ()))
             Exception.throwIO Exception.ThreadKilled
-      result <- Exception.try @SomeException (publishTerminalFailureOnException done failingSpawn)
+      result <- Exception.try @SomeException (publishTerminalFailureUnlessTransferred transferred done failingSpawn)
       case result of
         Left _ -> pure ()
         Right () -> expectationFailure "expected the failing spawn to propagate"
@@ -315,6 +324,53 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       case outcome of
         Left _ -> pure ()
         Right () -> expectationFailure "expected the failed spawn to be published as Left"
+
+    {- | Structural regression for the HIGH-severity finding that a naive,
+    unconditional \"any exception escaping @start@ means no child was
+    created\" version of this wrapper would overwrite @done@ with a
+    stale, spurious 'Left' even when a live, already-tracked child
+    exists -- e.g. because an asynchronous exception landed in the
+    narrow gap between 'acquireThenForkTransferringOwnership''s own
+    masked @publish@ committing (durably recording the new generation's
+    handle) and this wrapper's own 'mask'\/'restore' boundary. Mirrors
+    'DevelMain.start' exactly: @transferred@ is flipped to 'True' (as
+    @DevelMain.start@'s own @publish@ callback does, immediately after
+    recording the new generation's 'Control.Concurrent.ThreadId') /before/
+    the exception is thrown, simulating exactly that post-publish,
+    pre-return cancellation window.
+
+    Mutation check: reverting 'publishTerminalFailureUnlessTransferred'
+    to unconditionally 'tryPutMVar' regardless of @transferred@ (the
+    pre-fix, HIGH-severity-vulnerable behavior) makes this test fail: it
+    would observe @done@ filled with a spurious 'Left', not left
+    genuinely empty for the live child's own eventual
+    'shutdownThenDeliver' to fill.
+    -}
+    it "does NOT publish into done once ownership has already been transferred to a live child, even though the action itself still throws" do
+      done <- newEmptyMVar
+      transferred <- newIORef False
+      let publishThenFail = do
+            -- Mirrors 'DevelMain.start''s own @publish@ callback
+            -- committing ownership before an async exception can land.
+            writeIORef transferred True
+            Exception.throwIO (userError "async exception after publish committed")
+      result <- Exception.try @SomeException (publishTerminalFailureUnlessTransferred transferred done publishThenFail)
+      case result of
+        Left _ -> pure ()
+        Right () -> expectationFailure "expected the exception to still propagate to the caller"
+      -- done must be genuinely untouched -- not filled with a stale
+      -- Left -- since a live child now owns its eventual filling.
+      stillEmpty <- tryTakeMVar done
+      case stillEmpty of
+        Nothing -> pure ()
+        Just _ -> expectationFailure "expected done to remain empty; a live, transferred child must own its own eventual delivery"
+      -- The live child's own eventual shutdown can still fill done
+      -- normally afterwards -- proving it was never poisoned.
+      shutdownThenDeliver (pure ()) done
+      delivered <- readMVar done
+      case delivered of
+        Right () -> pure ()
+        Left err -> expectationFailure ("expected the live child's own later shutdown to deliver Right (), got Left " <> show err)
 
   {- | Regression for the exact @DevelMain.hs@ ordering bug: the old code
   signalled restart readiness (@putMVar done ()@, which unblocks
@@ -442,18 +498,29 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         started `shouldBe` False
 
     {- | Regression: if @onSuccess@ (starting the replacement generation)
-    itself fails -- having already consumed the previous 'Right' -- the
-    'MVar' must not be left permanently empty (which would make the
-    *next* restart attempt's 'readMVar' block forever, nothing ever being
-    left to fill it again). It must instead be repopulated with that same
-    failure, so the next attempt fails immediately too.
+    itself fails -- having already consumed the previous 'Right' -- and
+    ownership was never transferred to any child (mirroring
+    @DevelMain.hs@'s actual composition, where every production
+    @onSuccess@ is wrapped in 'publishTerminalFailureUnlessTransferred'
+    against a fresh, per-attempt @transferred@ token), the 'MVar' must
+    not be left permanently empty (which would make the *next* restart
+    attempt's 'readMVar' block forever, nothing ever being left to fill
+    it again). It must instead be repopulated with that same failure, so
+    the next attempt fails immediately too. This exercises the exact
+    'DevelMain.start' composition -- 'publishTerminalFailureUnlessTransferred'
+    wrapping @onSuccess@, itself passed to
+    'proceedOnlyIfPreviousShutdownSucceededReplayable' -- not either
+    combinator in isolation.
     -}
     it "repopulates the MVar with a terminal failure if starting the replacement itself fails after consuming a Right" do
       done <- newEmptyMVar
       shutdownThenDeliver (pure ()) done
+      transferred <- newIORef False
       firstAttempt <-
         Exception.try @Exception.SomeException
-          $ proceedOnlyIfPreviousShutdownSucceededReplayable done (Exception.throwIO (userError "failed to start replacement"))
+          $ proceedOnlyIfPreviousShutdownSucceededReplayable
+            done
+            (publishTerminalFailureUnlessTransferred transferred done (Exception.throwIO (userError "failed to start replacement")))
       case firstAttempt of
         Left _ -> pure ()
         Right () -> expectationFailure "expected the replacement start's own failure to propagate"
@@ -533,14 +600,21 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     -}
     it "defers a canary asynchronous exception through the just-consumed-success bookkeeping, delivering it only once onSuccess is genuinely running, where it is caught and safely re-recorded rather than lost with the MVar left empty" do
       done <- newMVar (Right ())
+      transferred <- newIORef False
       neverFilled <- newEmptyMVar
       caughtInsideOnSuccess <- newEmptyMVar
       resultVar <- newEmptyMVar
       let onSuccess =
-            takeMVar (neverFilled :: MVar ())
-              `Exception.catch` \e@(Exception.SomeException _) -> do
-                putMVar caughtInsideOnSuccess ()
-                Exception.throwIO e
+            -- Mirrors 'DevelMain.start''s own wrapping exactly: a
+            -- never-transferred @onSuccess@ (no child was ever durably
+            -- published) is responsible for repopulating @done@ itself
+            -- via 'publishTerminalFailureUnlessTransferred', not this
+            -- combinator.
+            publishTerminalFailureUnlessTransferred transferred done do
+              takeMVar (neverFilled :: MVar ())
+                `Exception.catch` \e@(Exception.SomeException _) -> do
+                  putMVar caughtInsideOnSuccess ()
+                  Exception.throwIO e
       -- The forking thread is itself masked, so the child inherits
       -- 'Exception.MaskedInterruptible' at birth: this rules out the
       -- exception being delivered before the child has even reached its

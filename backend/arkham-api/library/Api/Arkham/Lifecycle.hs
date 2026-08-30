@@ -27,7 +27,7 @@ module Api.Arkham.Lifecycle (
   shutdownThenDeliver,
   proceedOnlyIfPreviousShutdownSucceededReplayable,
   proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
-  publishTerminalFailureOnException,
+  publishTerminalFailureUnlessTransferred,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
   ManagedThread,
@@ -41,7 +41,7 @@ module Api.Arkham.Lifecycle (
 ) where
 
 import Control.Concurrent (ThreadId, forkIOWithUnmask)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Exception (
   AsyncException (ThreadKilled),
   SomeException,
@@ -55,6 +55,8 @@ import Control.Exception (
   throwTo,
   try,
  )
+import Control.Monad (unless)
+import Data.IORef (IORef, readIORef)
 import Prelude
 
 {- | Acquire a resource whose ownership transfers to the caller on
@@ -151,50 +153,55 @@ failed/interrupted previous shutdown, that version still consumed the
 same one-shot 'MVar' cell (reused, per @DevelMain.hs@'s design, across
 every generation's own eventual shutdown) could never be filled again,
 and the /next/ restart attempt's own wait on it would block forever
-instead of observing the same failure immediately. This version instead:
+instead of observing the same failure immediately. This version instead
+peeks the outcome with 'readMVar' (non-consuming) rather than 'takeMVar':
+on 'Left', it is left untouched and re-thrown immediately -- every
+subsequent call sees the exact same failure immediately, without
+blocking, and without ever starting a replacement. Only on 'Right ()'
+does it 'takeMVar' (finally consuming that success, emptying the cell so
+the /next/ generation's own eventual shutdown can fill it again)
+immediately before running @onSuccess@.
 
-* Peeks the outcome with 'readMVar' (non-consuming) rather than
-  'takeMVar'. On 'Left', it is left untouched and re-thrown immediately
-  -- every subsequent call sees the exact same failure immediately,
-  without blocking, and without ever starting a replacement.
-* Only on 'Right ()' does it 'takeMVar' (finally consuming that success,
-  emptying the cell so the /next/ generation's own eventual shutdown can
-  fill it again) immediately before running @onSuccess@.
-* If @onSuccess@ itself then fails (e.g. starting the replacement
-  generation throws, synchronously or asynchronously, having already
-  consumed the previous 'Right'), the same failure is written back into
-  the now-empty cell as a 'Left' before being re-thrown -- so the cell is
-  never left permanently empty either, and every subsequent call
-  immediately observes that same failure rather than blocking on a cell
-  nothing will ever fill again.
+Deliberately does /not/ itself catch or repopulate @done@ if @onSuccess@
+then fails: an earlier version did (an unconditional @try@\/@putMVar
+done (Left err)@ around @onSuccess@), on the assumption that any
+'onSuccess' failure meant no replacement generation was ever created.
+That assumption is false for @onSuccess@'s actual production shape
+('DevelMain.hs''s @start@, built on 'acquireThenForkTransferringOwnership'):
+once its own masked acquire\/spawn\/publish transaction has durably
+recorded a new generation's handle (e.g. into a
+'Foreign.Store.Store'\/'Data.IORef.IORef'-backed restart-state cell)
+/before/ returning, that new generation is already live and its own
+eventual shutdown -- not this call -- is what must eventually fill
+@done@; a subsequent asynchronous exception landing in the narrow gap
+between that masked transaction returning and this function's own
+'mask'\/'restore' boundary would then still reach this function as an
+ordinary thrown exception, even though a replacement now genuinely
+exists. Blindly repopulating @done@ with 'Left' in that case would
+either deadlock (a blocking 'putMVar' against a cell @onSuccess@ itself
+may already have filled, e.g. via 'publishTerminalFailureUnlessTransferred')
+or -- worse -- silently claim a live, untracked-by-@done@ replacement
+generation had failed to start at all, permanently blocking every
+future restart attempt behind a stale 'Left' even though a real
+generation is still running and has not been told to stop. Managing
+@done@ on an @onSuccess@ failure is therefore entirely @onSuccess@'s own
+responsibility now (see 'publishTerminalFailureUnlessTransferred', which
+every production @onSuccess@ -- both @DevelMain.hs@'s initial \"no server
+running\" branch and its restart branch -- is wrapped in); this function
+only ever gates *readiness* to attempt @onSuccess@ at all, replayably,
+never @done@'s content afterwards.
 
 The gap between 'takeMVar' returning (consuming the previous 'Right ()')
-and @onSuccess@'s own failure handling being installed is closed with
-'mask': only 'readMVar' (which does not consume anything, so being
-interrupted there is harmless -- the cell is untouched for the next
-caller) and @onSuccess@ itself (explicitly 'restore'd, so it still runs
-interruptibly, and any exception it raises -- sync or async -- is caught
-by 'try' and written back before propagating) run with asynchronous
+and @onSuccess@ beginning is closed with 'mask': only 'readMVar' (which
+does not consume anything, so being interrupted there is harmless -- the
+cell is untouched for the next caller) and @onSuccess@ itself (explicitly
+'restore'd, so it still runs interruptibly) run with asynchronous
 exceptions enabled. 'takeMVar' remains genuinely interruptible by design
 even under 'mask' (so a blocked take can still be cancelled), but nothing
 is consumed unless it actually returns; once it returns, every step up to
 @onSuccess@ beginning is masked, so there is no window in which the cell
-has been emptied but nothing (yet) owns repopulating it.
-
-The @onSuccess@-failure repopulation ('putMVar done (Left err)') is
-additionally wrapped in an explicit 'mask_', even though it already
-executes at this function's own ambient masked level (everything here
-except the two 'restore'd calls above runs masked, so this call is never
-actually unmasked to begin with): 'Control.Concurrent.MVar.putMVar' can
-still be interrupted even under (non-uninterruptible) 'mask' if it has to
-/block/ (i.e. the target cell is unexpectedly already full), and this
-call's safety otherwise relies on the single-owner invariant that this
-cell is always empty here (having just been emptied by the 'takeMVar'
-above, with nothing else able to refill it concurrently by this module's
-design) rather than on any local, self-evident guarantee. The explicit
-'mask_' costs nothing, does not change today's observable masking state,
-and documents the invariant this call actually depends on rather than
-leaving it implicit.
+has been emptied but @onSuccess@ has not yet had a chance to react to a
+failure it is itself responsible for recording.
 -}
 proceedOnlyIfPreviousShutdownSucceededReplayable
   :: MVar (Either SomeException ()) -> IO a -> IO a
@@ -220,12 +227,7 @@ proceedOnlyIfPreviousShutdownSucceededReplayableUsing afterConsume done onSucces
     Right () -> do
       _ <- takeMVar done
       afterConsume
-      result <- try (restore onSuccess)
-      case result of
-        Left err -> do
-          mask_ (putMVar done (Left err))
-          throwIO err
-        Right a -> pure a
+      restore onSuccess
 
 {- | Given an already-acquired resource whose remaining lifetime is meant
 to be owned by a newly-forked child thread (which runs @body res@
@@ -485,33 +487,64 @@ raceManaged_ leftAction rightAction = mask $ \restore -> do
       (Right (), Left e) -> throwIO e
       (Right (), Right ()) -> pure ()
 
-{- | Used by @app\/DevelMain.hs@'s initial \"no server running\" branch:
-run @action@ (expected to eventually make some other caller's future
-'proceedOnlyIfPreviousShutdownSucceededReplayable' call against @done@
-observe a definite outcome via that same @done@ cell -- see
-'acquireThenForkTransferringOwnership''s own @finalize@\/'shutdownThenDeliver'),
-but if @action@ itself fails before ever reaching the point where a
-spawned child's own finalizer takes over responsibility for eventually
-filling @done@ (i.e. an ordinary acquisition\/spawn failure on the very
-first generation, with no child ever created), durably publish that same
-failure into @done@ (via 'Control.Concurrent.MVar.tryPutMVar', so this
-can never itself block) before propagating it, rather than leaving @done@
-permanently empty.
+{- | Used to wrap @app\/DevelMain.hs@'s @start@ -- both its initial \"no
+server running\" branch /and/ its restart branch (as @onSuccess@ passed
+to 'proceedOnlyIfPreviousShutdownSucceededReplayable') -- around a fresh
+@transferred@ 'IORef' created anew for each attempt, alongside
+'acquireThenForkTransferringOwnership''s own @publish@ callback (which
+@start@ must also flip to 'True', still within that same masked
+acquire\/spawn\/publish transaction, immediately once @publish@ itself
+succeeds -- e.g. @\\h -> writeIORef transferred True >> writeIORef tidRef
+(Just h)@): run @action@, and if it fails, publish that failure into
+@done@ /unless/ @transferred@ already reads 'True'.
 
-Without this, a failed\/cancelled first @start@ still leaves the
+This is the \"explicit committed ownership token\" this module's own
+generic acquire\/spawn\/publish helper
+('acquireThenForkTransferringOwnershipUsing') cannot itself provide in
+isolation: once its own masked transaction has durably published a new
+generation's handle (so a live, running child now definitely owns
+@done@'s eventual filling, via its own finalizer\/'shutdownThenDeliver'),
+returning from that transaction's own enclosing 'Control.Exception.mask'
+back to an unmasked ambient state is still, unavoidably, a point at which
+an asynchronous exception can be delivered to /this/ (the acquiring)
+thread -- interrupting nothing about the already-published child, but
+still making @action@ as a whole appear to \"fail\" to its own caller.
+Naively treating /any/ exception escaping @action@ as proof that no child
+was ever created (the original, buggy behavior this replaces) would then
+durably publish a stale, spurious 'Left' into @done@ despite a live,
+already-tracked child still running -- permanently blocking every future
+restart attempt (which reads that stale 'Left' via
+'proceedOnlyIfPreviousShutdownSucceededReplayable' and refuses to
+proceed) even though the actual, tracked child has never been told to
+stop and eventually /will/ genuinely fill @done@ itself once it is.
+
+So: if @transferred@ still reads 'False' when @action@ throws, ownership
+was never transferred to any child -- this is an ordinary acquisition\/
+spawn\/publish failure (or a cancellation strictly before publish
+committed), so this call is the one and only place that will ever fill
+@done@, and it must (via 'Control.Concurrent.MVar.tryPutMVar', so this
+can never itself block -- safe even if @action@'s own internal cleanup,
+e.g. a failed @publish@'s @cancel@ callback, already filled @done@ with a
+genuine result first). If @transferred@ reads 'True', a child now
+definitely owns @done@'s eventual filling; this call touches @done@ not
+at all, and simply re-throws, leaving @done@ correctly empty for that
+child's own eventual shutdown to fill.
+
+Without this at all, a failed\/cancelled first @start@ still leaves the
 'Foreign.Store.Store'-backed slot itself created (so the /next/
 @DevelMain.update@ call takes the \"server is already running\" branch,
 not \"no server running\"), reading that exact same, still-empty @done@
-via 'proceedOnlyIfPreviousShutdownSucceededReplayableUsing''s own
+via 'proceedOnlyIfPreviousShutdownSucceededReplayable''s own
 'Control.Concurrent.MVar.readMVar' -- which then blocks forever, since
-nothing was ever going to fill it. Publishing a terminal 'Left' here
-instead makes every subsequent restart attempt observe that same failure
-immediately, exactly as 'proceedOnlyIfPreviousShutdownSucceededReplayableUsing'
-already does for a /later/ generation's own failed shutdown.
+nothing was ever going to fill it. Publishing a terminal 'Left' whenever
+@transferred@ is still 'False' makes every subsequent restart attempt
+observe that same failure immediately, without ever risking the
+stale-'Left'-over-a-live-child hazard above.
 -}
-publishTerminalFailureOnException :: MVar (Either SomeException ()) -> IO a -> IO a
-publishTerminalFailureOnException done action =
+publishTerminalFailureUnlessTransferred :: IORef Bool -> MVar (Either SomeException ()) -> IO a -> IO a
+publishTerminalFailureUnlessTransferred transferred done action =
   action `catchAndPublish` \err -> do
+    committed <- readIORef transferred
     -- 'mask_' (matching 'shutdownThenDeliver''s own identical guard):
     -- without it, a second asynchronous exception landing in the
     -- narrow window between catching @err@ and 'tryPutMVar' actually
@@ -520,7 +553,7 @@ publishTerminalFailureOnException done action =
     -- deadlock this function exists to prevent, just one layer
     -- earlier (before any child was ever spawned to eventually fill
     -- it via 'shutdownThenDeliver').
-    mask_ (tryPutMVar done (Left err) >> pure ())
+    unless committed $ mask_ (tryPutMVar done (Left err) >> pure ())
     throwIO err
  where
   catchAndPublish act handler = do

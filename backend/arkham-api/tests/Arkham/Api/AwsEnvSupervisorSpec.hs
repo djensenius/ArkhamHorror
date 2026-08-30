@@ -19,6 +19,7 @@ import Api.Arkham.AwsEnvSupervisor (
   classifyAuthErrorDiagnostic,
   classifyErrorDiagnostic,
   managedFetchAuthInBackground,
+  ManagedReleaseInvariantViolated (..),
   newDemandDrivenSupervisor,
   readSupervisedEnv,
   releaseAwsEnvAcquisition,
@@ -147,11 +148,31 @@ forks a real, killable thread and returns an 'Env' whose @.auth@ is
 credentials. Returns the child's 'ThreadId' too so tests can assert on
 its liveness directly via 'threadStatus', independent of whichever
 'Auth'\/'Env' value it ends up (or does not end up) reachable through.
+
+Takes the same @finalReleaseRef@ every 'ConfigProfileResolvers' field
+does and durably records a real, awaited release into it -- exactly as
+every production @safe*@ resolver (@safeAssumedRole@\/@safeWebIdentity@\/
+@safeSSO@\/@safeContainerEnv@\/@safeDefaultInstanceProfile@) is required
+to for any 'Ref'-shaped result, per 'Api.Arkham.AwsEnvSupervisor.deriveRelease'.
+Uses 'requireChildReleased' (not a bare 'killThread') so this fake's
+release genuinely blocks until the child is confirmed terminal, matching
+every real managed release's own contract -- tests that assert an exact
+multi-child release /order/ depend on this: a release that only signals
+without awaiting could let 'releaseAwsEnvAcquisition''s next release
+begin before this child's own handler has actually finished recording
+its effect. A fake resolver that ignores this ref (the pre-fix norm this
+module's tests used to follow, back when 'deriveRelease' silently
+downgraded an unpopulated ref to the naive kill-then-bounded-poll
+fallback) is exactly the now-eliminated \"bare expiring resolver\" shape
+-- see the dedicated regression test below proving that shape is now a
+loud, immediate, typed 'Api.Arkham.AwsEnvSupervisor.ManagedReleaseInvariantViolated'
+failure, never silently tolerated.
 -}
-fakeRefEnv :: Env' withAuth -> IO (Env, ThreadId)
-fakeRefEnv env = do
+fakeRefEnv :: IORef (Maybe (IO ())) -> Env' withAuth -> IO (Env, ThreadId)
+fakeRefEnv finalReleaseRef env = do
   tid <- forkIO (forever (threadDelay maxBound))
   cell <- newIORef (AuthEnv "AKIAFAKE" "secret" Nothing Nothing)
+  writeIORef finalReleaseRef (Just (requireChildReleased (Ref tid cell)))
   pure (env {auth = Identity (Ref tid cell)}, tid)
 
 {- | Whether a 'ThreadStatus' represents definite, final termination.
@@ -224,6 +245,56 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
       Auth _ -> pure ()
       Ref {} -> expectationFailure "expected static Auth, not a background refresh Ref, for ExplicitKeys"
 
+  {- | Structural regression for the MEDIUM-severity finding that the
+  managed-release handshake was merely \"optional\": a resolver that
+  returns a live, expiring 'Ref'-shaped 'Env' but never populates the
+  'IORef' it is handed (the exact \"bare expiring resolver\" shape --
+  e.g. a bug in a future custom\/exported resolver, or a copy-pasted test
+  fake that forgets the ref, as every fixture in this module itself once
+  did) must NEVER be silently downgraded to the naive, un-awaited
+  'requireChildReleased' kill-then-bounded-poll fallback (the exact
+  residual risk this fix eliminates -- see 'Api.Arkham.AwsEnvSupervisor.deriveRelease').
+  It must instead surface as an immediate, loud, typed
+  'ManagedReleaseInvariantViolated' failure, carrying only the orphaned
+  child's own 'Control.Concurrent.ThreadId' (never any credential\/auth
+  material) -- proving this \"bare\" shape is now a deterministic, typed
+  failure rather than something a caller could ever observe \"working\"
+  via the eliminated fallback.
+
+  Mutation check: reverting 'Api.Arkham.AwsEnvSupervisor.deriveRelease'
+  to its pre-fix @fromMaybe (requireChildReleased authValue) managedRelease@
+  fallback makes this test fail: 'safeEvalConfigProfile' would return
+  successfully instead of throwing, and the orphaned child spawned below
+  would leak (never killed by anything this module tracks).
+  -}
+  it "a resolver that returns an expiring Ref without ever populating the managed-release ref is a loud, immediate, typed failure -- never a silent fallback" do
+    envNoAuth <- newEnvNoAuth
+    let config = HashMap.fromList [("default", profileMap [("role_arn", "arn:aws:iam::1:role/bare"), ("credential_source", "EcsContainer")])]
+    bareThreadIdRef <- newIORef Nothing
+    let resolvers =
+          unreachableConfigProfileResolvers
+            { -- Deliberately ignores the ref it is handed (the exact
+              -- pre-fix-era test-fixture shape), simulating a resolver
+              -- that forgets to report its managed release.
+              resolveEcsSource = \_ref env -> do
+                tid <- forkIO (forever (threadDelay maxBound))
+                writeIORef bareThreadIdRef (Just tid)
+                cell <- newIORef (AuthEnv "AKIABARE" "secret" Nothing Nothing)
+                pure env {auth = Identity (Ref tid cell)}
+            }
+    result <- Exception.try @ManagedReleaseInvariantViolated (safeEvalConfigProfile resolvers config [] "default" envNoAuth)
+    case result of
+      Left (ManagedReleaseInvariantViolated tid) -> do
+        Just bareThreadId <- readIORef bareThreadIdRef
+        tid `shouldBe` bareThreadId
+      Right _ -> expectationFailure "expected a bare expiring resolver to be a loud ManagedReleaseInvariantViolated failure, not a silent success"
+    -- Clean up the orphaned test-fixture thread itself (this module's
+    -- own release protocol correctly never tracked it -- that is
+    -- precisely the point -- so this test must reap it directly, not
+    -- via any production release path).
+    Just bareThreadId <- readIORef bareThreadIdRef
+    killThread bareThreadId
+
   {- | A two-level @source_profile@ chain (@parent@ assumes a role from
   @middle@, which itself assumes a role from @leaf@) with every
   assumed-role step modelled as forking a real refresh child (matching
@@ -244,9 +315,9 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     assumedRoleCallsRef <- newIORef ([] :: [Text])
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \_ roleArn sourceEnv -> do
+            { resolveAssumedRole = \ref roleArn sourceEnv -> do
                 atomicModifyIORef' assumedRoleCallsRef (\cs -> (cs <> [roleArn], ()))
-                fst <$> fakeRefEnv sourceEnv
+                fst <$> fakeRefEnv ref sourceEnv
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "parent" envNoAuth
     -- Both assumed-role steps were attempted, source-to-sink.
@@ -269,8 +340,8 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     ecsCalledRef <- newIORef False
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveEcsSource = \_ env -> writeIORef ecsCalledRef True >> fst <$> fakeRefEnv env
-            , resolveAssumedRole = \_ _roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
+            { resolveEcsSource = \ref env -> writeIORef ecsCalledRef True >> fst <$> fakeRefEnv ref env
+            , resolveAssumedRole = \ref _roleArn sourceEnv -> fst <$> fakeRefEnv ref sourceEnv
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
     readIORef ecsCalledRef `shouldReturn` True
@@ -294,8 +365,8 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     ec2CalledRef <- newIORef False
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveEc2Source = \_ref env -> writeIORef ec2CalledRef True >> fst <$> fakeRefEnv env
-            , resolveAssumedRole = \_ _roleArn sourceEnv -> fst <$> fakeRefEnv sourceEnv
+            { resolveEc2Source = \ref env -> writeIORef ec2CalledRef True >> fst <$> fakeRefEnv ref env
+            , resolveAssumedRole = \ref _roleArn sourceEnv -> fst <$> fakeRefEnv ref sourceEnv
             }
     _ <- safeEvalConfigProfile resolvers config [] "default" envNoAuth
     readIORef ec2CalledRef `shouldReturn` True
@@ -370,10 +441,10 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     middleThreadIdRef <- newIORef Nothing
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \_ roleArn sourceEnv ->
+            { resolveAssumedRole = \ref roleArn sourceEnv ->
                 if roleArn == "arn:aws:iam::1:role/middle"
                   then do
-                    (fakeEnv, tid) <- fakeRefEnv sourceEnv
+                    (fakeEnv, tid) <- fakeRefEnv ref sourceEnv
                     writeIORef middleThreadIdRef (Just tid)
                     pure fakeEnv
                   else Exception.throwIO (InvalidIAMError "simulated outer assume-role failure")
@@ -421,14 +492,14 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     outerStarted <- newEmptyMVar
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \_ roleArn sourceEnv ->
+            { resolveAssumedRole = \ref roleArn sourceEnv ->
                 if roleArn == "arn:aws:iam::1:role/middle"
                   then do
                     -- "middle"'s own step completes normally and returns
                     -- -- its resulting child is now fully known to
                     -- 'safeEvalConfigProfile' before "parent"'s own wrap
                     -- is even attempted.
-                    (fakeEnv, tid) <- fakeRefEnv sourceEnv
+                    (fakeEnv, tid) <- fakeRefEnv ref sourceEnv
                     writeIORef middleThreadIdRef (Just tid)
                     pure fakeEnv
                   else do
@@ -469,7 +540,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
             [ ("parent", profileMap [("role_arn", "arn:aws:iam::1:role/parent"), ("source_profile", "leaf")])
             , ("leaf", profileMap [("aws_access_key_id", "AKIALEAF"), ("aws_secret_access_key", "s")])
             ]
-        resolvers = unreachableConfigProfileResolvers {resolveAssumedRole = \_ _ sourceEnv -> fst <$> fakeRefEnv sourceEnv}
+        resolvers = unreachableConfigProfileResolvers {resolveAssumedRole = \ref _ sourceEnv -> fst <$> fakeRefEnv ref sourceEnv}
     acquisition <- safeEvalConfigProfile resolvers config [] "parent" envNoAuth
     let [leafRelease] = awsEnvAcquisitionHiddenReleases acquisition
     leafRelease
@@ -511,8 +582,8 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     middleThreadIdRef <- newIORef Nothing
     let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \_ roleArn sourceEnv -> do
-                (fakeEnv, tid) <- fakeRefEnv sourceEnv
+            { resolveAssumedRole = \ref roleArn sourceEnv -> do
+                (fakeEnv, tid) <- fakeRefEnv ref sourceEnv
                 when (roleArn == "arn:aws:iam::1:role/middle") $ writeIORef middleThreadIdRef (Just tid)
                 pure fakeEnv
             }
@@ -569,7 +640,7 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
           | otherwise = error "unexpected role_arn in three-deep order test"
         resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \_ roleArn sourceEnv -> do
+            { resolveAssumedRole = \ref roleArn sourceEnv -> do
                 let label = labelFor roleArn
                 -- A readiness gate, signalled from strictly inside the
                 -- already-installed 'Exception.catch' handler region,
@@ -590,6 +661,11 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
                       atomicModifyIORef' releaseOrderRef (\labels -> (labels <> [label], ()))
                 takeMVar readyGate
                 cell <- newIORef (AuthEnv "AKIAFAKE" "secret" Nothing Nothing)
+                -- 'requireChildReleased' (not a bare 'killThread'): the
+                -- exact release-order assertion below depends on each
+                -- release genuinely awaiting its own child's confirmed
+                -- termination before returning, not merely signalling it.
+                writeIORef ref (Just (requireChildReleased (Ref tid cell)))
                 pure sourceEnv {auth = Identity (Ref tid cell)}
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "c" envNoAuth
@@ -668,7 +744,7 @@ safeFileEnvSpec = describe "safeFileEnv (config-file bridge: threading finalRele
         setEnv "AWS_SHARED_CREDENTIALS_FILE" credentialsPath
         hiddenReleasesRef <- newIORef []
         finalReleaseRef <- newIORef Nothing
-        let resolvers = unreachableConfigProfileResolvers {resolveAssumedRole = \_ _ sourceEnv -> fst <$> fakeRefEnv sourceEnv}
+        let resolvers = unreachableConfigProfileResolvers {resolveAssumedRole = \ref _ sourceEnv -> fst <$> fakeRefEnv ref sourceEnv}
         _finalEnv <- safeFileEnv resolvers hiddenReleasesRef finalReleaseRef envNoAuth
         hidden <- readIORef hiddenReleasesRef
         length hidden `shouldBe` 1

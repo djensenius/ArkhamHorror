@@ -120,6 +120,8 @@ module Api.Arkham.AwsEnvSupervisor (
   -- * Credential acquisition\/release primitives -- exposed for regression tests
   ChildReleaseOutcome (..),
   ChildReleaseTimedOutException (..),
+  ManagedReleaseInvariantViolated (..),
+  deriveRelease,
   releaseAwsEnvChild,
   requireChildReleased,
   releaseAwsEnvGeneration,
@@ -376,6 +378,57 @@ newtype ChildReleaseTimedOutException = ChildReleaseTimedOutException ThreadId
   deriving stock (Show)
 
 instance Exception.Exception ChildReleaseTimedOutException
+
+{- | Thrown by 'deriveRelease' when a provider returns an 'Env' whose
+@.auth@ is a live, expiring 'Ref' but never recorded a managed release
+into the 'IORef' it was handed for exactly that purpose (see
+'withManagedRelease'\/'acquireAwsEnv'). This can only ever be reached by a
+/new/ programming error in this module itself -- every current provider
+in 'productionConfigProfileResolvers'\/'discoverSafely' is already audited
+to always record one for any 'Ref' it can produce -- but if one ever
+regresses (or a future provider is added without doing so), silently
+falling back to the naive, un-awaited 'requireChildReleased' kill-then-
+bounded-poll release for a live background refresh thread is exactly the
+class of bug this whole module exists to eliminate. This carries only a
+bare 'ThreadId' (never any credential\/request data), so it is always safe
+to surface via the ordinary \"an unanticipated exception escaping
+@acquire@ terminates the supervisor\" path 'startSupervisedEnv' already
+documents -- there is deliberately no silent \"guess a release and carry
+on\" fallback for this case: an unmanaged, un-awaited live 'Ref' is never
+survivable, so the whole generation (and, via 'startSupervisedEnv', the
+supervisor itself) must instead fail loudly rather than pretend to be
+safe.
+-}
+newtype ManagedReleaseInvariantViolated = ManagedReleaseInvariantViolated ThreadId
+  deriving stock (Show)
+
+instance Exception.Exception ManagedReleaseInvariantViolated
+
+{- | The single point every managed-release derivation in this module goes
+through (see 'withManagedRelease'\/'acquireAwsEnv'): given whatever a
+provider actually recorded into its @finalReleaseRef@ (if anything) and
+the 'Auth' it ultimately returned, decide the correct overall release --
+structurally, not by convention:
+
+* A recorded managed release is always used as-is, regardless of what
+  @authValue@ turns out to be (a provider that both records a release
+  /and/ returns 'Auth' is merely being extra-cautious, never wrong).
+* No recorded release, but @authValue@ is 'Auth' (statically, provably
+  never-expiring -- e.g. 'ExplicitKeys'\/'fromKeysEnv'): 'requireChildReleased'
+  is an immediate, non-blocking no-op for this case, so there is nothing
+  unsafe about deriving it from @.auth@ alone.
+* No recorded release, but @authValue@ is 'Ref' (a live, expiring,
+  background-refreshing credential): this can only mean some provider
+  forgot to record its managed release. There is no safe derivation from
+  '.auth' alone here -- 'requireChildReleased' would silently reach for
+  the un-awaited kill-then-bounded-poll fallback against a thread nothing
+  actually tracked reaching this point -- so this throws
+  'ManagedReleaseInvariantViolated' instead of ever calling it.
+-}
+deriveRelease :: Maybe (IO ()) -> Auth -> IO (IO ())
+deriveRelease (Just release) _ = pure release
+deriveRelease Nothing authValue@(Auth _) = pure (requireChildReleased authValue)
+deriveRelease Nothing (Ref tid _) = Exception.throwIO (ManagedReleaseInvariantViolated tid)
 
 -- | Bounded poll for a 'ThreadId' to reach a genuinely terminal
 -- 'ThreadStatus' ('ThreadFinished' or 'ThreadDied'). See
@@ -855,14 +908,17 @@ safeNamedInstanceProfile finalReleaseRef name env@Env {manager} =
 'managedFetchAuthInBackground' release via a fresh, single-use 'IORef' it
 is handed (exactly the @finalReleaseRef@ pattern 'safeNamedInstanceProfile'
 established), and derive the correct overall release for whatever 'Env'
-it returns: the managed release if it wrote one, or the naive
-'.auth'-derived 'requireChildReleased' otherwise. The naive fallback is
-only ever actually hazardous (kill-then-bounded-poll against a live
-background thread) for a 'Ref'; for a non-expiring 'Auth' (e.g.
-'fromKeysEnv', 'ExplicitKeys') it is an immediate, non-blocking no-op --
-so a provider that can never expire is not required to use this at all
-(see 'resolveEnvironmentSource'\/'ExplicitKeys' in 'safeEvalConfigProfile',
-which ignore the ref entirely rather than pretend to need it).
+it returns via 'deriveRelease': the managed release if it wrote one, the
+naive, immediate, non-blocking '.auth'-derived 'requireChildReleased' if
+it did not /and/ the returned 'Auth' is statically non-expiring (e.g.
+'fromKeysEnv', 'ExplicitKeys' -- so a provider that can never expire is
+not required to use this at all; see 'resolveEnvironmentSource'\/'ExplicitKeys'
+in 'safeEvalConfigProfile', which ignore the ref entirely rather than
+pretend to need it), or a thrown 'ManagedReleaseInvariantViolated' if it
+did not /and/ the returned auth is a live, expiring 'Ref' -- this last
+case can only mean a provider forgot to record its managed release, and
+is never silently downgraded to the naive kill-then-bounded-poll
+fallback the way an earlier version of this function did.
 
 Used uniformly by every managed provider added to close the \"opaque
 pinned provider, kill-then-poll release\" residual scope this module's
@@ -873,14 +929,17 @@ all of which are now built on 'managedFetchAuthInBackground' exactly as
 'safeNamedInstanceProfile' already was, so that /no/ provider this
 module's own production credential graph can reach still relies on the
 pinned fork's own @fetchAuthInBackground@ or this module's naive
-kill-then-bounded-poll fallback for a live, expiring credential.
+kill-then-bounded-poll fallback for a live, expiring credential -- and, per
+'deriveRelease', any future provider that regresses on this is a loud,
+immediate failure rather than a silent, hazardous fallback.
 -}
 withManagedRelease :: (IORef (Maybe (IO ())) -> IO Env) -> IO (Env, IO ())
 withManagedRelease act = do
   finalReleaseRef <- newIORef Nothing
   finalEnv <- act finalReleaseRef
   managedRelease <- readIORef finalReleaseRef
-  pure (finalEnv, fromMaybe (requireChildReleased (runIdentity finalEnv.auth)) managedRelease)
+  release <- deriveRelease managedRelease (runIdentity finalEnv.auth)
+  pure (finalEnv, release)
 
 {- | A safe reimplementation of the pinned Amazonka fork's own
 @Amazonka.Auth.Container.fromContainer@\/@fromContainerEnv@
@@ -1130,8 +1189,8 @@ acquireAwsEnv = do
     Right env -> do
       hiddenReleases <- readIORef hiddenReleasesRef
       finalRelease <- readIORef finalReleaseRef
-      let release = fromMaybe (requireChildReleased (runIdentity env.auth)) finalRelease
-          acquisition =
+      release <- deriveRelease finalRelease (runIdentity env.auth)
+      let acquisition =
             AwsEnvAcquisition
               { awsEnvAcquisitionEnv = env
               , awsEnvAcquisitionRelease = release
