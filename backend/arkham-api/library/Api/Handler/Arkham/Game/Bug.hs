@@ -108,13 +108,15 @@ Amazonka 'Error' (and, transitively, whatever it wraps: an 'HttpException'
 carrying request headers, or a raw response body) until something else
 happens to force it later. 'evaluate' itself only forces to /weak head
 normal form/ (the outermost constructor), not full normal form -- but
-every type it can bottom out in here ('HeadObjectOutcome',
-'AwsErrorDiagnostic', 'AwsErrorCategory', down to a plain 'Int') is
-declared in this module, which enables this package's default
-'StrictData' extension, so every field of every nested constructor is
-itself strict. That single outer WHNF force therefore cascades through
-every nested constructor all the way down to atomic values with no
-further structure to hide a thunk in -- the practical result is full
+every type it can bottom out in here ('HeadObjectOutcome', declared in
+this module; 'Api.Arkham.AwsEnvSupervisor.AwsErrorDiagnostic' and
+'Api.Arkham.AwsEnvSupervisor.AwsErrorCategory', declared there; down to
+a plain 'Int') is compiled with this package's default 'StrictData'
+extension (a package-wide default, not specific to either module), so
+every field of every nested constructor is itself strict. That single
+outer WHNF force therefore cascades through every nested constructor
+all the way down to atomic values with no further structure to hide a
+thunk in -- the practical result is full
 normal form, even though 'evaluate' alone never guarantees that in
 general. Forcing here, inside this action, guarantees that by the time it
 returns -- in particular, by the time 'runResourceT' built around it
