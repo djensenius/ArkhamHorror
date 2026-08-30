@@ -169,11 +169,8 @@ module Api.Arkham.AwsEnvSupervisor (
   acquireRegionBeforeAuth,
   awaitAwsEnvInvalidation,
   managedFetchAuthInBackground,
-  ManagedRelease,
-  managedRelease,
-  polledRelease,
   ManagedEnvAcquisition,
-  pairManagedAcquisition,
+  managedEnvAcquisition,
   staticEnvAcquisition,
   runManagedEnvAcquisition,
   safeContainer,
@@ -667,65 +664,67 @@ managedFetchAuthInBackground getAuthEnv = do
     | Just authErr@(AuthServiceError _) <- Exception.fromException err = authErr
     | otherwise = OtherAuthError err
 
-{- | Unforgeable evidence that an 'IO ()' release genuinely, verifiably
-awaits its target's confirmed termination before ever returning -- never
-a bare, arbitrary 'IO ()' a caller merely /claims/ does so. The only ways
-to produce one, both exported below, are 'managedRelease' (wrapping
-'managedFetchAuthInBackground''s own MVar-based, genuinely-awaiting
-release) and 'polledRelease' (wrapping 'requireChildReleased''s
-poll-until-confirmed-terminal release against a real, live 'Auth'). This
-type's constructor is deliberately /not/ exported: nothing outside this
-module can wrap an unconditional @pure ()@ (or any other unverified
-action) and have the result type-check as one of these.
--}
-newtype ManagedRelease = ManagedRelease {runManagedRelease :: IO ()}
-
--- | See 'ManagedRelease'. Wraps 'managedFetchAuthInBackground' itself,
--- unchanged, so every existing direct caller\/test of that function is
--- unaffected -- this is purely an additional, stricter-typed adapter for
--- callers that go on to build a 'ManagedEnvAcquisition'.
-managedRelease :: IO AuthEnv -> IO (Auth, ManagedRelease)
-managedRelease getAuthEnv = fmap ManagedRelease <$> managedFetchAuthInBackground getAuthEnv
-
-{- | See 'ManagedRelease'. Wraps 'requireChildReleased' (poll-until-
-confirmed-terminal, throwing 'ChildReleaseTimedOutException' rather than
-ever silently reporting success on a still-live child) for any real,
-live 'Auth' value this module's own tests construct directly (e.g. a
-fake worker thread standing in for a real managed provider without
-needing 'managedFetchAuthInBackground''s own refresh-loop machinery).
-Safe for a static 'Auth' too (an immediate, genuine no-op, per
-'releaseAwsEnvChild''s own 'Auth' branch) -- there is no unverified case
-this can produce.
--}
-polledRelease :: Auth -> ManagedRelease
-polledRelease authValue = ManagedRelease (requireChildReleased authValue)
-
 {- | An opaque, unforgeable proof that an 'Env' is paired with the exact
 release for whatever it currently holds as its own @.auth@: either a
-genuinely-verified 'ManagedRelease' (see 'pairManagedAcquisition') for a
-live, expiring 'Ref', or a release-free acquisition for a /provably/
-non-expiring 'Auth' checked at construction time (see
-'staticEnvAcquisition'). The only ways to construct one -- both exported,
-neither this type's own constructor nor field accessors -- are those two
-functions, so a custom\/test 'ConfigProfileResolvers' resolver cannot
-forge one the way the previous, plain @(Env, IO ())@ tuple shape
-allowed: there is no way to write, for example,
-@resolveEcsSource = \\env -> pure (env {auth = Identity (Ref tid cell)}, pure ())@
-and have it type-check against this type at all, let alone compile
-without ever calling a real release primitive.
+genuinely-live managed refresh worker's own release (see
+'managedEnvAcquisition'), for a live, expiring 'Ref', or a release-free
+acquisition for a /provably/ non-expiring 'Auth' checked at construction
+time (see 'staticEnvAcquisition'). The only ways to construct one -- both
+exported, neither this type's own constructor nor field accessors -- are
+those two functions.
+
+An earlier version of this type additionally exported 'ManagedRelease'\/
+@managedRelease@\/@polledRelease@\/@pairManagedAcquisition@ as separable
+public primitives: a caller could obtain a genuine 'Auth'\/release pair
+from one worker (or a real \"released\" proof from an unrelated, already-
+static 'Auth' via @polledRelease@) and then pair /that/ release with a
+completely different, unrelated, still-live 'Env' via
+@pairManagedAcquisition@ -- e.g. @pairManagedAcquisition env {auth =
+Identity (Ref liveTid credentialsRef)} (polledRelease (Auth
+staticCredentials))@, which type-checked and even ran a genuine,
+non-fake release primitive, yet paired a live worker's 'Env' with an
+entirely unrelated no-op release, orphaning @liveTid@. Removing those
+four exports (see 'managedEnvAcquisition' below, the single atomic
+factory that now creates the worker and pairs it with its own exact
+release in one indivisible step) closes that: there is no longer any
+exported way to obtain an 'Auth' and a release as two independent values
+in the first place, so there is nothing left to mismatch.
 -}
 data ManagedEnvAcquisition = ManagedEnvAcquisition
   { managedEnvAcquisitionEnv :: Env
   , managedEnvAcquisitionRelease :: IO ()
   }
 
--- | Pair an 'Env' with a genuine 'ManagedRelease'. Always safe: a
--- 'ManagedRelease' value's mere existence already proves it came from
--- 'managedRelease' or 'polledRelease', never an arbitrary, unverified
--- 'IO ()'.
-pairManagedAcquisition :: Env -> ManagedRelease -> ManagedEnvAcquisition
-pairManagedAcquisition env release =
-  ManagedEnvAcquisition {managedEnvAcquisitionEnv = env, managedEnvAcquisitionRelease = runManagedRelease release}
+{- | The only way to obtain a 'ManagedEnvAcquisition' backed by a live,
+expiring managed refresh worker: this atomically starts that /exact/
+worker (via 'managedFetchAuthInBackground'), builds the resulting 'Env'
+from its freshly resolved 'Auth' via @withAuth@, and pairs that /exact/
+'Env' with that /same/ worker's own genuinely-awaiting release -- all in
+one indivisible expression. Every current provider ('safeNamedInstanceProfile',
+'safeContainer', 'safeAssumedRole', 'safeWebIdentity', 'safeSSO') uses
+@withAuth@ only to set @auth@ (and, for the instance-profile provider,
+also @region@) on an otherwise-already-complete template 'Env'; nothing
+here lets a caller supply an 'Auth'\/'Env' obtained from one call and a
+release obtained from another, unlike a former design's separately
+exported @managedRelease@\/@polledRelease@\/@pairManagedAcquisition@ (see
+'ManagedEnvAcquisition''s own Haddock for the exact spoofing this
+replaces). Test doubles standing in for a real dynamic provider (see
+'Arkham.Api.AwsEnvSupervisorSpec.fakeRefEnv') go through this exact same
+factory -- there is no separate, weaker \"test-only\" pairing primitive
+either.
+-}
+managedEnvAcquisition
+  :: (MonadIO m)
+  => (Auth -> Env)
+  -- ^ withAuth: build the final 'Env' from the worker's freshly resolved
+  -- 'Auth'.
+  -> IO AuthEnv
+  -- ^ getAuthEnv: how the worker should re-fetch credentials on each
+  -- refresh cycle (see 'managedFetchAuthInBackground').
+  -> m ManagedEnvAcquisition
+managedEnvAcquisition withAuth getAuthEnv = liftIO $ do
+  (auth, release) <- managedFetchAuthInBackground getAuthEnv
+  pure ManagedEnvAcquisition {managedEnvAcquisitionEnv = withAuth auth, managedEnvAcquisitionRelease = release}
 
 {- | The only way to obtain a release-free 'ManagedEnvAcquisition':
 checks, at construction time, that the given 'Env''s current @.auth@ is
@@ -735,8 +734,8 @@ immediately releasing the child and throwing
 accepting a @pure ()@ release for a live, expiring worker the way a bare
 @(env, pure ())@ tuple could. Used only for 'ExplicitKeys'\/
 @credential_source=Environment@, the sole config-file variants that can
-never expire; every other provider goes through 'managedRelease'\/
-'polledRelease' instead.
+never expire; every other provider goes through 'managedEnvAcquisition'
+instead.
 -}
 staticEnvAcquisition :: Env -> IO ManagedEnvAcquisition
 staticEnvAcquisition env =
@@ -1043,13 +1042,13 @@ safeDefaultInstanceProfile env =
 @fromNamedInstanceProfile@ except @getRegionFromIdentity@ is resolved
 before @fetchAuthInBackground@, not after -- via 'acquireRegionBeforeAuth'
 -- and @fetchAuthInBackground@ itself is replaced with
-'managedFetchAuthInBackground' (via 'managedRelease'), whose genuinely-
-awaiting release is returned alongside the resolved 'Env' as an opaque
-'ManagedEnvAcquisition' (see the module Haddock, \"Structural release
-ownership\"): there is no 'IORef' side channel here for a future change
-to accidentally leave unwritten, and no way to construct the returned
-value at all except by pairing a genuine 'ManagedRelease' with the
-resolved 'Env'.
+'managedFetchAuthInBackground' (via 'managedEnvAcquisition'), whose
+genuinely-awaiting release is returned alongside the resolved 'Env' as an
+opaque 'ManagedEnvAcquisition' (see the module Haddock, \"Structural
+release ownership\"): there is no 'IORef' side channel here for a future
+change to accidentally leave unwritten, and no way to construct the
+returned value at all except through 'managedEnvAcquisition''s own
+atomic worker-creation-and-pairing step.
 -}
 safeNamedInstanceProfile ::
   (MonadIO m) =>
@@ -1059,8 +1058,7 @@ safeNamedInstanceProfile ::
 safeNamedInstanceProfile name env@Env {manager} =
   liftIO $ do
     region <- getRegionFromIdentity
-    (auth, release) <- managedRelease getCredentials
-    pure (pairManagedAcquisition env {auth = Identity auth, region} release)
+    managedEnvAcquisition (\auth -> env {auth = Identity auth, region}) getCredentials
  where
   getCredentials =
     Exception.try (metadata manager (IAM . SecurityCredentials $ Just name))
@@ -1128,8 +1126,7 @@ safeContainer ::
 safeContainer url env =
   liftIO $ do
     req <- Client.parseUrlThrow $ Text.unpack url
-    (auth, release) <- managedRelease (renew req)
-    pure (pairManagedAcquisition env {auth = Identity auth} release)
+    managedEnvAcquisition (\auth -> env {auth = Identity auth}) (renew req)
  where
   renew :: Client.Request -> IO AuthEnv
   renew req = do
@@ -1211,9 +1208,8 @@ safeAssumedRole ::
   Text ->
   Env ->
   IO ManagedEnvAcquisition
-safeAssumedRole roleArn roleSessionName env = do
-  (auth, release) <- managedRelease getCredentials
-  pure (pairManagedAcquisition env {auth = Identity auth} release)
+safeAssumedRole roleArn roleSessionName env =
+  managedEnvAcquisition (\auth -> env {auth = Identity auth}) getCredentials
  where
   getCredentials = do
     let assumeRole = STS.newAssumeRole roleArn roleSessionName
@@ -1231,7 +1227,7 @@ UUID when unset, matching the C++ SDK this pinned source itself mimics),
 token-file re-read on every refresh (ignoring any subsequent environment
 variable changes, exactly as pinned), and response field extraction.
 @fetchAuthInBackground@ is replaced with 'managedFetchAuthInBackground'
-(via 'managedRelease'), whose release is returned alongside the resolved
+(via 'managedEnvAcquisition'), whose release is returned alongside the resolved
 'Env' as an opaque 'ManagedEnvAcquisition'.
 -}
 safeWebIdentity ::
@@ -1245,8 +1241,7 @@ safeWebIdentity ::
   IO ManagedEnvAcquisition
 safeWebIdentity tokenFile roleArn mSessionName env = do
   sessionName <- maybe (UUID.toText <$> UUID.nextRandom) pure mSessionName
-  (auth, release) <- managedRelease (getCredentials sessionName)
-  pure (pairManagedAcquisition env {auth = Identity auth} release)
+  managedEnvAcquisition (\auth -> env {auth = Identity auth}) (getCredentials sessionName)
  where
   getCredentials sessionName = do
     token <- TextIO.readFile tokenFile
@@ -1296,7 +1291,7 @@ error reclassification (a 'ServiceError'\/'TransportError' response is
 reported as 'AuthServiceError'\/'RetrievalError'; anything else as
 'OtherAuthError', exactly as pinned @errorAsAuthError@).
 @fetchAuthInBackground@ is replaced with 'managedFetchAuthInBackground'
-(via 'managedRelease'), whose release is returned alongside the resolved
+(via 'managedEnvAcquisition'), whose release is returned alongside the resolved
 'Env' as an opaque 'ManagedEnvAcquisition'.
 -}
 safeSSO ::
@@ -1308,9 +1303,8 @@ safeSSO ::
   Text ->
   Env' withAuth ->
   IO ManagedEnvAcquisition
-safeSSO cachedTokenFile ssoRegion accountId roleName env = do
-  (auth, release) <- managedRelease getCredentials
-  pure (pairManagedAcquisition env {auth = Identity auth} release)
+safeSSO cachedTokenFile ssoRegion accountId roleName env =
+  managedEnvAcquisition (\auth -> env {auth = Identity auth}) getCredentials
  where
   getCredentials = do
     cachedToken <- readCachedAccessToken cachedTokenFile

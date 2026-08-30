@@ -41,6 +41,7 @@ import Api.Arkham.AwsEnvSupervisor (
 import Api.Arkham.Helpers (tryRedis_)
 import Api.Arkham.Lifecycle (
   RestartState (..),
+  StopOutcome (..),
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
   forkTransferringOwnership,
@@ -533,13 +534,24 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     must succeed (there is nothing for any of them to genuinely fail on),
     and the lock must end up describing exactly one live generation --
     never two, and never left in some torn intermediate state.
+
+    @finalize@ here deliberately ignores @body@'s own exit outcome
+    (matching production's own typical shape, @\\res outcome newDone ->
+    shutdownThenDeliver (release' res) newDone@ -- see this function's own
+    Haddock): a generation retired via an ordinary, expected cancellation
+    always exits with a 'Left' 'Control.Exception.ThreadKilled' outcome,
+    which is /not/ itself a teardown failure (see 'RestartState''s own
+    Haddock, and the review's own \"Distinguish expected body ThreadKilled
+    from teardown result correctly\"); only the actual release action
+    (here, trivially @release res = pure ()@, since there is no real
+    resource) can genuinely fail a retirement.
     -}
     it "concurrent restart attempts fully serialize through the same lock: every attempt succeeds and exactly one generation is left alive" do
       lock <- newMVar NotStarted
       let acquire = pure ("acquired-resource" :: String)
           release _ = pure ()
           body _ = forever (threadDelay maxBound)
-          finalize _ (outcome :: Either SomeException ()) newDone = shutdownThenDeliver (either Exception.throwIO pure outcome) newDone
+          finalize res (_ :: Either SomeException ()) newDone = shutdownThenDeliver (release res) newDone
           attempt = Exception.try @SomeException (restartManagedGeneration lock killThread acquire release body finalize) :: IO (Either SomeException ())
       barrier <- newEmptyMVar
       resultVars <- mapM (const (newEmptyMVar :: IO (MVar (Either SomeException ())))) [1 .. 5 :: Int]
@@ -556,25 +568,29 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         _ -> expectationFailure "expected the lock to read Running after 5 successful concurrent attempts"
 
   describe "stopManagedGeneration (DevelMain shutdown: serialized against restartManagedGeneration via the same lock)" do
-    it "returns False and leaves the lock NotStarted when nothing has ever been started" do
+    it "returns NothingWasRunning and leaves the lock NotStarted when nothing has ever been started" do
       lock <- newMVar NotStarted
       stopped <- stopManagedGeneration lock killThread
-      stopped `shouldBe` False
+      case stopped of
+        NothingWasRunning -> pure ()
+        _ -> expectationFailure ("expected NothingWasRunning, got " <> show stopped)
       final <- readMVar lock
       case final of
         NotStarted -> pure ()
         _ -> expectationFailure "expected the lock to still read NotStarted"
 
-    it "returns False and resets StartFailed to NotStarted" do
+    it "returns NothingWasRunning and resets StartFailed to NotStarted" do
       lock <- newMVar (StartFailed (Exception.toException (userError "stale")))
       stopped <- stopManagedGeneration lock killThread
-      stopped `shouldBe` False
+      case stopped of
+        NothingWasRunning -> pure ()
+        _ -> expectationFailure ("expected NothingWasRunning, got " <> show stopped)
       final <- readMVar lock
       case final of
         NotStarted -> pure ()
         _ -> expectationFailure "expected StartFailed to reset to NotStarted"
 
-    it "cancels and awaits a live generation, returning True and leaving the lock NotStarted" do
+    it "cancels and awaits a live generation, returning StoppedCleanly and leaving the lock NotStarted" do
       readyVar <- newEmptyMVar
       tid <- forkIO (putMVar readyVar () >> forever (threadDelay maxBound))
       takeMVar readyVar
@@ -582,7 +598,9 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       _ <- forkIO (shutdownThenDeliver (pure ()) done)
       lock <- newMVar (Running tid done)
       stopped <- stopManagedGeneration lock killThread
-      stopped `shouldBe` True
+      case stopped of
+        StoppedCleanly -> pure ()
+        _ -> expectationFailure ("expected StoppedCleanly, got " <> show stopped)
       finalAfterStop <- readMVar lock
       case finalAfterStop of
         NotStarted -> pure ()
@@ -598,13 +616,140 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       result <- Exception.try @SomeException (stopManagedGeneration lock failingCancel)
       case result of
         Left _ -> pure ()
-        Right (_ :: Bool) -> expectationFailure "expected the failing cancel to propagate"
+        Right (outcome :: StopOutcome) -> expectationFailure ("expected the failing cancel to propagate, got " <> show outcome)
       unchanged <- readMVar lock
       case unchanged of
         Running observedTid _ | observedTid == tid -> pure ()
         _ -> expectationFailure "expected the lock to still read the exact same Running generation after a failed stop"
       killThread tid
       putMVar done (Right ())
+
+    {- | Direct regression for the MEDIUM-severity finding that both
+    'restartManagedGenerationUsing' and 'stopManagedGeneration' used to
+    discard the retired generation's own teardown outcome via
+    @() <$ readMVar priorDone@: a previous generation's own
+    'shutdownThenDeliver'\/@finalize@ call genuinely running and
+    filling its completion cell with 'Left' (its own teardown failed,
+    e.g. 'Application.shutdownApp' itself threw) must never be reported
+    as 'StoppedCleanly', nor silently reset the lock to 'NotStarted'
+    (which would let a later caller believe there is nothing left to
+    release, even though this generation's resources may not actually
+    have been freed).
+
+    Mutation check: reverting 'stopManagedGeneration' to
+    @() <$ readMVar priorDone@ (discarding the 'Either') makes this test
+    fail: it would report 'StoppedCleanly' and reset the lock to
+    'NotStarted' instead of 'StopFailed'\/'RetireFailed'.
+    -}
+    it "reports StopFailed (not StoppedCleanly) and sets the lock to RetireFailed when the retired generation's own teardown itself failed" do
+      tid <- forkIO (forever (threadDelay maxBound))
+      done <- newEmptyMVar
+      let teardownErr = Exception.toException (userError "shutdownApp failed")
+      -- Simulates a generation whose body has already exited and whose
+      -- own 'shutdownThenDeliver'\/@finalize@ call has already, genuinely
+      -- completed -- but reported its own teardown failure, exactly as a
+      -- real 'Application.shutdownApp' throwing would.
+      putMVar done (Left teardownErr)
+      lock <- newMVar (Running tid done)
+      stopped <- stopManagedGeneration lock killThread
+      case stopped of
+        StopFailed err -> show err `shouldBe` show teardownErr
+        _ -> expectationFailure ("expected StopFailed, got " <> show stopped)
+      final <- readMVar lock
+      case final of
+        RetireFailed observedTid _ | observedTid == tid -> pure ()
+        _ -> expectationFailure "expected the lock to read RetireFailed after a genuinely failed teardown"
+      killThread tid
+
+    {- | A 'RetireFailed' lock is never silently treated as \"nothing to
+    stop\": both this call and a later one must keep re-reporting the
+    exact same recorded failure, never resetting to 'NotStarted' on
+    their own (see 'RetireFailed''s own Haddock for why an operator must
+    explicitly clear it instead).
+    -}
+    it "re-reports the exact same StopFailed when the lock is already RetireFailed, without resetting to NotStarted" do
+      tid <- forkIO (forever (threadDelay maxBound))
+      let priorErr = Exception.toException (userError "already-recorded teardown failure")
+      lock <- newMVar (RetireFailed tid priorErr)
+      stopped <- stopManagedGeneration lock killThread
+      case stopped of
+        StopFailed err -> show err `shouldBe` show priorErr
+        _ -> expectationFailure ("expected StopFailed, got " <> show stopped)
+      final <- readMVar lock
+      case final of
+        RetireFailed observedTid _ | observedTid == tid -> pure ()
+        _ -> expectationFailure "expected the lock to still read RetireFailed, not reset to NotStarted"
+      killThread tid
+
+  describe "restartManagedGenerationUsing propagates a retired generation's own teardown outcome (never discards the Either)" do
+    {- | Direct regression, on 'restartManagedGenerationUsing' itself,
+    for the same MEDIUM-severity finding as the 'stopManagedGeneration'
+    tests above: if the previous generation's own completion cell holds
+    'Left' (its teardown failed), this must re-raise that exact failure
+    and never proceed to acquire\/spawn a replacement, and must leave
+    the lock 'RetireFailed', never 'Running' (a replacement) nor
+    'NotStarted'.
+
+    Mutation check: reverting to @() <$ readMVar priorDone@ makes this
+    test fail: a replacement generation would be started (@acquire@
+    would be called and the lock would read 'Running') instead of the
+    call re-raising and leaving the lock 'RetireFailed'.
+    -}
+    it "re-raises the retired generation's own teardown failure and never starts a replacement" do
+      tid <- forkIO (forever (threadDelay maxBound))
+      done <- newEmptyMVar
+      let teardownErr = Exception.toException (userError "shutdownApp failed")
+      putMVar done (Left teardownErr)
+      lock <- newMVar (Running tid done)
+      acquireCalledRef <- newIORef False
+      result <-
+        Exception.try @SomeException
+          ( restartManagedGenerationUsing
+              lock
+              forkIOWithUnmask
+              killThread
+              (writeIORef acquireCalledRef True)
+              (\() -> pure ())
+              (\() -> forever (threadDelay maxBound))
+              (\() outcome newDone -> shutdownThenDeliver (either Exception.throwIO pure outcome) newDone)
+          )
+      case result of
+        Left err -> show err `shouldBe` show teardownErr
+        Right () -> expectationFailure "expected the retired generation's own teardown failure to propagate"
+      acquireCalled <- readIORef acquireCalledRef
+      acquireCalled `shouldBe` False
+      final <- readMVar lock
+      case final of
+        RetireFailed observedTid _ | observedTid == tid -> pure ()
+        _ -> expectationFailure "expected the lock to read RetireFailed, not a fresh replacement"
+      killThread tid
+
+    it "re-raises the exact same failure again, still without starting a replacement, when the lock is already RetireFailed" do
+      tid <- forkIO (forever (threadDelay maxBound))
+      let priorErr = Exception.toException (userError "already-recorded teardown failure")
+      lock <- newMVar (RetireFailed tid priorErr)
+      acquireCalledRef <- newIORef False
+      result <-
+        Exception.try @SomeException
+          ( restartManagedGenerationUsing
+              lock
+              forkIOWithUnmask
+              killThread
+              (writeIORef acquireCalledRef True)
+              (\() -> pure ())
+              (\() -> forever (threadDelay maxBound))
+              (\() outcome newDone -> shutdownThenDeliver (either Exception.throwIO pure outcome) newDone)
+          )
+      case result of
+        Left err -> show err `shouldBe` show priorErr
+        Right () -> expectationFailure "expected the already-recorded teardown failure to propagate again"
+      acquireCalled <- readIORef acquireCalledRef
+      acquireCalled `shouldBe` False
+      final <- readMVar lock
+      case final of
+        RetireFailed observedTid _ | observedTid == tid -> pure ()
+        _ -> expectationFailure "expected the lock to still read RetireFailed"
+      killThread tid
 
 
   {- | Regression for the exact @DevelMain.hs@ ordering bug: the old code

@@ -38,6 +38,8 @@ module DevelMain where
 
 import Api.Arkham.Lifecycle (
   RestartState (..),
+  StopOutcome (..),
+  getOrCreateStore,
   restartManagedGeneration,
   shutdownThenDeliver,
   stopManagedGeneration,
@@ -56,7 +58,7 @@ A Store holds onto some data across ghci reloads
 -}
 update :: IO ()
 update = do
-  lock <- storeAction restartLockStore (newMVar NotStarted)
+  lock <- getOrCreateStore restartLockStore (newMVar NotStarted)
   restartManagedGeneration
     lock
     killThread
@@ -85,10 +87,11 @@ shutdown = do
     Nothing -> putStrLn "no Yesod app running"
     Just lockStore -> do
       lock <- readStore lockStore
-      stopped <- stopManagedGeneration lock killThread
-      if stopped
-        then putStrLn "Yesod app is shutdown"
-        else putStrLn "no Yesod app running"
+      outcome <- stopManagedGeneration lock killThread
+      case outcome of
+        NothingWasRunning -> putStrLn "no Yesod app running"
+        StoppedCleanly -> putStrLn "Yesod app is shutdown"
+        StopFailed err -> putStrLn ("Yesod app shutdown FAILED (resources may not be released): " <> show err)
 
 {- | The single, authoritative 'Api.Arkham.Lifecycle.RestartState' cell:
 see its own Haddock for why this replaces the scaffold's original
@@ -113,17 +116,39 @@ no shared cell left for any generation's outcome to ever collide with,
 and two concurrent 'update' calls can no longer independently populate
 two separate slots and spawn two untracked generations.
 
-@102@ is a fresh slot, never used by any prior version of this module
+@update@ retrieves this cell via 'Api.Arkham.Lifecycle.getOrCreateStore',
+never @Foreign.Store.storeAction@ (a prior version of this module's own
+choice): @storeAction@ /always/ runs its supplied action and /always/
+overwrites the store, even if a value was already published there -- so
+a second, later @update@ call (e.g. after @:r@\/@DevelMain.update@,
+GHCi's own normal restart-protocol usage) would silently fabricate a
+brand-new, empty @newMVar NotStarted@ and publish it over the lock the
+/first/ call already created and is actively serializing through,
+orphaning whatever generation that first call started and defeating the
+mutual exclusion 'restartManagedGeneration'\/'stopManagedGeneration'
+otherwise provide entirely (including for genuinely concurrent callers,
+who would each fabricate and publish their own independent lock).
+'getOrCreateStore' retrieves the existing lock if one is already
+published, and is itself safe to call concurrently (see its own
+Haddock's 'Api.Arkham.Lifecycle.foreignStoreInitLock' -- a process-global
+lock defined in that /compiled library/ module, which GHCi's own
+@:r@\/@:l@ never reloads, unlike this module).
+
+@103@ is a fresh slot, never used by any prior version of this module
 (which used @1@\/@0@ in the original Yesod scaffold, then @100@\/@101@
-once 'shutdownThenDeliver' needed an @Either@): 'Foreign.Store' has no
-runtime type check at all, so reusing a slot whose stored type has
-changed is memory-unsafe in an already-running GHCi session that
-populated it under an old type -- a fresh slot avoids that rather than
-papering over it; a full GHCi restart (already the normal remedy whenever
-this module's own persisted types change) picks up the new slot cleanly.
+once 'shutdownThenDeliver' needed an @Either@, then @102@ once both
+slots were consolidated into one 'Api.Arkham.Lifecycle.RestartState'):
+'Foreign.Store' has no runtime type check at all, so reusing a slot whose
+stored type has changed is memory-unsafe in an already-running GHCi
+session that populated it under an old type -- a fresh slot avoids that
+rather than papering over it; a full GHCi restart (already the normal
+remedy whenever this module's own persisted types change) picks up the
+new slot cleanly. This slot is bumped again here because
+'Api.Arkham.Lifecycle.RestartState' itself gained a new constructor
+('Api.Arkham.Lifecycle.RetireFailed').
 -}
 restartLockStore :: Store (MVar (RestartState ThreadId))
 restartLockStore = Store restartLockStoreNum
 
 restartLockStoreNum :: Word32
-restartLockStoreNum = 102
+restartLockStoreNum = 103

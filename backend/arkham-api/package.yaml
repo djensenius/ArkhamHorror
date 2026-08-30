@@ -90,6 +90,7 @@ library:
     - extra
     - fast-logger
     - file-embed
+    - foreign-store
     - hashable
     - hedis
     - http-api-data

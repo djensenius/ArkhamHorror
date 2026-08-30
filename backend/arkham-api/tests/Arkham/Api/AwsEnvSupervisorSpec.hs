@@ -18,15 +18,15 @@ import Api.Arkham.AwsEnvSupervisor (
   acquireRegionBeforeAuth,
   classifyAuthErrorDiagnostic,
   classifyErrorDiagnostic,
+  managedEnvAcquisition,
   managedFetchAuthInBackground,
   newDemandDrivenSupervisor,
-  pairManagedAcquisition,
-  polledRelease,
   readSupervisedEnv,
   releaseAwsEnvAcquisition,
   releaseAwsEnvChild,
   requestDemandDrivenReady,
   requireChildReleased,
+  runManagedEnvAcquisition,
   safeEvalConfigProfile,
   safeFileEnv,
   staticEnvAcquisition,
@@ -158,20 +158,31 @@ tests can assert on its liveness directly via 'threadStatus', independent
 of whichever 'Auth'\/'Env' value it ends up (or does not end up)
 reachable through.
 
-Uses 'polledRelease' (built on 'requireChildReleased', not a bare
-'killThread') so this fake's release genuinely blocks until the child is
+Goes through 'managedEnvAcquisition' -- the same single atomic factory
+every real dynamic provider uses -- rather than manually forking a
+thread and pairing it by hand, so this fake's worker\/release genuinely
+comes from 'managedFetchAuthInBackground' and blocks until the child is
 confirmed terminal, matching every real managed release's own contract
 -- tests that assert an exact multi-child release /order/ depend on
 this: a release that only signals without awaiting could let
 'releaseAwsEnvAcquisition''s next release begin before this child's own
-handler has actually finished recording its effect.
+handler has actually finished recording its effect. A far-future
+'expiration' (see 'farFuture' below, the same pattern already proven
+safe elsewhere in this file) is what makes
+'managedFetchAuthInBackground' spawn a genuine, long-lived refresh
+thread instead of returning a release-free static 'Auth'.
 -}
 fakeRefEnv :: Env' withAuth -> IO (ManagedEnvAcquisition, ThreadId)
 fakeRefEnv env = do
-  tid <- forkIO (forever (threadDelay maxBound))
-  cell <- newIORef (AuthEnv "AKIAFAKE" "secret" Nothing Nothing)
-  let auth = Ref tid cell
-  pure (pairManagedAcquisition env {auth = Identity auth} (polledRelease auth), tid)
+  farFuture <- (\now -> Time (addUTCTime 3600 now)) <$> getCurrentTime
+  acquisition <-
+    managedEnvAcquisition
+      (\auth -> env {auth = Identity auth})
+      (pure (AuthEnv "AKIAFAKE" "secret" Nothing (Just farFuture)))
+  tid <- case runIdentity (fst (runManagedEnvAcquisition acquisition)).auth of
+    Ref t _ -> pure t
+    Auth _ -> Exception.throwIO (userError "fakeRefEnv: managedEnvAcquisition unexpectedly produced a release-free static Auth")
+  pure (acquisition, tid)
 
 {- | Whether a 'ThreadStatus' represents definite, final termination.
 Note a genuinely still-alive thread parked in @forever (threadDelay
@@ -255,26 +266,33 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
   eliminates the entire class at the /type/ level instead: every
   dynamic-provider 'ConfigProfileResolvers' field now has result type
   @IO 'ManagedEnvAcquisition'@, an opaque type whose only public
-  constructors are 'pairManagedAcquisition' (which requires an actual
-  'ManagedRelease' value, itself producible only by 'managedRelease' or
-  'polledRelease' wrapping a genuine, awaited managed-refresh handle) and
+  constructors are 'managedEnvAcquisition' (which atomically starts the
+  exact live, expiring refresh worker via 'managedFetchAuthInBackground'
+  and pairs it with its own genuinely-awaiting release, all in one
+  indivisible expression -- there is no way to supply an 'Auth'\/'Env'
+  obtained from one call and a release obtained from another) and
   'staticEnvAcquisition' (which is itself runtime-checked to reject any
   'Env' whose @.auth@ is 'Ref'-shaped). There is no longer an 'IORef'
   side channel a resolver could omit writing to, nor a bare @(Env, IO
   ())@ tuple a resolver could construct by hand with an arbitrary\/no-op
-  release. A \"bare expiring resolver\" in the old sense is now not
-  merely rejected at runtime but literally unrepresentable: any attempt
-  to write @resolveEcsSource = \\env -> pure env {auth = Identity (Ref tid
-  cell)}@ (returning a bare 'Env', as the old buggy/forgetful shape did),
-  or even @resolveEcsSource = \\env -> pairManagedAcquisition env {auth =
-  Identity (Ref tid cell)} (ManagedRelease (pure ()))@ (fabricating a
-  fake, non-awaiting release), is a /compile/-time type error or an
-  inaccessible-constructor error, not something this module could even
-  attempt to run and catch. This is a strictly stronger guarantee than
-  the previous version of this test (which merely proved a runtime
-  'ManagedReleaseInvariantViolated' exception was thrown for such a
-  value) could express, so no equivalent executable test exists here:
-  there is no longer any way to construct the input the old test needed.
+  release, nor any separately exported release primitive (the earlier
+  @pairManagedAcquisition@\/@managedRelease@\/@polledRelease@\/
+  @ManagedRelease@ four, removed entirely -- see 'ManagedEnvAcquisition'
+  in "Api.Arkham.AwsEnvSupervisor" for the exact spoofing example those
+  used to permit) a caller could use to pair an unrelated release with a
+  live worker's 'Env'. A \"bare expiring resolver\" in the old sense is
+  now not merely rejected at runtime but literally unrepresentable: any
+  attempt to write @resolveEcsSource = \\env -> pure env {auth = Identity
+  (Ref tid cell)}@ (returning a bare 'Env', as the old buggy/forgetful
+  shape did) is a /compile/-time type error, since the field's result
+  type is @IO ManagedEnvAcquisition@, not @IO Env@, and there is no
+  longer any exported way to fabricate a 'ManagedEnvAcquisition' from an
+  arbitrary pre-existing 'Env' and an arbitrary\/no-op release. This is a
+  strictly stronger guarantee than the previous version of this test
+  (which merely proved a runtime 'ManagedReleaseInvariantViolated'
+  exception was thrown for such a value) could express, so no equivalent
+  executable test exists here: there is no longer any way to construct
+  the input the old test needed.
   'ManagedReleaseInvariantViolated' itself remains defined and reachable
   only as a defensive backstop inside 'staticEnvAcquisition' and at
   'Api.Arkham.AwsEnvSupervisor.acquireAwsEnv''s outer boundary (see those
@@ -592,25 +610,61 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     cleanedUpStatus `shouldSatisfy` isTerminatedStatus
 
   {- | Exact release-order regression for the HIGH-severity cleanup-order
-  audit finding: for a chain of three real refresh children (@root@,
-  static, wrapped by @a@'s own assumed role, wrapped in turn by @b@'s,
-  wrapped in turn by @c@'s -- the final, directly-visible child),
-  'releaseAwsEnvAcquisition' must release the still-visible outer child
-  (@c@) FIRST, then the hidden children newest-to-oldest (@b@, then
-  @a@) -- i.e. exactly @c, b, a@ -- never the old, buggy @b, a, c@ order
-  (hidden-then-outer). Each fake child records its own label into a
-  shared, order-preserving list the instant it is actually killed (from
-  inside its own exception handler, not merely once
-  'releaseAwsEnvChild''s\/'awaitThreadTerminated''s call returns), so this
-  proves the true release sequence, not just that all three eventually
-  terminate.
+  audit finding: 'releaseAwsEnvAcquisition' must release the still-visible
+  outer child FIRST, then hidden children newest-to-oldest -- i.e. exactly
+  @c, b, a, root@ for @'awsEnvAcquisitionRelease' = c@ and
+  @'awsEnvAcquisitionHiddenReleases' = [root, a, b]@ -- never the old,
+  buggy @sequence_ (reverse hiddenReleases) >> releaseAwsEnvChild ...@
+  order (hidden newest-to-oldest, then outer last, i.e. @b, a, root, c@).
+
+  This tests 'releaseAwsEnvAcquisition''s own sequencing algorithm
+  directly and deterministically against a hand-built 'AwsEnvAcquisition'
+  (a plain, non-opaque record -- unlike 'ManagedEnvAcquisition', nothing
+  about this construction is a forgery: every release here is an
+  ordinary test-owned @IO ()@ that only records its own label, not a
+  claim about any live managed worker), rather than through real
+  managed refresh threads: reconstructing this exact interleaved order
+  by externally polling real threads' own RTS 'GHC.Conc.Sync.threadStatus'
+  turned out to be inherently racy once those releases run genuinely in
+  parallel (with @-threaded -with-rtsopts=-N@) and complete within a few
+  microseconds of each other -- not a meaningful test of this function's
+  own, purely sequential 'Control.Monad.foldM'-based algorithm, which
+  this instead exercises with zero scheduling dependency.
 
   Mutation check: reverting 'releaseAwsEnvAcquisition' to its previous
   @sequence_ (reverse hiddenReleases) >> releaseAwsEnvChild ...@ order
-  (hidden newest-to-oldest, then outer last) makes this test fail with
-  the order @[\"b\",\"a\",\"c\"]@ instead of the required @[\"c\",\"b\",\"a\"]@.
+  makes this test fail with the order @[\"b\",\"a\",\"root\",\"c\"]@ instead
+  of the required @[\"c\",\"b\",\"a\",\"root\"]@.
   -}
-  it "releases the still-visible outer child first, then hidden children newest-to-oldest: exact order c, b, a for a three-deep chain" do
+  it "releaseAwsEnvAcquisition releases the visible outer child first, then hidden children newest-to-oldest (pure sequencing, no scheduling dependency)" do
+    envNoAuth <- newEnvNoAuth
+    dummyEnv <- fakeStaticEnv envNoAuth
+    releaseOrderRef <- newIORef ([] :: [Text])
+    let recordRelease label = atomicModifyIORef' releaseOrderRef (\labels -> (labels <> [label], ()))
+        acquisition =
+          AwsEnvAcquisition
+            { awsEnvAcquisitionEnv = dummyEnv
+            , awsEnvAcquisitionRelease = recordRelease "c"
+            , awsEnvAcquisitionHiddenReleases = [recordRelease "root", recordRelease "a", recordRelease "b"]
+            }
+    releaseAwsEnvAcquisition acquisition
+    readIORef releaseOrderRef `shouldReturn` ["c", "b", "a", "root"]
+
+  {- | End-to-end regression, through the real @source_profile@ chain
+  resolution\/accumulation machinery (unlike the pure sequencing test
+  just above), that a three-deep chain (@root@, static, wrapped by @a@'s
+  own assumed role, wrapped in turn by @b@'s, wrapped in turn by @c@'s --
+  the final, directly-visible child) genuinely accumulates exactly the
+  two real, live intermediate children (@a@ and @b@) as hidden releases
+  (plus @root@'s own static, no-op release), and that
+  'releaseAwsEnvAcquisition' genuinely tears down every real managed
+  refresh thread reachable from the acquisition -- both the two hidden
+  ones (@a@, @b@) and @c@'s own visible, directly-returned one -- not
+  merely that the hidden-release /count/ is right. (The pure test above
+  already separately proves the exact release /order/ this drives,
+  deterministically.)
+  -}
+  it "accumulates exactly two real hidden children for a three-deep chain, and genuinely releases every one of them" do
     envNoAuth <- newEnvNoAuth
     let config =
           HashMap.fromList
@@ -619,42 +673,13 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
             , ("a", profileMap [("role_arn", "arn:aws:iam::1:role/a"), ("source_profile", "root")])
             , ("root", profileMap [("aws_access_key_id", "AKIAROOT"), ("aws_secret_access_key", "s")])
             ]
-    releaseOrderRef <- newIORef ([] :: [Text])
-    let labelFor roleArn
-          | roleArn == "arn:aws:iam::1:role/a" = "a"
-          | roleArn == "arn:aws:iam::1:role/b" = "b"
-          | roleArn == "arn:aws:iam::1:role/c" = "c"
-          | otherwise = error "unexpected role_arn in three-deep order test"
-        resolvers =
+    capturedThreadIdsRef <- newIORef ([] :: [ThreadId])
+    let resolvers =
           unreachableConfigProfileResolvers
-            { resolveAssumedRole = \roleArn sourceEnv -> do
-                let label = labelFor roleArn
-                -- A readiness gate, signalled from strictly inside the
-                -- already-installed 'Exception.catch' handler region,
-                -- before this function returns: without it, a
-                -- freshly-forked child could still be killed before it
-                -- has ever installed its handler (its very first
-                -- scheduler slice not yet run), silently dying via an
-                -- unmasked, uncaught 'ThreadKilled' with nothing
-                -- recorded -- exactly the same forkIO/catch-installation
-                -- race documented on 'forkTransferringOwnership''s own
-                -- cancellation test below.
-                readyGate <- newEmptyMVar
-                tid <-
-                  forkIO
-                    $ Exception.catch
-                      (putMVar readyGate () >> forever (threadDelay maxBound))
-                    $ \Exception.ThreadKilled ->
-                      atomicModifyIORef' releaseOrderRef (\labels -> (labels <> [label], ()))
-                takeMVar readyGate
-                cell <- newIORef (AuthEnv "AKIAFAKE" "secret" Nothing Nothing)
-                let auth = Ref tid cell
-                -- 'polledRelease' (built on 'requireChildReleased', not a
-                -- bare 'killThread'): the exact release-order assertion
-                -- below depends on each release genuinely awaiting its
-                -- own child's confirmed termination before returning,
-                -- not merely signalling it.
-                pure (pairManagedAcquisition sourceEnv {auth = Identity auth} (polledRelease auth))
+            { resolveAssumedRole = \_roleArn sourceEnv -> do
+                (acquisition, tid) <- fakeRefEnv sourceEnv
+                atomicModifyIORef' capturedThreadIdsRef (\ids -> (ids <> [tid], ()))
+                pure acquisition
             }
     acquisition <- safeEvalConfigProfile resolvers config [] "c" envNoAuth
     -- Three hidden releases: root's own (a static, no-op release, since
@@ -662,18 +687,17 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
     -- real "a" and "b" children -- "c"'s own auth is the visible outer
     -- one, released separately (see 'releaseAwsEnvAcquisition').
     length (awsEnvAcquisitionHiddenReleases acquisition) `shouldBe` 3
+    -- 'resolveAssumedRole' itself is invoked once per assumed-role
+    -- profile in the chain ("a", "b", AND "c" -- "root" is the only
+    -- plain-static, non-assumed-role profile and never reaches this
+    -- resolver at all), so all three real managed threads are captured
+    -- here; "c"'s is the visible/final release, "a" and "b"'s are the
+    -- two genuinely real entries among 'awsEnvAcquisitionHiddenReleases'.
+    capturedThreadIds <- readIORef capturedThreadIdsRef
+    length capturedThreadIds `shouldBe` 3 -- "a", "b", and "c"; "root" spawns no thread
     releaseAwsEnvAcquisition acquisition
-    -- Bounded poll: each fake child's own handler above appends its
-    -- label synchronously as part of being killed, so once all three
-    -- labels are present the true release order is already fixed and
-    -- will never change further.
-    let waitForAllLabels (n :: Int)
-          | n <= 0 = expectationFailure "not all three children were ever released"
-          | otherwise = do
-              labels <- readIORef releaseOrderRef
-              if length labels >= 3 then pure () else threadDelay 1000 >> waitForAllLabels (n - 1)
-    waitForAllLabels 2000
-    readIORef releaseOrderRef `shouldReturn` ["c", "b", "a"]
+    finalStatuses <- traverse waitUntilTerminated capturedThreadIds
+    finalStatuses `shouldSatisfy` all isTerminatedStatus
 
 {- | Regression for the HIGH-severity finding that 'safeFileEnv' recorded
 only 'awsEnvAcquisitionHiddenReleases' into @hiddenReleasesRef@ and never

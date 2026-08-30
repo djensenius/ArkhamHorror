@@ -34,13 +34,15 @@ module Api.Arkham.Lifecycle (
   cancelManagedThread,
   raceManaged_,
   RestartState (..),
+  StopOutcome (..),
   restartManagedGeneration,
   restartManagedGenerationUsing,
   stopManagedGeneration,
+  getOrCreateStore,
 ) where
 
 import Control.Concurrent (ThreadId, forkIOWithUnmask)
-import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, readMVar, takeMVar, tryPutMVar)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, newMVar, putMVar, readMVar, takeMVar, tryPutMVar, withMVar)
 import Control.Exception (
   AsyncException (ThreadKilled),
   SomeException,
@@ -54,6 +56,8 @@ import Control.Exception (
   throwTo,
   try,
  )
+import Foreign.Store (Store (..), lookupStore, readStore, writeStore)
+import System.IO.Unsafe (unsafePerformIO)
 import Prelude
 
 {- | Acquire a resource whose ownership transfers to the caller on
@@ -447,6 +451,96 @@ data RestartState handle
     -- generation could ever collide with, so the next attempt proceeds
     -- immediately rather than replaying this stale failure forever.
     StartFailed SomeException
+  | -- | The generation identified by @handle@ has already exited (its
+    -- own 'Control.Concurrent.forkIOWithUnmask'-spawned body returned,
+    -- threw, or was cancelled, and its own completion cell -- see
+    -- 'Running' -- has therefore already been durably filled), but the
+    -- attempt to tear it down (its @finalize@\/@shutdownApp@ call) itself
+    -- failed, i.e. that completion cell holds 'Left', not 'Right'.
+    --
+    -- Deliberately kept distinct from both 'NotStarted' and 'StartFailed':
+    -- unlike either of those, this generation's own resources
+    -- (production: 'Application.shutdownApp''s AWS supervisor, Redis
+    -- connection, database pool, room-heartbeat\/pub-sub threads --
+    -- see 'releaseAll') may /not/ actually have been released. Every
+    -- production gate therefore refuses to silently treat this the same
+    -- as \"nothing to retire\": 'restartManagedGenerationUsing' re-raises
+    -- the exact same recorded failure rather than proceeding to start a
+    -- replacement generation on top of possibly-still-held resources,
+    -- and 'stopManagedGeneration' reports 'StopFailed' rather than
+    -- claiming either \"stopped\" or \"nothing was running\". Recovery is
+    -- deliberately not automatic: an operator (or a future, more
+    -- specific recovery function) must explicitly decide this is safe to
+    -- clear, e.g. after confirming out-of-band that no resources were
+    -- actually leaked.
+    RetireFailed handle SomeException
+
+{- | The truthful outcome of 'stopManagedGeneration', replacing a plain
+'Bool' (which could only ever distinguish \"something was running\" from
+\"nothing was running\", with no way to report \"something was running,
+tried to stop, and that attempt itself failed\" other than lying about
+one of the other two cases).
+-}
+data StopOutcome
+  = -- | 'RestartState' was already 'NotStarted'\/'StartFailed': there was
+    -- nothing live to stop.
+    NothingWasRunning
+  | -- | A live generation was found, cancelled, and its own teardown
+    -- ('Right' from its completion cell) genuinely, successfully
+    -- completed. 'RestartState' is now 'NotStarted'.
+    StoppedCleanly
+  | -- | A live generation was found and cancelled, but its own teardown
+    -- itself failed ('Left' from its completion cell): its resources may
+    -- not actually have been released. 'RestartState' is now
+    -- 'RetireFailed', not 'NotStarted' -- see that constructor's own
+    -- Haddock for why this must never be silently overwritten.
+    StopFailed SomeException
+  deriving stock (Show)
+
+{- | Atomically retrieve the value already published at the given
+'Foreign.Store.Store' slot, or create-and-publish a fresh one (via
+@mkDefault@) if the slot is currently empty -- unlike
+@Foreign.Store.storeAction@ (the Yesod scaffold's own original helper),
+which /always/ runs its action and /always/ overwrites the slot via
+'Foreign.Store.writeStore', discarding whatever value (if any) was
+already published there. That distinction matters enormously for a
+restart-protocol lock\/state cell specifically: @storeAction slot
+(newMVar NotStarted)@, called from @app\/DevelMain.hs@'s @update@ on
+/every/ invocation (including a second, later @update@ after the first
+generation is already running), would fabricate a brand new, empty
+'MVar' 'NotStarted' and publish it over the existing one -- silently
+losing all track of whatever generation the first call had already
+started (and, for two genuinely concurrent initial callers, handing each
+its own independent lock\/state, defeating the mutual exclusion
+'restartManagedGenerationUsing'\/'stopManagedGeneration' otherwise
+provide entirely).
+
+'Foreign.Store' itself performs no synchronization whatsoever of its own
+(its own Haddock: \"Not thread-safe\") -- composing a lookup with a
+conditional write is therefore only safe here because every caller is
+first serialized through 'foreignStoreInitLock', a single process-global
+'Control.Concurrent.MVar.MVar' defined via
+'System.IO.Unsafe.unsafePerformIO' with an explicit @NOINLINE@ pragma in
+/this/ module: a compiled library module GHC only ever loads once per
+process, unlike @app\/DevelMain.hs@ itself, which GHCi's own
+\`:r\`\/\`:l\` reloads on every edit -- a lock defined there would be
+silently reinitialized (forgetting any in-progress caller) on every such
+reload, reopening exactly the race this function exists to close.
+-}
+getOrCreateStore :: Store a -> IO a -> IO a
+getOrCreateStore store@(Store slot) mkDefault =
+  withMVar foreignStoreInitLock $ \() -> do
+    mExisting <- lookupStore slot
+    case mExisting of
+      Just existing -> readStore existing
+      Nothing -> do
+        fresh <- mkDefault
+        writeStore store fresh
+        pure fresh
+
+{-# NOINLINE foreignStoreInitLock #-}
+foreignStoreInitLock :: MVar ()
+foreignStoreInitLock = unsafePerformIO (newMVar ())
 
 {- | Start (or restart) a managed generation, fully serialized against
 every other call (including concurrent ones) via @lock@: if a previous
@@ -459,22 +553,34 @@ immediately. Only then is @acquire@\/@spawn@\/publish attempted for the
 storing @'Running' handle newDone@ into @lock@ itself, rather than two
 separately-scoped writes to two separate cells.
 
-Precisely two things can go wrong, and each has an exact, narrow recovery
-that restores @lock@ to a value describing reality, never a stale one:
+Precisely three things can go wrong, and each has an exact, narrow
+recovery that restores @lock@ to a value describing reality, never a
+stale one:
 
 * Retiring the /previous/ generation (@cancel@, or awaiting its own
-  @done@) itself throws or is cancelled: @lock@ is restored to the exact
-  same 'Running' value it held before this call -- nothing has actually
+  @done@) itself throws or is cancelled -- i.e. /this thread's own/
+  attempt to retire is interrupted, distinct from the previous
+  generation's own teardown having genuinely completed and reported
+  failure (see the next bullet): @lock@ is restored to the exact same
+  'Running' value it held before this call -- nothing has actually
   changed yet (in production, @cancel@ has already sent
   'Control.Exception.ThreadKilled', so a subsequent retry's own @cancel@
   and @readMVar@ are simply repeated, both idempotent against an
   already-dying\/already-terminated target and an already-filled
   completion cell), so this is always safe to retry.
-* The previous generation (if any) was already confirmed retired, but
-  acquiring\/spawning the /replacement/ then fails or this thread is
-  cancelled: @lock@ is set to 'NotStarted' -- never the stale previous
-  'Running' value, which no longer describes anything live -- so a
-  subsequent attempt starts fresh rather than trying to re-retire a
+* The previous generation's own body has already exited and its
+  completion cell was genuinely, successfully read, but that cell's own
+  value is 'Left' -- its teardown (@finalize@\/@shutdownApp@) itself
+  failed, so its resources may not actually have been released: @lock@
+  is set to 'RetireFailed' (carrying the exact failure), and this call
+  re-raises that same failure /without/ ever attempting to
+  acquire\/spawn a replacement -- see 'RetireFailed''s own Haddock for
+  why silently proceeding here would be unsound.
+* The previous generation (if any) was already confirmed cleanly
+  retired, but acquiring\/spawning the /replacement/ then fails or this
+  thread is cancelled: @lock@ is set to 'NotStarted' -- never the stale
+  previous 'Running' value, which no longer describes anything live --
+  so a subsequent attempt starts fresh rather than trying to re-retire a
   generation that is already gone.
 
 Only 'restore acquire' itself ever runs unmasked (matching every prior
@@ -512,32 +618,62 @@ restartManagedGenerationUsing
   -> IO ()
 restartManagedGenerationUsing lock spawn cancel acquire release body finalize = mask $ \restore -> do
   priorState <- takeMVar lock
-  retireResult <- try @SomeException (retirePrior priorState)
-  case retireResult of
-    Left err -> do
-      -- Retiring the previous generation (if any) itself failed or was
-      -- cancelled: nothing has actually changed, so restore exactly what
-      -- was there -- see this function's own Haddock for why repeating
-      -- that retirement later is always safe.
+  retireOutcome <- try @SomeException (retirePrior priorState)
+  case retireOutcome of
+    Left cancelErr -> do
+      -- This thread's own attempt to retire (cancel\/await) was itself
+      -- interrupted, or @cancel@ threw synchronously: nothing has
+      -- actually changed, so restore exactly what was there -- see this
+      -- function's own Haddock for why repeating that retirement later
+      -- is always safe.
       putMVar lock priorState
-      throwIO err
-    Right () -> do
+      throwIO cancelErr
+    Right (Left teardownErr) -> do
+      -- The previous generation's own body already exited, and its
+      -- completion cell was genuinely read, but teardown itself failed:
+      -- never silently start a replacement on top of possibly-unreleased
+      -- resources.
+      putMVar lock (RetireFailed (retiredHandleOf priorState) teardownErr)
+      throwIO teardownErr
+    Right (Right ()) -> do
       startResult <- try @SomeException (acquireAndSpawn restore)
       case startResult of
         Right (handle, newDone) -> putMVar lock (Running handle newDone)
         Left err -> do
           -- The previous generation (if any) is already confirmed
-          -- retired; only starting its replacement failed, so there is
-          -- nothing live for @lock@ to describe.
+          -- cleanly retired; only starting its replacement failed, so
+          -- there is nothing live for @lock@ to describe.
           putMVar lock (StartFailed err)
           throwIO err
  where
+  -- | Retire whatever @priorState@ describes, returning the previous
+  -- generation's own teardown outcome (never discarding it -- see this
+  -- function's own Haddock): 'Right' if there was nothing to retire, or
+  -- retirement completed and its own completion cell held 'Right';
+  -- 'Left' if that completion cell held 'Left'. An exception escaping
+  -- this action (caught by the outer 'try') means /this thread's own/
+  -- retirement attempt was itself interrupted, not that the previous
+  -- generation's teardown reported failure.
   retirePrior = \case
-    NotStarted -> pure ()
-    StartFailed _ -> pure ()
+    NotStarted -> pure (Right ())
+    StartFailed _ -> pure (Right ())
+    RetireFailed _ err -> pure (Left err)
     Running priorHandle priorDone -> do
       cancel priorHandle
-      () <$ readMVar priorDone
+      readMVar priorDone
+
+  -- | The @handle@ a 'RetireFailed' constructed here should carry,
+  -- carried over from whichever prior generation's completion cell
+  -- revealed the failure (or, for a 'RetireFailed' prior state already
+  -- being re-reported, whichever handle it already carried).
+  retiredHandleOf = \case
+    Running priorHandle _ -> priorHandle
+    RetireFailed priorHandle _ -> priorHandle
+    -- unreachable: 'retirePrior' only ever returns a 'Left' for
+    -- 'Running'\/'RetireFailed'; 'NotStarted'\/'StartFailed' always
+    -- return 'Right' and so never reach this branch.
+    NotStarted -> error "restartManagedGenerationUsing: unreachable RetireFailed handle for NotStarted"
+    StartFailed _ -> error "restartManagedGenerationUsing: unreachable RetireFailed handle for StartFailed"
 
   acquireAndSpawn restore = do
     res <- restore acquire
@@ -561,9 +697,13 @@ restartManagedGeneration lock = restartManagedGenerationUsing lock forkIOWithUnm
 
 {- | Cancel the currently running generation (if any), fully serialized
 against 'restartManagedGenerationUsing' via the same @lock@, leaving
-@lock@ as 'NotStarted' once genuinely confirmed stopped. Returns 'True'
-if there was a live generation to stop, 'False' if @lock@ was already
-'NotStarted'\/'StartFailed'.
+@lock@ as 'NotStarted' once genuinely, cleanly confirmed stopped. Returns
+a 'StopOutcome' -- never a plain 'Bool', which could only ever
+distinguish \"something was running\" from \"nothing was running\", with
+no way to truthfully report \"something was running, was cancelled, and
+its own teardown itself then failed\" other than lying about one of the
+other two cases (previously: silently discarding that generation's own
+completion-cell outcome and unconditionally reporting 'True').
 
 Used by @app\/DevelMain.hs@'s standalone @shutdown@, which (before this
 fix) read\/killed its 'Foreign.Store'-published 'ThreadId' entirely
@@ -579,15 +719,26 @@ marked 'NotStarted' while that generation might still, in fact, be alive
 -- so this caller can always itself still be interrupted, and a failed
 stop attempt never lets a live child's dependencies be released nor
 lets a later caller believe nothing is running.
+
+If the live generation is genuinely cancelled and its own completion
+cell is genuinely read, but that cell holds 'Left' (its own teardown
+failed), @lock@ is set to 'RetireFailed' -- never silently 'NotStarted'
+-- and 'StopFailed' is returned, carrying the exact same failure; a
+later 'restartManagedGenerationUsing'\/'stopManagedGeneration' call sees
+that 'RetireFailed' and refuses to silently treat it as \"nothing
+running\" either (see 'RetireFailed''s own Haddock).
 -}
-stopManagedGeneration :: MVar (RestartState handle) -> (handle -> IO ()) -> IO Bool
+stopManagedGeneration :: MVar (RestartState handle) -> (handle -> IO ()) -> IO StopOutcome
 stopManagedGeneration lock cancel = mask $ \restore -> do
   priorState <- takeMVar lock
   case priorState of
-    NotStarted -> putMVar lock NotStarted >> pure False
-    StartFailed _ -> putMVar lock NotStarted >> pure False
+    NotStarted -> putMVar lock NotStarted >> pure NothingWasRunning
+    StartFailed _ -> putMVar lock NotStarted >> pure NothingWasRunning
+    RetireFailed _ err -> putMVar lock priorState >> pure (StopFailed err)
     Running priorHandle priorDone -> do
-      result <- try @SomeException (cancel priorHandle >> restore (() <$ readMVar priorDone))
+      result <- try @SomeException (cancel priorHandle >> restore (readMVar priorDone))
       case result of
-        Right () -> putMVar lock NotStarted >> pure True
-        Left err -> putMVar lock priorState >> throwIO err
+        Right (Right ()) -> putMVar lock NotStarted >> pure StoppedCleanly
+        Right (Left teardownErr) -> putMVar lock (RetireFailed priorHandle teardownErr) >> pure (StopFailed teardownErr)
+        Left cancelErr -> putMVar lock priorState >> throwIO cancelErr
+
