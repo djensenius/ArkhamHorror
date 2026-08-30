@@ -38,6 +38,7 @@ import Api.Arkham.AwsEnvSupervisor (
   requestAwsEnvReady,
   stopAwsEnvSupervisor,
  )
+import Api.Arkham.Helpers (tryRedis_)
 import Api.Arkham.Lifecycle (
   acquireThenForkTransferringOwnershipGuarded,
   acquireThenForkTransferringOwnershipGuardedUsing,
@@ -49,11 +50,13 @@ import Api.Arkham.Lifecycle (
   forkTransferringOwnershipUsing,
   raceManaged_,
   releaseAll,
+  restartGateForPreviousGeneration,
   shutdownThenDeliver,
  )
 import Arkham.Prelude
 import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId, threadDelay)
 import Control.Exception qualified as Exception
+import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Test.Hspec
 
 -- | Every test below stops via 'requestAwsEnvReady' with a zero-length
@@ -702,6 +705,69 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
           Left _ -> pure ()
           Right () -> expectationFailure "expected every replay to fail, not just the first"
         started `shouldBe` False
+
+  {- | Regression for the MEDIUM finding that @DevelMain.hs@'s @update@
+  durably publishes its 'Foreign.Store' slots for @tidRef@\/@done@ (so a
+  /later/ @update@ call takes the \"already running\" branch,
+  'restartAppInNewThread') as ordinary, unmasked statements, strictly
+  before ever calling @start@ (whose own single
+  'Control.Exception.mask', inside
+  'acquireThenForkTransferringOwnershipGuarded', is what actually
+  protects everything from that point on). An asynchronous exception
+  landing in that gap -- after the 'Foreign.Store' slot exists
+  (publishing @tidRef = 'Nothing'@) but before a generation is ever
+  actually spawned -- used to leave a /subsequent/ @update@ call reading
+  @tidRef = 'Nothing'@ and unconditionally treating that as \"a previous
+  generation exists and must be consulted\", calling
+  'consumePreviousShutdownReplayable' on a @done@ that no generation was
+  ever going to fill -- deadlocking every later restart attempt forever.
+  'restartGateForPreviousGeneration' is the exact production fix
+  'DevelMain.restartAppInNewThread' now uses in place of an unconditional
+  @'Control.Concurrent.killThread'@ + 'consumePreviousShutdownReplayable':
+  these tests exercise it directly.
+  -}
+  describe "restartGateForPreviousGeneration (DevelMain restartAppInNewThread's gate: recovers from a Nothing previously-published generation instead of blocking on it)" do
+    it "gates with an immediate no-op when no generation has ever been durably published (Nothing), even though 'done' would otherwise block forever" do
+      -- A permanently empty 'MVar': no generation was ever spawned to
+      -- fill it, so 'consumePreviousShutdownReplayable' called
+      -- unconditionally against it would block forever.
+      done <- newEmptyMVar
+      reached <- timeout (200 * 1000) (restartGateForPreviousGeneration Nothing done)
+      reached `shouldBe` Just ()
+
+    it "kills the previous generation and consumes its already-delivered Right result when one was durably published" do
+      readyVar <- newEmptyMVar
+      tid <- forkIO (putMVar readyVar () >> forever (threadDelay maxBound))
+      takeMVar readyVar
+      done <- newEmptyMVar
+      shutdownThenDeliver (pure ()) done
+      restartGateForPreviousGeneration (Just tid) done
+      status <- waitUntilTerminated tid
+      status `shouldSatisfy` isTerminatedStatus
+      -- 'consumePreviousShutdownReplayable' drains the 'Right' it
+      -- consumed: nothing is left behind for the next generation to
+      -- mistakenly observe.
+      stillEmpty <- timeout (50 * 1000) (readMVar done)
+      stillEmpty `shouldSatisfy` isNothing
+
+    it "propagates (not swallows) a previous generation's delivered Left failure, without killing/proceeding a second time" do
+      readyVar <- newEmptyMVar
+      tid <- forkIO (putMVar readyVar () >> forever (threadDelay maxBound))
+      takeMVar readyVar
+      done <- newEmptyMVar
+      shutdownThenDeliver (Exception.throwIO (userError "previous generation failed to stop")) done
+      outcome <- Exception.try @Exception.SomeException (restartGateForPreviousGeneration (Just tid) done)
+      case outcome of
+        Left err -> show err `shouldContain` "previous generation failed to stop"
+        Right () -> expectationFailure "expected the previous generation's failure to propagate"
+      killThread tid
+
+    it "mutation check: unconditionally consuming (ignoring Nothing/Just) would instead block forever on a Nothing previous generation" do
+      done <- newEmptyMVar
+      let unconditional :: Maybe ThreadId -> MVar (Either Exception.SomeException ()) -> IO ()
+          unconditional _ = consumePreviousShutdownReplayable
+      blocked <- timeout (200 * 1000) (unconditional Nothing done)
+      blocked `shouldBe` Nothing
   {- | Regression for the second MEDIUM lifecycle finding: 'DevelMain.hs's
   @start@ transfers an already-acquired 'App''s remaining lifetime to a
   newly-forked child thread (which runs Warp, then shuts the 'App' down
@@ -1032,3 +1098,82 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         Right _ -> expectationFailure "expected the cancelled racer's own call to propagate a failure"
       readIORef leftCleanedUp `shouldReturn` True
       readIORef rightCleanedUp `shouldReturn` True
+
+  {- | Regression for the production 'Api.Arkham.Helpers.tryRedis_' guard
+  itself (used directly by 'Api.Arkham.Helpers.withRedis',
+  'Api.Arkham.Helpers.getRedisRoomCounts''s stale-room sweep, and
+  'Api.Arkham.Helpers.pubSubSupervisor''s health-ping, and, transitively
+  via those, by 'Api.Arkham.Helpers.roomHeartbeat''s and
+  'Api.Arkham.Helpers.pubSubSupervisor''s own @watchdog@ -- each of which
+  is one racer under 'raceManaged_' and so depends on actually terminating
+  on the 'Exception.ThreadKilled' 'Api.Arkham.Lifecycle.cancelManagedThread'
+  delivers). 'tryRedis_' must swallow only genuinely synchronous failures
+  (a real Redis\/network error) and let any asynchronous exception --
+  above all a caller's own cancellation -- propagate unchanged; a
+  'Control.Exception.try' \@'Control.Exception.SomeException'-based
+  implementation would instead swallow the cancellation too, leaving
+  'Api.Arkham.Lifecycle.cancelManagedThread''s own await blocked forever
+  and hanging Foundation shutdown.
+
+  This exercises 'tryRedis_' directly (not a fake stand-in): rather than
+  merely checking the guarded thread eventually terminates -- which a
+  buggy, swallowing 'tryRedis_' would also do, just via its /caller/
+  finishing normally instead of via the propagating exception, giving no
+  real signal either way -- it instead proves the guarded action's
+  enclosing @do@-block genuinely never reaches a statement placed
+  immediately /after/ the 'tryRedis_' call. For a correct
+  implementation this is a hard guarantee, not a probabilistic one:
+  Haskell's own exception semantics mean a propagating exception
+  unconditionally aborts the rest of that @do@-block, so the marker below
+  can never be reached, for any timeout bound whatsoever. For a buggy,
+  swallowing implementation, 'tryRedis_' instead returns normally almost
+  immediately after the cancellation is delivered, letting execution
+  reach the marker within a generous bound.
+  -}
+  describe "tryRedis_ (async-safe Redis guard shared by withRedis, getRedisRoomCounts, roomHeartbeat, and pubSubSupervisor)" do
+    it "propagates (never swallows) an asynchronous cancellation delivered while the guarded action is running" do
+      startedVar <- newEmptyMVar
+      reachedAfterVar <- newEmptyMVar
+      tid <- forkIO do
+        tryRedis_ (putMVar startedVar () >> forever (threadDelay maxBound))
+        -- Only reachable if 'tryRedis_' wrongly swallowed the
+        -- cancellation and returned normally instead of letting it
+        -- propagate.
+        putMVar reachedAfterVar ()
+      takeMVar startedVar
+      Exception.throwTo tid Exception.ThreadKilled
+      reachedAfter <- timeout (200 * 1000) (takeMVar reachedAfterVar)
+      reachedAfter `shouldBe` Nothing
+      status <- waitUntilTerminated tid
+      status `shouldSatisfy` isTerminatedStatus
+
+    it "swallows a genuine synchronous failure instead of propagating it" do
+      tryRedis_ (Exception.throwIO (userError "genuine synchronous Redis failure")) `shouldReturn` ()
+
+    it "mutation check: a Control.Exception.try @SomeException-based guard would instead swallow the cancellation above" do
+      -- Proves the first assertion is load-bearing: the naive
+      -- alternative this guards against actually would let execution
+      -- reach the post-guard marker.
+      startedVar <- newEmptyMVar
+      reachedAfterVar <- newEmptyMVar
+      tid <- forkIO do
+        _ <-
+          Exception.try @Exception.SomeException
+            (putMVar startedVar () >> forever (threadDelay maxBound))
+        putMVar reachedAfterVar ()
+      takeMVar startedVar
+      Exception.throwTo tid Exception.ThreadKilled
+      reachedAfter <- timeout (200 * 1000) (takeMVar reachedAfterVar)
+      reachedAfter `shouldBe` Just ()
+ where
+  isTerminatedStatus :: ThreadStatus -> Bool
+  isTerminatedStatus status = status == ThreadFinished || status == ThreadDied
+
+  waitUntilTerminated :: ThreadId -> IO ThreadStatus
+  waitUntilTerminated tid = go (500 :: Int)
+   where
+    go n = do
+      status <- threadStatus tid
+      if isTerminatedStatus status || n <= 0
+        then pure status
+        else threadDelay 1000 >> go (n - 1)

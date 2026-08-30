@@ -27,6 +27,7 @@ module Api.Arkham.Lifecycle (
   shutdownThenDeliver,
   consumePreviousShutdownReplayable,
   consumePreviousShutdownReplayableUsing,
+  restartGateForPreviousGeneration,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
   ManagedThread,
@@ -39,7 +40,7 @@ module Api.Arkham.Lifecycle (
   acquireThenForkTransferringOwnershipGuardedUsing,
 ) where
 
-import Control.Concurrent (ThreadId, forkIOWithUnmask)
+import Control.Concurrent (ThreadId, forkIOWithUnmask, killThread)
 import Control.Concurrent.MVar (MVar, newEmptyMVar, readMVar, takeMVar, tryPutMVar)
 import Control.Exception (
   AsyncException (ThreadKilled),
@@ -198,6 +199,46 @@ consumePreviousShutdownReplayableUsing afterConsume done = do
     Right () -> do
       _ <- takeMVar done
       afterConsume
+
+{- | Choose the correct restart gate for @app\/DevelMain.hs@'s @update@,
+given the previously-published generation handle read from its own
+durable 'Foreign.Store' -- or 'Nothing' if no generation has ever been
+durably published there.
+
+This is the fix for the finding that @DevelMain.hs@'s initial \"no server
+running\" branch published its durable @tidRef@\/@done@ 'Foreign.Store'
+slots (so a /later/ @update@ call would take the \"already running\"
+branch below) as two ordinary, unmasked statements, strictly before ever
+calling 'acquireThenForkTransferringOwnershipGuarded' (whose own single
+'mask' is what actually protects everything from that point on -- see its
+Haddock). An asynchronous exception landing in that narrow gap (after the
+'Foreign.Store' slot exists, publishing @tidRef = 'Nothing'@, but before a
+generation is ever actually spawned) used to leave that later @update@
+call unconditionally treating @tidRef = 'Nothing'@ as \"a previous
+generation exists and must be consulted\", calling
+'consumePreviousShutdownReplayable' on a @done@ 'Control.Concurrent.MVar.MVar'
+that no generation was ever going to fill -- deadlocking that
+'Control.Concurrent.MVar.readMVar' (and therefore every subsequent
+restart attempt) forever.
+
+The fix is this exact distinction: @tidRef@'s own content is the single
+source of truth for \"has a generation ever been durably published\",
+independent of whether the 'Foreign.Store' slot itself already exists.
+'Nothing' means exactly that -- whether because this is genuinely the
+very first start, or because an earlier attempt was interrupted before
+ever reaching a durable publish -- and in either case there is nothing
+to kill and nothing pending in @done@ to consume, so the correct gate is
+the same @'pure' ()@ used for a genuine first start. Only 'Just' means a
+previous generation was actually spawned and durably published, in which
+case it must be killed and its eventual result consumed exactly as
+before.
+-}
+restartGateForPreviousGeneration :: Maybe ThreadId -> MVar (Either SomeException ()) -> IO ()
+restartGateForPreviousGeneration mPreviousThreadId done = case mPreviousThreadId of
+  Nothing -> pure ()
+  Just previousThreadId -> do
+    killThread previousThreadId
+    consumePreviousShutdownReplayable done
 
 {- | Given an already-acquired resource whose remaining lifetime is meant
 to be owned by a newly-forked child thread (which runs @body res@

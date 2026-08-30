@@ -38,7 +38,7 @@ module DevelMain where
 
 import Api.Arkham.Lifecycle (
   acquireThenForkTransferringOwnershipGuarded,
-  consumePreviousShutdownReplayable,
+  restartGateForPreviousGeneration,
   shutdownThenDeliver,
  )
 import Application (getApplicationRepl, shutdownApp)
@@ -69,15 +69,19 @@ update = do
       -- wrapper -- whether it fails before ever spawning a child (an
       -- ordinary acquisition\/spawn failure on this very first
       -- generation, with no child ever created to otherwise fill @done@)
-      -- or after one is already durably tracked. Without that, every
-      -- /subsequent/ 'update' call would take the \"server is already
-      -- running\" branch below and either block forever on
-      -- 'consumePreviousShutdownReplayable''s own
-      -- 'Control.Concurrent.MVar.readMVar' against a cell nothing was
-      -- ever going to fill, or (the subtler hazard) observe a stale
-      -- failure over a still-live, untracked-by-@done@ child. There is
-      -- no previous generation to consult for this very first start, so
-      -- @gate@ here is simply @'pure' ()@.
+      -- or after one is already durably tracked. There is no previous
+      -- generation to consult for this very first start, so @gate@ here
+      -- is simply @'pure' ()@ -- and if an asynchronous exception lands
+      -- in the gap between the two 'storeAction' calls above and 'start'
+      -- actually beginning (before 'start''s own 'mask' has begun
+      -- protecting anything), a /subsequent/ 'update' call takes the
+      -- \"server is already running\" branch below and finds @tidRef@
+      -- still reading 'Nothing' -- 'restartAppInNewThread''s own use of
+      -- 'restartGateForPreviousGeneration' (see its Haddock) is what
+      -- makes that safe: it recognises 'Nothing' as \"no generation was
+      -- ever durably published\" and gates with @'pure' ()@ too, rather
+      -- than blocking forever trying to consume a @done@ nothing was
+      -- ever going to fill.
       start (pure ()) tidRef done
     -- server is already running
     Just tidStore -> withStore tidStore (`restartAppInNewThread` doneStore)
@@ -100,32 +104,48 @@ update = do
   doneStore :: Store (MVar (Either SomeException ()))
   doneStore = Store 100
 
-  -- Kill the previous generation's Warp thread, wait for its shutdown
-  -- result, and only start a replacement if that shutdown actually
-  -- succeeded ('Right'). A failed/interrupted shutdown ('Left') is
-  -- reported and re-thrown rather than silently starting a new
-  -- generation on top of a supervisor that may not have actually
-  -- stopped; unlike an earlier version of this protocol, that 'Left' is
-  -- never consumed here, so every subsequent restart attempt observes
-  -- the exact same failure immediately rather than blocking forever on
-  -- an already-emptied one-shot 'MVar' -- see
-  -- 'consumePreviousShutdownReplayable'. @tidRef@ itself is never
-  -- cleared to 'Nothing' here: 'start' (via
+  -- Kill the previous generation's Warp thread (if any was ever durably
+  -- published), wait for its shutdown result, and only start a
+  -- replacement if that shutdown actually succeeded ('Right'). A
+  -- failed/interrupted shutdown ('Left') is reported and re-thrown
+  -- rather than silently starting a new generation on top of a
+  -- supervisor that may not have actually stopped; unlike an earlier
+  -- version of this protocol, that 'Left' is never consumed here, so
+  -- every subsequent restart attempt observes the exact same failure
+  -- immediately rather than blocking forever on an already-emptied
+  -- one-shot 'MVar' -- see 'consumePreviousShutdownReplayable'.
+  --
+  -- 'restartGateForPreviousGeneration' (not an unconditional
+  -- @'killThread'@ + @'consumePreviousShutdownReplayable'@) is what
+  -- makes this function safe to reach even when @tidRef@ reads
+  -- 'Nothing' here -- which can genuinely happen: @update@'s own \"no
+  -- server running\" branch below durably publishes this function's
+  -- 'Foreign.Store' slots (so a /later/ @update@ takes this branch
+  -- instead) as ordinary, unmasked statements, strictly before ever
+  -- calling 'start' (whose own single 'Control.Exception.mask', inside
+  -- 'acquireThenForkTransferringOwnershipGuarded', is what actually
+  -- protects everything from that point on). An asynchronous exception
+  -- landing in that gap -- after the slot exists (publishing
+  -- @tidRef = 'Nothing'@) but before a generation is ever actually
+  -- spawned -- used to leave this function unconditionally treating
+  -- @tidRef = 'Nothing'@ as \"a previous generation exists\", calling
+  -- 'consumePreviousShutdownReplayable' on a @done@ that no generation
+  -- was ever going to fill, deadlocking every subsequent restart
+  -- forever. 'restartGateForPreviousGeneration' instead treats
+  -- @tidRef = 'Nothing'@ here exactly like a genuine first start (see
+  -- its own Haddock), recovering cleanly instead. @tidRef@ itself is
+  -- never cleared to 'Nothing' here: 'start' (via
   -- 'acquireThenForkTransferringOwnershipGuarded''s @publish@ callback)
   -- always overwrites it with the new generation's 'ThreadId' before
-  -- this function's own caller (GHCi) could ever observe a stale one,
-  -- and 'consumePreviousShutdownReplayable' (passed to 'start' as its
-  -- @gate@, run as the very first step inside 'start''s own single
-  -- 'mask') guarantees that overwrite is only even attempted once the
-  -- previous shutdown genuinely succeeded. Managing @done@ if 'start'
-  -- itself then fails is 'start''s own responsibility (see its
-  -- Haddock), not 'consumePreviousShutdownReplayable''s.
+  -- this function's own caller (GHCi) could ever observe a stale one.
+  -- Managing @done@ if 'start' itself then fails is 'start''s own
+  -- responsibility (see its Haddock), not
+  -- 'restartGateForPreviousGeneration''s.
   restartAppInNewThread :: IORef (Maybe ThreadId) -> Store (MVar (Either SomeException ())) -> IO ()
   restartAppInNewThread tidRef doneStoreRef = do
     done <- readStore doneStoreRef
     mtid <- readIORef tidRef
-    maybe (pure ()) killThread mtid
-    start (consumePreviousShutdownReplayable done) tidRef done
+    start (restartGateForPreviousGeneration mtid done) tidRef done
 
   {- | Start the server in a separate thread, and durably publish its
   'ThreadId' into @tidRef@ before returning. Used identically for the

@@ -108,6 +108,46 @@ module's own regression tests (documenting the primitive itself, and
 guarding against ever silently reintroducing an unmanaged @Ref@ into this
 credential graph), but no production acquisition path still depends on
 their kill-then-poll branch to release a live child.
+
+= Structural release ownership
+
+Every managed provider in this module -- 'safeContainer', 'safeAssumedRole',
+'safeWebIdentity', 'safeSSO', 'safeDefaultInstanceProfile'\/
+'safeNamedInstanceProfile', and 'resolveContainerCredentials' -- returns
+its resolved 'Env' paired with 'managedFetchAuthInBackground''s
+genuinely-awaiting release as a /mandatory/ @(Env, IO ())@ tuple, never a
+bare 'Env' plus an optional 'IORef' side channel a caller could forget to
+populate. This is a deliberate, structural (type-level, not merely
+runtime-checked) redesign: an earlier version of this module instead
+handed each provider an @IORef (Maybe (IO ()))@ to /optionally/ write a
+release into (via a since-removed @withManagedRelease@ combinator), which
+meant a provider that returned a live, expiring 'Ref'-shaped 'Env' without
+ever populating that ref was only caught at /runtime/, by 'deriveRelease'
+reaping the orphaned worker and throwing 'ManagedReleaseInvariantViolated'
+-- a real, working safety net, but one that could only ever fire /after/
+such a bug already shipped. With the mandatory-tuple shape, that same bug
+is instead a /compile/-time type error: there is no longer any way to
+write a @ConfigProfileResolvers@ field, or call any of the @safe*@
+functions above, that produces an 'Env' without also producing its
+release in the same expression.
+
+Only 'discoverSafely''s own /outer/ candidates -- 'safeFileEnv',
+'safeWebIdentityEnv', 'safeContainerEnv', and 'safeDefaultInstanceProfileEnv'
+-- still take an @IORef (Maybe (IO ()))@ (@finalReleaseRef@) parameter and
+have the narrower @EnvNoAuth -> IO Env@ shape, because that shape is fixed
+by the pinned Amazonka fork's own external @newEnv@\/@runCredentialChain@
+API, not something this module controls. Each of these outer wrappers
+does exactly one @writeIORef finalReleaseRef@, unconditionally, derived
+directly from the mandatory tuple its own inner provider (or
+'resolveContainerCredentials'\/'safeDefaultInstanceProfile' etc.) already
+returned -- there is no separate code path where that write could be
+skipped or forgotten. 'deriveRelease'\/'ManagedReleaseInvariantViolated'
+remain defined only as a defensive backstop at 'acquireAwsEnv''s own
+outer boundary (see its Haddock), reachable in practice only when
+@finalReleaseRef@ is genuinely 'Nothing' -- which, after this redesign,
+can only happen when the resolved 'Auth' came from 'fromKeysEnv' (static,
+non-expiring credentials that never populate it at all), never from a
+live, expiring 'Ref'.
 -}
 module Api.Arkham.AwsEnvSupervisor (
   -- * AWS error diagnostics -- safe to cross IO boundaries and to log
@@ -129,9 +169,9 @@ module Api.Arkham.AwsEnvSupervisor (
   acquireRegionBeforeAuth,
   awaitAwsEnvInvalidation,
   managedFetchAuthInBackground,
-  withManagedRelease,
   safeContainer,
   safeContainerEnv,
+  resolveContainerCredentials,
   safeAssumedRole,
   safeWebIdentity,
   safeWebIdentityEnv,
@@ -382,11 +422,11 @@ instance Exception.Exception ChildReleaseTimedOutException
 
 {- | Thrown by 'deriveRelease' when a provider returns an 'Env' whose
 @.auth@ is a live, expiring 'Ref' but never recorded a managed release
-into the 'IORef' it was handed for exactly that purpose (see
-'withManagedRelease'\/'acquireAwsEnv'). This can only ever be reached by a
-/new/ programming error in this module itself -- every current provider
-in 'productionConfigProfileResolvers'\/'discoverSafely' is already audited
-to always record one for any 'Ref' it can produce -- but if one ever
+into the 'IORef' it was handed for exactly that purpose (see the module
+Haddock, \"Structural release ownership\", and 'acquireAwsEnv'). This can
+only ever be reached by a /new/ programming error in this module itself
+-- every current provider in 'productionConfigProfileResolvers'\/'discoverSafely'
+is already audited to always record one for any 'Ref' it can produce -- but if one ever
 regresses (or a future provider is added without doing so), silently
 carrying on as if a managed release existed for a live background refresh
 thread is exactly the class of bug this whole module exists to eliminate.
@@ -411,8 +451,8 @@ newtype ManagedReleaseInvariantViolated = ManagedReleaseInvariantViolated Thread
 instance Exception.Exception ManagedReleaseInvariantViolated
 
 {- | The single point every managed-release derivation in this module goes
-through (see 'withManagedRelease'\/'acquireAwsEnv'): given whatever a
-provider actually recorded into its @finalReleaseRef@ (if anything) and
+through (see 'acquireAwsEnv'): given whatever a provider actually
+recorded into its @finalReleaseRef@ (if anything) and
 the 'Auth' it ultimately returned, decide the correct overall release --
 structurally, not by convention:
 
@@ -689,7 +729,7 @@ created, outermost\/newest first: 'awsEnvAcquisitionRelease' itself, then
 every hidden child, newest-to-oldest (see 'AwsEnvAcquisition').
 
 Every child's release is attempted even if an earlier one fails: each
-child's own release (see 'withManagedRelease'\/'managedFetchAuthInBackground')
+child's own release (see 'managedFetchAuthInBackground')
 already never returns -- and so never lets 'attemptRelease' below observe
 success -- until that /exact/ child's own completion cell is genuinely
 observed, retrying internally past any asynchronously-arriving 'AuthError'
@@ -782,9 +822,13 @@ exactly the single-child release every other provider already had). A
 second 'IORef', @finalReleaseRef@, similarly lets every managed provider
 (every one of them except 'fromKeysEnv') report its genuinely-awaiting
 'managedFetchAuthInBackground' release for @.auth@ itself when it wins
-outright (see 'AwsEnvAcquisition'\/'withManagedRelease'); 'fromKeysEnv'
-alone leaves it untouched, and 'acquireAwsEnv' then falls back to the
-naive (but, for a non-expiring 'Auth', instant, non-hazardous) derivation.
+outright; 'fromKeysEnv' alone leaves it untouched, and 'acquireAwsEnv'
+then falls back to the naive (but, for a non-expiring 'Auth', instant,
+non-hazardous) derivation. Every other candidate in this list writes
+@finalReleaseRef@ unconditionally, derived directly from its own inner
+provider's mandatory @(Env, IO ())@ return pair (see the module Haddock,
+\"Structural release ownership\") -- there is no optional side channel
+left for any of them to forget.
 -}
 discoverSafely :: IORef [IO ()] -> IORef (Maybe (IO ())) -> EnvNoAuth -> IO Env
 discoverSafely hiddenReleasesRef finalReleaseRef =
@@ -793,8 +837,19 @@ discoverSafely hiddenReleasesRef finalReleaseRef =
     , safeFileEnv productionConfigProfileResolvers hiddenReleasesRef finalReleaseRef
     , safeWebIdentityEnv finalReleaseRef
     , safeContainerEnv finalReleaseRef
-    , safeDefaultInstanceProfile finalReleaseRef
+    , safeDefaultInstanceProfileEnv finalReleaseRef
     ]
+
+-- | 'discoverSafely''s own outer candidate for @credential_source=Ec2InstanceMetadata@\/
+-- default-instance-profile discovery: like 'safeContainerEnv'\/'safeWebIdentityEnv',
+-- this exists purely to satisfy 'runCredentialChain''s fixed
+-- @EnvNoAuth -> IO Env@ shape, unconditionally writing @finalReleaseRef@
+-- from 'safeDefaultInstanceProfile''s own mandatory return pair.
+safeDefaultInstanceProfileEnv :: IORef (Maybe (IO ())) -> Env' withAuth -> IO Env
+safeDefaultInstanceProfileEnv finalReleaseRef env = do
+  (finalEnv, release) <- safeDefaultInstanceProfile env
+  writeIORef finalReleaseRef (Just release)
+  pure finalEnv
 
 
 {- | A safe reimplementation of the pinned Amazonka fork's own
@@ -837,9 +892,15 @@ throws\/is cancelled, no background child was ever created in the first
 place, so 'startSupervisedEnv''s @release@ (in production,
 'releaseAwsEnvGeneration') genuinely has nothing to clean up on that path
 -- there is no orphan window left to protect against, rather than a wider
-catch papering over one. See 'acquireRegionBeforeAuth' for the exact
-ordering, factored out so it is directly, deterministically testable
-without a real IMDS endpoint.
+catch papering over one. 'acquireRegionBeforeAuth' documents (and is
+directly, deterministically tested against) this exact ordering as a
+standalone primitive, using fake @getRegion@\/@getAuth@ actions rather
+than a real IMDS endpoint; 'safeNamedInstanceProfile' itself inlines the
+identical @getRegion@-then-@getAuth@ sequencing directly (rather than
+calling 'acquireRegionBeforeAuth' itself) purely so it can also thread
+'managedFetchAuthInBackground''s release back out as part of its own
+mandatory @(Env, IO ())@ return pair -- see the module Haddock, \"Structural
+release ownership\".
 -}
 
 {- | The exact ordering fix 'safeNamedInstanceProfile' applies to the
@@ -864,15 +925,14 @@ acquireRegionBeforeAuth env getRegion getAuth = do
 
 safeDefaultInstanceProfile ::
   (MonadIO m) =>
-  IORef (Maybe (IO ())) ->
   Env' withAuth ->
-  m Env
-safeDefaultInstanceProfile finalReleaseRef env =
+  m (Env, IO ())
+safeDefaultInstanceProfile env =
   liftIO $ do
     ls <-
       Exception.try $ metadata (manager env) (IAM (SecurityCredentials Nothing))
     case BS8.lines <$> ls of
-      Right (x : _) -> safeNamedInstanceProfile finalReleaseRef (TE.decodeUtf8 x) env
+      Right (x : _) -> safeNamedInstanceProfile (TE.decodeUtf8 x) env
       Left e -> Exception.throwIO (RetrievalError e)
       _ ->
         Exception.throwIO
@@ -883,26 +943,23 @@ safeDefaultInstanceProfile finalReleaseRef env =
 before @fetchAuthInBackground@, not after -- via 'acquireRegionBeforeAuth'
 -- and @fetchAuthInBackground@ itself is replaced with
 'managedFetchAuthInBackground', whose genuinely-awaiting release is
-recorded into @finalReleaseRef@ for 'acquireAwsEnv'\/'safeEvalConfigProfile'
-to pick up (see 'AwsEnvAcquisition'). Written only on success -- by
-construction, 'acquireRegionBeforeAuth' never runs @getAuth@ (and so never
-runs this write) unless @getRegion@ already succeeded, and this function
-as a whole only returns once both have.
+returned alongside the resolved 'Env' as a mandatory pair (see the module
+Haddock, \"Structural release ownership\"): there is no 'IORef' side
+channel here for a future change to accidentally leave unwritten -- the
+only way to obtain an 'Env' from this function at all is to also obtain
+its release in the very same value.
 -}
 safeNamedInstanceProfile ::
   (MonadIO m) =>
-  IORef (Maybe (IO ())) ->
   Text ->
   Env' withAuth ->
-  m Env
-safeNamedInstanceProfile finalReleaseRef name env@Env {manager} =
-  liftIO $ acquireRegionBeforeAuth env getRegionFromIdentity getAuth
- where
-  getAuth = do
+  m (Env, IO ())
+safeNamedInstanceProfile name env@Env {manager} =
+  liftIO $ do
+    region <- getRegionFromIdentity
     (auth, release) <- managedFetchAuthInBackground getCredentials
-    writeIORef finalReleaseRef (Just release)
-    pure auth
-
+    pure (env {auth = Identity auth, region}, release)
+ where
   getCredentials =
     Exception.try (metadata manager (IAM . SecurityCredentials $ Just name))
       >>= handleErr (eitherDecode' . LBS8.fromStrict) invalidIAMErr
@@ -923,42 +980,24 @@ safeNamedInstanceProfile finalReleaseRef name env@Env {manager} =
     InvalidIAMError
       $ mconcat ["Error parsing Instance Identity Document ", Text.pack e]
 
-{- | Run a provider action that /may/ report a genuinely-awaiting
-'managedFetchAuthInBackground' release via a fresh, single-use 'IORef' it
-is handed (exactly the @finalReleaseRef@ pattern 'safeNamedInstanceProfile'
-established), and derive the correct overall release for whatever 'Env'
-it returns via 'deriveRelease': the managed release if it wrote one, the
-naive, immediate, non-blocking '.auth'-derived 'requireChildReleased' if
-it did not /and/ the returned 'Auth' is statically non-expiring (e.g.
-'fromKeysEnv', 'ExplicitKeys' -- so a provider that can never expire is
-not required to use this at all; see 'resolveEnvironmentSource'\/'ExplicitKeys'
-in 'safeEvalConfigProfile', which ignore the ref entirely rather than
-pretend to need it), or a thrown 'ManagedReleaseInvariantViolated' if it
-did not /and/ the returned auth is a live, expiring 'Ref' -- this last
-case can only mean a provider forgot to record its managed release, and
-is never silently downgraded to the naive kill-then-bounded-poll
-fallback the way an earlier version of this function did.
-
-Used uniformly by every managed provider added to close the \"opaque
-pinned provider, kill-then-poll release\" residual scope this module's
-Haddock used to describe for 'fromContainerEnv'\/'fromAssumedRole'\/
-'fromWebIdentity(Env)'\/'fromSSO': see 'safeContainer'\/'safeContainerEnv'\/
-'safeAssumedRole'\/'safeWebIdentity'\/'safeWebIdentityEnv'\/'safeSSO' below,
-all of which are now built on 'managedFetchAuthInBackground' exactly as
-'safeNamedInstanceProfile' already was, so that /no/ provider this
-module's own production credential graph can reach still relies on the
-pinned fork's own @fetchAuthInBackground@ or this module's naive
-kill-then-bounded-poll fallback for a live, expiring credential -- and, per
-'deriveRelease', any future provider that regresses on this is a loud,
-immediate failure rather than a silent, hazardous fallback.
+{- | Every managed provider below returns its resolved 'Env' paired with
+'managedFetchAuthInBackground''s genuinely-awaiting release as a
+/mandatory/ tuple -- see the module Haddock, \"Structural release
+ownership\": there is deliberately no 'IORef' side channel a provider
+could forget to write into, the way an earlier version of this module's
+@finalReleaseRef@ plumbing allowed (caught only at
+runtime, by 'deriveRelease' reaping an orphaned worker before throwing
+'ManagedReleaseInvariantViolated'). 'deriveRelease'\/'ManagedReleaseInvariantViolated'
+remain as a defensive backstop at 'acquireAwsEnv''s own outer boundary
+(see its Haddock), where 'discoverSafely''s external @EnvNoAuth -> IO Env@
+shape -- fixed by the pinned Amazonka fork's own @newEnv@\/@runCredentialChain@
+API, not something this module controls -- still requires a single,
+final ref-based handoff; every provider reachable from that boundary now
+writes it unconditionally, from a mandatory tuple already in hand, so
+that outer 'Maybe' can in practice only ever be 'Nothing' when the
+resolved 'Auth' is statically non-expiring (never reachable with a live
+'Ref').
 -}
-withManagedRelease :: (IORef (Maybe (IO ())) -> IO Env) -> IO (Env, IO ())
-withManagedRelease act = do
-  finalReleaseRef <- newIORef Nothing
-  finalEnv <- act finalReleaseRef
-  managedRelease <- readIORef finalReleaseRef
-  release <- deriveRelease managedRelease (runIdentity finalEnv.auth)
-  pure (finalEnv, release)
 
 {- | A safe reimplementation of the pinned Amazonka fork's own
 @Amazonka.Auth.Container.fromContainer@\/@fromContainerEnv@
@@ -971,26 +1010,24 @@ dependency -- byte-for-byte identical request URL construction, response
 parsing, and error message text. The only behavioral difference is
 @fetchAuthInBackground@ itself being replaced with
 'managedFetchAuthInBackground', whose genuinely-awaiting release is
-recorded into @finalReleaseRef@ exactly as 'safeNamedInstanceProfile'
-does. There is no fallible operation after credentials are fetched (the
-pinned source's own @fromContainer@ has none either), so there is no
-region-ordering hazard here to fix the way 'safeDefaultInstanceProfile'
-had to for the instance-profile provider -- this is purely closing the
-opaque-release residual scope.
+returned alongside the resolved 'Env' as a mandatory pair, exactly as
+'safeNamedInstanceProfile' does. There is no fallible operation after
+credentials are fetched (the pinned source's own @fromContainer@ has none
+either), so there is no region-ordering hazard here to fix the way
+'safeDefaultInstanceProfile' had to for the instance-profile provider --
+this is purely closing the opaque-release residual scope.
 -}
 safeContainer ::
   (MonadIO m) =>
-  IORef (Maybe (IO ())) ->
   -- | Absolute URL
   Text ->
   Env' withAuth ->
-  m Env
-safeContainer finalReleaseRef url env =
+  m (Env, IO ())
+safeContainer url env =
   liftIO $ do
     req <- Client.parseUrlThrow $ Text.unpack url
     (auth, release) <- managedFetchAuthInBackground (renew req)
-    writeIORef finalReleaseRef (Just release)
-    pure env {auth = Identity auth}
+    pure (env {auth = Identity auth}, release)
  where
   renew :: Client.Request -> IO AuthEnv
   renew req = do
@@ -1011,6 +1048,36 @@ fork's own @fromContainerEnv@: resolves the ECS metadata URL from
 'MissingEnvError' if it is unset, exactly matching pinned behavior
 (including the documented lack of support for
 @AWS_CONTAINER_CREDENTIALS_FULL_URI@\/@AWS_CONTAINTER_AUTHORIZATION_TOKEN@).
+
+Ref-free (returns 'safeContainer''s own mandatory @(Env, IO ())@ pair
+directly) so it can be shared, unchanged, by both 'safeContainerEnv' (the
+outer, ref-based candidate 'discoverSafely' passes to
+@runCredentialChain@) and 'ConfigProfileResolvers''s @resolveEcsSource@
+field (the purely-inner @credential_source=EcsContainer@ path reached via
+'safeEvalConfigProfile') -- there is exactly one place this environment
+variable is ever read, used identically by both callers.
+-}
+resolveContainerCredentials ::
+  (MonadIO m) =>
+  Env' withAuth ->
+  m (Env, IO ())
+resolveContainerCredentials env = liftIO $ do
+  uriRel <-
+    lookupEnv "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"
+      >>= maybe
+        (Exception.throwIO $ MissingEnvError "Unable to read AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
+        pure
+  safeContainer (Text.pack $ "http://169.254.170.2" <> uriRel) env
+
+{- | This is one of 'discoverSafely''s own outer candidates, whose external
+@EnvNoAuth -> IO Env@ shape is fixed by the pinned fork's own
+@runCredentialChain@ -- so, unlike 'resolveContainerCredentials' itself,
+this still takes @finalReleaseRef@ and writes it. That write is now
+unconditional and derived directly from 'resolveContainerCredentials''s
+own mandatory return pair (never optional, never something this function
+could forget): it is the /only/ statement here that touches
+@finalReleaseRef@, immediately after the single call that can produce a
+release to record.
 -}
 safeContainerEnv ::
   (MonadIO m) =>
@@ -1018,12 +1085,9 @@ safeContainerEnv ::
   Env' withAuth ->
   m Env
 safeContainerEnv finalReleaseRef env = liftIO $ do
-  uriRel <-
-    lookupEnv "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"
-      >>= maybe
-        (Exception.throwIO $ MissingEnvError "Unable to read AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
-        pure
-  safeContainer finalReleaseRef (Text.pack $ "http://169.254.170.2" <> uriRel) env
+  (finalEnv, release) <- resolveContainerCredentials env
+  writeIORef finalReleaseRef (Just release)
+  pure finalEnv
 
 {- | A safe reimplementation of the pinned Amazonka fork's own
 @Amazonka.Auth.STS.fromAssumedRole@
@@ -1035,21 +1099,19 @@ byte-for-byte identical request construction and response field
 extraction. As with 'safeContainer', there is no fallible operation
 after credentials are fetched, so this is purely closing the
 opaque-release residual scope: @fetchAuthInBackground@ is replaced with
-'managedFetchAuthInBackground', whose release is recorded into
-@finalReleaseRef@.
+'managedFetchAuthInBackground', whose release is returned alongside the
+resolved 'Env' as a mandatory pair.
 -}
 safeAssumedRole ::
-  IORef (Maybe (IO ())) ->
   -- | Role ARN
   Text ->
   -- | Role session name
   Text ->
   Env ->
-  IO Env
-safeAssumedRole finalReleaseRef roleArn roleSessionName env = do
+  IO (Env, IO ())
+safeAssumedRole roleArn roleSessionName env = do
   (auth, release) <- managedFetchAuthInBackground getCredentials
-  writeIORef finalReleaseRef (Just release)
-  pure env {auth = Identity auth}
+  pure (env {auth = Identity auth}, release)
  where
   getCredentials = do
     let assumeRole = STS.newAssumeRole roleArn roleSessionName
@@ -1067,10 +1129,10 @@ UUID when unset, matching the C++ SDK this pinned source itself mimics),
 token-file re-read on every refresh (ignoring any subsequent environment
 variable changes, exactly as pinned), and response field extraction.
 @fetchAuthInBackground@ is replaced with 'managedFetchAuthInBackground',
-whose release is recorded into @finalReleaseRef@.
+whose release is returned alongside the resolved 'Env' as a mandatory
+pair.
 -}
 safeWebIdentity ::
-  IORef (Maybe (IO ())) ->
   -- | Path to token file
   FilePath ->
   -- | Role ARN
@@ -1078,12 +1140,11 @@ safeWebIdentity ::
   -- | Role Session Name
   Maybe Text ->
   Env' withAuth ->
-  IO Env
-safeWebIdentity finalReleaseRef tokenFile roleArn mSessionName env = do
+  IO (Env, IO ())
+safeWebIdentity tokenFile roleArn mSessionName env = do
   sessionName <- maybe (UUID.toText <$> UUID.nextRandom) pure mSessionName
   (auth, release) <- managedFetchAuthInBackground (getCredentials sessionName)
-  writeIORef finalReleaseRef (Just release)
-  pure env {auth = Identity auth}
+  pure (env {auth = Identity auth}, release)
  where
   getCredentials sessionName = do
     token <- TextIO.readFile tokenFile
@@ -1096,6 +1157,10 @@ safeWebIdentity finalReleaseRef tokenFile roleArn mSessionName env = do
 Amazonka fork's own @fromWebIdentityEnv@: resolves
 @AWS_WEB_IDENTITY_TOKEN_FILE@\/@AWS_ROLE_ARN@\/@AWS_ROLE_SESSION_NAME@,
 throwing the identical 'MissingEnvError' for the two required variables.
+
+Like 'safeContainerEnv', this is one of 'discoverSafely''s own outer
+candidates, so it still takes @finalReleaseRef@ and writes it -- again
+unconditionally, from 'safeWebIdentity''s own mandatory return pair.
 -}
 safeWebIdentityEnv ::
   IORef (Maybe (IO ())) ->
@@ -1105,7 +1170,9 @@ safeWebIdentityEnv finalReleaseRef env = do
   tokenFile <- lookupRequiredEnv "AWS_WEB_IDENTITY_TOKEN_FILE" "Unable to read token file name from AWS_WEB_IDENTITY_TOKEN_FILE"
   roleArn <- Text.pack <$> lookupRequiredEnv "AWS_ROLE_ARN" "Unable to read role ARN from AWS_ROLE_ARN"
   mSessionName <- fmap Text.pack <$> lookupNonEmptyEnv "AWS_ROLE_SESSION_NAME"
-  safeWebIdentity finalReleaseRef tokenFile roleArn mSessionName env
+  (finalEnv, release) <- safeWebIdentity tokenFile roleArn mSessionName env
+  writeIORef finalReleaseRef (Just release)
+  pure finalEnv
  where
   lookupRequiredEnv var message =
     lookupNonEmptyEnv var >>= maybe (Exception.throwIO $ MissingEnvError message) pure
@@ -1127,10 +1194,10 @@ error reclassification (a 'ServiceError'\/'TransportError' response is
 reported as 'AuthServiceError'\/'RetrievalError'; anything else as
 'OtherAuthError', exactly as pinned @errorAsAuthError@).
 @fetchAuthInBackground@ is replaced with 'managedFetchAuthInBackground',
-whose release is recorded into @finalReleaseRef@.
+whose release is returned alongside the resolved 'Env' as a mandatory
+pair.
 -}
 safeSSO ::
-  IORef (Maybe (IO ())) ->
   FilePath ->
   Region ->
   -- | Account ID
@@ -1138,11 +1205,10 @@ safeSSO ::
   -- | Role Name
   Text ->
   Env' withAuth ->
-  IO Env
-safeSSO finalReleaseRef cachedTokenFile ssoRegion accountId roleName env = do
+  IO (Env, IO ())
+safeSSO cachedTokenFile ssoRegion accountId roleName env = do
   (auth, release) <- managedFetchAuthInBackground getCredentials
-  writeIORef finalReleaseRef (Just release)
-  pure env {auth = Identity auth}
+  pure (env {auth = Identity auth}, release)
  where
   getCredentials = do
     cachedToken <- readCachedAccessToken cachedTokenFile
@@ -1230,32 +1296,37 @@ data ConfigProfileResolvers = ConfigProfileResolvers
   { resolveEnvironmentSource :: forall withAuth. Env' withAuth -> IO Env
   -- ^ @credential_source=Environment@ \/ plain env-var credentials.
   -- Never expiring ('fromKeysEnv' never calls @fetchAuthInBackground@ at
-  -- all), so this alone has no 'IORef' parameter: there is never a
-  -- managed release to report.
-  , resolveEc2Source :: forall withAuth. IORef (Maybe (IO ())) -> Env' withAuth -> IO Env
+  -- all), so this alone returns a bare 'Env', not a @(Env, IO ())@ pair:
+  -- there is never a managed release to report.
+  , resolveEc2Source :: forall withAuth. Env' withAuth -> IO (Env, IO ())
   -- ^ @credential_source=Ec2InstanceMetadata@ -- deliberately
   -- 'safeDefaultInstanceProfile', /not/ the pinned source's own
   -- @fromDefaultInstanceProfile@, which 'Amazonka.Auth.ConfigFile'
   -- reaches directly and unsafely for this exact credential source.
-  , resolveEcsSource :: forall withAuth. IORef (Maybe (IO ())) -> Env' withAuth -> IO Env
-  -- ^ @credential_source=EcsContainer@ -- 'safeContainerEnv'.
-  , resolveAssumedRole :: IORef (Maybe (IO ())) -> Text -> Env -> IO Env
+  , resolveEcsSource :: forall withAuth. Env' withAuth -> IO (Env, IO ())
+  -- ^ @credential_source=EcsContainer@ -- 'safeContainer' (not
+  -- 'safeContainerEnv': the URL is already resolved by the time this
+  -- field is reached, exactly as pinned @evalConfig@'s own
+  -- @fromContainer@ call, not @fromContainerEnv@, is used here -- see
+  -- 'resolveCredentialSourceAcquisition').
+  , resolveAssumedRole :: Text -> Env -> IO (Env, IO ())
   -- ^ @sts:AssumeRole@ onto an already-resolved source 'Env' --
   -- 'safeAssumedRole'.
-  , resolveWebIdentity :: forall withAuth. IORef (Maybe (IO ())) -> FilePath -> Text -> Maybe Text -> Env' withAuth -> IO Env
+  , resolveWebIdentity :: forall withAuth. FilePath -> Text -> Maybe Text -> Env' withAuth -> IO (Env, IO ())
   -- ^ @AssumeRoleWithWebIdentity@ -- 'safeWebIdentity'.
-  , resolveSSO :: forall withAuth. IORef (Maybe (IO ())) -> FilePath -> Region -> Text -> Text -> Env' withAuth -> IO Env
+  , resolveSSO :: forall withAuth. FilePath -> Region -> Text -> Text -> Env' withAuth -> IO (Env, IO ())
   -- ^ @AssumeRoleViaSSO@ -- 'safeSSO'.
   }
 
-{- | Every field except 'resolveEnvironmentSource' now takes an extra
-'IORef' parameter so it can report a genuinely-awaiting
-'managedFetchAuthInBackground' release (see 'withManagedRelease') exactly
-as 'resolveEc2Source' already did before this round: /every/ credential
-source capable of producing temporary\/expiring credentials -- ECS,
-@sts:AssumeRole@, web identity, and SSO, not only EC2\/IMDS -- is now a
-repository-owned managed reimplementation rather than an opaque call into
-the pinned fork's own @fetchAuthInBackground@-using functions. See each
+{- | Every field except 'resolveEnvironmentSource' returns its resolved
+'Env' paired with a genuinely-awaiting 'managedFetchAuthInBackground'
+release as a /mandatory/ tuple, not an optional 'IORef' write: /every/
+credential source capable of producing temporary\/expiring credentials --
+ECS, @sts:AssumeRole@, web identity, and SSO, not only EC2\/IMDS -- is now
+a repository-owned managed reimplementation rather than an opaque call
+into the pinned fork's own @fetchAuthInBackground@-using functions, and
+none of them can compile while silently discarding their own release --
+see the module Haddock, \"Structural release ownership\". See each
 @safe*@ function's own Haddock in this module for exactly which pinned
 source it reimplements and why.
 -}
@@ -1264,8 +1335,8 @@ productionConfigProfileResolvers =
   ConfigProfileResolvers
     { resolveEnvironmentSource = fromKeysEnv
     , resolveEc2Source = safeDefaultInstanceProfile
-    , resolveEcsSource = safeContainerEnv
-    , resolveAssumedRole = \ref roleArn -> safeAssumedRole ref roleArn "amazonka-assumed-role"
+    , resolveEcsSource = resolveContainerCredentials
+    , resolveAssumedRole = \roleArn -> safeAssumedRole roleArn "amazonka-assumed-role"
     , resolveWebIdentity = safeWebIdentity
     , resolveSSO = safeSSO
     }
@@ -1346,9 +1417,9 @@ safeEvalConfigProfile resolvers config seen profileName env =
   applyRegionOverride (Just r) acquisition =
     acquisition {awsEnvAcquisitionEnv = (awsEnvAcquisitionEnv acquisition) {region = r}}
 
-  leaf :: (IORef (Maybe (IO ())) -> IO Env) -> IO AwsEnvAcquisition
+  leaf :: IO (Env, IO ()) -> IO AwsEnvAcquisition
   leaf act = do
-    (finalEnv, release) <- withManagedRelease act
+    (finalEnv, release) <- act
     pure
       AwsEnvAcquisition
         { awsEnvAcquisitionEnv = finalEnv
@@ -1365,16 +1436,17 @@ safeEvalConfigProfile resolvers config seen profileName env =
   -- 'awsEnvAcquisitionRelease' (the correct release for that @.auth@,
   -- whether naive or 'managedFetchAuthInBackground'-derived -- see
   -- 'resolveCredentialSourceAcquisition') is appended to the accumulated
-  -- hidden-release list. @wrap@ itself is now always given a fresh
-  -- release ref (via 'leaf'\/'withManagedRelease'), since 'safeAssumedRole'
-  -- is itself a managed provider.
-  assumeRoleOnto :: IO AwsEnvAcquisition -> (IORef (Maybe (IO ())) -> Env -> IO Env) -> IO AwsEnvAcquisition
+  -- hidden-release list. @wrap@ itself now always returns its own
+  -- mandatory @(Env, IO ())@ pair directly, since 'safeAssumedRole' is
+  -- itself a managed provider (see the module Haddock, \"Structural
+  -- release ownership\") -- there is no longer any ref for it to forget.
+  assumeRoleOnto :: IO AwsEnvAcquisition -> (Env -> IO (Env, IO ())) -> IO AwsEnvAcquisition
   assumeRoleOnto acquireSource wrap = do
     sourceAcquisition <- acquireSource
     let sourceEnv = awsEnvAcquisitionEnv sourceAcquisition
         sourceRelease = awsEnvAcquisitionRelease sourceAcquisition
     ( do
-        (finalEnv, release) <- withManagedRelease (`wrap` sourceEnv)
+        (finalEnv, release) <- wrap sourceEnv
         pure
           AwsEnvAcquisition
             { awsEnvAcquisitionEnv = finalEnv
@@ -1386,7 +1458,7 @@ safeEvalConfigProfile resolvers config seen profileName env =
 
   resolveProfile :: ConfigProfile -> IO AwsEnvAcquisition
   resolveProfile = \case
-    ExplicitKeys authKeys -> leaf $ \_ref -> pure env {auth = Identity (Auth authKeys)}
+    ExplicitKeys authKeys -> leaf $ pure (env {auth = Identity (Auth authKeys)}, pure ())
     AssumeRoleFromProfile roleArn sourceProfileName
       | sourceProfileName `elem` seen ->
           Exception.throwIO
@@ -1396,14 +1468,14 @@ safeEvalConfigProfile resolvers config seen profileName env =
       | otherwise ->
           assumeRoleOnto
             (safeEvalConfigProfile resolvers config (sourceProfileName : seen) sourceProfileName env)
-            (\ref -> resolveAssumedRole resolvers ref roleArn)
+            (resolveAssumedRole resolvers roleArn)
     AssumeRoleFromCredentialSource roleArn source ->
-      assumeRoleOnto (resolveCredentialSourceAcquisition source) (\ref -> resolveAssumedRole resolvers ref roleArn)
+      assumeRoleOnto (resolveCredentialSourceAcquisition source) (resolveAssumedRole resolvers roleArn)
     AssumeRoleWithWebIdentity roleArn mSessionName tokenFile ->
-      leaf $ \ref -> resolveWebIdentity resolvers ref tokenFile roleArn mSessionName env
+      leaf $ resolveWebIdentity resolvers tokenFile roleArn mSessionName env
     AssumeRoleViaSSO startUrl ssoRegion accountId roleName -> do
       cachedTokenFile <- configPathRelative (relativeCachedTokenFile startUrl)
-      leaf $ \ref -> resolveSSO resolvers ref cachedTokenFile ssoRegion accountId roleName env
+      leaf $ resolveSSO resolvers cachedTokenFile ssoRegion accountId roleName env
 
   -- | Resolve one leaf @CredentialSource@ into a full 'AwsEnvAcquisition'
   -- (always then wrapped by 'assumeRoleOnto', per 'AssumeRoleFromCredentialSource'
@@ -1411,13 +1483,13 @@ safeEvalConfigProfile resolvers config seen profileName env =
   -- pinned config-file grammar, so this source's own @.auth@ is always
   -- about to be hidden, never the final visible one). Every source
   -- except 'Environment' (never expiring) now goes through 'leaf''s
-  -- uniform 'withManagedRelease' plumbing, exactly like every other
+  -- uniform mandatory-@(Env, IO ())@ plumbing, exactly like every other
   -- managed provider in this module.
   resolveCredentialSourceAcquisition :: CredentialSource -> IO AwsEnvAcquisition
   resolveCredentialSourceAcquisition = \case
-    Environment -> leaf (\_ref -> resolveEnvironmentSource resolvers env)
-    Ec2InstanceMetadata -> leaf (\ref -> resolveEc2Source resolvers ref env)
-    EcsContainer -> leaf (\ref -> resolveEcsSource resolvers ref env)
+    Environment -> leaf ((,pure ()) <$> resolveEnvironmentSource resolvers env)
+    Ec2InstanceMetadata -> leaf (resolveEc2Source resolvers env)
+    EcsContainer -> leaf (resolveEcsSource resolvers env)
 
 
 {- | A safe reimplementation of the pinned Amazonka fork's own
@@ -1458,7 +1530,7 @@ dynamic provider -- @sts:AssumeRole@ (direct or via @source_profile@),
 @credential_source=Ec2InstanceMetadata@ -- left @finalReleaseRef@
 permanently empty whenever the config-file provider won outright:
 'safeEvalConfigProfile' still produced a fully correct
-'awsEnvAcquisitionRelease' (via 'withManagedRelease'\/'managedFetchAuthInBackground'),
+'awsEnvAcquisitionRelease' (via 'managedFetchAuthInBackground'),
 but this function discarded it, so 'acquireAwsEnv' silently fell back to
 the naive '.auth'-derived @requireChildReleased@ -- the exact
 kill-then-bounded-poll fallback (with no stop flag, no genuinely-awaited
@@ -1788,9 +1860,31 @@ startSupervisedEnvUsing afterSpawn acquire awaitInvalidation backoff = do
       -- still masked, is guaranteed to already be in place for any
       -- exception 'restore' lets back in), but no exception can ever
       -- land in the narrower window before that handler exists.
+      --
+      -- @afterSpawn@ itself now runs *inside* the same
+      -- 'Exception.onException' as the wait, not before it: a prior
+      -- version of this function ran @afterSpawn@ between
+      -- 'spawnManagedThread' returning and 'Exception.onException' being
+      -- installed, so a genuine, synchronous exception thrown by
+      -- @afterSpawn@ itself (never possible for production's own
+      -- @'pure' ()@, but not something this exported, test-only-in-
+      -- practice parameter's type forbids either) would propagate with
+      -- no handler yet in place to cancel\/await @generationThread@ --
+      -- orphaning it exactly as the masked-gap bug this function's own
+      -- Haddock describes did, just one statement later. There is
+      -- deliberately no other way for a caller of this function to reach
+      -- @generationThread@ at all except through @cancelManagedThread@
+      -- here, so folding @afterSpawn@ into the very same protected span
+      -- as the wait closes that residual gap completely rather than only
+      -- narrowing it, without needing to hide this seam from tests that
+      -- must still drive it deterministically (see
+      -- 'AwsEnvSupervisorSpec''s own \"genuinely cancels and awaits...\"
+      -- regression, this function's only caller of a non-trivial
+      -- @afterSpawn@).
       generationThread <- spawnManagedThread runOneGeneration
-      afterSpawn
-      diag <- restore (waitManagedThread generationThread) `Exception.onException` cancelManagedThread generationThread
+      diag <-
+        (afterSpawn >> restore (waitManagedThread generationThread))
+          `Exception.onException` cancelManagedThread generationThread
       publish stateVar diag
       backoff
 
