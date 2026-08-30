@@ -155,8 +155,9 @@ can be logged or leaked by these routes.
     mise run locale-catalog:validate    # schemas, digests, provenance, deploy seam
 
 `scripts/validate-locale-catalog.py` regenerates the catalog twice, rebuilds it
-from git-tracked files only in a scratch tree and requires the same revision
-byte for byte, validates the manifest and every chunk against the v1 schemas,
+in a scratch tree whose sources are only git-tracked files (reusing the
+lockfile-installed dependencies rather than reinstalling them) and requires the
+same revision byte for byte, validates the manifest and every chunk against the v1 schemas,
 re-derives the provenance digests from the hashed sources, proves `--check`
 detects stale output, proves generation fails when a required key is removed or
 a locale file is malformed, and checks the nginx/container/build wiring.

@@ -15,8 +15,10 @@ bundles. This gate therefore checks the *generator and its deploy seam* rather
 than checked-in bytes:
 
   * the generator is deterministic across separate processes;
-  * a build from nothing but git-tracked files reproduces the same revision
-    byte for byte (so a clean clone and the deployment agree);
+  * a build whose *sources* are nothing but git-tracked files — with the
+    lockfile-installed dependencies reused rather than reinstalled —
+    reproduces the same revision byte for byte, so a clean checkout and the
+    deployment agree;
   * the manifest and every chunk validate against the committed v1 schemas;
   * every chunk is pinned by size and SHA-256, content-addressed, immutable;
   * the manifest's provenance digests really are digests of the exact source
@@ -481,8 +483,10 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
 
 
 def validate_clean_clone(tracked: set[str], manifest: dict, files: dict[str, bytes]) -> Path:
-    """Builds the catalog from git-tracked sources only, in a scratch tree, and
-    requires it to reproduce the worktree build byte for byte."""
+    """Builds the catalog in a scratch tree containing only git-tracked source
+    files (dependencies are reused from the already-installed
+    frontend/node_modules rather than reinstalled) and requires it to
+    reproduce the worktree build byte for byte."""
     clone = WORK_ROOT / "clean-clone"
     shutil.rmtree(clone, ignore_errors=True)
     for relative in sorted(tracked):
