@@ -25,9 +25,8 @@ module Api.Arkham.Lifecycle (
   acquireWithUnconditionalRelease,
   releaseAll,
   shutdownThenDeliver,
-  proceedOnlyIfPreviousShutdownSucceededReplayable,
-  proceedOnlyIfPreviousShutdownSucceededReplayableUsing,
-  publishTerminalFailureUnlessTransferred,
+  consumePreviousShutdownReplayable,
+  consumePreviousShutdownReplayableUsing,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
   ManagedThread,
@@ -36,8 +35,8 @@ module Api.Arkham.Lifecycle (
   waitManagedThread,
   cancelManagedThread,
   raceManaged_,
-  acquireThenForkTransferringOwnership,
-  acquireThenForkTransferringOwnershipUsing,
+  acquireThenForkTransferringOwnershipGuarded,
+  acquireThenForkTransferringOwnershipGuardedUsing,
 ) where
 
 import Control.Concurrent (ThreadId, forkIOWithUnmask)
@@ -55,8 +54,6 @@ import Control.Exception (
   throwTo,
   try,
  )
-import Control.Monad (unless)
-import Data.IORef (IORef, readIORef)
 import Prelude
 
 {- | Acquire a resource whose ownership transfers to the caller on
@@ -159,75 +156,48 @@ on 'Left', it is left untouched and re-thrown immediately -- every
 subsequent call sees the exact same failure immediately, without
 blocking, and without ever starting a replacement. Only on 'Right ()'
 does it 'takeMVar' (finally consuming that success, emptying the cell so
-the /next/ generation's own eventual shutdown can fill it again)
-immediately before running @onSuccess@.
+the /next/ generation's own eventual shutdown can fill it again).
 
-Deliberately does /not/ itself catch or repopulate @done@ if @onSuccess@
-then fails: an earlier version did (an unconditional @try@\/@putMVar
-done (Left err)@ around @onSuccess@), on the assumption that any
-'onSuccess' failure meant no replacement generation was ever created.
-That assumption is false for @onSuccess@'s actual production shape
-('DevelMain.hs''s @start@, built on 'acquireThenForkTransferringOwnership'):
-once its own masked acquire\/spawn\/publish transaction has durably
-recorded a new generation's handle (e.g. into a
-'Foreign.Store.Store'\/'Data.IORef.IORef'-backed restart-state cell)
-/before/ returning, that new generation is already live and its own
-eventual shutdown -- not this call -- is what must eventually fill
-@done@; a subsequent asynchronous exception landing in the narrow gap
-between that masked transaction returning and this function's own
-'mask'\/'restore' boundary would then still reach this function as an
-ordinary thrown exception, even though a replacement now genuinely
-exists. Blindly repopulating @done@ with 'Left' in that case would
-either deadlock (a blocking 'putMVar' against a cell @onSuccess@ itself
-may already have filled, e.g. via 'publishTerminalFailureUnlessTransferred')
-or -- worse -- silently claim a live, untracked-by-@done@ replacement
-generation had failed to start at all, permanently blocking every
-future restart attempt behind a stale 'Left' even though a real
-generation is still running and has not been told to stop. Managing
-@done@ on an @onSuccess@ failure is therefore entirely @onSuccess@'s own
-responsibility now (see 'publishTerminalFailureUnlessTransferred', which
-every production @onSuccess@ -- both @DevelMain.hs@'s initial \"no server
-running\" branch and its restart branch -- is wrapped in); this function
-only ever gates *readiness* to attempt @onSuccess@ at all, replayably,
-never @done@'s content afterwards.
-
-The gap between 'takeMVar' returning (consuming the previous 'Right ()')
-and @onSuccess@ beginning is closed with 'mask': only 'readMVar' (which
-does not consume anything, so being interrupted there is harmless -- the
-cell is untouched for the next caller) and @onSuccess@ itself (explicitly
-'restore'd, so it still runs interruptibly) run with asynchronous
-exceptions enabled. 'takeMVar' remains genuinely interruptible by design
-even under 'mask' (so a blocked take can still be cancelled), but nothing
-is consumed unless it actually returns; once it returns, every step up to
-@onSuccess@ beginning is masked, so there is no window in which the cell
-has been emptied but @onSuccess@ has not yet had a chance to react to a
-failure it is itself responsible for recording.
+Unlike an earlier version of this function, this is deliberately *not*
+itself a separate 'mask'\/'restore' boundary wrapping a caller-supplied
+@onSuccess@: composing two independently-scoped 'mask' calls (this one,
+restoring to call an entirely separate, later 'mask' inside what used to
+be @acquireThenForkTransferringOwnership@) left ordinary, ambient-masking
+Haskell code -- e.g. allocating a fresh ownership token -- running
+genuinely /unmasked/ in the gap between them: an asynchronous exception
+landing there, after this function's own 'takeMVar' had already consumed
+the previous 'Right ()', would propagate with @done@ left permanently
+empty, since no protection had even been installed yet to catch it. This
+function is now a plain gate with no @onSuccess@ parameter at all,
+designed to be called as the very first step /inside/
+'acquireThenForkTransferringOwnershipGuarded''s own single 'mask' (see
+its Haddock): 'readMVar'\/'takeMVar' remain genuinely interruptible even
+under an enclosing 'mask' (so a blocked wait can still be cancelled), but
+nothing is consumed unless 'readMVar' actually returns 'Right', and
+nothing this function does can itself throw except by re-throwing an
+already-recorded 'Left' -- so there is no window, masked or otherwise, in
+which this gate's own execution could lose track of @done@.
 -}
-proceedOnlyIfPreviousShutdownSucceededReplayable
-  :: MVar (Either SomeException ()) -> IO a -> IO a
-proceedOnlyIfPreviousShutdownSucceededReplayable =
-  proceedOnlyIfPreviousShutdownSucceededReplayableUsing (pure ())
+consumePreviousShutdownReplayable :: MVar (Either SomeException ()) -> IO ()
+consumePreviousShutdownReplayable = consumePreviousShutdownReplayableUsing (pure ())
 
-{- | As 'proceedOnlyIfPreviousShutdownSucceededReplayable', parameterized
-over an extra hook run (still under the enclosing 'mask', i.e. with
-asynchronous exceptions deferred) immediately after 'takeMVar' consumes
-the previous 'Right ()' and immediately before @onSuccess@ begins.
+{- | As 'consumePreviousShutdownReplayable', parameterized over an extra
+hook run immediately after 'takeMVar' consumes the previous 'Right ()'.
 Production always passes @'pure' ()@ via
-'proceedOnlyIfPreviousShutdownSucceededReplayable'; this seam exists
-purely so a test can observe (e.g. via 'Control.Exception.getMaskingState')
-that this exact window is genuinely masked, deterministically and without
-racing any real exception delivery against it.
+'consumePreviousShutdownReplayable'; this seam exists purely so a test
+can observe (e.g. via 'Control.Exception.getMaskingState', with this
+called from inside 'acquireThenForkTransferringOwnershipGuarded''s own
+'mask') that this exact window is genuinely masked, deterministically and
+without racing any real exception delivery against it.
 -}
-proceedOnlyIfPreviousShutdownSucceededReplayableUsing
-  :: IO () -> MVar (Either SomeException ()) -> IO a -> IO a
-proceedOnlyIfPreviousShutdownSucceededReplayableUsing afterConsume done onSuccess = mask $ \restore -> do
-  outcome <- restore (readMVar done)
+consumePreviousShutdownReplayableUsing :: IO () -> MVar (Either SomeException ()) -> IO ()
+consumePreviousShutdownReplayableUsing afterConsume done = do
+  outcome <- readMVar done
   case outcome of
     Left err -> throwIO err
     Right () -> do
       _ <- takeMVar done
       afterConsume
-      restore onSuccess
 
 {- | Given an already-acquired resource whose remaining lifetime is meant
 to be owned by a newly-forked child thread (which runs @body res@
@@ -487,138 +457,128 @@ raceManaged_ leftAction rightAction = mask $ \restore -> do
       (Right (), Left e) -> throwIO e
       (Right (), Right ()) -> pure ()
 
-{- | Used to wrap @app\/DevelMain.hs@'s @start@ -- both its initial \"no
-server running\" branch /and/ its restart branch (as @onSuccess@ passed
-to 'proceedOnlyIfPreviousShutdownSucceededReplayable') -- around a fresh
-@transferred@ 'IORef' created anew for each attempt, alongside
-'acquireThenForkTransferringOwnership''s own @publish@ callback (which
-@start@ must also flip to 'True', still within that same masked
-acquire\/spawn\/publish transaction, immediately once @publish@ itself
-succeeds -- e.g. @\\h -> writeIORef transferred True >> writeIORef tidRef
-(Just h)@): run @action@, and if it fails, publish that failure into
-@done@ /unless/ @transferred@ already reads 'True'.
+{- | Combines 'consumePreviousShutdownReplayable' (or @'pure' ()@ for the
+very first start, which has no previous generation to consult),
+acquiring a resource whose ownership transfers to a newly-forked child,
+and durably publishing a terminal failure into @done@ if no child was
+ever actually spawned -- as a *single* masked transaction, with exactly
+one 'Control.Exception.mask'\/@restore@ boundary (around @acquire@
+alone). Used by @app\/DevelMain.hs@'s @start@ for both its initial \"no
+server running\" branch (gate @= 'pure' ()@) and its restart branch
+(gate @= 'consumePreviousShutdownReplayable' done@), so both get
+identical protection.
 
-This is the \"explicit committed ownership token\" this module's own
-generic acquire\/spawn\/publish helper
-('acquireThenForkTransferringOwnershipUsing') cannot itself provide in
-isolation: once its own masked transaction has durably published a new
-generation's handle (so a live, running child now definitely owns
-@done@'s eventual filling, via its own finalizer\/'shutdownThenDeliver'),
-returning from that transaction's own enclosing 'Control.Exception.mask'
-back to an unmasked ambient state is still, unavoidably, a point at which
-an asynchronous exception can be delivered to /this/ (the acquiring)
-thread -- interrupting nothing about the already-published child, but
-still making @action@ as a whole appear to \"fail\" to its own caller.
-Naively treating /any/ exception escaping @action@ as proof that no child
-was ever created (the original, buggy behavior this replaces) would then
-durably publish a stale, spurious 'Left' into @done@ despite a live,
-already-tracked child still running -- permanently blocking every future
-restart attempt (which reads that stale 'Left' via
-'proceedOnlyIfPreviousShutdownSucceededReplayable' and refuses to
-proceed) even though the actual, tracked child has never been told to
-stop and eventually /will/ genuinely fill @done@ itself once it is.
+This replaces an earlier design that composed three separately-scoped
+combinators -- a gating @mask@ (this module's former
+@proceedOnlyIfPreviousShutdownSucceededReplayable@, restoring to call an
+entirely separate @onSuccess@), a wrapping @try@\/@transferred@-flag
+combinator (@publishTerminalFailureUnlessTransferred@), and
+@acquireThenForkTransferringOwnershipUsing@'s own, third, independent
+@mask@ -- glued together by ordinary, *unmasked* Haskell code in between
+(allocating a fresh ownership token, building the closure passed to the
+next combinator). An asynchronous exception landing in either of those
+unmasked gaps -- after the gate had already consumed the previous
+generation's recorded success, but strictly before the next combinator's
+own protection had even been installed -- would propagate with @done@
+left permanently empty, since nothing had yet been set up to catch it:
+every subsequent restart attempt would then block forever on
+'consumePreviousShutdownReplayable''s own 'Control.Concurrent.MVar.readMVar'
+against a cell nothing was ever going to fill again.
 
-So: if @transferred@ still reads 'False' when @action@ throws, ownership
-was never transferred to any child -- this is an ordinary acquisition\/
-spawn\/publish failure (or a cancellation strictly before publish
-committed), so this call is the one and only place that will ever fill
-@done@, and it must (via 'Control.Concurrent.MVar.tryPutMVar', so this
-can never itself block -- safe even if @action@'s own internal cleanup,
-e.g. a failed @publish@'s @cancel@ callback, already filled @done@ with a
-genuine result first). If @transferred@ reads 'True', a child now
-definitely owns @done@'s eventual filling; this call touches @done@ not
-at all, and simply re-throws, leaving @done@ correctly empty for that
-child's own eventual shutdown to fill.
-
-Without this at all, a failed\/cancelled first @start@ still leaves the
-'Foreign.Store.Store'-backed slot itself created (so the /next/
-@DevelMain.update@ call takes the \"server is already running\" branch,
-not \"no server running\"), reading that exact same, still-empty @done@
-via 'proceedOnlyIfPreviousShutdownSucceededReplayable''s own
-'Control.Concurrent.MVar.readMVar' -- which then blocks forever, since
-nothing was ever going to fill it. Publishing a terminal 'Left' whenever
-@transferred@ is still 'False' makes every subsequent restart attempt
-observe that same failure immediately, without ever risking the
-stale-'Left'-over-a-live-child hazard above.
+Folding @gate@, acquiring @res@, spawning the child, and publishing its
+handle into *one* 'mask' closes every one of those gaps completely, not
+merely narrows them: nothing between @gate@ running and @publish@
+committing is ever restored except @acquire@ itself (so @acquire@ alone
+remains genuinely interruptible, matching prior behavior exactly), and
+everything else -- allocating a token, if any; spawning; publishing --
+executes under an unbroken masked region an asynchronous exception simply
+cannot enter. This also makes the historical \"transferred ownership
+token\" this design used to need entirely unnecessary: because @publish@
+now always runs strictly inside the *same* mask as everything else (never
+crossing into a second, separately-scoped @mask@ an unmasked gap could
+sit between), the only way this function's own @try@ below can ever
+observe a 'Left' is if @publish@ itself never got the chance to durably
+commit a handle in the first place -- and if @publish@ /did/ commit (so a
+live child now exists), the only way to subsequently fail is via
+@cancel@, which (matching @DevelMain.hs@'s own @cancel@:
+@\\tid -> killThread tid >> (() \<$ readMVar done)@) itself already awaits
+that same child's own terminal delivery into @done@ before ever
+returning -- so by the time this function's own final
+'Control.Concurrent.MVar.tryPutMVar' below could run, @done@ is either
+still genuinely empty (no child ever existed) or has *already* been
+filled by that same cancelled child's own finalizer, and
+'Control.Concurrent.MVar.tryPutMVar' can never overwrite an already-full
+cell. There is therefore no remaining code path, mutation or otherwise,
+by which this function could durably publish a stale 'Left' over a live,
+untracked child: doing so would require a live child that is neither
+tracked by @done@'s own eventual filling nor ever cancelled\/awaited by
+this same transaction, which this function's own control flow does not
+admit.
 -}
-publishTerminalFailureUnlessTransferred :: IORef Bool -> MVar (Either SomeException ()) -> IO a -> IO a
-publishTerminalFailureUnlessTransferred transferred done action =
-  action `catchAndPublish` \err -> do
-    committed <- readIORef transferred
-    -- 'mask_' (matching 'shutdownThenDeliver''s own identical guard):
-    -- without it, a second asynchronous exception landing in the
-    -- narrow window between catching @err@ and 'tryPutMVar' actually
-    -- completing could interrupt this non-blocking write itself,
-    -- leaving @done@ permanently empty -- recreating exactly the
-    -- deadlock this function exists to prevent, just one layer
-    -- earlier (before any child was ever spawned to eventually fill
-    -- it via 'shutdownThenDeliver').
-    unless committed $ mask_ (tryPutMVar done (Left err) >> pure ())
-    throwIO err
- where
-  catchAndPublish act handler = do
-    outcome <- try @SomeException act
-    either handler pure outcome
-
-{- | As 'forkTransferringOwnershipUsing', but additionally owns
-*acquiring* @res@ itself, rather than accepting an already-acquired
-value: @acquire@ runs via @restore@ (so it remains fully interruptible --
-if it throws, or this thread is asynchronously cancelled while it is
-still in flight, there is nothing yet to release), but the very instant
-it returns, this thread is already back in a masked state. This closes
-the exact gap an ordinary @res <- acquire@ bind followed by a *separate*
-call to 'forkTransferringOwnership' leaves open: an asynchronous
-exception landing in between those two statements -- after @acquire@ has
-already committed to returning ownership on success, but before this
-function's own protection has begun -- would otherwise leak @res@ with
-nothing left to release it. @DevelMain.hs@'s @start@ calls this directly
-around 'Application.getApplicationRepl' for exactly this reason: there is
-no intervening bind between acquiring the whole @(Int, App, Application)@
-tuple and this function taking over its ownership.
-
-Also accepts @publish@, run masked immediately after @spawn@ succeeds and
-strictly before this function returns to its own caller: used to durably
-record the spawned child's handle (e.g. into a
-'Foreign.Store.Store'\/'Data.IORef.IORef'-backed restart-state cell)
-before any asynchronous exception delivered to *this* (the acquiring)
-thread -- once it eventually returns to an unmasked context -- could ever
-have a chance to lose it. If @publish@ itself throws, @cancel@ is used to
-cancel the just-spawned child and wait for it to genuinely finish (which,
-by 'forkTransferringOwnershipUsing''s own contract, always runs
-@finalize@ -- typically releasing @res@ -- exactly once first) before
-that failure propagates, so a failed publish can never leave an
-untracked, still-running child (nor a leaked @res@) behind.
--}
-acquireThenForkTransferringOwnershipUsing
-  :: (((forall a. IO a -> IO a) -> IO ()) -> IO handle)
+acquireThenForkTransferringOwnershipGuardedUsing
+  :: IO ()
+  -- ^ gate: run first, still under this function's own single 'mask'.
+  -- Typically 'consumePreviousShutdownReplayable' @done@ (or
+  -- 'consumePreviousShutdownReplayableUsing' for the test-only masking
+  -- hook), or @'pure' ()@ when there is no previous generation to
+  -- consult at all. A 'Left' recorded by a previous failed shutdown
+  -- propagates immediately from here, untouched: no child has been
+  -- created yet in this attempt, so there is nothing for this function
+  -- to publish on its own behalf.
+  -> (((forall a. IO a -> IO a) -> IO ()) -> IO handle)
+  -- ^ spawn: stands in for 'Control.Concurrent.forkIOWithUnmask' -- see
+  -- 'forkTransferringOwnershipUsing' for why a test substitute matters.
+  -> MVar (Either SomeException ())
+  -- ^ done: filled with 'Left' here only if no child was ever spawned;
+  -- otherwise left for that child's own eventual 'shutdownThenDeliver'.
   -> IO res
   -> (res -> IO ())
   -> (res -> IO b)
   -> (res -> Either SomeException b -> IO ())
   -> (handle -> IO ())
   -- ^ cancel: cancel the spawned child and wait for it to have
-  -- genuinely, synchronously finished -- used only if @publish@ itself
-  -- fails.
+  -- genuinely, synchronously finished (and, in production, for @done@
+  -- to have been filled by its finalizer) -- used only if @publish@
+  -- itself fails.
   -> (handle -> IO ())
   -- ^ publish: durably record @handle@ before this function returns.
   -> IO handle
-acquireThenForkTransferringOwnershipUsing spawn acquire release body finalize cancel publish =
+acquireThenForkTransferringOwnershipGuardedUsing gate spawn done acquire release body finalize cancel publish =
   mask $ \restore -> do
-    res <- restore acquire
-    handle <-
-      spawn (\unmask -> try (unmask (body res)) >>= \outcome -> mask_ (finalize res outcome))
-        `onException` release res
-    publish handle `onException` cancel handle
-    pure handle
+    gate
+    outcome <- try @SomeException do
+      res <- restore acquire
+      handle <-
+        spawn (\unmask -> try (unmask (body res)) >>= \o -> mask_ (finalize res o))
+          `onException` release res
+      publish handle `onException` cancel handle
+      pure handle
+    case outcome of
+      Right handle -> pure handle
+      Left err -> do
+        -- 'tryPutMVar' never overwrites an already-full cell (see this
+        -- function's own Haddock): if @cancel@ above already delivered
+        -- a cancelled child's own terminal result into @done@, this is
+        -- a harmless no-op against an already-filled cell; if no child
+        -- was ever spawned, this is the one and only place that will
+        -- ever fill it. 'mask_' matches 'shutdownThenDeliver''s own
+        -- identical guard: without it, a second asynchronous exception
+        -- landing in the narrow window between catching @err@ and
+        -- 'tryPutMVar' actually completing could interrupt this
+        -- non-blocking write itself.
+        _ <- mask_ (tryPutMVar done (Left err))
+        throwIO err
 
--- | 'acquireThenForkTransferringOwnershipUsing', fixed to production's
--- 'Control.Concurrent.forkIOWithUnmask'.
-acquireThenForkTransferringOwnership
-  :: IO res
+-- | 'acquireThenForkTransferringOwnershipGuardedUsing', fixed to
+-- production's 'Control.Concurrent.forkIOWithUnmask'.
+acquireThenForkTransferringOwnershipGuarded
+  :: IO ()
+  -> MVar (Either SomeException ())
+  -> IO res
   -> (res -> IO ())
   -> (res -> IO b)
   -> (res -> Either SomeException b -> IO ())
   -> (ThreadId -> IO ())
   -> (ThreadId -> IO ())
   -> IO ThreadId
-acquireThenForkTransferringOwnership = acquireThenForkTransferringOwnershipUsing forkIOWithUnmask
+acquireThenForkTransferringOwnershipGuarded gate = acquireThenForkTransferringOwnershipGuardedUsing gate forkIOWithUnmask

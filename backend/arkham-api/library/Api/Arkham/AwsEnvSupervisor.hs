@@ -151,6 +151,7 @@ module Api.Arkham.AwsEnvSupervisor (
   SupervisedEnvState (..),
   SupervisedEnv,
   startSupervisedEnv,
+  startSupervisedEnvUsing,
   readSupervisedEnv,
   SupervisorStopOutcome (..),
   stopSupervisedEnv,
@@ -387,17 +388,22 @@ into the 'IORef' it was handed for exactly that purpose (see
 in 'productionConfigProfileResolvers'\/'discoverSafely' is already audited
 to always record one for any 'Ref' it can produce -- but if one ever
 regresses (or a future provider is added without doing so), silently
-falling back to the naive, un-awaited 'requireChildReleased' kill-then-
-bounded-poll release for a live background refresh thread is exactly the
-class of bug this whole module exists to eliminate. This carries only a
-bare 'ThreadId' (never any credential\/request data), so it is always safe
-to surface via the ordinary \"an unanticipated exception escaping
-@acquire@ terminates the supervisor\" path 'startSupervisedEnv' already
-documents -- there is deliberately no silent \"guess a release and carry
-on\" fallback for this case: an unmanaged, un-awaited live 'Ref' is never
-survivable, so the whole generation (and, via 'startSupervisedEnv', the
-supervisor itself) must instead fail loudly rather than pretend to be
-safe.
+carrying on as if a managed release existed for a live background refresh
+thread is exactly the class of bug this whole module exists to eliminate.
+This carries only a bare 'ThreadId' (never any credential\/request data),
+so it is always safe to surface via the ordinary \"an unanticipated
+exception escaping @acquire@ terminates the supervisor\" path
+'startSupervisedEnv' already documents -- there is deliberately no silent
+\"guess a release and carry on\" fallback for this case: any generation
+that reaches here is always failed loudly rather than pretended to be
+safe. Unlike an earlier version of this exception, 'deriveRelease' itself
+now reaps the orphaned worker ('requireChildReleased') /before/ this is
+ever thrown -- see its own Haddock -- so a caller catching this (or
+unwinding through 'startSupervisedEnv') can rely on the offending thread
+already being genuinely terminated, never merely \"about to be\", closing
+the HIGH-severity finding that a caller releasing further dependencies
+(e.g. an assume-role chain's own source credentials) immediately after
+this propagates could otherwise race a still-live orphaned child.
 -}
 newtype ManagedReleaseInvariantViolated = ManagedReleaseInvariantViolated ThreadId
   deriving stock (Show)
@@ -420,15 +426,28 @@ structurally, not by convention:
 * No recorded release, but @authValue@ is 'Ref' (a live, expiring,
   background-refreshing credential): this can only mean some provider
   forgot to record its managed release. There is no safe derivation from
-  '.auth' alone here -- 'requireChildReleased' would silently reach for
-  the un-awaited kill-then-bounded-poll fallback against a thread nothing
-  actually tracked reaching this point -- so this throws
-  'ManagedReleaseInvariantViolated' instead of ever calling it.
+  '.auth' alone here, but the leaked worker itself is not a mystery --
+  it is exactly the same 'Ref' this function already has in hand, and
+  'requireChildReleased' (kill it, then genuinely await its terminal
+  'ThreadStatus') is a perfectly ordinary, safe way to reap it even
+  though nothing else was ever going to. Reaping it /before/ throwing
+  'ManagedReleaseInvariantViolated' -- rather than leaving it alive and
+  merely throwing -- closes the HIGH-severity finding that a caller
+  unwinding an assume-role\/nested-provider chain around this failure
+  (e.g. releasing a parent 'Auth'\/'Env' the leaked child's own refresh
+  loop was still reading from) could otherwise release those source
+  dependencies while the orphaned worker was still running: by the time
+  any exception from this function ever reaches such a caller, the
+  worker is provably already terminated (or, if reaping itself times
+  out, 'ChildReleaseTimedOutException' -- a strictly more urgent signal
+  than the invariant violation -- propagates instead, exactly as it
+  would from any other genuine 'requireChildReleased' timeout elsewhere
+  in this module).
 -}
 deriveRelease :: Maybe (IO ()) -> Auth -> IO (IO ())
 deriveRelease (Just release) _ = pure release
 deriveRelease Nothing authValue@(Auth _) = pure (requireChildReleased authValue)
-deriveRelease Nothing (Ref tid _) = Exception.throwIO (ManagedReleaseInvariantViolated tid)
+deriveRelease Nothing r@(Ref tid _) = requireChildReleased r >> Exception.throwIO (ManagedReleaseInvariantViolated tid)
 
 -- | Bounded poll for a 'ThreadId' to reach a genuinely terminal
 -- 'ThreadStatus' ('ThreadFinished' or 'ThreadDied'). See
@@ -1689,7 +1708,47 @@ startSupervisedEnv
   -- ^ backoff between a failed\/invalidated generation and the next
   -- attempt.
   -> IO (SupervisedEnv env)
-startSupervisedEnv acquire awaitInvalidation backoff = do
+startSupervisedEnv = startSupervisedEnvUsing (pure ())
+
+{- | As 'startSupervisedEnv', parameterized over an extra test-only seam
+run by @loopOnce@ immediately after @generationThread@ is spawned and
+strictly before this dispatcher @restore@s back to an interruptible wait
+around it. Production always passes @'pure' ()@ via 'startSupervisedEnv';
+this seam exists purely so a regression test can deterministically pause
+the dispatcher /exactly/ inside the masked span the HIGH-severity
+\"unmasked between spawn and handler-install\" fix closes (see
+'startSupervisedEnv''s own Haddock, \"'loopOnce' itself runs entirely
+unmasked...\"), rather than racing a real exception against a window only
+ever a few instructions wide.
+
+A test seam suitable for this must itself never rely on any operation
+that remains interruptible even under 'Control.Exception.mask' (e.g.
+'Control.Concurrent.MVar.MVar'\/'Control.Concurrent.threadDelay'\/STM's
+@retry@) -- doing so would reopen exactly the escape valve this mask
+exists to close, defeating the point of testing it. A busy-spin on a
+plain 'Data.IORef.IORef' is genuinely safe here specifically /because/ it
+never blocks on any such primitive: GHC's async-exception delivery to a
+masked thread is deferred regardless of how long it busy-spins, so a test
+driving this seam can hold the dispatcher here for an arbitrary, tester
+-controlled duration (verifying, from the outside, that the paused
+generation thread is still alive and that a concurrent
+'stopSupervisedEnv'\/'cancelManagedThread' targeting this dispatcher
+genuinely cannot proceed past it) with an absolute, zero-probability
+guarantee against a false pass -- and, symmetrically, a mutated
+(accidentally unmasked) version of this same span would almost
+-instantly lose the busy-spinning thread to the injected cancellation
+instead, at ordinary allocation\/heap-check points, making a mutation
+failure certain rather than merely likely.
+-}
+startSupervisedEnvUsing
+  :: IO ()
+  -- ^ afterSpawn: the test-only seam described above. @'pure' ()@ in
+  -- production.
+  -> IO (Either AwsAuthErrorDiagnostic (env, IO ()))
+  -> (env -> IO AwsAuthErrorDiagnostic)
+  -> IO ()
+  -> IO (SupervisedEnv env)
+startSupervisedEnvUsing afterSpawn acquire awaitInvalidation backoff = do
   stateVar <- newTVarIO SupervisedEnvInitializing
   supervisorThread <- spawnManagedThread (supervise stateVar)
   pure SupervisedEnv {supervisedEnvStateVar = stateVar, supervisedEnvThread = supervisorThread}
@@ -1730,6 +1789,7 @@ startSupervisedEnv acquire awaitInvalidation backoff = do
       -- exception 'restore' lets back in), but no exception can ever
       -- land in the narrower window before that handler exists.
       generationThread <- spawnManagedThread runOneGeneration
+      afterSpawn
       diag <- restore (waitManagedThread generationThread) `Exception.onException` cancelManagedThread generationThread
       publish stateVar diag
       backoff

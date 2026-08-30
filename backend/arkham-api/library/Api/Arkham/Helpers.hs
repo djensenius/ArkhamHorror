@@ -17,7 +17,7 @@ import Arkham.Random
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
 import Control.Concurrent.MVar qualified as MVar
-import Control.Exception (throwIO, try)
+import Control.Exception (throwIO)
 import Control.Lens hiding (from)
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow)
 import Control.Monad.Random (MonadRandom (..), StdGen)
@@ -383,7 +383,17 @@ getRedisRoomCounts = do
     WebSocketBroker -> pure Nothing
     RedisBroker conn _ -> do
       now <- liftIO currentEpoch
-      result <- liftIO $ try @SomeException $ runRedis conn do
+      -- 'UE.tryAny' (not 'Control.Exception.try' \@'SomeException'): this
+      -- is reachable from an admin request handler's own Warp
+      -- request-worker thread, which its caller can legitimately
+      -- cancel (e.g. a disconnected admin client). Catching that
+      -- cancellation here and falling through to the @Just Map.empty@
+      -- "Redis hiccup" branch below would make a genuine cancellation
+      -- masquerade as a successful, merely-empty result instead of
+      -- actually terminating the request thread. 'UE.tryAny' only ever
+      -- catches genuinely synchronous exceptions (a real Redis\/network
+      -- failure); any asynchronous exception propagates unchanged.
+      result <- liftIO $ UE.tryAny $ runRedis conn do
         countsR <- hgetall roomsHashKey
         seenR <- hgetall roomsSeenHashKey
         pure (countsR, seenR)

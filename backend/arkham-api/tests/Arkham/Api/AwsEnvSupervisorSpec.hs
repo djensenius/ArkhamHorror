@@ -29,6 +29,7 @@ import Api.Arkham.AwsEnvSupervisor (
   safeEvalConfigProfile,
   safeFileEnv,
   startSupervisedEnv,
+  startSupervisedEnvUsing,
   stopDemandDrivenSupervisor,
   stopSupervisedEnv,
  )
@@ -261,13 +262,25 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
   failure rather than something a caller could ever observe \"working\"
   via the eliminated fallback.
 
+  This also proves the follow-up HIGH-severity fix: production itself --
+  not this test -- must already have reaped (killed and genuinely
+  awaited) the orphaned child /before/ this exception ever escapes
+  'safeEvalConfigProfile', so that any caller unwinding through this
+  failure (e.g. releasing further source dependencies in an assume-role
+  chain) can never race a still-live, untracked worker. Unlike an earlier
+  version of this test, nothing here manually 'killThread's the orphaned
+  thread afterward: doing so would only mask a regression back to the
+  pre-fix \"throw without reaping\" behavior by cleaning up after it. The
+  thread's own 'GHC.Conc.Sync.threadStatus' is asserted terminal instead,
+  directly observing that production already finished the reap.
+
   Mutation check: reverting 'Api.Arkham.AwsEnvSupervisor.deriveRelease'
-  to its pre-fix @fromMaybe (requireChildReleased authValue) managedRelease@
-  fallback makes this test fail: 'safeEvalConfigProfile' would return
-  successfully instead of throwing, and the orphaned child spawned below
-  would leak (never killed by anything this module tracks).
+  to throw 'ManagedReleaseInvariantViolated' without first calling
+  'Api.Arkham.AwsEnvSupervisor.requireChildReleased' makes this test
+  fail: the orphaned child's 'GHC.Conc.Sync.threadStatus' would still
+  read as running, not terminal, by the time this exception is caught.
   -}
-  it "a resolver that returns an expiring Ref without ever populating the managed-release ref is a loud, immediate, typed failure -- never a silent fallback" do
+  it "a resolver that returns an expiring Ref without ever populating the managed-release ref is a loud, immediate, typed failure -- never a silent fallback -- and production has already reaped the orphaned worker before the exception escapes" do
     envNoAuth <- newEnvNoAuth
     let config = HashMap.fromList [("default", profileMap [("role_arn", "arn:aws:iam::1:role/bare"), ("credential_source", "EcsContainer")])]
     bareThreadIdRef <- newIORef Nothing
@@ -288,12 +301,12 @@ configProfileGraphSpec = describe "safeEvalConfigProfile (config-file credential
         Just bareThreadId <- readIORef bareThreadIdRef
         tid `shouldBe` bareThreadId
       Right _ -> expectationFailure "expected a bare expiring resolver to be a loud ManagedReleaseInvariantViolated failure, not a silent success"
-    -- Clean up the orphaned test-fixture thread itself (this module's
-    -- own release protocol correctly never tracked it -- that is
-    -- precisely the point -- so this test must reap it directly, not
-    -- via any production release path).
+    -- Production must have already reaped this thread (killed it and
+    -- genuinely awaited its terminal status) before the exception above
+    -- was ever thrown -- this test performs no cleanup of its own.
     Just bareThreadId <- readIORef bareThreadIdRef
-    killThread bareThreadId
+    status <- threadStatus bareThreadId
+    status `shouldSatisfy` \s -> s == ThreadFinished || s == ThreadDied
 
   {- | A two-level @source_profile@ chain (@parent@ assumes a role from
   @middle@, which itself assumes a role from @leaf@) with every
@@ -1287,35 +1300,61 @@ spec = describe "AWS Env supervisor" do
     in that exact gap could propagate out of 'loopOnce' unhandled,
     orphaning @generationThread@ (and everything it in turn owns) with
     nothing left to cancel\/await it -- 'forever loopOnce''s own enclosing
-    'finally' only ever publishes 'AwsAuthSupervisorTerminated', which
-    (as this very test's setup proves) is published identically whether
-    or not the generation thread was actually cancelled, since an
-    unhandled exception escaping @loopOnce@ still terminates the
-    @forever loopOnce@ dispatcher and runs that outer 'finally' either
-    way. A prior version of this suite only asserted the published
-    terminal state here, which cannot distinguish the fixed design from
-    the bug: this test additionally captures @generationThread@'s own
-    'Control.Concurrent.ThreadId' (via 'myThreadId' called directly from
-    inside @acquire@ itself, which always runs on that generation's own
-    dedicated thread) and proves it is genuinely, provably terminated --
-    not merely that some terminal state was published -- after
-    'stopSupervisedEnv' returns, even though @acquire@ here never returns
-    on its own (so the only way the generation thread can die is via
-    'loopOnce''s 'Exception.onException'-driven cancel\/await).
+    'finally' only ever publishes 'AwsAuthSupervisorTerminated', which is
+    published identically whether or not the generation thread was
+    actually cancelled, since an unhandled exception escaping @loopOnce@
+    still terminates the @forever loopOnce@ dispatcher and runs that outer
+    'finally' either way.
+
+    Unlike a prior version of this test (which only synchronized against
+    the generation thread's own @myThreadId >>= putMVar@ signal -- itself
+    racing independently against the *dispatcher's* internal
+    spawn/mask/handler-install progress, not a true seam at the exact gap
+    under test, so a reverted mutation there only failed \"an observable
+    fraction of the time\"), this drives 'startSupervisedEnvUsing''s own
+    injected seam directly: @afterSpawn@ busy-spins on a plain 'Data.IORef.IORef'
+    (deliberately not any operation that remains interruptible even under
+    'Control.Exception.mask', which would reopen the very escape valve
+    this proof needs closed), using 'Data.IORef.atomicWriteIORef'\/'Data.IORef.atomicModifyIORef''
+    (never a plain, unfenced 'Data.IORef.writeIORef'\/'Data.IORef.readIORef' pair) on both the
+    writing (this test's own main thread and the release below) and
+    reading (the spinning dispatcher thread) sides -- this test suite
+    links @-threaded -with-rtsopts=-N@ (see @package.yaml@), so the two
+    genuinely run on different capabilities\/OS threads, and a plain
+    'Data.IORef.IORef' gives no memory-visibility guarantee across them: an
+    un-fenced write can be invisible to a concurrently-spinning reader
+    indefinitely, turning this into a real, silent deadlock rather than a
+    fast, deterministic pass\/fail -- until this test releases it, letting the
+    test deterministically confirm the dispatcher is paused /exactly/
+    inside the masked span, then attempt a concurrent 'stopSupervisedEnv'
+    against it, and only then release the seam -- with zero dependency on
+    scheduler timing for either the \"paused there\" observation or the
+    eventual \"genuinely cancelled\" proof.
 
     Mutation check: reverting 'loopOnce' to mask only around
     'spawnManagedThread' itself (restoring before installing
-    'Exception.onException', re-introducing the gap) makes this
-    generation thread's 'GHC.Conc.Sync.threadStatus' remain live
-    (indistinguishable from 'ThreadRunning'\/blocked, never terminated) an
-    observable fraction of the time this test runs, since a 'ThreadKilled'
-    landing in that reintroduced gap now propagates straight out of
-    'loopOnce' without ever cancelling @generationThread@.
+    'Exception.onException', re-introducing the gap) makes this test fail
+    deterministically, every run: the busy-spinning @afterSpawn@ seam
+    would then run genuinely unmasked, so the concurrent
+    'stopSupervisedEnv''s cancellation is delivered near-instantly instead
+    of being deferred, propagating straight out of 'loopOnce' without ever
+    cancelling @generationThread@ -- leaving its
+    'GHC.Conc.Sync.threadStatus' permanently un-terminated by the time
+    this test's final check runs, rather than merely \"sometimes\".
     -}
-    it "genuinely cancels and awaits the in-flight generation's own dedicated thread when stopped while still Initializing, not merely publishing a terminal state that could equally result from an orphaned generation" do
+    it "genuinely cancels and awaits the in-flight generation's own dedicated thread when stopped while the dispatcher is deterministically paused inside its own masked spawn-to-handler-install window" do
       generationTidVar <- newEmptyMVar
+      reachedSeamRef <- newIORef False
+      releaseSeamRef <- newIORef False
+      let afterSpawn = do
+            atomicWriteIORef reachedSeamRef True
+            let spin = do
+                  released <- atomicModifyIORef' releaseSeamRef (\r -> (r, r))
+                  if released then pure () else spin
+            spin
       sup <-
-        startSupervisedEnv
+        startSupervisedEnvUsing
+          afterSpawn
           ( withRelease
               noRelease
               ( do
@@ -1327,8 +1366,35 @@ spec = describe "AWS Env supervisor" do
           neverInvalidate
           (pure ())
       generationTid <- takeMVar generationTidVar
-      readSupervisedEnv sup `shouldReturn` SupervisedEnvInitializing
-      stopSupervisedEnv sup
+      -- Deterministically wait until the dispatcher is confirmed paused
+      -- exactly at the injected seam -- inside its own single 'mask',
+      -- strictly after spawning @generationThread@ and strictly before
+      -- restoring to an interruptible wait around it.
+      let waitReached = do
+            reached <- atomicModifyIORef' reachedSeamRef (\r -> (r, r))
+            if reached then pure () else threadDelay 1000 >> waitReached
+      waitReached
+      -- Ask the supervisor to stop while the dispatcher is provably
+      -- paused there. A correct, genuinely masked dispatcher cannot
+      -- possibly act on this yet.
+      stopResultVar <- newEmptyMVar
+      _ <- forkIO (stopSupervisedEnv sup >>= putMVar stopResultVar)
+      -- Brief and bounded -- not itself part of the proof, merely gives
+      -- the forked 'stopSupervisedEnv' call above a chance to actually
+      -- reach its own cancellation attempt before the check below.
+      threadDelay (50 * 1000)
+      -- The generation thread must still be alive: for the fixed,
+      -- genuinely masked dispatcher, the seam cannot yet have been
+      -- interrupted, so 'loopOnce' cannot yet have reached (let alone
+      -- completed) its own cancel/await of @generationThread@.
+      genStatusWhileParked <- threadStatus generationTid
+      genStatusWhileParked `shouldSatisfy` (not . isTerminatedStatus)
+      -- Release the seam: only now can the dispatcher (if genuinely
+      -- masked) restore to its interruptible wait, observe the pending
+      -- cancellation, and cancel/await the generation before
+      -- 'stopSupervisedEnv' is allowed to return.
+      atomicWriteIORef releaseSeamRef True
+      _ <- takeMVar stopResultVar
       readSupervisedEnv sup `shouldReturn` SupervisedEnvUnavailable AwsAuthSupervisorTerminated
       status <- waitUntilTerminated generationTid
       status `shouldSatisfy` isTerminatedStatus

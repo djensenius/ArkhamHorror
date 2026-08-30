@@ -37,9 +37,8 @@ This option provides significantly faster code reload compared to
 module DevelMain where
 
 import Api.Arkham.Lifecycle (
-  acquireThenForkTransferringOwnership,
-  proceedOnlyIfPreviousShutdownSucceededReplayable,
-  publishTerminalFailureUnlessTransferred,
+  acquireThenForkTransferringOwnershipGuarded,
+  consumePreviousShutdownReplayable,
   shutdownThenDeliver,
  )
 import Application (getApplicationRepl, shutdownApp)
@@ -65,19 +64,21 @@ update = do
       done <- storeAction doneStore newEmptyMVar
       tidRef <- storeAction (Store tidStoreNum) (newIORef Nothing)
       -- 'start' (see its own Haddock) always durably manages @done@ on
-      -- its own -- via 'publishTerminalFailureUnlessTransferred', wrapped
-      -- inside 'start' around a fresh @transferred@ token for this very
-      -- attempt -- whether it fails before ever spawning a child (an
+      -- its own -- via 'acquireThenForkTransferringOwnershipGuarded''s
+      -- own single 'Control.Exception.mask', not a separately-composed
+      -- wrapper -- whether it fails before ever spawning a child (an
       -- ordinary acquisition\/spawn failure on this very first
       -- generation, with no child ever created to otherwise fill @done@)
       -- or after one is already durably tracked. Without that, every
       -- /subsequent/ 'update' call would take the \"server is already
       -- running\" branch below and either block forever on
-      -- 'proceedOnlyIfPreviousShutdownSucceededReplayable''s own
+      -- 'consumePreviousShutdownReplayable''s own
       -- 'Control.Concurrent.MVar.readMVar' against a cell nothing was
       -- ever going to fill, or (the subtler hazard) observe a stale
-      -- failure over a still-live, untracked-by-@done@ child.
-      start tidRef done
+      -- failure over a still-live, untracked-by-@done@ child. There is
+      -- no previous generation to consult for this very first start, so
+      -- @gate@ here is simply @'pure' ()@.
+      start (pure ()) tidRef done
     -- server is already running
     Just tidStore -> withStore tidStore (`restartAppInNewThread` doneStore)
  where
@@ -108,30 +109,32 @@ update = do
   -- never consumed here, so every subsequent restart attempt observes
   -- the exact same failure immediately rather than blocking forever on
   -- an already-emptied one-shot 'MVar' -- see
-  -- 'proceedOnlyIfPreviousShutdownSucceededReplayable'. @tidRef@ itself
-  -- is never cleared to 'Nothing' here: 'start' (via
-  -- 'acquireThenForkTransferringOwnership''s @publish@ callback) always
-  -- overwrites it with the new generation's 'ThreadId' before this
-  -- function's own caller (GHCi) could ever observe a stale one, and
-  -- 'proceedOnlyIfPreviousShutdownSucceededReplayable' guarantees that
-  -- overwrite is only even attempted once the previous shutdown
-  -- genuinely succeeded. Managing @done@ if 'start' itself then fails is
-  -- 'start''s own responsibility (see its Haddock), not
-  -- 'proceedOnlyIfPreviousShutdownSucceededReplayable''s.
+  -- 'consumePreviousShutdownReplayable'. @tidRef@ itself is never
+  -- cleared to 'Nothing' here: 'start' (via
+  -- 'acquireThenForkTransferringOwnershipGuarded''s @publish@ callback)
+  -- always overwrites it with the new generation's 'ThreadId' before
+  -- this function's own caller (GHCi) could ever observe a stale one,
+  -- and 'consumePreviousShutdownReplayable' (passed to 'start' as its
+  -- @gate@, run as the very first step inside 'start''s own single
+  -- 'mask') guarantees that overwrite is only even attempted once the
+  -- previous shutdown genuinely succeeded. Managing @done@ if 'start'
+  -- itself then fails is 'start''s own responsibility (see its
+  -- Haddock), not 'consumePreviousShutdownReplayable''s.
   restartAppInNewThread :: IORef (Maybe ThreadId) -> Store (MVar (Either SomeException ())) -> IO ()
   restartAppInNewThread tidRef doneStoreRef = do
     done <- readStore doneStoreRef
     mtid <- readIORef tidRef
     maybe (pure ()) killThread mtid
-    proceedOnlyIfPreviousShutdownSucceededReplayable done (start tidRef done)
+    start (consumePreviousShutdownReplayable done) tidRef done
 
   {- | Start the server in a separate thread, and durably publish its
   'ThreadId' into @tidRef@ before returning. Used identically for the
-  very first generation ('update''s \"no server running\" branch) and
-  every replacement ('restartAppInNewThread'), so both paths get the
-  exact same failure\/ownership handling.
+  very first generation ('update''s \"no server running\" branch, with
+  @gate = 'pure' ()@) and every replacement ('restartAppInNewThread',
+  with @gate = 'consumePreviousShutdownReplayable' done@), so both paths
+  get the exact same failure\/ownership handling.
 
-  Uses 'acquireThenForkTransferringOwnership' rather than a plain
+  Uses 'acquireThenForkTransferringOwnershipGuarded' rather than a plain
   @(port, site, app) <- getApplicationRepl@ bind followed by a
   /separate/ ownership-transfer call: that would leave a genuine gap
   between 'Application.getApplicationRepl' returning an already-owned
@@ -140,69 +143,62 @@ update = do
   'Control.Concurrent.forkIOWithUnmask' itself throwing, however rare)
   would leak the returned @App@ (and its AWS Env supervisor), since
   nothing would yet own its eventual 'Application.shutdownApp'.
-  'acquireThenForkTransferringOwnership' instead masks from *before*
-  'Application.getApplicationRepl' is even called through the child
-  being definitely spawned, so there is no such gap: this thread is
-  already back in a masked state the very instant acquisition returns.
+  'acquireThenForkTransferringOwnershipGuarded' instead masks from
+  *before* @gate@ itself even runs, through
+  'Application.getApplicationRepl' being called, through the child being
+  definitely spawned and its 'ThreadId' durably published, all as one
+  single transaction -- so there is no such gap anywhere in this
+  sequence, and (unlike an earlier version of this function) no
+  additional @transferred@ token is needed either: see
+  'acquireThenForkTransferringOwnershipGuarded''s own Haddock for exactly
+  why folding everything into one 'mask' makes that token structurally
+  redundant rather than merely superfluous.
 
   The @publish@ callback runs -- still masked -- immediately after the
-  child is spawned and strictly before 'acquireThenForkTransferringOwnership'
-  returns to this function: without this, an asynchronous exception
-  landing between the child being spawned and a *separate*, subsequent
-  @writeIORef@ elsewhere could leave the freshly spawned child (already
-  running Warp) permanently untracked -- no future 'update'\/'shutdown'
-  call could ever find its 'ThreadId' to kill it. It does two writes,
-  both still masked and in this order: first @writeIORef transferred
-  True@ (see 'publishTerminalFailureUnlessTransferred' below), then
-  @writeIORef tidRef (Just h)@. If @publish@ itself somehow throws (only
+  child is spawned and strictly before
+  'acquireThenForkTransferringOwnershipGuarded' returns to this function:
+  without this, an asynchronous exception landing between the child
+  being spawned and a *separate*, subsequent @writeIORef@ elsewhere could
+  leave the freshly spawned child (already running Warp) permanently
+  untracked -- no future 'update'\/'shutdown' call could ever find its
+  'ThreadId' to kill it. If @publish@ itself somehow throws (only
   possible via a genuine asynchronous exception landing in that exact
-  masked window, strictly before either write -- so @transferred@ still
-  correctly reads 'False'), @cancel@ kills the just-spawned child and
-  waits for its finalizer ('shutdownThenDeliver') to have genuinely run
-  and recorded a result in @done@, so a failed publish can never leave an
-  untracked, still-running child behind either.
-
-  The whole call is wrapped in 'publishTerminalFailureUnlessTransferred'
-  against a fresh @transferred@ token created anew for this one attempt:
-  if 'acquireThenForkTransferringOwnership' throws having never reached
-  @publish@'s @writeIORef transferred True@ (an ordinary acquisition\/
-  spawn\/publish failure, or a cancellation strictly before then), no
-  child was ever durably tracked, so this call is the one place that must
-  publish that failure into @done@. If it throws /after/ @transferred@
-  was already flipped 'True' (only reachable via an asynchronous
-  exception landing in the narrow gap between
-  'acquireThenForkTransferringOwnership''s own internal 'Control.Exception.mask'
-  returning and this function's own return to its caller), a live child
-  is already durably tracked via @tidRef@ and will itself eventually fill
-  @done@ once it is told to stop (by a future 'restartAppInNewThread'
-  call, via @tidRef@) -- so this call must not, and does not, touch
-  @done@ at all in that case, leaving it correctly empty.
+  masked window, strictly before its one @writeIORef@), @cancel@ kills
+  the just-spawned child and waits for its finalizer
+  ('shutdownThenDeliver') to have genuinely run and recorded a result in
+  @done@, so a failed publish can never leave an untracked, still-running
+  child behind either.
   -}
   start
-    :: IORef (Maybe ThreadId)
+    :: IO ()
+    -- \^ gate: consulted first, still under this call's own single
+    -- 'mask' -- see 'acquireThenForkTransferringOwnershipGuarded''s
+    -- Haddock. @'pure' ()@ for the very first generation;
+    -- 'consumePreviousShutdownReplayable' @done@ for every replacement.
+    -> IORef (Maybe ThreadId)
     -> MVar (Either SomeException ())
     -- \^ Written to (with the shutdown outcome) when the thread is killed.
     -> IO ()
-  start tidRef done = do
-    transferred <- newIORef False
-    () <$ publishTerminalFailureUnlessTransferred transferred done do
-      acquireThenForkTransferringOwnership
-        getApplicationRepl
-        (\(_, site, _) -> shutdownApp site)
-        (\(port, _site, app) -> runSettings (setPort port defaultSettings) app)
-        -- 'shutdownThenDeliver' MUST finish (and deliver a result) before
-        -- 'restartAppInNewThread''s wait can unblock, which then
-        -- immediately proceeds to 'start' a brand-new foundation (and a
-        -- brand-new AWS 'Env' supervisor) -- but only on 'Right': signalling
-        -- unconditionally, or before shutdown actually finished, would let
-        -- that new foundation's supervisor start running concurrently with
-        -- the old one still being torn down, or (if shutdown threw) with
-        -- the old one never actually torn down at all. This ordering closes
-        -- both an overlapping-generations window and a would-be deadlock if
-        -- shutdown itself fails or is cancelled.
-        (\(_, site, _) _result -> shutdownThenDeliver (shutdownApp site) done)
-        (\tid -> killThread tid >> (() <$ readMVar done))
-        (\h -> writeIORef transferred True >> writeIORef tidRef (Just h))
+  start gate tidRef done =
+    () <$ acquireThenForkTransferringOwnershipGuarded
+      gate
+      done
+      getApplicationRepl
+      (\(_, site, _) -> shutdownApp site)
+      (\(port, _site, app) -> runSettings (setPort port defaultSettings) app)
+      -- 'shutdownThenDeliver' MUST finish (and deliver a result) before
+      -- 'restartAppInNewThread''s wait can unblock, which then
+      -- immediately proceeds to 'start' a brand-new foundation (and a
+      -- brand-new AWS 'Env' supervisor) -- but only on 'Right': signalling
+      -- unconditionally, or before shutdown actually finished, would let
+      -- that new foundation's supervisor start running concurrently with
+      -- the old one still being torn down, or (if shutdown threw) with
+      -- the old one never actually torn down at all. This ordering closes
+      -- both an overlapping-generations window and a would-be deadlock if
+      -- shutdown itself fails or is cancelled.
+      (\(_, site, _) _result -> shutdownThenDeliver (shutdownApp site) done)
+      (\tid -> killThread tid >> (() <$ readMVar done))
+      (\h -> writeIORef tidRef (Just h))
 
 -- | kill the server
 shutdown :: IO ()
@@ -223,7 +219,7 @@ shutdown = do
 original @1@: the stored type at this slot changed from a bare
 @IORef ThreadId@ to @IORef (Maybe ThreadId)@ (so it can be seeded before
 any generation has ever started, and durably published by
-'acquireThenForkTransferringOwnership''s own masked @publish@ step), and
+'acquireThenForkTransferringOwnershipGuarded''s own masked @publish@ step), and
 'Foreign.Store' has no runtime type check to catch that mismatch in an
 already-running session -- a fresh slot avoids it rather than papering
 over it.
