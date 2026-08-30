@@ -266,6 +266,8 @@ test('the manifest pins every chunk by size and digest', () => {
   const immutable = built.files.get(`r/${built.manifest.catalogRevision}/manifest.json`)
   assert.ok(stable.equals(immutable))
   assert.equal(sha256Hex(stable), built.manifestSha256)
+  assert.equal(built.manifest.basePath, BASE_PATH)
+  assert.equal(built.manifest.manifestPath, `${BASE_PATH}/manifest.json`)
   assert.equal(built.manifest.revisionManifestPath, `${BASE_PATH}/r/${built.manifest.catalogRevision}/manifest.json`)
   assert.equal(built.manifest.catalogRevision, `1.${built.manifest.provenance.sha256.slice(0, 32)}`)
 })

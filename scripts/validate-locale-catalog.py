@@ -225,6 +225,16 @@ def validate_catalog(files: dict[str, bytes], schemas) -> dict:
         manifest["revisionManifestPath"] == f"{manifest['basePath']}/r/{revision}/manifest.json",
         "revisionManifestPath does not address the current revision",
     )
+    # The stable URL a capability response will advertise; a client that
+    # follows it must land on the manifest this build actually wrote.
+    require(
+        manifest["manifestPath"] == f"{manifest['basePath']}/manifest.json",
+        "manifestPath is not the stable manifest URL under basePath",
+    )
+    require(
+        manifest["manifestPath"][len(manifest["basePath"]) + 1 :] in files,
+        "manifestPath does not address a generated file",
+    )
 
     revision_manifest = f"r/{revision}/manifest.json"
     require(revision_manifest in files, "the immutable revision manifest was not generated")
