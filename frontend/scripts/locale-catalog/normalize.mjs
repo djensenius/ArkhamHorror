@@ -74,6 +74,8 @@ const VARIABLE_NAME_PATTERN = /^[A-Za-z0-9_]{1,64}$/
 // (apostrophes, brackets, CJK), but never a dot (the key separator), a path
 // separator, a control character, or a sentinel.
 export const KEY_SEGMENT_PATTERN = /^[^\u0000-\u001f\u007f./\\\ue000\ue001]+$/
+// Matches the `maxLength` both v1 schemas put on a message key.
+export const MAX_MESSAGE_KEY_LENGTH = 512
 const MESSAGE_KEY_PATTERN = new RegExp(
   `^${KEY_SEGMENT_PATTERN.source.slice(1, -1)}(?:\\.${KEY_SEGMENT_PATTERN.source.slice(1, -1)})*$`,
 )
@@ -242,7 +244,7 @@ function substitutePlaceholders(items, classifyVariable) {
         const key = item.key
         let target
         if (key.type === NODE_LINKED_KEY || key.type === NODE_LITERAL) {
-          if (!MESSAGE_KEY_PATTERN.test(key.value)) {
+          if (!MESSAGE_KEY_PATTERN.test(key.value) || key.value.length > MAX_MESSAGE_KEY_LENGTH) {
             throw unsupported('unsupported-message-syntax', `linked key ${key.value}`)
           }
           target = { kind: 'static', key: key.value }

@@ -220,6 +220,8 @@ test('unsupported and unsafe input is refused, never partially rendered', () => 
     // `skull` is an icon placeholder here and a linked message key there:
     // one declaration cannot describe both.
     ['{skull} @:{skull}', 'conflicting-variable-role'],
+    // Longer than the maxLength both schemas put on a message key.
+    [`@:${'a'.repeat(513)}`, 'unsupported-message-syntax'],
   ]
 
   for (const [input, reason] of cases) {

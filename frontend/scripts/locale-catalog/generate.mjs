@@ -25,6 +25,7 @@ import { canonicalJson, sha256Hex } from './canonical.mjs'
 import {
   ASSET_PATH_VARIABLES,
   KEY_SEGMENT_PATTERN,
+  MAX_MESSAGE_KEY_LENGTH,
   UNSUPPORTED_REASONS,
   normalizeMessage,
   referencedVariables,
@@ -146,6 +147,11 @@ function collectRequiredKeys() {
 function flattenMessages(value, prefix, out) {
   if (typeof value === 'string') {
     if (out.has(prefix)) fail(`duplicate normalized key ${prefix}`)
+    // The published schemas bound a key at MAX_MESSAGE_KEY_LENGTH; refuse
+    // here rather than emitting a chunk no client can validate.
+    if (prefix.length > MAX_MESSAGE_KEY_LENGTH) {
+      fail(`message key longer than ${MAX_MESSAGE_KEY_LENGTH} characters: ${prefix.slice(0, 80)}…`)
+    }
     out.set(prefix, value)
     return
   }

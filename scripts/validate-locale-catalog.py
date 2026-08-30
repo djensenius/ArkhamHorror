@@ -665,7 +665,12 @@ def validate_deployment_wiring(manifest: dict) -> None:
 
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     require(
-        "COPY ./contracts /opt/arkham/src/contracts" in dockerfile,
+        re.search(
+            r"^\s*COPY\s+\.?/?contracts\s+/opt/arkham/src/contracts\s*$",
+            dockerfile,
+            re.MULTILINE,
+        )
+        is not None,
         "the container build does not provide the contract fixtures the generator requires",
     )
 
