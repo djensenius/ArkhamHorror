@@ -218,10 +218,13 @@ spec = describe "gameParticipantGate (participant game-stream authorization gate
       -- is distinct from the deliberately-untouched spectator route's own
       -- "spectatorGameStream gameId" (capital @G@, a different function);
       -- it appears exactly once in the whole module, and only inside
-      -- withGameParticipant's slice. Whitespace is normalized (all runs of
-      -- spaces/newlines collapsed to a single space) before this specific
-      -- check so a harmless line-wrap or extra space between "gameStream"
-      -- and "gameId" can't make this test noisily fail.
-      let normalizeWhitespace = T.unwords . T.words
-      T.count "gameStream gameId" (normalizeWhitespace src) `shouldBe` 1
-      T.isInfixOf "gameStream gameId" (normalizeWhitespace withGameParticipantBody) `shouldBe` True
+      -- withGameParticipant's slice. Before this specific check, `$` and
+      -- parentheses are erased (in addition to collapsing all whitespace
+      -- runs to a single space), so this still matches semantically
+      -- equivalent call-syntax variants -- e.g. a harmless line-wrap,
+      -- extra space, `gameStream $ gameId`, or `gameStream (gameId)` --
+      -- rather than only the one literal spacing currently in the source.
+      let normalizeCallSyntax =
+            T.unwords . T.words . T.replace "$" " " . T.replace "(" " " . T.replace ")" " "
+      T.count "gameStream gameId" (normalizeCallSyntax src) `shouldBe` 1
+      T.isInfixOf "gameStream gameId" (normalizeCallSyntax withGameParticipantBody) `shouldBe` True
