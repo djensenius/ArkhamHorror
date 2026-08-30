@@ -628,12 +628,15 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
       -- is always safe.
       putMVar lock priorState
       throwIO cancelErr
-    Right (Left teardownErr) -> do
+    Right (Left (retiredHandle, teardownErr)) -> do
       -- The previous generation's own body already exited, and its
       -- completion cell was genuinely read, but teardown itself failed:
       -- never silently start a replacement on top of possibly-unreleased
-      -- resources.
-      putMVar lock (RetireFailed (retiredHandleOf priorState) teardownErr)
+      -- resources. 'retirePrior' pairs the failing handle with its own
+      -- error directly, so there is no separate lookup (and no partial
+      -- match) needed to reconstruct which handle a 'RetireFailed'
+      -- should carry.
+      putMVar lock (RetireFailed retiredHandle teardownErr)
       throwIO teardownErr
     Right (Right ()) -> do
       startResult <- try @SomeException (acquireAndSpawn restore)
@@ -650,30 +653,23 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
   -- generation's own teardown outcome (never discarding it -- see this
   -- function's own Haddock): 'Right' if there was nothing to retire, or
   -- retirement completed and its own completion cell held 'Right';
-  -- 'Left' if that completion cell held 'Left'. An exception escaping
-  -- this action (caught by the outer 'try') means /this thread's own/
-  -- retirement attempt was itself interrupted, not that the previous
-  -- generation's teardown reported failure.
+  -- 'Left', paired with the exact handle a resulting 'RetireFailed'
+  -- should carry, if that completion cell held 'Left' (pairing the
+  -- handle directly with its own error here -- rather than
+  -- reconstructing it separately afterwards from @priorState@ -- makes
+  -- every case total by construction: there is no handle-less
+  -- 'RetireFailed' this function could ever be asked to produce). An
+  -- exception escaping this action (caught by the outer 'try') means
+  -- /this thread's own/ retirement attempt was itself interrupted, not
+  -- that the previous generation's teardown reported failure.
   retirePrior = \case
     NotStarted -> pure (Right ())
     StartFailed _ -> pure (Right ())
-    RetireFailed _ err -> pure (Left err)
+    RetireFailed priorHandle err -> pure (Left (priorHandle, err))
     Running priorHandle priorDone -> do
       cancel priorHandle
-      readMVar priorDone
-
-  -- | The @handle@ a 'RetireFailed' constructed here should carry,
-  -- carried over from whichever prior generation's completion cell
-  -- revealed the failure (or, for a 'RetireFailed' prior state already
-  -- being re-reported, whichever handle it already carried).
-  retiredHandleOf = \case
-    Running priorHandle _ -> priorHandle
-    RetireFailed priorHandle _ -> priorHandle
-    -- unreachable: 'retirePrior' only ever returns a 'Left' for
-    -- 'Running'\/'RetireFailed'; 'NotStarted'\/'StartFailed' always
-    -- return 'Right' and so never reach this branch.
-    NotStarted -> error "restartManagedGenerationUsing: unreachable RetireFailed handle for NotStarted"
-    StartFailed _ -> error "restartManagedGenerationUsing: unreachable RetireFailed handle for StartFailed"
+      outcome <- readMVar priorDone
+      pure (either (\err -> Left (priorHandle, err)) Right outcome)
 
   acquireAndSpawn restore = do
     res <- restore acquire
