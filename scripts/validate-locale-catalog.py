@@ -67,6 +67,15 @@ CLEAN_CLONE_PREFIXES = (
 )
 CLEAN_CLONE_FILES = ("frontend/package.json",)
 
+# Production modules the normalizer mirrors (icon/literal classification and
+# the asset-path variables). Their bytes change catalog semantics, so they must
+# be part of its provenance.
+SEMANTIC_SOURCES = (
+    "frontend/src/arkham/helpers.ts",
+    "frontend/src/arkham/homebrewAssets.ts",
+    "frontend/src/arkham/components/FormattedEntry.vue",
+)
+
 MAX_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_CHUNKS_PER_LOCALE = 256
 
@@ -439,17 +448,25 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
         require(relative in tracked, f"the catalog hashes untracked file {relative}")
         require(sha256_hex(read_source_bytes(relative)) == digest, f"provenance digest mismatch for {relative}")
 
+    # Coverage: everything whose bytes can change the catalog must be hashed,
+    # so a generator that quietly stopped hashing an input cannot pass.
     hashed_paths = {relative for relative, _ in hashed}
+    covered = set(SEMANTIC_SOURCES) | set(REQUIRED_KEY_FIXTURES)
     for relative in tracked:
-        covered_locale_source = relative.startswith("frontend/src/locales/") or (
-            relative.startswith("frontend/homebrew/")
-            and "/locales/" in relative
-            and relative.endswith(".json")
-        )
-        if covered_locale_source:
-            require(relative in hashed_paths, f"{relative} is not covered by catalog provenance")
+        if relative.startswith("frontend/src/locales/"):
+            covered.add(relative)
+        elif relative.startswith("frontend/homebrew/") and (
+            ("/locales/" in relative and relative.endswith(".json"))
+            or re.fullmatch(r"frontend/homebrew/[^/]+/icons\.json", relative) is not None
+        ):
+            covered.add(relative)
     for schema in SCHEMA_DIR.glob("*.schema.json"):
-        relative = schema.relative_to(ROOT).as_posix()
+        covered.add(schema.relative_to(ROOT).as_posix())
+    for generator in (FRONTEND / "scripts" / "locale-catalog").glob("*.mjs"):
+        covered.add(generator.relative_to(ROOT).as_posix())
+
+    for relative in sorted(covered):
+        require(relative in tracked, f"{relative} is not tracked by git")
         require(relative in hashed_paths, f"{relative} is not covered by catalog provenance")
 
 
