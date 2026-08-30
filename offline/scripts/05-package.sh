@@ -879,14 +879,8 @@ http {
       add_header Cache-Control \$catalog_cache_control always;
       add_header X-Content-Type-Options "nosniff" always;
       add_header Vary "Accept-Encoding" always;
-      error_page 416 = @locale_catalog_error;
-    }
-    location @locale_catalog_error {
-      internal;
-      default_type application/json;
-      add_header Cache-Control "no-store" always;
-      add_header X-Content-Type-Options "nosniff" always;
-      return 416;
+      # Whole-file fetches only, as in prod.nginxconf.
+      max_ranges 0;
     }
     # Card image routing:
     # 1. user cards/

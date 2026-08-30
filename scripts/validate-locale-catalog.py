@@ -870,8 +870,9 @@ def validate_deployment_wiring(manifest: dict) -> None:
             f"prod.nginxconf does not cache {status} catalog responses by path policy",
         )
     require(
-        "error_page 416 = @locale_catalog_error;" in nginx,
-        "prod.nginxconf does not re-header a 416, whose status nginx finalizes after add_header",
+        re.search(r"^\s*max_ranges 0;", block, re.MULTILINE) is not None,
+        "prod.nginxconf must disable ranges for the catalog, so no status is finalized after "
+        "its cache headers are computed",
     )
     require(
         'add_header Vary "Accept-Encoding" always;' in block,

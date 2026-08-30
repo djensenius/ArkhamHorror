@@ -65,13 +65,26 @@ def tool(name: str) -> str:
 
 
 def request(path: str, *, method: str = "GET", headers: dict[str, str] | None = None):
+    """Returns (status, headers, body). `headers` keeps every occurrence, so a
+    duplicated header is visible rather than collapsed."""
     url = f"http://127.0.0.1:{PORT}{path}"
     message = urllib.request.Request(url, method=method, headers=headers or {})
     try:
         with urllib.request.urlopen(message) as response:
-            return response.status, {k.lower(): v for k, v in response.headers.items()}, response.read()
+            return response.status, Headers(response.headers.items()), response.read()
     except urllib.error.HTTPError as error:
-        return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read()
+        return error.code, Headers(error.headers.items()), error.read()
+
+
+class Headers(dict):
+    def __init__(self, items):
+        self.occurrences: dict[str, list[str]] = {}
+        for name, value in items:
+            self.occurrences.setdefault(name.lower(), []).append(value)
+        super().__init__({name: values[0] for name, values in self.occurrences.items()})
+
+    def count(self, name: str) -> int:
+        return len(self.occurrences.get(name.lower(), []))
 
 
 class Nginx:
@@ -120,12 +133,26 @@ def build_catalog(frontend: Path, out: Path) -> dict:
     result = run([tool("node"), str(frontend / "scripts" / "locale-catalog" / "generate.mjs"), "--out", str(out)], cwd=frontend)
     require(result.returncode == 0, f"generation failed: {result.stdout}\n{result.stderr}")
 
-    # The production build precompresses everything it publishes; mirror that
-    # so gzip_static has something to serve here too.
+    # The production build precompresses everything it publishes (gzip for
+    # gzip_static, brotli for the explicit -f check in prod.nginxconf); mirror
+    # that so both negotiation paths are actually exercised here.
     import gzip
 
     for path in out.rglob("*.json"):
         path.with_suffix(".json.gz").write_bytes(gzip.compress(path.read_bytes(), 9))
+    brotli = run(
+        [
+            tool("node"),
+            "-e",
+            "const {readdirSync,statSync,readFileSync,writeFileSync}=require('node:fs');"
+            "const {join}=require('node:path');const zlib=require('node:zlib');"
+            "const walk=(d)=>readdirSync(d,{withFileTypes:true}).flatMap(e=>e.isDirectory()?walk(join(d,e.name)):[join(d,e.name)]);"
+            "for (const f of walk(process.argv[1])) if (f.endsWith('.json')) "
+            "writeFileSync(f+'.br', zlib.brotliCompressSync(readFileSync(f)));",
+            str(out),
+        ]
+    )
+    require(brotli.returncode == 0, f"could not precompress the test catalog: {brotli.stderr}")
     return json.loads((out / "manifest.json").read_text(encoding="utf-8"))
 
 
@@ -197,15 +224,57 @@ def check_status_matrix(manifest: dict, label: str) -> None:
     status, headers, _ = request(path, method="HEAD")
     assert_headers(f"{label} chunk HEAD", status, headers, expect_status=200, cache=IMMUTABLE)
 
-    status, headers, partial = request(path, headers={"Range": "bytes=0-31"})
-    assert_headers(f"{label} chunk range", status, headers, expect_status=206, cache=IMMUTABLE)
-    require(partial == body[:32], f"{label} range returned the wrong bytes")
+    # Ranges are disabled for the catalog, so a Range request must return the
+    # whole file (200) rather than a 206 — and can never produce a 416, whose
+    # status nginx finalizes after the cache headers are computed.
+    status, headers, ranged = request(path, headers={"Range": "bytes=0-31"})
+    assert_headers(f"{label} chunk range", status, headers, expect_status=200, cache=IMMUTABLE)
+    require(ranged == body, f"{label} range request did not return the whole file")
+    require("content-range" not in headers, f"{label} range request produced a partial response")
+
+    # Content negotiation: gzip_static must hand back the stored .gz, and the
+    # brotli branch must hand back the stored .br — with one set of headers,
+    # not one per nginx `if` level.
+    status, headers, gzipped = request(path, headers={"Accept-Encoding": "gzip"})
+    require(status == 200, f"{label} gzip request returned {status}")
+    require(headers.get("content-encoding") == "gzip", f"{label} did not serve gzip_static")
+    import gzip as gzip_module
+
+    require(gzip_module.decompress(gzipped) == body, f"{label} gzip payload differs from the identity body")
+    assert_headers(f"{label} gzip", status, headers, expect_status=200, cache=IMMUTABLE)
+
+    status, headers, brotli_body = request(path, headers={"Accept-Encoding": "br"})
+    require(status == 200, f"{label} brotli request returned {status}")
+    require(headers.get("content-encoding") == "br", f"{label} did not serve the brotli sibling")
+    require(brotli_body != body, f"{label} brotli response was not compressed")
+    # nginx's `if` block re-declares these headers because add_header does not
+    # inherit into a nested context; the response must still carry exactly one
+    # of each.
+    for header in ("cache-control", "vary", "x-content-type-options", "content-encoding"):
+        require(
+            headers.count(header) == 1,
+            f"{label} brotli response carries {headers.count(header)} {header} headers",
+        )
+    for missing_status, missing_path in (
+        (404, "/locale-catalog/c/does-not-exist.json"),
+        (405, path),
+    ):
+        _, error_headers, _ = request(
+            missing_path, method="POST" if missing_status == 405 else "GET"
+        )
+        require(
+            error_headers.count("cache-control") == 1,
+            f"{label} {missing_status} response carries "
+            f"{error_headers.count('cache-control')} Cache-Control headers",
+        )
+    assert_headers(f"{label} brotli", status, headers, expect_status=200, cache=IMMUTABLE)
 
     status, headers, _ = request(path, headers={"If-None-Match": etag})
     assert_headers(f"{label} chunk revalidation", status, headers, expect_status=304, cache=IMMUTABLE, json_type=False)
 
-    status, headers, _ = request(path, headers={"Range": "bytes=99999999-"})
-    assert_headers(f"{label} unsatisfiable range", status, headers, expect_status=416, cache=NO_STORE, json_type=False)
+    status, headers, unsatisfiable = request(path, headers={"Range": "bytes=99999999-"})
+    assert_headers(f"{label} unsatisfiable range", status, headers, expect_status=200, cache=IMMUTABLE)
+    require(unsatisfiable == body, f"{label} unsatisfiable range did not return the whole file")
 
     status, headers, _ = request(path, method="POST")
     assert_headers(f"{label} bad method", status, headers, expect_status=405, cache=NO_STORE, json_type=False)

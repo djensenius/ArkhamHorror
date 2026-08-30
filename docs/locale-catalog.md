@@ -25,9 +25,11 @@ build.
 
 Immutable paths (`/c/` and `/r/`) are served `Cache-Control: public,
 max-age=31536000, immutable`; the stable manifest URL revalidates. Crucially,
-that policy is chosen by **response status**: only 200, 206 and 304 are
-cacheable, and every 4xx/5xx — a missing chunk, a wrong method, an
-unsatisfiable range — is `no-store`. A client that does race a deploy and gets
+that policy is chosen by **response status**: only 200 and 304 are cacheable,
+and every 4xx/5xx — a missing chunk, a wrong method — is `no-store`. Ranges are
+disabled for these paths (a partial JSON chunk is useless), so a `Range`
+request returns the whole file and nginx never produces a 416, the one status
+it finalizes *after* the cache headers are computed. A client that does race a deploy and gets
 a 404 for a changed pack must re-fetch `manifest.json` and retry; because the
 404 was never cached, the retry succeeds as soon as it reaches a replica of the
 newer build. Deployments should still swap the static root atomically.

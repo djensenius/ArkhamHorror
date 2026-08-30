@@ -200,19 +200,12 @@ http {
       # holds for a native client even on a response nginx did not negotiate.
       add_header Vary "Accept-Encoding" always;
 
-      # nginx's range filter runs *after* the header filter, so a 416 would
-      # otherwise still carry the immutable policy computed for the 200 it
-      # started as. Routing it through a named location re-writes the headers
-      # once the status is final.
-      error_page 416 = @locale_catalog_error;
-    }
-
-    location @locale_catalog_error {
-      internal;
-      default_type application/json;
-      add_header Cache-Control "no-store" always;
-      add_header X-Content-Type-Options "nosniff" always;
-      return 416;
+      # Catalog files are fetched whole — a partial JSON chunk is useless — so
+      # ranges are disabled here. That also removes the one status nginx
+      # finalizes *after* the header filter (416, produced by the range filter),
+      # which would otherwise be labelled with the policy of the 200 it started
+      # as. A Range request simply gets the whole file, cacheable as usual.
+      max_ranges 0;
     }
 
     location / {
