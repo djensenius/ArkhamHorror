@@ -1173,7 +1173,7 @@ spec = describe "Native client contract fixtures" do
     fixture <- loadFixture "investigator-unhealed-horror-negative.json"
     fixtureInvestigatorNegativeUnhealedHorror `shouldBe` fixture
 
-  it "keeps investigatorCardPool out of the public wire while leaving it in the internal encoder (regression: InvestigatorAttrs' TH-derived ToJSON, shared by internal persistence (Arkham.Game.Json/Entities) and the public PublicGame projection alike, started leaking a bare \"cardPool\": null onto every real investigator view the moment investigatorCardPool existed at all -- an additive drift investigator.schema.json's additionalProperties:false never allowed and the governed 0.1.22 fixtures never declared; contracts:validate stayed green throughout because it only checks fixtures against schemas, never against this real encoder. WithDeckSize's ToJSON in Game.hs now strips cardPool at that one public seam. This proves both the shim and its scope with one real, non-Nothing investigatorCardPool set via cardPoolL: the investigator's own InvestigatorAttrs encoding still carries it (persistence/round-trip untouched), while the same investigator pulled from PublicGame's \"investigators\" map -- via both toJSON and the toEncoding-driven wire bytes, so a hand-written toEncoding can't reintroduce the leak on only one path -- has no cardPool key at all, with cardsUnderneath left present and unaffected" do
+  it "keeps investigatorCardPool out of the public wire while leaving it in the internal encoder (see Haddock on fixtureInvestigatorCardPoolShim above)" do
     let (internalEncoding, publicToJson, publicWireEncoding) = fixtureInvestigatorCardPoolShim
         hasKey k = \case
           Aeson.Object o -> AesonKeyMap.member (AesonKey.fromText k) o
