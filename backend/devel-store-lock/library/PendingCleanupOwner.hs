@@ -91,7 +91,7 @@ import Control.Concurrent.STM (
   stateTVar,
   writeTVar,
  )
-import Control.Exception (SomeException, throwIO, try)
+import Control.Exception (SomeException, mask, throwIO, try)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
@@ -206,10 +206,25 @@ claim), then atomically commit its outcome:
   permanently stuck 'Running' (which would deadlock every later attempt
   to claim it) the instant this call's own caller is itself cancelled
   while this capability happened to be running.
+
+'action' itself runs fully interruptible (under 'restore', i.e. exactly
+as asynchronously-cancellable as this call's own caller left it), but
+every commit of the outcome back into 'pcoEntries' below is masked: once
+'action' has itself returned or been caught, a /new/ asynchronous
+exception arriving in the gap between that and the commit must never be
+allowed to skip the commit and leave this receipt stuck 'Running'
+forever (which would permanently wedge every later
+'drainPendingCleanup'\/'attemptCleanupReceipt' call against it). Each
+commit below is a single, non-retrying 'atomically' transaction that
+runs to completion without blocking, so masking around it is genuinely
+sufficient: GHC only delivers a pending asynchronous exception to a
+masked thread at its own next interruptible operation, and an
+'atomically' transaction that never calls 'retry' is not itself such a
+point until after it has already committed.
 -}
 attemptOne :: PendingCleanupOwner -> CleanupReceipt -> IO (Either SomeException ()) -> IO (Either (NonEmpty SomeException) ())
-attemptOne owner receipt action = do
-  outcome <- try @SomeException action
+attemptOne owner receipt action = mask $ \restore -> do
+  outcome <- try @SomeException (restore action)
   case outcome of
     Right (Right ()) -> do
       atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt Terminated)

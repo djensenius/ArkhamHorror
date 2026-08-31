@@ -3,7 +3,7 @@
 module PendingCleanupOwnerSpec (spec) where
 
 import Arkham.Prelude
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO, myThreadId, threadDelay)
 import Control.Exception (AsyncException (ThreadKilled))
 import Control.Exception qualified as E
 import PendingCleanupOwner (
@@ -224,3 +224,72 @@ spec = describe "PendingCleanupOwner" do
       outcome <- attemptCleanupReceipt owner receipt
       expectReceiptSucceeded outcome
       hasPendingCleanup owner `shouldReturn` False
+
+  describe "commit-window asynchronous-exception safety" do
+    {- | Root-cause regression for the OTHER gap in 'attemptOne' (distinct
+    from the mid-action interruption already covered above): once the
+    claimed action has itself already returned (successfully or with a
+    clean, data-shaped failure), a /new/ asynchronous exception arriving
+    in the narrow window between that return and the STM commit of its
+    outcome must never be allowed to skip that commit -- doing so would
+    leave the receipt stuck 'PendingCleanupOwner.Running' forever,
+    deadlocking every later 'attemptCleanupReceipt'\/'drainPendingCleanup'
+    call against it. 'attemptOne' masks exactly this window (running only
+    the action itself, via @restore@, fully interruptible), so this test
+    races many independent, freshly claimed receipts, each forking a
+    thread that immediately (racing the claiming thread's own return from
+    the action) delivers a real 'Control.Exception.ThreadKilled' to it,
+    and confirms every single one of them is always found genuinely
+    'PendingCleanupOwner.Terminated' afterwards -- never stuck --
+    regardless of exactly when, relative to the commit, the signal
+    happened to land.
+    -}
+    it "an asynchronous exception racing the boundary between a claimed action returning and its outcome being committed never leaves the receipt stuck Running, across many independent trials" do
+      let trials = 8000 :: Int
+      results <- for [1 .. trials] $ \_ -> do
+        owner <- newPendingCleanupOwner
+        runCount <- newIORef (0 :: Int)
+        deliveredGate <- newEmptyMVar
+        let action = do
+              atomicModifyIORef' runCount (\n -> (n + 1, ()))
+              myTid <- myThreadId
+              -- 'Control.Exception.throwTo' only returns once delivery
+              -- has genuinely begun on the target thread, so this
+              -- forked thread's own 'putMVar' below can only ever run
+              -- afterwards -- letting the synchronization immediately
+              -- following (still inside the very same 'E.try' this
+              -- action itself is run under, via 'restore') confirm
+              -- delivery has definitely occurred /somewhere/ in that
+              -- span before this trial's own final check proceeds,
+              -- without needing to know exactly where it landed.
+              _ <- forkIO (E.throwTo myTid ThreadKilled >> putMVar deliveredGate ())
+              pure (Right ())
+        receipt <- transferPendingCleanup owner action
+        -- This single racing signal can land at any interruptible point
+        -- from here onward (inside 'attemptCleanupReceipt' itself, or at
+        -- the 'takeMVar' immediately below) -- so both are kept inside
+        -- ONE continuous 'E.try' with no gap between them, exactly
+        -- mirroring 'Arkham.Api.AwsEnvSupervisor''s own mid-cancellation
+        -- probe test. Whichever way this resolves (caught here as
+        -- 'Left', or completing normally because the 'takeMVar' itself
+        -- already observed delivery), the signal is by now fully,
+        -- exactly-once spent -- proven by 'deliveredGate' being taken
+        -- only after the forked thread's own 'throwTo' call has already
+        -- returned -- so nothing further can interrupt this trial's own
+        -- separate, guaranteed race-free final check below.
+        _ <- E.try @SomeException $ do
+          _ <- attemptCleanupReceipt owner receipt
+          takeMVar deliveredGate
+        finalOutcome <- attemptCleanupReceipt owner receipt
+        finalRunCount <- readIORef runCount
+        pure (finalOutcome, finalRunCount)
+      for_ results $ \(finalOutcome, finalRunCount) -> do
+        expectReceiptSucceeded finalOutcome
+        -- The action must have run exactly once in total across both
+        -- attempts above: never zero (it would have to run at least once
+        -- for either attempt to report success) and, just as important,
+        -- never twice (which would mean the first attempt's own success
+        -- was somehow NOT committed as 'Terminated', leaving the second
+        -- attempt to needlessly re-claim and re-run a receipt that had
+        -- already genuinely completed).
+        finalRunCount `shouldBe` 1
