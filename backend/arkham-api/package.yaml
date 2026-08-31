@@ -53,13 +53,20 @@ library:
         - -fwarn-tabs
         - -O2
         - +RTS -V0 -RTS
+    - condition: flag(internal-test-hooks)
+      cpp-options: -DINTERNAL_TEST_HOOKS
+      dependencies:
+        - hspec
   dependencies:
     - MonadRandom
     - aeson
     - aeson-casing
     - aeson-diff
     - amazonka
+    - amazonka-core
     - amazonka-s3
+    - amazonka-sso
+    - amazonka-sts
     - annotated-exception
     - async
     - base16-bytestring
@@ -79,6 +86,7 @@ library:
     - dependent-map
     - dependent-sum
     - dependent-sum-template
+    - devel-store-lock
     - directory
     - email-validate
     - errors
@@ -87,12 +95,15 @@ library:
     - extra
     - fast-logger
     - file-embed
+    - foreign-store
     - hashable
     - hedis
     - http-api-data
+    - http-client
     - http-client-tls
     - http-conduit
     - http-types
+    - ini
     - jose
     - lens
     - lens-aeson
@@ -110,6 +121,7 @@ library:
     - random-shuffle
     - regex-posix
     - relude
+    - resource-pool
     - safe
     - semialign
     - some
@@ -123,6 +135,7 @@ library:
     - tls
     - transformers
     - unliftio
+    - unordered-containers
     - uri-bytestring
     - uuid
     - vector
@@ -180,6 +193,20 @@ flags:
     description: Turn on development settings, like auto-reload templates.
     manual: false
     default: false
+  internal-test-hooks:
+    description: >
+      Include this library's internal white-box regression Spec (e.g.
+      Api.Arkham.AwsEnvSupervisor's awsEnvSupervisorInternalSpec, which
+      exercises credential-acquisition primitives this module
+      deliberately never exports otherwise) and its Test.Hspec
+      dependency in the library component itself. Defaults on so an
+      ordinary `stack build`/`stack test` (as used by this repository's
+      own CI and local development) needs no extra flag to build and
+      run the test suite. A genuine production/deployment build (see
+      Dockerfile) explicitly disables this flag so the shipped library
+      never depends on hspec.
+    manual: true
+    default: true
 
 tests:
   spec:
@@ -191,11 +218,18 @@ tests:
       - arkham-api
       - aeson
       - aeson-diff
+      - amazonka
+      - amazonka-core
       - bytestring
+      - containers
+      - devel-store-lock
       - directory
       - exceptions
+      - foreign-store
       - hspec
       - hspec-expectations-lifted
+      - http-client
+      - http-types
       - jose
       - lens
       - monad-time
@@ -204,7 +238,7 @@ tests:
       - persistent
       - random
       - relude
-      - containers
       - text
       - time
+      - unordered-containers
       - yaml

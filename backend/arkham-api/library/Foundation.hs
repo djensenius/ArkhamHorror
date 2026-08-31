@@ -29,6 +29,8 @@ import Control.Monad.Catch qualified as Catch
 import Data.IntMap.Strict qualified as IntMap
 import UnliftIO.Exception qualified as UnliftIO
 
+import Api.Arkham.AwsEnvSupervisor (AwsEnvSupervisor)
+import Api.Arkham.Lifecycle (ManagedThread)
 import Arkham.Card.CardCode
 import Auth.JWT qualified as JWT
 import Control.Monad.Logger (LogSource)
@@ -182,6 +184,27 @@ data App = App
   subscription is actually alive. See 'pubSubHealthChannel'.
   -}
   , appBugsnag :: Bugsnag.Settings
+  , appAwsEnvSupervisor :: AwsEnvSupervisor
+  {- ^ The application's single, foundation-owned AWS 'Env' supervisor for
+  bug-report S3 uploads: constructed once in 'Application.makeFoundation',
+  before Warp accepts any request, and torn down by
+  'Application.shutdownApp'. See "Api.Arkham.AwsEnvSupervisor" for why this
+  must be foundation-owned rather than request- or lazily-CAF-constructed.
+  -}
+  , appRoomHeartbeatThread :: ManagedThread ()
+  {- ^ The 'Api.Arkham.Helpers.roomHeartbeat' background thread: forked
+  unconditionally in 'Application.makeFoundation' (it no-ops immediately
+  under 'WebSocketBroker', so tracking it unconditionally costs nothing),
+  and cancelled\/awaited by 'Application.shutdownApp' so a DevelMain
+  restart, or a repeated GHCI 'Application.handler' call, cannot
+  accumulate one of these per generation.
+  -}
+  , appPubSubSupervisorThread :: Maybe (ManagedThread ())
+  {- ^ The 'Api.Arkham.Helpers.pubSubSupervisor' background thread, only
+  ever forked (and so only ever 'Just') when 'appMessageBroker' is a
+  'RedisBroker': cancelled\/awaited by 'Application.shutdownApp' for the
+  same reason as 'appRoomHeartbeatThread'.
+  -}
   }
 
 class Monad m => HasApp m where

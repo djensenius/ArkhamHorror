@@ -49,8 +49,11 @@ fi
 rm -f "$STAMP"
 
 stack build --no-terminal --system-ghc \
+  --flag "arkham-api:-internal-test-hooks" \
   --ghc-options '-rtsopts -with-rtsopts=-V0 -j4 +RTS -V0 -A128m -n2m -RTS'
-stack --no-terminal --local-bin-path /opt/arkham/bin install
+stack --no-terminal --local-bin-path /opt/arkham/bin \
+  --flag "arkham-api:-internal-test-hooks" \
+  install
 
 mkdir -p "$WORK"
 touch "$STAMP"

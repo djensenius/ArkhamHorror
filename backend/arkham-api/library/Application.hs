@@ -15,17 +15,28 @@ module Application (
   -- * for DevelMain
   getApplicationRepl,
   shutdownApp,
+  shutdownAppActions,
 
   -- * for GHCI
   handler,
   db,
 ) where
 
+import Api.Arkham.AwsEnvSupervisor (newAwsEnvSupervisor, stopAwsEnvSupervisor)
 import Api.Arkham.Helpers (
   markPubSubAlive,
   pubSubHealthChannel,
   pubSubSupervisor,
   roomHeartbeat,
+ )
+import Api.Arkham.Lifecycle (
+  ManagedThread,
+  acquireTransferringOwnershipOnSuccess,
+  acquireWithUnconditionalRelease,
+  cancelManagedThread,
+  drainOwnedCleanup,
+  releaseAll,
+  spawnManagedThread,
  )
 import Arkham.Metrics qualified as Metrics
 import Config
@@ -35,8 +46,9 @@ import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.CaseInsensitive (foldCase, mk)
 import Data.Default.Class (def)
 import Data.List (lookup)
+import Data.Pool (destroyAllResources)
 import Data.Text qualified as T
-import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock (UTCTime, getCurrentTime)
 import Data.X509.CertificateStore (readCertificateStore)
 import Database.Persist.Postgresql (
   SqlBackend,
@@ -48,6 +60,7 @@ import Database.Redis (
   ConnectAddr (..),
   ConnectInfo (..),
   checkedConnect,
+  disconnect,
   newPubSubController,
   parseConnectInfo,
  )
@@ -106,7 +119,6 @@ import Base.Api.Handler.Notifications
 import Base.Api.Handler.PasswordReset
 import Base.Api.Handler.Registration
 import Base.Api.Handler.Settings
-import Control.Concurrent (forkIO)
 import Handler.Health
 
 -- This line actually creates our YesodDispatch instance. It is the second half
@@ -131,55 +143,108 @@ makeFoundation appSettings = do
   appEventRooms <- newMVar mempty
   appPubSubHealth <- newTVarIO =<< getCurrentTime
 
-  appMessageBroker <- case appRedisConnectionInfo appSettings of
-    Nothing -> pure WebSocketBroker
-    Just url -> do
-      conn <- checkedConnect =<< fromConnectionUrl url
-      -- The health channel is an INITIAL subscription so 'pubSubForever'
-      -- restores it on every reconnect and the controller is never left with
-      -- zero channels. Per-game channels are added and removed on demand by
-      -- 'getRoomIn' / 'releaseRoomIfEmpty'.
-      ctrl <-
-        newPubSubController
-          [(pubSubHealthChannel, const $ markPubSubAlive appPubSubHealth)]
-          []
-      -- Supervised, not bare: 'pubSubForever' exits on connection loss and
-      -- must be restarted to resubscribe, and it cannot see a half-open
-      -- socket at all. See 'pubSubSupervisor'.
-      _ <- forkIO $ pubSubSupervisor appPubSubHealth conn ctrl
-      pure $ RedisBroker conn ctrl
+  -- Constructed once, here -- before Warp is ever handed the application
+  -- and starts accepting requests -- never lazily on the first request.
+  -- Starts its dedicated thread immediately, but that thread performs no
+  -- credential discovery (and so contacts no environment/file/metadata
+  -- credential source) until a bug-report upload actually demands it; see
+  -- "Api.Arkham.AwsEnvSupervisor".
+  --
+  -- 'bracketOnError' (here, 'acquireTransferringOwnershipOnSuccess') ties
+  -- its fate to the REST of this function: if any later initialization
+  -- step below throws, or this thread is asynchronously cancelled, before
+  -- 'makeFoundation' returns, the supervisor started here is stopped (its
+  -- dedicated thread terminated and awaited, see 'stopAwsEnvSupervisor')
+  -- exactly once before that exception propagates, so a failed/aborted
+  -- Foundation construction can never leak it. On success, ownership
+  -- crosses into the returned 'App' value for its ultimate owner
+  -- ('shutdownApp', via 'appMain'/'handler'/'DevelMain') to stop later --
+  -- unlike 'acquireWithUnconditionalRelease', this deliberately does *not*
+  -- release on success.
+  acquireTransferringOwnershipOnSuccess newAwsEnvSupervisor stopAwsEnvSupervisor $ \appAwsEnvSupervisor ->
+    acquireMessageBroker appSettings appPubSubHealth $ \(appMessageBroker, appPubSubSupervisorThread) ->
+      -- Same 'bracketOnError' reasoning as 'appAwsEnvSupervisor' above,
+      -- now applied to the per-pod room-registry heartbeat: if any later
+      -- initialization step throws, or this thread is cancelled, before
+      -- 'makeFoundation' returns, this thread is cancelled and awaited
+      -- (never merely signalled) before that exception propagates. On
+      -- success, ownership crosses into the returned 'App' for
+      -- 'shutdownApp' to cancel later. Forked unconditionally (it no-ops
+      -- immediately under 'WebSocketBroker') so there is exactly one
+      -- heartbeat-thread field, not a 'Maybe', to track and release.
+      acquireTransferringOwnershipOnSuccess
+        (spawnManagedThread (roomHeartbeat appMessageBroker appGameRooms))
+        cancelManagedThread
+        $ \appRoomHeartbeatThread -> do
+          -- We need a log function to create a connection pool. We need a
+          -- connection pool to create our foundation. And we need our
+          -- foundation to get a logging function. To get out of this loop,
+          -- we initially create a temporary foundation without a real
+          -- connection pool, get a log function from there, and then create
+          -- the real foundation.
+          let mkFoundation appConnPool = App {..}
+              -- The App {..} syntax is an example of record wild cards. For
+              -- more information, see:
+              -- https://ocharles.org.uk/blog/posts/2014-12-04-record-wildcards.html
+              tempFoundation = mkFoundation $ error "connPool forced in tempFoundation"
+              logFunc = messageLoggerSource tempFoundation appLogger
 
-  -- We need a log function to create a connection pool. We need a connection
-  -- pool to create our foundation. And we need our foundation to get a
-  -- logging function. To get out of this loop, we initially create a
-  -- temporary foundation without a real connection pool, get a log function
-  -- from there, and then create the real foundation.
-  let mkFoundation appConnPool = App {..}
-      -- The App {..} syntax is an example of record wild cards. For more
-      -- information, see:
-      -- https://ocharles.org.uk/blog/posts/2014-12-04-record-wildcards.html
-      tempFoundation = mkFoundation $ error "connPool forced in tempFoundation"
-      logFunc = messageLoggerSource tempFoundation appLogger
+          -- Create the database connection pool. Same 'bracketOnError'
+          -- reasoning again: a pool that is created here but never makes it
+          -- into a returned 'App' (because this is the temporary
+          -- bootstrapping call, or some later step somehow throws) is
+          -- destroyed rather than leaked; on success, 'shutdownApp' owns
+          -- destroying it instead.
+          acquireTransferringOwnershipOnSuccess
+            ( flip runLoggingT logFunc
+                $ createPostgresqlPool
+                  (pgConnStr $ appDatabaseConf appSettings)
+                  (pgPoolSize $ appDatabaseConf appSettings)
+            )
+            destroyAllResources
+            $ \pool -> do
+              -- Perform database migration using our application's logging
+              -- settings.
+              -- runLoggingT (runSqlPool (runMigration migrateAll) pool) logFunc
+              pure $ mkFoundation pool
 
-  -- Create the database connection pool
-  pool <-
-    flip runLoggingT logFunc
-      $ createPostgresqlPool
-        (pgConnStr $ appDatabaseConf appSettings)
-        (pgPoolSize $ appDatabaseConf appSettings)
-
-  -- Perform database migration using our application's logging settings.
-  -- runLoggingT (runSqlPool (runMigration migrateAll) pool) logFunc
-
-  let foundation = mkFoundation pool
-
-  -- Per-pod heartbeat for the cross-server room registry: refreshes the
-  -- 'arkham:rooms:seen' timestamps for any game this pod is still
-  -- serving, so admin counts age out automatically when a pod crashes.
-  -- No-op when no Redis broker is configured.
-  _ <- forkIO (roomHeartbeat foundation)
-
-  pure foundation
+{- | Connect to Redis (if configured) and start the supervised pub/sub
+subscriber thread, both released together if anything downstream of this
+call in 'makeFoundation' throws or this thread is cancelled before
+'makeFoundation' returns: 'acquireTransferringOwnershipOnSuccess'
+guarantees that a Redis connection this function opens but which never
+makes it into a returned 'App' cannot outlive the failed construction.
+On success, ownership crosses into 'appMessageBroker'/'appPubSubSupervisorThread'
+for 'Application.shutdownApp' to disconnect/cancel later.
+-}
+acquireMessageBroker
+  :: AppSettings
+  -> TVar UTCTime
+  -> ((MessageBroker, Maybe (ManagedThread ())) -> IO a)
+  -> IO a
+acquireMessageBroker appSettings appPubSubHealth body =
+  case appRedisConnectionInfo appSettings of
+    Nothing -> body (WebSocketBroker, Nothing)
+    Just url ->
+      acquireTransferringOwnershipOnSuccess
+        (checkedConnect =<< fromConnectionUrl url)
+        disconnect
+        $ \conn -> do
+          -- The health channel is an INITIAL subscription so 'pubSubForever'
+          -- restores it on every reconnect and the controller is never left
+          -- with zero channels. Per-game channels are added and removed on
+          -- demand by 'getRoomIn' / 'releaseRoomIfEmpty'.
+          ctrl <-
+            newPubSubController
+              [(pubSubHealthChannel, const $ markPubSubAlive appPubSubHealth)]
+              []
+          -- Supervised, not bare: 'pubSubForever' exits on connection loss
+          -- and must be restarted to resubscribe, and it cannot see a
+          -- half-open socket at all. See 'pubSubSupervisor'.
+          acquireTransferringOwnershipOnSuccess
+            (spawnManagedThread (pubSubSupervisor appPubSubHealth conn ctrl))
+            cancelManagedThread
+            $ \pubSubThread -> body (RedisBroker conn ctrl, Just pubSubThread)
 
 {- | Convert our foundation to a WAI Application by calling @toWaiAppPlain@ and
  applying some additional middlewares.
@@ -297,14 +362,18 @@ appMain = do
     Just v | v /= "" && v /= "0" && v /= "false" -> void Metrics.enableMetrics
     _ -> pure ()
 
-  -- Generate the foundation from the settings
-  foundation <- makeFoundation settings
+  -- Generate the foundation from the settings, and bracket its ownership
+  -- with 'shutdownApp' -- covering both a Warp exit/exception below and
+  -- an exception raised constructing the WAI 'Application' itself.
+  -- 'acquireWithUnconditionalRelease' (plain 'bracket'): there is no
+  -- "success" case to skip cleanup for, since Warp serves forever, so
+  -- reaching this bracket's cleanup always means exit.
+  acquireWithUnconditionalRelease (makeFoundation settings) shutdownApp $ \foundation -> do
+    -- Generate a WAI Application from the foundation
+    app <- makeApplication foundation
 
-  -- Generate a WAI Application from the foundation
-  app <- makeApplication foundation
-
-  -- Run the application with Warp
-  runSettings (warpSettings foundation) app
+    -- Run the application with Warp
+    runSettings (warpSettings foundation) app
 
 --------------------------------------------------------------
 -- Functions for DevelMain.hs (a way to run the app from GHCi)
@@ -312,21 +381,99 @@ appMain = do
 getApplicationRepl :: IO (Int, App, Application)
 getApplicationRepl = do
   settings <- getAppSettings
-  foundation <- makeFoundation settings
-  wsettings <- getDevSettings $ warpSettings foundation
-  app1 <- makeApplication foundation
-  pure (getPort wsettings, foundation, app1)
+  -- 'acquireTransferringOwnershipOnSuccess' (here, 'bracketOnError'
+  -- semantics) spans acquisition of the WHOLE Foundation through the
+  -- complete '(Int, App, Application)' tuple being ready -- not just a
+  -- bare 'makeFoundation' call followed by a separately-installed
+  -- 'onException': the latter leaves a real gap between 'makeFoundation'
+  -- returning (unmasked) and the exception handler actually being
+  -- installed, in which a delivered async exception would leak the
+  -- Foundation (and its supervisor) with nothing left to shut it down.
+  -- 'bracketOnError' masks across exactly that boundary. On success,
+  -- ownership crosses to the returned 'foundation' for 'DevelMain''s
+  -- restart protocol to shut down later.
+  acquireTransferringOwnershipOnSuccess (makeFoundation settings) shutdownApp $ \foundation -> do
+    wsettings <- getDevSettings $ warpSettings foundation
+    app1 <- makeApplication foundation
+    pure (getPort wsettings, foundation, app1)
 
+{- | Release every foundation-owned resource 'makeFoundation' created:
+stop the AWS supervisor, cancel and await the room-heartbeat thread and
+(if a Redis broker is configured) the pub/sub-supervisor thread,
+disconnect the Redis connection, and destroy the database connection
+pool. Uses 'releaseAll' rather than a plain sequence of statements so an
+earlier release throwing can never cause a later one to be skipped --
+without that, a single misbehaving release would leave every resource
+after it leaking on every subsequent 'DevelMain' restart or 'handler'
+call.
+
+This is itself already a complete, single 'Api.Arkham.Lifecycle.ManagedReleasePlan'
+(via 'releaseAll'): a MEDIUM-severity finding was that @app\/DevelMain.hs@'s
+own restart wiring used to call @releaseAllRecordingReceipt receiptSink
+[shutdownApp site]@, wrapping this already-managed action inside a
+SECOND, independent outer plan. If this call's own internal 'releaseAll'
+was asynchronously interrupted partway through the list below, it
+durably transferred its own genuinely-outstanding remainder away (via
+its own, permanently-discarded receipt sink) before rethrowing -- but the
+outer plan then ALSO classified the same rethrown exception as
+asynchronous and ALSO durably transferred the ENTIRE @shutdownApp site@
+action to be retried from scratch, including whichever resources below
+had already actually finished releasing: draining both of these
+registrations later duplicated every resource release that had already
+genuinely succeeded. See 'shutdownAppActions' for the fix.
+-}
 shutdownApp :: App -> IO ()
-shutdownApp _ = pure ()
+shutdownApp = releaseAll . shutdownAppActions
+
+{- | The exact, concrete, ordered list of release actions 'shutdownApp'
+runs (unconditionally, via 'releaseAll'). Exposed separately so a caller
+that wants a single managed release pass with its OWN receipt-tracked
+retry (production: @app\/DevelMain.hs@'s restart wiring, via
+'Api.Arkham.Lifecycle.releaseAllRecordingReceipt') can run that directly
+over this flat list -- @releaseAllRecordingReceipt receiptSink
+(shutdownAppActions site)@ -- rather than ever wrapping the already-managed
+'shutdownApp' in a second, outer plan (see 'shutdownApp''s own Haddock
+for the MEDIUM-severity duplicate-release finding that composition
+caused). Every OTHER caller ('appMain', 'handler', 'getApplicationRepl')
+keeps using plain 'shutdownApp' unchanged: exactly one managed plan
+either way, just addressed through a different, equally valid entry
+point depending on whether the caller has anywhere durable of its own to
+retain a receipt.
+-}
+shutdownAppActions :: App -> [IO ()]
+shutdownAppActions app =
+  [ stopAwsEnvSupervisor (appAwsEnvSupervisor app)
+  , cancelManagedThread (appRoomHeartbeatThread app)
+  , for_ (appPubSubSupervisorThread app) cancelManagedThread
+  , case appMessageBroker app of
+      WebSocketBroker -> pure ()
+      RedisBroker conn _ -> disconnect conn
+  , destroyAllResources (appConnPool app)
+  ]
 
 ---------------------------------------------
 -- Functions for use in development with GHCi
 ---------------------------------------------
 
--- | Run a handler
+-- | Run a handler. Each invocation constructs its own temporary
+-- 'Foundation' (including its own AWS 'Env' supervisor) and always calls
+-- 'shutdownApp' on it afterwards, whether @h@ succeeds or throws, so
+-- repeated GHCi\/REPL use never accumulates supervisor threads across
+-- calls.
+--
+-- Also opportunistically attempts 'drainOwnedCleanup' first: a
+-- /previous/ 'handler' call's own 'shutdownApp' may have been
+-- asynchronously interrupted mid-'releaseAll' and durably transferred
+-- its remaining, not-yet-confirmed-released steps away (see
+-- 'releaseAll''s own Haddock) rather than silently abandoning them;
+-- giving each subsequent call here a genuine, repeatedly-exercised
+-- chance to finish that leftover work is what makes that transfer
+-- meaningfully durable rather than merely deferred forever.
 handler :: Handler a -> IO a
-handler h = getAppSettings >>= makeFoundation >>= flip unsafeHandler h
+handler h = do
+  _ <- drainOwnedCleanup
+  settings <- getAppSettings
+  acquireWithUnconditionalRelease (makeFoundation settings) shutdownApp (flip unsafeHandler h)
 
 -- | Run DB queries
 db :: ReaderT SqlBackend Handler a -> IO a

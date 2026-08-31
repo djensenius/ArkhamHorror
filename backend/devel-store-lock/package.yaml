@@ -1,0 +1,19 @@
+name: devel-store-lock
+
+# A deliberately tiny, standalone Cabal package -- see
+# 'DevelStoreLock''s own module Haddock for exactly why this exists as a
+# genuinely separate package (sibling to 'arkham-api', matching this
+# monorepo's own existing "backend/validate"/"backend/cards-discover"
+# precedent) rather than a module inside "arkham-api" itself.
+
+dependencies:
+  - base
+  - containers
+  - foreign-store
+  - stm
+
+library:
+  source-dirs: library
+  exposed-modules:
+    - DevelStoreLock
+    - PendingCleanupOwner
