@@ -7,7 +7,12 @@ manifest rather than from constants copied into this module.
 
 @contracts\/fixtures\/locale-catalog-manifest.json@ is a __test artifact__: it
 is schema-valid against the published v1 manifest schema, carries no narrative
-text, and is never regenerated from @frontend\/src\/locales\/**@. That is what
+text, and is never regenerated from @frontend\/src\/locales\/**@. Every digest,
+count and path in it is computed from committed sibling authorities
+(@contracts\/fixtures\/locale-catalog-source-*.json@, @-backend-registry.json@,
+@-generator.json@, @-schemas.json@, @-chunk-*.json@) by
+@scripts\/build-locale-catalog-fixture.py@, whose @--check@ mode re-derives all
+of it. That is what
 keeps the governed contract stable while production catalog content changes
 freely — a real deployment's revision and digest are runtime configuration
 (see @docs\/locale-catalog.md@), not contract bytes.

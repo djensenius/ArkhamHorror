@@ -1,0 +1,5 @@
+{
+  "name": "arkham-locale-catalog",
+  "version": "1.0.0",
+  "description": "Identity of the generator this synthetic catalog was built by. scripts/build-locale-catalog-fixture.py is that generator; this file is the committed authority its provenance.generatorSha256 is taken over."
+}

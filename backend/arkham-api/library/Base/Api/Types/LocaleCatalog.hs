@@ -48,11 +48,14 @@ module Base.Api.Types.LocaleCatalog (
   localeCatalogSettingKey,
   localeCatalogSupportedSchemaVersions,
   parseLocaleCatalogConfig,
+  parseLocaleCatalogSetting,
   parseManifestUrl,
   renderLocaleCatalogConfigError,
 ) where
 
-import Data.Aeson (ToJSON (..), defaultOptions, genericToEncoding, genericToJSON)
+import Data.Aeson (Object, ToJSON (..), Value (..), defaultOptions, genericToEncoding, genericToJSON, (.:?))
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.Types (Parser)
 import Data.Char qualified as Char
 import Data.List qualified as List
 import Data.Text qualified as T
@@ -135,6 +138,32 @@ localeCatalogSettingEnvVar = \case
   SupportedLocalesSetting -> "ARKHAM_LOCALE_CATALOG_LOCALES"
   ManifestSha256Setting -> "ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"
 
+{- | Read one raw setting out of the settings object.
+
+Values reach this parser from @config\/settings.yml@ after environment
+substitution, and @Data.Yaml.Config@ re-parses each substituted value as a YAML
+scalar — so a digest that happens to be all decimal digits, or a version typed
+as @1.0@, arrives as a @Number@ rather than a @String@. Coercing that back to
+text would be lossy and ambiguous (@1.0@, @1e5@), so it is refused, with a
+message naming the setting and its environment variable instead of aeson's bare
+\"expected String\".
+-}
+parseLocaleCatalogSetting :: Object -> LocaleCatalogSetting -> Parser (Maybe Text)
+parseLocaleCatalogSetting o setting =
+  o .:? Key.fromText (localeCatalogSettingKey setting) >>= \case
+    Nothing -> pure Nothing
+    Just Null -> pure Nothing
+    Just (String value) -> pure (Just value)
+    Just _ ->
+      fail
+        $ toString
+        $ "locale catalog configuration is invalid: "
+        <> localeCatalogSettingKey setting
+        <> " ("
+        <> localeCatalogSettingEnvVar setting
+        <> ") must be a quoted string; YAML read it as a number or boolean, which happens when a"
+        <> " value such as a digest of only digits, or a version like 1.0, is left unquoted"
+
 {- | Raw, untrusted configuration exactly as it arrives from
 @config\/settings.yml@ (and therefore from the environment). A key that is
 absent, null, or blank is treated as not supplied.
@@ -208,8 +237,10 @@ data LocaleCatalogConfigError
 {- | Validate the whole configuration up front.
 
 @Right Nothing@ means the catalog is not configured: the capability string and
-the @localeCatalog@ object are both omitted, and the response is byte-identical
-to the legacy one. That happens only when /every/ setting is absent or blank —
+the @localeCatalog@ object are both omitted, so the response keeps the exact
+legacy field and capability shape (@schemaRevision@ still reports this server's
+real contract revision — see "Base.Api.Types.Capabilities"). That happens only
+when /every/ setting is absent or blank —
 blanking some but not all is 'PartiallyConfigured', i.e. a startup failure, so
 a half-removed pointer can never be silently dropped and a supplied-but-invalid
 configuration can never degrade into "just don't advertise it".

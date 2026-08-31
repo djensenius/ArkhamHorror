@@ -489,6 +489,18 @@ both directions.
   is a deployment that publishes no catalog. A client must treat story keys as
   unresolvable rather than probe a guessed catalog path, exactly as it must for
   any other absent capability.
+- **Disabled is the legacy *shape*, not the legacy bytes.** A deployment with no
+  catalog serves no `localeCatalog` member, no `i18n.locale-catalog.v1`
+  identifier, and every other field — including the full capability list —
+  unchanged from `0.1.22`. `schemaRevision` still advances to `0.1.23`, because
+  it identifies this server's whole contract bundle rather than one optional
+  runtime feature; a server that under-reported it would lie to every client
+  that negotiates on it, and the monotonic bump is required for the bundle in
+  any case. Clients compare the three numeric revision components and ignore
+  unknown identifiers, so a client built against `0.1.22` is unaffected.
+  `manifest.json`'s `legacyCompatibilityChecks` pins that exact baseline body,
+  and both `contracts:fixtures` and the backend spec compare the real response
+  against it with the allowed differences normalized away.
 - **`manifestUrl` is the only authority.** There is deliberately no separate
   origin or base-path field to disagree with it. A relative value (the hosted
   form, `/locale-catalog/manifest.json`) is resolved against the origin the
@@ -533,29 +545,58 @@ time a translator fixed a typo — while a stale copy would have the fixture
 self-attest a catalog no artifact in this repository has.
 
 So the fixture is derived, mechanically, from a committed **synthetic** v1
-catalog manifest, `fixtures/locale-catalog-manifest.json`:
+catalog manifest, `fixtures/locale-catalog-manifest.json` — and that manifest
+in turn claims nothing it cannot prove. Every digest, count and path in it is
+computed from committed sibling authorities:
 
-- it is a fixed test artifact, schema-valid against the published
-  `frontend/schemas/locale-catalog/v1/manifest.schema.json`, narrative-free
-  (a manifest is an index — paths, digests, counts and locale tags), and is
-  never regenerated from locale sources;
-- `contracts:fixtures` derives `schemaVersion`, `catalogRevision`,
-  `defaultLocale`, `supportedLocales` and `manifestSha256` from **that file's
-  exact bytes** and requires the advertised block to equal the result, so any
-  drift in either file fails. It also re-derives the manifest's own provenance
-  — `catalogRevision` from `provenance.sha256`, `revisionManifestPath` from
-  `catalogRevision`, every chunk path from its digest, `totals` from the
-  catalog's contents, `provenance.contractRevision` from this manifest's
-  `schemaRevision` — and self-tests prove those checks reject a mutated copy;
+    fixtures/locale-catalog-source-<locale>.json   miniature locale sources
+    fixtures/locale-catalog-backend-registry.json  miniature emitted-key registry
+    fixtures/locale-catalog-generator.json         the generator identity
+    fixtures/locale-catalog-schemas.json           the schema set it renders against
+    fixtures/locale-catalog-chunk-<sha256>.json    the rendered chunks
+    fixtures/locale-catalog-manifest.json          derived from all of the above
+
+- All of them are governed documents, so a digest the manifest publishes is
+  always a digest of bytes this contract pins.
+- `contracts:catalog-fixture`
+  (`scripts/build-locale-catalog-fixture.py --check`) rebuilds the whole set
+  from those inputs and requires the committed bytes to match exactly — chunk
+  digests and sizes, per-locale and total counts, `backend.artifactSha256`,
+  `sourceSha256`, `emittedKeys`, `requiredKeys`, `untranslatedKeys`,
+  `dynamicSites`, `provenance.outputSha256`, `localeSourcesSha256`,
+  `schemasSha256`, `generatorSha256`, `localeSourceFiles`, `fixtureKeys`,
+  `provenance.sha256`, `catalogRevision` and `revisionManifestPath`. Its
+  self-tests mutate each of those in turn and require the check to fail.
+- It is schema-valid against the published
+  `frontend/schemas/locale-catalog/v1/` manifest *and* chunk schemas, is
+  narrative-free (identifier-shaped values only), and is never regenerated from
+  `frontend/src/locales/**`.
+- `contracts:fixtures` then re-derives `schemaVersion`, `catalogRevision`,
+  `defaultLocale`, `supportedLocales` and `manifestSha256` from the manifest's
+  **exact bytes** and requires the advertised block to equal the result, and
+  separately fails if that revision is hard-coded anywhere else in the governed
+  set.
 - `Helpers.LocaleCatalog` feeds the **same bytes** through the production
   settings pipeline, so the Haskell fixture assertions and the Python
   derivation cannot disagree.
 
+Because the manifest binds `provenance.contractRevision`, a contract revision
+bump regenerates it: `mise run contracts:catalog-fixture-write`, then
+`scripts/update-manifest-hashes.py`.
+
 The opposite risk — a synthetic shape no real deployment can produce — is
-closed by `locale-catalog:capability-settings`, which derives the settings from
-the manifest the frontend build actually generated and requires the response it
-produces to satisfy this schema, while asserting it stays *different* from the
-governed fixture. Nothing generated is ever hashed into `artifactHashes`.
+closed at the deployment seam. `locale-catalog:capability-settings` derives the
+settings from the manifest the frontend build actually generated and requires
+the response they produce to satisfy this schema, while asserting it stays
+*different* from the governed fixture. `locale-catalog:capability-probe` goes
+further and runs the backend: `backend/arkham-api/app-capabilities-probe` loads
+settings through the same `loadYamlSettings` call `Application.appMain` uses,
+builds the body with the handler's own `capabilitiesResponse`, and prints
+`Data.Aeson.encode`'s bytes — the production `toEncoding` path. Those bytes are
+validated against this schema and against the generated manifest's exact
+metadata, and every setting is then corrupted in turn to prove the server
+refuses to start rather than advertising a catalog a client cannot verify.
+Nothing generated is ever hashed into `artifactHashes`.
 
 ## Achievements
 

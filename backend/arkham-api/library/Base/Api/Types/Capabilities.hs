@@ -14,8 +14,20 @@ import Relude
 
 @localeCatalog@ is the only optional field: it is present exactly when the
 deployment has a valid locale-catalog pointer configured, and omitted (not
-null) otherwise, so a server without one answers with bytes identical to every
-revision before the field existed.
+null) otherwise.
+
+A deployment without a catalog therefore answers with the exact /field and
+capability shape/ it did before this field existed — no @localeCatalog@ member,
+no @i18n.locale-catalog.v1@ identifier, every other field including the full
+capability list unchanged. It is deliberately not byte-identical:
+@schemaRevision@ advances to 0.1.23, because it describes this server's whole
+contract bundle rather than one optional runtime feature, and a server that
+under-reported it would lie to every client that negotiates on it. Clients
+compare the three numeric revision components and ignore unknown identifiers,
+so a client built against 0.1.22 behaves exactly as it did.
+@contracts\/manifest.json@'s @legacyCompatibilityChecks@ pins that baseline and
+both this repository's contract validator and
+@Arkham.Api.LocaleCatalogCapabilitySpec@ compare the real response against it.
 -}
 data ServerCapabilities = ServerCapabilities
   { schemaRevision :: Text

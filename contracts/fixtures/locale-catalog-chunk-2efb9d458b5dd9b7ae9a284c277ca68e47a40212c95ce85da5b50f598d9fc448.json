@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0.0",
+  "locale": "de",
+  "fallback": "en",
+  "pack": "core",
+  "entries": {
+    "continue": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "core.continue.de"
+        }
+      ],
+      "variables": []
+    }
+  }
+}

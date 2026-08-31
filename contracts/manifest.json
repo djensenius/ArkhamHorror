@@ -37,7 +37,17 @@
     "contracts/schemas/server-message.schema.json",
     "contracts/schemas/uuid-entity-map.schema.json",
     "contracts/schemas/card-code-entity-map.schema.json",
-    "contracts/fixtures/locale-catalog-manifest.json"
+    "contracts/fixtures/locale-catalog-backend-registry.json",
+    "contracts/fixtures/locale-catalog-chunk-2e99d063306d7ae986368dfdd065afc6c0e00416fc22a7f2a4c7f71365d3e72d.json",
+    "contracts/fixtures/locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json",
+    "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json",
+    "contracts/fixtures/locale-catalog-chunk-53afdb521d26506a1661e54f71d31fc3828ad5d9badd6ebac62b68bc6a554c48.json",
+    "contracts/fixtures/locale-catalog-generator.json",
+    "contracts/fixtures/locale-catalog-manifest.json",
+    "contracts/fixtures/locale-catalog-schemas.json",
+    "contracts/fixtures/locale-catalog-source-de.json",
+    "contracts/fixtures/locale-catalog-source-en.json",
+    "contracts/fixtures/locale-catalog-source-pt-BR.json"
   ],
   "fixtures": [
     {
@@ -1229,7 +1239,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^https://(?:(25[0-5]|"
+          "messageContains": "does not match '^https://(?=[^:/]{1,253}[:/])"
         }
       ]
     },
@@ -1309,7 +1319,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^https://(?:(25[0-5]|"
+          "messageContains": "does not match '^https://(?=[^:/]{1,253}[:/])"
         }
       ]
     },
@@ -1346,7 +1356,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^https://(?:(25[0-5]|"
+          "messageContains": "does not match '^https://(?=[^:/]{1,253}[:/])"
         }
       ]
     },
@@ -1411,7 +1421,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "f57bed6352b5d8d439b035e877f66a96e81a258a448964accf1b325b35ec8373",
+    "contracts/fixtures/capabilities-locale-catalog.json": "91c34e89c66dd31ed6dd1e0c814c0fb1e98ec40a04484b6e303512e9c6405bf8",
     "contracts/fixtures/capabilities.json": "681006ec76cb04916fb2f79ac186bff80077faab1300157f1287720edffe3df5",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
@@ -1434,7 +1444,17 @@
     "contracts/fixtures/game-update.json": "ceb21a35691320516d3fe68b50d8115f092c4f32dd8f98d6240baeeeb73d07df",
     "contracts/fixtures/get-game.json": "f406071dca455c1d87a2192729dda30c08d037bedfc78b3bb3ffc998f7304b93",
     "contracts/fixtures/investigator-unhealed-horror-negative.json": "f251bd1a525fa0eb9508db084fbe7fb86928ec1ecb4472cf0c79cbaf9478762f",
-    "contracts/fixtures/locale-catalog-manifest.json": "00dee33a414020bce32d0056bf642b7584e337422d7acb4df2bacb22720c97a0",
+    "contracts/fixtures/locale-catalog-backend-registry.json": "2408510decda4d41fd50eef7fe297e0db194a1b2bb1ac210152a0a400d01c623",
+    "contracts/fixtures/locale-catalog-chunk-2e99d063306d7ae986368dfdd065afc6c0e00416fc22a7f2a4c7f71365d3e72d.json": "2e99d063306d7ae986368dfdd065afc6c0e00416fc22a7f2a4c7f71365d3e72d",
+    "contracts/fixtures/locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json": "2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448",
+    "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
+    "contracts/fixtures/locale-catalog-chunk-53afdb521d26506a1661e54f71d31fc3828ad5d9badd6ebac62b68bc6a554c48.json": "53afdb521d26506a1661e54f71d31fc3828ad5d9badd6ebac62b68bc6a554c48",
+    "contracts/fixtures/locale-catalog-generator.json": "767df444712bf4dbee8c1b81603ccdeaacd0ed81efa40140dc9970adf6a82c21",
+    "contracts/fixtures/locale-catalog-manifest.json": "467e3a097108960ad2d659993d3fcf8bdbf6a07a6cc3ff943c98e4d225ccc51b",
+    "contracts/fixtures/locale-catalog-schemas.json": "1cf7132863101427670400b671a030380ad86448964b1d2d3d632a938d5ed183",
+    "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
+    "contracts/fixtures/locale-catalog-source-en.json": "8e3bb33d606ad8e31a410338e26063d36639bbf5339b3aea82cfcb608a38387e",
+    "contracts/fixtures/locale-catalog-source-pt-BR.json": "cd7593ead3708918f8d8df4dea9775659a78351d90c485f3c82ad8fe69f4f241",
     "contracts/fixtures/location-enemy-view.json": "fd2cc29b6ea081cfa340b02c93194433542ee27ea50c9e841c94d6ed37f419b4",
     "contracts/fixtures/mode-campaign-only.json": "b68d6e0422852684fd4ebdf2d6097bc6b65edda012cc91ccf38b55ca32b9213f",
     "contracts/fixtures/mode-campaign-scenario.json": "36a77bcf41059ca4a5d2c0e5bbd4d9ff3b429da2f6ddbc35d7fb1e1491e88c89",
@@ -1449,7 +1469,7 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "682dc8edaa41d636d7128f081fbb8862914b0b057bed3790e71192ced6e4d479",
+    "contracts/manifest.json": "05785fa431b927ac34b7b8888db4bd2c6da42381fb357a8bcc7fc05fc701e4d9",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
@@ -1457,7 +1477,7 @@
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
     "contracts/schemas/basic-choice-question.schema.json": "fc2f196adb2d12d5f95b88c9f6f328e50e7e91cadeeddc3bbb522cd6ece05087",
-    "contracts/schemas/capabilities.schema.json": "ab06eea07bab53f4d36638cba7d0b4549c0d4bd1a1c7ebe0caac9a44bce8ec2b",
+    "contracts/schemas/capabilities.schema.json": "7fa6af7e71e7c072adeed1a5263d6efe35d6bad6ebf33c9f773dfdf38962f098",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
     "contracts/schemas/chaos-bag.schema.json": "45c9a42563b5e13d054f5689a8acf578df81f45746445020628335794fce4339",
@@ -1511,7 +1531,7 @@
     }
   ],
   "manifestUrlChecks": {
-    "description": "The one governed table both sides of the manifest-URL contract are held to. scripts/validate-contract-fixtures.py validates every 'published' value against the manifestUrl sub-schema located by 'pointer' and requires every 'configured' rejection to fail it, while Arkham.Api.LocaleCatalogCapabilitySpec drives the same rows through the production Base.Api.Types.LocaleCatalog.parseManifestUrl and requires the same verdict, the same normalized output, and the named ManifestUrlRejection constructor. The Haskell side additionally requires 'rejected' to name every constructor the closed type declares, so a new refusal cannot be added without a row here.",
+    "description": "The one governed table both sides of the manifest-URL contract are held to. scripts/validate-contract-fixtures.py validates every 'published' value against the manifestUrl sub-schema located by 'pointer' and requires every 'configured' rejection to fail it, while Arkham.Api.LocaleCatalogCapabilitySpec drives the same rows through the production Base.Api.Types.LocaleCatalog.parseManifestUrl and requires the same verdict, the same normalized output, and the named ManifestUrlRejection constructor. The Haskell side additionally requires 'rejected' to name every constructor the closed type declares, so a new refusal cannot be added without a row here. Boundary rows pin the exact bounds both sides enforce: a 253-character host and a 512-character URL are published, 254 characters and a 64-character label are refused, and ports 1 and 65535 are accepted while 65536 and a zero-padded 0443 are not.",
     "schema": "contracts/schemas/capabilities.schema.json",
     "pointer": "/$defs/localeCatalog/properties/manifestUrl",
     "accepted": [
@@ -1520,8 +1540,8 @@
         "published": "/locale-catalog/manifest.json"
       },
       {
-        "configured": "/locale-catalog/r/1.664fbfd6f2d7d9f7c7671303b16465ca/manifest.json",
-        "published": "/locale-catalog/r/1.664fbfd6f2d7d9f7c7671303b16465ca/manifest.json"
+        "configured": "/locale-catalog/r/1.0123456789abcdef0123456789abcdef/manifest.json",
+        "published": "/locale-catalog/r/1.0123456789abcdef0123456789abcdef/manifest.json"
       },
       {
         "configured": "https://static.example.org/l10n/manifest.json",
@@ -1558,6 +1578,22 @@
       {
         "configured": "https://255.255.255.255/locale-catalog/manifest.json",
         "published": "https://255.255.255.255/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/locale-catalog/manifest.json",
+        "published": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "https://a.example:1/locale-catalog/manifest.json",
+        "published": "https://a.example:1/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "https://a.example:65535/locale-catalog/manifest.json",
+        "published": "https://a.example:65535/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+        "published": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
       }
     ],
     "rejected": [
@@ -1692,7 +1728,50 @@
       {
         "configured": "/locale-catalog/manifest",
         "reason": "ManifestUrlNotJsonPath"
+      },
+      {
+        "configured": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/locale-catalog/manifest.json",
+        "reason": "ManifestUrlInvalidHost"
+      },
+      {
+        "configured": "https://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.example/locale-catalog/manifest.json",
+        "reason": "ManifestUrlInvalidHost"
+      },
+      {
+        "configured": "https://a.example:65536/locale-catalog/manifest.json",
+        "reason": "ManifestUrlInvalidPort"
+      },
+      {
+        "configured": "https://a.example:0443/locale-catalog/manifest.json",
+        "reason": "ManifestUrlInvalidPort"
       }
     ]
+  },
+  "legacyCompatibilityChecks": {
+    "description": "The exact GET /api/v1/capabilities body this contract served at revision 0.1.22, before the optional locale-catalog pointer existed. A deployment that configures no catalog is NOT byte-identical to it, and must not be: issue #53 requires a monotonic contract bump, and schemaRevision describes the backend contract bundle, not this optional runtime feature -- a server reporting 0.1.22 while serving 0.1.23 schemas would be lying to every client that negotiates on it. What is guaranteed instead is the exact legacy FIELD AND CAPABILITY SHAPE: no localeCatalog member, no i18n.locale-catalog.v1 identifier, and every other field, including the full capability list, unchanged. Clients compare the three numeric revision components and ignore unknown identifiers (see 'Capability negotiation'), so an older client reading 0.1.23 behaves exactly as it did at 0.1.22. scripts/validate-contract-fixtures.py and Arkham.Api.LocaleCatalogCapabilitySpec both compare the real response against this baseline with allowedDifferences normalized away.",
+    "baselineRevision": "0.1.22",
+    "baselineResponse": {
+      "schemaRevision": "0.1.22",
+      "status": "baseline-incomplete",
+      "apiBasePath": "/api/v1",
+      "nativeClientMinimumRevision": "0.1.0",
+      "capabilities": [
+        "events.shared-state-versioning",
+        "games.step-probe",
+        "websockets.authorization-header",
+        "websockets.spectator-read-only"
+      ]
+    },
+    "addedCapability": "i18n.locale-catalog.v1",
+    "allowedDifferences": {
+      "disabled": [
+        "schemaRevision"
+      ],
+      "advertised": [
+        "schemaRevision",
+        "capabilities",
+        "localeCatalog"
+      ]
+    }
   }
 }

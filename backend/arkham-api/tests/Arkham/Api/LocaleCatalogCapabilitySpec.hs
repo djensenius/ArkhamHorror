@@ -18,6 +18,9 @@ module Arkham.Api.LocaleCatalogCapabilitySpec (spec) where
 import Base.Api.Types.Capabilities (ServerCapabilities (..))
 import Base.Api.Types.LocaleCatalog
 import Data.Aeson (FromJSON (..), withObject, (.:))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Char qualified as Char
 import Data.List qualified as List
 import Data.Text qualified as T
@@ -117,11 +120,59 @@ instance FromJSON RejectedManifestUrl where
   parseJSON = withObject "manifestUrlChecks.rejected" \o ->
     RejectedManifestUrl <$> o .: "configured" <*> o .: "reason"
 
-newtype ContractManifest = ContractManifest {manifestUrlChecks :: ManifestUrlChecks}
+{- | @legacyCompatibilityChecks@: the exact response this contract served at
+0.1.22, before the optional pointer existed, plus the members a revision is
+allowed to differ in.
+-}
+data LegacyCompatibility = LegacyCompatibility
+  { baselineRevision :: Text
+  , baselineResponse :: Aeson.Object
+  , addedCapability :: Text
+  , allowedDifferences :: AllowedDifferences
+  }
+
+data AllowedDifferences = AllowedDifferences
+  { disabled :: [Text]
+  , advertised :: [Text]
+  }
+
+instance FromJSON LegacyCompatibility where
+  parseJSON = withObject "legacyCompatibilityChecks" \o ->
+    LegacyCompatibility
+      <$> o .: "baselineRevision"
+      <*> o .: "baselineResponse"
+      <*> o .: "addedCapability"
+      <*> o .: "allowedDifferences"
+
+instance FromJSON AllowedDifferences where
+  parseJSON = withObject "allowedDifferences" \o ->
+    AllowedDifferences <$> o .: "disabled" <*> o .: "advertised"
+
+data ContractManifest = ContractManifest
+  { manifestUrlChecks :: ManifestUrlChecks
+  , legacyCompatibilityChecks :: LegacyCompatibility
+  }
 
 instance FromJSON ContractManifest where
   parseJSON = withObject "contracts/manifest.json" \o ->
-    ContractManifest <$> o .: "manifestUrlChecks"
+    ContractManifest <$> o .: "manifestUrlChecks" <*> o .: "legacyCompatibilityChecks"
+
+{- | Drop exactly the members a revision is allowed to differ in, so what is
+left has to be the 0.1.22 shape and nothing else.
+-}
+normalizeAgainstBaseline :: Text -> [Text] -> Aeson.Value -> Aeson.Object
+normalizeAgainstBaseline added allowed = \case
+  Aeson.Object fields ->
+    let dropped = AesonKeyMap.filterWithKey (\key _ -> AesonKey.toText key `notElem` allowed) fields
+     in if "capabilities" `elem` allowed
+          then AesonKeyMap.insert "capabilities" (withoutAdded fields) dropped
+          else dropped
+  _ -> AesonKeyMap.empty
+ where
+  withoutAdded fields = case AesonKeyMap.lookup "capabilities" fields of
+    Just (Aeson.Array capabilities) ->
+      Aeson.toJSON $ filter (/= Aeson.String added) (toList capabilities)
+    _ -> Aeson.Null
 
 -- | The constructor name, as the governed table spells it.
 rejectionName :: ManifestUrlRejection -> Text
@@ -140,6 +191,7 @@ spec = do
   catalog <- runIO loadSyntheticCatalog
   contractManifest <- runIO (loadContractJson "contracts/manifest.json" :: IO ContractManifest)
   let checks = contractManifest.manifestUrlChecks
+      legacy = contractManifest.legacyCompatibilityChecks
 
   let fixtureCatalogEnv = catalogEnvFor catalog
       -- Every locale-catalog variable present but blank, which is how an
@@ -279,6 +331,13 @@ spec = do
         )
         `shouldSatisfy` T.isInfixOf "is not listed in"
 
+    it "refuses a value YAML read as a number instead of a quoted string" do
+      -- A digest of only decimal digits, or a version typed as 1.0, is a Number
+      -- by the time Data.Yaml.Config has re-parsed the substituted value.
+      let message = startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", T.replicate 64 "0")])
+      message `shouldSatisfy` T.isInfixOf "must be a quoted string"
+      message `shouldSatisfy` T.isInfixOf "ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"
+
     it "names the settings key and its environment variable" do
       let message = startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", "deadbeef")])
       message `shouldSatisfy` T.isInfixOf "locale-catalog-manifest-sha256"
@@ -354,3 +413,31 @@ spec = do
     it "carries a digest of the manifest's real bytes, not a copied constant" do
       T.length catalog.manifestSha256 `shouldBe` 64
       catalog.manifestSha256 `shouldSatisfy` T.all (\c -> Char.isDigit c || (c >= 'a' && c <= 'f'))
+
+  describe "compatibility with the pre-feature response" do
+    it "keeps the exact legacy shape when no catalog is configured" do
+      let baseline = normalizeAgainstBaseline legacy.addedCapability ["schemaRevision"]
+      fmap (normalizeAgainstBaseline legacy.addedCapability legacy.allowedDifferences.disabled . Aeson.toJSON) (responseFor [])
+        `shouldBe` Right (baseline (Aeson.Object legacy.baselineResponse))
+
+    it "keeps the exact legacy shape underneath the advertised catalog" do
+      let baseline = normalizeAgainstBaseline legacy.addedCapability ["schemaRevision"]
+      fmap
+        (normalizeAgainstBaseline legacy.addedCapability legacy.allowedDifferences.advertised . Aeson.toJSON)
+        (responseFor fixtureCatalogEnv)
+        `shouldBe` Right (baseline (Aeson.Object legacy.baselineResponse))
+
+    it "reports this server's real contract revision, not the baseline's" do
+      -- schemaRevision identifies the whole contract bundle, so under-reporting
+      -- it to look byte-identical would lie to every client that negotiates on
+      -- it. Older clients compare numeric components, so they are unaffected.
+      fmap (.schemaRevision) (responseFor []) `shouldBe` Right "0.1.23"
+      fmap (.schemaRevision) (responseFor []) `shouldNotBe` Right legacy.baselineRevision
+
+    it "still refuses to drop or rename a legacy capability" do
+      let dropped =
+            Aeson.Object
+              $ AesonKeyMap.insert "capabilities" (Aeson.toJSON ["games.step-probe" :: Text])
+              $ legacy.baselineResponse
+      normalizeAgainstBaseline legacy.addedCapability legacy.allowedDifferences.disabled dropped
+        `shouldNotBe` normalizeAgainstBaseline legacy.addedCapability ["schemaRevision"] (Aeson.Object legacy.baselineResponse)

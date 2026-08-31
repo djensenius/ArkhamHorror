@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0.0",
+  "documents": [
+    "frontend/schemas/locale-catalog/v1/manifest.schema.json",
+    "frontend/schemas/locale-catalog/v1/chunk.schema.json"
+  ],
+  "description": "The schema set this synthetic catalog is rendered against, named rather than hashed: the v1 schemas are frontend-owned, and hashing their bytes here would let an unrelated frontend edit churn a governed contract fixture."
+}

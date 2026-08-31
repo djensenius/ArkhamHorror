@@ -23,9 +23,18 @@ run = "npx --yes @asyncapi/cli@6.0.2 validate contracts/asyncapi.yaml"
 description = "Validate the exact backend route inventory"
 run = "uv run scripts/validate-route-inventory.py"
 
+[tasks."contracts:catalog-fixture"]
+description = "Re-derive the synthetic locale-catalog fixture set from its committed authorities and verify every digest, count, path and provenance value"
+run = "uv run scripts/build-locale-catalog-fixture.py --check"
+
+[tasks."contracts:catalog-fixture-write"]
+description = "Rewrite the synthetic locale-catalog fixture set (run after a contract revision bump)"
+run = "uv run scripts/build-locale-catalog-fixture.py"
+
 [tasks."contracts:validate"]
 description = "Run every native-client contract check"
 depends = [
+  "contracts:catalog-fixture",
   "contracts:fixtures",
   "contracts:revision-drift",
   "contracts:openapi",
@@ -68,6 +77,10 @@ run = "npm --prefix frontend run locale-catalog"
 [tasks."locale-catalog:capability-settings"]
 description = "Check a real generated catalog manifest can populate the ARKHAM_LOCALE_CATALOG_* settings and that the response it produces satisfies the governed capabilities schema"
 run = "uv run scripts/check-locale-catalog-settings.py"
+
+[tasks."locale-catalog:capability-probe"]
+description = "Run the real backend capabilities probe over a generated catalog manifest: production settings parsing, handler and toEncoding, plus a corrupted-setting startup-failure matrix"
+run = "uv run scripts/check-locale-catalog-settings.py --probe 'stack --stack-yaml backend/stack.yaml exec --system-ghc arkham-capabilities-probe --'"
 
 [tasks."locale-catalog:validate"]
 description = "Generate the public locale catalog and verify its schemas, digests, provenance, clean-clone reproducibility, and deploy seam"

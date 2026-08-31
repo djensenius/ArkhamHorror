@@ -1,9 +1,9 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.664fbfd6f2d7d9f7c7671303b16465ca",
+  "catalogRevision": "1.a5b2f6cb61da1b1ad16da6e8ade24b65",
   "basePath": "/locale-catalog",
   "manifestPath": "/locale-catalog/manifest.json",
-  "revisionManifestPath": "/locale-catalog/r/1.664fbfd6f2d7d9f7c7671303b16465ca/manifest.json",
+  "revisionManifestPath": "/locale-catalog/r/1.a5b2f6cb61da1b1ad16da6e8ade24b65/manifest.json",
   "chunkPathPrefix": "/locale-catalog/c/",
   "digestAlgorithm": "sha256",
   "defaultLocale": "en",
@@ -29,15 +29,15 @@
     {
       "locale": "de",
       "fallback": "en",
-      "keys": 2,
-      "bytes": 96,
+      "keys": 1,
+      "bytes": 288,
       "chunks": [
         {
           "pack": "core",
-          "path": "/locale-catalog/c/f62b6f8e774888c3caf97755b9691e4fcf7ed1082ce89d2d597c8a900ad6151b.json",
-          "bytes": 96,
-          "sha256": "f62b6f8e774888c3caf97755b9691e4fcf7ed1082ce89d2d597c8a900ad6151b",
-          "keys": 2,
+          "path": "/locale-catalog/c/2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json",
+          "bytes": 288,
+          "sha256": "2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448",
+          "keys": 1,
           "unsupportedKeys": 0
         }
       ]
@@ -46,23 +46,23 @@
       "locale": "en",
       "fallback": null,
       "keys": 5,
-      "bytes": 272,
+      "bytes": 1211,
       "chunks": [
         {
           "pack": "core",
-          "path": "/locale-catalog/c/01d3a8ed9921576791b1ec174823c7c8a85d10c6a8747e57b00618c6321db140.json",
-          "bytes": 104,
-          "sha256": "01d3a8ed9921576791b1ec174823c7c8a85d10c6a8747e57b00618c6321db140",
-          "keys": 2,
-          "unsupportedKeys": 0
+          "path": "/locale-catalog/c/53afdb521d26506a1661e54f71d31fc3828ad5d9badd6ebac62b68bc6a554c48.json",
+          "bytes": 641,
+          "sha256": "53afdb521d26506a1661e54f71d31fc3828ad5d9badd6ebac62b68bc6a554c48",
+          "keys": 3,
+          "unsupportedKeys": 1
         },
         {
           "pack": "nightOfTheZealot",
-          "path": "/locale-catalog/c/adca66ba321541c2bcedc39d065171a7a6640c1cbe853fd0e9c7b6bc883a5c43.json",
-          "bytes": 168,
-          "sha256": "adca66ba321541c2bcedc39d065171a7a6640c1cbe853fd0e9c7b6bc883a5c43",
-          "keys": 3,
-          "unsupportedKeys": 1
+          "path": "/locale-catalog/c/2e99d063306d7ae986368dfdd065afc6c0e00416fc22a7f2a4c7f71365d3e72d.json",
+          "bytes": 570,
+          "sha256": "2e99d063306d7ae986368dfdd065afc6c0e00416fc22a7f2a4c7f71365d3e72d",
+          "keys": 2,
+          "unsupportedKeys": 0
         }
       ]
     },
@@ -70,13 +70,13 @@
       "locale": "pt-BR",
       "fallback": "en",
       "keys": 1,
-      "bytes": 72,
+      "bytes": 294,
       "chunks": [
         {
           "pack": "core",
-          "path": "/locale-catalog/c/86237d71ffa15bedb0fc1570edbffc79a9e6fec93ca1b0e99c2bb6a39ab63e58.json",
-          "bytes": 72,
-          "sha256": "86237d71ffa15bedb0fc1570edbffc79a9e6fec93ca1b0e99c2bb6a39ab63e58",
+          "path": "/locale-catalog/c/309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json",
+          "bytes": 294,
+          "sha256": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
           "keys": 1,
           "unsupportedKeys": 0
         }
@@ -86,24 +86,26 @@
   "totals": {
     "locales": 3,
     "chunks": 4,
-    "bytes": 440,
-    "keys": 8,
+    "bytes": 1793,
+    "keys": 7,
     "unsupportedKeys": 1
   },
   "backend": {
-    "artifactPath": "backend/arkham-api/i18n-emitted-keys.json",
-    "artifactSha256": "47e9786d5df612a8c9c72b361451efcac48890aa91f0239f9427a4954d6d5394",
-    "sourceSha256": "d221ee193a45ff56ea417169b96f9cc9c0ed42f60a941d719462b20f50a7c492",
+    "artifactPath": "contracts/fixtures/locale-catalog-backend-registry.json",
+    "artifactSha256": "2408510decda4d41fd50eef7fe297e0db194a1b2bb1ac210152a0a400d01c623",
+    "sourceSha256": "c4239e5ebe9db0b81178628992998144c5ade2e4171606285c2790a86834ce0f",
     "emittedKeys": 6,
     "requiredKeys": 6,
-    "untranslatedKeys": [],
+    "untranslatedKeys": [
+      "nightOfTheZealot.theGathering.setup.setOutOfPlay"
+    ],
     "variableGaps": [],
     "dynamicSites": 0,
     "unknownVariableTypes": []
   },
   "provenance": {
-    "sha256": "664fbfd6f2d7d9f7c7671303b16465ca2811788a9b9623a40f97db3f0cacde56",
-    "outputSha256": "c9528154a7d29eadb979628057d8df2f9cff30af20ca8fd154ddd9af83db7e53",
+    "sha256": "a5b2f6cb61da1b1ad16da6e8ade24b65bfda41db056219e87948f05f032391d5",
+    "outputSha256": "076f02c0ede2866017f843c8a7cf0903258a580f8cb3ab0fab7a498134c1244b",
     "generator": {
       "name": "arkham-locale-catalog",
       "version": "1.0.0"
@@ -118,8 +120,8 @@
       "shuffleRemainder"
     ],
     "localeSourceFiles": 3,
-    "localeSourcesSha256": "1478ebf365ad8f142b03f1b192dbede8354d6a2cb97d83b73d21e8e2e1d11d00",
-    "schemasSha256": "0df06cf1767995ea0394d2331b7a6cebaced11af0419680cb2df01f124a672f7",
-    "generatorSha256": "81e11fcc06b6300e45f0ac42db5999608d97a61addfc5d62b1cdc7c565b5d84f"
+    "localeSourcesSha256": "c4239e5ebe9db0b81178628992998144c5ade2e4171606285c2790a86834ce0f",
+    "schemasSha256": "33a97a630fce097004f807cec71ed2f69f6e6af5695c957f4113975471537de5",
+    "generatorSha256": "19794cbd099ecbe618c1d08ac36b704b26aae705f259ff5c633f15750b9030ac"
   }
 }

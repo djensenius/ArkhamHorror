@@ -21,12 +21,25 @@ manifest the frontend build actually generated -- exactly the derivation
 `localeCatalog` object, and the whole capabilities response it would appear
 in, to satisfy the governed schema the backend's encoder is bound to.
 
+With `--probe`, it stops modelling the backend and *runs* it: the probe
+(`backend/arkham-api/app-capabilities-probe`) loads settings through the same
+`loadYamlSettings` call `Application.appMain` uses, builds the body through the
+handler's own `capabilitiesResponse`, and prints `Data.Aeson.encode`'s bytes --
+the production `toEncoding` path. Those bytes are validated against the
+governed schema and against the generated manifest's exact metadata, and then
+every setting is corrupted in turn to prove the server refuses to start rather
+than advertising a broken catalog.
+
 Nothing generated is hashed, committed, or compared against contract bytes:
 this script asserts the *shape* is producible, and separately asserts the
 generated catalog is free to differ from the synthetic fixture.
 """
 
+import argparse
 import hashlib
+import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
@@ -134,12 +147,147 @@ def make_validator(schema: dict, sub_schema: dict | None = None):
     return validator_class(target, format_checker=FormatChecker())
 
 
+def run_probe(command: list[str], environment: dict[str, str]) -> subprocess.CompletedProcess:
+    """Run the production probe with exactly `environment` added to the current
+    one, so an inherited ARKHAM_LOCALE_CATALOG_* value cannot mask a failure.
+    """
+    child_environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("ARKHAM_LOCALE_CATALOG_")
+    }
+    child_environment.update(environment)
+    return subprocess.run(
+        command,
+        env=child_environment,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=False,
+    )
+
+
+def check_with_probe(
+    command: list[str],
+    capabilities_schema: dict,
+    settings: dict[str, str],
+    advertised: dict,
+) -> None:
+    printed = run_probe(command, settings)
+    require(
+        printed.returncode == 0,
+        f"the production probe refused the settings derived from the generated catalog: "
+        f"{printed.stderr.strip() or printed.stdout.strip()}",
+    )
+    try:
+        response = strict_json.strict_json_loads(printed.stdout.encode("utf-8"), source="<probe>")
+    except SystemExit:
+        raise
+    require(isinstance(response, dict), f"the probe did not print a JSON object: {printed.stdout!r}")
+
+    errors = list(make_validator(capabilities_schema).iter_errors(response))
+    require(
+        not errors,
+        "the bytes the production encoder emitted for the generated catalog do not satisfy "
+        f"{CAPABILITIES_SCHEMA}: {[error.message for error in errors]}",
+    )
+    require(
+        response.get("localeCatalog") == advertised,
+        "the production encoder did not advertise the generated catalog's own metadata: "
+        f"{response.get('localeCatalog')} != {advertised}",
+    )
+    require(
+        LOCALE_CATALOG_CAPABILITY in response.get("capabilities", []),
+        "the production encoder advertised a localeCatalog without its capability string",
+    )
+
+    disabled = run_probe(command, {})
+    require(
+        disabled.returncode == 0,
+        f"the probe failed with no catalog configured at all: {disabled.stderr.strip()}",
+    )
+    legacy = strict_json.strict_json_loads(disabled.stdout.encode("utf-8"), source="<probe>")
+    require(
+        "localeCatalog" not in legacy
+        and LOCALE_CATALOG_CAPABILITY not in legacy.get("capabilities", []),
+        "an unconfigured deployment must serve the legacy field and capability shape, got "
+        f"{legacy}",
+    )
+
+    # Every setting, corrupted in turn: the server must refuse to start rather
+    # than advertise a catalog a client cannot verify.
+    corruptions: list[tuple[str, str]] = [
+        ("ARKHAM_LOCALE_CATALOG_MANIFEST_URL", "http://cdn.example.com/manifest.json"),
+        ("ARKHAM_LOCALE_CATALOG_MANIFEST_URL", "https://2130706433/manifest.json"),
+        ("ARKHAM_LOCALE_CATALOG_MANIFEST_URL", ""),
+        ("ARKHAM_LOCALE_CATALOG_REVISION", "1.0.0"),
+        ("ARKHAM_LOCALE_CATALOG_REVISION", "2" + settings["ARKHAM_LOCALE_CATALOG_REVISION"][1:]),
+        ("ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION", "2.0.0"),
+        ("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", "xx-not-a-locale-tag"),
+        ("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", "sv"),
+        ("ARKHAM_LOCALE_CATALOG_LOCALES", settings["ARKHAM_LOCALE_CATALOG_LOCALES"] + ",english"),
+        (
+            "ARKHAM_LOCALE_CATALOG_LOCALES",
+            settings["ARKHAM_LOCALE_CATALOG_LOCALES"]
+            + ","
+            + settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"].upper(),
+        ),
+        ("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", "deadbeef"),
+        ("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", settings["ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"].upper()),
+        # YAML re-parses substituted values, so an all-digit digest is a Number
+        # by the time the settings parser sees it: that must be a named refusal,
+        # not an uncaught type error.
+        ("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", "0" * 64),
+        ("ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION", "1.0"),
+    ]
+    for name, value in corruptions:
+        corrupted = dict(settings)
+        corrupted[name] = value
+        result = run_probe(command, corrupted)
+        require(
+            result.returncode != 0,
+            f"the server started with {name}={value!r}; a supplied-but-invalid catalog "
+            "configuration must fail startup, never be silently dropped",
+        )
+        require(
+            "localeCatalog" not in result.stdout,
+            f"the server printed a catalog pointer while failing on {name}={value!r}",
+        )
+
+    # A digest that is well-formed but not this manifest's is the one corruption
+    # the server cannot detect: it is the client that verifies the bytes. Prove
+    # the server still advertises exactly what it was told, so the mismatch is
+    # visible to the client rather than papered over here.
+    mismatched = dict(settings)
+    mismatched["ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"] = "a" * 64
+    result = run_probe(command, mismatched)
+    require(result.returncode == 0, "a well-formed digest must be accepted verbatim")
+    mismatched_response = strict_json.strict_json_loads(
+        result.stdout.encode("utf-8"), source="<probe>"
+    )
+    require(
+        mismatched_response["localeCatalog"]["manifestSha256"] == "a" * 64,
+        "the server must advertise the digest it was configured with, so a client verifying the "
+        "manifest sees the mismatch",
+    )
+    print(
+        f"locale-catalog capability probe: {len(corruptions)} corrupted settings each refused at "
+        "startup, and the production encoder's bytes match the generated catalog exactly."
+    )
+
+
 def main() -> None:
     strict_json.run_self_tests()
     strict_json.run_governed_bytes_self_tests()
     strict_json.run_governed_path_self_tests(ROOT)
 
-    manifest_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_MANIFEST
+    parser = argparse.ArgumentParser(description="Locale-catalog capability deployment seam")
+    parser.add_argument("manifest", nargs="?", default=str(DEFAULT_MANIFEST))
+    parser.add_argument(
+        "--probe",
+        help="command that runs the production capabilities probe, e.g. "
+        "'stack exec --system-ghc arkham-capabilities-probe --'",
+    )
+    arguments = parser.parse_args()
+    manifest_path = Path(arguments.manifest).resolve()
     require(
         manifest_path.is_file(),
         f"no generated catalog manifest at {manifest_path}; run "
@@ -215,6 +363,9 @@ def main() -> None:
         f"({advertised['catalogRevision']}); the governed fixture must describe the synthetic "
         "manifest, or every production content change would force a contract revision bump",
     )
+
+    if arguments.probe:
+        check_with_probe(shlex.split(arguments.probe), capabilities_schema, settings, advertised)
 
     print(
         "locale-catalog capability settings: the generated catalog "

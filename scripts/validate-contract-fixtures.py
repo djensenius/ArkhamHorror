@@ -867,6 +867,7 @@ require(
 # ---------------------------------------------------------------------------
 
 CATALOG_MANIFEST_PATH = "contracts/fixtures/locale-catalog-manifest.json"
+CATALOG_FIXTURE_PREFIX = "contracts/fixtures/locale-catalog-"
 CATALOG_MANIFEST_SCHEMA = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1" / "manifest.schema.json"
 
 require(
@@ -880,6 +881,30 @@ catalog_manifest = strict_json.strict_json_loads(
 )
 require(isinstance(catalog_manifest, dict), f"{CATALOG_MANIFEST_PATH} must be a JSON object")
 
+# Every authority the manifest's claims are derived from is governed too, so a
+# digest it publishes cannot be true of a file this contract does not pin.
+governed_catalog_files = sorted(
+    path for path in documents if path.startswith(CATALOG_FIXTURE_PREFIX)
+)
+require(
+    len(governed_catalog_files) >= 6,
+    "the synthetic catalog's authority files (sources, backend registry, generator, schema "
+    "descriptor, chunks, manifest) must all be governed documents; found "
+    f"{governed_catalog_files}",
+)
+for role in ("backend-registry", "generator", "schemas", "source-", "chunk-"):
+    require(
+        any(f"{CATALOG_FIXTURE_PREFIX}{role}" in path for path in governed_catalog_files),
+        f"the synthetic catalog is missing its committed {role!r} authority; every digest and "
+        "count in its manifest must be backed by governed bytes",
+    )
+
+# scripts/build-locale-catalog-fixture.py owns the derivation itself (and its
+# own mutation self-tests); `contracts:catalog-fixture` re-derives all of it.
+# What is checked here is the seam this contract depends on: the manifest is
+# schema-valid, internally consistent, and is exactly what the advertised
+# pointer describes.
+#
 # The v1 catalog schema is deliberately frontend-owned and NOT a governed
 # contract document (contracts/README.md), so it is loaded by path here rather
 # than registered -- the synthetic fixture is still held to the real, published
@@ -966,6 +991,58 @@ def check_catalog_manifest_provenance(catalog: dict, catalog_bytes: bytes, adver
         if entry["locale"] not in locale_tags:
             return f"languageResolution maps {entry['tag']!r} to unpublished locale {entry['locale']!r}"
 
+    backend = catalog.get("backend", {})
+    artifact_path = backend.get("artifactPath", "")
+    if not artifact_path.startswith(CATALOG_FIXTURE_PREFIX):
+        return (
+            f"backend.artifactPath {artifact_path!r} is not one of this contract's committed "
+            "synthetic authorities, so its digest and counts are unverifiable claims"
+        )
+    registry_bytes = strict_json.read_governed_worktree_bytes(ROOT, artifact_path)
+    if backend.get("artifactSha256") != hashlib.sha256(registry_bytes).hexdigest():
+        return f"backend.artifactSha256 is not the digest of {artifact_path}"
+    registry = strict_json.strict_json_loads(registry_bytes, source=artifact_path)
+    if backend.get("sourceSha256") != registry.get("source", {}).get("sha256"):
+        return f"backend.sourceSha256 is not the source digest {artifact_path} declares"
+    if backend.get("emittedKeys") != len(registry.get("emittedKeys", [])):
+        return f"backend.emittedKeys does not count {artifact_path}'s emitted keys"
+    if backend.get("requiredKeys") != len(registry.get("requiredKeys", [])):
+        return f"backend.requiredKeys does not count {artifact_path}'s required keys"
+    if backend.get("dynamicSites") != registry.get("dynamicSites"):
+        return f"backend.dynamicSites is not what {artifact_path} reports"
+
+    default_chunks = [
+        chunk
+        for record in locales
+        if record["locale"] == catalog.get("defaultLocale")
+        for chunk in record["chunks"]
+    ]
+    translated: set[str] = set()
+    for chunk in default_chunks:
+        chunk_path = f"{CATALOG_FIXTURE_PREFIX}chunk-{chunk['sha256']}.json"
+        chunk_bytes = strict_json.read_governed_worktree_bytes(ROOT, chunk_path)
+        if hashlib.sha256(chunk_bytes).hexdigest() != chunk["sha256"]:
+            return f"{chunk_path} is not addressed by its own digest"
+        if len(chunk_bytes) != chunk["bytes"]:
+            return f"{chunk_path} byte count does not match the manifest"
+        chunk_document = strict_json.strict_json_loads(chunk_bytes, source=chunk_path)
+        if len(chunk_document.get("entries", {})) != chunk["keys"]:
+            return f"{chunk_path} key count does not match the manifest"
+        translated |= set(chunk_document.get("entries", {}))
+    expected_untranslated = sorted(
+        key for key in registry.get("emittedKeys", []) if key not in translated
+    )
+    if backend.get("untranslatedKeys") != expected_untranslated:
+        return (
+            "backend.untranslatedKeys is not the emitted keys the default locale leaves "
+            f"untranslated (expected {expected_untranslated})"
+        )
+
+    if provenance.get("fixtureKeys") != sorted(registry.get("requiredKeys", [])):
+        return f"provenance.fixtureKeys is not the required-key set {artifact_path} declares"
+    if provenance.get("outputSha256") == provenance.get("sha256"):
+        return "provenance.outputSha256 must be the rendered-output digest, not the revision digest"
+
     totals = catalog.get("totals", {})
     expected_totals = {
         "locales": len(locales),
@@ -1005,6 +1082,121 @@ require(
     provenance_failure is None,
     f"{CATALOG_MANIFEST_PATH} provenance check failed: {provenance_failure}",
 )
+
+
+# ---------------------------------------------------------------------------
+# Legacy compatibility
+#
+# The disabled response is deliberately NOT byte-identical to 0.1.22: the
+# contract revision advances, as a monotonic bump requires, and schemaRevision
+# describes the backend contract bundle rather than this optional runtime
+# feature. What must hold is the exact legacy field and capability *shape*.
+# ---------------------------------------------------------------------------
+
+legacy_checks = manifest.get("legacyCompatibilityChecks")
+require(
+    isinstance(legacy_checks, dict),
+    "manifest.json must declare legacyCompatibilityChecks pinning the pre-feature response",
+)
+require_entry_keys(
+    legacy_checks,
+    ["baselineRevision", "baselineResponse", "addedCapability", "allowedDifferences"],
+    entry_kind="legacyCompatibilityChecks",
+    index=0,
+)
+legacy_baseline = legacy_checks["baselineResponse"]
+require(isinstance(legacy_baseline, dict), "legacyCompatibilityChecks.baselineResponse must be an object")
+require(
+    legacy_baseline.get("schemaRevision") == legacy_checks["baselineRevision"],
+    "legacyCompatibilityChecks.baselineResponse must carry baselineRevision",
+)
+require(
+    legacy_checks["addedCapability"] not in legacy_baseline.get("capabilities", []),
+    "the baseline predates the locale-catalog capability, so it must not advertise it",
+)
+require(
+    "localeCatalog" not in legacy_baseline,
+    "the baseline predates the localeCatalog field, so it must not carry it",
+)
+
+
+def normalize_against_baseline(response: dict, allowed: list[str]) -> dict:
+    """Drop exactly the members a revision is allowed to differ in, so what is
+    left is the legacy shape and nothing else."""
+    normalized = {key: value for key, value in response.items() if key not in allowed}
+    if "capabilities" in allowed:
+        normalized["capabilities"] = [
+            capability
+            for capability in response.get("capabilities", [])
+            if capability != legacy_checks["addedCapability"]
+        ]
+    return normalized
+
+
+legacy_expected = {key: value for key, value in legacy_baseline.items() if key != "schemaRevision"}
+for advertises_catalog, capabilities_path in capabilities_shapes.items():
+    response = load_governed_json(capabilities_path)
+    allowed = legacy_checks["allowedDifferences"]["advertised" if advertises_catalog else "disabled"]
+    require(
+        isinstance(allowed, list) and "schemaRevision" in allowed,
+        f"legacyCompatibilityChecks.allowedDifferences must allow schemaRevision for "
+        f"{capabilities_path}",
+    )
+    normalized = normalize_against_baseline(response, allowed)
+    require(
+        normalized == legacy_expected,
+        f"{capabilities_path} changes the legacy response shape beyond {allowed}: "
+        f"{normalized} != {legacy_expected}",
+    )
+    require(
+        response.get("schemaRevision") == manifest.get("schemaRevision")
+        and response.get("schemaRevision") != legacy_checks["baselineRevision"],
+        f"{capabilities_path} must report this revision, not the {legacy_checks['baselineRevision']} "
+        "baseline -- a server that under-reports its contract revision lies to every client that "
+        "negotiates on it",
+    )
+
+
+def run_legacy_compatibility_self_test() -> None:
+    """Prove the normalization is not vacuous: it must still catch a change to
+    a field the revision is *not* allowed to differ in.
+    """
+    disabled_allowed = legacy_checks["allowedDifferences"]["disabled"]
+    mutated = copy.deepcopy(legacy_baseline)
+    mutated["capabilities"] = mutated["capabilities"][:-1]
+    require(
+        normalize_against_baseline(mutated, disabled_allowed) != legacy_expected,
+        "Self-test failure: dropping a legacy capability survived baseline normalization",
+    )
+    mutated = copy.deepcopy(legacy_baseline)
+    mutated["nativeClientMinimumRevision"] = "9.9.9"
+    require(
+        normalize_against_baseline(mutated, disabled_allowed) != legacy_expected,
+        "Self-test failure: changing the compatibility floor survived baseline normalization",
+    )
+
+
+run_legacy_compatibility_self_test()
+
+
+def run_no_copied_revision_self_test() -> None:
+    """The synthetic catalog's revision must appear only where it is *derived*
+    -- in the manifest that computes it and in the advertised fixture derived
+    from that manifest's bytes. A copy anywhere else (this manifest's own
+    descriptor content, a schema, another fixture) is exactly the drift this
+    whole binding exists to prevent, so it fails here.
+    """
+    revision = catalog_manifest["catalogRevision"]
+    allowed = {CATALOG_MANIFEST_PATH} | set(capabilities_shapes.values())
+    for relative_path in documents + [fixture["path"] for fixture in fixtures]:
+        if relative_path in allowed:
+            continue
+        content = strict_json.read_governed_worktree_bytes(ROOT, relative_path)
+        require(
+            revision.encode("utf-8") not in content,
+            f"{relative_path} hard-codes the synthetic catalog revision {revision}; it must be "
+            "derived from the manifest's bytes instead",
+        )
 
 
 def run_locale_catalog_provenance_self_test() -> None:
@@ -1047,6 +1239,7 @@ def run_locale_catalog_provenance_self_test() -> None:
 
 
 run_locale_catalog_provenance_self_test()
+run_no_copied_revision_self_test()
 
 
 def run_self_test() -> None:
@@ -1509,6 +1702,7 @@ print(
     f"{'check' if len(forward_compatibility_checks) == 1 else 'checks'}, "
     f"{len(enum_boundary_checks)} closed-enum boundary checks, "
     f"{len(manifest_url_checks['accepted'])} accepted and {len(manifest_url_checks['rejected'])} "
-    f"rejected manifest-URL bindings, and the locale-catalog provenance binding "
-    f"({CATALOG_MANIFEST_PATH})."
+    f"rejected manifest-URL bindings, the locale-catalog provenance binding "
+    f"({CATALOG_MANIFEST_PATH}), and the {legacy_checks['baselineRevision']} legacy-shape "
+    "baseline."
 )

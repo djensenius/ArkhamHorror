@@ -14,7 +14,9 @@ module Settings where
 import Base.Api.Types.LocaleCatalog
   ( LocaleCatalog
   , LocaleCatalogConfig(..)
+  , LocaleCatalogSetting(..)
   , parseLocaleCatalogConfig
+  , parseLocaleCatalogSetting
   , renderLocaleCatalogConfigError
   )
 import Control.Exception qualified as Exception
@@ -141,12 +143,12 @@ instance FromJSON AppSettings where
         appWebsocketCompression <- o .:? "websocket-compression" .!= True
 
         localeCatalogConfig <- LocaleCatalogConfig
-            <$> o .:? "locale-catalog-manifest-url"
-            <*> o .:? "locale-catalog-revision"
-            <*> o .:? "locale-catalog-schema-version"
-            <*> o .:? "locale-catalog-default-locale"
-            <*> o .:? "locale-catalog-locales"
-            <*> o .:? "locale-catalog-manifest-sha256"
+            <$> parseLocaleCatalogSetting o ManifestUrlSetting
+            <*> parseLocaleCatalogSetting o CatalogRevisionSetting
+            <*> parseLocaleCatalogSetting o SchemaVersionSetting
+            <*> parseLocaleCatalogSetting o DefaultLocaleSetting
+            <*> parseLocaleCatalogSetting o SupportedLocalesSetting
+            <*> parseLocaleCatalogSetting o ManifestSha256Setting
         appLocaleCatalog <-
             either (fail . T.unpack . renderLocaleCatalogConfigError) pure
                 $ parseLocaleCatalogConfig localeCatalogConfig

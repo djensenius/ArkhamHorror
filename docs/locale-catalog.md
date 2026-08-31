@@ -357,6 +357,7 @@ header forms — against both, checking the selected encoding *and* the bytes.
     mise run locale-catalog:offline-cache-hit-test  # a restored cache verifies without frontend/public
     mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
     mise run locale-catalog:capability-settings  # a real manifest configures the advertised capability
+    mise run locale-catalog:capability-probe     # ... and the real backend serves it, or refuses to start
     mise run locale-catalog:serving              # real nginx: status, cache, MIME, rollout
 
 `scripts/validate-locale-catalog.py` regenerates the catalog twice, rebuilds it
@@ -518,8 +519,11 @@ differ without recompiling anything
 | `locale-catalog-manifest-sha256` | `ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256` | `sha256` of the bytes served at the manifest URL |
 
 Every one of them blank (the default) means the deployment publishes no
-pointer, and the capabilities response keeps its exact pre-`0.1.23` shape —
-no object, no identifier. Supplying some but not all of them is a startup
+pointer, and the capabilities response keeps its exact pre-`0.1.23` field and
+capability shape — no object, no identifier, every other field unchanged. It is
+not byte-identical: `schemaRevision` reports `0.1.23`, because it identifies the
+server's contract bundle rather than this optional feature, and clients compare
+its numeric components rather than the string. Supplying some but not all of them is a startup
 error rather than a silent fallback to that legacy shape, so a half-removed
 pointer cannot quietly disappear from a running deployment.
 
@@ -562,13 +566,18 @@ Two different artifacts describe a catalog, and conflating them is the mistake
 this section exists to prevent.
 
 `contracts/fixtures/locale-catalog-manifest.json` is a **synthetic** v1
-manifest: a small, fixed, committed test artifact with three locales, no
-narrative text, and digests that are deterministic constants. It is never
-generated from `frontend/src/locales/**`. The governed capabilities fixture
-derives every advertised value from its exact bytes, which is what lets the
-published contract stay still while catalog content moves: a translator fixing
-a typo changes the production catalog's revision and digest and touches no
-governed byte.
+manifest: a small, fixed, committed test artifact with three locales and no
+narrative text. Nothing in it is asserted — every digest, count, path,
+`outputSha256` and provenance value is *computed* from committed sibling
+authorities (`locale-catalog-source-*.json`, `-backend-registry.json`,
+`-generator.json`, `-schemas.json`, `-chunk-*.json`) by
+`scripts/build-locale-catalog-fixture.py`, whose `--check` mode rebuilds the
+whole set and whose self-tests mutate each claimed field to prove the check
+bites. It is never generated from `frontend/src/locales/**`. The governed
+capabilities fixture derives every advertised value from its exact bytes, which
+is what lets the published contract stay still while catalog content moves: a
+translator fixing a typo changes the production catalog's revision and digest
+and touches no governed byte.
 
 The catalog under `frontend/public/locale-catalog/` is the **production**
 artifact. Its revision and digest are runtime configuration, read by an
@@ -580,6 +589,18 @@ and the whole capabilities response they produce to satisfy the governed
 schema, and asserts the generated manifest is *not* the synthetic one — so the
 fixture can never quietly become a copy of production output, and the synthetic
 shape can never drift into something no deployment can produce.
+
+`mise run locale-catalog:capability-probe` closes it against the real backend
+rather than a model of it. `backend/arkham-api/app-capabilities-probe` loads
+settings through the same `loadYamlSettings` call `Application.appMain` uses,
+builds the response with the handler's own `capabilitiesResponse`, and prints
+`Data.Aeson.encode`'s bytes — the production `toEncoding` path. The driver
+validates those bytes against the governed schema and against the generated
+manifest's exact metadata, checks that an unconfigured run still serves the
+legacy shape, and then corrupts each setting in turn (insecure and ambiguous
+URLs, a malformed revision, a mismatched schema version, an invalid, duplicate
+or unsupported locale, a malformed digest, a value YAML reads as a number)
+requiring the server to refuse to start every time.
 
 Because generation is deterministic, the values are derivable from the
 manifest the deployment just built:
