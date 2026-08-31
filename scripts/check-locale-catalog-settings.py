@@ -158,9 +158,10 @@ def run_probe(
     one, so an inherited ARKHAM_LOCALE_CATALOG_* value cannot mask a failure.
 
     `settings_files` are passed as command-line arguments, which is how
-    `Application.loadAppSettingsArgs` takes runtime config files: they override
-    the compile-time `config/settings.yml` value, and the environment overrides
-    them in turn. Output is captured as raw bytes — the probe writes the
+    `Application.loadAppSettingsArgs` takes runtime config files: they are
+    merged over the compile-time `config/settings.yml` value key by key, and the
+    environment reaches whatever `_env:` markers survive that merge. Output is
+    captured as raw bytes — the probe writes the
     production encoder's output and nothing else, so a caller can assert those
     bytes exactly.
     """
@@ -340,11 +341,14 @@ def _check_with_probe(
     )
 
     # Precedence, as `loadAppSettingsArgs` actually defines it: a runtime
-    # settings file replaces the compile-time value outright, and the
-    # environment reaches a setting only through an `_env:` marker. A literal
-    # in a settings file therefore wins over the environment -- which is the
-    # safe direction, since it means an operator cannot be surprised by an
-    # inherited variable, and a bad settings file cannot be silently rescued.
+    # settings file is merged *over* the compile-time value key by key, and the
+    # environment reaches a setting only through an `_env:` marker. So a key the
+    # file spells literally wins over the environment (the file replaced the
+    # marker the variable would have reached), while a key the file omits keeps
+    # its compile-time marker and stays environment-configurable. Both
+    # directions are exercised below. The literal-wins direction is the safe
+    # one: an operator cannot be surprised by an inherited variable, and a bad
+    # settings file cannot be silently rescued by one.
     literal_override = run_probe(
         command,
         {"ARKHAM_LOCALE_CATALOG_MANIFEST_URL": "https://static.example.org/l10n/manifest.json"},
