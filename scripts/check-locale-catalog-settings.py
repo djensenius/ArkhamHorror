@@ -27,7 +27,6 @@ generated catalog is free to differ from the synthetic fixture.
 """
 
 import hashlib
-import json
 import sys
 from pathlib import Path
 
