@@ -27,6 +27,7 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
         working-directory: frontend
+      - run: mise run locale-catalog:backend-keys-test
       - run: mise run locale-catalog:backend-keys-check
       - run: mise run locale-catalog:validate
 
@@ -52,6 +53,18 @@ jobs:
       - name: Verify the catalog ships in the build output
         run: node scripts/locale-catalog/verify-dist.mjs
         working-directory: frontend
+      # The offline packager builds into its own output directory; a second,
+      # incremental build there must precompress that directory rather than the
+      # default one.
+      - name: Build and verify a custom output directory, twice
+        run: |
+          set -euo pipefail
+          for attempt in first second; do
+            PRECOMPRESS_DIST=dist-custom npm run build -- --outDir dist-custom --emptyOutDir
+            node scripts/locale-catalog/verify-dist.mjs --dist dist-custom
+            test -f dist-custom/locale-catalog/manifest.json.br
+          done
+        working-directory: frontend
 
   serving:
     name: Serving and rollout behavior
@@ -68,4 +81,5 @@ jobs:
       # Boots real nginx over prod.nginxconf and over the config the offline
       # packager generates: status/cache/MIME matrix plus a rolling deploy in
       # both directions.
+      - run: mise run locale-catalog:offline-cache-test
       - run: mise run locale-catalog:serving

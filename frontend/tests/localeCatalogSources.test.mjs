@@ -2,9 +2,16 @@
 // built. All fixtures here are synthetic; no locale prose is duplicated.
 
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
-import { findCompositionLosses, findDuplicateKeys } from '../scripts/locale-catalog/inventory.mjs'
+import { analyzeComposition, findDuplicateKeys } from '../scripts/locale-catalog/inventory.mjs'
+import { nodeRuntime } from '../scripts/locale-catalog/sources.mjs'
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 
 test('a duplicate key in one document is reported with both locations', () => {
   const text = ['{', '  "alpha": "first",', '  "beta": "kept",', '  "alpha": "second"', '}'].join('\n')
@@ -33,68 +40,153 @@ test('duplicates are found at every depth, in arrays, and for equal values', () 
   assert.deepEqual(findDuplicateKeys('{"a":1,"b":{"a":2}}', 'ok.json'), [])
 })
 
-test('a partially overridden contributor is reported with its mount and owner', () => {
-  const composed = {
-    scenario: { intro: 'a long enough shared intro line', outro: 'replaced by the other file' },
-  }
+// The composed tree carries one owner per leaf, exactly as the ownership-tagging
+// Vite plugin produces it, so these exercise the real attribution rules rather
+// than a value-matching approximation.
+const OWNER = '__localeCatalogOwner'
+const owned = (text, file) => {
+  const boxed = new String(text)
+  boxed[OWNER] = file
+  return boxed
+}
+
+test('a partially overridden contributor is reported with the file that won', () => {
+  const first = 'src/locales/en/scenario/first.json'
+  const second = 'src/locales/en/scenario/second.json'
+  const composed = { scenario: { intro: owned('kept', first), outro: owned('other file wins', second) } }
   const files = [
-    {
-      path: 'src/locales/en/scenario/first.json',
-      tree: { intro: 'a long enough shared intro line', outro: 'this variant was overridden', extra: 'lost' },
-    },
+    { path: first, tree: { intro: 'kept', outro: 'overridden', extra: 'never mounted' } },
+    { path: second, tree: { outro: 'other file wins' } },
   ]
-  const losses = findCompositionLosses(composed, files, new Set(files.map((file) => file.path)))
-  assert.equal(losses.length, 1)
-  assert.equal(losses[0].mount, 'scenario')
-  assert.deepEqual(losses[0].overridden, ['outro'])
-  assert.deepEqual(losses[0].missing, ['extra'])
+
+  const { findings } = analyzeComposition(composed, files, OWNER)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, first)
+  assert.equal(findings[0].kind, 'content-lost')
+  assert.deepEqual(findings[0].examples, [`outro -> ${second}`, 'extra'])
+  assert.equal(findings[0].count, 2)
+})
+
+test('short and identical values are still attributed to their real owner', () => {
+  // Value matching cannot tell these apart; ownership tags can.
+  const first = 'src/locales/en/a.json'
+  const second = 'src/locales/en/b.json'
+  const composed = { a: { ok: owned('NO', second) } }
+  const files = [
+    { path: first, tree: { ok: 'NO' } },
+    { path: second, tree: { ok: 'NO' } },
+  ]
+
+  const { findings } = analyzeComposition(composed, files, OWNER)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, first)
+  assert.equal(findings[0].kind, 'no-surviving-content')
 })
 
 test('a contributor whose content never reaches the tree is reported', () => {
-  const composed = {
-    scenario: { intro: 'from the second file', outro: 'only here' },
-  }
+  const first = 'src/locales/en/scenario/first.json'
+  const second = 'src/locales/en/scenario/second.json'
+  const composed = { scenario: { intro: owned('from the second file', second) } }
   const files = [
-    { path: 'src/locales/en/scenario/first.json', tree: { intro: 'from the first file', extra: 'lost' } },
-    { path: 'src/locales/en/scenario/second.json', tree: { intro: 'from the second file', outro: 'only here' } },
+    { path: first, tree: { intro: 'from the first file', extra: 'lost' } },
+    { path: second, tree: { intro: 'from the second file' } },
   ]
 
-  const losses = findCompositionLosses(composed, files, new Set(files.map((file) => file.path)))
-  assert.equal(losses.length, 1)
-  assert.equal(losses[0].file, 'src/locales/en/scenario/first.json')
-  assert.equal(losses[0].mount, '<orphaned-or-overridden>')
-  assert.equal(losses[0].missingCount, 2)
+  const { findings } = analyzeComposition(composed, files, OWNER)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, first)
+  assert.equal(findings[0].kind, 'no-surviving-content')
+  assert.equal(findings[0].count, 2)
 })
 
 test('a file no module imports is reported as orphaned', () => {
-  const composed = { scenario: { intro: 'published text for the scenario' } }
+  const used = 'src/locales/en/scenario/used.json'
+  const composed = { scenario: { intro: owned('published', used) } }
   const files = [
-    { path: 'src/locales/en/scenario/used.json', tree: { intro: 'published text for the scenario' } },
+    { path: used, tree: { intro: 'published' } },
     { path: 'src/locales/en/scenario/orphan.json', tree: { intro: 'translated but never imported' } },
   ]
 
-  const losses = findCompositionLosses(composed, files, new Set(files.map((file) => file.path)))
-  assert.equal(losses.length, 1)
-  assert.equal(losses[0].file, 'src/locales/en/scenario/orphan.json')
-  assert.equal(losses[0].mount, '<orphaned-or-overridden>')
+  const { findings } = analyzeComposition(composed, files, OWNER)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, 'src/locales/en/scenario/orphan.json')
+  assert.equal(findings[0].kind, 'no-surviving-content')
 })
 
-test('a file that belongs to another locale is not a finding', () => {
-  const composed = { scenario: { intro: 'english text for the scenario' } }
+test('a spread that fully overrides another file is still reported', () => {
+  // `{ ...label, ...other }` at the same mount: `other` wins every leaf.
+  const label = 'src/locales/en/label.json'
+  const other = 'src/locales/en/other.json'
+  const composed = { one: owned('other', other), two: owned('other two', other) }
   const files = [
-    { path: 'src/locales/en/scenario/used.json', tree: { intro: 'english text for the scenario' } },
-    { path: 'homebrew/campaign/locales/en/base.json', tree: { intro: 'homebrew text nobody composed here' } },
+    { path: label, tree: { one: 'label', two: 'label two' } },
+    { path: other, tree: { one: 'other', two: 'other two' } },
   ]
 
-  const losses = findCompositionLosses(composed, files, new Set(['src/locales/en/scenario/used.json']))
-  assert.deepEqual(losses, [])
+  const { findings } = analyzeComposition(composed, files, OWNER)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, label)
+})
+
+test('a file mounted under two aliases is attributed to both', () => {
+  const shared = 'src/locales/en/shared.json'
+  const composed = {
+    first: { intro: owned('shared intro', shared) },
+    second: { intro: owned('shared intro', shared) },
+  }
+  const files = [{ path: shared, tree: { intro: 'shared intro' } }]
+  assert.deepEqual(analyzeComposition(composed, files, OWNER).findings, [])
 })
 
 test('an intact composition reports nothing', () => {
-  const composed = { a: { one: 'value one is long enough' }, b: { two: 'value two is long enough' } }
+  const a = 'src/locales/en/a.json'
+  const b = 'src/locales/en/b.json'
+  const composed = { a: { one: owned('one', a) }, b: { two: owned('two', b) } }
   const files = [
-    { path: 'src/locales/en/a.json', tree: { one: 'value one is long enough' } },
-    { path: 'src/locales/en/b.json', tree: { two: 'value two is long enough' } },
+    { path: a, tree: { one: 'one' } },
+    { path: b, tree: { two: 'two' } },
   ]
-  assert.deepEqual(findCompositionLosses(composed, files, new Set(files.map((f) => f.path))), [])
+  assert.deepEqual(analyzeComposition(composed, files, OWNER).findings, [])
+})
+
+// --- Runtime pin ------------------------------------------------------------
+// The generator's output depends on the Node it runs on, so the version is
+// pinned exactly and recorded in the provenance. A patch-level drift must be a
+// hard failure, not a shrug.
+
+test('the node engine pin is exact and must match the running runtime', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'locale-catalog-node-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+
+  const frontend = join(directory, 'frontend')
+  mkdirSync(frontend, { recursive: true })
+  const write = (engine) =>
+    writeFileSync(join(frontend, 'package.json'), JSON.stringify({ engines: { node: engine } }))
+
+  write(process.versions.node)
+  assert.deepEqual(nodeRuntime(frontend), { version: process.versions.node })
+
+  const [major, minor, patch] = process.versions.node.split('.')
+  write(`${major}.${minor}.${Number(patch) + 1}`)
+  assert.throws(() => nodeRuntime(frontend), /pinned to Node/)
+
+  write(`^${process.versions.node}`)
+  assert.throws(() => nodeRuntime(frontend), /must pin an exact node version/)
+
+  write(major)
+  assert.throws(() => nodeRuntime(frontend), /must pin an exact node version/)
+})
+
+test('the repository pins the same exact node version everywhere', () => {
+  const pinned = JSON.parse(readFileSync(join(REPO_ROOT, 'frontend/package.json'), 'utf8')).engines
+    .node
+  assert.match(pinned, /^\d+\.\d+\.\d+$/)
+
+  const contains = (path, needle) =>
+    assert.ok(
+      readFileSync(join(REPO_ROOT, path), 'utf8').includes(needle),
+      `${path} does not pin node ${pinned}`,
+    )
+  contains('mise.toml', pinned)
+  contains('Dockerfile', pinned)
 })

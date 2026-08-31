@@ -136,19 +136,18 @@ install_nodejs() {
     step "Installing Node.js"
 
     # Keep this aligned with mise.toml, the Dockerfile and frontend/package.json
-    # `engines`: the locale-catalog generator refuses to run on a different
-    # major, because the published catalog revision is bound to it.
+    # `engines`: the locale-catalog generator refuses to run on any other
+    # version, because the published catalog revision is bound to it exactly.
     local node_ver="26.7.0"
-    local node_major="${node_ver%%.*}"
 
     if [ -x "${DEPS_DIR}/node/bin/node" ]; then
-        local installed_major
-        installed_major="$("${DEPS_DIR}/node/bin/node" --version 2>/dev/null | sed 's/^v//; s/\..*//')"
-        if [ "$installed_major" = "$node_major" ]; then
-            info "Node.js ${installed_major}.x already present, skipping"
+        local installed_ver
+        installed_ver="$("${DEPS_DIR}/node/bin/node" --version 2>/dev/null | sed 's/^v//')"
+        if [ "$installed_ver" = "$node_ver" ]; then
+            info "Node.js ${installed_ver} already present, skipping"
             export PATH="${DEPS_DIR}/node/bin:${PATH}"; touch "$STAMP_NODE"; return 0
         fi
-        warn "Node.js ${installed_major}.x is installed but ${node_major}.x is required; reinstalling"
+        warn "Node.js ${installed_ver} is installed but ${node_ver} is required; reinstalling"
         rm -rf "${DEPS_DIR}/node" "$STAMP_NODE"
     elif [ -f "$STAMP_NODE" ]; then
         rm -f "$STAMP_NODE"

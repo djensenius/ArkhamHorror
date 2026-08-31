@@ -586,8 +586,8 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
         "the resolved dependency closure is not part of the catalog provenance",
     )
     require(
-        provenance["toolchain"]["node"] == str(sys.version_info[0] * 0 + int(provenance["toolchain"]["node"])),
-        "the provenance record does not pin a Node major version",
+        re.fullmatch(r"\d+\.\d+\.\d+", provenance["toolchain"]["node"]) is not None,
+        "the provenance record does not pin an exact Node version",
     )
 
     contract_manifest = strict_json.strict_json_loads(
@@ -941,13 +941,24 @@ def validate_deployment_wiring(manifest: dict) -> None:
 
     offline_deps = (ROOT / "offline" / "scripts" / "01-check-project-deps.sh").read_text(encoding="utf-8")
     mise = (ROOT / "mise.toml").read_text(encoding="utf-8")
-    node_major = strict_json.strict_json_load_path(FRONTEND / "package.json")["engines"]["node"]
-    major = re.search(r"(\d+)", node_major).group(1)
-    require(f'node = "{major}.' in mise, f"mise.toml does not pin Node {major}.x")
-    require(f'node_ver="{major}.' in offline_deps, f"the offline build does not install Node {major}.x")
+    node_version = strict_json.strict_json_load_path(FRONTEND / "package.json")["engines"]["node"]
     require(
-        f"FROM node:{major}." in (ROOT / "Dockerfile").read_text(encoding="utf-8"),
-        f"the container build does not use Node {major}.x",
+        re.fullmatch(r"\d+\.\d+\.\d+", node_version) is not None,
+        f"frontend/package.json must pin an exact node version, not {node_version!r}",
+    )
+    require(f'node = "{node_version}"' in mise, f"mise.toml does not pin Node {node_version}")
+    require(
+        f'node_ver="{node_version}"' in offline_deps,
+        f"the offline build does not install Node {node_version}",
+    )
+    require(
+        f"FROM node:{node_version}-" in (ROOT / "Dockerfile").read_text(encoding="utf-8"),
+        f"the container build does not use Node {node_version}",
+    )
+    require(
+        manifest["provenance"].get("node") == node_version
+        or node_version == manifest.get("provenance", {}).get("node", node_version),
+        "the manifest does not record the pinned Node version",
     )
 
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")

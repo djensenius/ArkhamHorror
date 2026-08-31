@@ -16,6 +16,7 @@ import {
   buildCatalog,
   diffCatalog,
   requiredKeysFromFixture,
+  resolveLinkedVariables,
   writeCatalog,
 } from '../scripts/locale-catalog/generate.mjs'
 import { sha256Hex } from '../scripts/locale-catalog/canonical.mjs'
@@ -357,4 +358,95 @@ test('written output is verifiable and stale output is detected', () => {
   ])
 
   rmSync(SCRATCH, { recursive: true, force: true })
+})
+
+// --- Linked-message variable contracts -------------------------------------
+// A message that links another one renders the target's text too, so the
+// variables the target needs are part of the parent's effective contract.
+
+const linkEntry = (target, variables = []) => ({
+  form: 'message',
+  nodes: [{ type: 'linked', modifier: null, target: { kind: 'static', key: target } }],
+  variables,
+})
+
+const textEntry = (variables) => ({
+  form: 'message',
+  nodes: variables.map((variable) => ({ type: 'var', ...variable })),
+  variables,
+})
+
+test('a linked chain publishes every variable its descendants need', () => {
+  const shelter = { name: 'shelterValue', source: 'named', role: 'text' }
+  const xp = { name: 'xp', source: 'named', role: 'text' }
+  const entries = new Map([
+    ['parent', linkEntry('middle')],
+    ['middle', linkEntry('leaf', [xp])],
+    ['leaf', textEntry([shelter])],
+  ])
+
+  resolveLinkedVariables(new Map([['en', entries]]), 'en')
+
+  assert.deepEqual(
+    entries.get('parent').linkedVariables.map((variable) => variable.name),
+    ['shelterValue', 'xp'],
+  )
+})
+
+test('a link resolved through the fallback locale still contributes variables', () => {
+  const count = { name: 'count', source: 'named', role: 'text' }
+  const en = new Map([['leaf', textEntry([count])]])
+  const fr = new Map([['parent', linkEntry('leaf')]])
+
+  resolveLinkedVariables(
+    new Map([
+      ['en', en],
+      ['fr', fr],
+    ]),
+    'en',
+  )
+
+  assert.deepEqual(
+    fr.get('parent').linkedVariables.map((variable) => variable.name),
+    ['count'],
+  )
+})
+
+test('a cycle in the link graph terminates without inventing variables', () => {
+  const entries = new Map([
+    ['a', linkEntry('b')],
+    ['b', linkEntry('a')],
+    ['self', linkEntry('self')],
+  ])
+
+  resolveLinkedVariables(new Map([['en', entries]]), 'en')
+
+  assert.equal(entries.get('a').linkedVariables, undefined)
+  assert.equal(entries.get('self').linkedVariables, undefined)
+})
+
+test('a variable whose role disagrees across a link makes the parent unsupported', () => {
+  const entries = new Map([
+    ['parent', linkEntry('leaf', [{ name: 'name', source: 'named', role: 'text' }])],
+    ['leaf', textEntry([{ name: 'name', source: 'named', role: 'assetPath' }])],
+  ])
+
+  const conflicts = resolveLinkedVariables(new Map([['en', entries]]), 'en')
+
+  assert.equal(conflicts, 1)
+  assert.equal(entries.get('parent').form, 'unsupported')
+  assert.equal(entries.get('parent').reason, 'conflicting-variable-role')
+})
+
+test('the production catalog carries the variables a linked resolution needs', async () => {
+  // edgeOfTheEarth part 3 links part 2, which asks for shelterValue.
+  const built = await buildCatalog({})
+  const key = 'edgeOfTheEarth.iceAndDeath.part3.investigatorSetup.body'
+  const entry = chunkFor(built.files, built.manifest, built.manifest.defaultLocale, key)?.entries[key]
+
+  assert.ok(entry, `${key} is not published in ${built.manifest.defaultLocale}`)
+  const declared = [...(entry.variables ?? []), ...(entry.linkedVariables ?? [])].map(
+    (variable) => variable.name,
+  )
+  assert.ok(declared.includes('shelterValue'), `expected shelterValue in ${declared.join(', ')}`)
 })

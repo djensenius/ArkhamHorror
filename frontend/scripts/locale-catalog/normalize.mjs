@@ -105,6 +105,13 @@ const HEADING_ELEMENTS = new Map([
 // element's AST node cannot carry (a `src` on a paragraph, an `alt` on a list
 // item) is refused rather than parsed and dropped.
 const STYLE_ATTRIBUTES = new Set(['class', 'style'])
+// `data-count='{count}'` mirrors a counter into an attribute the stylesheet
+// reads. The name is meaningful to a client, so it is carried as typed data
+// rather than dropped — but only the names on this list, and only holding a
+// declared variable or a short literal token.
+const DATA_ATTRIBUTES = new Map([['data-count', 'count']])
+const PARAGRAPH_ATTRIBUTES = new Set(['class', 'style', ...DATA_ATTRIBUTES.keys()])
+const DATA_TEXT_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/
 const GROUP_ATTRIBUTES = new Set(['class', 'style', 'data-image-id'])
 const IMAGE_ATTRIBUTES = new Set(['class', 'style', 'src', 'alt', 'width', 'align'])
 const NO_ATTRIBUTES = new Set()
@@ -113,8 +120,8 @@ function allowedAttributesFor(tagName) {
   if (tagName === 'img') return IMAGE_ATTRIBUTES
   if (tagName === 'br' || tagName === 'hr' || EMPHASIS_ELEMENTS.has(tagName)) return NO_ATTRIBUTES
   if (GROUP_ELEMENTS.has(tagName)) return GROUP_ATTRIBUTES
+  if (tagName === 'p') return PARAGRAPH_ATTRIBUTES
   if (
-    tagName === 'p' ||
     tagName === 'ul' ||
     tagName === 'ol' ||
     tagName === 'li' ||
@@ -126,24 +133,70 @@ function allowedAttributesFor(tagName) {
 }
 
 // Inline CSS is kept as structured, non-executable declarations rather than a
-// raw string: a native client can map or ignore them, and nothing here can
-// carry a URL, a script, or markup.
-const STYLE_PROPERTY_PATTERN = /^(?:--)?[A-Za-z][A-Za-z0-9-]{0,31}$/
-const STYLE_VALUE_PATTERN = /^[A-Za-z0-9 .,%#()/_-]{1,64}$/
+// raw string, and it is parsed against a *closed* grammar rather than a
+// permissive character class: only these properties, only these value tokens,
+// only these functions. Anything else — an unknown property, an unknown
+// function, a string, an escape, `!important`, `expression(`, or a resource in
+// any position other than a whole-value `url()` — makes the entry
+// unsupported. Resources never survive as URLs: a `url()` is resolved to the
+// same semantic asset reference an image node carries, so a nested
+// `image-set(url(/api/private))` cannot smuggle one through.
+const STYLE_PROPERTIES = new Set([
+  'align-items',
+  'align-self',
+  'color',
+  'container-type',
+  'display',
+  'flex',
+  'flex-basis',
+  'flex-direction',
+  'flex-shrink',
+  'float',
+  'font-size',
+  'font-weight',
+  'gap',
+  'justify-content',
+  'line-height',
+  'margin',
+  'margin-left',
+  'margin-top',
+  'max-width',
+  'object-fit',
+  'overflow',
+  'padding-bottom',
+  'padding-left',
+  'padding-right',
+  'shape-margin',
+  'shape-outside',
+  'text-align',
+  'width',
+])
+const CUSTOM_PROPERTY_PATTERN = /^--[a-z][a-z0-9-]{0,31}$/
+const STYLE_KEYWORDS = new Set([
+  'auto', 'baseline', 'block', 'bold', 'border-box', 'center', 'column', 'contain', 'content-box',
+  'cover', 'end', 'flex', 'flex-end', 'flex-start', 'hidden', 'inherit', 'initial', 'inline',
+  'inline-block', 'inline-size', 'justify', 'left', 'middle', 'none', 'normal', 'nowrap', 'right',
+  'row', 'space-around', 'space-between', 'space-evenly', 'start', 'stretch', 'unset', 'visible',
+  'wrap',
+])
+const STYLE_COLORS = new Set([
+  'black', 'blue', 'brown', 'gray', 'green', 'grey', 'orange', 'purple', 'red', 'white', 'yellow',
+])
+const STYLE_FUNCTIONS = new Set(['calc', 'clamp', 'max', 'min'])
+const STYLE_UNITS = new Set([
+  '%', 'ch', 'cqh', 'cqw', 'deg', 'em', 'ex', 'fr', 'pt', 'px', 'rem', 'vh', 'vmax', 'vmin', 'vw',
+])
 const MAX_STYLE_DECLARATIONS = 8
+const MAX_STYLE_VALUE_LENGTH = 96
 const CARD_CODE_PATTERN = /^:?[A-Za-z0-9][A-Za-z0-9:_-]{1,31}$/
 const IMAGE_ALIGNMENTS = new Set(['left', 'right', 'center', 'justify'])
 const MAX_IMAGE_WIDTH = 4096
 
-function styleDeclarations(attributes, tagName, placeholders) {
-  const raw = attributes.get('style')
-  if (raw === undefined) return []
-
-  const declarations = []
-  // Split on `;` outside parentheses so `clamp(1px, 2cqw, 3px)` stays intact.
+/** Splits a declaration list on `;` that are not inside parentheses. */
+function splitDeclarations(raw) {
+  const chunks = []
   let depth = 0
   let chunk = ''
-  const chunks = []
   for (const character of raw) {
     if (character === '(') depth += 1
     else if (character === ')') depth = Math.max(0, depth - 1)
@@ -155,30 +208,133 @@ function styleDeclarations(attributes, tagName, placeholders) {
     chunk += character
   }
   chunks.push(chunk)
+  return chunks
+}
 
-  for (const entry of chunks) {
+/**
+ * Tokenizes a CSS value against the closed grammar and returns it normalized.
+ * Throws for anything the grammar does not describe.
+ */
+function normalizeStyleValue(value, where) {
+  const refuse = (detail) => {
+    throw unsupported('invalid-style-declaration', `${where}: ${detail}`)
+  }
+  if (value.length > MAX_STYLE_VALUE_LENGTH) refuse('value too long')
+
+  const tokens = []
+  const functions = []
+  let index = 0
+  while (index < value.length) {
+    const rest = value.slice(index)
+    const whitespace = rest.match(/^\s+/)
+    if (whitespace) {
+      index += whitespace[0].length
+      continue
+    }
+
+    const functionCall = rest.match(/^([a-zA-Z][a-zA-Z0-9-]*)\(/)
+    if (functionCall) {
+      const name = functionCall[1].toLowerCase()
+      if (!STYLE_FUNCTIONS.has(name)) refuse(`function ${name}()`)
+      functions.push(name)
+      tokens.push(`${name}(`)
+      index += functionCall[0].length
+      continue
+    }
+
+    const number = rest.match(/^[+-]?(?:\d+\.?\d*|\.\d+)([a-zA-Z%]*)/)
+    if (number) {
+      const unit = number[1]
+      if (unit !== '' && !STYLE_UNITS.has(unit.toLowerCase())) refuse(`unit ${unit}`)
+      tokens.push(number[0])
+      index += number[0].length
+      continue
+    }
+
+    const color = rest.match(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})\b/)
+    if (color) {
+      tokens.push(color[0])
+      index += color[0].length
+      continue
+    }
+
+    const ident = rest.match(/^[a-zA-Z][a-zA-Z0-9-]*/)
+    if (ident) {
+      const word = ident[0].toLowerCase()
+      if (!STYLE_KEYWORDS.has(word) && !STYLE_COLORS.has(word)) refuse(`keyword ${ident[0]}`)
+      tokens.push(word)
+      index += ident[0].length
+      continue
+    }
+
+    const character = value[index]
+    if (character === ',' || character === ')') {
+      if (character === ')') {
+        if (functions.length === 0) refuse('unbalanced )')
+        functions.pop()
+      }
+      tokens.push(character)
+      index += 1
+      continue
+    }
+    if ('+-*/'.includes(character)) {
+      if (functions.length === 0) refuse(`operator ${character} outside a function`)
+      tokens.push(character)
+      index += 1
+      continue
+    }
+    refuse(`character ${JSON.stringify(character)}`)
+  }
+
+  if (functions.length > 0) refuse('unbalanced (')
+  if (tokens.length === 0) refuse('empty value')
+
+  // Deterministic normalization: single spaces, none before `,` or `)`, none
+  // after `(`.
+  let out = ''
+  for (const token of tokens) {
+    if (out === '' || out.endsWith('(') || token === ',' || token === ')') out += token
+    else out += ` ${token}`
+  }
+  return out
+}
+
+function styleDeclarations(attributes, tagName, placeholders) {
+  const raw = attributes.get('style')
+  if (raw === undefined) return []
+  if (placeholders === undefined) {
+    throw new Error('locale-catalog: styleDeclarations needs the placeholder table')
+  }
+
+  const declarations = []
+  for (const entry of splitDeclarations(raw)) {
     const trimmed = entry.trim()
     if (trimmed === '') continue
     const separator = trimmed.indexOf(':')
     if (separator === -1) throw unsupported('invalid-style-declaration', `${tagName}: ${trimmed}`)
-    const property = trimmed.slice(0, separator).trim()
+    const property = trimmed.slice(0, separator).trim().toLowerCase()
     const value = trimmed.slice(separator + 1).trim()
-    if (!STYLE_PROPERTY_PATTERN.test(property)) {
-      throw unsupported('invalid-style-declaration', `${tagName}: ${trimmed}`)
+    if (!STYLE_PROPERTIES.has(property) && !CUSTOM_PROPERTY_PATTERN.test(property)) {
+      throw unsupported('invalid-style-declaration', `${tagName}: property ${property}`)
     }
 
-    // A `url(...)` is only ever kept as a resolved semantic asset reference —
-    // never as a URL a client could fetch blindly, and never external.
-    const urlMatch = value.match(/^url\(\s*([^)]*?)\s*\)$/i)
-    if (urlMatch) {
-      declarations.push({ property, asset: assetReference(urlMatch[1], placeholders, tagName) })
+    // A resource is only ever accepted as the entire value, and only as a
+    // semantic asset reference.
+    const urlValue = value.match(/^url\(\s*([^()]*?)\s*\)$/i)
+    if (urlValue) {
+      declarations.push({
+        property,
+        asset: assetReference(urlValue[1], placeholders, `${tagName}[style]`),
+      })
       continue
     }
-    if (SENTINEL_PATTERN.test(value)) throw unsupported('placeholder-in-attribute', `${tagName}[style]`)
-    if (!STYLE_VALUE_PATTERN.test(value) || /expression\s*\(|[a-z]+:\/\//i.test(value)) {
-      throw unsupported('invalid-style-declaration', `${tagName}: ${trimmed}`)
+    if (/url\s*\(/i.test(value)) {
+      throw unsupported('invalid-style-declaration', `${tagName}: nested resource in ${property}`)
     }
-    declarations.push({ property, value })
+    if (SENTINEL_PATTERN.test(value)) {
+      throw unsupported('placeholder-in-attribute', `${tagName}[style]`)
+    }
+    declarations.push({ property, value: normalizeStyleValue(value, `${tagName}[${property}]`) })
   }
 
   if (declarations.length > MAX_STYLE_DECLARATIONS) {
@@ -187,11 +343,42 @@ function styleDeclarations(attributes, tagName, placeholders) {
   return declarations
 }
 
-/** Adds `style`/`styleVars` to a node only when the source carried them. */
+/**
+ * Typed values for the allowlisted `data-*` attributes. A placeholder becomes a
+ * declared variable; anything else must be a short literal token.
+ */
+function dataValues(attributes, tagName, placeholders) {
+  const values = []
+  for (const [attribute, name] of DATA_ATTRIBUTES) {
+    const raw = attributes.get(attribute)
+    if (raw === undefined) continue
+    const match = raw.match(new RegExp(`^${SENTINEL_OPEN}(\\d+)${SENTINEL_CLOSE}$`, 'u'))
+    if (match) {
+      const placeholder = placeholders?.[Number(match[1])]
+      if (placeholder?.kind !== 'variable') {
+        throw unsupported('placeholder-in-attribute', `${tagName}[${attribute}]`)
+      }
+      values.push({ name, variable: { name: placeholder.name, source: placeholder.source } })
+      continue
+    }
+    if (SENTINEL_PATTERN.test(raw)) {
+      throw unsupported('placeholder-in-attribute', `${tagName}[${attribute}]`)
+    }
+    if (!DATA_TEXT_PATTERN.test(raw)) {
+      throw unsupported('unsupported-attribute', `${tagName}[${attribute}]`)
+    }
+    values.push({ name, text: raw })
+  }
+  return values
+}
+
+/** Adds `style`/`styleVars`/`data` to a node only when the source carried them. */
 function withPresentation(node, attributes, tagName, styleVariables, placeholders) {
   const declarations = styleDeclarations(attributes, tagName, placeholders)
   if (declarations.length > 0) node.style = declarations
   if (styleVariables !== undefined && styleVariables.length > 0) node.styleVars = styleVariables
+  const data = dataValues(attributes, tagName, placeholders)
+  if (data.length > 0) node.data = data
   return node
 }
 
@@ -363,7 +550,7 @@ function parseHtml(html) {
 // `src` holds the asset-path variables, `class` may hold a style variable, and
 // `style` may hold an asset URL; a placeholder anywhere else is data this AST
 // cannot carry. Each of those three validates its own placeholders strictly.
-const PLACEHOLDER_ATTRIBUTES = new Set(['src', 'class', 'style'])
+const PLACEHOLDER_ATTRIBUTES = new Set(['src', 'class', 'style', ...DATA_ATTRIBUTES.keys()])
 const MAX_ATTRIBUTE_LENGTH = 240
 
 function attributeMap(element, allowed) {
@@ -578,10 +765,17 @@ function listNode(element, placeholders, ordered, styles, styleVariables, attrib
         itemAttributes,
         'li',
         item.variables,
+        placeholders,
       ),
     )
   }
-  return withPresentation({ type: 'list', ordered, styles, items }, attributes, ordered ? 'ol' : 'ul', styleVariables)
+  return withPresentation(
+    { type: 'list', ordered, styles, items },
+    attributes,
+    ordered ? 'ol' : 'ul',
+    styleVariables,
+    placeholders,
+  )
 }
 
 function convertNode(node, placeholders, out) {
@@ -619,6 +813,7 @@ function convertNode(node, placeholders, out) {
         attributes,
         tagName,
         variables,
+        placeholders,
       ),
     )
     return
@@ -636,6 +831,7 @@ function convertNode(node, placeholders, out) {
         attributes,
         tagName,
         variables,
+        placeholders,
       ),
     )
     return
@@ -671,12 +867,15 @@ function convertNode(node, placeholders, out) {
           attributes,
           tagName,
           variables,
+          placeholders,
         ),
       )
       return
     }
 
-    out.push(withPresentation({ type: 'group', styles: tokens, children }, attributes, tagName, variables))
+    out.push(
+      withPresentation({ type: 'group', styles: tokens, children }, attributes, tagName, variables, placeholders),
+    )
     return
   }
   // Unreachable while allowedAttributesFor() and this dispatch agree; kept so
@@ -709,6 +908,11 @@ function collectVariables(nodes, into) {
   for (const node of nodes) {
     for (const variable of node.styleVars ?? []) {
       declareVariable(into, { name: variable.name, source: variable.source, role: 'text' })
+    }
+    for (const value of node.data ?? []) {
+      if (value.variable !== undefined) {
+        declareVariable(into, { name: value.variable.name, source: value.variable.source, role: 'text' })
+      }
     }
     if (node.type === 'var') {
       declareVariable(into, { name: node.name, source: node.source, role: node.role })

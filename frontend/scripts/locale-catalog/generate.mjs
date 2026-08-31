@@ -22,7 +22,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { canonicalJson, sha256Hex } from './canonical.mjs'
-import { findCompositionLosses, findDuplicateKeys } from './inventory.mjs'
+import { analyzeComposition, findDuplicateKeys } from './inventory.mjs'
 import {
   ASSET_PATH_VARIABLES,
   KEY_SEGMENT_PATTERN,
@@ -35,6 +35,7 @@ import {
 import {
   collectSourceFiles,
   loadLocaleSources,
+  loadOwnershipTrees,
   makeVariableClassifier,
   toolchainVersions,
 } from './sources.mjs'
@@ -102,8 +103,10 @@ function digestRepoFiles(relativePaths) {
 }
 
 function generatorSourceDigests() {
+  // `.json` is here for known-gaps.json: the set of holes the catalog carries
+  // is part of what the generator does, so editing it must move the revision.
   return readdirSync(HERE, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.mjs'))
+    .filter((entry) => entry.isFile() && (entry.name.endsWith('.mjs') || entry.name.endsWith('.json')))
     .map((entry) => ({
       path: relative(REPO_ROOT, join(HERE, entry.name)).split('\\').join('/'),
       sha256: sha256Hex(readFileSync(join(HERE, entry.name))),
@@ -155,7 +158,7 @@ function collectRequiredKeys() {
  * declared twice inside one JSON file (JSON.parse keeps the last silently), or
  * a contributor whose keys the `.ts` spread composition overrode.
  */
-function assertSourceIntegrity(frontendDir, sourceFiles, sources) {
+function assertSourceIntegrity(frontendDir, sourceFiles, sources, ownership) {
   const duplicates = []
   for (const { path } of sourceFiles) {
     if (!path.endsWith('.json')) continue
@@ -171,44 +174,54 @@ function assertSourceIntegrity(frontendDir, sourceFiles, sources) {
   }
 
   const files = sources.fileTrees.map(({ path, tree }) => ({
-    path: path.replace(/^\/?(src\/locales|homebrew)\//, (match) => match.replace(/^\//, '')),
+    path: path.replace(/^\//, ''),
     tree,
   }))
-  // Mirrors homebrewMessages(): `homebrew/<campaign>/locales/en/*.json` is
-  // merged into the camelCased campaign scope, and only into the locales whose
-  // composed tree actually has that scope.
-  const homebrewScope = (path) => {
-    const campaign = path.match(/^homebrew\/([^/]+)\/locales\//)?.[1]
-    if (campaign === undefined) return null
-    const [head, ...rest] = campaign.split('-')
-    return head + rest.map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join('')
+
+  // Ownership is read off a second composition in which every JSON leaf is
+  // tagged with the file it came from, so "who won this key" is an answer from
+  // the module graph rather than a guess from matching values.
+  const findings = []
+  for (const locale of sources.locales) {
+    const composed = ownership.trees[locale]
+    const owned = new Set()
+    for (const value of Object.values(composed)) {
+      if (value instanceof String && value[ownership.ownerKey]?.startsWith('homebrew/')) owned.add(true)
+    }
+    const composesHomebrew = JSON.stringify(Object.keys(composed)).length > 0 && localeComposesHomebrew(composed, ownership.ownerKey)
+    const contributors = files.filter((file) => {
+      if (file.path.startsWith(`src/locales/${locale}/`)) return true
+      return composesHomebrew && file.path.startsWith('homebrew/')
+    })
+    const result = analyzeComposition(composed, contributors, ownership.ownerKey)
+    for (const finding of result.findings) findings.push({ locale, ...finding })
   }
 
-  const losses = []
-  for (const locale of sources.locales) {
-    const composed = sources.messages[locale]
-    const owned = files.filter((file) => {
-      if (file.path.startsWith(`src/locales/${locale}/`)) return true
-      const scope = homebrewScope(file.path)
-      return scope !== null && Object.hasOwn(composed, scope)
-    })
-    const ownedPaths = new Set(
-      owned.filter((file) => file.path.startsWith(`src/locales/${locale}/`)).map((file) => file.path),
-    )
-    for (const loss of findCompositionLosses(sources.messages[locale], owned, ownedPaths)) {
-      losses.push({ locale, ...loss })
-    }
-  }
-  if (losses.length > 0) {
-    const detail = losses
+  if (findings.length > 0) {
+    const detail = findings
       .slice(0, 6)
       .map(
-        (loss) =>
-          `${loss.locale}:${loss.file} mounted at ${loss.mount} lost ${loss.missingCount} and had ${loss.overriddenCount} overridden (${[...loss.missing, ...loss.overridden].slice(0, 3).join(', ')})`,
+        (finding) =>
+          `${finding.locale}:${finding.file} (${finding.kind}, ${finding.count}) ${finding.detail} — ${finding.examples.join(', ')}`,
       )
       .join('; ')
     fail(`locale composition dropped contributor content: ${detail}`)
   }
+}
+
+/** True when this locale's composed tree contains homebrew-owned content. */
+function localeComposesHomebrew(composed, ownerKey) {
+  const stack = [composed]
+  while (stack.length > 0) {
+    const node = stack.pop()
+    if (node instanceof String) {
+      if (node[ownerKey]?.startsWith('homebrew/')) return true
+      continue
+    }
+    if (node === null || typeof node !== 'object') continue
+    stack.push(...Object.values(node))
+  }
+  return false
 }
 
 /** The backend's machine-derived emitted-key registry. */
@@ -366,6 +379,87 @@ function resolveLinkGraph(normalized, defaultLocale) {
   return downgraded
 }
 
+/**
+ * Publishes the *effective* variable contract of every entry: the variables its
+ * own nodes need, plus the variables every entry it links to needs, resolved
+ * transitively through the same locale-then-fallback path a client follows.
+ *
+ * A rendered link is rendered with the parent's variables, so an entry that
+ * links to one needing `shelterValue` needs `shelterValue` too — otherwise the
+ * client silently renders a hole. A name whose role disagrees across the chain
+ * cannot be satisfied at all and makes the entry unsupported.
+ */
+export function resolveLinkedVariables(normalized, defaultLocale) {
+  const entryOf = (locale, key) =>
+    normalized.get(locale)?.get(key) ??
+    (locale === defaultLocale ? undefined : normalized.get(defaultLocale)?.get(key))
+
+  let conflicts = 0
+  for (const [locale, entries] of normalized) {
+    const cache = new Map()
+
+    const collect = (key, seen) => {
+      const cached = cache.get(key)
+      if (cached !== undefined) return cached
+      if (seen.has(key)) return new Map()
+      seen.add(key)
+
+      const entry = entryOf(locale, key)
+      if (entry === undefined || entry.form === 'unsupported') return new Map()
+
+      const variables = new Map()
+      for (const variable of entry.variables) {
+        variables.set(`${variable.source}:${variable.name}`, variable)
+      }
+      for (const target of staticLinkTargets(entry)) {
+        for (const [id, variable] of collect(target, seen)) {
+          if (!variables.has(id)) variables.set(id, variable)
+        }
+      }
+      cache.set(key, variables)
+      return variables
+    }
+
+    for (const [key, entry] of entries) {
+      if (entry.form === 'unsupported') continue
+      const targets = staticLinkTargets(entry)
+      if (targets.length === 0) continue
+
+      const own = new Map(entry.variables.map((variable) => [`${variable.source}:${variable.name}`, variable]))
+      const linked = new Map()
+      let conflict = null
+      for (const target of targets) {
+        for (const [id, variable] of collect(target, new Set([key]))) {
+          const existing = own.get(id) ?? linked.get(id)
+          if (existing !== undefined && existing.role !== variable.role) {
+            conflict = `${id} is ${existing.role} here and ${variable.role} in ${target}`
+            break
+          }
+          if (!own.has(id)) linked.set(id, variable)
+        }
+        if (conflict !== null) break
+      }
+
+      if (conflict !== null) {
+        entries.set(key, {
+          form: 'unsupported',
+          reason: 'conflicting-variable-role',
+          detail: conflict.slice(0, 120),
+        })
+        conflicts += 1
+        continue
+      }
+
+      if (linked.size > 0) {
+        entry.linkedVariables = [...linked.values()].sort(
+          (a, b) => a.source.localeCompare(b.source) || a.name.localeCompare(b.name),
+        )
+      }
+    }
+  }
+  return conflicts
+}
+
 function chunkEntries(entries) {
   const packs = new Map()
   for (const [key, entry] of entries) {
@@ -384,7 +478,7 @@ function localeResolutionTable(sources) {
 }
 
 /** Builds the whole catalog in memory. Nothing is written by this function. */
-export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
+export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = {}) {
   const sources = await loadLocaleSources(frontendDir)
   const classifyVariable = makeVariableClassifier(sources, ASSET_PATH_VARIABLES)
 
@@ -414,7 +508,8 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
   const defaultLocale = sources.uiLocaleFor('')
   if (!sources.locales.includes(defaultLocale)) fail(`default locale ${defaultLocale} is not supported`)
 
-  assertSourceIntegrity(frontendDir, provenance.localeSources, sources)
+  const ownership = await loadOwnershipTrees(frontendDir)
+  assertSourceIntegrity(frontendDir, provenance.localeSources, sources, ownership)
 
   const normalized = new Map()
   for (const locale of sources.locales) {
@@ -427,6 +522,10 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
     if (resolveLinkGraph(normalized, defaultLocale) === 0) break
     if (pass === 7) fail('link graph did not stabilize')
   }
+
+  // A link is rendered with the parent's variables, so the parent's contract
+  // includes everything its targets need.
+  resolveLinkedVariables(normalized, defaultLocale)
 
   // Required = the keys the governed contract fixtures reference, plus every
   // key the backend actually emits that the default locale translates. The
@@ -447,22 +546,42 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
     if (!defaultEntries.has(key)) fail(`contract fixture key ${key} is missing from ${defaultLocale}`)
   }
 
+  // Every offending key is collected before failing: fixing these one build at
+  // a time, with 6,000 required keys, is not a workflow anyone should have.
+  const unusable = []
   for (const key of [...requiredKeys].sort()) {
     const fallbackEntry = defaultEntries.get(key)
-    if (fallbackEntry === undefined) fail(`required key ${key} is missing from ${defaultLocale}`)
+    if (fallbackEntry === undefined) {
+      unusable.push(`${key} is missing from ${defaultLocale}`)
+      continue
+    }
     if (fallbackEntry.form === 'unsupported') {
-      fail(
-        `required key ${key} is unsupported in ${defaultLocale} ` +
-          `(${fallbackEntry.reason}: ${fallbackEntry.detail}) — it is emitted by the backend, so it cannot be optional`,
-      )
+      unusable.push(`${key} is unsupported in ${defaultLocale} (${fallbackEntry.reason}: ${fallbackEntry.detail})`)
     }
     for (const [locale, entries] of normalized) {
       const entry = entries.get(key)
       if (entry !== undefined && entry.form === 'unsupported') {
-        fail(`required key ${key} is unsupported in ${locale} (${entry.reason}: ${entry.detail})`)
+        unusable.push(`${key} is unsupported in ${locale} (${entry.reason}: ${entry.detail})`)
       }
     }
   }
+  if (unusable.length > 0) {
+    fail(
+      `${unusable.length} backend-emitted key(s) cannot be published; they are emitted by the ` +
+        `backend, so they cannot be optional:\n  ${unusable.join('\n  ')}`,
+    )
+  }
+
+  // Entries the catalog cannot publish but that no required key depends on.
+  const unsupportedEntries = []
+  for (const [locale, entries] of normalized) {
+    for (const [key, entry] of entries) {
+      if (entry.form === 'unsupported') unsupportedEntries.push({ locale, key, reason: entry.reason })
+    }
+  }
+  unsupportedEntries.sort((a, b) =>
+    a.locale === b.locale ? (a.key < b.key ? -1 : 1) : a.locale < b.locale ? -1 : 1,
+  )
 
   // Variable coverage: a message that needs a substitution the backend never
   // sends renders with a hole. Where the extractor resolved a key's variables,
@@ -475,7 +594,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
     if (record === undefined) continue
     const entry = defaultEntries.get(key)
     if (entry.form === 'unsupported') continue
-    const needed = entry.variables
+    const needed = [...entry.variables, ...(entry.linkedVariables ?? [])]
       .filter((variable) => variable.source === 'named' && variable.role === 'text')
       .map((variable) => variable.name)
     const missing = needed.filter((name) => !record.variables.has(name))
@@ -486,6 +605,13 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR } = {}) {
       variableGaps.push({ key, missing, declared: [], resolved: false })
     }
   }
+
+  const gaps = {
+    untranslatedKeys: untranslated,
+    unsupportedEntries,
+    variableGaps: variableGaps.map(({ key, missing }) => ({ key, missing })),
+  }
+  enforceKnownGaps(gaps, options.updateKnownGaps === true)
 
   // Phase 1: the catalog's content, with no revision and no URLs in it yet.
   const bodies = []
@@ -711,6 +837,57 @@ export function diffCatalog(files, outputDir) {
   return problems
 }
 
+/**
+ * Holes the catalog is knowingly carrying, pinned so they cannot grow.
+ *
+ * Three kinds exist, and none of them can be fixed by this generator: a key the
+ * backend emits that the default locale never translated, an entry whose markup
+ * this AST refuses (and that no required key needs), and a key whose text wants
+ * a variable the backend was not seen to send. Inventing prose to close the
+ * first is not an option, so instead the exact set is committed. A new hole
+ * fails the build; a hole that has been fixed also fails, so the list can only
+ * be shrunk deliberately.
+ */
+function enforceKnownGaps(actual, update) {
+  const path = resolve(REPO_ROOT, 'frontend/scripts/locale-catalog/known-gaps.json')
+  const rendered = {
+    $comment:
+      'Known, reviewed holes in the locale catalog. Regenerate deliberately with ' +
+      '`node scripts/locale-catalog/generate.mjs --update-known-gaps`; every change must be reviewed.',
+    unsupportedEntries: actual.unsupportedEntries,
+    untranslatedKeys: actual.untranslatedKeys,
+    variableGaps: actual.variableGaps,
+  }
+  if (update) {
+    writeFileSync(path, canonicalJson(rendered))
+    return
+  }
+  if (!existsSync(path)) fail(`${path} is missing; the catalog will not publish unreviewed gaps`)
+
+  const expected = JSON.parse(readFileSync(path, 'utf8'))
+  const differences = []
+  const compare = (label, actualList, expectedList) => {
+    const actualSet = new Set(actualList.map((entry) => canonicalJson(entry)))
+    const expectedSet = new Set((expectedList ?? []).map((entry) => canonicalJson(entry)))
+    for (const entry of actualSet) {
+      if (!expectedSet.has(entry)) differences.push(`new ${label}: ${entry.trim()}`)
+    }
+    for (const entry of expectedSet) {
+      if (!actualSet.has(entry)) differences.push(`fixed ${label} still listed: ${entry.trim()}`)
+    }
+  }
+  compare('unsupported entry', rendered.unsupportedEntries, expected.unsupportedEntries)
+  compare('untranslated key', rendered.untranslatedKeys, expected.untranslatedKeys)
+  compare('variable gap', rendered.variableGaps, expected.variableGaps)
+
+  if (differences.length > 0) {
+    fail(
+      `known-gaps.json is out of date (${differences.length} difference(s)); review each one and ` +
+        `re-run with --update-known-gaps:\n  ${differences.slice(0, 40).join('\n  ')}`,
+    )
+  }
+}
+
 async function main(argv) {
   const check = argv.includes('--check')
   const outIndex = argv.indexOf('--out')
@@ -718,7 +895,9 @@ async function main(argv) {
   const outputDir = outIndex === -1 ? DEFAULT_OUTPUT_DIR : resolve(argv[outIndex + 1])
   const provenanceIndex = argv.indexOf('--provenance')
 
-  const { manifest, manifestSha256, files, catalogRevision, provenance } = await buildCatalog({})
+  const { manifest, manifestSha256, files, catalogRevision, provenance } = await buildCatalog({
+    updateKnownGaps: argv.includes('--update-known-gaps'),
+  })
 
   // Full provenance (every hashed input path and digest) for the validator,
   // which re-derives the manifest's provenance digests from it.

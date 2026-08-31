@@ -23,7 +23,7 @@ instance RunMessage AMomentsRest where
     ResolveThisStory iid (is attrs -> True) -> do
       enemies <- select $ EnemyOneOf [NotEnemy ExhaustedEnemy, EnemyIsEngagedWith Anyone]
       chooseOrRunOneM iid do
-        scenarioI18n $ labeled' "aMomentsRest.chooseEnemy " do
+        scenarioI18n $ labeled' "aMomentsRest.chooseEnemy" do
           chooseTargetM iid enemies \enemy -> do
             exhaustWith attrs enemy
             disengageFromAll enemy

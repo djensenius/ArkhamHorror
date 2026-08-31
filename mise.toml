@@ -41,6 +41,14 @@ run = "uv run scripts/extract-backend-i18n-keys.py"
 description = "Fail if the committed backend emitted-key registry has drifted from the Haskell sources"
 run = "uv run scripts/extract-backend-i18n-keys.py --check"
 
+[tasks."locale-catalog:backend-keys-test"]
+description = "Run the backend emitted-key extractor's own tests (synthetic modules plus registry properties)"
+run = "uv run scripts/test_extract_backend_i18n_keys.py"
+
+[tasks."locale-catalog:offline-cache-test"]
+description = "Check the offline build's cache key really covers every locale-catalog provenance input"
+run = "bash offline/scripts/test-frontend-cache-hash.sh"
+
 [tasks."locale-catalog:serving"]
 description = "Boot prod.nginxconf and the offline package's nginx config and verify catalog status, cache, MIME and rolling-deploy behavior"
 run = "uv run scripts/validate-catalog-serving.py"

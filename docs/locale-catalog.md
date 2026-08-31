@@ -79,15 +79,26 @@ plural branch, and both declare every variable they reference in `variables`.
 | `image` | semantic asset reference: `role` (`encounterSet`, `card`, `token`, `chaosToken`, `campaign`, `homebrew`, `extra`, `other`), `assetPath` relative to `/img/arkham/`, `styles`, and optional `alt`, `width`, `align` |
 | `cardRef` | text that names a card (`code`) plus its `children`; the web client shows that card's art on hover |
 
+A `paragraph` may also carry `data`: an allowlisted `data-*` value (currently
+only `count`) holding either a declared variable or a short literal token. It
+is data, never markup — the vote counters in *Congress of the Keys* mirror
+their count into an attribute the stylesheet reads, and a client that ignores
+`data` still renders the instruction.
+
 `styles` are the source `class` tokens, restricted to `[A-Za-z][A-Za-z0-9-]*`.
 They are hints only: a client may ignore any token without losing an
 instruction. An element whose node type has no `styles` field (`emphasis`,
 `break`, `rule`) refuses a `class` attribute rather than dropping it.
 
 Inline CSS becomes `style`: a bounded list of `{property, value}` declarations
-with a closed charset — never a raw string, never a URL. A `url(...)` is only
-kept when it resolves inside `/img/arkham/`, and then as `{property, asset}`
-with the same semantic asset reference an image node carries. A class built
+drawn from a **closed grammar** — an allowlisted property, and a value built
+only from allowlisted keywords, numbers with allowlisted units, hex/plain
+colors and the functions `calc`, `clamp`, `min`, `max`. Any other property,
+function (`var()`, `image-set()`, an escaped `\75 rl()`, …) or token makes the
+entry unsupported; a value is never a raw string. A `url(...)` is accepted only
+as a whole value, only when it resolves inside `/img/arkham/`, and then becomes
+`{property, asset}` — the same semantic asset reference an image node carries —
+so a nested `image-set(url(/api/private))` cannot smuggle a resource through. A class built
 from a placeholder (`class='{restfulNight3Status}'`) becomes a declared
 `styleVars` entry, so the hint survives as a typed variable instead of being
 dropped.
@@ -110,10 +121,30 @@ tree-sitter's Haskell grammar and resolves each key-emitting call site
 (`ikey`, `i18n`, `i18nWithTitle`, the flavor-text DSL, `labeled'`, literal
 `"$key"` tokens, …) together with the scope stack `scope`/`campaignI18n`/
 `scenarioI18n`/`unscoped` put it in, and the variables `countVar`/`withXp`/
-`nameVar`/… attach. Helper functions whose scope comes from their caller are
-resolved through their call sites; anything still not statically resolvable is
-recorded as a `dynamic` site with its location, so the artifact states its own
-coverage instead of implying completeness.
+`nameVar`/… attach. Resolution follows Haskell scoping rather than proximity: an alias
+(`campaignI18n`, `scenarioI18n`, …) is looked up through the imports that
+actually carry it, including `module X` re-exports and the import lists that
+narrow them, and a parameterized alias
+(`scenarioI18n n a = campaignI18n $ scope ("part" <> tshow n) a`) is resolved
+with the literal its call site supplies. Scopes and keys that are a conditional
+or a local binding over literals fan out to every branch; a local helper whose
+key is a parameter (`let interlude k = … p k`) is resolved from its call sites.
+Presentation modifiers (`p.green`, `li.validate cond "key"`) keep their key, and
+amount-prompt labels are recorded under `choice.` exactly as the web client
+resolves them.
+
+Three fail-closed rules keep the registry honest:
+
+* a module tree-sitter cannot parse is a **hard failure** unless a lexical scan
+  proves it contains no i18n token at all, and then it is recorded — with its
+  digest — in `unparsedModules`, so the waiver dies when the file changes;
+* every site that cannot be resolved is committed in full in `dynamicSites`
+  with a reason from a **closed vocabulary** (`runtime-key`, `runtime-scope`,
+  `caller-scope`, `partial-key`, `scope-underflow`); an unclassifiable reason
+  fails the run, and the drift gate fails when the set moves;
+* the extractor has its own tests (`mise run locale-catalog:backend-keys-test`)
+  that feed synthetic Haskell modules to the production code path, one rule at
+  a time.
 
 The result is committed as `backend/arkham-api/i18n-emitted-keys.json` and is
 re-derived in CI (`mise run locale-catalog:backend-keys-check`), so adding a new
@@ -121,10 +152,16 @@ re-derived in CI (`mise run locale-catalog:backend-keys-check`), so adding a new
 build consumes it and **fails** if any emitted key that the default locale
 translates is unsupported — those keys are gameplay content, not decoration.
 Keys the backend emits that no locale translates at all are a content gap in
-the locale sources, not a rendering failure: they are listed in the manifest's
-`backend.untranslatedKeys` and the gate fails if that list changes without the
-registry being regenerated. `backend.variableGaps` reports required keys whose
-message needs a substitution the extracted record does not list.
+the locale sources, not a rendering failure: writing the missing prose is not
+something a build tool can do. Those, the entries whose markup the AST refuses,
+and the keys whose text wants a variable the backend was not seen to send are
+therefore pinned in `frontend/scripts/locale-catalog/known-gaps.json`. The
+build **fails** when a gap appears that is not on that list *and* when a listed
+gap has been fixed, so the set can only move deliberately
+(`--update-known-gaps`, reviewed in the diff). The file is part of the
+generator's provenance, so changing it changes the catalog revision. The same
+sets are also reported in the manifest under `backend.untranslatedKeys` and
+`backend.variableGaps`.
 
 ### Unsupported entries
 
@@ -139,15 +176,15 @@ the reason is one of a closed set: `message-syntax-error`,
 `misplaced-list-item`, `unresolved-link`, `unsupported-link-target`,
 `link-cycle`, `conflicting-variable-role`.
 
-At the revision this was written that is 19 of 38,603 entries (0.05%), and
-**none of them is a key the backend emits**: 9 `html-parse-error` (malformed
-prose markup in strings the backend never sends), 5 `unsupported-element`
-(`<a href>` on the About page, one `<table>`), 4 `unsupported-attribute`
-(`data-count` on a vote counter) and 1 `message-syntax-error` (a `<style>`
-block whose CSS braces are not valid vue-i18n message syntax). Several source
-typos that used to swallow prose in the web client too — `<p.`/`<li.`/`<pSon`
-instead of a closed tag, a `<ul>` whose first `<li>` was missing, and a linked
-key with a misspelled target — were fixed in the locale sources rather than
+At the revision this was written that is 6 of 38,817 entries (0.015%), and
+**none of them is a key the backend emits**: 5 `unsupported-element`
+(`<a href>` on the About page, one `<table>`) and 1 `message-syntax-error` (a
+`<style>` block whose CSS braces are not valid vue-i18n message syntax). They
+are pinned in `known-gaps.json`. Source typos that used to swallow prose in the
+web client too — `<p.`/`<li.`/`<pSon`/`<?p`/`<<ul` instead of a closed tag, a
+`<ul>` whose first `<li>` was missing, an unterminated `<li`, a Korean
+paragraph opened with `<끔찍한`, a linked key with a misspelled target, and two
+backend keys with a trailing space — were fixed at the source rather than
 papered over here. A client should show any remaining unsupported entry as
 unavailable rather than blank.
 
@@ -174,16 +211,17 @@ no URLs in it and hashed (`provenance.outputSha256`). Then that digest is
 hashed together with the complete provenance — every locale source file, the
 production modules whose semantics are mirrored, the generator sources, both
 schemas, the backend emitted-key registry, the exact `package-lock.json`
-(integrity hashes included), the pinned Node major, the versions of Vite,
+(integrity hashes included), the exact Node version, the versions of Vite,
 vue-i18n/`@intlify`, parse5 and jsonc-parser, and the contract fixtures — and
 the result becomes the revision. A dependency bump, a Node major change, a
 locale byte, or a change in the rendered output alone therefore all produce a
 new revision, and identical inputs always reproduce the same one.
 
-Node is pinned to one major across `mise.toml`, `frontend/package.json`
-(`engines`), the `Dockerfile` and the offline installer; the generator refuses
-to run on a different major rather than silently producing different bytes. Identical
-inputs therefore always produce identical bytes, and any input change is a new
+Node is pinned to one **exact** version (`26.7.0`) across `mise.toml`,
+`frontend/package.json` (`engines`), the `Dockerfile`, CI and the offline
+installer; the generator refuses to run on any other version, down to the
+patch, rather than silently producing different bytes. Identical inputs
+therefore always produce identical bytes, and any input change is a new
 revision. The manifest's `provenance` block republishes those digests, and the
 manifest pins every chunk's size and SHA-256, so a client can verify what it
 downloaded against what it was promised.
@@ -195,10 +233,14 @@ be lost silently:
   and any key declared twice in the same object — including keys that are only
   equal after unescaping — fails the build with both locations. `JSON.parse`,
   and therefore Vite and the Vue build, would simply have kept the last one.
-* **Composition collisions.** Each contributor file is compared against the
-  composed tree it was merged into; a file whose keys were overridden by
-  another spread, or whose content is not in the tree at all (a translated file
-  no module imports), fails the build naming the owning file and its mount.
+* **Composition collisions.** Ownership is taken from the module graph, not
+  from matching values: a Vite plugin boxes every JSON string leaf with the
+  file it came from, so each leaf in the composed tree has exactly one owner
+  even when two files declare the same short string. A file whose keys were
+  overridden by another spread, or whose content is not in the composed tree at
+  all (a translated file no module imports), fails the build naming the file
+  that won. This is how the Spanish `label` namespace and the Chinese
+  *Heart of the Elders* parts were found to be missing from the Vue build.
 
 Generation then fails — rather than publishing a partial catalog — on an unsafe
 key/pack/locale identifier, a key longer than the schema's bound, a non-string
@@ -223,7 +265,9 @@ can be logged or leaked by these routes.
 ## Verification
 
     mise run locale-catalog:test                 # render-AST, source-integrity and generator tests
+    mise run locale-catalog:backend-keys-test    # the key extractor's own rules, on synthetic modules
     mise run locale-catalog:backend-keys-check   # backend emitted-key registry drift
+    mise run locale-catalog:offline-cache-test   # the offline build's cache key covers every input
     mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
     mise run locale-catalog:serving              # real nginx: status, cache, MIME, rollout
 
@@ -252,9 +296,13 @@ old static root and vice versa).
 
 `frontend/scripts/locale-catalog/verify-dist.mjs` proves the built `dist/`
 really contains the catalog with matching digests and precompressed siblings;
-the offline build runs the same check against its own output and hashes every
-catalog provenance input into its cache key, so a stale `_deps/frontend` can
-never be reused. All of it runs in the `Locale catalog` GitHub Actions
+the offline build runs the same check against its own output — before both of
+its cache-hit returns — and hashes every catalog provenance input into its
+cache key, so a stale `_deps/frontend` can never be reused.
+`offline/scripts/test-frontend-cache-hash.sh` runs that production hash
+function against a synthetic tree and mutates each input class in turn,
+including the cases where an input is missing and the hash must fail rather
+than quietly hash nothing. All of it runs in the `Locale catalog` GitHub Actions
 workflow.
 
 ## Ownership

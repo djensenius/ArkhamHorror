@@ -31,26 +31,74 @@ else
     _hash_cmd() { shasum -a 256 "$@"; }
 fi
 
+# Hashes one file, failing loudly if it cannot be read. `xargs` cannot invoke a
+# shell function, so every input is hashed through this loop instead — the
+# previous `find ... | xargs _hash_cmd` silently produced nothing, which meant a
+# source change never invalidated the cache.
+hash_paths() {
+    local path
+    for path in "$@"; do
+        if [ ! -r "$path" ]; then
+            echo "missing hash input: $path" >&2
+            return 1
+        fi
+        _hash_cmd "$path" || return 1
+    done
+}
+
+hash_tree() {
+    local root="$1"; shift
+    if [ ! -d "$root" ]; then
+        echo "missing hash input directory: $root" >&2
+        return 1
+    fi
+    local files=()
+    while IFS= read -r file; do files+=("$file"); done < <(find "$root" -type f "$@" | LC_ALL=C sort)
+    if [ ${#files[@]} -eq 0 ]; then
+        echo "no files under hash input directory: $root" >&2
+        return 1
+    fi
+    hash_paths "${files[@]}"
+}
+
+# Everything the build output depends on:
+#   - all frontend sources (src/ covers src/locales)
+#   - the dependency declarations and build config
+#   - the locale catalog's remaining provenance inputs: homebrew locales and
+#     icon maps, the generator, its schemas, the governed contract fixtures and
+#     the backend emitted-key registry
+#   - the exact Node version the catalog revision is bound to
+# node_modules/ is deliberately excluded: package-lock.json pins it.
+# `set -e` is suppressed inside a condition or an assignment, and this function
+# is always called from one, so every step propagates its own failure
+# explicitly and the collected input is captured before it is hashed. Relying on
+# errexit here is how a hash of nothing gets accepted as a cache key.
 compute_frontend_hash() {
-    (
-        cd "$FRONTEND_DIR"
-        # Use find | sort to keep a stable order, then hash each file
-        find src -type f | sort | xargs _hash_cmd 2>/dev/null
-        # A package-lock.json change means dependency declarations may have changed
-        _hash_cmd package-lock.json 2>/dev/null || true
-        _hash_cmd package.json 2>/dev/null || true
-        # Rebuild when the index.html template changes as well
-        _hash_cmd index.html 2>/dev/null || true
-        _hash_cmd vite.config.js 2>/dev/null || true
-        # Everything the locale catalog is generated from. `src` above covers
-        # src/locales; these are the rest of its provenance inputs, so a stale
-        # _deps/frontend can never be reused after one of them changes.
-        find homebrew -type f \( -name '*.json' -path '*/locales/*' -o -name 'icons.json' \) | sort | xargs _hash_cmd 2>/dev/null
-        find scripts/locale-catalog schemas -type f | sort | xargs _hash_cmd 2>/dev/null
-        (cd "$PROJECT_ROOT" && find contracts/fixtures contracts/manifest.json backend/arkham-api/i18n-emitted-keys.json -type f | sort | xargs _hash_cmd 2>/dev/null)
-        # The runtime the catalog revision is bound to.
-        node --version 2>/dev/null || true
-    ) | _hash_cmd | cut -d' ' -f1
+    local inputs
+    inputs="$(
+        cd "$FRONTEND_DIR" || exit 1
+        hash_tree src || exit 1
+        hash_paths package.json package-lock.json index.html vite.config.js || exit 1
+        hash_tree homebrew \( -name '*.json' -path '*/locales/*' -o -name 'icons.json' \) || exit 1
+        hash_tree scripts/locale-catalog || exit 1
+        hash_tree schemas || exit 1
+        cd "$PROJECT_ROOT" || exit 1
+        hash_tree contracts/fixtures || exit 1
+        hash_paths contracts/manifest.json backend/arkham-api/i18n-emitted-keys.json || exit 1
+        node --version || exit 1
+    )" || return 1
+    [ -n "$inputs" ] || return 1
+    printf '%s\n' "$inputs" | _hash_cmd | cut -d' ' -f1
+}
+
+# Fails the build unless the locale catalog really is in `$1`.
+verify_locale_catalog() {
+    local output="$1"
+    substep "Verifying the locale catalog in ${output}"
+    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output"); then
+        rm -rf "$output" "$FRONTEND_BUILT_MARKER"
+        die "  ✗ The build output in ${output} does not contain a valid locale catalog"
+    fi
 }
 
 # ── Build frontend ────────────────────────────────────────────────────────────
@@ -60,13 +108,16 @@ build_frontend() {
 
     # ── Decide whether a rebuild is needed based on the content hash ─────────
     local current_hash
-    current_hash="$(compute_frontend_hash)"
+    if ! current_hash="$(compute_frontend_hash)"; then
+        die "  ✗ Could not hash the frontend build inputs"
+    fi
 
     if [ -f "$FRONTEND_BUILT_MARKER" ]; then
         local stored_hash
         stored_hash="$(cat "$FRONTEND_BUILT_MARKER" 2>/dev/null || echo '')"
         if [ "$current_hash" = "$stored_hash" ] && [ -d "$FRONTEND_OUTPUT" ] && [ -f "${FRONTEND_OUTPUT}/index.html" ]; then
             info "Frontend source unchanged (hash matches), skipping build"
+            verify_locale_catalog "$FRONTEND_OUTPUT"
             return 0
         fi
         info "Frontend source changed; rebuild required"
@@ -78,6 +129,7 @@ build_frontend() {
     if [ -d "$FRONTEND_OUTPUT" ] && [ -f "${FRONTEND_OUTPUT}/index.html" ]; then
         if [ -f "$hash_record" ] && [ "$(cat "$hash_record" 2>/dev/null)" = "$current_hash" ]; then
             info "Frontend artifacts already exist and the source is unchanged (CI cache hit), skipping build"
+            verify_locale_catalog "$FRONTEND_OUTPUT"
             echo "$current_hash" > "$FRONTEND_BUILT_MARKER"
             return 0
         fi
@@ -166,6 +218,10 @@ build_frontend() {
     ensure_dir "$FRONTEND_OUTPUT"
 
     # Try to write directly to the target directory through Vite CLI --outDir
+    # PRECOMPRESS_DIST makes npm's postbuild compress the directory this build
+    # actually wrote; without it precompress would compress a stale
+    # frontend/dist and leave the real output uncompressed.
+    export PRECOMPRESS_DIST="${FRONTEND_OUTPUT}"
     info "Running: npm run build -- --outDir ${FRONTEND_OUTPUT}"
     if npm run build -- --outDir "${FRONTEND_OUTPUT}" 2>&1 | while IFS= read -r line; do
         echo "    $line"
@@ -190,11 +246,7 @@ build_frontend() {
 
     # 3. Verify the published locale catalog really is in this build output
     #    (npm prebuild generates it; a stale cached dist would fail here).
-    substep "Verifying the locale catalog in ${FRONTEND_OUTPUT}"
-    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "${FRONTEND_OUTPUT}"); then
-        rm -rf "$FRONTEND_OUTPUT" "$FRONTEND_BUILT_MARKER"
-        die "  ✗ The offline build output does not contain a valid locale catalog"
-    fi
+    verify_locale_catalog "$FRONTEND_OUTPUT"
 
     # 4. Verify artifacts
     if [ -d "$FRONTEND_OUTPUT" ]; then

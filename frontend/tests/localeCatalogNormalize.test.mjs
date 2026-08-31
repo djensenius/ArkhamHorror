@@ -280,8 +280,18 @@ test('unsupported and unsafe input is refused, never partially rendered', () => 
     ['<a href="https://example.test">link</a>', 'unsupported-element'],
     ['<a href="javascript:alert(1)">link</a>', 'unsupported-element'],
     ['<p onclick="steal()">x</p>', 'unsupported-attribute'],
-    ['<div style="background:url(https://evil.test/x.png)">x</div>', 'unsupported-image-source'],
-    ['<div style="background:url(/etc/passwd.png)">x</div>', 'unsupported-image-source'],
+    // `background` is not on the property allowlist at all, so the value is
+    // never even examined.
+    ['<div style="background:url(https://evil.test/x.png)">x</div>', 'invalid-style-declaration'],
+    ['<div style="background:url(/etc/passwd.png)">x</div>', 'invalid-style-declaration'],
+    // `shape-outside` is allowlisted and does take a `url()`, so these exercise
+    // the resource rule itself rather than the property rule.
+    ['<div style="shape-outside:url(https://evil.test/x.png)">x</div>', 'unsupported-image-source'],
+    ['<div style="shape-outside:url(/etc/passwd.png)">x</div>', 'unsupported-image-source'],
+    ['<div style="shape-outside:image-set(url(/api/private))">x</div>', 'invalid-style-declaration'],
+    ['<div style="shape-outside:\\75 rl(/api/private)">x</div>', 'invalid-style-declaration'],
+    ['<div style="width:var(--leak)">x</div>', 'invalid-style-declaration'],
+    ['<div style="width:calc(1px * url(/api/private))">x</div>', 'invalid-style-declaration'],
     ['<div style="content:\'</div><script>\'">x</div>', 'invalid-style-declaration'],
     ["<div style='--at:12%;--b:1;--c:2;--d:3;--e:4;--f:5;--g:6;--h:7;--i:8'>x</div>", 'invalid-style-declaration'],
     ['<span data-image-id="../../etc/passwd">x</span>', 'unsupported-attribute'],

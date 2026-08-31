@@ -81,7 +81,7 @@ export function findDuplicateKeys(text, file) {
 }
 
 function leafEntries(value, prefix, out) {
-  if (value === null || typeof value !== 'object') {
+  if (value === null || typeof value !== 'object' || value instanceof String) {
     out.set(prefix, value)
     return out
   }
@@ -95,107 +95,97 @@ function leafEntries(value, prefix, out) {
   return out
 }
 
-function valueAt(tree, path) {
-  let current = tree
-  for (const segment of path.split('.')) {
-    if (current === null || typeof current !== 'object') return undefined
-    current = Array.isArray(current) ? current[Number(segment)] : current[segment]
-    if (current === undefined) return undefined
-  }
-  return current
-}
-
 /**
- * Detects content a locale source file contributed that the composed tree does
- * not carry — the signature of one contributor overriding another through a
- * spread or a homebrew scope merge.
+ * Attributes every published string to the source file that produced it, using
+ * the ownership tags the module graph itself carries — not value matching.
  *
- * A file's mount point is discovered, not assumed: sample leaves are looked up
- * by value in an index of the composed tree, and the mount is the prefix those
- * matches agree on. A file whose mount cannot be determined that way (nothing
- * it contributes survives anywhere) is reported as fully lost.
+ * For each contributor this reports the leaves it lost to another file, the
+ * leaves that reached no tree at all, and the files that won nothing anywhere.
+ * A leaf has exactly one owner, so there is no ambiguity to shrug at: a file
+ * whose declared content is not in the composed tree under its own name is a
+ * finding.
  */
-export function findCompositionLosses(composed, files, ownedPaths) {
-  const byValue = new Map()
+export function analyzeComposition(composed, files, ownerKey) {
+  const ownerOf = new Map()
+  const ownedByFile = new Map()
   for (const [path, value] of leafEntries(composed, '', new Map())) {
-    if (typeof value !== 'string' || value.length < 4) continue
-    if (!byValue.has(value)) byValue.set(value, [])
-    byValue.get(value).push(path)
+    if (!(value instanceof String)) continue
+    const owner = value[ownerKey]
+    if (owner === undefined) continue
+    ownerOf.set(path, owner)
+    if (!ownedByFile.has(owner)) ownedByFile.set(owner, new Set())
+    ownedByFile.get(owner).add(path)
   }
 
-  const losses = []
+  const findings = []
   for (const { path, tree } of files) {
     if (tree === null || typeof tree !== 'object') continue
-    const leaves = leafEntries(tree, '', new Map())
-    if (leaves.size === 0) continue
+    const declared = [...leafEntries(tree, '', new Map()).keys()]
+    if (declared.length === 0) continue
 
-    // Candidate mounts: for each sampled leaf, every composed path carrying
-    // the same value, minus that leaf's own path.
-    const votes = new Map()
-    let sampled = 0
-    for (const [leaf, value] of leaves) {
-      if (typeof value !== 'string' || value.length < 4) continue
-      const matches = byValue.get(value)
-      if (matches === undefined) continue
-      sampled += 1
-      for (const match of matches) {
-        if (match !== leaf && !match.endsWith(`.${leaf}`)) continue
-        const prefix = match === leaf ? '' : match.slice(0, match.length - leaf.length - 1)
-        votes.set(prefix, (votes.get(prefix) ?? 0) + 1)
-      }
-      if (sampled >= 12) break
-    }
-
-    // No votes means nothing this file contributes is reachable in the
-    // composed tree. For a file that belongs to this locale that is an orphan
-    // — a translated file no module imports, so the app never shows it. For a
-    // file from elsewhere (a homebrew campaign only the default locale
-    // composes) it is expected and not claimed as a finding.
-    if (votes.size === 0) {
-      const hasText = [...leaves.values()].some(
-        (value) => typeof value === 'string' && value.length >= 4,
-      )
-      if (hasText && ownedPaths?.has(path)) {
-        losses.push({
-          file: path,
-          mount: '<orphaned-or-overridden>',
-          missing: [...leaves.keys()].slice(0, 8),
-          missingCount: leaves.size,
-          overridden: [],
-          overriddenCount: 0,
-        })
-      }
+    const owned = ownedByFile.get(path) ?? new Set()
+    if (owned.size === 0) {
+      findings.push({
+        file: path,
+        kind: 'no-surviving-content',
+        detail: 'every key this file declares was overridden, or no module imports it',
+        examples: declared.slice(0, 6),
+        count: declared.length,
+      })
       continue
     }
 
-    const ranked = [...votes.entries()].sort((a, b) => b[1] - a[1] || a[0].length - b[0].length)
-    const [mount, agreement] = ranked[0]
-    // An ambiguous mount would produce noise, not findings: the winning mount
-    // must be agreed on by at least two sampled leaves (or by the only one
-    // available) and must hold a majority of the votes.
-    if (agreement < Math.min(2, sampled) || agreement * 2 < sampled) continue
-    const root = mount === '' ? composed : valueAt(composed, mount)
-    if (root === null || typeof root !== 'object') continue
-
-    const missing = []
-    const overridden = []
-    for (const [leaf, value] of leaves) {
-      const found = valueAt(root, leaf)
-      if (found === undefined) missing.push(leaf)
-      else if (found !== value && (typeof found !== 'object' || found === null)) overridden.push(leaf)
+    // Mount points, derived from the paths this file actually owns. A file may
+    // legitimately be mounted more than once (an alias such as
+    // returnToTheForgottenAge), so every mount is kept.
+    const declaredSet = new Set(declared)
+    const mounts = new Set()
+    for (const path_ of owned) {
+      for (const leaf of declaredSet) {
+        if (path_ === leaf) mounts.add('')
+        else if (path_.endsWith(`.${leaf}`)) mounts.add(path_.slice(0, path_.length - leaf.length - 1))
+      }
+    }
+    if (mounts.size === 0) {
+      findings.push({
+        file: path,
+        kind: 'unattributable-mount',
+        detail: 'the file owns published keys but none of them match its own key paths',
+        examples: [...owned].slice(0, 6),
+        count: owned.size,
+      })
+      continue
     }
 
-    if (missing.length > 0 || overridden.length > 0) {
-      losses.push({
+    const overridden = []
+    const dropped = []
+    for (const leaf of declared) {
+      let survives = false
+      let winner
+      for (const mount of mounts) {
+        const composedPath = mount === '' ? leaf : `${mount}.${leaf}`
+        const owner = ownerOf.get(composedPath)
+        if (owner === path) {
+          survives = true
+          break
+        }
+        if (owner !== undefined) winner ??= owner
+      }
+      if (survives) continue
+      if (winner !== undefined) overridden.push(`${leaf} -> ${winner}`)
+      else dropped.push(leaf)
+    }
+
+    if (overridden.length > 0 || dropped.length > 0) {
+      findings.push({
         file: path,
-        mount: mount === '' ? '<root>' : mount,
-        missing: missing.slice(0, 8),
-        missingCount: missing.length,
-        overridden: overridden.slice(0, 8),
-        overriddenCount: overridden.length,
+        kind: 'content-lost',
+        detail: `mounted at ${[...mounts].map((mount) => mount || '<root>').join(', ')}`,
+        examples: [...overridden.slice(0, 4), ...dropped.slice(0, 4)],
+        count: overridden.length + dropped.length,
       })
     }
   }
 
-  return losses
+  return { findings, ownedByFile }
 }

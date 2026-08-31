@@ -125,6 +125,13 @@
               "items": {
                 "$ref": "#/$defs/variable"
               }
+            },
+            "linkedVariables": {
+              "description": "Variables the entries this one links to require. A link renders with the parent's variables, so a client must supply these too; they are listed separately from the entry's own so the origin stays visible.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/variable"
+              }
             }
           }
         },
@@ -148,6 +155,13 @@
               }
             },
             "variables": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/variable"
+              }
+            },
+            "linkedVariables": {
+              "description": "Variables the entries this one links to require. A link renders with the parent's variables, so a client must supply these too; they are listed separately from the entry's own so the origin stays visible.",
               "type": "array",
               "items": {
                 "$ref": "#/$defs/variable"
@@ -365,6 +379,9 @@
             },
             "styleVars": {
               "$ref": "#/$defs/styleVariables"
+            },
+            "data": {
+              "$ref": "#/$defs/dataValues"
             }
           }
         },
@@ -675,6 +692,62 @@
             "pattern": "(^|/)\\.\\.(/|$)"
           }
         }
+      }
+    },
+    "dataValues": {
+      "description": "Allowlisted data-* values carried as typed data. Each holds either a declared variable or a short literal token; clients must never treat them as markup.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "count"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+          },
+          "variable": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "source"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]{1,64}$"
+              },
+              "source": {
+                "enum": [
+                  "named",
+                  "list"
+                ]
+              }
+            }
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "required": [
+              "variable"
+            ]
+          }
+        ]
       }
     }
   }
