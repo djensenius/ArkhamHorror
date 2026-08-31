@@ -1271,7 +1271,102 @@
             "1"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$'"
+          "messageContains": "'EN' does not match '^[a-z]{2,3}(-(?:[A-Z]{2}|"
+        }
+      ]
+    },
+    {
+      "description": "Locale catalog manifest URL carrying the redundant default https port, which the server normalizes away before publishing, so two strings could otherwise describe one deployment.",
+      "schema": "contracts/schemas/capabilities.schema.json",
+      "basePositiveFixture": "contracts/fixtures/capabilities-locale-catalog.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/localeCatalog/manifestUrl",
+        "value": "https://static.example.org:443/l10n/manifest.json"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "localeCatalog",
+            "manifestUrl"
+          ],
+          "keyword": "oneOf",
+          "messageContains": "'https://static.example.org:443/l10n/manifest.json' is not valid under any of the given schemas"
+        },
+        {
+          "path": [
+            "localeCatalog",
+            "manifestUrl"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\\\.json$'"
+        },
+        {
+          "path": [
+            "localeCatalog",
+            "manifestUrl"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^https://[a-z0-9]"
+        }
+      ]
+    },
+    {
+      "description": "Locale catalog manifest URL with a port above the 65535 the server accepts.",
+      "schema": "contracts/schemas/capabilities.schema.json",
+      "basePositiveFixture": "contracts/fixtures/capabilities-locale-catalog.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/localeCatalog/manifestUrl",
+        "value": "https://static.example.org:99999/l10n/manifest.json"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "localeCatalog",
+            "manifestUrl"
+          ],
+          "keyword": "oneOf",
+          "messageContains": "'https://static.example.org:99999/l10n/manifest.json' is not valid under any of the given schemas"
+        },
+        {
+          "path": [
+            "localeCatalog",
+            "manifestUrl"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\\\.json$'"
+        },
+        {
+          "path": [
+            "localeCatalog",
+            "manifestUrl"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^https://[a-z0-9]"
+        }
+      ]
+    },
+    {
+      "description": "Locale catalog default locale in a non-canonical region casing ('en-us'); the server uppercases the region before advertising it, so a client can compare by string equality.",
+      "schema": "contracts/schemas/capabilities.schema.json",
+      "basePositiveFixture": "contracts/fixtures/capabilities-locale-catalog.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/localeCatalog/defaultLocale",
+        "value": "en-us"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "localeCatalog",
+            "defaultLocale"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'en-us' does not match '^[a-z]{2,3}(-(?:[A-Z]{2}|"
         }
       ]
     }
@@ -1331,7 +1426,7 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "2efba86fc00e99fb7bd88b29dde78f7d8d781c6b3c2c1bf8e5a5a9004b97e31b",
+    "contracts/manifest.json": "b0d30e1aad7f9c9efb3bd829e85640eb06884e5e49200d161b36f1b45ea2939a",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
@@ -1339,7 +1434,7 @@
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
     "contracts/schemas/basic-choice-question.schema.json": "fc2f196adb2d12d5f95b88c9f6f328e50e7e91cadeeddc3bbb522cd6ece05087",
-    "contracts/schemas/capabilities.schema.json": "4eddf8952d3f6bfb4216346d2f46735353fb10c66fa6d45ad1587e0d6a5bda56",
+    "contracts/schemas/capabilities.schema.json": "08e3ed0b36cec3c4f847f6e7361c4d50e4dfad66ad431fb910696b7b78b4c6a0",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
     "contracts/schemas/chaos-bag.schema.json": "45c9a42563b5e13d054f5689a8acf578df81f45746445020628335794fce4339",
