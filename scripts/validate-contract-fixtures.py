@@ -1043,11 +1043,28 @@ def check_catalog_manifest_provenance(catalog: dict, catalog_bytes: bytes, adver
             f"provenance.sha256 (expected {derived_revision!r})"
         )
 
-    expected_revision_path = f"/locale-catalog/r/{revision}/manifest.json"
+    # Every published route is read from the manifest's own basePath rather
+    # than re-spelled here, so the v1 schema's `const` declarations stay the one
+    # place the route is decided (the generator reads them from there too).
+    base_path = catalog.get("basePath")
+    if not isinstance(base_path, str) or not base_path.startswith("/"):
+        return f"basePath {base_path!r} is not an absolute published route"
+    for field, expected_path in (
+        ("manifestPath", f"{base_path}/manifest.json"),
+        ("chunkPathPrefix", f"{base_path}/c/"),
+    ):
+        if catalog.get(field) != expected_path:
+            return (
+                f"{field} {catalog.get(field)!r} is not the route basePath {base_path!r} "
+                f"defines (expected {expected_path!r})"
+            )
+
+    expected_revision_path = f"{base_path}/r/{revision}/manifest.json"
     if catalog.get("revisionManifestPath") != expected_revision_path:
         return (
             f"revisionManifestPath {catalog.get('revisionManifestPath')!r} does not address "
-            f"catalogRevision {revision!r} (expected {expected_revision_path!r})"
+            f"catalogRevision {revision!r} under basePath {base_path!r} "
+            f"(expected {expected_revision_path!r})"
         )
 
     if provenance.get("contractRevision") != manifest.get("schemaRevision"):
@@ -1302,6 +1319,18 @@ def run_locale_catalog_provenance_self_test() -> None:
         "Self-test failure: the provenance gate accepted a manifest whose bytes no longer hash "
         "to the advertised manifestSha256",
     )
+
+    for field in ("basePath", "manifestPath", "chunkPathPrefix"):
+        mutated_route = copy.deepcopy(catalog_manifest)
+        mutated_route[field] = "/elsewhere"
+        require(
+            check_catalog_manifest_provenance(
+                mutated_route, catalog_manifest_bytes, advertised_locale_catalog
+            )
+            is not None,
+            f"Self-test failure: the provenance gate accepted a {field} the manifest's own routes "
+            "do not agree on",
+        )
 
     mutated_catalog = copy.deepcopy(catalog_manifest)
     mutated_catalog["catalogRevision"] = "1." + "0" * 32
