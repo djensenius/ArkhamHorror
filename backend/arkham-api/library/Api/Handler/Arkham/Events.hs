@@ -400,7 +400,7 @@ deleteApiV1ArkhamEventR :: ArkhamEpicEventId -> Handler ()
 deleteApiV1ArkhamEventR eid = do
   userId <- getRequestUserId
   mask $ \restore -> do
-    outcome <- runDB $ deleteEpicEventAggregate eid userId
+    outcome <- restore $ runDB $ deleteEpicEventAggregate eid userId
     case outcome of
       EventDeletionMissing -> notFound
       EventDeletionForbidden ->

@@ -277,7 +277,7 @@ deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
   mask $ \restore -> do
-    gameRemains <- runDB do
+    gameRemains <- restore $ runDB do
       delete do
         games <- from $ table @ArkhamGame
         where_ $ games.id ==. val gameId
