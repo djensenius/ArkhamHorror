@@ -40,8 +40,10 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from jsonschema import FormatChecker
@@ -226,17 +228,17 @@ def check_with_probe(
     legacy_baseline: dict,
     contract_revision: str,
 ) -> None:
-    scratch = ROOT / "scratch-capability-probe"
-    scratch.mkdir(exist_ok=True)
+    # A directory this invocation created, so the cleanup below can only ever
+    # remove files this invocation wrote: a fixed name could collide with a
+    # leftover or unrelated directory and delete someone else's work.
+    scratch = Path(tempfile.mkdtemp(prefix="scratch-capability-probe-", dir=ROOT))
     try:
         _check_with_probe(
             command, capabilities_schema, settings, advertised, legacy_baseline,
             contract_revision, scratch,
         )
     finally:
-        for path in sorted(scratch.glob("*")):
-            path.unlink()
-        scratch.rmdir()
+        shutil.rmtree(scratch)
 
 
 def write_settings_file(scratch: Path, name: str, values: dict[str, str]) -> Path:
