@@ -143,6 +143,19 @@ test('a table becomes rows and cells, never markup', () => {
   assert.deepEqual(result.variables, [{ name: 'count', source: 'named', role: 'presentation' }])
 })
 
+test('a table section refuses every attribute rather than dropping it', () => {
+  for (const section of ['thead', 'tbody', 'tfoot']) {
+    for (const attribute of ["class='x'", "style='color:red'", "onclick='steal()'", "data-x='1'"]) {
+      const html = `<table><${section} ${attribute}><tr><td>x</td></tr></${section}></table>`
+      const result = normalize(html)
+      assert.equal(result.form, 'unsupported', `${html} should be unsupported`)
+      assert.equal(result.reason, 'unsupported-attribute', `${html} reason`)
+    }
+    const clean = normalize(`<table><${section}><tr><td>x</td></tr></${section}></table>`)
+    assert.equal(clean.form, 'message', `${section} without attributes should normalize`)
+  }
+})
+
 test('table content the model does not describe is refused, not flattened', () => {
   // parse5 foster-parents stray elements out of a table exactly as a browser
   // does, so those cases are covered by the element rules; what reaches the

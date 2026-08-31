@@ -48,6 +48,23 @@ export const SCHEMA_VERSION = '1.0.0'
 export const GENERATOR_NAME = 'arkham-locale-catalog'
 export const GENERATOR_VERSION = '1.0.0'
 export const BASE_PATH = '/locale-catalog'
+// `unsupported.detail`'s bound, read from the schema so the generator and the
+// schema can never disagree: a long key in a conflict message used to produce
+// a chunk its own schema rejected.
+export const MAX_UNSUPPORTED_DETAIL = unsupportedDetailBound()
+const truncateDetail = (detail) => detail.slice(0, MAX_UNSUPPORTED_DETAIL)
+
+function unsupportedDetailBound() {
+  const schema = JSON.parse(
+    readFileSync(resolve(REPO_ROOT, 'frontend/schemas/locale-catalog/v1/chunk.schema.json'), 'utf8'),
+  )
+  const branch = schema.$defs.entry.oneOf.find((candidate) => candidate.properties?.detail)
+  const bound = branch?.properties?.detail?.maxLength
+  if (typeof bound !== 'number') {
+    throw new Error('locale-catalog: the chunk schema does not bound unsupported.detail')
+  }
+  return bound
+}
 // A downgrade can expose another conflict; this bounds the settling loop.
 const MAX_LINK_ROUNDS = 32
 export const DEFAULT_OUTPUT_DIR = join(FRONTEND_DIR, 'public', 'locale-catalog')
@@ -233,6 +250,7 @@ function loadBackendKeys() {
   const keys = new Map()
   for (const entry of artifact.keys) {
     keys.set(entry.key, {
+      site: entry.site,
       variables: new Map(entry.variables.map((variable) => [variable.name, variable.type])),
     })
   }
@@ -372,7 +390,7 @@ function resolveLinkGraph(normalized, defaultLocale) {
         entries.set(key, {
           form: 'unsupported',
           reason: problem.reason,
-          detail: String(problem.detail).slice(0, 120),
+          detail: truncateDetail(String(problem.detail)),
         })
         downgraded += 1
       }
@@ -474,7 +492,7 @@ export function resolveLinkedVariables(normalized, defaultLocale) {
           entries.set(key, {
             form: 'unsupported',
             reason: 'conflicting-variable-role',
-            detail: conflict.slice(0, 160),
+            detail: truncateDetail(conflict),
           })
           conflicts += 1
           changed = true
@@ -647,6 +665,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   }
 
   const gaps = {
+    sites: new Map(untranslated.map((key) => [key, backend.keys.get(key)?.site])),
     untranslatedKeys: untranslated,
     unsupportedEntries,
     variableGaps: variableGaps.map(({ key, missing }) => ({ key, missing })),
@@ -919,6 +938,9 @@ function enforceKnownGaps(actual, update) {
     })),
     untranslatedKeys: actual.untranslatedKeys.map((key) => ({
       key,
+      // The emitter, so the list is an actionable blocker report rather than a
+      // set of names: this is the call site whose text is missing.
+      site: actual.sites?.get(key),
       justification:
         (Array.isArray(previous.untranslatedKeys)
           ? previous.untranslatedKeys.find((candidate) => candidate?.key === key)?.justification

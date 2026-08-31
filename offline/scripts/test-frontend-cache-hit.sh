@@ -85,6 +85,37 @@ if verify_cached_locale_catalog "$MISSING" >/dev/null 2>&1; then
   fail "a cached output with no catalog at all was accepted"
 fi
 
+# A cache can restore a compressed sibling that no longer matches the JSON next
+# to it; nginx serves those bytes without ever reading the identity file.
+mutate_and_expect_reject() {
+  local label="$1"; shift
+  local copy="${WORK}/$1"; shift
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp -R "${DIST}/." "$copy/"
+  ( cd "${copy}/locale-catalog" && "$@" )
+  if verify_cached_locale_catalog "$copy" >/dev/null 2>&1; then
+    fail "${label} was accepted from a restored cache"
+  fi
+}
+
+pick_compressed() {
+  ( cd "${DIST}/locale-catalog" && ls c/*.json.gz | head -1 )
+}
+SAMPLE_GZ="$(pick_compressed)"
+SAMPLE_JSON="${SAMPLE_GZ%.gz}"
+
+mutate_and_expect_reject "a corrupt .gz sibling" corrupt-gz \
+  bash -c "printf 'not gzip' > '${SAMPLE_GZ}'"
+mutate_and_expect_reject "a stale .gz sibling" stale-gz \
+  bash -c "printf 'x' | gzip -c > '${SAMPLE_GZ}'"
+mutate_and_expect_reject "a missing .br sibling" missing-br \
+  bash -c "rm -f '${SAMPLE_JSON}.br'"
+mutate_and_expect_reject "an unlisted compressed artifact" extra-gz \
+  bash -c "printf 'x' | gzip -c > 'c/not-in-the-manifest.json.gz'"
+mutate_and_expect_reject "a decompression bomb" bomb-gz \
+  bash -c "head -c 8000000 /dev/zero | gzip -c > '${SAMPLE_GZ}'"
+
 # The strict check (used after a real build) must still demand `public/`, and
 # it owns the destructive behaviour, so it gets its own throwaway copy.
 STRICT="${WORK}/strict"

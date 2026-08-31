@@ -33,8 +33,8 @@ instance RunMessage SpectralRazor2 where
         (True, _ : _) ->
           chooseOne
             iid
-            [ Label "$cards.label.spectralRazor2.engageFirst" [Msg.chooseEngageEnemy iid attrs, DoStep 1 msg]
-            , Label "$cards.label.spectralRazor2.doNotEngage" [DoStep 1 msg]
+            [ Label "$label.engageAnEnemyFirst" [Msg.chooseEngageEnemy iid attrs, DoStep 1 msg]
+            , Label "$label.doNotEngageAnEnemy" [DoStep 1 msg]
             ]
       pure e
     DoStep 1 (PlayThisEvent iid eid) | eid == toId attrs -> do

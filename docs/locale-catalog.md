@@ -181,7 +181,9 @@ build **fails** when a gap appears that is not on that list *and* when a listed
 gap has been fixed, so the set can only move deliberately
 (`--update-known-gaps`, reviewed in the diff). Every entry carries a
 justification from a closed list (`missing-from-locale-sources`,
-`web-only-chrome`, `source-syntax`) and the build fails if one does not. The
+`web-only-chrome`, `source-syntax`) and the emitter site that needs the text,
+so the file is an actionable blocker report rather than a set of names; the
+build fails if a justification is missing. The
 file is part of the generator's provenance, so changing it changes the catalog
 revision. The same
 sets are also reported in the manifest under `backend.untranslatedKeys` and
@@ -264,7 +266,12 @@ be lost silently:
   even when two files declare the same short string. It is checked per
   *(file, mount, leaf)*: a file mounted twice — an alias such as
   `returnToTheForgottenAge` — must survive at every mount, and a mount reached
-  by reference is recorded even when every one of its leaves was overridden. A file whose keys were
+  by reference is recorded even when every one of its leaves was overridden.
+
+A table section (`thead`/`tbody`/`tfoot`) carries no presentation in this
+model, so any attribute on one is refused rather than dropped, and
+`unsupported.detail` is truncated to the bound read from the chunk schema
+itself, so the generator and the schema cannot disagree. A file whose keys were
   overridden by another spread, or whose content is not in the composed tree at
   all (a translated file no module imports), fails the build naming the file
   that won. This is how the Spanish `label` namespace and the Chinese
@@ -337,7 +344,12 @@ than quietly hash nothing. A cache restores `offline/_deps` and not
 its *own* manifest (`verify-dist.mjs --dist-only`) and treats a failure as a
 cache miss to rebuild from, never as a reason to delete a usable output;
 `offline/scripts/test-frontend-cache-hit.sh` drives those branches with
-`frontend/public/locale-catalog` absent. All of it runs in the `Locale catalog` GitHub Actions
+`frontend/public/locale-catalog` absent. That check also decompresses every
+`.gz`/`.br` sibling and compares it byte-for-byte with the JSON beside it,
+under a size ceiling, and refuses any compressed artifact the manifest does not
+list: nginx serves those bytes without ever reading the identity file, so a
+cache that restored a stale, corrupt or oversized sibling would otherwise be
+served as if it were the catalog. All of it runs in the `Locale catalog` GitHub Actions
 workflow.
 
 ## Ownership

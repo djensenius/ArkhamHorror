@@ -1195,6 +1195,29 @@ def collect_aliases(tree, source: bytes) -> dict[str, dict]:
     return aliases
 
 
+NUMERIC_RESULT = re.compile(r"\b(Int|Integer|Double|Natural)\b")
+TEXT_RESULT = re.compile(r"\b(Text|String)\b")
+
+
+def top_level_signatures(tree, source: bytes) -> dict[str, str]:
+    """Top-level type signatures, so a bound value can be typed from source.
+
+    `withVars ["shelterValue" .= sv]` says nothing about `sv`; the signature of
+    whatever produced it does (`shelterValue :: … -> m (Maybe Int)`).
+    """
+    signatures: dict[str, str] = {}
+    for child in tree.root_node.children:
+        if child.type != "declarations":
+            continue
+        for declaration in child.children:
+            if declaration.type != "signature":
+                continue
+            parts = significant_children(declaration)
+            if len(parts) >= 2 and parts[0].type == "variable":
+                signatures[text_of(parts[0], source)] = text_of(parts[-1], source)
+    return signatures
+
+
 def top_level_definitions(tree, source: bytes) -> set[str]:
     """Names this module defines at the top level."""
     names: set[str] = set()
@@ -1445,7 +1468,7 @@ def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, contex
                     pass
                 else:
                     effects.append({"name": name, "args": args})
-                    _collect_variables(name, args, source, variables)
+                    _collect_variables(name, args, source, variables, index, module)
         elif parent.type == "infix":
             parts = infix_parts(parent, source)
             if parts is not None:
@@ -1456,11 +1479,11 @@ def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, contex
                         if application is not None:
                             name, args = application
                             effects.append({"name": name, "args": args})
-                            _collect_variables(name, args, source, variables)
+                            _collect_variables(name, args, source, variables, index, module)
                         elif left.type == "variable":
                             name = text_of(left, source)
                             effects.append({"name": name, "args": []})
-                            _collect_variables(name, [], source, variables)
+                            _collect_variables(name, [], source, variables, index, module)
         child = parent
         parent = parent.parent
 
@@ -1512,20 +1535,21 @@ def _contains(candidate, node) -> bool:
     return candidate.start_byte <= node.start_byte and candidate.end_byte >= node.end_byte
 
 
-def _collect_variables(name: str, args, source: bytes, variables: dict[str, str]) -> None:
+def _collect_variables(name: str, args, source: bytes, variables: dict[str, str], index=None, module: str | None = None) -> None:
     # `withVars ["xp" .= xp, "shelterValue" .= n]` and `withVar "name" value`
     # bind arbitrary names (Arkham/I18n.hs), and they are how most resolutions
     # supply their numbers. Without them every one of those keys looks like it
     # renders a variable the backend never sends.
     if name == "withVars" and args:
         for pair_name, value in _pair_bindings(args[0], source):
-            variables.setdefault(pair_name, value_type(value, source))
+            variables.setdefault(pair_name, value_type(value, source, index, module))
         return
     if name == "withVar" and len(args) >= 1:
         variable = string_literal(args[0], source)
         if variable is not None:
             variables.setdefault(
-                variable, value_type(args[1], source) if len(args) > 1 else "unknown"
+                variable,
+                value_type(args[1], source, index, module) if len(args) > 1 else "unknown",
             )
         return
 
@@ -1568,8 +1592,13 @@ NUMERIC_CALLS = {"length", "count", "sum", "toInteger", "fromIntegral", "generic
 NUMERIC_OPERATORS = {"+", "-", "*", "`div`", "`max`", "`min`"}
 
 
-def value_type(node, source: bytes) -> str:
-    """The type of a bound value where the syntax proves one."""
+def value_type(node, source: bytes, index=None, module: str | None = None) -> str:
+    """The type of a bound value where the source proves one.
+
+    Syntax first (a literal, arithmetic, `length`), then the binding the value
+    came from: a `<-`/`let` bound name is traced to the function that produced
+    it and typed from that function's signature.
+    """
     if node is None:
         return "unknown"
     if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
@@ -1583,10 +1612,127 @@ def value_type(node, source: bytes) -> str:
         parts = infix_parts(node, source)
         if parts is not None and parts[1] in NUMERIC_OPERATORS:
             return "integer"
+        # `fromMaybe 0 <$> getCurrentShelterValue`, `f $ x`: the value's type is
+        # the type of what the left-hand side produces.
+        if parts is not None and parts[1] in {"<$>", "<&>", "$", "=<<", "<*>"}:
+            left = value_type(parts[0], source, index, module)
+            if left != "unknown":
+                return left
+            return value_type(parts[2], source, index, module)
     application = flatten_application(node, source)
     if application is not None and application[0] in NUMERIC_CALLS:
         return "integer"
+    # `fromMaybe 0 …` and `fromMaybe "" …` carry their own default's type.
+    if application is not None and application[0] in {"fromMaybe", "maybe"} and application[1]:
+        default = value_type(application[1][0], source, index, module)
+        if default != "unknown":
+            return default
+    if application is not None and index is not None and module is not None:
+        from_signature = _signature_type(application[0], index, module)
+        if from_signature != "unknown":
+            return from_signature
+    if node.type == "variable" and index is not None and module is not None:
+        name = text_of(node, source)
+        producer = _binding_producer(node, name, source)
+        if producer is not None:
+            return value_type(producer, source, index, module)
+        parameter = _parameter_type(node, name, source, index, module)
+        if parameter != "unknown":
+            return parameter
     return "unknown"
+
+
+def _parameter_type(node, name: str, source: bytes, index, module: str) -> str:
+    """Types a parameter from its own function's signature.
+
+    `resolutionWithXp' s xp = … withVars ["xp" .= xp] …` types `xp` from
+    `resolutionWithXp' :: … -> Int -> …`.
+    """
+    holder = node.parent
+    while holder is not None and holder.type != "function":
+        holder = holder.parent
+    if holder is None:
+        return "unknown"
+    children = significant_children(holder)
+    if not children or children[0].type != "variable":
+        return "unknown"
+    positions: list[str] = []
+    for child in children[1:-1]:
+        if child.type == "variable":
+            positions.append(text_of(child, source))
+        elif child.type == "patterns":
+            positions.extend(text_of(pattern, source) for pattern in significant_children(child))
+        else:
+            positions.append("")
+    if name not in positions:
+        return "unknown"
+    signature = index.by_module.get(module, {}).get("signatures", {}).get(
+        text_of(children[0], source)
+    )
+    if signature is None:
+        return "unknown"
+    arguments = [part.strip() for part in re.split(r"->(?![^(]*\))", signature)]
+    position = positions.index(name)
+    if position >= len(arguments) - 1:
+        return "unknown"
+    argument = arguments[position]
+    if NUMERIC_RESULT.search(argument) and not TEXT_RESULT.search(argument):
+        return "integer"
+    if TEXT_RESULT.search(argument) and not NUMERIC_RESULT.search(argument):
+        return "text"
+    return "unknown"
+
+
+def _signature_type(name: str, index, module: str) -> str:
+    """Types a call from the signature of the function it invokes."""
+    for origin in index.defining_modules(module, name):
+        signature = index.by_module.get(origin, {}).get("signatures", {}).get(name)
+        if signature is None:
+            continue
+        if NUMERIC_RESULT.search(signature) and not TEXT_RESULT.search(signature):
+            return "integer"
+        if TEXT_RESULT.search(signature) and not NUMERIC_RESULT.search(signature):
+            return "text"
+    return "unknown"
+
+
+def _binding_producer(node, name: str, source: bytes):
+    """The expression a `<-` or `let` in scope bound `name` to."""
+    ancestor = node.parent
+    while ancestor is not None:
+        for candidate in ancestor.children:
+            if candidate.type == "bind":
+                children = significant_children(candidate)
+                if len(children) >= 2 and children[0].type == "variable":
+                    if text_of(children[0], source) == name:
+                        body = children[-1]
+                        if body.type == "match":
+                            inner = significant_children(body)
+                            body = inner[-1] if inner else None
+                        return body
+            if candidate.type in {"let", "local_binds"}:
+                found = _binding_producer_in(candidate, name, source)
+                if found is not None:
+                    return found
+        ancestor = ancestor.parent
+    return None
+
+
+def _binding_producer_in(node, name: str, source: bytes):
+    for child in node.children:
+        if child.type in {"bind", "function"}:
+            children = significant_children(child)
+            if children and children[0].type == "variable" and text_of(children[0], source) == name:
+                body = children[-1]
+                if body.type == "match":
+                    inner = significant_children(body)
+                    body = inner[-1] if inner else None
+                return body
+        elif child.type in {"local_binds", "declarations"}:
+            found = _binding_producer_in(child, name, source)
+            if found is not None:
+                return found
+    return None
 
 
 def label_key(stack: list[str], key: str) -> list[str]:
@@ -2049,6 +2195,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
                 "exports": exports_of(tree, source),
                 "aliases": collect_aliases(tree, source),
                 "definitions": top_level_definitions(tree, source),
+                "signatures": top_level_signatures(tree, source),
             },
         )
         parsed.append((path, source, tree, module))

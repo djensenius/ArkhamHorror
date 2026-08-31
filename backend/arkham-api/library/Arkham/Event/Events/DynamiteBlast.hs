@@ -33,6 +33,6 @@ instance RunMessage DynamiteBlast where
               unless (null concealed) do
                 chooseOneM iid do
                   labeledI "exposeConcealedCard" $ chooseTargetM iid concealed $ exposeConcealed iid attrs
-                  labeledI "doNotExpose" nothing
+                  labeledI "doNotExposeConcealed" nothing
       pure e
     _ -> DynamiteBlast <$> liftRunMessage msg attrs

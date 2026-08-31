@@ -797,6 +797,16 @@ function tableNode(element, placeholders, styles, styleVariables, attributes) {
   }
 
   const readSection = (section, into) => {
+    // A section carries no presentation of its own in this model, so anything
+    // written on it — `style`, `onclick`, a stray `data-*` — would be dropped
+    // silently. Refuse instead: nothing is lost without saying so.
+    if ((section.attrs ?? []).length > 0) {
+      const [attribute] = section.attrs
+      throw unsupported(
+        'unsupported-attribute',
+        `${section.tagName}[${attribute.prefix ? `${attribute.prefix}:` : ''}${attribute.name}]`,
+      )
+    }
     for (const row of section.childNodes ?? []) {
       if (row.nodeName === '#text') {
         if (row.value.trim() === '') continue

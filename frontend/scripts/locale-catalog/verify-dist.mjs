@@ -6,6 +6,7 @@
 //   npm run build && node scripts/locale-catalog/verify-dist.mjs
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { brotliDecompressSync, gunzipSync } from 'node:zlib'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -27,12 +28,26 @@ const DIST_CATALOG = join(DIST_ROOT, 'locale-catalog')
 
 // scripts/precompress.cjs skips anything smaller than one MTU's worth of bytes.
 const PRECOMPRESS_MIN_BYTES = 1024
+// A compressed sibling should never exceed its payload by more than framing,
+// and inflating it must not be allowed to outgrow the payload either.
+const MAX_COMPRESSED_OVERHEAD = 4096
+const MAX_INFLATE_SLACK = 4096
 
 const problems = []
 
 function require(condition, message) {
   if (!condition) problems.push(message)
   return condition
+}
+
+function listFiles(directory, prefix = '') {
+  const out = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`
+    if (entry.isDirectory()) out.push(...listFiles(join(directory, entry.name), path))
+    else out.push(path)
+  }
+  return out.sort()
 }
 
 function listJson(directory, prefix = '') {
@@ -100,12 +115,57 @@ if (require(existsSync(DIST_CATALOG), `${DIST_CATALOG} is missing — the build 
     }
 
     // nginx serves .br by an explicit -f test and .gz through gzip_static;
-    // both are produced by the postbuild precompress pass.
+    // both are produced by the postbuild precompress pass. A cache can restore
+    // a compressed sibling that no longer matches the JSON beside it, and
+    // nginx would serve those bytes without ever reading the identity file, so
+    // each one is decompressed and compared — under a size ceiling, because a
+    // corrupt sibling is exactly where a decompression bomb would sit.
+    const compressed = new Set()
     for (const relative of expected) {
       const file = join(DIST_CATALOG, relative)
-      if (!existsSync(file) || statSync(file).size < PRECOMPRESS_MIN_BYTES) continue
-      require(existsSync(`${file}.gz`), `${relative} has no precompressed .gz sibling`)
-      require(existsSync(`${file}.br`), `${relative} has no precompressed .br sibling`)
+      if (!existsSync(file)) continue
+      const identity = readFileSync(file)
+      if (identity.length < PRECOMPRESS_MIN_BYTES) continue
+      for (const [suffix, inflate] of [
+        ['.gz', gunzipSync],
+        ['.br', brotliDecompressSync],
+      ]) {
+        const sibling = `${file}${suffix}`
+        if (!require(existsSync(sibling), `${relative} has no precompressed ${suffix} sibling`)) {
+          continue
+        }
+        compressed.add(`${relative}${suffix}`)
+        const packed = readFileSync(sibling)
+        if (
+          !require(
+            packed.length <= identity.length + MAX_COMPRESSED_OVERHEAD,
+            `${relative}${suffix} is larger than the payload it encodes`,
+          )
+        ) {
+          continue
+        }
+        let inflated = null
+        try {
+          inflated = inflate(packed, { maxOutputLength: identity.length + MAX_INFLATE_SLACK })
+        } catch (error) {
+          require(false, `${relative}${suffix} does not decompress (${error.code ?? error.message})`)
+          continue
+        }
+        require(
+          inflated.equals(identity),
+          `${relative}${suffix} decompresses to different bytes than ${relative}`,
+        )
+      }
+    }
+
+    // Anything else compressed under the catalog is unaccounted for: nginx
+    // would happily serve it for a path the manifest never promised.
+    for (const relative of listFiles(DIST_CATALOG)) {
+      if (!relative.endsWith('.gz') && !relative.endsWith('.br')) continue
+      require(
+        compressed.has(relative),
+        `dist/locale-catalog/${relative} is a compressed artifact the manifest does not list`,
+      )
     }
 
     if (problems.length === 0) {

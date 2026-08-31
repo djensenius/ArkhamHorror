@@ -15,6 +15,7 @@ import {
   assertReplaceableOutputDir,
   buildCatalog,
   diffCatalog,
+  MAX_UNSUPPORTED_DETAIL,
   requiredKeysFromFixture,
   resolveLinkedVariables,
   writeCatalog,
@@ -454,4 +455,29 @@ test('the production catalog carries the variables a linked resolution needs', a
     (variable) => variable.name,
   )
   assert.ok(declared.includes('shelterValue'), `expected shelterValue in ${declared.join(', ')}`)
+})
+
+test('a conflict detail is truncated to the bound the schema publishes', () => {
+  const long = `${'k'.repeat(400)}`
+  const entries = new Map([
+    [long, linkEntry('leaf', [{ name: 'name', source: 'named', role: 'text' }])],
+    ['leaf', textEntry([{ name: 'name', source: 'named', role: 'assetPath' }])],
+  ])
+
+  const conflicts = resolveLinkedVariables(new Map([['en', entries]]), 'en')
+
+  assert.equal(conflicts, 1)
+  const entry = entries.get(long)
+  assert.equal(entry.form, 'unsupported')
+  assert.ok(
+    entry.detail.length <= MAX_UNSUPPORTED_DETAIL,
+    `detail is ${entry.detail.length} characters, schema allows ${MAX_UNSUPPORTED_DETAIL}`,
+  )
+
+  // And the bound really is the schema's, not a second copy of the number.
+  const schema = JSON.parse(
+    readFileSync(join(REPO_ROOT, 'frontend/schemas/locale-catalog/v1/chunk.schema.json'), 'utf8'),
+  )
+  const branch = schema.$defs.entry.oneOf.find((candidate) => candidate.properties?.detail)
+  assert.equal(branch.properties.detail.maxLength, MAX_UNSUPPORTED_DETAIL)
 })
