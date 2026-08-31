@@ -391,23 +391,31 @@ def committed_files() -> dict[str, bytes]:
     return found
 
 
-def check(files: dict[str, bytes]) -> None:
-    found = committed_files()
+def check_failure(files: dict[str, bytes], found: dict[str, bytes]) -> str | None:
+    """Compare a committed set against the derived one, returning a failure
+    message rather than raising, so `run_self_tests` can drive this exact
+    comparison over mutated inputs and prove it bites.
+    """
     expected_names = set(files)
     found_names = set(found)
-    require(
-        expected_names == found_names,
-        "the committed synthetic catalog fixture set does not match the derived one; "
-        f"missing {sorted(expected_names - found_names)}, unexpected {sorted(found_names - expected_names)}"
-        " -- run `mise run contracts:catalog-fixture`",
-    )
-    for name in sorted(expected_names):
-        require(
-            found[name] == files[name],
-            f"contracts/fixtures/{name} is not what its inputs derive; every "
-            "digest, count and path in this fixture set is computed, never asserted -- run "
-            "`mise run contracts:catalog-fixture`",
+    if expected_names != found_names:
+        return (
+            "the committed synthetic catalog fixture set does not match the derived one; "
+            f"missing {sorted(expected_names - found_names)}, "
+            f"unexpected {sorted(found_names - expected_names)}"
         )
+    for name in sorted(expected_names):
+        if found[name] != files[name]:
+            return (
+                f"contracts/fixtures/{name} is not what its inputs derive; every digest, count "
+                "and path in this fixture set is computed, never asserted"
+            )
+    return None
+
+
+def check(files: dict[str, bytes]) -> None:
+    failure = check_failure(files, committed_files())
+    require(failure is None, f"{failure} -- run `mise run contracts:catalog-fixture`")
 
 
 def write(files: dict[str, bytes]) -> None:
@@ -418,55 +426,97 @@ def write(files: dict[str, bytes]) -> None:
 
 
 def run_self_tests(files: dict[str, bytes]) -> None:
-    """Prove the derivation is load-bearing: mutating any claimed field of the
-    manifest, or any byte of any authority file, must make `check` fail.
+    """Prove the derivation is load-bearing by running the *real* comparison
+    (`check_failure`) against mutated committed sets: every claimed field of
+    the manifest, and every byte of every authority file, must make it fail.
     """
-    manifest = json.loads(files[f"{FIXTURE_PREFIX}manifest.json"])
+    committed = committed_files()
+    require(
+        check_failure(files, committed) is None,
+        "self-test precondition: the committed fixture set must match the derived one before "
+        "mutations can prove anything",
+    )
 
-    mutations: list[tuple[str, object]] = [
+    manifest_name = f"{FIXTURE_PREFIX}manifest.json"
+    manifest = json.loads(files[manifest_name])
+
+    field_mutations: list[tuple[str, object]] = [
         ("catalogRevision", "1." + "0" * 32),
         ("revisionManifestPath", "/locale-catalog/r/1." + "0" * 32 + "/manifest.json"),
+        ("schemaVersion", "1.0.1"),
         ("defaultLocale", "de"),
+        ("manifestPath", "/locale-catalog/index.json"),
+        ("chunkPathPrefix", "/locale-catalog/chunk/"),
+        ("languageResolution", manifest["languageResolution"][:1]),
+        ("locales", manifest["locales"][:1]),
         ("totals", {**manifest["totals"], "keys": manifest["totals"]["keys"] + 1}),
-        ("backend", {**manifest["backend"], "emittedKeys": manifest["backend"]["emittedKeys"] + 1}),
+        ("totals", {**manifest["totals"], "chunks": manifest["totals"]["chunks"] + 1}),
+        ("totals", {**manifest["totals"], "bytes": manifest["totals"]["bytes"] + 1}),
+        ("totals", {**manifest["totals"], "unsupportedKeys": 0}),
         ("backend", {**manifest["backend"], "artifactSha256": "0" * 64}),
         ("backend", {**manifest["backend"], "sourceSha256": "0" * 64}),
+        ("backend", {**manifest["backend"], "emittedKeys": manifest["backend"]["emittedKeys"] + 1}),
+        ("backend", {**manifest["backend"], "requiredKeys": manifest["backend"]["requiredKeys"] + 1}),
         ("backend", {**manifest["backend"], "untranslatedKeys": []}),
+        ("backend", {**manifest["backend"], "dynamicSites": 1}),
+        ("backend", {**manifest["backend"], "artifactPath": "contracts/fixtures/other.json"}),
+        ("provenance", {**manifest["provenance"], "sha256": "0" * 64}),
         ("provenance", {**manifest["provenance"], "outputSha256": "0" * 64}),
         ("provenance", {**manifest["provenance"], "localeSourcesSha256": "0" * 64}),
         ("provenance", {**manifest["provenance"], "schemasSha256": "0" * 64}),
         ("provenance", {**manifest["provenance"], "generatorSha256": "0" * 64}),
         ("provenance", {**manifest["provenance"], "localeSourceFiles": 99}),
-        ("provenance", {**manifest["provenance"], "sha256": "0" * 64}),
+        ("provenance", {**manifest["provenance"], "contractRevision": "0.0.1"}),
         ("provenance", {**manifest["provenance"], "fixtureKeys": ["setup"]}),
-        ("locales", copy.deepcopy(manifest["locales"])[:1]),
-        ("languageResolution", manifest["languageResolution"][:1]),
+        (
+            "provenance",
+            {**manifest["provenance"], "generator": {"name": GENERATOR_NAME, "version": "9.9.9"}},
+        ),
     ]
 
-    for field, value in mutations:
-        mutated = copy.deepcopy(manifest)
-        mutated[field] = value
+    for field, value in field_mutations:
+        mutated_manifest = copy.deepcopy(manifest)
+        mutated_manifest[field] = value
+        mutated = dict(committed)
+        mutated[manifest_name] = canonical_bytes(mutated_manifest)
         require(
-            canonical_bytes(mutated) != files[f"{FIXTURE_PREFIX}manifest.json"],
-            f"self-test mutation of {field} did not change the manifest",
+            check_failure(files, mutated) is not None,
+            f"Self-test failure: a mutated manifest {field} ({value!r}) survived the derivation "
+            "check, so that field is an unverified claim",
         )
 
-    # Every chunk is addressed by its own bytes, so a mutated chunk cannot keep
-    # its path, and a mutated locale source cannot keep its chunk.
-    for name in sorted(files):
-        mutated_files = dict(files)
-        mutated_files[name] = files[name] + b" "
-        rebuilt_differs = mutated_files[name] != files[name]
-        require(rebuilt_differs, f"self-test mutation of {name} was a no-op")
+    # A chunk record is nested, so mutate one in place too: its digest, size and
+    # key count each have to be load-bearing.
+    for chunk_field, chunk_value in (("sha256", "0" * 64), ("bytes", 1), ("keys", 99), ("path", "/x.json")):
+        mutated_manifest = copy.deepcopy(manifest)
+        mutated_manifest["locales"][0]["chunks"][0][chunk_field] = chunk_value
+        mutated = dict(committed)
+        mutated[manifest_name] = canonical_bytes(mutated_manifest)
+        require(
+            check_failure(files, mutated) is not None,
+            f"Self-test failure: a mutated chunk {chunk_field} survived the derivation check",
+        )
 
-    # The strongest statement: rebuilding from the committed inputs must
-    # reproduce every byte, so `check` passing is a real derivation, not a
-    # comparison of a file with itself.
-    rebuilt = build_all()
+    # Every authority file: one appended byte must be caught, because the
+    # manifest's digests and counts are taken over exactly these bytes.
+    for name in sorted(files):
+        mutated = dict(committed)
+        mutated[name] = committed[name] + b" "
+        require(
+            check_failure(files, mutated) is not None,
+            f"Self-test failure: an edited {name} survived the derivation check",
+        )
+
+    # A missing or extra authority must fail too, so the set itself is pinned.
+    for name in sorted(files):
+        mutated = {key: value for key, value in committed.items() if key != name}
+        require(
+            check_failure(files, mutated) is not None,
+            f"Self-test failure: a deleted {name} survived the derivation check",
+        )
     require(
-        rebuilt == files,
-        "self-test failure: rebuilding the fixture set from its committed inputs did not "
-        "reproduce it byte for byte",
+        check_failure(files, {**committed, f"{FIXTURE_PREFIX}extra.json": b"{}\n"}) is not None,
+        "Self-test failure: an unexpected extra authority file survived the derivation check",
     )
 
 
