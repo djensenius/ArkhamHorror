@@ -515,6 +515,16 @@ both directions.
   comparing revisions as strings would read as different catalogs. All three
   are startup failures, and `manifest.json`'s `catalogRevisionChecks` holds the
   schema and the production parser to one table.
+- **Configured values are ASCII, before anything is trimmed.** A setting is
+  refused on its *raw* spelling if it holds any non-ASCII character, so a value
+  wrapped in a no-break, thin or ideographic space, or a byte-order mark, is a
+  startup failure rather than something stripped down to a valid remainder —
+  otherwise the configured value and the value this contract describes would be
+  two different things. Only an ASCII space or tab is then trimmed; every other
+  control character is refused. (`Data.Yaml.Config` normalizes a trailing line
+  ending and a leading byte-order mark away before the settings parser runs, so
+  the parser is tested directly for those too, and the guarantee does not rest
+  on the layer above.)
 - **Every grammar is ASCII.** Digests, revisions, locale tags, hosts and ports
   are compared by clients as strings, so a character that merely looks like a
   digit or a letter is refused rather than folded: an Arabic-Indic or fullwidth
@@ -576,7 +586,13 @@ of them, which is what those fields mean in production. The generator's source
 set is its own `scripts/` **import closure**, computed from each module's AST,
 so `strict_json` is included and a helper added later cannot be left out by
 forgetting to list it; a dropped or renamed module changes the digest too,
-because it is bound to the path as well as the bytes. Editing any of them
+because it is bound to the path as well as the bytes. The boundary is
+fail-closed: sources must be plain non-symlink files inside `scripts/`, and a
+relative import, a package or repo-local module outside that tree, a dynamic
+`importlib`/`__import__`, an `exec`/`eval`, `sys.path`/`meta_path`/`path_hooks`
+machinery, or any import that is neither generator-local, standard-library nor
+one of the pinned dependencies is a refusal — each proven by injecting it into
+the real generator and helper sources' own AST. Editing any of them
 therefore moves the synthetic catalog revision, and every fixed value
 the v1 schemas already pin (`schemaVersion`, `basePath`, `manifestPath`,
 `chunkPathPrefix`, `digestAlgorithm`, the generator name) is read from their

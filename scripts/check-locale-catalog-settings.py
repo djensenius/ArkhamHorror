@@ -340,6 +340,16 @@ def _check_with_probe(
         "a command-line settings file and the environment produced different bytes",
     )
 
+    # ASCII space and tab around a value are trimmed and change nothing; that is
+    # the only whitespace normalization there is.
+    padded = {name: f" \t{value}\t " for name, value in settings.items()}
+    padded_run = run_probe(command, padded)
+    require(
+        padded_run.returncode == 0 and padded_run.stdout == printed.stdout,
+        "ASCII space and tab around a setting must be trimmed and change nothing: "
+        f"{padded_run.stderr.decode('utf-8', 'replace').strip()}",
+    )
+
     # Precedence, as `loadAppSettingsArgs` actually defines it: a runtime
     # settings file is merged *over* the compile-time value key by key, and the
     # environment reaches a setting only through an `_env:` marker. So a key the
@@ -473,6 +483,27 @@ def _check_with_probe(
         # not an uncaught type error.
         ("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", "0" * 64),
         ("ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION", "1.0"),
+        # Whitespace outside ASCII is refused on the raw value, before any trim:
+        # otherwise a no-break-space-wrapped value would be stripped down to a
+        # valid one and published, and the configured value and the value this
+        # contract describes would be two different things.
+        (
+            "ARKHAM_LOCALE_CATALOG_MANIFEST_URL",
+            "\u00a0" + settings["ARKHAM_LOCALE_CATALOG_MANIFEST_URL"] + "\u00a0",
+        ),
+        ("ARKHAM_LOCALE_CATALOG_REVISION", "\u2009" + settings["ARKHAM_LOCALE_CATALOG_REVISION"]),
+        # Trailing rather than leading: a *leading* U+FEFF is a YAML stream
+        # byte-order mark and is normalized away before the settings parser
+        # runs, exactly like a trailing newline. The parser refuses it either
+        # way (Arkham.Api.LocaleCatalogCapabilitySpec drives that case
+        # directly); what the deployment seam can observe is this one.
+        ("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"] + "\ufeff"),
+        ("ARKHAM_LOCALE_CATALOG_LOCALES", settings["ARKHAM_LOCALE_CATALOG_LOCALES"].replace(",", ",\u3000")),
+        (
+            "ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256",
+            settings["ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"] + "\u00a0",
+        ),
+        ("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"] + "\v"),
     ]
     for name, value in corruptions:
         corrupted = dict(settings)

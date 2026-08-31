@@ -542,9 +542,21 @@ and host, redundant `:443` dropped). Startup also rejects an unsupported
 to the configured schema version, a digest that is not 64 lowercase hex
 characters, an invalid or duplicated locale tag (compared *after*
 canonicalization, so `en-us` and `en-US` collide), and a default locale that is
-not in the supported list. Diagnostics name the setting and the environment
-variable but never echo the manifest URL, because a mistyped URL is exactly
-where credentials end up.
+not in the supported list.
+
+Values are read as ASCII: a setting holding any non-ASCII character is refused
+on its raw spelling, *before* any trimming, so a value wrapped in a no-break,
+thin or ideographic space, or in a byte-order mark, fails startup instead of
+being stripped down to a valid remainder and published as something the
+operator did not type. Only an ASCII space or tab is trimmed — around the whole
+value and around each entry in the locale list — and any other control
+character is refused. (`Data.Yaml.Config` re-parses each substituted value as a
+YAML scalar, which removes a trailing line ending and a leading byte-order mark
+before the settings parser ever sees them; the parser refuses those too, so the
+guarantee is the parser's rather than the layer's.)
+
+Diagnostics name the setting and the environment variable but never echo the
+manifest URL, because a mistyped URL is exactly where credentials end up.
 
 **The host must mean the same thing to every client.** An absolute URL's host
 is accepted only as canonical dotted-decimal IPv4 — four decimal octets
@@ -575,7 +587,11 @@ mode rebuilds the whole set and whose self-tests mutate each claimed field to
 prove the check bites. `generatorSha256` and `schemasSha256` are digests of the
 real inputs — the generator's whole `scripts/` import closure (computed from
 each module's AST, so `strict_json` is covered and a later helper cannot be
-omitted) and the published v1 schemas — so editing, adding, dropping or
+omitted; the boundary is fail-closed — symlinks, relative imports, packages or
+repo-local modules outside `scripts/`, dynamic `importlib`/`__import__`,
+`exec`/`eval`, `sys.path` machinery and any import it cannot classify as
+generator-local, standard-library or a pinned dependency are all refusals, each
+proven by injecting it into the real sources' own AST) and the published v1 schemas — so editing, adding, dropping or
 renaming any of them moves the synthetic revision exactly as it would in
 production, and every value those
 schemas already pin as a `const` is read from them rather than re-typed. It is never generated from `frontend/src/locales/**`. The governed

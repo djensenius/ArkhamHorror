@@ -228,6 +228,8 @@ data LocaleCatalogConfigError
   | UnsupportedSchemaVersion Text
   | CatalogRevisionSchemaMismatch Text Text
   | InvalidManifestSha256 Text
+  | NonAsciiSettingValue LocaleCatalogSetting
+  | ControlCharacterInSettingValue LocaleCatalogSetting
   | InvalidLocaleTag LocaleCatalogSetting Text
   | DuplicateLocaleTag Text
   | TooManySupportedLocales Int
@@ -247,39 +249,59 @@ configuration can never degrade into "just don't advertise it".
 -}
 parseLocaleCatalogConfig
   :: LocaleCatalogConfig -> Either LocaleCatalogConfigError (Maybe LocaleCatalog)
-parseLocaleCatalogConfig config
-  | null suppliedSettings = Right Nothing
-  | otherwise = case supplied of
-      Nothing -> Left $ PartiallyConfigured [s | (s, Nothing) <- settings]
-      Just fields -> Just <$> buildLocaleCatalog fields
- where
-  settings :: [(LocaleCatalogSetting, Maybe Text)]
-  settings =
-    [ (ManifestUrlSetting, present config.manifestUrl)
-    , (CatalogRevisionSetting, present config.catalogRevision)
-    , (SchemaVersionSetting, present config.schemaVersion)
-    , (DefaultLocaleSetting, present config.defaultLocale)
-    , (SupportedLocalesSetting, present config.supportedLocales)
-    , (ManifestSha256Setting, present config.manifestSha256)
-    ]
+parseLocaleCatalogConfig config = do
+  settings <-
+    traverse
+      (\(setting, raw) -> (setting,) <$> present setting raw)
+      [ (ManifestUrlSetting, config.manifestUrl)
+      , (CatalogRevisionSetting, config.catalogRevision)
+      , (SchemaVersionSetting, config.schemaVersion)
+      , (DefaultLocaleSetting, config.defaultLocale)
+      , (SupportedLocalesSetting, config.supportedLocales)
+      , (ManifestSha256Setting, config.manifestSha256)
+      ]
+  if null [s | (s, Just _) <- settings]
+    then Right Nothing
+    else case map snd settings of
+      [Just url, Just revision, Just schemaVersion, Just locale, Just locales, Just digest] ->
+        Just <$> buildLocaleCatalog (SuppliedLocaleCatalog url revision schemaVersion locale locales digest)
+      _ -> Left $ PartiallyConfigured [s | (s, Nothing) <- settings]
 
-  suppliedSettings :: [LocaleCatalogSetting]
-  suppliedSettings = [s | (s, Just _) <- settings]
+{- | Normalize one raw setting value, or refuse it.
 
-  supplied :: Maybe SuppliedLocaleCatalog
-  supplied =
-    SuppliedLocaleCatalog
-      <$> present config.manifestUrl
-      <*> present config.catalogRevision
-      <*> present config.schemaVersion
-      <*> present config.defaultLocale
-      <*> present config.supportedLocales
-      <*> present config.manifestSha256
+Order matters, and it is the reason this is a validating step rather than a
+'T.strip'. Every grammar this module publishes is ASCII, and the governed
+tables say so — but 'T.strip' removes /Unicode/ whitespace, so stripping first
+would quietly accept a value wrapped in a no-break space, a thin space or a
+byte-order mark and then publish the ASCII remainder, making the configured
+value and the value the contract describes two different things.
 
-  present :: Maybe Text -> Maybe Text
-  present raw = case T.strip <$> raw of
-    Just value | not (T.null value) -> Just value
-    _ -> Nothing
+So: non-ASCII is refused on the __raw__ value, before anything is trimmed or
+folded. Only an ASCII space or tab is then trimmed, because those are what an
+editor or a shell adds by accident. A carriage return or newline is /not/
+trimmed — it is a control character, it is never accidental in a single-line
+setting, and silently accepting a value with a line ending would hide a
+copy-paste that also brought something else along. Anything still holding a
+control character after trimming is refused.
+-}
+present
+  :: LocaleCatalogSetting -> Maybe Text -> Either LocaleCatalogConfigError (Maybe Text)
+present setting = \case
+  Nothing -> Right Nothing
+  Just raw
+    | T.any (not . Char.isAscii) raw -> Left $ NonAsciiSettingValue setting
+    | T.any isControlCharacter trimmed -> Left $ ControlCharacterInSettingValue setting
+    | T.null trimmed -> Right Nothing
+    | otherwise -> Right (Just trimmed)
+   where
+    trimmed = asciiTrim raw
+
+-- | Trim only the two ASCII characters a value picks up by accident.
+asciiTrim :: Text -> Text
+asciiTrim = T.dropAround \c -> c == ' ' || c == '\t'
+
+isControlCharacter :: Char -> Bool
+isControlCharacter c = c < ' ' || c == '\DEL'
 
 buildLocaleCatalog :: SuppliedLocaleCatalog -> Either LocaleCatalogConfigError LocaleCatalog
 buildLocaleCatalog fields = do
@@ -364,7 +386,7 @@ parseSupportedLocales raw = do
 
 parseLocaleTag :: LocaleCatalogSetting -> Text -> Either LocaleCatalogConfigError Text
 parseLocaleTag setting raw =
-  maybe (Left $ InvalidLocaleTag setting (excerpt raw)) Right (canonicalLocaleTag (T.strip raw))
+  maybe (Left $ InvalidLocaleTag setting (excerpt raw)) Right (canonicalLocaleTag (asciiTrim raw))
 
 {- | Accept the catalog manifest's locale grammar (a 2–3 letter primary subtag
 followed by 2–8 alphanumeric subtags) in any case, and return the BCP-47
@@ -428,7 +450,7 @@ reason about a control character, a backslash, a percent escape, or a query.
 parseManifestUrl :: Text -> Either ManifestUrlRejection Text
 parseManifestUrl raw
   | T.length raw > 512 = Left ManifestUrlTooLong
-  | T.any isControlChar raw = Left ManifestUrlControlCharacter
+  | T.any isControlCharacter raw = Left ManifestUrlControlCharacter
   | T.any (not . Char.isAscii) raw = Left ManifestUrlNonAscii
   | T.any (== ' ') raw = Left ManifestUrlWhitespace
   | T.any (== '\\') raw = Left ManifestUrlBackslash
@@ -443,7 +465,6 @@ parseManifestUrl raw
   | hasScheme raw = Left ManifestUrlUnsupportedScheme
   | otherwise = Left ManifestUrlNotAbsolute
  where
-  isControlChar c = c < ' ' || c == '\DEL'
 
 parseHttpsUrl :: Text -> Either ManifestUrlRejection Text
 parseHttpsUrl rest = do
@@ -616,6 +637,14 @@ renderLocaleCatalogConfigError err = "locale catalog configuration is invalid: "
       <> " must be 64 lowercase hex characters, got '"
       <> value
       <> "'"
+  NonAsciiSettingValue setting' ->
+    setting setting'
+      <> " contains a non-ASCII character; every value this contract publishes is ASCII, and a"
+      <> " value wrapped in a no-break space or a byte-order mark is not the value it looks like"
+  ControlCharacterInSettingValue setting' ->
+    setting setting'
+      <> " contains a control character (a newline or carriage return is not trimmed, only an"
+      <> " ASCII space or tab is)"
   InvalidLocaleTag setting' value ->
     setting setting'
       <> " contains an invalid locale tag '"

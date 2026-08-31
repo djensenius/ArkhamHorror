@@ -1546,7 +1546,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "d1f20ae1d26406c1a26d3f020b0494a0163cbd895b976d00ee32afbff4b028e9",
+    "contracts/fixtures/capabilities-locale-catalog.json": "44283894c91705bcc275d780e981eb08eb33db1a1bd84efe2151064815079fe2",
     "contracts/fixtures/capabilities.json": "681006ec76cb04916fb2f79ac186bff80077faab1300157f1287720edffe3df5",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
@@ -1574,7 +1574,7 @@
     "contracts/fixtures/locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json": "2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448",
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-53afdb521d26506a1661e54f71d31fc3828ad5d9badd6ebac62b68bc6a554c48.json": "53afdb521d26506a1661e54f71d31fc3828ad5d9badd6ebac62b68bc6a554c48",
-    "contracts/fixtures/locale-catalog-manifest.json": "0b335e2e4549e80a18662da4d5f8d65e22a074937bd382537ccd9913b7ad6221",
+    "contracts/fixtures/locale-catalog-manifest.json": "a61dd558ea69a248ceef54fe7e479f3ea6f4cd7bd54531cc539fc184ac520bdb",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "8e3bb33d606ad8e31a410338e26063d36639bbf5339b3aea82cfcb608a38387e",
     "contracts/fixtures/locale-catalog-source-pt-BR.json": "cd7593ead3708918f8d8df4dea9775659a78351d90c485f3c82ad8fe69f4f241",
@@ -1592,7 +1592,7 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "928de5228360836675ed457012b271b23c7ae0a00a28c034c6bf9480a93d2e38",
+    "contracts/manifest.json": "5cb932f0f758e1fd268069aba287fcbb5a35bb4ff03fb06d497d0824d4baf4ff",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
@@ -1914,7 +1914,7 @@
     }
   },
   "catalogRevisionChecks": {
-    "description": "The governed table for catalogRevision, checked on both sides exactly like manifestUrlChecks. scripts/validate-contract-fixtures.py validates every row against the catalogRevision sub-schema located by 'pointer', and Arkham.Api.LocaleCatalogCapabilitySpec drives the same rows through the production parseLocaleCatalogConfig with schemaVersion 1.0.0, requiring the same verdict and the named LocaleCatalogConfigError constructor. While the catalog schema is fixed at 1.0.0 the only legal major is 1: 2.<hex> belongs to a schema version this server does not speak, and 01.<hex>/00.<hex> are non-canonical spellings of it. Unicode rows are included deliberately: a digit outside ASCII is not a digit in this grammar, and a client comparing revisions by string equality would read it as a different catalog.",
+    "description": "The governed table for catalogRevision, checked on both sides exactly like manifestUrlChecks. scripts/validate-contract-fixtures.py validates every row against the catalogRevision sub-schema located by 'pointer', and Arkham.Api.LocaleCatalogCapabilitySpec drives the same rows through the production parseLocaleCatalogConfig with schemaVersion 1.0.0, requiring the same verdict and the named LocaleCatalogConfigError constructor. While the catalog schema is fixed at 1.0.0 the only legal major is 1: 2.<hex> belongs to a schema version this server does not speak, and 01.<hex>/00.<hex> are non-canonical spellings of it. Unicode rows are included deliberately: a digit outside ASCII is not a digit in this grammar, and a client comparing revisions by string equality would read it as a different catalog. They are refused as NonAsciiSettingValue rather than as a malformed revision, because a setting is checked for ASCII on its raw spelling before any grammar sees it.",
     "schema": "contracts/schemas/capabilities.schema.json",
     "pointer": "/$defs/localeCatalog/properties/catalogRevision",
     "schemaVersion": "1.0.0",
@@ -1980,19 +1980,19 @@
       },
       {
         "configured": "1.0123456789abcdef0123456789abcde\u0660",
-        "reason": "InvalidCatalogRevision"
+        "reason": "NonAsciiSettingValue"
       },
       {
         "configured": "1.\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10",
-        "reason": "InvalidCatalogRevision"
+        "reason": "NonAsciiSettingValue"
       },
       {
         "configured": "\u0660.0123456789abcdef0123456789abcdef",
-        "reason": "InvalidCatalogRevision"
+        "reason": "NonAsciiSettingValue"
       },
       {
         "configured": "1.0123456789abcdef0123456789abcd\u0430f",
-        "reason": "InvalidCatalogRevision"
+        "reason": "NonAsciiSettingValue"
       }
     ]
   }

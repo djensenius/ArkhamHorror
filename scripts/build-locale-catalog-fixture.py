@@ -72,6 +72,20 @@ CATALOG_SCHEMA_DIR = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1"
 # script is followed by `mise run contracts:catalog-fixture-write`.
 GENERATOR_ENTRY = "scripts/build-locale-catalog-fixture.py"
 GENERATOR_MODULE_DIR = "scripts"
+
+# Third-party distributions this generator is allowed to import, pinned here
+# and in the PEP 723 block above. Everything else must be either a module in
+# the generator tree or a standard-library module: an unrecognised import is a
+# refusal, never a silent "probably external" fallback, because an import the
+# closure cannot classify is an input it cannot hash.
+PINNED_EXTERNAL_MODULES = frozenset({"jsonschema", "referencing"})
+
+# Names and attributes that would let a module reach code the AST closure
+# cannot see. Fail-closed: the generator has no need for any of them, so their
+# mere presence in a source is a refusal rather than something to analyse.
+BANNED_IMPORT_ROOTS = frozenset({"importlib", "imp", "runpy", "pkgutil", "pkg_resources"})
+BANNED_NAMES = frozenset({"__import__", "eval", "exec", "compile", "globals", "locals", "vars"})
+BANNED_SYS_ATTRIBUTES = frozenset({"path", "meta_path", "path_hooks", "path_importer_cache", "modules"})
 SCHEMA_SOURCES = (
     "frontend/schemas/locale-catalog/v1/manifest.schema.json",
     "frontend/schemas/locale-catalog/v1/chunk.schema.json",
@@ -178,23 +192,159 @@ def build_backend_registry() -> bytes:
     return canonical_bytes(registry)
 
 
-def generator_sources() -> tuple[str, ...]:
+class GeneratorBoundaryError(Exception):
+    """A generator source reached outside the closed implementation boundary."""
+
+
+def canonical_generator_tree() -> Path:
+    tree = (ROOT / GENERATOR_MODULE_DIR).resolve(strict=True)
+    require(tree.is_dir(), f"{GENERATOR_MODULE_DIR} is not a directory")
+    return tree
+
+
+def check_generator_path(relative_path: str) -> Path:
+    """Every generator source must be a plain file inside the canonical
+    generator tree.
+
+    A symlink is refused outright rather than followed: following one would let
+    the bytes that are hashed live somewhere the boundary does not cover, and a
+    retarget would change the generator's behavior without changing anything
+    this closure reads. The path is canonicalized and required to stay inside
+    the tree, so `scripts/../something.py` cannot slip out either.
+    """
+    tree = canonical_generator_tree()
+    path = ROOT / relative_path
+
+    walked = ROOT
+    for part in Path(relative_path).parts:
+        walked = walked / part
+        if walked.is_symlink():
+            raise GeneratorBoundaryError(
+                f"{relative_path} is reached through the symlink {walked.relative_to(ROOT)}; "
+                "generator sources must be plain files inside the generator tree"
+            )
+
+    if not path.is_file():
+        raise GeneratorBoundaryError(f"missing generator source {relative_path}")
+
+    resolved = path.resolve(strict=True)
+    if resolved != tree and tree not in resolved.parents:
+        raise GeneratorBoundaryError(
+            f"{relative_path} resolves to {resolved}, outside the generator tree {tree}"
+        )
+    return path
+
+
+def read_generator_source(relative_path: str) -> bytes:
+    return check_generator_path(relative_path).read_bytes()
+
+
+def local_module_candidates(module_name: str) -> list[str]:
+    """Repository paths a module name could resolve to.
+
+    Both roots the generator actually runs with are considered: the generator
+    tree (which is on `sys.path` because the entry module lives there) and the
+    repository root. Packages are resolved through their `__init__.py`, and
+    every parent package on the way is a candidate too, so a package's
+    initialisation code is hashed alongside the module that was imported.
+    """
+    segments = module_name.split(".")
+    candidates: list[str] = []
+    for root in (GENERATOR_MODULE_DIR, ""):
+        prefix = f"{root}/" if root else ""
+        for depth in range(1, len(segments) + 1):
+            head = "/".join(segments[:depth])
+            candidates.append(f"{prefix}{head}/__init__.py")
+            if depth == len(segments):
+                candidates.append(f"{prefix}{head}.py")
+    return candidates
+
+
+def imported_module_names(tree: ast.AST, relative_path: str) -> list[str]:
+    """Every module name a source imports, with anything the closure cannot
+    follow statically refused rather than skipped.
+    """
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                raise GeneratorBoundaryError(
+                    f"{relative_path} uses a relative import; generator modules are resolved by "
+                    "absolute name so the closure can bind each one to a repository path"
+                )
+            if node.module is None:
+                raise GeneratorBoundaryError(f"{relative_path} has an import with no module name")
+            names.append(node.module)
+            # `from package import submodule` imports the submodule too.
+            names.extend(f"{node.module}.{alias.name}" for alias in node.names if alias.name != "*")
+        elif isinstance(node, ast.Name) and node.id in BANNED_NAMES:
+            raise GeneratorBoundaryError(
+                f"{relative_path} references {node.id!r}, which can execute or import code this "
+                "closure cannot see; the generator's inputs must all be statically resolvable"
+            )
+        elif isinstance(node, ast.Attribute):
+            value = node.value
+            if isinstance(value, ast.Name) and value.id == "sys" and node.attr in BANNED_SYS_ATTRIBUTES:
+                raise GeneratorBoundaryError(
+                    f"{relative_path} touches sys.{node.attr}, which can change where imports "
+                    "resolve from; the generator's module search must stay fixed"
+                )
+    return names
+
+
+def classify_import(module_name: str, relative_path: str) -> list[str]:
+    """Return every repository path a module resolves to -- the module itself
+    and each parent package's `__init__.py`, so a package's initialisation code
+    is hashed alongside it -- or an empty list when it is an allowed external
+    module. Anything else raises.
+    """
+    root_name = module_name.split(".")[0]
+    if root_name == "__future__":
+        return []
+
+    inside: list[str] = []
+    outside: list[str] = []
+    for candidate in local_module_candidates(module_name):
+        if not (ROOT / candidate).exists():
+            continue
+        (inside if candidate.startswith(f"{GENERATOR_MODULE_DIR}/") else outside).append(candidate)
+
+    if outside:
+        raise GeneratorBoundaryError(
+            f"{relative_path} imports {module_name!r}, which resolves to the repository-local "
+            f"{outside[0]} outside the generator tree; move it into {GENERATOR_MODULE_DIR}/ or "
+            "stop importing it"
+        )
+    if inside:
+        return inside
+
+    if root_name in PINNED_EXTERNAL_MODULES or root_name in sys.stdlib_module_names:
+        return []
+
+    raise GeneratorBoundaryError(
+        f"{relative_path} imports {module_name!r}, which is neither a generator module, a "
+        "standard-library module, nor one of this generator's pinned dependencies "
+        f"({sorted(PINNED_EXTERNAL_MODULES)}); the closure refuses imports it cannot classify"
+    )
+
+
+def scan_generator_sources(read_source=read_generator_source) -> tuple[str, ...]:
     """Every repository-local module this generator actually executes.
 
-    Hashing only this file would leave behavior-bearing source out of the
-    provenance: the derivation runs `strict_json`'s readers and parsers too, and
-    a future helper would join them silently. So the set is the *import closure*
-    of the entry module, computed from each module's own AST and restricted to
-    modules that live in `scripts/` -- a new local import is picked up
-    automatically rather than having to be remembered here, and a dropped or
-    renamed one changes the digest because it is bound to the path as well as
-    the bytes.
+    Hashing only the entry module would leave behavior-bearing source out of
+    the provenance: the derivation runs `strict_json`'s readers and parsers too,
+    and a future helper would join them silently. So the set is the import
+    closure of the entry module, resolved statically against the repository and
+    confined to a closed implementation boundary -- the `scripts/` tree, plain
+    files only, no symlinks, no relative imports, no packages outside it, no
+    dynamic import or `sys.path` machinery, and no import the closure cannot
+    classify as generator-local, standard-library, or a pinned dependency.
 
-    Relative imports and `scripts/` packages are refused rather than
-    approximated: neither exists today, and silently under-approximating the
-    closure is the exact failure this function is here to prevent.
+    `read_source` is injectable so the self-tests can put each bypass into the
+    real entry module's own AST and require a refusal.
     """
-    module_dir = ROOT / GENERATOR_MODULE_DIR
     pending = [GENERATOR_ENTRY]
     closure: set[str] = set()
 
@@ -202,40 +352,28 @@ def generator_sources() -> tuple[str, ...]:
         relative_path = pending.pop()
         if relative_path in closure:
             continue
-        path = ROOT / relative_path
-        require(path.is_file(), f"missing generator source {relative_path}")
+        source = read_source(relative_path)
         closure.add(relative_path)
 
-        tree = ast.parse(path.read_bytes(), filename=relative_path)
-        for node in ast.walk(tree):
-            imported: list[str] = []
-            if isinstance(node, ast.Import):
-                imported = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                require(
-                    node.level == 0,
-                    f"{relative_path} uses a relative import, which this closure does not model; "
-                    "keep generator helpers as plain sibling modules in scripts/",
+        tree = ast.parse(source, filename=relative_path)
+        for module_name in imported_module_names(tree, relative_path):
+            if module_name.split(".")[0] in BANNED_IMPORT_ROOTS:
+                raise GeneratorBoundaryError(
+                    f"{relative_path} imports {module_name!r}, which can load code this closure "
+                    "cannot see; the generator's inputs must all be statically resolvable"
                 )
-                if node.module:
-                    imported = [node.module]
-            for name in imported:
-                top_level = name.split(".")[0]
-                candidate = module_dir / f"{top_level}.py"
-                package = module_dir / top_level
-                require(
-                    not package.is_dir(),
-                    f"{relative_path} imports the local package {top_level!r}, which this closure "
-                    "does not model; keep generator helpers as single modules",
-                )
-                if candidate.is_file():
-                    pending.append(candidate.relative_to(ROOT).as_posix())
+            pending.extend(classify_import(module_name, relative_path))
 
-    require(
-        GENERATOR_ENTRY in closure,
-        "the generator source closure lost its own entry module",
-    )
+    if GENERATOR_ENTRY not in closure:
+        raise GeneratorBoundaryError("the generator source closure lost its own entry module")
     return tuple(sorted(closure))
+
+
+def generator_sources() -> tuple[str, ...]:
+    try:
+        return scan_generator_sources()
+    except GeneratorBoundaryError as error:
+        raise SystemExit(f"locale-catalog fixture: {error}") from None
 
 
 def read_repository_files(relative_paths: tuple[str, ...]) -> list[tuple[str, bytes]]:
@@ -652,6 +790,122 @@ def run_self_tests(files: dict[str, bytes]) -> None:
     )
 
     run_provenance_input_self_tests(manifest)
+    run_generator_boundary_self_tests()
+
+
+def run_generator_boundary_self_tests() -> None:
+    """Put each bypass into the *real* generator sources' own AST and require a
+    refusal, rather than asserting the boundary in prose.
+
+    The AST cases run through an injected reader, so nothing is written to
+    disk; the path cases need real filesystem state and clean it up.
+    """
+    entry_source = read_generator_source(GENERATOR_ENTRY)
+    helper = f"{GENERATOR_MODULE_DIR}/strict_json.py"
+    helper_source = read_generator_source(helper)
+
+    def reader_with(overrides: dict[str, bytes]):
+        def read(relative_path: str) -> bytes:
+            if relative_path in overrides:
+                return overrides[relative_path]
+            return read_generator_source(relative_path)
+
+        return read
+
+    def require_refusal(label: str, overrides: dict[str, bytes]) -> None:
+        try:
+            scan_generator_sources(reader_with(overrides))
+        except GeneratorBoundaryError:
+            return
+        raise SystemExit(
+            f"locale-catalog fixture: Self-test failure: {label} was accepted by the generator "
+            "source closure, so the boundary is not fail-closed"
+        )
+
+    bypasses = {
+        "an importlib import": b"import importlib\n",
+        "an importlib.util import": b"from importlib import util\n",
+        "a runpy import": b"import runpy\n",
+        "a pkgutil import": b"import pkgutil\n",
+        "a __import__ call": b'__import__("os")\n',
+        "an exec call": b'exec("VALUE = 1")\n',
+        "an eval call": b'eval("1")\n',
+        "a compile call": b'compile("1", "<s>", "eval")\n',
+        "a sys.path mutation": b'import sys\nsys.path.insert(0, "elsewhere")\n',
+        "a sys.meta_path mutation": b"import sys\nsys.meta_path.clear()\n",
+        "a sys.path_hooks mutation": b"import sys\nsys.path_hooks.clear()\n",
+        "a sys.modules lookup": b'import sys\nVALUE = sys.modules.get("os")\n',
+        "a relative import": b"from . import strict_json\n",
+        "an unclassifiable import": b"import totally_unknown_third_party\n",
+    }
+    for label, injected in bypasses.items():
+        require_refusal(f"{label} in the entry module", {GENERATOR_ENTRY: injected + entry_source})
+        require_refusal(f"{label} in a generator helper", {helper: injected + helper_source})
+
+    # A repository-local module *outside* the generator tree must be refused
+    # rather than quietly treated as external and left unhashed.
+    outside = ROOT / "locale_catalog_boundary_probe.py"
+    package_root = ROOT / GENERATOR_MODULE_DIR / "locale_catalog_boundary_pkg"
+    outside_package = ROOT / "locale_catalog_boundary_pkg_outside"
+    link = ROOT / GENERATOR_MODULE_DIR / "locale_catalog_boundary_link.py"
+    try:
+        outside.write_bytes(b"VALUE = 1\n")
+        require_refusal(
+            "a repository-local import outside the generator tree",
+            {GENERATOR_ENTRY: b"import locale_catalog_boundary_probe\n" + entry_source},
+        )
+
+        outside_package.mkdir()
+        (outside_package / "__init__.py").write_bytes(b"VALUE = 1\n")
+        require_refusal(
+            "a repository-local package outside the generator tree",
+            {GENERATOR_ENTRY: b"import locale_catalog_boundary_pkg_outside\n" + entry_source},
+        )
+
+        # A package *inside* the tree must resolve, and its __init__ must join
+        # the closure -- otherwise its initialisation code would go unhashed.
+        package_root.mkdir()
+        (package_root / "__init__.py").write_bytes(b"VALUE = 1\n")
+        (package_root / "leaf.py").write_bytes(b"VALUE = 2\n")
+        with_package = scan_generator_sources(
+            reader_with(
+                {
+                    GENERATOR_ENTRY: b"from locale_catalog_boundary_pkg import leaf\n" + entry_source
+                }
+            )
+        )
+        for expected in (
+            f"{GENERATOR_MODULE_DIR}/locale_catalog_boundary_pkg/__init__.py",
+            f"{GENERATOR_MODULE_DIR}/locale_catalog_boundary_pkg/leaf.py",
+        ):
+            require(
+                expected in with_package,
+                f"Self-test failure: an in-tree package import left {expected} out of the closure",
+            )
+
+        # A symlinked source must be refused rather than followed.
+        link.symlink_to(ROOT / GENERATOR_MODULE_DIR / "strict_json.py")
+        require_refusal(
+            "a symlinked generator module",
+            {GENERATOR_ENTRY: b"import locale_catalog_boundary_link\n" + entry_source},
+        )
+    finally:
+        for path in (link, package_root / "leaf.py", package_root / "__init__.py"):
+            if path.is_symlink() or path.exists():
+                path.unlink()
+        for directory in (package_root, outside_package):
+            if directory.exists():
+                for child in sorted(directory.iterdir()):
+                    child.unlink()
+                directory.rmdir()
+        if outside.exists():
+            outside.unlink()
+
+    # Finally, the real closure must still be exactly what the manifest hashed.
+    require(
+        scan_generator_sources() == generator_sources(),
+        "Self-test failure: the injectable reader changed the real generator source closure",
+    )
 
 
 def run_provenance_input_self_tests(manifest: dict) -> None:

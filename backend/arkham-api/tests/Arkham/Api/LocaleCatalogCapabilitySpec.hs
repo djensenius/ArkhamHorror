@@ -198,6 +198,8 @@ configErrorName = \case
   UnsupportedSchemaVersion _ -> "UnsupportedSchemaVersion"
   CatalogRevisionSchemaMismatch _ _ -> "CatalogRevisionSchemaMismatch"
   InvalidManifestSha256 _ -> "InvalidManifestSha256"
+  NonAsciiSettingValue _ -> "NonAsciiSettingValue"
+  ControlCharacterInSettingValue _ -> "ControlCharacterInSettingValue"
   InvalidLocaleTag _ _ -> "InvalidLocaleTag"
   DuplicateLocaleTag _ -> "DuplicateLocaleTag"
   TooManySupportedLocales _ -> "TooManySupportedLocales"
@@ -220,6 +222,10 @@ normalizeAgainstBaseline added allowed = \case
       Aeson.toJSON $ filter (/= Aeson.String added) (toList capabilities)
     _ -> Aeson.Null
 
+-- | 'T.isInfixOf' with its arguments in the order a test reads them.
+isInfixOf' :: Text -> Text -> Bool
+isInfixOf' haystack needle = T.isInfixOf needle haystack
+
 -- | The constructor name, as the governed table spells it.
 rejectionName :: ManifestUrlRejection -> Text
 rejectionName = show
@@ -239,6 +245,14 @@ spec = do
   let checks = contractManifest.manifestUrlChecks
       revisions = contractManifest.catalogRevisionChecks
       legacy = contractManifest.legacyCompatibilityChecks
+      configWithUrl url =
+        catalogConfig
+          url
+          ("1." <> T.replicate 32 "0")
+          revisions.schemaVersion
+          "en"
+          "de,en"
+          (T.replicate 63 "0" <> "a")
       configWithRevision revision =
         catalogConfig
           "/locale-catalog/manifest.json"
@@ -443,6 +457,23 @@ spec = do
         (refused.configured, first rejectionName (parseManifestUrl refused.configured))
           `shouldBe` (refused.configured, Left refused.reason)
 
+    it "reaches the same verdict through the production settings pipeline" do
+      -- parseManifestUrl is the parser; parseLocaleCatalogConfig is the path a
+      -- deployment's value actually takes, `present` included. A row the table
+      -- publishes must survive that path, and a row it refuses must not slip
+      -- through it.
+      for_ checks.accepted \accepted ->
+        ( accepted.configured
+        , fmap (fmap (.manifestUrl)) (parseLocaleCatalogConfig (configWithUrl accepted.configured))
+        )
+          `shouldBe` (accepted.configured, Right (Just accepted.published))
+
+      for_ checks.rejected \refused ->
+        ( refused.configured
+        , first configErrorName (parseLocaleCatalogConfig (configWithUrl refused.configured))
+        )
+          `shouldSatisfy` (isLeft . snd)
+
     it "covers every rejection the closed type declares" do
       List.sort (List.nub (map (.reason) checks.rejected))
         `shouldBe` List.sort (map rejectionName [minBound .. maxBound])
@@ -473,21 +504,24 @@ spec = do
     -- Every grammar here is a wire grammar, and the schemas that mirror it are
     -- ASCII. A digit or letter that only looks like one has to be refused, or a
     -- client comparing by string equality would read a different catalog.
+    -- These are refused as non-ASCII settings rather than as malformed values:
+    -- a setting is checked for ASCII on its raw spelling before any grammar
+    -- sees it, which is both earlier and a clearer thing to tell an operator.
     it "refuses a digest whose hex is not ASCII" do
       startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", T.replicate 63 "0" <> "\1632")])
-        `shouldSatisfy` T.isInfixOf "64 lowercase hex characters"
+        `shouldSatisfy` T.isInfixOf "non-ASCII character"
 
     it "refuses a digest of fullwidth digits" do
       startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", T.replicate 64 "\65296")])
-        `shouldSatisfy` T.isInfixOf "64 lowercase hex characters"
+        `shouldSatisfy` T.isInfixOf "non-ASCII character"
 
     it "refuses a locale subtag spelled with a Cyrillic confusable" do
       startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", "de,d\1072")])
-        `shouldSatisfy` T.isInfixOf "invalid locale tag"
+        `shouldSatisfy` T.isInfixOf "non-ASCII character"
 
     it "refuses a region subtag of fullwidth digits" do
       startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", "en-\65296\65296")])
-        `shouldSatisfy` T.isInfixOf "invalid locale tag"
+        `shouldSatisfy` T.isInfixOf "non-ASCII character"
 
     it "refuses a host that only becomes ASCII under Unicode case folding" do
       -- \8490 (KELVIN SIGN) lowercases to 'k'; the URL is refused as non-ASCII
@@ -505,7 +539,97 @@ spec = do
       -- \304 (LATIN CAPITAL LETTER I WITH DOT ABOVE) is not an ASCII letter, so
       -- it is refused rather than folded to 'i'.
       startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", "de,\304t")])
-        `shouldSatisfy` T.isInfixOf "invalid locale tag"
+        `shouldSatisfy` T.isInfixOf "non-ASCII character"
+
+  describe "raw setting values" do
+    -- Every published grammar is ASCII, so a value is refused on its *raw*
+    -- spelling before anything is trimmed: stripping Unicode whitespace first
+    -- would accept a no-break-space-wrapped value and then publish the ASCII
+    -- remainder, making the configured value and the contract two different
+    -- things.
+    let wrappers =
+          [ ("a no-break space", "\160")
+          , ("a thin space", "\8201")
+          , ("an ideographic space", "\12288")
+          , ("a byte-order mark", "\65279")
+          , ("an en quad", "\8192")
+          ]
+        settingsUnderTest =
+          [ "ARKHAM_LOCALE_CATALOG_MANIFEST_URL"
+          , "ARKHAM_LOCALE_CATALOG_REVISION"
+          , "ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION"
+          , "ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"
+          , "ARKHAM_LOCALE_CATALOG_LOCALES"
+          , "ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"
+          ]
+
+    for_ wrappers \(label, wrapper) ->
+      it ("refuses any setting wrapped in " <> toString label) do
+        for_ settingsUnderTest \name -> do
+          let value = fromMaybe "" (List.lookup name fixtureCatalogEnv)
+              message = startupErrorFor (withEnv [(name, wrapper <> value <> wrapper)])
+          (name, isInfixOf' message "non-ASCII character") `shouldBe` (name, True)
+
+    it "refuses a non-ASCII wrapper around a single locale in the list" do
+      let locales = fromMaybe "" (List.lookup "ARKHAM_LOCALE_CATALOG_LOCALES" fixtureCatalogEnv)
+      startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", "\160" <> locales)])
+        `shouldSatisfy` T.isInfixOf "non-ASCII character"
+      startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", T.replace "," ",\160" locales)])
+        `shouldSatisfy` T.isInfixOf "non-ASCII character"
+
+    it "refuses a control character the settings layer does not normalize away" do
+      -- Data.Yaml.Config re-parses each substituted value as a YAML scalar, so
+      -- a trailing CR/LF never reaches this parser (see the case below). Every
+      -- other control character does, and is refused rather than trimmed.
+      for_ (["\v", "\f", "\DEL", "\SOH"] :: [Text]) \ending ->
+        ( ending
+        , isInfixOf'
+            (startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", "en" <> ending)]))
+            "control character"
+        )
+          `shouldBe` (ending, True)
+
+    it "refuses a carriage return and newline at the parser, whatever the layer above does" do
+      -- The guarantee has to hold in this module, not by grace of the YAML
+      -- layer, so the direct parser is exercised too.
+      for_ (["\r", "\n", "\r\n"] :: [Text]) \ending ->
+        ( ending
+        , first configErrorName
+            (parseLocaleCatalogConfig (configWith revisions.schemaVersion ("en" <> ending) "de,en"))
+        )
+          `shouldBe` (ending, Left "ControlCharacterInSettingValue")
+
+    it "refuses a leading byte-order mark at the parser, whatever the layer above does" do
+      -- A leading U+FEFF is a YAML stream byte-order mark and is normalized
+      -- away before this parser runs, so the guarantee has to be the parser's.
+      first configErrorName (parseLocaleCatalogConfig (configWith revisions.schemaVersion "\65279en" "de,en"))
+        `shouldBe` Left "NonAsciiSettingValue"
+
+    it "documents that the settings layer normalizes a trailing line ending away" do
+      -- A YAML scalar cannot carry its own line ending, so `en\n` arrives here
+      -- as `en`. Asserted rather than assumed: if that ever changed, the case
+      -- above is what would keep the value from being published.
+      for_ ([("\r", "en\r"), ("\n", "en\n"), ("\r\n", "en\r\n"), ("leading BOM", "\65279en")] :: [(Text, Text)])
+        \(label, configured) ->
+          (label, responseFor (withEnv [("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", configured)]))
+            `shouldBe` (label, responseFor fixtureCatalogEnv)
+
+    it "trims only an ASCII space or tab, and still publishes the same catalog" do
+      let padded = [(name, " \t" <> fromMaybe "" (List.lookup name fixtureCatalogEnv) <> "\t ") | name <- settingsUnderTest]
+      responseFor (withEnv padded) `shouldBe` responseFor fixtureCatalogEnv
+
+    it "trims ASCII space around each locale in the list" do
+      let locales = fromMaybe "" (List.lookup "ARKHAM_LOCALE_CATALOG_LOCALES" fixtureCatalogEnv)
+      fmap (.supportedLocales) (catalogFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", T.replace "," ", " locales)]))
+        `shouldBe` Right (List.sort catalog.supportedLocales)
+
+    it "refuses an interior tab in a locale list, which is not a separator" do
+      let locales = fromMaybe "" (List.lookup "ARKHAM_LOCALE_CATALOG_LOCALES" fixtureCatalogEnv)
+      startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", T.replace "," ",\t" locales)])
+        `shouldSatisfy` T.isInfixOf "control character"
+
+    it "still treats an all-whitespace value as unconfigured, not invalid" do
+      configuredCatalogFor [(name, " \t ") | name <- settingsUnderTest] `shouldBe` Right Nothing
 
   describe "catalog revision binding" do
     it "accepts exactly the revisions the governed contract table publishes" do
