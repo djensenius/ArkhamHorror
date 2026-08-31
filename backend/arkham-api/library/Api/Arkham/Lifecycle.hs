@@ -376,21 +376,27 @@ process's own retry or some entirely different caller's
 'RetireFailed''s own Haddock for the MEDIUM-severity finding this closes.
 -}
 releaseAllRecordingReceipt :: IORef (Maybe PendingCleanupOwner.CleanupReceipt) -> [IO ()] -> IO ()
-releaseAllRecordingReceipt receiptSink actions = do
+releaseAllRecordingReceipt receiptSink actions = mask $ \restore -> do
   plan <- newManagedReleasePlan actions
-  outcome <- try @SomeException (runManagedReleasePlan plan)
+  outcome <- try @SomeException (runManagedReleasePlanWith restore plan)
   case outcome of
     Right (Right ()) -> pure ()
     Right (Left failures) -> throwIO (ReleaseAllFailed failures plan)
     Left asyncErr -> do
-      -- 'runManagedReleasePlan' only ever throws (rather than returning
-      -- a 'Left' failure /value/) for a genuine asynchronous
+      -- 'runManagedReleasePlanWith' only ever throws (rather than
+      -- returning a 'Left' failure /value/) for a genuine asynchronous
       -- interruption -- see its own Haddock -- so anything caught here
       -- is, by construction, never a synchronous failure needing
-      -- 'ReleaseAllFailed'-style classification at all.
-      mask_ $ do
-        receipt <- PendingCleanupOwner.transferPendingCleanup globalPendingCleanupOwner (retryPlan plan)
-        writeIORef receiptSink (Just receipt)
+      -- 'ReleaseAllFailed'-style classification at all. From here
+      -- through the final 'throwIO' below, this whole function remains
+      -- continuously masked (this @case@'s own scrutinee, the
+      -- 'try'\/@case@ dispatch, and everything in this branch all run
+      -- under the SAME 'mask' this function opened at entry -- no
+      -- separate, later 'mask_' call, and therefore no gap between them
+      -- for a second asynchronous exception to land in and abandon this
+      -- transfer before it ever runs).
+      receipt <- PendingCleanupOwner.transferPendingCleanup globalPendingCleanupOwner (retryPlan plan)
+      writeIORef receiptSink (Just receipt)
       throwIO asyncErr
  where
   retryPlan plan =
@@ -443,14 +449,24 @@ pass) is durably handed to 'PendingCleanupOwner.globalPendingCleanupOwner'
 /before/ the ORIGINAL exception (never wrapped in anything else) is
 rethrown.
 
+This function's own top-level entry point below establishes a fresh
+'Control.Exception.mask' from whatever ambient masking state its caller
+happens to be in; 'runManagedReleasePlanWith' is the same logic
+parameterized over an externally-supplied @restore@ instead, used by
+'releaseAllRecordingReceipt' so that its own run\/catch\/transfer\/rethrow
+sequence shares ONE single, continuous outer 'Control.Exception.mask'
+(see its own Haddock for the MEDIUM-severity finding this closes) rather
+than nesting a second, independent 'mask' whose own @restore@ would only
+ever restore back to "still masked" and would therefore make every
+individual release action wrongly uninterruptible.
+
 A whole pass runs as one atomic 'Control.Concurrent.MVar.MVar' transaction
-(masked throughout, with 'Control.Exception.mask'\'s own @restore@
-applied only around the literal invocation of whichever single action is
-currently being attempted): two concurrent callers against the exact
-same @plan@ are therefore always fully serialized, and there is no gap,
-masked or otherwise, between an action completing and that being durably
-reflected in @plan@\'s own remaining list for an asynchronous exception
-to land in.
+(masked throughout, with @restore@ applied only around the literal
+invocation of whichever single action is currently being attempted): two
+concurrent callers against the exact same @plan@ are therefore always
+fully serialized, and there is no gap, masked or otherwise, between an
+action completing and that being durably reflected in @plan@\'s own
+remaining list for an asynchronous exception to land in.
 
 This function itself never touches 'PendingCleanupOwner.globalPendingCleanupOwner'
 at all (a change from an earlier version, which called
@@ -467,18 +483,26 @@ are ever minted, so a receipt always identifies one, unambiguous
 plan for the rest of its lifetime. This function is guaranteed to only
 ever /throw/ for a genuine asynchronous interruption -- a synchronous
 failure always comes back as 'Left', never as a thrown exception -- which
-'releaseAllRecordingReceipt' and 'PendingCleanupOwner.attemptOne' both
+'releaseAllRecordingReceipt' and 'PendingCleanupOwner.attemptCleanupReceipt' both
 rely on.
 -}
 runManagedReleasePlan :: ManagedReleasePlan -> IO (Either (NonEmpty SomeException) ())
-runManagedReleasePlan (ManagedReleasePlan actionsVar) = do
-  passOutcome <- mask $ \restore -> modifyMVar actionsVar (attemptPass restore)
+runManagedReleasePlan plan = mask $ \restore -> runManagedReleasePlanWith restore plan
+
+-- | Exactly 'runManagedReleasePlan', except that the masking state
+-- individual release actions run under (via @restore@) is supplied by
+-- the caller instead of this function establishing its own fresh 'mask'
+-- -- see 'runManagedReleasePlan''s own Haddock for why
+-- 'releaseAllRecordingReceipt' specifically needs this variant.
+runManagedReleasePlanWith :: (forall a. IO a -> IO a) -> ManagedReleasePlan -> IO (Either (NonEmpty SomeException) ())
+runManagedReleasePlanWith restore (ManagedReleasePlan actionsVar) = do
+  passOutcome <- modifyMVar actionsVar (attemptPass restore)
   case passOutcome of
     CleanPass -> pure (Right ())
     SyncFailuresRemain failures -> pure (Left failures)
     AsyncInterrupted asyncErr -> throwIO asyncErr
  where
-  attemptPass restore actions = go [] [] actions
+  attemptPass restore' actions = go [] [] actions
    where
     go failuresAcc retainedRev toAttempt = case toAttempt of
       [] ->
@@ -487,7 +511,7 @@ runManagedReleasePlan (ManagedReleasePlan actionsVar) = do
           , maybe CleanPass SyncFailuresRemain (NE.nonEmpty (reverse failuresAcc))
           )
       (action : rest) -> do
-        outcome <- try @SomeException (restore action)
+        outcome <- try @SomeException (restore' action)
         case outcome of
           Right () -> go failuresAcc retainedRev rest
           Left err

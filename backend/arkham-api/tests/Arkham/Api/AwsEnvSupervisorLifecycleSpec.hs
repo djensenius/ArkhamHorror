@@ -40,7 +40,6 @@ import Api.Arkham.AwsEnvSupervisor (
  )
 import Api.Arkham.Helpers (tryRedis_)
 import Api.Arkham.Lifecycle (
-  CleanupReceipt,
   ReceiptOutcome (..),
   RestartState (..),
   RetirementOutcome (..),
@@ -48,7 +47,6 @@ import Api.Arkham.Lifecycle (
   StopOutcome (..),
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
-  classifyRetirementFailure,
   drainOwnedCleanup,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
@@ -69,9 +67,6 @@ import PendingCleanupOwner (
   attemptCleanupReceipt,
   drainPendingCleanup,
   globalPendingCleanupOwner,
-  hasPendingCleanup,
-  newPendingCleanupOwner,
-  transferPendingCleanup,
  )
 import Arkham.Prelude
 import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay)
@@ -105,8 +100,23 @@ shouldNotBeTerminated :: SupervisedEnvState env -> Expectation
 shouldNotBeTerminated state =
   when (isTerminated state) $ expectationFailure "expected the supervisor NOT to have been stopped yet"
 
+-- | This whole module is deliberately run 'sequential'ly (overriding this
+-- project's default @SpecHook.hook = parallel@): several of its tests
+-- (search for 'drainOwnedCleanup'\/'globalPendingCleanupOwner' below)
+-- deliberately exercise the single, genuinely process-global
+-- 'PendingCleanupOwner.globalPendingCleanupOwner' singleton -- by
+-- construction, the exact same shared, mutable state every real
+-- @DevelMain@\/@Application.handler@ caller in the actual running
+-- process shares too -- so two such tests running truly concurrently
+-- (as this project's default parallel scheduling would otherwise
+-- attempt) can genuinely race each other's transfers and drains of that
+-- one shared queue, observed as a flaky, nondeterministic failure
+-- entirely unrelated to any real defect. Every other test in this file
+-- already finishes in a small fraction of a second, so running the
+-- whole module sequentially costs nothing measurable while removing
+-- that cross-test interference entirely.
 spec :: Spec
-spec = describe "Foundation lifecycle bracketing (Application.hs composition patterns)" do
+spec = sequential $ describe "Foundation lifecycle bracketing (Application.hs composition patterns)" do
   describe "makeFoundation-style bracketOnError: release only on failure/cancellation, never on success" do
     it "stops the supervisor exactly once when a later initialization step throws immediately after construction" do
       supRef <- newIORef Nothing
@@ -1545,6 +1555,114 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       case polledAgain of
         ReceiptSucceeded -> pure ()
         other -> expectationFailure ("expected polling the exact same receipt again to still report ReceiptSucceeded, got " <> show other)
+
+  {- | Root-cause regression for a MEDIUM \"ownership\" finding against
+  @app\/DevelMain.hs@'s own restart wiring: it used to call
+  @releaseAllRecordingReceipt receiptSink [shutdownApp site]@, wrapping
+  'Application.shutdownApp' -- an action that is ALREADY its own,
+  complete 'ManagedReleasePlan' (via its own internal 'releaseAll' call
+  over the foundation's five real resources) -- inside a SECOND,
+  independent OUTER plan holding only that one, already-managed action.
+  If the INNER 'releaseAll' call was itself asynchronously interrupted
+  partway through its own resource list, it durably transferred its own
+  genuinely-outstanding remainder to 'globalPendingCleanupOwner' (via its
+  own, permanently-discarded receipt sink) before rethrowing -- but the
+  SAME original exception then propagated out of @shutdownApp site@ and
+  back into the OUTER plan's own single action, which (correctly, in
+  isolation) ALSO classified it as asynchronous and ALSO durably
+  transferred the ENTIRE @shutdownApp site@ action (to be retried from
+  scratch, including whichever inner resources had already actually
+  finished releasing) as its OWN, separate, receipt-tracked remainder.
+  Draining both of these afterwards therefore re-ran every inner resource
+  release that had already genuinely succeeded a second time -- the exact
+  \"duplicate successful releases\" the reviewer reproduced.
+
+  Root fix: 'Application.hs' now exposes the foundation's concrete
+  release-action list directly ('Application.shutdownAppActions'), and
+  @app\/DevelMain.hs@\'s own restart wiring runs exactly ONE managed plan
+  over that flat list directly (@releaseAllRecordingReceipt receiptSink
+  (shutdownAppActions site)@) -- never wrapping the already-managed
+  'Application.shutdownApp' in a second, outer plan. 'Application.shutdownApp'
+  itself is unchanged (@releaseAll . shutdownAppActions@) for every OTHER
+  caller ('Application.appMain', 'Application.handler',
+  'Application.getApplicationRepl') that has no receipt of its own to
+  track and is content with the existing, single-layer, discarded-receipt
+  'releaseAll' behaviour those already exercise elsewhere in this file.
+
+  The first test below reproduces the OLD, nested shape directly (never
+  calling any production function that constructs it any more -- see
+  'Application.shutdownAppActions''s own Haddock) purely to prove the
+  anti-pattern itself is what caused the duplication, independent of
+  anything specific to 'Application.shutdownApp'. The second test proves
+  the CORRECTED, flat wiring @app\/DevelMain.hs@ now actually uses does
+  not duplicate anything across the exact same interruption.
+  -}
+  describe "DevelMain wiring: a single flat release-action list, never a nested already-managed shutdown action" do
+    it "mutation-proof: wrapping an already-managed releaseAll action inside a second, outer releaseAllRecordingReceipt plan duplicates whichever inner release had already succeeded once interrupted" do
+      firstReached <- newEmptyMVar
+      neverFilled <- newEmptyMVar
+      firstCalls <- newIORef (0 :: Int)
+      secondCalls <- newIORef (0 :: Int)
+      let firstRelease = do
+            n <- atomicModifyIORef' firstCalls (\c -> (c + 1, c + 1))
+            if n == 1
+              then putMVar firstReached () >> takeMVar neverFilled >> error "unreachable"
+              else pure ()
+          secondRelease = atomicModifyIORef' secondCalls (\c -> (c + 1, ()))
+          -- Stands in for the OLD, buggy 'Application.shutdownApp':
+          -- an action that is already its own, complete managed plan.
+          alreadyManagedShutdownStandIn = releaseAll [firstRelease, secondRelease]
+      outerReceiptSink <- newIORef Nothing
+      callerDone <- newEmptyMVar
+      callerTid <- forkIOWithUnmask \unmask -> do
+        _ <-
+          Exception.try @Exception.SomeException
+            (unmask (releaseAllRecordingReceipt outerReceiptSink [alreadyManagedShutdownStandIn]))
+        putMVar callerDone ()
+      takeMVar firstReached
+      Exception.throwTo callerTid Exception.ThreadKilled
+      -- By the time this returns, BOTH the inner (discarded-receipt) and
+      -- the outer (tracked-receipt) masked transfer-then-rethrow
+      -- sequences have already fully, synchronously unwound -- so both
+      -- registrations genuinely exist before draining below, with no
+      -- timing race to lose.
+      takeMVar callerDone
+      _ <- drainPendingCleanup globalPendingCleanupOwner
+      -- 'secondRelease' (the one action that had not yet even been
+      -- reached by either layer at the moment of cancellation) is run
+      -- once by the inner registration's own fresh retry, and AGAIN by
+      -- the outer registration's own fresh, independent retry of the
+      -- entire already-managed action -- the duplicate release this
+      -- test exists to prove.
+      readIORef secondCalls `shouldReturn` 2
+
+    it "the corrected flat wiring (Application.shutdownAppActions run directly through releaseAllRecordingReceipt, never wrapped again) runs each resource release at most once, across the exact same async interruption" do
+      firstReached <- newEmptyMVar
+      neverFilled <- newEmptyMVar
+      firstCalls <- newIORef (0 :: Int)
+      secondCalls <- newIORef (0 :: Int)
+      let firstRelease = do
+            n <- atomicModifyIORef' firstCalls (\c -> (c + 1, c + 1))
+            if n == 1
+              then putMVar firstReached () >> takeMVar neverFilled >> error "unreachable"
+              else pure ()
+          secondRelease = atomicModifyIORef' secondCalls (\c -> (c + 1, ()))
+      receiptSink <- newIORef Nothing
+      callerDone <- newEmptyMVar
+      callerTid <- forkIOWithUnmask \unmask -> do
+        _ <-
+          Exception.try @Exception.SomeException
+            (unmask (releaseAllRecordingReceipt receiptSink [firstRelease, secondRelease]))
+        putMVar callerDone ()
+      takeMVar firstReached
+      Exception.throwTo callerTid Exception.ThreadKilled
+      takeMVar callerDone
+      drainResult <- drainPendingCleanup globalPendingCleanupOwner
+      case drainResult of
+        Right () -> pure ()
+        Left errs -> expectationFailure ("expected drainPendingCleanup to genuinely finish the transferred cleanup, but it still reports " <> show errs)
+      readIORef firstCalls `shouldReturn` 2
+      readIORef secondCalls `shouldReturn` 1
 
   {- | Root-cause regression, on 'acquireTransferringOwnershipOnSuccess'
   itself, for the second MEDIUM \"cleanup-progress\" finding: the old

@@ -50,7 +50,7 @@ import Api.Arkham.Lifecycle (
   shutdownThenDeliverRecordingReceipt,
   stopManagedGeneration,
  )
-import Application (getApplicationRepl, shutdownApp)
+import Application (getApplicationRepl, shutdownApp, shutdownAppActions)
 import Prelude
 
 import Control.Concurrent
@@ -99,7 +99,13 @@ update =
       -- stuck forever -- see 'RetirementRetry''s own Haddock.
       (\(_, site, _) _result newDone -> do
         receiptSink <- newIORef Nothing
-        shutdownThenDeliverRecordingReceipt receiptSink (releaseAllRecordingReceipt receiptSink [shutdownApp site]) newDone)
+        -- Runs 'Application.shutdownAppActions' directly through exactly
+        -- ONE managed release plan -- never wraps the already-managed
+        -- 'Application.shutdownApp' in a second, outer plan (see
+        -- 'Application.shutdownApp''s own Haddock for the
+        -- MEDIUM-severity duplicate-release finding that composition
+        -- caused).
+        shutdownThenDeliverRecordingReceipt receiptSink (releaseAllRecordingReceipt receiptSink (shutdownAppActions site)) newDone)
     -- Opportunistically attempt to finish any cleanup capability a
     -- /previous/ generation's own asynchronously-interrupted shutdown
     -- durably transferred away (see 'drainOwnedCleanup''s own Haddock):

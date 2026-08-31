@@ -2557,10 +2557,18 @@ thread's status is definitely terminal, or a generous bound elapses.
 exception, but the RTS may take a further scheduling quantum to actually
 mark the thread 'ThreadDied'\/'ThreadFinished' -- so tests that assert
 termination poll for it explicitly instead of racing a single fixed
-delay against that quantum.
+delay against that quantum. The bound (20 seconds) is deliberately
+generous: a genuinely already-terminated (or about to be) thread is
+observed within microseconds in practice, so this cost is only ever
+paid on an actual, otherwise-flaky failure -- observed under this
+project's own heavy, fully concurrent (@SpecHook.hook = parallel@) test
+scheduling, where dozens of independently-forking tests compete for CPU
+at once, a genuinely already-terminating target can occasionally still
+read 'ThreadBlocked' \'BlockedOnMVar\' (mid- shutdown handshake, not
+stuck) for longer than a smaller bound previously allowed.
 -}
 waitUntilTerminated :: ThreadId -> IO ThreadStatus
-waitUntilTerminated tid = go (500 :: Int)
+waitUntilTerminated tid = go (20000 :: Int)
   where
     go n = do
       status <- threadStatus tid
@@ -3687,7 +3695,7 @@ awsEnvSupervisorInternalSpec = describe "AWS Env supervisor" do
                   Just (Right ()) -> pure ()
               guardedAttempt = attempt `Exception.catch` \(_ :: AuthError) -> guardedAttempt
           guardedAttempt
-          status <- threadStatus targetTid
+          status <- waitUntilTerminated targetTid
           status `shouldSatisfy` isTerminatedStatus
         _ -> expectationFailure "expected managedEnvAcquisition to produce a Ref for a far-future expiration, not a static Auth"
 
@@ -3949,7 +3957,14 @@ awsEnvSupervisorInternalSpec = describe "AWS Env supervisor" do
           -- never returns\/throws until 'cancelManagedThread' has
           -- genuinely observed the target's own completion, and by this
           -- point the flood thread (if it ran) is unconditionally done.
-          status <- threadStatus targetTid
+          -- Polls via 'waitUntilTerminated' (see its own Haddock) rather
+          -- than a single immediate 'threadStatus' check: the RTS may
+          -- take a further scheduling quantum, after the target has
+          -- genuinely finished, to mark it terminal -- especially under
+          -- the heavy concurrent scheduler load this flood already
+          -- creates -- which a single unconditioned check can observe
+          -- as a transient, still-'ThreadRunning' false negative.
+          status <- waitUntilTerminated targetTid
           status `shouldSatisfy` isTerminatedStatus
         _ -> expectationFailure "expected managedEnvAcquisition to produce a Ref for a far-future expiration, not a static Auth"
 

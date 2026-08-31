@@ -15,6 +15,7 @@ module Application (
   -- * for DevelMain
   getApplicationRepl,
   shutdownApp,
+  shutdownAppActions,
 
   -- * for GHCI
   handler,
@@ -405,18 +406,50 @@ earlier release throwing can never cause a later one to be skipped --
 without that, a single misbehaving release would leave every resource
 after it leaking on every subsequent 'DevelMain' restart or 'handler'
 call.
+
+This is itself already a complete, single 'Api.Arkham.Lifecycle.ManagedReleasePlan'
+(via 'releaseAll'): a MEDIUM-severity finding was that @app\/DevelMain.hs@'s
+own restart wiring used to call @releaseAllRecordingReceipt receiptSink
+[shutdownApp site]@, wrapping this already-managed action inside a
+SECOND, independent outer plan. If this call's own internal 'releaseAll'
+was asynchronously interrupted partway through the list below, it
+durably transferred its own genuinely-outstanding remainder away (via
+its own, permanently-discarded receipt sink) before rethrowing -- but the
+outer plan then ALSO classified the same rethrown exception as
+asynchronous and ALSO durably transferred the ENTIRE @shutdownApp site@
+action to be retried from scratch, including whichever resources below
+had already actually finished releasing: draining both of these
+registrations later duplicated every resource release that had already
+genuinely succeeded. See 'shutdownAppActions' for the fix.
 -}
 shutdownApp :: App -> IO ()
-shutdownApp app =
-  releaseAll
-    [ stopAwsEnvSupervisor (appAwsEnvSupervisor app)
-    , cancelManagedThread (appRoomHeartbeatThread app)
-    , for_ (appPubSubSupervisorThread app) cancelManagedThread
-    , case appMessageBroker app of
-        WebSocketBroker -> pure ()
-        RedisBroker conn _ -> disconnect conn
-    , destroyAllResources (appConnPool app)
-    ]
+shutdownApp = releaseAll . shutdownAppActions
+
+{- | The exact, concrete, ordered list of release actions 'shutdownApp'
+runs (unconditionally, via 'releaseAll'). Exposed separately so a caller
+that wants a single managed release pass with its OWN receipt-tracked
+retry (production: @app\/DevelMain.hs@'s restart wiring, via
+'Api.Arkham.Lifecycle.releaseAllRecordingReceipt') can run that directly
+over this flat list -- @releaseAllRecordingReceipt receiptSink
+(shutdownAppActions site)@ -- rather than ever wrapping the already-managed
+'shutdownApp' in a second, outer plan (see 'shutdownApp''s own Haddock
+for the MEDIUM-severity duplicate-release finding that composition
+caused). Every OTHER caller ('appMain', 'handler', 'getApplicationRepl')
+keeps using plain 'shutdownApp' unchanged: exactly one managed plan
+either way, just addressed through a different, equally valid entry
+point depending on whether the caller has anywhere durable of its own to
+retain a receipt.
+-}
+shutdownAppActions :: App -> [IO ()]
+shutdownAppActions app =
+  [ stopAwsEnvSupervisor (appAwsEnvSupervisor app)
+  , cancelManagedThread (appRoomHeartbeatThread app)
+  , for_ (appPubSubSupervisorThread app) cancelManagedThread
+  , case appMessageBroker app of
+      WebSocketBroker -> pure ()
+      RedisBroker conn _ -> disconnect conn
+  , destroyAllResources (appConnPool app)
+  ]
 
 ---------------------------------------------
 -- Functions for use in development with GHCi

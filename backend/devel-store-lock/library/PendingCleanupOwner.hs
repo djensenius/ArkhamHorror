@@ -55,18 +55,20 @@ capability that /had/ already succeeded earlier in that same drain pass.
 Every entry owned here now lives in one 'Control.Concurrent.STM.TVar',
 keyed by its own opaque 'CleanupReceipt', with an explicit @Queued@\/
 @Running@\/@Terminated@ state: claiming an entry (moving it from @Queued@
-to @Running@) is one nonblocking, masked-safe 'Control.Concurrent.STM.atomically'
-transaction; the claimed capability's own 'IO' action then runs entirely
-/outside/ any 'Control.Concurrent.STM.STM' transaction (so it may itself
+to @Running@), running the claimed capability's own 'IO' action (entirely
+/outside/ any 'Control.Concurrent.STM.STM' transaction, so it may itself
 freely call 'transferPendingCleanup' again -- inserting into the very
 same 'Control.Concurrent.STM.TVar' -- without any risk of deadlocking
-against its own claim); and the outcome (success, a synchronous failure,
-or an asynchronous interruption) is committed back via one more atomic,
-nonblocking transaction immediately afterwards -- for an asynchronous
-interruption, specifically /before/ the original exception is ever
-rethrown, so nothing already recorded, and nothing not yet even
-attempted, is ever lost or left permanently stuck 'Running' (which would
-otherwise deadlock every later attempt to claim it).
+against its own claim), and committing the outcome (success, a
+synchronous failure, or an asynchronous interruption) back afterwards
+all happen under one single, continuous 'Control.Exception.mask' (see
+'attemptClaimed'): only the action itself runs under that mask's own
+@restore@, i.e. exactly as asynchronously-cancellable as its caller left
+it. For an asynchronous interruption, the requeue commit specifically
+happens /before/ the original exception is ever rethrown, so nothing
+already recorded, and nothing not yet even attempted (including the
+claim itself), is ever lost or left permanently stuck 'Running' (which
+would otherwise deadlock every later attempt to claim it).
 -}
 module PendingCleanupOwner (
   PendingCleanupOwner,
@@ -96,6 +98,8 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set (Set)
+import Data.Set qualified as Set
 import System.IO.Unsafe (unsafePerformIO)
 import Prelude
 
@@ -170,22 +174,50 @@ transferPendingCleanup owner action = atomically $ do
   modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued action))
   pure receipt
 
--- | Atomically claim the single, first still-'Queued' entry (in
--- ascending receipt order, i.e. oldest transfer first), if any,
--- returning it and marking it 'Running' -- or 'Nothing' if nothing is
--- currently 'Queued'. Never blocks.
-claimOneQueued :: PendingCleanupOwner -> STM (Maybe (CleanupReceipt, IO (Either SomeException ())))
-claimOneQueued owner = do
+{- | Atomically claim the single, first still-'Queued' entry (in
+ascending receipt order, i.e. oldest transfer first) whose receipt is
+/not/ in @excluded@, if any, returning it and marking it 'Running' -- or
+'Left' @()@ if nothing eligible is currently 'Queued'. Never blocks.
+
+@excluded@ exists purely so 'drainPendingCleanup' can attempt every
+entry it currently owns /at most once per pass/ (see its own Haddock for
+the starvation this closes): a persistently, synchronously failing entry
+is requeued by 'attemptClaimed' exactly as before, but a single drain
+pass must not re-claim it and loop on it forever while never reaching
+any different, later-queued entry.
+-}
+claimNextExcluding :: PendingCleanupOwner -> Set CleanupReceipt -> STM (Either () (CleanupReceipt, IO (Either SomeException ())))
+claimNextExcluding owner excluded = do
   entries <- readTVar (pcoEntries owner)
-  case [(receipt, action) | (receipt, Queued action) <- Map.toAscList entries] of
-    [] -> pure Nothing
+  case [(receipt, action) | (receipt, Queued action) <- Map.toAscList entries, receipt `Set.notMember` excluded] of
+    [] -> pure (Left ())
     (claimed@(receipt, _) : _) -> do
       writeTVar (pcoEntries owner) (Map.insert receipt Running entries)
-      pure (Just claimed)
+      pure (Right claimed)
 
-{- | Run exactly one already-claimed capability's own 'IO' action
-(entirely outside any 'Control.Concurrent.STM.STM' transaction, so it may
-itself freely call 'transferPendingCleanup' -- e.g. a retried
+{- | Atomically decide whether (and how) 'attemptCleanupReceipt' may
+proceed against one specific, already-known receipt: already 'Terminated'
+(or, vacuously, entirely unknown -- never actually reachable given this
+module's own construction, since no entry is ever removed) reports
+'ReceiptSucceeded' directly without ever attempting anything; already
+'Running' (some other, concurrent caller has already claimed it) reports
+'ReceiptBusy'; otherwise claims it exactly like 'claimNextExcluding'.
+-}
+claimSpecific :: PendingCleanupOwner -> CleanupReceipt -> STM (Either ReceiptOutcome (CleanupReceipt, IO (Either SomeException ())))
+claimSpecific owner receipt = do
+  entries <- readTVar (pcoEntries owner)
+  case Map.lookup receipt entries of
+    Nothing -> pure (Left ReceiptSucceeded)
+    Just Terminated -> pure (Left ReceiptSucceeded)
+    Just Running -> pure (Left ReceiptBusy)
+    Just (Queued action) -> do
+      writeTVar (pcoEntries owner) (Map.insert receipt Running entries)
+      pure (Right (receipt, action))
+
+{- | Atomically claim (via @claimSTM@) and, if anything was claimed, run
+that one capability's own 'IO' action (entirely outside any
+'Control.Concurrent.STM.STM' transaction, so it may itself freely call
+'transferPendingCleanup' -- e.g. a retried
 'Api.Arkham.Lifecycle.ManagedReleasePlan' asynchronously interrupted
 /again/ mid-retry -- without any risk of deadlocking against its own
 claim), then atomically commit its outcome:
@@ -207,60 +239,86 @@ claim), then atomically commit its outcome:
   to claim it) the instant this call's own caller is itself cancelled
   while this capability happened to be running.
 
-'action' itself runs fully interruptible (under 'restore', i.e. exactly
-as asynchronously-cancellable as this call's own caller left it), but
-every commit of the outcome back into 'pcoEntries' below is masked: once
-'action' has itself returned or been caught, a /new/ asynchronous
-exception arriving in the gap between that and the commit must never be
-allowed to skip the commit and leave this receipt stuck 'Running'
-forever (which would permanently wedge every later
-'drainPendingCleanup'\/'attemptCleanupReceipt' call against it). Each
-commit below is a single, non-retrying 'atomically' transaction that
-runs to completion without blocking, so masking around it is genuinely
-sufficient: GHC only delivers a pending asynchronous exception to a
-masked thread at its own next interruptible operation, and an
-'atomically' transaction that never calls 'retry' is not itself such a
-point until after it has already committed.
+The claim transaction, the action itself, and every commit of the
+outcome back into 'pcoEntries' all run under ONE continuous, single
+'Control.Exception.mask' spanning this entire function: only the action
+itself runs under 'restore' (i.e. exactly as asynchronously-cancellable
+as this call's own caller left it) -- everything else, INCLUDING the
+initial claim (@Queued -> Running@), runs masked. This closes a
+MEDIUM-severity finding against an earlier version of this function,
+which performed the claim transaction /before/ ever entering its own
+'Control.Exception.mask': an asynchronous exception landing in the gap
+between that unmasked claim committing and this function's own 'mask'
+call beginning left the claimed entry permanently stranded 'Running',
+with nothing left to ever requeue or rethrow anything -- deadlocking
+every later attempt to claim it. Every 'atomically' transaction here
+(the claim, and each outcome commit) is a single, non-retrying
+transaction that runs to completion without blocking, so masking around
+all of them is genuinely sufficient: GHC only delivers a pending
+asynchronous exception to a masked thread at its own next interruptible
+operation, and an 'atomically' transaction that never calls 'retry' is
+not itself such a point until after it has already committed.
 -}
-attemptOne :: PendingCleanupOwner -> CleanupReceipt -> IO (Either SomeException ()) -> IO (Either (NonEmpty SomeException) ())
-attemptOne owner receipt action = mask $ \restore -> do
-  outcome <- try @SomeException (restore action)
-  case outcome of
-    Right (Right ()) -> do
-      atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt Terminated)
-      pure (Right ())
-    Right (Left err) -> do
-      atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued action))
-      pure (Left (err :| []))
-    Left threwErr -> do
-      atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued action))
-      throwIO threwErr
+attemptClaimed
+  :: PendingCleanupOwner
+  -> STM (Either r (CleanupReceipt, IO (Either SomeException ())))
+  -> IO (Either r (CleanupReceipt, Either (NonEmpty SomeException) ()))
+attemptClaimed owner claimSTM = mask $ \restore -> do
+  claimed <- atomically claimSTM
+  case claimed of
+    Left notClaimed -> pure (Left notClaimed)
+    Right (receipt, action) -> do
+      outcome <- try @SomeException (restore action)
+      case outcome of
+        Right (Right ()) -> do
+          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt Terminated)
+          pure (Right (receipt, Right ()))
+        Right (Left err) -> do
+          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued action))
+          pure (Right (receipt, Left (err :| [])))
+        Left threwErr -> do
+          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued action))
+          throwIO threwErr
 
 {- | Attempt every capability currently owned, claiming (and running) one
 entry at a time -- never a batch claimed all at once -- specifically so
 that an asynchronous exception interrupting one entry's own attempt
-(propagated straight out of this call: see 'attemptOne') leaves every
+(propagated straight out of this call: see 'attemptClaimed') leaves every
 /other/ entry not yet reached still safely 'Queued', never stuck
-'Running' forever. Returns 'Right' @()@ once nothing remains owned
-(whether because nothing ever was, or because every capability
-attempted this call genuinely succeeded), or 'Left' the complete list of
-synchronous failures collected along the way (continuing to attempt
-independent, later entries even after an earlier one fails
-synchronously -- exactly like 'Api.Arkham.Lifecycle.ManagedReleasePlan'
-own single pass).
+'Running' forever.
+
+Each entry currently owned is attempted AT MOST ONCE per call (tracked
+via the growing @attempted@ set of receipts, threaded through 'go'):
+root-causing a MEDIUM-severity starvation finding against this
+function's own structural predecessor, which re-claimed the single
+/oldest/ still-'Queued' entry on every iteration with no memory of what
+it had already tried this pass -- so a persistently, synchronously
+failing entry (requeued unchanged by 'attemptClaimed') was immediately
+reclaimed again, forever, and no /other/, later-queued entry was ever
+even reached at all. A newly 'transferPendingCleanup'd entry (always a
+fresh, never-yet-attempted receipt) is never excluded by this pass's own
+@attempted@ set, so independent, concurrently-arriving work is still
+picked up within the very same call, exactly as before.
+
+Returns 'Right' @()@ once nothing eligible remains queued (whether
+because nothing ever was, or because every capability attempted this
+call genuinely succeeded), or 'Left' the complete list of synchronous
+failures collected along the way (continuing to attempt independent,
+later entries even after an earlier one fails synchronously -- exactly
+like 'Api.Arkham.Lifecycle.ManagedReleasePlan''s own single pass). A
+persistently failing entry is left safely 'Queued' for a genuinely
+/later/, separate call to retry -- this function itself never loops on
+it more than once.
 -}
 drainPendingCleanup :: PendingCleanupOwner -> IO (Either [SomeException] ())
-drainPendingCleanup owner = go []
+drainPendingCleanup owner = go Set.empty []
  where
-  go failuresAcc = do
-    claimed <- atomically (claimOneQueued owner)
+  go attempted failuresAcc = do
+    claimed <- attemptClaimed owner (claimNextExcluding owner attempted)
     case claimed of
-      Nothing -> pure (if null failuresAcc then Right () else Left (reverse failuresAcc))
-      Just (receipt, action) -> do
-        result <- attemptOne owner receipt action
-        case result of
-          Right () -> go failuresAcc
-          Left errs -> go (reverse (NE.toList errs) ++ failuresAcc)
+      Left () -> pure (if null failuresAcc then Right () else Left (reverse failuresAcc))
+      Right (receipt, Right ()) -> go (Set.insert receipt attempted) failuresAcc
+      Right (receipt, Left errs) -> go (Set.insert receipt attempted) (reverse (NE.toList errs) ++ failuresAcc)
 
 -- | The outcome of one 'attemptCleanupReceipt' call against a specific
 -- receipt.
@@ -294,39 +352,22 @@ or not this exact call is the one that actually finishes the work (a
 concurrent 'drainPendingCleanup' -- e.g. @DevelMain@'s own opportunistic
 call, or 'Application.handler''s -- may finish it first; either way, the
 very next poll against the exact same receipt observes 'ReceiptSucceeded').
+
+The claim (@Queued -> Running@, or the already-resolved
+'ReceiptSucceeded'\/'ReceiptBusy' cases) and the attempt-and-commit that
+follows it both run through 'attemptClaimed', so they share the exact
+same single, continuous 'Control.Exception.mask' -- see its own Haddock
+for the MEDIUM-severity finding this closes (an asynchronous exception
+landing between an unmasked claim and a not-yet-started attempt could
+otherwise strand this exact receipt 'Running' forever).
 -}
 attemptCleanupReceipt :: PendingCleanupOwner -> CleanupReceipt -> IO ReceiptOutcome
 attemptCleanupReceipt owner receipt = do
-  claim <- atomically $ do
-    entries <- readTVar (pcoEntries owner)
-    case Map.lookup receipt entries of
-      -- Never actually reachable given this module's own construction
-      -- (a 'CleanupReceipt' is only ever obtainable from
-      -- 'transferPendingCleanup', which always inserts an entry, and no
-      -- entry is ever removed -- only transitioned to 'Terminated');
-      -- treated as vacuously complete rather than looping forever on a
-      -- receipt that could never legitimately still be outstanding.
-      Nothing -> pure ClaimTerminated
-      Just Terminated -> pure ClaimTerminated
-      Just Running -> pure ClaimBusy
-      Just (Queued action) -> do
-        writeTVar (pcoEntries owner) (Map.insert receipt Running entries)
-        pure (ClaimedForAttempt action)
-  case claim of
-    ClaimTerminated -> pure ReceiptSucceeded
-    ClaimBusy -> pure ReceiptBusy
-    ClaimedForAttempt action -> do
-      result <- attemptOne owner receipt action
-      pure $ case result of
-        Right () -> ReceiptSucceeded
-        Left errs -> ReceiptFailed errs
-
--- | The result of atomically deciding whether (and how)
--- 'attemptCleanupReceipt' may proceed against a specific receipt.
-data ReceiptClaim
-  = ClaimTerminated
-  | ClaimBusy
-  | ClaimedForAttempt (IO (Either SomeException ()))
+  result <- attemptClaimed owner (claimSpecific owner receipt)
+  pure $ case result of
+    Left alreadyResolved -> alreadyResolved
+    Right (_, Right ()) -> ReceiptSucceeded
+    Right (_, Left errs) -> ReceiptFailed errs
 
 -- | Whether anything at all is currently owned (queued or actively
 -- running; excludes 'Terminated' entries) -- for tests\/introspection
