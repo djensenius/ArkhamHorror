@@ -641,10 +641,22 @@ withInvestigatorConnectionData inner@(With target _) = case target of
 newtype WithDeckSize = WithDeckSize Investigator
   deriving newtype (Show, Targetable)
 
+-- The attrs keep the original investigator's printed values so the form can be
+-- dropped again, so the transfigured class is applied here, on the wire, the same
+-- way `field InvestigatorClass` applies it for the engine.
 instance ToJSON WithDeckSize where
   toJSON (WithDeckSize i) = case toJSON i of
-    Object o -> Object $ KeyMap.insert "deckSize" (toJSON $ length $ investigatorDeck $ toAttrs i) o
+    Object o ->
+      Object
+        $ KeyMap.insert "deckSize" (toJSON $ length $ investigatorDeck attrs)
+        $ case investigatorForm attrs of
+          TransfiguredForm inner ->
+            let iinvestigator = lookupInvestigator (InvestigatorId inner) attrs.player
+             in KeyMap.insert "class" (toJSON (toAttrs iinvestigator).classSymbol) o
+          _ -> o
     _ -> error "failed to serialize investigator"
+   where
+    attrs = toAttrs i
 
 withSkillTestModifiers :: HasGame m => ChaosToken -> m (With ChaosToken Value)
 withSkillTestModifiers token = do
@@ -3075,6 +3087,19 @@ leavePlayWindowAssets = do
     Window.EntityDiscarded _ (AssetTarget aid) -> Just aid
     _ -> Nothing
 
+{- | Assets mid-removal, which can no longer soak the damage/horror their own
+leave-play trigger deals. Narrower than 'leavePlayWindowAssets': a defeat can
+still be rescued mid-window, so @AssetDefeated@ alone is not leaving. #5551
+-}
+assetsLeavingPlay :: HasGame m => m (Set AssetId)
+assetsLeavingPlay = do
+  stack <- fromMaybe [] . gameWindowStack <$> getGame
+  pure $ setFromList $ mapMaybe (subjectOf . windowType) (concat stack)
+ where
+  subjectOf = \case
+    Window.LeavePlay (AssetTarget aid) -> Just aid
+    _ -> Nothing
+
 {- | While a leave-play window is open, resolve asset queries against a game in
 which assets blanked by this frame's removals are restored to the snapshots
 parked by @RemoveFromPlay@ into @gameTombstones@ -- frozen copies that still
@@ -3342,6 +3367,7 @@ getAssetsMatching' matcher = do
       filterM isSanityDamageable as
     AssetCanBeAssignedDamageBy iid -> do
       modifiers' <- getModifiers (InvestigatorTarget iid)
+      leaving <- assetsLeavingPlay
       let
         otherDamageableAssetIds = flip mapMaybe modifiers' $ \case
           CanAssignDamageToAsset aid -> Just aid
@@ -3355,9 +3381,10 @@ getAssetsMatching' matcher = do
       let
         isHealthDamageable a =
           fieldP AssetRemainingHealth (maybe (toId a `elem` otherDamageableAssetIds) (> 0)) (toId a)
-      filterM isHealthDamageable assets
+      filterM isHealthDamageable $ filter ((`notMember` leaving) . toId) assets
     AssetCanBeAssignedHorrorBy iid -> do
       modifiers' <- getModifiers (InvestigatorTarget iid)
+      leaving <- assetsLeavingPlay
       let
         otherDamageableAssetIds = flip mapMaybe modifiers' $ \case
           CanAssignHorrorToAsset aid -> Just aid
@@ -3371,7 +3398,7 @@ getAssetsMatching' matcher = do
       let
         isSanityDamageable a =
           fieldP AssetRemainingSanity (maybe (toId a `elem` otherDamageableAssetIds) (> 0)) (toId a)
-      filterM isSanityDamageable assets
+      filterM isSanityDamageable $ filter ((`notMember` leaving) . toId) assets
     AssetCanBeDamagedBySource source -> flip filterM as \asset -> do
       mods <- getModifiers asset
       flip allM mods $ \case
@@ -3734,6 +3761,7 @@ referencesOutOfPlay = any isOutOfPlayReference . universe
     OutOfPlayEnemy {} -> True
     IncludeOutOfPlayEnemy {} -> True
     DefeatedEnemy {} -> True
+    EnemyWasAt {} -> True
     EnemyWithPlacement p -> isOutOfPlayPlacement p
     EnemyFacedownInThreatAreaOf {} -> True
     _ -> False
@@ -5114,6 +5142,7 @@ instance Projection Investigator where
       InvestigatorName -> pure investigatorName
       InvestigatorSettings -> pure investigatorSettings
       InvestigatorTaboo -> pure investigatorTaboo
+      InvestigatorCardPool -> pure investigatorCardPool
       InvestigatorSealedChaosTokens -> pure investigatorSealedChaosTokens
       InvestigatorRemainingActions -> pure $ investigatorRemainingActions
       InvestigatorAdditionalActions -> getAdditionalActions attrs
@@ -5226,7 +5255,12 @@ instance Projection Investigator where
       InvestigatorSideDeck -> pure investigatorSideDeck
       InvestigatorDecks -> pure investigatorDecks
       InvestigatorDiscard -> pure investigatorDiscard
-      InvestigatorClass -> pure investigatorClass
+      InvestigatorClass -> case investigatorForm of
+        TransfiguredForm inner ->
+          pure
+            $ let iinvestigator = lookupInvestigator (InvestigatorId inner) investigatorPlayerId
+               in (toAttrs iinvestigator).classSymbol
+        _ -> pure investigatorClass
       InvestigatorActionsTaken -> pure investigatorActionsTaken
       InvestigatorActionsPerformed -> pure investigatorActionsPerformed
       InvestigatorSlots -> do
