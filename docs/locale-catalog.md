@@ -137,7 +137,11 @@ dropped.
 Variable coverage is checked by role *and* type, not by name: the catalog
 declares a role for every slot, the backend registry proves a type for most
 names, and a slot the registry cannot type is not a pass. Those entries become
-`unsupported`.
+`unsupported`, and — because a message that renders *through* one is no more
+renderable than the one itself — link resolution and type compatibility settle
+**together**, alternating until a whole round changes nothing. No supported
+entry can reach an unusable one, directly, transitively, or through the
+fallback locale.
 
 Variables are **never interpolated at generation time**. The backend's
 `I18nEntry.variables` are substituted by the client, exactly as vue-i18n does
@@ -380,11 +384,18 @@ every digest that is compared — so:
   `revisionManifestPath` that its own `catalogRevision` derives;
 * every chunk path is exactly `/locale-catalog/c/<sha256>.json` and the name
   must be the digest the descriptor promises;
-* every path component is `lstat`ed rather than followed, the catalog root
-  included, and every artifact is opened `O_NOFOLLOW` then `fstat`ed and read
-  through that same descriptor — regular file, `nlink == 1` — so neither a
-  symlink, a hard link, nor a path swapped between the check and the read can
-  substitute bytes;
+* the supplied `--dist` root is canonicalized once, then every directory from
+  it down to each artifact is opened `O_NOFOLLOW|O_DIRECTORY` and **kept open**
+  with its `(dev, ino)` recorded; at the end every pin is re-checked, so a
+  directory swapped for a symlink *after* it was validated is caught rather
+  than followed;
+* every artifact is opened `O_NOFOLLOW`, then `fstat`ed and read through that
+  same descriptor — regular file, `nlink == 1`, size within an explicit ceiling
+  **before** a byte is allocated, exact EOF, and the same inode and size
+  afterwards — so a symlink, a hard link, a sparse or multi-gigabyte file, or a
+  file that grew or was truncated mid-read cannot substitute bytes or exhaust
+  memory. The manifest's own totals and descriptor count are bounded too, in
+  the schema and again here;
 * the identity/`.gz`/`.br` artifact sets are compared with the manifest in both
   directions, so nothing unlisted can sit where nginx would serve it;
 the offline build runs the same check against its own output — before both of

@@ -18,6 +18,7 @@ import {
   MAX_UNSUPPORTED_DETAIL,
   requiredKeysFromFixture,
   resolveLinkedVariables,
+  resolveVariablesAndLinks,
   writeCatalog,
 } from '../scripts/locale-catalog/generate.mjs'
 import { sha256Hex } from '../scripts/locale-catalog/canonical.mjs'
@@ -542,4 +543,70 @@ test('variable coverage compares role and type, not just the name', async () => 
       `${key} does not declare ${variable}; this should have been a missing-variable gap`,
     )
   }
+})
+
+test('an entry that links an unusable one is unusable too, in every locale', async () => {
+  const built = await buildCatalog({})
+  const unusable = new Set(built.manifest.backend.unknownVariableTypes.map((entry) => entry.key))
+  assert.ok(unusable.size > 0, 'nothing to check')
+
+  // Nothing published may render *through* an entry the backend cannot fill.
+  const linkTargets = (entry) => {
+    const targets = []
+    for (const nodes of entryNodes(entry)) {
+      walkNodes(nodes, (node) => {
+        if (node.type === 'linked' && node.target.kind === 'static') targets.push(node.target.key)
+      })
+    }
+    return targets
+  }
+  eachEntry(built.files, (chunk, key, entry) => {
+    if (entry.form === 'unsupported') return
+    for (const target of linkTargets(entry)) {
+      assert.ok(
+        !unusable.has(target),
+        `${key} is published as renderable in ${chunk.locale} but links ${target}, which is not`,
+      )
+    }
+  })
+})
+
+test('a parent that links an unusable entry is downgraded, transitively and through the fallback', () => {
+  // A synthetic three-level chain, resolved by the same production driver the
+  // build uses.
+  const unusableTarget = {
+    form: 'message',
+    nodes: [{ type: 'var', name: 'token', source: 'named', role: 'text' }],
+    variables: [{ name: 'token', source: 'named', role: 'text' }],
+  }
+  const en = new Map([
+    ['leaf', unusableTarget],
+    ['middle', linkEntry('leaf')],
+    ['parent', linkEntry('middle')],
+  ])
+  const fr = new Map([['frParent', linkEntry('leaf')]])
+  const normalized = new Map([
+    ['en', en],
+    ['fr', fr],
+  ])
+  const backend = { keys: new Map([['leaf', { variables: new Map([['token', 'unknown']]) }]]) }
+
+  const { unknownVariableTypes } = resolveVariablesAndLinks(
+    normalized,
+    'en',
+    new Set(['leaf']),
+    backend,
+  )
+
+  assert.deepEqual(unknownVariableTypes, [
+    { key: 'leaf', variable: 'token', role: 'text', type: 'unknown' },
+  ])
+  for (const [locale, entries] of normalized) {
+    for (const [key, entry] of entries) {
+      assert.equal(entry.form, 'unsupported', `${locale}:${key} should be unsupported`)
+    }
+  }
+  assert.equal(en.get('leaf').reason, 'unusable-variable-type')
+  // …including the one that only reaches the leaf through the fallback locale.
+  assert.equal(fr.get('frParent').reason, 'conflicting-variable-role')
 })

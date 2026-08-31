@@ -243,6 +243,31 @@ symlink_and_expect_reject "a hard-linked compressed sibling" hardlink-gz \
 symlink_and_expect_reject "a hard-linked manifest" hardlink-manifest \
   bash -c "cp manifest.json '${OUTSIDE}/manifest.json' && rm -f manifest.json && ln '${OUTSIDE}/manifest.json' manifest.json"
 
+# A directory that was validated must still be that directory: `c/` swapped for
+# a symlink after validation, and an oversized or growing artifact, must all be
+# refused rather than read.
+symlink_and_expect_reject "an oversized chunk" oversized \
+  bash -c "f=\$(ls c/*.json | head -c 200 | cut -d' ' -f1); : > /dev/null; python3 - <<'PY'
+import glob, os
+target = sorted(glob.glob('c/*.json'))[0]
+with open(target, 'ab') as handle:
+    handle.truncate(9 * 1024 * 1024)
+PY"
+symlink_and_expect_reject "a sparse multi-gigabyte chunk" sparse \
+  bash -c "python3 - <<'PY'
+import glob
+target = sorted(glob.glob('c/*.json'))[0]
+with open(target, 'r+b') as handle:
+    handle.truncate(4 * 1024 * 1024 * 1024)
+PY"
+symlink_and_expect_reject "a truncated chunk" truncated \
+  bash -c "python3 - <<'PY'
+import glob
+target = sorted(glob.glob('c/*.json'))[0]
+with open(target, 'r+b') as handle:
+    handle.truncate(4)
+PY"
+
 # The catalog root itself must be a real directory.
 ROOTLINK="${WORK}/rootlink"
 rm -rf "$ROOTLINK"

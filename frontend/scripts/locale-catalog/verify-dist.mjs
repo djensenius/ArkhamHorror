@@ -33,8 +33,14 @@ if (distIndex !== -1 && (process.argv[distIndex + 1] ?? '').trim() === '') {
   console.error('locale-catalog: --dist requires a directory')
   process.exit(1)
 }
-const DIST_ROOT =
+// The supplied root is canonicalized exactly once, so the tree that is
+// verified is the tree those bytes really live in — an operator may reach it
+// through a symlink (a CI workspace, a macOS `/var` -> `/private/var`), and
+// what matters is that nothing *inside* it redirects, and that nothing moves
+// after it has been checked.
+const SUPPLIED_ROOT =
   distIndex === -1 ? join(FRONTEND_DIR, 'dist') : resolve(process.argv[distIndex + 1])
+const DIST_ROOT = existsSync(SUPPLIED_ROOT) ? realpathSync(SUPPLIED_ROOT) : SUPPLIED_ROOT
 const DIST_CATALOG = join(DIST_ROOT, 'locale-catalog')
 
 // scripts/precompress.cjs skips anything smaller than one MTU's worth of bytes.
@@ -43,6 +49,12 @@ const PRECOMPRESS_MIN_BYTES = 1024
 // and inflating it must not be allowed to outgrow the payload either.
 const MAX_COMPRESSED_OVERHEAD = 4096
 const MAX_INFLATE_SLACK = 4096
+// The generator's own ceilings, restated here because this side must refuse an
+// oversized artifact before it allocates for it.
+const MAX_CHUNK_BYTES = 8 * 1024 * 1024
+const MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+const MAX_CATALOG_BYTES = 192 * 1024 * 1024
+const MAX_CATALOG_FILES = 4096
 // The only shape a chunk path may take. A manifest is data, and data that
 // names a filesystem path decides what nginx serves, so the grammar is closed:
 // `<basePath>/c/<64 lowercase hex>.json`, and the digest in the name must be
@@ -181,6 +193,87 @@ function validateAgainstSchema(value, schema, root, path = '', errors = []) {
 }
 
 /**
+ * Directory identities along the catalog's own path, captured once and held.
+ *
+ * Node has no `openat`, so containment is enforced by *pinning* rather than by
+ * hoping a path resolves the same way twice: every directory from the supplied
+ * `--dist` root down to the catalog, and every directory walked below it, is
+ * opened `O_NOFOLLOW|O_DIRECTORY` and kept open with its `(dev, ino)` recorded.
+ * Anything that later swaps one of those directories — `c/` replaced by a
+ * symlink after it was validated, an ancestor of `--dist` relinked — changes
+ * the identity behind a descriptor still held, and `assertPinsIntact()` says so
+ * before the run is allowed to succeed.
+ */
+const pinnedDirectories = []
+
+function pinDirectory(absolute) {
+  let descriptor = null
+  try {
+    descriptor = openSync(
+      absolute,
+      fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW,
+    )
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `${absolute} is not a directory that opens without following links (${error.code ?? error.message})`,
+    }
+  }
+  const held = fstatSync(descriptor)
+  let link = null
+  try {
+    link = lstatSync(absolute)
+  } catch (error) {
+    closeSync(descriptor)
+    return { ok: false, reason: `${absolute} disappeared (${error.code ?? error.message})` }
+  }
+  if (link.isSymbolicLink() || link.ino !== held.ino || link.dev !== held.dev) {
+    closeSync(descriptor)
+    return { ok: false, reason: `${absolute} is a symlink or was replaced while being opened` }
+  }
+  pinnedDirectories.push({ absolute, descriptor, dev: held.dev, ino: held.ino })
+  return { ok: true, reason: null }
+}
+
+/** Every pinned directory must still be the directory it was pinned to. */
+function assertPinsIntact() {
+  for (const pin of pinnedDirectories) {
+    let link = null
+    try {
+      link = lstatSync(pin.absolute)
+    } catch (error) {
+      return `${pin.absolute} disappeared (${error.code ?? error.message})`
+    }
+    const held = fstatSync(pin.descriptor)
+    if (link.isSymbolicLink()) return `${pin.absolute} became a symlink`
+    if (link.dev !== pin.dev || link.ino !== pin.ino) return `${pin.absolute} was replaced`
+    if (held.dev !== pin.dev || held.ino !== pin.ino) return `${pin.absolute} changed identity`
+  }
+  return null
+}
+
+/**
+ * Pins the supplied `--dist` root's whole ancestry and then the catalog: a
+ * caller can point this anywhere, and a symlinked ancestor redirects
+ * everything below it.
+ */
+function pinCatalogAncestry() {
+  // From the canonical root down. Above it there is nothing left to resolve;
+  // below it, every directory is pinned, so a component swapped for a symlink
+  // after it was checked is caught by `assertPinsIntact()`.
+  const relativeParts = relative(DIST_ROOT, DIST_CATALOG).split(sep).filter(Boolean)
+  let walked = DIST_ROOT
+  const pinnedRoot = pinDirectory(walked)
+  if (!pinnedRoot.ok) return pinnedRoot.reason
+  for (const part of relativeParts) {
+    walked = join(walked, part)
+    const pinned = pinDirectory(walked)
+    if (!pinned.ok) return pinned.reason
+  }
+  return null
+}
+
+/**
  * A repo-relative path inside the catalog, or null.
  *
  * Everything is decided here: no absolute path, no `..`, no encoded or
@@ -216,20 +309,22 @@ function safeCatalogPath(relativePath) {
   }
 
   // Every component, not just the leaf: a symlinked directory redirects the
-  // whole subtree.
+  // whole subtree. Intermediate directories are *pinned*, so a later swap is
+  // detected rather than silently followed.
   let walked = DIST_CATALOG
   for (const segment of segments) {
     walked = join(walked, segment)
-    let status
-    try {
-      status = lstatSync(walked)
-    } catch {
-      return null
-    }
-    if (status.isSymbolicLink()) return null
-    if (walked !== absolute && !status.isDirectory()) return null
-    if (walked === absolute && !status.isFile()) return null
+    if (walked === absolute) break
+    if (pinnedDirectories.some((pin) => pin.absolute === walked)) continue
+    if (!pinDirectory(walked).ok) return null
   }
+  let leaf
+  try {
+    leaf = lstatSync(absolute)
+  } catch {
+    return null
+  }
+  if (leaf.isSymbolicLink() || !leaf.isFile()) return null
   try {
     if (realpathSync(absolute) !== realpathSync.native(absolute)) return null
     const real = realpathSync(absolute)
@@ -250,24 +345,48 @@ function safeCatalogPath(relativePath) {
  * in. A hard link (`nlink > 1`) is refused for the same reason a symlink is:
  * the same bytes are reachable, and writable, from outside the catalog.
  */
-function readContainedFile(absolute) {
+function readContainedFile(absolute, maxBytes) {
+  if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error('readContainedFile needs an explicit byte ceiling')
+  }
   let descriptor = null
   try {
     descriptor = openSync(absolute, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
-    const status = fstatSync(descriptor)
-    if (!status.isFile()) return { bytes: null, reason: 'is not a regular file' }
-    if (status.nlink !== 1) return { bytes: null, reason: `has ${status.nlink} hard links` }
-    const bytes = Buffer.alloc(status.size)
+    const before = fstatSync(descriptor)
+    if (!before.isFile()) return { bytes: null, reason: 'is not a regular file' }
+    if (before.nlink !== 1) return { bytes: null, reason: `has ${before.nlink} hard links` }
+
+    // Size is decided from the descriptor *before* a byte is allocated: a
+    // multi-gigabyte or sparse file must be refused, not read into memory.
+    if (before.size > maxBytes) {
+      return { bytes: null, reason: `is ${before.size} bytes, over the ${maxBytes}-byte ceiling` }
+    }
+
+    const bytes = Buffer.alloc(before.size)
     let read = 0
     while (read < bytes.length) {
       const chunk = readSync(descriptor, bytes, read, bytes.length - read, read)
       if (chunk === 0) break
       read += chunk
     }
-    if (read !== bytes.length) return { bytes: null, reason: 'changed size while being read' }
+    if (read !== bytes.length) return { bytes: null, reason: 'was truncated while being read' }
+
+    // Exact EOF, and the same inode at the same size: a file that grew, shrank
+    // or was replaced under the descriptor is refused rather than hashed.
+    const tail = Buffer.alloc(1)
+    if (readSync(descriptor, tail, 0, 1, bytes.length) !== 0) {
+      return { bytes: null, reason: 'grew while being read' }
+    }
+    const after = fstatSync(descriptor)
+    if (after.size !== before.size || after.ino !== before.ino || after.dev !== before.dev) {
+      return { bytes: null, reason: 'changed while being read' }
+    }
     return { bytes, reason: null }
   } catch (error) {
-    return { bytes: null, reason: `cannot be opened without following links (${error.code ?? error.message})` }
+    return {
+      bytes: null,
+      reason: `cannot be opened without following links (${error.code ?? error.message})`,
+    }
   } finally {
     if (descriptor !== null) closeSync(descriptor)
   }
@@ -329,7 +448,7 @@ function verifyCompressedSiblings(expected) {
   for (const relative of expected) {
     const file = safeCatalogPath(relative)
     if (file === null) continue
-    const identityRead = readContainedFile(file)
+    const identityRead = readContainedFile(file, MAX_CHUNK_BYTES)
     if (!require(identityRead.bytes !== null, `${relative} ${identityRead.reason}`)) continue
     const identity = identityRead.bytes
     if (identity.length < PRECOMPRESS_MIN_BYTES) continue
@@ -348,7 +467,9 @@ function verifyCompressedSiblings(expected) {
         continue
       }
       compressed.add(siblingRelative)
-      const siblingRead = readContainedFile(sibling)
+      // A compressed sibling is bounded by the payload it encodes, so an
+      // oversized one is refused before it is allocated for.
+      const siblingRead = readContainedFile(sibling, identity.length + MAX_COMPRESSED_OVERHEAD)
       if (!require(siblingRead.bytes !== null, `${siblingRelative} ${siblingRead.reason}`)) continue
       const packed = siblingRead.bytes
       if (
@@ -401,6 +522,13 @@ function verifyCatalog() {
   if (!require(rootIsContained(), `${DIST_CATALOG} is not a real directory (a symlinked catalog root redirects everything below it)`)) {
     return
   }
+  // The directories above the catalog decide what "inside the catalog" means,
+  // and a caller can point `--dist` anywhere, so the whole ancestry is pinned
+  // before anything below it is trusted.
+  const ancestry = pinCatalogAncestry()
+  if (!require(ancestry === null, `${DIST_CATALOG} has an unsafe ancestor: ${ancestry}`)) {
+    return
+  }
   const manifestSchema = JSON.parse(readFileSync(join(SCHEMA_DIR, 'manifest.schema.json'), 'utf8'))
   const manifestPath = safeCatalogPath('manifest.json')
   if (
@@ -412,7 +540,7 @@ function verifyCatalog() {
     return
   }
 
-  const manifestRead = readContainedFile(manifestPath)
+  const manifestRead = readContainedFile(manifestPath, MAX_MANIFEST_BYTES)
   if (!require(manifestRead.bytes !== null, `dist/locale-catalog/manifest.json ${manifestRead.reason}`)) {
     return
   }
@@ -457,6 +585,16 @@ function verifyCatalog() {
     `chunkPathPrefix is ${manifest.chunkPathPrefix}, not ${ROUTE_CHUNK_PREFIX}`,
   )
 
+  require(
+    manifest.totals.bytes <= MAX_CATALOG_BYTES,
+    `the manifest claims ${manifest.totals.bytes} bytes, over the ${MAX_CATALOG_BYTES}-byte ceiling`,
+  )
+  const descriptors = manifest.locales.reduce((total, locale) => total + locale.chunks.length, 0)
+  require(
+    descriptors + 2 <= MAX_CATALOG_FILES,
+    `the manifest lists ${descriptors} chunks, over the ${MAX_CATALOG_FILES}-file ceiling`,
+  )
+
   const revisionRelative = `r/${manifest.catalogRevision}/manifest.json`
   const revisionManifest = safeCatalogPath(revisionRelative)
   if (
@@ -465,7 +603,7 @@ function verifyCatalog() {
       'the immutable revision manifest is missing from dist, is a symlink, or is not a regular file',
     )
   ) {
-    const revisionRead = readContainedFile(revisionManifest)
+    const revisionRead = readContainedFile(revisionManifest, MAX_MANIFEST_BYTES)
     if (!require(revisionRead.bytes !== null, `the immutable revision manifest ${revisionRead.reason}`)) {
       return
     }
@@ -524,7 +662,10 @@ function verifyCatalog() {
       ) {
         continue
       }
-      const read = readContainedFile(file)
+      if (!require(chunk.bytes <= MAX_CHUNK_BYTES, `${chunk.path} claims ${chunk.bytes} bytes`)) {
+        continue
+      }
+      const read = readContainedFile(file, MAX_CHUNK_BYTES)
       if (!require(read.bytes !== null, `${chunk.path} ${read.reason}`)) continue
       require(read.bytes.length === chunk.bytes, `${chunk.path} size mismatch in dist`)
       require(sha256Hex(read.bytes) === chunk.sha256, `${chunk.path} digest mismatch in dist`)
@@ -534,6 +675,11 @@ function verifyCatalog() {
   if (!DIST_ONLY) verifyPublicMirror(expected)
   verifyCompressedSiblings(expected)
 
+  // Nothing that was validated may have been swapped since it was validated:
+  // every directory this walked is still the directory it was pinned to.
+  const drifted = assertPinsIntact()
+  require(drifted === null, `the catalog changed while it was being verified: ${drifted}`)
+
   if (problems.length === 0) {
     console.log(
       `locale-catalog: dist publishes revision ${manifest.catalogRevision} ` +
@@ -542,7 +688,11 @@ function verifyCatalog() {
   }
 }
 
-verifyCatalog()
+try {
+  verifyCatalog()
+} finally {
+  for (const pin of pinnedDirectories) closeSync(pin.descriptor)
+}
 
 if (problems.length > 0) {
   console.error('locale-catalog: the build output is not servable')

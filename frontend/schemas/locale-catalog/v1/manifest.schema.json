@@ -145,10 +145,12 @@
                   "$ref": "#/$defs/count"
                 }
               }
-            }
+            },
+            "maxItems": 256
           }
         }
-      }
+      },
+      "maxItems": 64
     },
     "totals": {
       "type": "object",

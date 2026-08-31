@@ -518,6 +518,97 @@ export function resolveLinkedVariables(normalized, defaultLocale) {
   return conflicts
 }
 
+/**
+ * Settles link resolution and variable-type compatibility together.
+ *
+ * Each is capable of invalidating the other: a downgraded entry makes its
+ * ancestors unrenderable, and resolving a link can pull a variable into an
+ * entry that did not declare one. Running them once, in either order, leaves a
+ * supported parent pointing at an unsupported child — so they run alternately
+ * until a whole round changes nothing.
+ */
+export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys, backend) {
+  // Only a `text` slot is filled by the backend: an `icon` name is rendered by
+  // the client from its own icon set, and a `presentation` name only styles.
+  const ROLE_ACCEPTS = { text: new Set(['text', 'integer']) }
+  const defaultEntries = normalized.get(defaultLocale)
+  let variableGaps = []
+  // Accumulated across rounds: once an entry is downgraded the next round
+  // skips it, but the pair that caused it still has to be reported.
+  const unknownVariableTypes = new Map()
+
+  for (let round = 0; ; round += 1) {
+    if (round > MAX_LINK_ROUNDS) fail('variable and link resolution did not settle')
+    resolveLinkedVariables(normalized, defaultLocale)
+
+    variableGaps = []
+    let downgraded = 0
+
+    for (const key of [...requiredKeys].sort()) {
+      const record = backend.keys.get(key)
+      if (record === undefined) continue
+      const entry = defaultEntries.get(key)
+      if (entry === undefined || entry.form === 'unsupported') continue
+
+      const needed = [...entry.variables, ...(entry.linkedVariables ?? [])].filter(
+        (variable) => variable.source === 'named' && variable.role === 'text',
+      )
+      const missing = needed
+        .filter((variable) => !record.variables.has(variable.name))
+        .map((variable) => variable.name)
+      if (missing.length > 0) {
+        variableGaps.push({
+          key,
+          missing,
+          declared: [...record.variables.keys()].sort(),
+          resolved: record.variables.size > 0,
+        })
+      }
+
+      const unusable = needed
+        .filter((variable) => record.variables.has(variable.name))
+        .map((variable) => ({ variable, type: record.variables.get(variable.name) }))
+        .filter(({ variable, type }) => !(ROLE_ACCEPTS[variable.role] ?? new Set()).has(type))
+      if (unusable.length === 0) continue
+
+      for (const { variable, type } of unusable) {
+        unknownVariableTypes.set(`${key}:${variable.name}`, {
+          key,
+          variable: variable.name,
+          role: variable.role,
+          type,
+        })
+      }
+      // Every locale, not just the default: the entry is unrenderable because
+      // of what the backend sends, which does not vary by language.
+      const detail = unusable
+        .map(({ variable, type }) => `${variable.name} is ${type} for a ${variable.role} slot`)
+        .join('; ')
+      for (const entries of normalized.values()) {
+        const localeEntry = entries.get(key)
+        if (localeEntry === undefined || localeEntry.form === 'unsupported') continue
+        entries.set(key, {
+          form: 'unsupported',
+          reason: 'unusable-variable-type',
+          detail: truncateDetail(detail),
+        })
+        downgraded += 1
+      }
+    }
+
+    // A downgrade this round can strand an ancestor, so link resolution runs
+    // again; when a round downgrades nothing, both are stable.
+    if (downgraded === 0) break
+  }
+
+  return {
+    variableGaps,
+    unknownVariableTypes: [...unknownVariableTypes.values()].sort((a, b) =>
+      a.key === b.key ? (a.variable < b.variable ? -1 : 1) : a.key < b.key ? -1 : 1,
+    ),
+  }
+}
+
 function chunkEntries(entries) {
   const packs = new Map()
   for (const [key, entry] of entries) {
@@ -583,7 +674,6 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
 
   // A link is rendered with the parent's variables, so the parent's contract
   // includes everything its targets need.
-  resolveLinkedVariables(normalized, defaultLocale)
 
   // Required = the keys the governed contract fixtures reference, plus every
   // key the backend actually emits that the default locale translates. The
@@ -639,58 +729,17 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   // is supported when nobody knows what will arrive in its slot. Those entries
   // are published as `unsupported` and listed in the manifest, so a consumer
   // sees the hole in the schema rather than discovering it at the table.
-  const ROLE_ACCEPTS = { text: new Set(['text', 'integer']) }
-  const variableGaps = []
-  const unknownVariableTypes = []
-  for (const key of [...requiredKeys].sort()) {
-    const record = backend.keys.get(key)
-    if (record === undefined) continue
-    const entry = defaultEntries.get(key)
-    if (entry.form === 'unsupported') continue
-
-    // Only a `text` slot is filled by the backend: an `icon` name is rendered
-    // by the client from its own icon set, and a `presentation` name only
-    // styles.
-    const needed = [...entry.variables, ...(entry.linkedVariables ?? [])].filter(
-      (variable) => variable.source === 'named' && variable.role === 'text',
-    )
-    const missing = needed
-      .filter((variable) => !record.variables.has(variable.name))
-      .map((variable) => variable.name)
-    if (missing.length > 0) {
-      variableGaps.push({
-        key,
-        missing,
-        declared: [...record.variables.keys()].sort(),
-        resolved: record.variables.size > 0,
-      })
-    }
-
-    const unusable = needed
-      .filter((variable) => record.variables.has(variable.name))
-      .map((variable) => ({ variable, type: record.variables.get(variable.name) }))
-      .filter(({ variable, type }) => !(ROLE_ACCEPTS[variable.role] ?? new Set()).has(type))
-    if (unusable.length === 0) continue
-
-    for (const { variable, type } of unusable) {
-      unknownVariableTypes.push({ key, variable: variable.name, role: variable.role, type })
-    }
-    // Every locale, not just the default: the entry is unrenderable because of
-    // what the backend sends, which does not vary by language.
-    const detail = unusable
-      .map(({ variable, type }) => `${variable.name} is ${type} for a ${variable.role} slot`)
-      .join('; ')
-    for (const entries of normalized.values()) {
-      const localeEntry = entries.get(key)
-      if (localeEntry === undefined || localeEntry.form === 'unsupported') continue
-      entries.set(key, {
-        form: 'unsupported',
-        reason: 'unusable-variable-type',
-        detail: truncateDetail(detail),
-      })
-    }
-  }
-  unknownVariableTypes.sort((a, b) => (a.key === b.key ? (a.variable < b.variable ? -1 : 1) : a.key < b.key ? -1 : 1))
+  //
+  // This runs *with* link resolution, not after it: downgrading an entry makes
+  // every message that renders through it unrenderable too, and resolving
+  // links can expose a slot that was previously hidden behind one. The two
+  // settle together.
+  const { variableGaps, unknownVariableTypes } = resolveVariablesAndLinks(
+    normalized,
+    defaultLocale,
+    requiredKeys,
+    backend,
+  )
 
   // Every entry the catalog cannot publish, taken after the variable pass so a
   // downgrade it made is visible here too.
