@@ -2364,10 +2364,15 @@ keeps a callback for a channel nothing will ever publish to again.
 Runs strictly AFTER 'Api.Handler.Arkham.Events.deleteApiV1ArkhamEventR' has
 already committed the deletion via 'runDB': a teardown failure here can
 never roll back, and must never fake, that already-committed success. See
-'RoomCleanupOutcome' for what this reports, and 'attemptRoomTeardown' for
-the exact per-room decision, factored out so tests can exercise it
-directly against a stubbed, deliberately-failing unsubscribe action,
-without a live server.
+'RoomCleanupOutcome' for what this reports and 'attemptRoomTeardown' for
+the exact per-room decision (both defined in 'Api.Arkham.Helpers', shared
+with 'releaseRoomIfEmpty' so the same identity\/retry discipline applies
+to both the ordinary last-subscriber release and this forced path), and
+'registerRoomCleanupRetry' for how a failure here is durably retried
+later (via 'roomHeartbeat') rather than only ever being retried by a
+repeated deletion -- which, for an event, is impossible: a second delete
+of an already-deleted 'ArkhamEpicEvent' returns a nondisclosing 404
+before ever reaching this cleanup.
 -}
 deleteRoom :: ArkhamGameId -> Handler RoomCleanupOutcome
 deleteRoom = forceDeleteRoom "game" appGameRooms
@@ -2375,74 +2380,36 @@ deleteRoom = forceDeleteRoom "game" appGameRooms
 deleteEventRoom :: ArkhamEpicEventId -> Handler RoomCleanupOutcome
 deleteEventRoom = forceDeleteRoom "event" appEventRooms
 
-{- | The typed result of one 'forceDeleteRoom' attempt, reported to the caller
-instead of being silently swallowed. No bounded-retry loop is layered on
-top of this: the codebase's one existing retry abstraction
-('Api.Arkham.Lifecycle''s 'ManagedCleanup'\/'ManagedReleasePlan') exists to
-compose ordered release steps across acquired AWS-credential-supervisor
-resources, an unrelated domain with its own acquisition ordering
-invariants -- forcing that machinery onto a single best-effort Redis
-unsubscribe would be overengineering, not reuse. Instead,
-'RoomCleanupUnsubscribeFailed' deliberately leaves the room reachable (see
-'attemptRoomTeardown') so a future manual or background cleanup pass has
-something to retry against, rather than fabricating new scheduling
-infrastructure this fix does not need.
--}
-data RoomCleanupOutcome
-  = -- | No room was tracked under this key at all (already cleaned up, or
-    -- this game\/event never had any live subscriber to begin with).
-    RoomCleanupAbsent
-  | -- | A room was present and its subscription was torn down
-    -- successfully; it has been removed from the rooms map.
-    RoomCleanupClean
-  | -- | A room was present but tearing down its subscription failed
-    -- synchronously (see 'attemptRoomTeardown' for why only synchronous
-    -- failures are ever caught here). The room is deliberately left IN
-    -- the map rather than dropped.
-    RoomCleanupUnsubscribeFailed SomeException
-  deriving stock Show
-
 forceDeleteRoom :: (Ord k, Show k) => Text -> (App -> MVar (Map k Room)) -> k -> Handler RoomCleanupOutcome
 forceDeleteRoom kind roomsOf key = do
   roomsVar <- getsYesod roomsOf
-  outcome <- liftIO $ modifyMVar roomsVar (attemptRoomTeardown key)
+  (outcome, attempted) <-
+    liftIO $ modifyMVar roomsVar \rooms -> case Map.lookup key rooms of
+      Nothing -> pure (rooms, (RoomCleanupAbsent, Nothing))
+      Just r -> do
+        (rooms', out) <- attemptRoomTeardown key rooms
+        pure (rooms', (out, Just r))
   case outcome of
-    RoomCleanupUnsubscribeFailed e ->
+    RoomCleanupUnsubscribeFailed e -> do
+      -- A forced deletion teardown ignores subscriber count on retry too
+      -- ('const True'): the game\/event is already gone, so occupancy is
+      -- never a reason to skip finishing this cleanup.
+      receipt <- for attempted \r -> liftIO $ registerRoomCleanupRetry (const True) roomsVar key r
+      -- Never log the raw exception ('SomeException''s own 'Show'
+      -- instance can include arbitrary connection\/message text) --
+      -- only a closed failure category plus structured, non-sensitive
+      -- correlation fields (kind, key, retry receipt).
       $(logWarn)
-        $ "Epic post-deletion room cleanup failed for "
+        $ "Epic post-deletion room cleanup failed"
+        <> " kind="
         <> kind
-        <> " "
+        <> " key="
         <> tshow key
-        <> ": "
-        <> tshow e
+        <> " category="
+        <> tshow (classifyRoomCleanupFailure e)
+        <> " retryReceipt="
+        <> maybe "unregistered" tshow receipt
     RoomCleanupAbsent -> pure ()
+    RoomCleanupStillOccupied -> pure () -- unreachable: this path never checks occupancy
     RoomCleanupClean -> pure ()
   pure outcome
-
-{- | The exact per-room teardown 'forceDeleteRoom' performs, factored out to
-operate directly on the rooms map (never on the 'MVar' or 'App' itself) so
-tests can exercise this SAME decision against a constructed 'Room' with a
-stubbed, deliberately-failing unsubscribe action -- no live server, 'MVar',
-or 'App' required.
-
-'UE.tryAny' (via the unqualified 'tryAny' already imported here) only
-ever catches a genuine, synchronous teardown failure -- exactly like
-'tryRedis_' \/ 'releaseRoomIfEmpty' -- so a caller's own cancellation (e.g.
-the admin request driving this deletion itself being torn down mid-flight)
-always propagates unchanged rather than being mistaken for a completed
-cleanup.
-
-The room is removed from the returned map ONLY when teardown actually
-succeeded, or there was nothing tracked to begin with. On a synchronous
-failure it is deliberately left IN the map: dropping it would discard the
-only reachable handle to its still-registered callback, turning an
-outstanding, retryable leak into a permanently unretryable one.
--}
-attemptRoomTeardown :: Ord k => k -> Map k Room -> IO (Map k Room, RoomCleanupOutcome)
-attemptRoomTeardown key rooms = case Map.lookup key rooms of
-  Nothing -> pure (rooms, RoomCleanupAbsent)
-  Just r -> do
-    result <- tryAny $ join $ readTVarIO (roomUnsubscribe r)
-    pure $ case result of
-      Right () -> (Map.delete key rooms, RoomCleanupClean)
-      Left e -> (rooms, RoomCleanupUnsubscribeFailed e)

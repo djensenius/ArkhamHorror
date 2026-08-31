@@ -2,7 +2,7 @@
 
 module Api.Arkham.Helpers where
 
-import Api.Arkham.Lifecycle (raceManaged_)
+import Api.Arkham.Lifecycle (drainOwnedCleanup, raceManaged_)
 import Arkham.Card
 import Arkham.Classes hiding (Entity (..), select)
 import Arkham.Classes.HasGame
@@ -17,7 +17,7 @@ import Arkham.Random
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
 import Control.Concurrent.MVar qualified as MVar
-import Control.Exception (throwIO)
+import Control.Exception (IOException, throwIO)
 import Control.Lens hiding (from)
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow)
 import Control.Monad.Random (MonadRandom (..), StdGen)
@@ -46,6 +46,7 @@ import Entity.Arkham.Game
 import Entity.Arkham.LogEntry
 import GHC.Records
 import Import hiding (appLogger, (==.), (>=.))
+import PendingCleanupOwner qualified
 import UnliftIO.Exception qualified as UE
 
 newtype GameLog = GameLog {gameLogToLogEntries :: [Text]}
@@ -234,28 +235,38 @@ map and tear down its Redis subscription, both under the rooms 'MVar'.
 The emptiness check belongs under that lock too. Checking first and deleting
 afterwards leaves a window in which a new connection joins the still-present
 room and is then left holding one whose channel we immediately unsubscribe --
-so it silently never receives another update. Returns whether the room was
-actually released.
+so it silently never receives another update. Returns the outcome of the
+attempt -- see 'RoomCleanupOutcome' -- rather than a bare 'Bool': a failed
+unsubscribe is reported (never silently swallowed), the room is
+deliberately left tracked rather than erased, and the failure is durably
+registered for retry (see 'registerRoomCleanupRetry').
 -}
 releaseRoomIfEmpty
-  :: (MonadIO m, HasApp m, Ord k) => (App -> MVar (Map k Room)) -> k -> m Bool
+  :: (MonadIO m, HasApp m, Ord k) => (App -> MVar (Map k Room)) -> k -> m RoomCleanupOutcome
 releaseRoomIfEmpty roomsOf key = do
   app <- getApp
-  liftIO $ modifyMVar (roomsOf app) \rooms -> case Map.lookup key rooms of
-    Nothing -> pure (rooms, False)
-    Just r -> do
-      n <- roomClientCount r
-      if n > 0
-        then pure (rooms, False)
-        else do
-          tryRedis_ $ join $ readTVarIO (roomUnsubscribe r)
-          pure (Map.delete key rooms, True)
+  let roomsVar = roomsOf app
+  (outcome, attempted) <-
+    liftIO $ modifyMVar roomsVar \rooms -> case Map.lookup key rooms of
+      Nothing -> pure (rooms, (RoomCleanupAbsent, Nothing))
+      Just r -> do
+        n <- roomClientCount r
+        if n > 0
+          then pure (rooms, (RoomCleanupStillOccupied, Nothing))
+          else do
+            (rooms', out) <- attemptRoomTeardown key rooms
+            pure (rooms', (out, Just r))
+  -- Only ever registers a retry when THIS attempt itself failed; a
+  -- no-op for every other outcome (see 'registerRoomCleanupRetryIfFailed').
+  for_ attempted \r ->
+    liftIO $ registerRoomCleanupRetryIfFailed (== 0) roomsVar key r outcome
+  pure outcome
 
 joinEventRoom
   :: (MonadIO m, HasApp m) => ArkhamEpicEventId -> m (Room, Int, Subscriber)
 joinEventRoom = joinRoomIn appEventRooms eventChannel
 
-releaseEventRoomIfEmpty :: (MonadIO m, HasApp m) => ArkhamEpicEventId -> m Bool
+releaseEventRoomIfEmpty :: (MonadIO m, HasApp m) => ArkhamEpicEventId -> m RoomCleanupOutcome
 releaseEventRoomIfEmpty = releaseRoomIfEmpty appEventRooms
 
 lookupEventRoom :: (MonadIO m, HasApp m) => ArkhamEpicEventId -> m (Maybe Room)
@@ -266,8 +277,164 @@ lookupEventRoom eid = do
 joinGameRoom :: (MonadIO m, HasApp m) => ArkhamGameId -> m (Room, Int, Subscriber)
 joinGameRoom = joinRoomIn appGameRooms gameChannel
 
-releaseGameRoomIfEmpty :: (MonadIO m, HasApp m) => ArkhamGameId -> m Bool
+releaseGameRoomIfEmpty :: (MonadIO m, HasApp m) => ArkhamGameId -> m RoomCleanupOutcome
 releaseGameRoomIfEmpty = releaseRoomIfEmpty appGameRooms
+
+{- | The typed result of one attempted room teardown -- shared by the
+ordinary "last subscriber left" release above ('releaseRoomIfEmpty') and
+the forced "game\/event was deleted" path
+('Api.Handler.Arkham.Games.Shared.forceDeleteRoom'), and by every retry
+capability registered against a failure via 'registerRoomCleanupRetry'.
+Reported to the caller, and (for a failure) durably retried, instead of
+ever being silently swallowed.
+
+No bespoke, room-specific scheduling infrastructure is layered on top of
+this: a failed unsubscribe is instead handed to the exact same
+process-global 'PendingCleanupOwner.globalPendingCleanupOwner' this
+codebase already uses for asynchronously-interrupted AWS-supervisor
+shutdown retries (see 'Api.Arkham.Lifecycle.drainOwnedCleanup'), and is
+genuinely, periodically retried in production by 'roomHeartbeat' -- the
+one background thread already alive whenever a Redis broker (the only
+broker configuration under which this teardown can ever actually fail;
+see 'ensureRoom') is in use -- rather than fabricating a room-specific
+retry loop this fix does not need.
+-}
+data RoomCleanupOutcome
+  = -- | No room was tracked under this key at all: already cleaned up,
+    -- replaced by a newer room instance since an earlier failure was
+    -- registered for retry, or this game\/event never had any live
+    -- subscriber to begin with.
+    RoomCleanupAbsent
+  | -- | Present, but ineligible for THIS particular attempt -- only ever
+    -- reported by an ordinary (never a forced) release: the room still
+    -- has at least one live subscriber, whether it always did or it
+    -- regained one since an earlier failure was first registered for
+    -- retry. Nothing is attempted; a future disconnect (or retry, once
+    -- it is genuinely empty again) will.
+    RoomCleanupStillOccupied
+  | -- | A room was present and eligible, and its subscription was torn
+    -- down successfully; it has been removed from the rooms map.
+    RoomCleanupClean
+  | -- | A room was present and eligible, but tearing down its
+    -- subscription failed synchronously ('UnliftIO.Exception.tryAny'
+    -- only ever catches a genuine, synchronous failure -- any
+    -- asynchronous exception, e.g. this thread's own cancellation,
+    -- always propagates unchanged). The room is deliberately left IN the
+    -- map -- dropping it would discard the only reachable handle to its
+    -- still-registered callback, turning an outstanding, retryable leak
+    -- into a permanently unretryable one -- and this exact failure is
+    -- durably registered for retry.
+    RoomCleanupUnsubscribeFailed SomeException
+  deriving stock Show
+
+{- | The exact per-room teardown decision, shared by every FIRST attempt
+(an ordinary, just-emptied release, or a forced post-deletion teardown,
+both of which have already separately confirmed it is eligible right
+now) and, via 'retryRoomTeardown', by every later retry of a failed one.
+Factored out to operate directly on a rooms 'Map' (never the 'MVar'
+itself) so tests can exercise this SAME decision against a constructed
+'Room' with a stubbed, deliberately-failing unsubscribe action, no live
+server required.
+-}
+attemptRoomTeardown :: Ord k => k -> Map k Room -> IO (Map k Room, RoomCleanupOutcome)
+attemptRoomTeardown key rooms = case Map.lookup key rooms of
+  Nothing -> pure (rooms, RoomCleanupAbsent)
+  Just r -> do
+    result <- UE.tryAny $ join $ readTVarIO (roomUnsubscribe r)
+    pure $ case result of
+      Right () -> (Map.delete key rooms, RoomCleanupClean)
+      Left e -> (rooms, RoomCleanupUnsubscribeFailed e)
+
+{- | Re-run 'attemptRoomTeardown' later, against whatever this key's
+CURRENT room is -- never blindly re-running against the room captured at
+the moment of the original failure, which could by now have been fully
+torn down and replaced by an unrelated, later room created under the same
+key (identity is compared via 'roomUnsubscribe'\'s own 'TVar' reference
+equality -- exactly the handle 'attemptRoomTeardown' itself tears down),
+or -- for an ordinary release only, never a forced deletion -- have
+gained a brand-new live subscriber since the original failure was first
+observed.
+
+@stillEligible@, given the CURRENT subscriber count read right now (not
+the one read at the time of the original failure), decides whether this
+retry should even attempt anything: @const True@ for a forced deletion
+(occupancy is irrelevant -- see
+'Api.Handler.Arkham.Games.Shared.forceDeleteRoom'), or @(== 0)@ for an
+ordinary release, so a room that has regained a live subscriber is never
+torn down out from under it; a future, fresh disconnect from that
+subscriber will attempt (and, if needed, itself register) its own
+teardown when it eventually leaves.
+-}
+retryRoomTeardown
+  :: Ord k => (Int -> Bool) -> MVar (Map k Room) -> k -> Room -> IO (Either SomeException ())
+retryRoomTeardown stillEligible roomsVar key expectedRoom =
+  modifyMVar roomsVar \rooms -> case Map.lookup key rooms of
+    Nothing -> pure (rooms, Right ())
+    Just r
+      | roomUnsubscribe r /= roomUnsubscribe expectedRoom -> pure (rooms, Right ())
+      | otherwise -> do
+          n <- roomClientCount r
+          if not (stillEligible n)
+            then pure (rooms, Right ())
+            else do
+              (rooms', out) <- attemptRoomTeardown key rooms
+              pure $ case out of
+                RoomCleanupUnsubscribeFailed e -> (rooms', Left e)
+                _ -> (rooms', Right ())
+
+{- | Durably hand a just-failed teardown off to the process-global
+'PendingCleanupOwner.globalPendingCleanupOwner' so it is genuinely,
+repeatedly retried later (see 'roomHeartbeat') instead of ever being
+logged once and forgotten. Returns the opaque receipt so a caller
+(currently only tests) can also poll this exact capability directly via
+'PendingCleanupOwner.attemptCleanupReceipt'.
+-}
+registerRoomCleanupRetry
+  :: Ord k
+  => (Int -> Bool) -> MVar (Map k Room) -> k -> Room -> IO PendingCleanupOwner.CleanupReceipt
+registerRoomCleanupRetry stillEligible roomsVar key expectedRoom =
+  PendingCleanupOwner.transferPendingCleanup
+    PendingCleanupOwner.globalPendingCleanupOwner
+    (retryRoomTeardown stillEligible roomsVar key expectedRoom)
+
+{- | Called unconditionally after every FIRST teardown attempt: registers
+a fresh retry precisely when (and only when) that attempt's own outcome
+was a failure, and is a complete no-op for every other outcome. (A retry
+itself, via 'retryRoomTeardown', does NOT call this again -- a
+still-failing retry is instead requeued automatically by
+'PendingCleanupOwner.attemptClaimed'\/'PendingCleanupOwner.drainPendingCleanup'.)
+-}
+registerRoomCleanupRetryIfFailed
+  :: Ord k => (Int -> Bool) -> MVar (Map k Room) -> k -> Room -> RoomCleanupOutcome -> IO ()
+registerRoomCleanupRetryIfFailed stillEligible roomsVar key expectedRoom = \case
+  RoomCleanupUnsubscribeFailed _ -> void $ registerRoomCleanupRetry stillEligible roomsVar key expectedRoom
+  RoomCleanupAbsent -> pure ()
+  RoomCleanupStillOccupied -> pure ()
+  RoomCleanupClean -> pure ()
+
+{- | A closed, non-sensitive summary of why a room teardown failed,
+reported instead of the raw exception: directly 'Show'ing\/'tshow'ing a
+'SomeException' (as an earlier version of
+'Api.Handler.Arkham.Games.Shared.forceDeleteRoom' did) risks leaking
+arbitrary connection details or other exception-message text into
+application logs. Extend this with a new, still-non-sensitive case if a
+genuinely useful-to-distinguish failure shape appears; never widen it
+back to an open, arbitrary 'Text'\/'String'.
+-}
+data RoomCleanupFailureCategory
+  = -- | The underlying failure was a genuine I\/O\/connection-level
+    -- exception (e.g. a dropped or refused Redis connection) --
+    -- generally transient, and expected to succeed on a later retry.
+    RoomCleanupConnectionFailure
+  | -- | Anything else: an unexpected, not-otherwise-classified
+    -- synchronous failure.
+    RoomCleanupOtherFailure
+  deriving stock (Show, Eq)
+
+classifyRoomCleanupFailure :: SomeException -> RoomCleanupFailureCategory
+classifyRoomCleanupFailure e
+  | Just (_ :: IOException) <- fromException e = RoomCleanupConnectionFailure
+  | otherwise = RoomCleanupOtherFailure
 
 {- | Like 'joinGameRoom' but never creates a Room and never subscribes. Use
 from the publish path so that broadcasting to a game with no listeners
@@ -327,8 +494,9 @@ next iteration would leave 'Api.Arkham.Lifecycle.cancelManagedThread''s
 'Control.Concurrent.MVar.readMVar' blocked forever, hanging
 'pubSubSupervisor' itself and, transitively, Foundation shutdown. The
 same reasoning applies to every other call site
-('releaseRoomIfEmpty', 'withRedis', the 'sweepStaleRooms' call inside
-'getRedisRoomCounts'): each already only ever wants to swallow a
+('withRedis', the 'sweepStaleRooms' call inside
+'getRedisRoomCounts', and 'attemptRoomTeardown'\/'retryRoomTeardown' via
+their own 'UE.tryAny'): each already only ever wants to swallow a
 genuine, synchronous Redis\/network failure, never a caller's own
 cancellation (e.g. a WebSocket disconnect handler or admin request
 being torn down mid-flight). 'UE.tryAny' only ever catches genuinely
@@ -423,10 +591,17 @@ sweepStaleRooms conn gameIds = for_ (nonEmpty $ map roomField gameIds) \fields -
     void $ hdel roomsSeenHashKey fields
 
 {- | Background heartbeat: every 'roomHeartbeatSeconds' refresh the seen
-timestamp for every game this pod still has live subscribers for. This
-keeps active games out of the staleness sweep even when nothing else
-(subscribe / unsubscribe) is writing to Redis. Run once per pod, tracked
-via 'Api.Arkham.Lifecycle.spawnManagedThread' from 'Application.makeFoundation'
+timestamp for every game this pod still has live subscribers for, and
+opportunistically retry any room teardown that previously failed to
+unsubscribe (see 'registerRoomCleanupRetry'). This keeps active games out
+of the staleness sweep even when nothing else (subscribe / unsubscribe)
+is writing to Redis, and gives every retained, retryable room -- game or
+event, since 'drainOwnedCleanup' drains the ONE process-global owner
+regardless of which rooms map originally registered the failure -- a
+genuine, bounded, periodic chance to finish tearing down, rather than
+being retried only the next time (if ever) that exact game or event
+happens to be deleted again. Run once per pod, tracked via
+'Api.Arkham.Lifecycle.spawnManagedThread' from 'Application.makeFoundation'
 and cancelled\/awaited by 'Application.shutdownApp'.
 
 Deliberately takes the broker and room registry directly rather than a
@@ -441,6 +616,14 @@ roomHeartbeat broker gameRooms = case broker of
   WebSocketBroker -> pure ()
   RedisBroker conn _ -> forever do
     threadDelay (roomHeartbeatSeconds * 1000000)
+    -- Retrying leftover room-cleanup capabilities never blocks (it only
+    -- ever runs each entry's own already-'UnliftIO.Exception.tryAny'-
+    -- guarded retry action -- see 'retryRoomTeardown') and, like every
+    -- other action in this loop, only lets a genuine asynchronous
+    -- exception (shutdown) propagate; a synchronous failure is reported
+    -- back as 'Left' and simply requeued for the next tick, never thrown
+    -- here.
+    _ <- drainOwnedCleanup
     rooms <- MVar.readMVar gameRooms
     active <- catMaybes <$> traverse keepIfActive (Map.toList rooms)
     unless (null active) do
