@@ -84,14 +84,24 @@ module DevelStoreLock (
   VersionedAccess (..),
   getOrCreateVersionedStore,
   getExistingVersionedStore,
+
+  -- * Legacy-slot-safe schema-versioned access
+  -- $legacySlot
+  LegacyDevelStoreSlotOccupied (..),
+  getOrCreateVersionedStoreCheckingLegacySlot,
+  getExistingVersionedStoreCheckingLegacySlot,
+
+  -- * Test support
+  withStoreAccessLock,
 ) where
 
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import Control.Exception (Exception, throwIO)
 import Data.Bits (xor)
 import Data.Kind (Type)
 import Data.Proxy (Proxy (..))
 import Data.Typeable (Typeable, typeRep)
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
 import Foreign.Store (Store (..), lookupStore, readStore, writeStore)
 import GHC.Generics (
   Generic (Rep),
@@ -113,6 +123,25 @@ import Prelude
 {-# NOINLINE storeAccessLock #-}
 storeAccessLock :: MVar ()
 storeAccessLock = unsafePerformIO (newMVar ())
+
+{- | Perform an arbitrary 'IO' action serialized against this module's
+own internal 'storeAccessLock', exactly as every other exported function
+in this module already does -- exported purely for test code that needs
+to perform a raw, direct 'Foreign.Store' operation (for example,
+simulating an out-of-band publish at a specific slot to set up a
+regression fixture) without corrupting, or being corrupted by, any
+genuinely concurrent, properly-synchronized caller of this module's own
+ordinary API: 'Foreign.Store' itself provides zero synchronization of
+its own (every one of its operations, including even ones that touch
+entirely different slot numbers, share one single, global, mutable
+table), so any direct access from outside this module that is not
+itself serialized against 'storeAccessLock' can race -- and, in
+practice, does race, under this test suite's own @parallel@ execution --
+against ordinary callers going through 'getOrCreateStore' \/
+'getOrCreateVersionedStore' \/ etc.
+-}
+withStoreAccessLock :: IO a -> IO a
+withStoreAccessLock action = withMVar storeAccessLock (\() -> action)
 
 -- | Atomically retrieve the value already published at the given
 -- 'Foreign.Store.Store', or -- if none has ever been published --
@@ -226,22 +255,32 @@ getOrCreateVersionedStore
   -> IO a
   -> IO (VersionedAccess a)
 getOrCreateVersionedStore expected store@(Store slot) mkDefault =
-  withMVar storeAccessLock $ \() -> do
-    mExisting <- lookupStore slot
-    case mExisting of
-      Nothing -> do
-        fresh <- mkDefault
-        writeStore store (expected, fresh)
-        pure (FreshlyPublished fresh)
-      Just existing -> do
-        -- Reading the pair itself never forces either field (GHC's pairs
-        -- are lazy in both components): only 'fst' is ever demanded
-        -- below, until (and unless) the hashes are first confirmed equal.
-        (storedHash, storedValue) <- readStore existing
-        pure $
-          if storedHash == expected
-            then ReusedExisting storedValue
-            else VersionMismatch storedHash expected
+  withMVar storeAccessLock $ \() -> unguardedGetOrCreateVersionedStore expected store slot mkDefault
+
+-- | The composed 'Foreign.Store.lookupStore'\/'Foreign.Store.writeStore'
+-- body of 'getOrCreateVersionedStore', factored out so
+-- 'getOrCreateVersionedStoreCheckingLegacySlot' can run it under the
+-- exact same already-held 'storeAccessLock' span as its own legacy-slot
+-- occupancy check, rather than releasing and immediately reacquiring the
+-- lock in between (which would reopen a window for a concurrent caller
+-- to act between the two).
+unguardedGetOrCreateVersionedStore :: Word64 -> Store (Word64, a) -> Word32 -> IO a -> IO (VersionedAccess a)
+unguardedGetOrCreateVersionedStore expected store slot mkDefault = do
+  mExisting <- lookupStore slot
+  case mExisting of
+    Nothing -> do
+      fresh <- mkDefault
+      writeStore store (expected, fresh)
+      pure (FreshlyPublished fresh)
+    Just existing -> do
+      -- Reading the pair itself never forces either field (GHC's pairs
+      -- are lazy in both components): only 'fst' is ever demanded
+      -- below, until (and unless) the hashes are first confirmed equal.
+      (storedHash, storedValue) <- readStore existing
+      pure $
+        if storedHash == expected
+          then ReusedExisting storedValue
+          else VersionMismatch storedHash expected
 
 -- | The read-only counterpart of 'getOrCreateVersionedStore', for a
 -- caller that only ever wants to observe an existing published value,
@@ -251,17 +290,126 @@ getExistingVersionedStore
   -> Store (Word64, a)
   -> IO (Maybe (VersionedAccess a))
 getExistingVersionedStore expected (Store slot) =
+  withMVar storeAccessLock $ \() -> unguardedGetExistingVersionedStore expected slot
+
+-- | The composed body of 'getExistingVersionedStore', factored out for
+-- the same reason as 'unguardedGetOrCreateVersionedStore'.
+unguardedGetExistingVersionedStore :: Word64 -> Word32 -> IO (Maybe (VersionedAccess a))
+unguardedGetExistingVersionedStore expected slot = do
+  mExisting <- lookupStore slot
+  traverse
+    ( \existing -> do
+        (storedHash, storedValue) <- readStore existing
+        pure $
+          if storedHash == expected
+            then ReusedExisting storedValue
+            else VersionMismatch storedHash expected
+    )
+    mExisting
+
+{- $legacySlot
+Even 'getOrCreateVersionedStore'\/'getExistingVersionedStore' are only as
+safe as the /slot number/ a caller picks for them: they can only ever
+detect a shape mismatch between two publications made at the /exact
+same/ slot. If a slot number that some strictly /earlier/, differently
+shaped (untagged, i.e. not even a @(Word64, a)@ pair at all) publication
+scheme once used is later reused, unchanged, for a /new/, differently
+laid-out @(Word64, a)@ scheme, then a live process that still holds an
+old-shaped value published there (from before this exact code was ever
+loaded) would have 'Foreign.Store.readStore' coerce it directly as the
+new @(Word64, a)@ representation -- undefined behaviour (a crash, not
+merely a wrong answer), and reached /before/ either scheme's own tag is
+ever compared, because the two schemes don't even agree on the shape a
+tag would be found at. This is exactly the root cause of a MEDIUM-severity
+finding: @app\/DevelMain.hs@'s own restart-lock slot changed from a bare
+@Store (MVar (RestartState ThreadId))@ to a tagged @Store (Word64, MVar
+(RestartState ThreadId))@ across two commits, but kept the exact same
+slot number across that change.
+
+The functions below close this: given the caller's own current slot
+/and/ the exact legacy slot number some strictly earlier, incompatible
+scheme once used, they first check -- via 'Foreign.Store.lookupStore'
+alone, which performs no decoding\/coercion of the underlying value at
+all (only 'Foreign.Store.readStore' does) -- whether anything at all is
+currently published at that /legacy/ slot. If so, this refuses outright
+(throwing 'LegacyDevelStoreSlotOccupied', never touching, forcing, or
+reading the legacy value itself) rather than proceeding to read\/write
+the new slot at all: the only safe recovery from a live process actually
+holding an old-shaped value is a genuinely fresh 'Foreign.Store' table,
+i.e. a full process\/@ghci@ restart, exactly as 'DevelStoreSchemaStale'
+already requires for a same-slot shape mismatch. This check, like every
+other composed access this module performs, is itself serialized via
+'storeAccessLock' against every other caller (including
+'getOrCreateStore'\/'getExistingStore'\/'getOrCreateVersionedStore'\/
+'getExistingVersionedStore', and every other call to these two
+functions), so a concurrent legacy-slot check and a concurrent ordinary
+access can never race each other either.
+-}
+
+{- | Thrown by 'getOrCreateVersionedStoreCheckingLegacySlot'\/'getExistingVersionedStoreCheckingLegacySlot'
+instead of ever proceeding to touch their own (new) slot while a
+strictly earlier, incompatible publication scheme's own slot is still
+occupied -- see the @$legacySlot@ section above. Deliberately carries
+only the legacy slot number itself: the value published there is never
+read, forced, or otherwise touched by this module at all, so there is
+nothing else safe to report about it.
+-}
+newtype LegacyDevelStoreSlotOccupied = LegacyDevelStoreSlotOccupied
+  { legacyDevelStoreSlotOccupiedSlot :: Word32
+  }
+  deriving stock (Eq, Show)
+
+instance Exception LegacyDevelStoreSlotOccupied
+
+-- | Whether /anything/ is currently published at the given slot,
+-- without ever decoding, coercing, forcing, or otherwise touching
+-- whatever value (if any) is actually stored there -- 'Foreign.Store.lookupStore'
+-- alone (never paired with 'Foreign.Store.readStore') is sufficient for
+-- this and is documented to perform no such decoding itself; the
+-- 'Store' this constructs is tagged with a throwaway phantom type
+-- (@()@) purely so this function's own type is total, and that tag is
+-- never actually used to decode anything -- only 'lookupStore''s own
+-- boolean-shaped \"is the slot occupied at all\" answer is.
+isStoreSlotOccupied :: Word32 -> IO Bool
+isStoreSlotOccupied slot = maybe False (const True) <$> (lookupStore slot :: IO (Maybe (Store ())))
+
+{- | Exactly 'getOrCreateVersionedStore', except it first refuses (via
+'isStoreSlotOccupied', /never/ 'Foreign.Store.readStore') to proceed at
+all if @legacySlot@ is currently occupied -- see the @$legacySlot@
+section above. Serialized, via the same 'storeAccessLock', against every
+other caller of any function in this module, so the legacy-slot check
+and the subsequent versioned access it guards happen as one atomic,
+uninterrupted composition -- no other caller can publish anything at
+either slot in between.
+-}
+getOrCreateVersionedStoreCheckingLegacySlot
+  :: Word32
+  -- ^ legacySlot: the slot number a strictly earlier, incompatible
+  -- publication scheme once used -- never itself read, only checked for
+  -- occupancy.
+  -> Word64
+  -> Store (Word64, a)
+  -> IO a
+  -> IO (VersionedAccess a)
+getOrCreateVersionedStoreCheckingLegacySlot legacySlot expected store@(Store slot) mkDefault =
   withMVar storeAccessLock $ \() -> do
-    mExisting <- lookupStore slot
-    traverse
-      ( \existing -> do
-          (storedHash, storedValue) <- readStore existing
-          pure $
-            if storedHash == expected
-              then ReusedExisting storedValue
-              else VersionMismatch storedHash expected
-      )
-      mExisting
+    legacyOccupied <- isStoreSlotOccupied legacySlot
+    if legacyOccupied
+      then throwIO (LegacyDevelStoreSlotOccupied legacySlot)
+      else unguardedGetOrCreateVersionedStore expected store slot mkDefault
+
+-- | The read-only counterpart of 'getOrCreateVersionedStoreCheckingLegacySlot'.
+getExistingVersionedStoreCheckingLegacySlot
+  :: Word32
+  -> Word64
+  -> Store (Word64, a)
+  -> IO (Maybe (VersionedAccess a))
+getExistingVersionedStoreCheckingLegacySlot legacySlot expected (Store slot) =
+  withMVar storeAccessLock $ \() -> do
+    legacyOccupied <- isStoreSlotOccupied legacySlot
+    if legacyOccupied
+      then throwIO (LegacyDevelStoreSlotOccupied legacySlot)
+      else unguardedGetExistingVersionedStore expected slot
 
 -- | Compute a 'Word64' hash of a type's own structural shape:
 -- automatically, from its 'GHC.Generics' representation, rather than

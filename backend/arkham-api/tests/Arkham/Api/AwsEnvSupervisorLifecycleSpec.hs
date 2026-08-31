@@ -40,10 +40,15 @@ import Api.Arkham.AwsEnvSupervisor (
  )
 import Api.Arkham.Helpers (tryRedis_)
 import Api.Arkham.Lifecycle (
+  CleanupReceipt,
+  ReceiptOutcome (..),
   RestartState (..),
+  RetirementOutcome (..),
+  RetirementRetry (..),
   StopOutcome (..),
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
+  classifyRetirementFailure,
   drainOwnedCleanup,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
@@ -51,12 +56,22 @@ import Api.Arkham.Lifecycle (
   newManagedReleasePlan,
   raceManaged_,
   releaseAll,
+  releaseAllRecordingReceipt,
   restartManagedGeneration,
   restartManagedGenerationUsing,
   runManagedCleanup,
   runManagedReleasePlan,
   shutdownThenDeliver,
+  shutdownThenDeliverRecordingReceipt,
   stopManagedGeneration,
+ )
+import PendingCleanupOwner (
+  attemptCleanupReceipt,
+  drainPendingCleanup,
+  globalPendingCleanupOwner,
+  hasPendingCleanup,
+  newPendingCleanupOwner,
+  transferPendingCleanup,
  )
 import Arkham.Prelude
 import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay)
@@ -208,23 +223,23 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
   propagate and skip delivery entirely.
   -}
   describe "shutdownThenDeliver (DevelMain restart-result delivery)" do
-    it "delivers Right () for a successful shutdown" do
+    it "delivers RetiredCleanly for a successful shutdown" do
       done <- newEmptyMVar
       shutdownThenDeliver (pure ()) done
       result <- takeMVar done
       case result of
-        Right () -> pure ()
-        Left e -> expectationFailure ("expected a successful shutdown to deliver Right (), got Left " <> show e)
+        RetiredCleanly -> pure ()
+        RetirementFailed e _ -> expectationFailure ("expected a successful shutdown to deliver RetiredCleanly, got RetirementFailed " <> show e)
 
-    it "delivers Left for a shutdown that throws, instead of propagating and skipping delivery" do
+    it "delivers RetirementFailed for a shutdown that throws, instead of propagating and skipping delivery" do
       done <- newEmptyMVar
       shutdownThenDeliver (Exception.throwIO (userError "supervisor stop failed")) done
       result <- takeMVar done
       case result of
-        Left _ -> pure ()
-        Right () -> expectationFailure "expected the shutdown failure to be delivered as Left, not silently succeed"
+        RetirementFailed _ _ -> pure ()
+        RetiredCleanly -> expectationFailure "expected the shutdown failure to be delivered as RetirementFailed, not silently succeed"
 
-    it "delivers Left for a shutdown cancelled by an async exception mid-flight, rather than deadlocking the waiter forever" do
+    it "delivers RetirementFailed for a shutdown cancelled by an async exception mid-flight, rather than deadlocking the waiter forever" do
       done <- newEmptyMVar
       shutdownStarted <- newEmptyMVar
       workerTid <-
@@ -239,8 +254,8 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       Exception.throwTo workerTid Exception.ThreadKilled
       result <- takeMVar done
       case result of
-        Left _ -> pure ()
-        Right () -> expectationFailure "expected the cancelled shutdown to be delivered as Left"
+        RetirementFailed _ _ -> pure ()
+        RetiredCleanly -> expectationFailure "expected the cancelled shutdown to be delivered as RetirementFailed"
 
   {- | Regression for the MEDIUM-severity audit finding: @app\/DevelMain.hs@'s
   initial \"no server running\" branch created its 'Foreign.Store'-backed
@@ -667,8 +682,8 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
           killThread tid
           delivered <- readMVar newDone
           case delivered of
-            Left _ -> pure ()
-            Right () -> expectationFailure "expected the cancelled generation's own outcome (a Left), not a stale value"
+            RetirementFailed _ _ -> pure ()
+            RetiredCleanly -> expectationFailure "expected the cancelled generation's own outcome (a RetirementFailed), not a stale value"
         _ -> expectationFailure "expected the lock to read Running after a successful start"
 
     {- | Structural, non-probabilistic regression for the async-exception-
@@ -684,7 +699,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     'restartManagedGenerationUsing''s own single 'mask'.
     -}
     it "the entire retire-through-publish transaction is masked: cancelling a previous generation happens under genuine protection" do
-      priorDone <- newMVar (Right ())
+      priorDone <- newMVar RetiredCleanly
       priorTid <- forkIO (forever (threadDelay maxBound))
       lock <- newMVar (Running priorTid priorDone)
       maskingStateDuringCancel <- newEmptyMVar
@@ -781,7 +796,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         Running tid _ | tid == priorTid -> pure ()
         _ -> expectationFailure "expected the lock to still read the exact same Running generation"
       killThread priorTid
-      putMVar priorDone (Right ())
+      putMVar priorDone RetiredCleanly
 
     {- | Fully serialized through the shared lock: each concurrent attempt
     retires whatever the lock currently holds (cancelling and awaiting it)
@@ -878,7 +893,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         Running observedTid _ | observedTid == tid -> pure ()
         _ -> expectationFailure "expected the lock to still read the exact same Running generation after a failed stop"
       killThread tid
-      putMVar done (Right ())
+      putMVar done RetiredCleanly
 
     {- | Direct regression for the MEDIUM-severity finding that both
     'restartManagedGenerationUsing' and 'stopManagedGeneration' used to
@@ -905,7 +920,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       -- own 'shutdownThenDeliver'\/@finalize@ call has already, genuinely
       -- completed -- but reported its own teardown failure, exactly as a
       -- real 'Application.shutdownApp' throwing would.
-      putMVar done (Left teardownErr)
+      putMVar done (RetirementFailed teardownErr Nothing)
       lock <- newMVar (Running tid done)
       stopped <- stopManagedGeneration lock killThread
       case stopped of
@@ -955,7 +970,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       tid <- forkIO (forever (threadDelay maxBound))
       done <- newEmptyMVar
       let teardownErr = Exception.toException (userError "shutdownApp failed")
-      putMVar done (Left teardownErr)
+      putMVar done (RetirementFailed teardownErr Nothing)
       lock <- newMVar (Running tid done)
       acquireCalledRef <- newIORef False
       result <-
@@ -1032,8 +1047,8 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       -- on 'Right'.
       result <- takeMVar done
       case result of
-        Left err -> expectationFailure ("expected a clean shutdown, got: " <> show err)
-        Right () -> pure ()
+        RetirementFailed err _ -> expectationFailure ("expected a clean shutdown, got: " <> show err)
+        RetiredCleanly -> pure ()
       newSup <- newAwsEnvSupervisor
       writeIORef newSupStartedRef True
       -- By the time the new generation exists, the old one is
@@ -1418,19 +1433,28 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       readIORef secondRan `shouldReturn` True
 
     {- | End-to-end regression for the same MEDIUM finding, but through the
-    real production path: 'shutdownThenDeliver' (as @app\/DevelMain.hs@
-    uses it), a genuine 'Running' lock, and 'stopManagedGeneration'
-    itself -- rather than calling 'releaseAll' directly. Proves that when
-    the retired generation's own shutdown was genuinely asynchronously
+    real production path: @app\/DevelMain.hs@'s own actual
+    'shutdownThenDeliverRecordingReceipt'\/'releaseAllRecordingReceipt'
+    wiring (a freshly created, per-attempt @receiptSink@ shared between
+    both calls -- exactly as @update@'s own @finalize@ closure builds
+    it), a genuine 'Running' lock, and 'stopManagedGeneration' itself --
+    rather than calling 'releaseAll' directly. Proves that when the
+    retired generation's own shutdown was genuinely asynchronously
     cancelled (never a purely synchronous 'ReleaseAllFailed'),
     'classifyRetirementFailure' correctly reports NO local retry
     capability (this module cannot itself prove one safe, and one was
     never captured locally to begin with -- see 'RetireFailed''s own
-    Haddock), yet the interrupted cleanup is nonetheless never abandoned:
-    'releaseAll' already durably transferred it to the global owner
-    before rethrowing, so a later, independent 'drainOwnedCleanup' call
-    (standing in for @app\/DevelMain.hs@\'s own opportunistic call after
-    @shutdown@) genuinely completes it.
+    Haddock) but DOES capture the exact 'PendingCleanupOwner.CleanupReceipt'
+    identifying the durably-transferred remainder, and that this is
+    genuinely, observably useful later: once an independent
+    'drainOwnedCleanup' call (standing in for @app\/DevelMain.hs@\'s own
+    opportunistic call after @shutdown@) finishes that transferred work
+    out-of-band, a SUBSEQUENT 'stopManagedGeneration' call against the
+    exact same, still-'RetireFailed' lock can observe -- via
+    'PendingCleanupOwner.attemptCleanupReceipt' -- that this exact
+    receipt's own work already terminated, and finally clears the lock
+    to 'NotStarted', rather than replaying the same 'StopFailed' forever
+    with no way out short of an operator manually resetting it.
 
     Mutation check: reverting the async branch of 'runManagedReleasePlan'
     to skip 'PendingCleanupOwner.transferPendingCleanup' (abandoning the
@@ -1443,9 +1467,14 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     incorrectly regain one), reintroducing a caller with no durable
     place of its own (production: 'Application.handler') receiving what
     looks like an ordinary, already-classified failure for a shutdown
-    still asynchronously in flight.
+    still asynchronously in flight. Reverting 'classifyRetirementFailure'
+    to always report 'Nothing' (discarding the receipt) makes the
+    'GlobalReceipt' assertion fail, and permanently reintroduces the
+    original MEDIUM-severity finding this whole test exists to close: a
+    'RetireFailed' lock that can /never/ observe out-of-band completion
+    and is therefore stuck forever short of a manual operator reset.
     -}
-    it "stopManagedGeneration reports RetireFailed with no local retry after a genuinely cancelled releaseAll shutdown, but a later drainOwnedCleanup still completes it" do
+    it "stopManagedGeneration reports RetireFailed with a GlobalReceipt (no local retry) after a genuinely cancelled shutdown, and a SUBSEQUENT stopManagedGeneration call observes that receipt's own later, out-of-band completion and clears the lock" do
       firstReached <- newEmptyMVar
       neverFilled <- newEmptyMVar
       firstCalls <- newIORef (0 :: Int)
@@ -1457,8 +1486,12 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
               else pure ()
           secondRelease = atomicModifyIORef' secondRan (const (True, ()))
       done <- newEmptyMVar
+      receiptSink <- newIORef Nothing
       genTid <- forkIOWithUnmask \unmask ->
-        shutdownThenDeliver (unmask (releaseAll [firstRelease, secondRelease])) done
+        shutdownThenDeliverRecordingReceipt
+          receiptSink
+          (unmask (releaseAllRecordingReceipt receiptSink [firstRelease, secondRelease]))
+          done
       takeMVar firstReached
       lock <- newMVar (Running genTid done)
       -- 'stopManagedGeneration''s OWN internal @cancel priorHandle@
@@ -1474,19 +1507,44 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         _ -> expectationFailure ("expected the stop to report StopFailed, got " <> show stopOutcome)
       readIORef secondRan `shouldReturn` False
       afterStop <- readMVar lock
-      case afterStop of
-        RetireFailed _ _ Nothing -> pure ()
-        RetireFailed _ _ (Just _) -> expectationFailure "expected RetireFailed to carry NO local retry: it was never captured, ownership was transferred to the durable owner instead"
-        _ -> expectationFailure "expected the lock to read RetireFailed after the interrupted teardown"
-      -- Never abandoned even though the LOCAL lock has nothing left to
-      -- retry: the interrupted release was durably transferred away,
-      -- and completes here.
+      receipt <- case afterStop of
+        RetireFailed _ _ (Just (GlobalReceipt r)) -> pure r
+        RetireFailed _ _ Nothing ->
+          expectationFailure "expected RetireFailed to carry a GlobalReceipt: the interrupted teardown's own remainder was durably transferred and this generation's own receipt sink observed it"
+            >> error "unreachable"
+        _ -> expectationFailure "expected the lock to read RetireFailed after the interrupted teardown" >> error "unreachable"
+      -- Never abandoned even though the LOCAL lock has nothing of its
+      -- own left to retry directly: the interrupted release was
+      -- durably transferred away, and completes here, via an
+      -- independent caller that never even sees @receipt@ itself.
       drainResult <- drainOwnedCleanup
       case drainResult of
         Right () -> pure ()
         Left remaining -> expectationFailure ("expected drainOwnedCleanup to genuinely finish the transferred cleanup, but it still reports " <> show remaining)
       readIORef firstCalls `shouldReturn` 2
       readIORef secondRan `shouldReturn` True
+      -- The actual Finding-4 regression: a SUBSEQUENT stopManagedGeneration
+      -- call against the exact same lock must now be able to observe
+      -- that this exact receipt's own work already terminated --
+      -- out-of-band, via 'drainOwnedCleanup' above, not through this
+      -- call's own retry at all -- and finally clear the lock, rather
+      -- than replaying the same StopFailed forever with no way out
+      -- short of an operator manually resetting it.
+      secondStopOutcome <- stopManagedGeneration lock killThread
+      case secondStopOutcome of
+        StoppedCleanly -> pure ()
+        _ -> expectationFailure ("expected the second stop to observe the already-terminated global receipt and report StoppedCleanly, got " <> show secondStopOutcome)
+      finalLock <- readMVar lock
+      case finalLock of
+        NotStarted -> pure ()
+        _ -> expectationFailure "expected the lock to finally clear to NotStarted once the global receipt's own work was confirmed terminal"
+      -- Sanity: @receipt@ genuinely identifies the same, already-
+      -- terminated capability -- polling it again directly must also
+      -- report success, never busy\/failed\/some fresh re-run.
+      polledAgain <- attemptCleanupReceipt globalPendingCleanupOwner receipt
+      case polledAgain of
+        ReceiptSucceeded -> pure ()
+        other -> expectationFailure ("expected polling the exact same receipt again to still report ReceiptSucceeded, got " <> show other)
 
   {- | Root-cause regression, on 'acquireTransferringOwnershipOnSuccess'
   itself, for the second MEDIUM \"cleanup-progress\" finding: the old

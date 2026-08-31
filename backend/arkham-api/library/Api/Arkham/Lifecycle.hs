@@ -26,8 +26,12 @@ module Api.Arkham.Lifecycle (
   AcquisitionCleanupFailed (..),
   acquireWithUnconditionalRelease,
   releaseAll,
+  releaseAllRecordingReceipt,
   ReleaseAllFailed (..),
   shutdownThenDeliver,
+  shutdownThenDeliverRecordingReceipt,
+  RetirementOutcome (..),
+  RetirementRetry (..),
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
   ManagedThread,
@@ -47,11 +51,17 @@ module Api.Arkham.Lifecycle (
   restartManagedGeneration,
   restartManagedGenerationUsing,
   stopManagedGeneration,
+  classifyRetirementFailure,
   getOrCreateStore,
   getExistingStore,
+  getOrCreateStoreCheckingLegacySlot,
+  getExistingStoreCheckingLegacySlot,
+  DevelStoreLock.LegacyDevelStoreSlotOccupied (..),
   restartStateSchemaHash,
   DevelStoreSchemaStale (..),
   drainOwnedCleanup,
+  PendingCleanupOwner.CleanupReceipt,
+  PendingCleanupOwner.ReceiptOutcome (..),
 ) where
 
 import Control.Concurrent (ThreadId, forkIOWithUnmask)
@@ -85,7 +95,7 @@ import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import Data.Proxy (Proxy (..))
 import Data.Typeable (Typeable)
-import Data.Word (Word64)
+import Data.Word (Word32, Word64)
 import DevelStoreLock (StructuralHash (..), VersionedAccess (..))
 import DevelStoreLock qualified
 import Foreign.Store (Store)
@@ -343,7 +353,48 @@ release after it -- exactly the "unbounded across restarts" leak this
 guards against.
 -}
 releaseAll :: [IO ()] -> IO ()
-releaseAll actions = newManagedReleasePlan actions >>= runManagedReleasePlanOrThrow
+releaseAll actions = do
+  discardedReceiptSink <- newIORef Nothing
+  releaseAllRecordingReceipt discardedReceiptSink actions
+
+{- | Exactly 'releaseAll', except that if this pass is asynchronously
+interrupted and its own outstanding remainder is durably transferred to
+'PendingCleanupOwner.globalPendingCleanupOwner' (see 'runManagedReleasePlan'\'s
+own Haddock for exactly when that happens), the exact
+'PendingCleanupOwner.CleanupReceipt' identifying that one hand-off is
+additionally recorded into @receiptSink@ -- an already-empty,
+single-write 'Data.IORef.IORef' -- /before/ the original exception is
+ever rethrown, rather than merely discarding it the way plain
+'releaseAll' does. @app\/DevelMain.hs@'s restart protocol (via
+'shutdownThenDeliverRecordingReceipt') uses this, never plain
+'releaseAll', specifically so that a resulting 'RetireFailed' can retain
+the exact receipt needed to observe -- and, on success, clear -- this
+teardown's own eventual completion later, however many
+'stopManagedGeneration' calls that takes and regardless of whether this
+process's own retry or some entirely different caller's
+'drainOwnedCleanup' is the one that actually finishes it -- see
+'RetireFailed''s own Haddock for the MEDIUM-severity finding this closes.
+-}
+releaseAllRecordingReceipt :: IORef (Maybe PendingCleanupOwner.CleanupReceipt) -> [IO ()] -> IO ()
+releaseAllRecordingReceipt receiptSink actions = do
+  plan <- newManagedReleasePlan actions
+  outcome <- try @SomeException (runManagedReleasePlan plan)
+  case outcome of
+    Right (Right ()) -> pure ()
+    Right (Left failures) -> throwIO (ReleaseAllFailed failures plan)
+    Left asyncErr -> do
+      -- 'runManagedReleasePlan' only ever throws (rather than returning
+      -- a 'Left' failure /value/) for a genuine asynchronous
+      -- interruption -- see its own Haddock -- so anything caught here
+      -- is, by construction, never a synchronous failure needing
+      -- 'ReleaseAllFailed'-style classification at all.
+      mask_ $ do
+        receipt <- PendingCleanupOwner.transferPendingCleanup globalPendingCleanupOwner (retryPlan plan)
+        writeIORef receiptSink (Just receipt)
+      throwIO asyncErr
+ where
+  retryPlan plan =
+    either (Left . toException . NE.head) (const (Right ())) <$> runManagedReleasePlan plan
 
 {- | An opaque, serialized handle to an /independent/ ("attempt every
 action even if an earlier one fails") sequence of release actions --
@@ -400,20 +451,33 @@ same @plan@ are therefore always fully serialized, and there is no gap,
 masked or otherwise, between an action completing and that being durably
 reflected in @plan@\'s own remaining list for an asynchronous exception
 to land in.
+
+This function itself never touches 'PendingCleanupOwner.globalPendingCleanupOwner'
+at all (a change from an earlier version, which called
+'PendingCleanupOwner.transferPendingCleanup' directly from its own
+'AsyncInterrupted' branch): doing the transfer here meant that /every/
+caller of this function -- including 'PendingCleanupOwner.drainPendingCleanup'\/'PendingCleanupOwner.attemptCleanupReceipt'
+themselves retrying an /already/-owned plan on a later pass -- would
+re-transfer it again on a second interruption, growing the owner's own
+queue with redundant entries for the exact same, already-owned plan on
+every retried cancellation. Only 'releaseAllRecordingReceipt' (this
+plan's own /first/-ever caller) performs that one-time registration; by
+construction, that is therefore the /only/ place 'PendingCleanupOwner.CleanupReceipt's
+are ever minted, so a receipt always identifies one, unambiguous
+plan for the rest of its lifetime. This function is guaranteed to only
+ever /throw/ for a genuine asynchronous interruption -- a synchronous
+failure always comes back as 'Left', never as a thrown exception -- which
+'releaseAllRecordingReceipt' and 'PendingCleanupOwner.attemptOne' both
+rely on.
 -}
 runManagedReleasePlan :: ManagedReleasePlan -> IO (Either (NonEmpty SomeException) ())
-runManagedReleasePlan self@(ManagedReleasePlan actionsVar) = do
+runManagedReleasePlan (ManagedReleasePlan actionsVar) = do
   passOutcome <- mask $ \restore -> modifyMVar actionsVar (attemptPass restore)
   case passOutcome of
     CleanPass -> pure (Right ())
     SyncFailuresRemain failures -> pure (Left failures)
-    AsyncInterrupted asyncErr -> do
-      PendingCleanupOwner.transferPendingCleanup globalPendingCleanupOwner transferAction
-      throwIO asyncErr
+    AsyncInterrupted asyncErr -> throwIO asyncErr
  where
-  transferAction =
-    either (Left . toException . NE.head) (const (Right ())) <$> runManagedReleasePlan self
-
   attemptPass restore actions = go [] [] actions
    where
     go failuresAcc retainedRev toAttempt = case toAttempt of
@@ -475,10 +539,10 @@ restart protocol is waiting on).
 Used by @app\/DevelMain.hs@'s restart protocol: without this, a
 shutdown that throws mid-way never reaches the @putMVar@ that unblocks
 the next restart's wait, deadlocking it forever. With this, the waiter
-always receives a result -- 'Right' on a clean shutdown, or 'Left' on a
-failed\/interrupted one -- and can choose not to start a replacement
-generation on 'Left', avoiding both the deadlock and two live
-generations ever coexisting.
+always receives a result -- 'RetiredCleanly' on a clean shutdown, or
+'RetirementFailed' on a failed\/interrupted one -- and can choose not to
+start a replacement generation on the latter, avoiding both the deadlock
+and two live generations ever coexisting.
 
 The delivery itself ('Control.Concurrent.MVar.tryPutMVar', not a
 blocking 'Control.Concurrent.MVar.putMVar') runs under 'mask_' so that
@@ -495,10 +559,62 @@ an unexpectedly-already-full cell can still itself block -- even under
 result nobody could have consumed anyway. @tryPutMVar@ can never block,
 so this finalizer always completes.
 -}
-shutdownThenDeliver :: IO () -> MVar (Either SomeException ()) -> IO ()
+shutdownThenDeliver :: IO () -> MVar RetirementOutcome -> IO ()
 shutdownThenDeliver shutdown done = do
+  discardedReceiptSink <- newIORef Nothing
+  shutdownThenDeliverRecordingReceipt discardedReceiptSink shutdown done
+
+{- | The outcome of one generation's own teardown attempt, delivered by
+'shutdownThenDeliver'\/'shutdownThenDeliverRecordingReceipt' into its own
+dedicated 'Running' completion cell. Unlike a plain @Either
+'SomeException' ()@, a failed teardown also carries the exact
+'PendingCleanupOwner.CleanupReceipt' identifying any durably-transferred
+outstanding cleanup work this teardown's own 'releaseAll' left behind --
+'Nothing' if either nothing was transferred, or @shutdown@ was not built
+from 'releaseAllRecordingReceipt' at all -- so that
+'stopManagedGeneration' can genuinely observe that receipt's own eventual
+completion later, root-causing the MEDIUM-severity finding that
+'RetireFailed' previously had no way to ever clear itself once its own
+teardown failure had already been durably transferred away: see
+'RetireFailed''s own Haddock.
+-}
+data RetirementOutcome
+  = -- | @shutdown@ completed without throwing.
+    RetiredCleanly
+  | -- | @shutdown@ threw (synchronously, or an asynchronous exception
+    -- delivered while it was blocked on its own interruptible internal
+    -- operations); the exact exception, and the exact receipt (if any)
+    -- identifying whatever outstanding work it durably transferred away
+    -- before this was thrown.
+    RetirementFailed SomeException (Maybe PendingCleanupOwner.CleanupReceipt)
+  deriving stock (Show)
+
+{- | Exactly 'shutdownThenDeliver', except @receiptSink@ -- an
+already-empty, single-write 'Data.IORef.IORef' that @shutdown@ itself is
+expected to write into (production: @shutdown@ is
+@releaseAllRecordingReceipt receiptSink actions@, i.e. @app\/DevelMain.hs@
+builds its own per-attempt @receiptSink@ and threads it straight down
+into 'releaseAllRecordingReceipt') -- is read immediately after
+@shutdown@ throws, and its own value is carried into the resulting
+'RetirementFailed' rather than discarded. @app\/DevelMain.hs@'s
+restart protocol uses this (never plain 'shutdownThenDeliver') for
+exactly this reason: only a generation with a persistent
+'Api.Arkham.Lifecycle.RestartState' lock to retain that receipt in (via
+'RetireFailed') has any use for it at all -- 'Application.handler''s own
+per-call, lock-less teardown has nowhere to keep it, and continues to
+use plain 'shutdownThenDeliver'\/'releaseAll'.
+-}
+shutdownThenDeliverRecordingReceipt
+  :: IORef (Maybe PendingCleanupOwner.CleanupReceipt)
+  -> IO ()
+  -> MVar RetirementOutcome
+  -> IO ()
+shutdownThenDeliverRecordingReceipt receiptSink shutdown done = do
   result <- try shutdown
-  mask_ (tryPutMVar done result >> pure ())
+  outcome <- case result of
+    Right () -> pure RetiredCleanly
+    Left err -> RetirementFailed err <$> readIORef receiptSink
+  mask_ (tryPutMVar done outcome >> pure ())
 
 {- | Given an already-acquired resource whose remaining lifetime is meant
 to be owned by a newly-forked child thread (which runs @body res@
@@ -800,7 +916,7 @@ data RestartState handle
     -- (production: its 'Control.Concurrent.ThreadId'), with its own
     -- dedicated, single-use completion cell that only *this* generation's
     -- own eventual 'shutdownThenDeliver' call will ever fill.
-    Running handle (MVar (Either SomeException ()))
+    Running handle (MVar RetirementOutcome)
   | -- | The most recent attempt to start a replacement generation itself
     -- failed (acquisition or spawn threw) before any child was ever
     -- created. Kept distinct from 'NotStarted' purely for introspection
@@ -830,22 +946,32 @@ data RestartState handle
     -- The second field is the complete, newest-first history of every
     -- teardown attempt's own failure (at least one, by construction).
     -- The third field is a retry capability, when one is actually known
-    -- to be safe: whenever the teardown failure came from 'releaseAll'
-    -- (production: always, since 'Application.shutdownApp' uses it
-    -- exclusively), this is 'Just' its exact, still-outstanding
-    -- 'releaseAllFailedRetry' 'ManagedReleasePlan' -- attempting, and only ever attempting,
-    -- resources genuinely not yet confirmed released -- and
-    -- 'stopManagedGeneration' retries it (never merely replaying the
-    -- same stale failure forever, root-causing a MEDIUM-severity finding
-    -- that this constructor previously had nowhere at all to retain
-    -- such a capability, silently abandoning every not-yet-released
-    -- resource the instant an asynchronous cancellation interrupted
-    -- 'releaseAll' mid-shutdown). It is 'Nothing' only for a teardown
-    -- failure this module cannot itself prove safe to retry (some
-    -- caller's own @finalize@ not built from 'releaseAll' at all) --
-    -- exactly as unrecoverable-except-manually as this constructor was
-    -- before this fix, never regressing it.
-    RetireFailed handle (NonEmpty SomeException) (Maybe ManagedReleasePlan)
+    -- to be safe -- see 'RetirementRetry' for the two ways this can be:
+    -- either 'LocalRetry' (the teardown failure came from 'releaseAll'
+    -- reporting purely synchronous failures, production: always, since
+    -- 'Application.shutdownApp' uses it exclusively) or 'GlobalReceipt'
+    -- (the teardown was asynchronously interrupted, and its own
+    -- outstanding remainder was durably transferred to
+    -- 'PendingCleanupOwner.globalPendingCleanupOwner' -- see
+    -- 'RetirementOutcome') -- 'stopManagedGeneration' retries either kind
+    -- (never merely replaying the same stale failure forever,
+    -- root-causing a MEDIUM-severity finding that this constructor
+    -- previously had nowhere at all to retain such a capability,
+    -- silently abandoning every not-yet-released resource the instant
+    -- an asynchronous cancellation interrupted 'releaseAll' mid-shutdown),
+    -- and -- root-causing a further MEDIUM-severity finding -- a
+    -- 'GlobalReceipt' lets this state genuinely, observably clear itself
+    -- back to 'NotStarted' once that receipt's own eventual completion
+    -- is confirmed, whether or not 'stopManagedGeneration''s own retry is
+    -- what actually finished it (an entirely independent
+    -- 'drainOwnedCleanup' call -- production: @DevelMain@'s own
+    -- opportunistic one, or 'Application.handler''s -- may finish it
+    -- first). It is 'Nothing' only for a teardown failure this module
+    -- cannot itself prove safe to retry at all (some caller's own
+    -- @finalize@ not built from 'releaseAllRecordingReceipt'\/'releaseAll'
+    -- at all) -- exactly as unrecoverable-except-manually as this
+    -- constructor was before this fix, never regressing it.
+    RetireFailed handle (NonEmpty SomeException) (Maybe RetirementRetry)
   | -- | Acquiring (or spawning) the replacement generation's resource
     -- genuinely failed, /and/ so did every attempt made so far at the
     -- compensating cleanup meant to tear down whatever was actually
@@ -889,6 +1015,29 @@ data RestartState handle
     -- see its own Haddock.
     StartCleanupFailed SomeException (NonEmpty SomeException) ManagedCleanup
   deriving stock (Generic)
+
+{- | The two ways a 'RetireFailed' teardown failure can be genuinely,
+safely retried -- see 'RetireFailed''s own Haddock, and
+'classifyRetirementFailure', the only place either constructor is ever
+built.
+-}
+data RetirementRetry
+  = -- | The teardown failure was 'ReleaseAllFailed': a purely
+    -- synchronous outcome (every action was attempted; at least one
+    -- failed), never durably transferred anywhere else. The exact,
+    -- still-outstanding 'ManagedReleasePlan' is retried directly,
+    -- serialized through the same @lock@ 'RetireFailed' itself lives in
+    -- -- see 'stopManagedGeneration'.
+    LocalRetry ManagedReleasePlan
+  | -- | The teardown was asynchronously interrupted before every action
+    -- could even be attempted, and its own outstanding remainder was
+    -- durably transferred to 'PendingCleanupOwner.globalPendingCleanupOwner'
+    -- (see 'RetirementOutcome'\/'releaseAllRecordingReceipt'). The exact
+    -- 'PendingCleanupOwner.CleanupReceipt' identifying that one hand-off
+    -- is polled\/attempted (never re-transferred) via
+    -- 'PendingCleanupOwner.attemptCleanupReceipt' -- see
+    -- 'stopManagedGeneration'.
+    GlobalReceipt PendingCleanupOwner.CleanupReceipt
 
 {- | The truthful outcome of 'stopManagedGeneration', replacing a plain
 'Bool' (which could only ever distinguish \"something was running\" from
@@ -1014,6 +1163,41 @@ getExistingStore store expected = do
     Just (ReusedExisting a) -> pure (Just a)
     Just (VersionMismatch stored _) -> throwIO (DevelStoreSchemaStale stored expected)
 
+{- | Exactly 'getOrCreateStore', except it first refuses (via
+'DevelStoreLock.LegacyDevelStoreSlotOccupied', /never/ reading or
+forcing whatever value is actually published at @legacySlot@) to ever
+touch @store@'s own slot at all while some strictly earlier, structurally
+incompatible publication scheme's own slot is still occupied -- see
+'DevelStoreLock''s own @$legacySlot@ section, and
+@app\/DevelMain.hs@'s own restart-lock slot, the exact site this closes
+a genuine, git-history-confirmed segfault for: an in-place slot-number
+reuse across an untagged-to-tagged shape change, which
+'getOrCreateVersionedStore'\/'getOrCreateStore' alone cannot detect
+(they only ever compare two publications made at the *same* slot). The
+only safe recovery from this exception is a full process\/GHCi restart
+-- never retrying, and never simply picking a different slot number at
+runtime -- exactly as 'DevelStoreSchemaStale' already requires for a
+same-slot mismatch.
+-}
+getOrCreateStoreCheckingLegacySlot :: Word32 -> Store (Word64, a) -> Word64 -> IO a -> IO a
+getOrCreateStoreCheckingLegacySlot legacySlot store expected mkDefault = do
+  access <- DevelStoreLock.getOrCreateVersionedStoreCheckingLegacySlot legacySlot expected store mkDefault
+  case access of
+    FreshlyPublished a -> pure a
+    ReusedExisting a -> pure a
+    VersionMismatch stored _ -> throwIO (DevelStoreSchemaStale stored expected)
+
+-- | The read-only counterpart of 'getOrCreateStoreCheckingLegacySlot',
+-- exactly mirroring how 'getExistingStore' relates to 'getOrCreateStore'.
+getExistingStoreCheckingLegacySlot :: Word32 -> Store (Word64, a) -> Word64 -> IO (Maybe a)
+getExistingStoreCheckingLegacySlot legacySlot store expected = do
+  mAccess <- DevelStoreLock.getExistingVersionedStoreCheckingLegacySlot legacySlot expected store
+  case mAccess of
+    Nothing -> pure Nothing
+    Just (FreshlyPublished a) -> pure (Just a)
+    Just (ReusedExisting a) -> pure (Just a)
+    Just (VersionMismatch stored _) -> throwIO (DevelStoreSchemaStale stored expected)
+
 -- | Attempt to finish every cleanup capability durably transferred to
 -- 'PendingCleanupOwner.globalPendingCleanupOwner' so far (production:
 -- whatever 'runManagedReleasePlan' handed off the instant an
@@ -1095,10 +1279,11 @@ restartManagedGenerationUsing
   -> (res -> IO b)
   -- ^ body: the new generation's own workload (production: running
   -- Warp).
-  -> (res -> Either SomeException b -> MVar (Either SomeException ()) -> IO ())
+  -> (res -> Either SomeException b -> MVar RetirementOutcome -> IO ())
   -- ^ finalize: run (masked) once @body@ exits, for any reason, with
   -- this generation's own freshly created completion cell -- typically
-  -- @\\res outcome newDone -> shutdownThenDeliver (release' res) newDone@.
+  -- @\\res outcome newDone -> shutdownThenDeliverRecordingReceipt sink (release' res) newDone@,
+  -- for some per-attempt receipt @sink@ -- see 'shutdownThenDeliverRecordingReceipt'.
   -> IO ()
 restartManagedGenerationUsing lock spawn cancel acquire release body finalize = mask $ \restore -> do
   priorState <- takeMVar lock
@@ -1178,9 +1363,9 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
       cancel priorHandle
       outcome <- readMVar priorDone
       pure $ case outcome of
-        Right () -> Right ()
-        Left err ->
-          let (failures, maybeRetry) = classifyRetirementFailure err
+        RetiredCleanly -> Right ()
+        RetirementFailed err maybeReceipt ->
+          let (failures, maybeRetry) = classifyRetirementFailure err maybeReceipt
           in Left (RetireFailed priorHandle failures maybeRetry, err)
 
   -- | The exact outcome of attempting to acquire\/spawn a replacement
@@ -1222,7 +1407,7 @@ restartManagedGenerationUsing lock spawn cancel acquire release body finalize = 
 -- itself failed, at this layer or a nested one\" (never safe to retry
 -- immediately -- see 'StartCleanupFailed').
 data StartAttemptOutcome handle
-  = Started handle (MVar (Either SomeException ()))
+  = Started handle (MVar RetirementOutcome)
   | AcquireFailed SomeException
   | SpawnFailedCleanly SomeException
   | -- | The original failure (@spawn@ failing at this exact layer, or
@@ -1240,7 +1425,7 @@ restartManagedGeneration
   -> IO res
   -> (res -> IO ())
   -> (res -> IO b)
-  -> (res -> Either SomeException b -> MVar (Either SomeException ()) -> IO ())
+  -> (res -> Either SomeException b -> MVar RetirementOutcome -> IO ())
   -> IO ()
 restartManagedGeneration lock = restartManagedGenerationUsing lock forkIOWithUnmask
 
@@ -1318,7 +1503,7 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
     StartFailed _ -> putMVar lock NotStarted >> pure NothingWasRunning
     RetireFailed priorHandle failuresSoFar maybeRetry -> case maybeRetry of
       Nothing -> putMVar lock priorState >> pure (StopFailed (NE.head failuresSoFar))
-      Just retryAction -> do
+      Just (LocalRetry retryAction) -> do
         -- Exactly mirrors the 'StartCleanupFailed' case below -- see
         -- this function's own Haddock.
         retryOutcome <- try @SomeException (UE.tryAny (restore (runManagedReleasePlanOrThrow retryAction)))
@@ -1331,6 +1516,35 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
             let failuresSoFar' = NE.cons newErr failuresSoFar
             putMVar lock (RetireFailed priorHandle failuresSoFar' maybeRetry)
             pure (StopFailed newErr)
+      Just (GlobalReceipt receipt) -> do
+        -- Poll\/attempt (never re-transfer) this exact receipt --
+        -- see 'PendingCleanupOwner.attemptCleanupReceipt''s own Haddock.
+        -- Unlike 'runManagedReleasePlanOrThrow'\/'runManagedCleanup',
+        -- this never itself throws for a synchronous outcome (success
+        -- or failure are both returned as plain 'PendingCleanupOwner.ReceiptOutcome'
+        -- data), so no inner 'UE.tryAny' is needed here: anything this
+        -- 'Control.Exception.try' catches is, by construction, a
+        -- genuine asynchronous interruption of this poll itself.
+        pollOutcome <- try @SomeException (restore (PendingCleanupOwner.attemptCleanupReceipt globalPendingCleanupOwner receipt))
+        case pollOutcome of
+          Left asyncErr -> do
+            putMVar lock priorState
+            throwIO asyncErr
+          Right PendingCleanupOwner.ReceiptSucceeded -> putMVar lock NotStarted >> pure StoppedCleanly
+          Right (PendingCleanupOwner.ReceiptFailed newErrs) -> do
+            let failuresSoFar' = NE.cons (NE.head newErrs) failuresSoFar
+            putMVar lock (RetireFailed priorHandle failuresSoFar' maybeRetry)
+            pure (StopFailed (NE.head newErrs))
+          Right PendingCleanupOwner.ReceiptBusy ->
+            -- Some other concurrent caller (another 'stopManagedGeneration'
+            -- call against a different handle sharing this owner, a
+            -- concurrent 'drainOwnedCleanup', or a doubled-up concurrent
+            -- call against this exact @lock@ -- impossible while this
+            -- 'Control.Exception.mask'\/@lock@ 'Control.Concurrent.MVar.takeMVar'
+            -- serializes every caller, but kept total regardless) is
+            -- already running this exact receipt right now: never race
+            -- it, just report the same stale failure again this once.
+            putMVar lock priorState >> pure (StopFailed (NE.head failuresSoFar))
     StartCleanupFailed originalErr cleanupErrs retryRelease -> do
       -- The outer 'try' only ever fires for a genuinely asynchronous
       -- interruption of THIS retry attempt: 'UE.tryAny' (inside)
@@ -1350,23 +1564,29 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
     Running priorHandle priorDone -> do
       result <- try @SomeException (cancel priorHandle >> restore (readMVar priorDone))
       case result of
-        Right (Right ()) -> putMVar lock NotStarted >> pure StoppedCleanly
-        Right (Left teardownErr) -> do
-          let (failures, maybeRetry) = classifyRetirementFailure teardownErr
+        Right RetiredCleanly -> putMVar lock NotStarted >> pure StoppedCleanly
+        Right (RetirementFailed teardownErr maybeReceipt) -> do
+          let (failures, maybeRetry) = classifyRetirementFailure teardownErr maybeReceipt
           putMVar lock (RetireFailed priorHandle failures maybeRetry) >> pure (StopFailed teardownErr)
         Left cancelErr -> putMVar lock priorState >> throwIO cancelErr
 
 {- | Classify a generation's own teardown failure (production: whatever
-'Application.shutdownApp' -- always 'releaseAll' -- raised) into the
-complete failure history and a safe retry capability, when one is known.
-A 'ReleaseAllFailed' names its own exact, narrowed, still-outstanding
-retry action directly, so that becomes 'Just'; anything else (some
-caller's own @finalize@ not built from 'releaseAll' at all) has no
-capability this module can itself prove safe to retry, so 'Nothing' --
-never fabricating one -- exactly as unrecoverable-except-manually as
-'RetireFailed' was before this fix, never regressing it.
+@app\/DevelMain.hs@'s own @finalize@ -- always built from
+'shutdownThenDeliverRecordingReceipt' -- raised, plus whatever receipt
+(if any) that same call observed alongside it) into the complete failure
+history and a safe retry capability, when one is known. A
+'ReleaseAllFailed' names its own exact, narrowed, still-outstanding
+retry action directly, so that becomes 'Just' a 'LocalRetry'; otherwise,
+if a receipt was actually observed (the teardown was asynchronously
+interrupted and its remainder durably transferred away), that becomes
+'Just' a 'GlobalReceipt'; only a teardown failure that is neither (some
+caller's own @finalize@ not built from 'shutdownThenDeliverRecordingReceipt'
+at all) has no capability this module can itself prove safe to retry, so
+'Nothing' -- never fabricating one -- exactly as
+unrecoverable-except-manually as 'RetireFailed' was before either fix,
+never regressing it.
 -}
-classifyRetirementFailure :: SomeException -> (NonEmpty SomeException, Maybe ManagedReleasePlan)
-classifyRetirementFailure err = case fromException err of
-  Just (ReleaseAllFailed failures retryAction) -> (failures, Just retryAction)
-  Nothing -> (err :| [], Nothing)
+classifyRetirementFailure :: SomeException -> Maybe PendingCleanupOwner.CleanupReceipt -> (NonEmpty SomeException, Maybe RetirementRetry)
+classifyRetirementFailure err maybeReceipt = case fromException err of
+  Just (ReleaseAllFailed failures retryAction) -> (failures, Just (LocalRetry retryAction))
+  Nothing -> (err :| [], GlobalReceipt <$> maybeReceipt)

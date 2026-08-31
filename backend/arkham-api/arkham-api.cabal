@@ -8771,6 +8771,7 @@ test-suite spec
       Helpers.Achievements
       Helpers.Message
       Helpers.UltimatumsAndBoons
+      PendingCleanupOwnerSpec
       SpecHook
       TestImport
       TestImport.Lifted

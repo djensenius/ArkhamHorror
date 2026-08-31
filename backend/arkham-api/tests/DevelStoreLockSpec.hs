@@ -7,14 +7,18 @@ import Arkham.Prelude
 import Control.Concurrent (forkIO, threadDelay)
 import Data.Proxy (Proxy (..))
 import DevelStoreLock (
+  LegacyDevelStoreSlotOccupied (..),
   StructuralHash (..),
   VersionedAccess (..),
   getExistingStore,
   getExistingVersionedStore,
+  getExistingVersionedStoreCheckingLegacySlot,
   getOrCreateStore,
   getOrCreateVersionedStore,
+  getOrCreateVersionedStoreCheckingLegacySlot,
+  withStoreAccessLock,
  )
-import Foreign.Store (Store (..))
+import Foreign.Store (Store (..), writeStore)
 import Test.Hspec
 
 {- | Regression for the MEDIUM-severity finding that a prior version of
@@ -214,6 +218,71 @@ spec = describe "DevelStoreLock" do
       _ <- getOrCreateVersionedStore staleHash store (pure (error "this stale value must never actually be forced"))
       observed <- getExistingVersionedStore currentExpected store
       observed `shouldBe` Just (VersionMismatch staleHash currentExpected)
+
+  {- | Root-cause regression for the MEDIUM \"Legacy slot migration
+  segfault\" finding: a prior incarnation of @app\/DevelMain.hs@ stored an
+  untagged @Store (MVar (RestartState ThreadId))@ at slot 103, and a
+  later incarnation changed the published shape to a tagged @Store
+  (Word64, MVar (RestartState ThreadId))@ while keeping that exact same
+  slot number. Reading the OLD, untagged value back as if it were the
+  NEW, tagged pair -- which is exactly what 'getOrCreateVersionedStore'\/
+  'getExistingVersionedStore' alone would do, since 'Foreign.Store'
+  performs zero runtime type checking -- forces a heap object under the
+  wrong layout, an authentic segfault risk in a live process (not merely
+  a logical error).
+
+  These tests prove 'getOrCreateVersionedStoreCheckingLegacySlot'\/
+  'getExistingVersionedStoreCheckingLegacySlot' refuse outright,
+  throwing 'LegacyDevelStoreSlotOccupied', the instant the legacy slot is
+  occupied at all -- and, critically, do so WITHOUT ever forcing\/reading
+  the legacy value: proven the same way as the 'VersionMismatch' laziness
+  proof above, by publishing a poisoned, @error@-throwing thunk directly
+  at the legacy slot (standing in for an old-shaped heap value that would
+  segfault, or at least trap, if any code ever attempted to read\/decode
+  it under the new shape) and confirming these functions complete cleanly
+  -- refusing via the exception -- without that poison ever firing.
+  -}
+  describe "legacy-slot-aware access (getOrCreateVersionedStoreCheckingLegacySlot / getExistingVersionedStoreCheckingLegacySlot)" do
+    it "getOrCreateVersionedStoreCheckingLegacySlot proceeds normally (FreshlyPublished) when the legacy slot is not occupied" do
+      let legacySlot = 9_100_201 :: Word32
+          store = Store 9_100_202 :: Store (Word64, SampleShapeV1)
+          expected = structuralHash (Proxy :: Proxy SampleShapeV1)
+      access <- getOrCreateVersionedStoreCheckingLegacySlot legacySlot expected store (pure (SampleShapeV1 11))
+      case access of
+        FreshlyPublished (SampleShapeV1 n) -> n `shouldBe` 11
+        other -> expectationFailure ("expected FreshlyPublished, got " <> show other)
+
+    it "getOrCreateVersionedStoreCheckingLegacySlot throws LegacyDevelStoreSlotOccupied, without ever forcing the legacy value or writing the new slot, when the legacy slot is occupied" do
+      let legacySlot = 9_100_203 :: Word32
+          store = Store 9_100_204 :: Store (Word64, SampleShapeV1)
+          expected = structuralHash (Proxy :: Proxy SampleShapeV1)
+      -- Publish a poisoned, untagged value directly at the legacy slot
+      -- number -- standing in for an old incarnation's own untagged
+      -- publication. This must never be forced.
+      withStoreAccessLock (writeStore (Store legacySlot :: Store Int) (error "legacy value must never be forced"))
+      getOrCreateVersionedStoreCheckingLegacySlot
+        legacySlot
+        expected
+        store
+        (pure (error "mkDefault must not run: refusal must happen before ever touching the new slot"))
+        `shouldThrow` (\e -> legacyDevelStoreSlotOccupiedSlot e == legacySlot)
+      -- The new slot itself must remain untouched: a later, ordinary
+      -- (non-legacy-checking) access still sees it as never-published.
+      getExistingVersionedStore expected store `shouldReturn` Nothing
+
+    it "getExistingVersionedStoreCheckingLegacySlot proceeds normally (Nothing) when the legacy slot is not occupied and the new slot has never been published" do
+      let legacySlot = 9_100_205 :: Word32
+          store = Store 9_100_206 :: Store (Word64, SampleShapeV1)
+          expected = structuralHash (Proxy :: Proxy SampleShapeV1)
+      getExistingVersionedStoreCheckingLegacySlot legacySlot expected store `shouldReturn` Nothing
+
+    it "getExistingVersionedStoreCheckingLegacySlot throws LegacyDevelStoreSlotOccupied, without ever forcing the legacy value, when the legacy slot is occupied" do
+      let legacySlot = 9_100_207 :: Word32
+          store = Store 9_100_208 :: Store (Word64, SampleShapeV1)
+          expected = structuralHash (Proxy :: Proxy SampleShapeV1)
+      withStoreAccessLock (writeStore (Store legacySlot :: Store Int) (error "legacy value must never be forced"))
+      getExistingVersionedStoreCheckingLegacySlot legacySlot expected store
+        `shouldThrow` (\e -> legacyDevelStoreSlotOccupiedSlot e == legacySlot)
 
 -- | A local sample type used only to exercise 'StructuralHash' directly
 -- (see the @schema-versioned access@ tests above): deliberately a

@@ -8,7 +8,9 @@ name: devel-store-lock
 
 dependencies:
   - base
+  - containers
   - foreign-store
+  - stm
 
 library:
   source-dirs: library
