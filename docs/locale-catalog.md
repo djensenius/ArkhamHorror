@@ -389,6 +389,14 @@ every digest that is compared — so:
   with its `(dev, ino)` recorded; at the end every pin is re-checked, so a
   directory swapped for a symlink *after* it was validated is caught rather
   than followed;
+* the manifest is checked against *itself* before anything is read: `(locale,
+  pack)` pairs and content paths must be unique, a digest may name only one
+  path, and every per-locale and global key/chunk/byte total is recomputed from
+  the descriptors and must match exactly — a manifest cannot attest small
+  totals and then list the same 8 MiB chunk four thousand times;
+* the filesystem is enumerated with a budget and stops the moment it exceeds
+  what a valid catalog could hold, so a directory flooded with unlisted files
+  is refused without building an array of them;
 * every artifact is opened `O_NOFOLLOW`, then `fstat`ed and read through that
   same descriptor — regular file, `nlink == 1`, size within an explicit ceiling
   **before** a byte is allocated, exact EOF, and the same inode and size
@@ -396,6 +404,17 @@ every digest that is compared — so:
   file that grew or was truncated mid-read cannot substitute bytes or exhaust
   memory. The manifest's own totals and descriptor count are bounded too, in
   the schema and again here;
+* after every read, and after a deterministic hook the tests use to swap a
+  verified leaf or an intermediate directory, every artifact is re-read and
+  compared with the bytes that were hashed, and every directory pin is
+  re-checked;
+* `--publish` closes the last gap between "these bytes were correct when I read
+  them" and "these are the bytes that will be served": the catalog is rewritten
+  from the verified buffers into a fresh mode-0700 directory and moved into
+  place with `rename`. The offline cache-hit path uses it, so what the package
+  serves is exactly what was verified;
+* `O_NOFOLLOW` and `O_DIRECTORY` are required to exist, since `undefined | 0`
+  would silently turn a no-follow open into an ordinary one;
 * the identity/`.gz`/`.br` artifact sets are compared with the manifest in both
   directions, so nothing unlisted can sit where nginx would serve it;
 the offline build runs the same check against its own output — before both of

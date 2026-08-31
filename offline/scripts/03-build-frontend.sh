@@ -106,10 +106,13 @@ verify_locale_catalog() {
 # and a cache restores just `offline/_deps`, so comparing against it would fail
 # on every fresh checkout. A failure here means the cache is unusable, not that
 # the tree is broken, so it is reported as a cache miss and the caller rebuilds.
+# `--publish` replaces the restored catalog with a private snapshot written from
+# the bytes this run hashed, so what the offline package serves is exactly what
+# was verified - not whatever the cache happens to hold afterwards.
 verify_cached_locale_catalog() {
     local output="$1"
-    substep "Verifying the cached locale catalog in ${output}"
-    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --dist-only)
+    substep "Verifying and republishing the cached locale catalog in ${output}"
+    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --dist-only --publish)
 }
 
 # ── Build frontend ────────────────────────────────────────────────────────────

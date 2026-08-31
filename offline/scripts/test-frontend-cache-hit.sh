@@ -61,69 +61,6 @@ die() { echo "die: $*" >&2; return 1; }
 # shellcheck disable=SC1090
 source "${WORK}/verify.sh"
 
-if ! verify_cached_locale_catalog "$DIST" >/dev/null 2>&1; then
-  fail "a cached build output was rejected even though its manifest matches"
-fi
-if [ ! -f "${DIST}/locale-catalog/manifest.json" ]; then
-  fail "verification deleted a usable cached build output"
-fi
-
-# An unusable cache must be reported as a miss, not accepted and not fatal.
-CORRUPT="${WORK}/corrupt"
-mkdir -p "$CORRUPT"
-cp -R "${DIST}/." "$CORRUPT/"
-printf '{"schemaVersion":"1.0.0"}' > "${CORRUPT}/locale-catalog/manifest.json"
-if verify_cached_locale_catalog "$CORRUPT" >/dev/null 2>&1; then
-  fail "a corrupt cached catalog was accepted"
-fi
-
-MISSING="${WORK}/missing"
-mkdir -p "$MISSING"
-cp -R "${DIST}/." "$MISSING/"
-rm -rf "${MISSING}/locale-catalog"
-if verify_cached_locale_catalog "$MISSING" >/dev/null 2>&1; then
-  fail "a cached output with no catalog at all was accepted"
-fi
-
-# A cache can restore a compressed sibling that no longer matches the JSON next
-# to it; nginx serves those bytes without ever reading the identity file.
-mutate_and_expect_reject() {
-  local label="$1"; shift
-  local copy="${WORK}/$1"; shift
-  rm -rf "$copy"
-  mkdir -p "$copy"
-  cp -R "${DIST}/." "$copy/"
-  ( cd "${copy}/locale-catalog" && "$@" )
-  if verify_cached_locale_catalog "$copy" >/dev/null 2>&1; then
-    fail "${label} was accepted from a restored cache"
-  fi
-}
-
-# No pipe here: `ls … | head -1` makes `ls` die of SIGPIPE, which `pipefail`
-# then turns into a failing script (exit 141) on Linux.
-pick_compressed() {
-  local files=("${DIST}/locale-catalog"/c/*.json.gz)
-  local first="${files[0]}"
-  printf '%s' "${first#"${DIST}/locale-catalog/"}"
-}
-SAMPLE_GZ="$(pick_compressed)"
-SAMPLE_JSON="${SAMPLE_GZ%.gz}"
-
-mutate_and_expect_reject "a corrupt .gz sibling" corrupt-gz \
-  bash -c "printf 'not gzip' > '${SAMPLE_GZ}'"
-mutate_and_expect_reject "a stale .gz sibling" stale-gz \
-  bash -c "printf 'x' | gzip -c > '${SAMPLE_GZ}'"
-mutate_and_expect_reject "a missing .br sibling" missing-br \
-  bash -c "rm -f '${SAMPLE_JSON}.br'"
-mutate_and_expect_reject "an unlisted compressed artifact" extra-gz \
-  bash -c "printf 'x' | gzip -c > 'c/not-in-the-manifest.json.gz'"
-mutate_and_expect_reject "a decompression bomb" bomb-gz \
-  bash -c "head -c 8000000 /dev/zero | gzip -c > '${SAMPLE_GZ}'"
-
-# A restored manifest is untrusted input: it names every path that gets read and
-# every digest that gets compared, so a cache must not be able to point the
-# verifier — or nginx — at anything but a content-addressed chunk inside the
-# catalog.
 jq_manifest() {
   local copy="$1"; shift
   node -e '
@@ -167,6 +104,127 @@ mutate_manifest_and_expect_reject() {
     fail "${label} was accepted from a restored cache"
   fi
 }
+
+pick_compressed() {
+  local files=("${DIST}/locale-catalog"/c/*.json.gz)
+  local first="${files[0]}"
+  printf '%s' "${first#"${DIST}/locale-catalog/"}"
+}
+SAMPLE_GZ="$(pick_compressed)"
+SAMPLE_JSON="${SAMPLE_GZ%.gz}"
+
+if ! verify_cached_locale_catalog "$DIST" >/dev/null 2>&1; then
+  fail "a cached build output was rejected even though its manifest matches"
+fi
+if [ ! -f "${DIST}/locale-catalog/manifest.json" ]; then
+  fail "verification deleted a usable cached build output"
+fi
+# What is served must be what was verified, so a second pass over the published
+# snapshot must pass too.
+if ! verify_cached_locale_catalog "$DIST" >/dev/null 2>&1; then
+  fail "the published snapshot does not verify"
+fi
+
+# A leaf replaced, or an intermediate directory swapped, *after* it was verified
+# must be refused rather than published.
+swap_during_verification() {
+  local label="$1" name="$2" hook="$3"
+  local copy="${WORK}/${name}"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp -R "${DIST}/." "$copy/"
+  if LOCALE_CATALOG_VERIFY_HOOK="$hook" verify_cached_locale_catalog "$copy" >/dev/null 2>&1; then
+    fail "${label} was accepted"
+  fi
+}
+
+swap_during_verification "a leaf replaced after it was verified" swap-leaf \
+  "printf tampered > \"\$DIST_CATALOG/${SAMPLE_JSON}\""
+swap_during_verification "a directory swapped after it was verified" swap-dir \
+  'cd "$DIST_CATALOG" && mv c c-real && ln -s c-real c'
+swap_during_verification "a directory swapped and restored during verification" swap-restore \
+  "cd \"\$DIST_CATALOG\" && mv c c-real && ln -s c-real c && rm c && mv c-real c && printf tampered > '${SAMPLE_JSON}'"
+
+# Self-attested totals must be recomputed from the descriptors.
+mutate_manifest_and_expect_reject "a repeated descriptor with unchanged totals" repeat-descriptor \
+  'manifest.locales[0].chunks.push(Object.assign({}, manifest.locales[0].chunks[0], {pack: "repeat"}))'
+mutate_manifest_and_expect_reject "a duplicated locale/pack" duplicate-pack \
+  'manifest.locales[0].chunks.push(Object.assign({}, manifest.locales[0].chunks[0]))'
+mutate_manifest_and_expect_reject "totals that contradict the descriptors" bad-totals \
+  'manifest.totals.bytes = manifest.totals.bytes + 1'
+mutate_manifest_and_expect_reject "a locale whose totals contradict its chunks" bad-locale-totals \
+  'manifest.locales[0].keys = manifest.locales[0].keys + 1'
+mutate_manifest_and_expect_reject "a self-attested oversized catalog" oversized-claim \
+  'var one = manifest.locales[0].chunks[0]; manifest.locales[0].chunks = Array.from({length: 4094}, function (_, i) { return Object.assign({}, one, {pack: "p" + i, bytes: 8 * 1024 * 1024}) })'
+
+# An unlisted flood of sparse files must be refused by the bounded iterator,
+# without reading or sorting them.
+FLOOD="${WORK}/flood"
+rm -rf "$FLOOD"
+mkdir -p "$FLOOD"
+cp -R "${DIST}/." "$FLOOD/"
+python3 -c '
+import os, sys
+target = sys.argv[1]
+for index in range(13000):
+    with open(os.path.join(target, "flood-%d.bin" % index), "wb") as handle:
+        handle.truncate(1024 * 1024 * 1024)
+' "$FLOOD/locale-catalog/c"
+if verify_cached_locale_catalog "$FLOOD" >/dev/null 2>&1; then
+  fail "a catalog flooded with unlisted artifacts was accepted"
+fi
+rm -rf "$FLOOD"
+
+
+# An unusable cache must be reported as a miss, not accepted and not fatal.
+CORRUPT="${WORK}/corrupt"
+mkdir -p "$CORRUPT"
+cp -R "${DIST}/." "$CORRUPT/"
+printf '{"schemaVersion":"1.0.0"}' > "${CORRUPT}/locale-catalog/manifest.json"
+if verify_cached_locale_catalog "$CORRUPT" >/dev/null 2>&1; then
+  fail "a corrupt cached catalog was accepted"
+fi
+
+MISSING="${WORK}/missing"
+mkdir -p "$MISSING"
+cp -R "${DIST}/." "$MISSING/"
+rm -rf "${MISSING}/locale-catalog"
+if verify_cached_locale_catalog "$MISSING" >/dev/null 2>&1; then
+  fail "a cached output with no catalog at all was accepted"
+fi
+
+# A cache can restore a compressed sibling that no longer matches the JSON next
+# to it; nginx serves those bytes without ever reading the identity file.
+mutate_and_expect_reject() {
+  local label="$1"; shift
+  local copy="${WORK}/$1"; shift
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp -R "${DIST}/." "$copy/"
+  ( cd "${copy}/locale-catalog" && "$@" )
+  if verify_cached_locale_catalog "$copy" >/dev/null 2>&1; then
+    fail "${label} was accepted from a restored cache"
+  fi
+}
+
+# No pipe here: `ls … | head -1` makes `ls` die of SIGPIPE, which `pipefail`
+# then turns into a failing script (exit 141) on Linux.
+
+mutate_and_expect_reject "a corrupt .gz sibling" corrupt-gz \
+  bash -c "printf 'not gzip' > '${SAMPLE_GZ}'"
+mutate_and_expect_reject "a stale .gz sibling" stale-gz \
+  bash -c "printf 'x' | gzip -c > '${SAMPLE_GZ}'"
+mutate_and_expect_reject "a missing .br sibling" missing-br \
+  bash -c "rm -f '${SAMPLE_JSON}.br'"
+mutate_and_expect_reject "an unlisted compressed artifact" extra-gz \
+  bash -c "printf 'x' | gzip -c > 'c/not-in-the-manifest.json.gz'"
+mutate_and_expect_reject "a decompression bomb" bomb-gz \
+  bash -c "head -c 8000000 /dev/zero | gzip -c > '${SAMPLE_GZ}'"
+
+# A restored manifest is untrusted input: it names every path that gets read and
+# every digest that gets compared, so a cache must not be able to point the
+# verifier — or nginx — at anything but a content-addressed chunk inside the
+# catalog.
 
 mutate_manifest_and_expect_reject "a traversing chunk path" traversal \
   'manifest.locales[0].chunks[0].path = manifest.basePath + "/../../../etc/passwd"'

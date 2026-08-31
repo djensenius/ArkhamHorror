@@ -6,6 +6,7 @@
 //   npm run build && node scripts/locale-catalog/verify-dist.mjs
 
 import {
+  chmodSync,
   closeSync,
   constants as fsConstants,
   existsSync,
@@ -16,9 +17,15 @@ import {
   readdirSync,
   readSync,
   realpathSync,
+  renameSync,
+  rmSync,
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
 } from 'node:fs'
 import { brotliDecompressSync, gunzipSync } from 'node:zlib'
 import { dirname, join, relative, resolve, sep } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { sha256Hex } from './canonical.mjs'
@@ -28,6 +35,13 @@ const FRONTEND_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'
 // `--dist <dir>` lets the offline packager point at its own build output; the
 // default is the directory prod.nginxconf serves.
 const DIST_ONLY = process.argv.includes('--dist-only')
+// `--publish` makes the check answer the only question that matters for a
+// restored cache: are the bytes nginx will serve the bytes that were verified?
+// Every artifact is written into a fresh private directory from the buffer
+// that was hashed, and that directory — nothing else — is moved into place.
+// Without it a verifier can only ever say "these bytes were correct when I read
+// them".
+const PUBLISH = process.argv.includes('--publish')
 const distIndex = process.argv.indexOf('--dist')
 if (distIndex !== -1 && (process.argv[distIndex + 1] ?? '').trim() === '') {
   console.error('locale-catalog: --dist requires a directory')
@@ -55,6 +69,9 @@ const MAX_CHUNK_BYTES = 8 * 1024 * 1024
 const MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 const MAX_CATALOG_BYTES = 192 * 1024 * 1024
 const MAX_CATALOG_FILES = 4096
+// Identity plus its `.gz` and `.br`: the most artifacts a valid catalog of
+// MAX_CATALOG_FILES logical files can contain.
+const MAX_CATALOG_ARTIFACTS = MAX_CATALOG_FILES * 3
 // The only shape a chunk path may take. A manifest is data, and data that
 // names a filesystem path decides what nginx serves, so the grammar is closed:
 // `<basePath>/c/<64 lowercase hex>.json`, and the digest in the name must be
@@ -68,6 +85,16 @@ const SCHEMA_DIR = resolve(FRONTEND_DIR, 'schemas/locale-catalog/v1')
 const ROUTE = '/locale-catalog'
 const ROUTE_MANIFEST = `${ROUTE}/manifest.json`
 const ROUTE_CHUNK_PREFIX = `${ROUTE}/c/`
+
+// `fs.constants` silently yields `undefined` for a flag a platform does not
+// have, and `undefined | 0` is `0` — which would turn every no-follow open into
+// an ordinary one. Refuse to run rather than verify with the guarantees off.
+for (const flag of ['O_RDONLY', 'O_NOFOLLOW', 'O_DIRECTORY']) {
+  if (typeof fsConstants[flag] !== 'number') {
+    console.error(`locale-catalog: this platform has no ${flag}; the verifier cannot guarantee containment`)
+    process.exit(1)
+  }
+}
 
 const problems = []
 
@@ -392,24 +419,29 @@ function readContainedFile(absolute, maxBytes) {
   }
 }
 
-function listFiles(directory, prefix = '') {
-  const out = []
+/**
+ * Enumerates the catalog, stopping the moment it exceeds what a valid catalog
+ * could contain. A directory full of files is not a reason to build an
+ * unbounded array in memory before deciding it is invalid.
+ */
+function listFiles(directory, prefix = '', out = [], budget = { left: MAX_CATALOG_ARTIFACTS }) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (budget.left <= 0) return { paths: out, overflowed: true }
     const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`
-    if (entry.isDirectory()) out.push(...listFiles(join(directory, entry.name), path))
-    else out.push(path)
+    if (entry.isDirectory()) {
+      const nested = listFiles(join(directory, entry.name), path, out, budget)
+      if (nested.overflowed) return nested
+      continue
+    }
+    budget.left -= 1
+    out.push(path)
   }
-  return out.sort()
+  return { paths: out, overflowed: budget.left <= 0 }
 }
 
-function listJson(directory, prefix = '') {
-  const out = []
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`
-    if (entry.isDirectory()) out.push(...listJson(join(directory, entry.name), path))
-    else if (entry.isFile() && entry.name.endsWith('.json')) out.push(path)
-  }
-  return out
+function listJson(directory) {
+  const listed = listFiles(directory)
+  return { paths: listed.paths.filter((path) => path.endsWith('.json')), overflowed: listed.overflowed }
 }
 
 function verifyPublicMirror(expected) {
@@ -422,7 +454,11 @@ function verifyPublicMirror(expected) {
   if (!require(existsSync(publicCatalog), 'public/locale-catalog is missing — prebuild did not run')) {
     return
   }
-  const published = listJson(publicCatalog)
+  const listed = listJson(publicCatalog)
+  if (!require(!listed.overflowed, 'public/locale-catalog holds more artifacts than a catalog can')) {
+    return
+  }
+  const published = listed.paths
   require(
     published.length === expected.size,
     `public/locale-catalog has ${published.length} files, dist expects ${expected.size}`,
@@ -487,16 +523,24 @@ function verifyCompressedSiblings(expected) {
         require(false, `${siblingRelative} does not decompress (${error.code ?? error.message})`)
         continue
       }
-      require(
-        inflated.equals(identity),
-        `${siblingRelative} decompresses to different bytes than ${relative}`,
-      )
+      if (
+        require(
+          inflated.equals(identity),
+          `${siblingRelative} decompresses to different bytes than ${relative}`,
+        )
+      ) {
+        recordVerified(siblingRelative, packed)
+      }
     }
   }
 
   // Anything else under the catalog is unaccounted for: nginx would happily
   // serve it for a path the manifest never promised.
-  for (const relative of listFiles(DIST_CATALOG)) {
+  const present = listFiles(DIST_CATALOG)
+  if (!require(!present.overflowed, `dist/locale-catalog holds more than ${MAX_CATALOG_ARTIFACTS} artifacts`)) {
+    return
+  }
+  for (const relative of present.paths) {
     if (relative.endsWith('.gz') || relative.endsWith('.br')) {
       require(
         compressed.has(relative),
@@ -512,6 +556,150 @@ function verifyCompressedSiblings(expected) {
       safeCatalogPath(relative) !== null,
       `dist/locale-catalog/${relative} is a symlink or a non-regular file`,
     )
+  }
+}
+
+/**
+ * Checks the manifest against itself before anything on disk is touched.
+ *
+ * Totals are self-attested: a manifest can claim a small catalog and then list
+ * the same 8 MiB chunk four thousand times, or list one `(locale, pack)` twice
+ * with different digests. Everything here is recomputed from the descriptors —
+ * per-locale and global key, chunk and byte counts — and each unique content
+ * path is read exactly once.
+ */
+function preflightDescriptors(manifest) {
+  const problems = []
+  const paths = new Map()
+  const packs = new Set()
+  const digests = new Map()
+  let totalKeys = 0
+  let totalChunks = 0
+  let totalBytes = 0
+
+  for (const locale of manifest.locales) {
+    let localeKeys = 0
+    let localeBytes = 0
+    for (const chunk of locale.chunks) {
+      const pack = `${locale.locale}/${chunk.pack}`
+      if (packs.has(pack)) problems.push(`${pack} is listed more than once`)
+      packs.add(pack)
+
+      if (!chunk.path.startsWith(`${manifest.basePath}/`)) {
+        problems.push(`${chunk.path} is not published under ${manifest.basePath}`)
+        continue
+      }
+      const relative = chunk.path.slice(`${manifest.basePath}/`.length)
+
+      // Content addressing is the contract: the name *is* the digest, so a
+      // descriptor cannot point at one file and promise another's bytes.
+      const named = CHUNK_PATH.exec(relative)
+      if (named === null) {
+        problems.push(`${chunk.path} is not a content-addressed chunk path (c/<sha256>.json)`)
+        continue
+      }
+      if (named[1] !== chunk.sha256) {
+        problems.push(`${chunk.path} names a digest it does not promise`)
+        continue
+      }
+      if (chunk.bytes > MAX_CHUNK_BYTES) {
+        problems.push(`${chunk.path} claims ${chunk.bytes} bytes`)
+        continue
+      }
+
+      const seen = paths.get(relative)
+      if (seen !== undefined) {
+        // The same content may legitimately be shared by two locales, but it
+        // must be described identically and read once.
+        if (seen.bytes !== chunk.bytes || seen.keys !== chunk.keys) {
+          problems.push(`${chunk.path} is described twice with different sizes`)
+        }
+      } else {
+        paths.set(relative, chunk)
+        totalChunks += 1
+        totalBytes += chunk.bytes
+      }
+      const digestPath = digests.get(chunk.sha256)
+      if (digestPath !== undefined && digestPath !== relative) {
+        problems.push(`digest ${chunk.sha256} is claimed by ${digestPath} and ${relative}`)
+      }
+      digests.set(chunk.sha256, relative)
+
+      localeKeys += chunk.keys
+      localeBytes += chunk.bytes
+    }
+
+    if (localeKeys !== locale.keys) {
+      problems.push(`${locale.locale} claims ${locale.keys} keys, its chunks total ${localeKeys}`)
+    }
+    if (localeBytes !== locale.bytes) {
+      problems.push(`${locale.locale} claims ${locale.bytes} bytes, its chunks total ${localeBytes}`)
+    }
+    totalKeys += localeKeys
+  }
+
+  if (paths.size + 2 > MAX_CATALOG_FILES) {
+    problems.push(`the manifest lists ${paths.size} chunks, over the ${MAX_CATALOG_FILES}-file ceiling`)
+  }
+  if (totalBytes > MAX_CATALOG_BYTES) {
+    problems.push(`the manifest's chunks total ${totalBytes} bytes, over the ${MAX_CATALOG_BYTES}-byte ceiling`)
+  }
+  if (manifest.totals.keys !== totalKeys) {
+    problems.push(`the manifest claims ${manifest.totals.keys} keys, its descriptors total ${totalKeys}`)
+  }
+  if (manifest.totals.chunks !== totalChunks) {
+    problems.push(`the manifest claims ${manifest.totals.chunks} chunks, its descriptors total ${totalChunks}`)
+  }
+  if (manifest.totals.bytes !== totalBytes) {
+    problems.push(`the manifest claims ${manifest.totals.bytes} bytes, its descriptors total ${totalBytes}`)
+  }
+
+  return { problems, paths }
+}
+
+/**
+ * Collects the exact bytes each artifact was verified from, so `--publish` can
+ * write those, and only those, into the tree that gets served.
+ */
+const verifiedArtifacts = new Map()
+const verifiedBytes = verifiedArtifacts
+
+function recordVerified(relative, bytes) {
+  verifiedArtifacts.set(relative, bytes)
+}
+
+/**
+ * Replaces the catalog with a private snapshot built from the verified bytes.
+ *
+ * The snapshot is created mode 0700 beside the target, written from the
+ * buffers this run hashed, and moved into place with `rename`, which is atomic
+ * within a filesystem. Anything that changed the source after it was read —
+ * a leaf swapped back, an intermediate directory restored — cannot reach the
+ * published tree, because the published tree was never read from disk again.
+ */
+function publishVerifiedSnapshot() {
+  const parent = dirname(DIST_CATALOG)
+  const staging = mkdtempSync(join(parent, '.locale-catalog-verified-'))
+  try {
+    chmodSync(staging, 0o700)
+    for (const [relative, bytes] of verifiedBytes) {
+      const target = join(staging, relative)
+      mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
+      writeFileSync(target, bytes, { mode: 0o600, flag: 'wx' })
+    }
+    const retired = `${DIST_CATALOG}.replaced-${process.pid}`
+    renameSync(DIST_CATALOG, retired)
+    try {
+      renameSync(staging, DIST_CATALOG)
+    } catch (error) {
+      renameSync(retired, DIST_CATALOG)
+      throw error
+    }
+    rmSync(retired, { recursive: true, force: true })
+    chmodSync(DIST_CATALOG, 0o755)
+  } catch (error) {
+    rmSync(staging, { recursive: true, force: true })
+    throw error
   }
 }
 
@@ -545,6 +733,7 @@ function verifyCatalog() {
     return
   }
   const manifestBytes = manifestRead.bytes
+  recordVerified('manifest.json', manifestBytes)
   let manifest = null
   try {
     manifest = parseUntrustedJson(manifestBytes.toString('utf8'))
@@ -585,16 +774,6 @@ function verifyCatalog() {
     `chunkPathPrefix is ${manifest.chunkPathPrefix}, not ${ROUTE_CHUNK_PREFIX}`,
   )
 
-  require(
-    manifest.totals.bytes <= MAX_CATALOG_BYTES,
-    `the manifest claims ${manifest.totals.bytes} bytes, over the ${MAX_CATALOG_BYTES}-byte ceiling`,
-  )
-  const descriptors = manifest.locales.reduce((total, locale) => total + locale.chunks.length, 0)
-  require(
-    descriptors + 2 <= MAX_CATALOG_FILES,
-    `the manifest lists ${descriptors} chunks, over the ${MAX_CATALOG_FILES}-file ceiling`,
-  )
-
   const revisionRelative = `r/${manifest.catalogRevision}/manifest.json`
   const revisionManifest = safeCatalogPath(revisionRelative)
   if (
@@ -608,6 +787,7 @@ function verifyCatalog() {
       return
     }
     const revisionBytes = revisionRead.bytes
+    recordVerified(revisionRelative, revisionBytes)
     require(revisionBytes.equals(manifestBytes), 'the stable and immutable manifests differ in dist')
     let revisionErrors = ['not JSON']
     try {
@@ -627,58 +807,65 @@ function verifyCatalog() {
     )
   }
 
-  const expected = new Set(['manifest.json', revisionRelative])
-  for (const locale of manifest.locales) {
-    for (const chunk of locale.chunks) {
-      if (
-        !require(
-          chunk.path.startsWith(`${manifest.basePath}/`),
-          `${chunk.path} is not published under ${manifest.basePath}`,
-        )
-      ) {
-        continue
-      }
-      const relative = chunk.path.slice(`${manifest.basePath}/`.length)
+  // Preflight: every descriptor is checked against every other descriptor
+  // *before* a single byte is read. A manifest that repeats a chunk, or claims
+  // totals its own descriptors contradict, is rejected here rather than after
+  // 4,000 hashes have been computed from it.
+  const preflight = preflightDescriptors(manifest)
+  for (const problem of preflight.problems) require(false, problem)
+  if (preflight.problems.length > 0) return
 
-      // Content addressing is the contract: the name *is* the digest, so a
-      // descriptor cannot point at one file and promise another's bytes.
-      const named = CHUNK_PATH.exec(relative)
-      if (
-        !require(named !== null, `${chunk.path} is not a content-addressed chunk path (c/<sha256>.json)`)
-      ) {
-        continue
-      }
-      if (!require(named[1] === chunk.sha256, `${chunk.path} names a digest it does not promise`)) {
-        continue
-      }
-
-      expected.add(relative)
-      const file = safeCatalogPath(relative)
-      if (
-        !require(
-          file !== null,
-          `${chunk.path} escapes the catalog, or is a symlink or a non-regular file`,
-        )
-      ) {
-        continue
-      }
-      if (!require(chunk.bytes <= MAX_CHUNK_BYTES, `${chunk.path} claims ${chunk.bytes} bytes`)) {
-        continue
-      }
-      const read = readContainedFile(file, MAX_CHUNK_BYTES)
-      if (!require(read.bytes !== null, `${chunk.path} ${read.reason}`)) continue
-      require(read.bytes.length === chunk.bytes, `${chunk.path} size mismatch in dist`)
-      require(sha256Hex(read.bytes) === chunk.sha256, `${chunk.path} digest mismatch in dist`)
+  const expected = new Set(['manifest.json', revisionRelative, ...preflight.paths.keys()])
+  for (const [relative, chunk] of preflight.paths) {
+    const file = safeCatalogPath(relative)
+    if (
+      !require(
+        file !== null,
+        `${chunk.path} escapes the catalog, or is a symlink or a non-regular file`,
+      )
+    ) {
+      continue
     }
+    const read = readContainedFile(file, MAX_CHUNK_BYTES)
+    if (!require(read.bytes !== null, `${chunk.path} ${read.reason}`)) continue
+    if (!require(read.bytes.length === chunk.bytes, `${chunk.path} size mismatch in dist`)) continue
+    if (!require(sha256Hex(read.bytes) === chunk.sha256, `${chunk.path} digest mismatch in dist`)) {
+      continue
+    }
+    recordVerified(relative, read.bytes)
+  }
+
+  for (const relative of listJson(DIST_CATALOG).paths) {
+    require(expected.has(relative), `dist/locale-catalog/${relative} is not listed in the manifest`)
   }
 
   if (!DIST_ONLY) verifyPublicMirror(expected)
   verifyCompressedSiblings(expected)
 
+  // A deterministic seam for the swap-restore test: a hook runs here, after
+  // every read and before the final checks, so a test can replace a verified
+  // leaf or restore an intermediate directory and prove the run still refuses
+  // to bless it.
+  const hook = process.env.LOCALE_CATALOG_VERIFY_HOOK
+  if (hook !== undefined && hook !== '') {
+    execFileSync('/bin/sh', ['-c', hook], { stdio: 'inherit', env: { ...process.env, DIST_CATALOG } })
+  }
+
   // Nothing that was validated may have been swapped since it was validated:
-  // every directory this walked is still the directory it was pinned to.
+  // every directory this walked is still the directory it was pinned to, and
+  // every artifact still hashes to what it hashed to.
   const drifted = assertPinsIntact()
   require(drifted === null, `the catalog changed while it was being verified: ${drifted}`)
+
+  for (const [relative, bytes] of verifiedArtifacts) {
+    const file = safeCatalogPath(relative)
+    if (!require(file !== null, `${relative} stopped being a contained regular file`)) continue
+    const reread = readContainedFile(file, bytes.length)
+    if (!require(reread.bytes !== null, `${relative} ${reread.reason} on re-read`)) continue
+    require(reread.bytes.equals(bytes), `${relative} changed after it was verified`)
+  }
+
+  if (PUBLISH && problems.length === 0) publishVerifiedSnapshot()
 
   if (problems.length === 0) {
     console.log(
