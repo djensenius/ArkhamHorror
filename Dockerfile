@@ -1,4 +1,4 @@
-FROM node:24.7.0-alpine AS frontend
+FROM node:26.7.0-alpine AS frontend
 
 # Frontend
 
@@ -12,8 +12,18 @@ WORKDIR /opt/arkham/src/frontend
 COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js ./frontend/eslint.config.js ./frontend/package-lock.json /opt/arkham/src/frontend/
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY ./frontend /opt/arkham/src/frontend
+# The locale-catalog generator (run by npm's prebuild) derives its required-key
+# set from the governed contract fixtures and from the backend's emitted-key
+# registry, so both have to be in the image.
+COPY ./contracts /opt/arkham/src/contracts
+COPY ./backend/arkham-api/i18n-emitted-keys.json /opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json
 ENV VITE_ASSET_HOST=${ASSET_HOST}
 RUN npm run build
+# The image copies `dist` out of this stage, so the catalog is verified here and
+# republished from the verified buffers: what the next stage copies — and what
+# nginx serves — is exactly what passed, not an intermediate tree that happened
+# to be correct when the build finished.
+RUN node scripts/locale-catalog/verify-dist.mjs --publish
 
 FROM ubuntu:22.04 AS base
 

@@ -30,7 +30,7 @@ instance RunMessage WatchersGaze where
         when yourLocationIsHaunted do
           labeled' "watchersGaze.yourLocation" $ handleTarget iid attrs iid
         when watchersLocationIsHaunted do
-          labeled' "watchersGaze.watchersLocation" $ handleTarget iid attrs attrs
+          labeled' "watchersGaze.watchersLocations" $ handleTarget iid attrs attrs
       pure t
     HandleTargetChoice iid (isSource attrs -> True) (InvestigatorTarget _) -> do
       runHauntedAbilities iid

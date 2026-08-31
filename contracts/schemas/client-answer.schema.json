@@ -19,22 +19,22 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "choice"
+            "choice",
+            "playerId",
+            "questionVersion"
           ],
           "properties": {
             "choice": {
-              "type": "integer",
-              "minimum": 0
+              "$ref": "./non-negative-int64.schema.json",
+              "description": "Zero-based index into the authoritative question choices array."
             },
             "playerId": {
-              "type": "string",
-              "format": "uuid",
-              "description": "Optional; defaults to the active player when omitted."
+              "$ref": "./uuid.schema.json",
+              "description": "Required canonical lowercase, hyphenated UUID map key for the answering player."
             },
             "questionVersion": {
-              "type": "integer",
-              "minimum": 0,
-              "description": "Optional optimistic-concurrency guard for the active question."
+              "$ref": "./non-negative-int64.schema.json",
+              "description": "Required for native clients: the authoritative PublicGame.scenarioSteps value from the snapshot that supplied the active question. The runtime decoder's legacy omission behavior is intentionally outside this native contract."
             }
           }
         }
@@ -88,8 +88,7 @@
               }
             },
             "questionVersion": {
-              "type": "integer",
-              "minimum": 0,
+              "$ref": "./non-negative-int64.schema.json",
               "description": "Optional optimistic-concurrency guard for the active question."
             },
             "playerId": {

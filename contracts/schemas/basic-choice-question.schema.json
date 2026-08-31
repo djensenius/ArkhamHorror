@@ -1,0 +1,534 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
+  "title": "BasicChoiceQuestion",
+  "description": "The closed native-renderable ChooseOne/PlayerWindowChooseOne/WindowChooseOne/Read question slice. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/chooseOneQuestion"
+    },
+    {
+      "$ref": "#/$defs/playerWindowChooseOneQuestion"
+    },
+    {
+      "$ref": "#/$defs/windowChooseOneQuestion"
+    },
+    {
+      "$ref": "#/$defs/readQuestion"
+    }
+  ],
+  "$defs": {
+    "chooseOneQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ChooseOne"
+        },
+        "choices": {
+          "$ref": "#/$defs/choices"
+        }
+      }
+    },
+    "playerWindowChooseOneQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "PlayerWindowChooseOne"
+        },
+        "choices": {
+          "$ref": "#/$defs/choices"
+        }
+      }
+    },
+    "windowChooseOneQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "WindowChooseOne"
+        },
+        "choices": {
+          "$ref": "#/$defs/choices"
+        }
+      }
+    },
+    "choices": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/choiceLabel"
+      }
+    },
+    "choiceLabel": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/componentLabel"
+        },
+        {
+          "$ref": "#/$defs/endTurnButton"
+        },
+        {
+          "$ref": "#/$defs/abilityLabel"
+        },
+        {
+          "$ref": "#/$defs/targetLabel"
+        }
+      ]
+    },
+    "componentLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "component",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ComponentLabel"
+        },
+        "component": {
+          "$ref": "#/$defs/component"
+        },
+        "messages": {
+          "$ref": "#/$defs/messages"
+        }
+      }
+    },
+    "endTurnButton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EndTurnButton"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        },
+        "messages": {
+          "$ref": "#/$defs/messages"
+        }
+      }
+    },
+    "abilityLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "ability",
+        "windows",
+        "before",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilityLabel"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        },
+        "ability": {
+          "$ref": "#/$defs/abilityDisplay"
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/engineObject"
+          }
+        },
+        "before": {
+          "$ref": "#/$defs/messages"
+        },
+        "messages": {
+          "$ref": "#/$defs/messages"
+        }
+      }
+    },
+    "targetLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "target",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "TargetLabel"
+        },
+        "target": {
+          "$ref": "#/$defs/locationTarget"
+        },
+        "messages": {
+          "$ref": "#/$defs/messages"
+        }
+      },
+      "description": "Only the LocationTarget variant of the broader Arkham.Target sum is supported here (e.g. the startAt starting-location prompt). Every other Target constructor is closed out by locationTarget's own 'tag' const and remains an explicit unsupported value, opaque wherever it appears inside PublicGame."
+    },
+    "locationTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "LocationTarget"
+        },
+        "contents": {
+          "$ref": "./uuid.schema.json",
+          "description": "The real LocationId (Arkham/Id.hs, deriving ToJSON newtype from UUID)."
+        }
+      }
+    },
+    "component": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/investigatorComponent"
+        },
+        {
+          "$ref": "#/$defs/investigatorDeckComponent"
+        }
+      ]
+    },
+    "investigatorComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "tokenType"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorComponent"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        },
+        "tokenType": {
+          "const": "ResourceToken"
+        }
+      }
+    },
+    "investigatorDeckComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorDeckComponent"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "description": "Guaranteed production Message constructor-object outer shape. Constructor-specific contents and additive fields are losslessly preserved engine-owned data, never client-side rules."
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/message"
+      },
+      "description": "Selecting a choice sends its array index. Native clients preserve these engine Message objects but never execute or synthesize actions from them."
+    },
+    "engineObject": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Explicit extension boundary for a nested engine-owned constructor object. Preserve all fields; do not interpret it as client-side game logic."
+    },
+    "abilityDisplay": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "source",
+        "cardCode",
+        "index",
+        "type"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/engineObject"
+        },
+        "cardCode": {
+          "$ref": "#/$defs/cardCode",
+          "description": "Card code used with source/type/index as display identity; it does not authorize or execute an ability."
+        },
+        "index": {
+          "type": "integer"
+        },
+        "type": {
+          "$ref": "#/$defs/abilityTypeDisplay"
+        }
+      },
+      "description": "Explicit engine-owned extension boundary. Stable display identity is modeled; criteria, limits, costs, sources, and future additive fields are preserved data."
+    },
+    "abilityTypeDisplay": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag",
+        "actions"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ActionAbility"
+        },
+        "actions": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "SingleAction"
+            },
+            "contents": {
+              "const": "Investigate"
+            }
+          },
+          "description": "The CORE fixture's stable action label/icon semantic. Additional engine-owned action data remains opaque."
+        }
+      },
+      "description": "Only the CORE ActionAbility display semantic is supported. Cost and skill fields remain opaque engine-owned data."
+    },
+    "readQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "flavorText",
+        "readChoices",
+        "readCards"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Read"
+        },
+        "flavorText": {
+          "$ref": "#/$defs/flavorText"
+        },
+        "readChoices": {
+          "$ref": "#/$defs/basicReadChoices"
+        },
+        "readCards": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/cardCode"
+              }
+            }
+          ],
+          "description": "Maybe [CardCode]: null when the story beat adds no cards (e.g. a plain setup-intro continue), an array of real card codes when it does (e.g. cards a scenario story adds to play). Never omitted: Aeson's default (non-omitting) Maybe encoding always emits this key."
+        }
+      },
+      "description": "Only the governed BasicReadChoices continue shape (readChoices) is supported; BasicReadChoicesN/BasicReadChoicesUpToN/LeadInvestigatorMustDecide remain explicit unsupported values, closed out by basicReadChoices's own 'tag' const."
+    },
+    "basicReadChoices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "BasicReadChoices"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/basicReadContinueLabel"
+          }
+        }
+      },
+      "description": "The governed shape is always exactly the single semantic continue choice Arkham.Message's story/storyWithCards/storyWithContinue build ('BasicReadChoices [Label \"$continue\" []]'); any other content is an explicit unsupported value."
+    },
+    "basicReadContinueLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "label",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Label"
+        },
+        "label": {
+          "const": "$continue"
+        },
+        "messages": {
+          "const": []
+        }
+      },
+      "description": "The exact, always-empty-messages semantic continue Label -- clients render this as a single dismiss/continue action, never as an arbitrary Label choice (unlike a real 'Label' elsewhere in Arkham.Question, which can carry nested messages and is out of scope for this narrow branch)."
+    },
+    "flavorText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "body"
+      ],
+      "properties": {
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/flavorTextEntry"
+          }
+        }
+      },
+      "description": "Arkham.Text.FlavorText {flavorTitle :: Maybe Text, flavorBody :: [FlavorTextEntry]}, encoded with its 'flavor' field prefix stripped (Arkham/Json.hs's aesonOptions). title is null (BasicReadChoices' plain story beats never set one) or a literal i18n key string; it is never rendered narrative text on the wire."
+    },
+    "flavorTextEntry": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/basicEntry"
+        },
+        {
+          "$ref": "#/$defs/i18nEntry"
+        },
+        {
+          "$ref": "#/$defs/listEntry"
+        }
+      ],
+      "description": "Only the three FlavorTextEntry (Arkham/Text.hs) constructors these fixtures actually exercise are supported; every other constructor (HeaderEntry, ModifyEntry, CompositeEntry, ColumnEntry, CardEntry, TarotEntry, ChaosTokenEntry, ChaosTokenMorphEntry, EntrySplit) remains an explicit unsupported value here, still opaque wherever it appears inside PublicGame."
+    },
+    "basicEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "text"
+      ],
+      "properties": {
+        "tag": {
+          "const": "BasicEntry"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "i18nEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "key",
+        "variables"
+      ],
+      "properties": {
+        "tag": {
+          "const": "I18nEntry"
+        },
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "A dotted i18n lookup key, never rendered narrative text -- the client's own locale files supply the displayed text for this key."
+        },
+        "variables": {
+          "type": "object"
+        }
+      }
+    },
+    "listEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "list"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ListEntry"
+        },
+        "list": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/listItemEntry"
+          }
+        }
+      }
+    },
+    "listItemEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entry",
+        "nested"
+      ],
+      "properties": {
+        "entry": {
+          "$ref": "#/$defs/flavorTextEntry"
+        },
+        "nested": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/listItemEntry"
+          }
+        }
+      }
+    },
+    "investigatorId": {
+      "$ref": "#/$defs/cardCode"
+    },
+    "cardCode": {
+      "type": "string",
+      "pattern": "^c[0-9a-z:._-]+$"
+    }
+  }
+}

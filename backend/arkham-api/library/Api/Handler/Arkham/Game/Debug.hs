@@ -14,6 +14,9 @@ module Api.Handler.Arkham.Game.Debug (
   ClaimSeatOutcome (..),
   MonadClaimSeat (..),
   planAndExecuteClaimSeat,
+
+  -- * Exposed for regression tests
+  selectUploadedExportFile,
 ) where
 
 import Api.Arkham.Epic (
@@ -45,7 +48,6 @@ import Entity.Arkham.Player
 import Entity.Arkham.Step
 import Import hiding (delete, exists, on, (==.))
 import Json
-import Safe (fromJustNote)
 import UnliftIO.Exception (catch, try)
 
 normalizeJsonInvestigatorId :: Text -> Text
@@ -53,6 +55,14 @@ normalizeJsonInvestigatorId iid = if "c" `T.isPrefixOf` iid then iid else "c" <>
 
 isGzipped :: BS.ByteString -> Bool
 isGzipped bs = BS.take 2 bs == BS.pack [0x1f, 0x8b]
+
+{- | Select the uploaded multipart export file, if any, without a partial
+selector. A 'Nothing' result must short-circuit before any decoding is
+attempted; the production handler wires this directly to an explicit
+'invalidArgs' branch instead of 'Safe.fromJustNote'.
+-}
+selectUploadedExportFile :: [(Text, a)] -> Maybe a
+selectUploadedExportFile = fmap snd . headMay
 
 decodeExportBytes :: BS.ByteString -> Handler (Either String ArkhamExport)
 decodeExportBytes bytes
@@ -191,14 +201,13 @@ postApiV1ArkhamGamesImportR = do
   (params, files) <- runRequestBody
   let
     mInvestigatorId = fmap normalizeJsonInvestigatorId $ snd <$> find ((== "investigatorId") . fst) params
+  -- An explicit branch, rather than a partial selector, so a request with no
+  -- multipart file gets a stable actionable 400 instead of a 500.
+  uploadedFile <- case selectUploadedExportFile files of
+    Nothing -> invalidArgs ["No export file uploaded"]
+    Just fi -> pure fi
   eExportData :: Either String ArkhamExport <-
-    decodeExportBytes
-      =<< ( fileSourceByteString
-              . snd
-              . fromJustNote "No export file uploaded"
-              . headMay
-              $ files
-          )
+    decodeExportBytes =<< fileSourceByteString uploadedFile
   now <- liftIO getCurrentTime
 
   case eExportData of

@@ -15,6 +15,11 @@ flag dev
   manual: False
   default: False
 
+flag internal-test-hooks
+  description: Include this library's internal white-box regression Spec (e.g. Api.Arkham.AwsEnvSupervisor's awsEnvSupervisorInternalSpec, which exercises credential-acquisition primitives this module deliberately never exports otherwise) and its Test.Hspec dependency in the library component itself. Defaults on so an ordinary `stack build`/`stack test` (as used by this repository's own CI and local development) needs no extra flag to build and run the test suite. A genuine production/deployment build (see Dockerfile) explicitly disables this flag so the shipped library never depends on hspec.
+  manual: True
+  default: True
+
 flag library-only
   description: Build for use with "yesod devel"
   manual: False
@@ -22,10 +27,12 @@ flag library-only
 
 library
   exposed-modules:
+      Api.Arkham.AwsEnvSupervisor
       Api.Arkham.Deck
       Api.Arkham.Epic
       Api.Arkham.Export
       Api.Arkham.Helpers
+      Api.Arkham.Lifecycle
       Api.Arkham.Types.Achievement
       Api.Arkham.Types.Deck
       Api.Arkham.Types.Game
@@ -2456,6 +2463,7 @@ library
       Arkham.Deck
       Arkham.DeckBuilding.Adjustment
       Arkham.Decklist
+      Arkham.Decklist.CardPool
       Arkham.Decklist.RandomBasicWeakness
       Arkham.Decklist.Type
       Arkham.Decks
@@ -8180,7 +8188,10 @@ library
     , aeson-casing
     , aeson-diff
     , amazonka
+    , amazonka-core
     , amazonka-s3
+    , amazonka-sso
+    , amazonka-sts
     , annotated-exception
     , async
     , base
@@ -8201,6 +8212,7 @@ library
     , dependent-map
     , dependent-sum
     , dependent-sum-template
+    , devel-store-lock
     , directory
     , email-validate
     , errors
@@ -8209,12 +8221,15 @@ library
     , extra
     , fast-logger
     , file-embed
+    , foreign-store
     , hashable
     , hedis
     , http-api-data
+    , http-client
     , http-client-tls
     , http-conduit
     , http-types
+    , ini
     , jose
     , lens
     , lens-aeson
@@ -8232,6 +8247,7 @@ library
     , random-shuffle
     , regex-posix
     , relude
+    , resource-pool
     , safe
     , semialign
     , some
@@ -8245,6 +8261,7 @@ library
     , tls
     , transformers
     , unliftio
+    , unordered-containers
     , uri-bytestring
     , uuid
     , vector
@@ -8265,6 +8282,10 @@ library
     cpp-options: -DDEVELOPMENT
   else
     ghc-options: -Wall -fwarn-tabs -O2 +RTS -V0 -RTS
+  if flag(internal-test-hooks)
+    cpp-options: -DINTERNAL_TEST_HOOKS
+    build-depends:
+        hspec
 
 executable arkham-api
   main-is: main.hs
@@ -8379,13 +8400,18 @@ test-suite spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.RestrictedAccessSpec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.AwsEnvSupervisorLifecycleSpec
+      Arkham.Api.AwsEnvSupervisorSpec
       Arkham.Api.ClaimSeatSpec
       Arkham.Api.EpicGameLockOrderSpec
       Arkham.Api.Events.EventCreationSpec
       Arkham.Api.Events.EventDeletionSpec
       Arkham.Api.Events.EventListSpec
       Arkham.Api.Events.EventStreamAuthSpec
+      Arkham.Api.GameBugUploadSpec
       Arkham.Api.GameDecksSpec
+      Arkham.Api.GameImportSpec
+      Arkham.Api.GameStreamAuthSpec
       Arkham.Api.GameStreamSpec
       Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
@@ -8444,6 +8470,7 @@ test-suite spec
       Arkham.Asset.Assets.HardKnocks2Spec
       Arkham.Asset.Assets.HardKnocksSpec
       Arkham.Asset.Assets.HeirloomOfHyperboreaSpec
+      Arkham.Asset.Assets.HelplessPassengerSpec
       Arkham.Asset.Assets.HolyRosarySpec
       Arkham.Asset.Assets.Hyperawareness2Spec
       Arkham.Asset.Assets.HyperawarenessSpec
@@ -8458,6 +8485,7 @@ test-suite spec
       Arkham.Asset.Assets.MacheteSpec
       Arkham.Asset.Assets.MagnifyingGlass1Spec
       Arkham.Asset.Assets.MagnifyingGlassSpec
+      Arkham.Asset.Assets.MeatCleaverSpec
       Arkham.Asset.Assets.MedicalTextsSpec
       Arkham.Asset.Assets.MiguelsKnapsackSpec
       Arkham.Asset.Assets.MitchBrownSpec
@@ -8577,6 +8605,7 @@ test-suite spec
       Arkham.Event.Events.HiddenPocketSpec
       Arkham.Event.Events.HotStreak4Spec
       Arkham.Event.Events.IllTakeThatSpec
+      Arkham.Event.Events.JoinTheCaravan1Spec
       Arkham.Event.Events.LieInWaitSpec
       Arkham.Event.Events.LiveAndLearnSpec
       Arkham.Event.Events.LookWhatIFoundSpec
@@ -8611,6 +8640,7 @@ test-suite spec
       Arkham.Game.ChooseDecksSpec
       Arkham.Game.DiffSpec
       Arkham.Game.PendingGameOptionsSpec
+      Arkham.Game.ReplayChoicesSpec
       Arkham.GameSpec
       Arkham.Helpers.EnemySpec
       Arkham.Helpers.InvestigatorSpec
@@ -8703,6 +8733,7 @@ test-suite spec
       Arkham.Treachery.Cards.RexsCurseSpec
       Arkham.Treachery.Cards.RookieMistakeSpec
       Arkham.Treachery.Cards.SearchingForIzzieSpec
+      Arkham.Treachery.Cards.SelfDestructiveSpec
       Arkham.Treachery.Cards.ShockingDiscoverySpec
       Arkham.Treachery.Cards.SmiteTheWickedAdvancedSpec
       Arkham.Treachery.Cards.SmiteTheWickedSpec
@@ -8747,10 +8778,12 @@ test-suite spec
       Arkham.UltimatumsAndBoons.UltimatumOfTheSpiralSpec
       Arkham.UltimatumsAndBoons.UltimatumOfUltimatumsSpec
       Auth.JWTSpec
+      DevelStoreLockSpec
       Entity.AnswerSpec
       Helpers.Achievements
       Helpers.Message
       Helpers.UltimatumsAndBoons
+      PendingCleanupOwnerSpec
       SpecHook
       TestImport
       TestImport.Lifted
@@ -8790,13 +8823,20 @@ test-suite spec
       MonadRandom
     , aeson
     , aeson-diff
+    , amazonka
+    , amazonka-core
     , arkham-api
     , base
     , bytestring
     , containers
+    , devel-store-lock
+    , directory
     , exceptions
+    , foreign-store
     , hspec
     , hspec-expectations-lifted
+    , http-client
+    , http-types
     , jose
     , lens
     , monad-time
@@ -8806,5 +8846,6 @@ test-suite spec
     , relude
     , text
     , time
+    , unordered-containers
     , uuid
   default-language: GHC2021

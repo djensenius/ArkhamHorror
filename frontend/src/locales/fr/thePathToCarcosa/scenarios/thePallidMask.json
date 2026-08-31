@@ -14,7 +14,6 @@
     }
   },
   "label": {
-    "chooseWhoReadsActII": "Choisissez qui lira l’Acte II du Roi en Jaune",
     "above": "Placez au-dessus",
     "below": "Placez au-dessous",
     "right": "Placez à droite",
@@ -64,6 +63,9 @@
     },
     "xp": {
       "bonus": "Pour avoir entraperçu les machinations du Roi en Guenilles"
+    },
+    "label": {
+      "chooseWhoReadsActII": "Choisissez qui lira l’Acte II du Roi en Jaune"
     }
   }
 }

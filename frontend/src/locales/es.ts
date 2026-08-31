@@ -4,4 +4,4 @@ import gameBoard from '@/locales/es/gameBoard/gameBoard'
 import nightOfTheZealot from '@/locales/es/nightOfTheZealot'
 import theFeastOfHemlockVale from '@/locales/en/theFeastOfHemlockVale'
 
-export default {...base, ...label, ...gameBoard, nightOfTheZealot, theFeastOfHemlockVale}
+export default {...base, label, ...gameBoard, nightOfTheZealot, theFeastOfHemlockVale}

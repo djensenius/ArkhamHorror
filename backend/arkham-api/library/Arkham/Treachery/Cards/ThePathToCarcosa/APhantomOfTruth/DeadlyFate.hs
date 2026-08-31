@@ -34,7 +34,7 @@ instance RunMessage DeadlyFate where
           focusCard c do
             chooseOneM iid $ scenarioI18n do
               labeled' "deadlyFate.drawEnemy" $ drawCard iid c
-              labeled' "deadlyFate.attack " do
+              labeled' "deadlyFate.attack" do
                 addToEncounterDiscard (only c)
                 push $ EnemyAttackFromDiscard iid (toSource attrs) (EncounterCard c)
       pure t

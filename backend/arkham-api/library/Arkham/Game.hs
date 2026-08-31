@@ -392,11 +392,30 @@ toExternalGame g mq = do
   newGameSeed <- getRandom
   pure $ g {gameQuestion = mq, gameSeed = newGameSeed}
 
-replayChoices :: Game -> [Diff.Patch] -> Game
-replayChoices currentGame choices = do
+{- | Opaque, non-secret failure reason for 'replayChoices'. Deliberately
+nullary and carries no field: the underlying patch/parser error text (which
+can echo fragments of stored game/user content) must never be retained,
+shown, logged, or returned by any caller. There is exactly one failure
+mode, so no further cases are needed.
+-}
+data ReplayChoicesError = ReplayChoicesPatchFailed
+  deriving stock (Eq, Show)
+
+{- | Apply a sequence of stored replay patches to a game, returning an
+explicit 'Left' describing the failure instead of throwing. Patch failures
+here reflect corrupt or incompatible stored data (not malformed request
+input), so callers must surface a stable, non-secret error rather than
+propagate a raw exception. The underlying patch/parser error text is
+intentionally discarded at the source -- never retained in a field, Show
+instance, logger, or response -- so callers cannot accidentally leak it.
+There is deliberately no partial variant of this function: every caller
+must handle the 'Left' case explicitly.
+-}
+replayChoices :: Game -> [Diff.Patch] -> Either ReplayChoicesError Game
+replayChoices currentGame choices =
   case foldM patch currentGame choices of
-    Error e -> error e
-    Success g -> g
+    Error _e -> Left ReplayChoicesPatchFailed
+    Success g -> Right g
 
 withModifiers :: (HasGame m, Targetable a) => a -> m (With a ModifierData)
 withModifiers a = With a . ModifierData <$> (traverse (overModifierTypeM calculateModifier) =<< getModifiers' a)
@@ -641,10 +660,35 @@ withInvestigatorConnectionData inner@(With target _) = case target of
 newtype WithDeckSize = WithDeckSize Investigator
   deriving newtype (Show, Targetable)
 
+-- The attrs keep the original investigator's printed values so the form can be
+-- dropped again, so the transfigured class is applied here, on the wire, the same
+-- way `field InvestigatorClass` applies it for the engine.
 instance ToJSON WithDeckSize where
   toJSON (WithDeckSize i) = case toJSON i of
-    Object o -> Object $ KeyMap.insert "deckSize" (toJSON $ length $ investigatorDeck $ toAttrs i) o
+    Object o ->
+      Object
+        $ KeyMap.insert "deckSize" (toJSON $ length $ investigatorDeck attrs)
+        $ case investigatorForm attrs of
+          TransfiguredForm inner ->
+            let iinvestigator = lookupInvestigator (InvestigatorId inner) attrs.player
+             in KeyMap.insert "class" (toJSON (toAttrs iinvestigator).classSymbol) (withoutCardPool o)
+          _ -> withoutCardPool o
     _ -> error "failed to serialize investigator"
+   where
+    attrs = toAttrs i
+    -- `cardPool` (InvestigatorAttrs' `investigatorCardPool`, added for
+    -- deck-building card-pool restrictions) rides along on `Investigator`'s
+    -- ToJSON because that same instance also round-trips full internal game
+    -- state (`Entities`/`Game`'s persistence, undo, replay). It has never
+    -- been part of the governed `contracts/manifest.json` 0.1.22 wire
+    -- contract (see `contracts/schemas/investigator.schema.json` and
+    -- `contracts/fixtures/get-game.json`/`game-update.json`), so strip it
+    -- here, at the public REST/WebSocket projection boundary, rather than
+    -- silently widening the wire contract out from under pinned native
+    -- clients. This mirrors this module's existing tombstone-blinding
+    -- comment: one seam, applied once, covers every published investigator
+    -- view (in-play, otherInvestigators, killedInvestigators).
+    withoutCardPool = KeyMap.delete "cardPool"
 
 withSkillTestModifiers :: HasGame m => ChaosToken -> m (With ChaosToken Value)
 withSkillTestModifiers token = do
@@ -3075,6 +3119,19 @@ leavePlayWindowAssets = do
     Window.EntityDiscarded _ (AssetTarget aid) -> Just aid
     _ -> Nothing
 
+{- | Assets mid-removal, which can no longer soak the damage/horror their own
+leave-play trigger deals. Narrower than 'leavePlayWindowAssets': a defeat can
+still be rescued mid-window, so @AssetDefeated@ alone is not leaving. #5551
+-}
+assetsLeavingPlay :: HasGame m => m (Set AssetId)
+assetsLeavingPlay = do
+  stack <- fromMaybe [] . gameWindowStack <$> getGame
+  pure $ setFromList $ mapMaybe (subjectOf . windowType) (concat stack)
+ where
+  subjectOf = \case
+    Window.LeavePlay (AssetTarget aid) -> Just aid
+    _ -> Nothing
+
 {- | While a leave-play window is open, resolve asset queries against a game in
 which assets blanked by this frame's removals are restored to the snapshots
 parked by @RemoveFromPlay@ into @gameTombstones@ -- frozen copies that still
@@ -3342,6 +3399,7 @@ getAssetsMatching' matcher = do
       filterM isSanityDamageable as
     AssetCanBeAssignedDamageBy iid -> do
       modifiers' <- getModifiers (InvestigatorTarget iid)
+      leaving <- assetsLeavingPlay
       let
         otherDamageableAssetIds = flip mapMaybe modifiers' $ \case
           CanAssignDamageToAsset aid -> Just aid
@@ -3355,9 +3413,10 @@ getAssetsMatching' matcher = do
       let
         isHealthDamageable a =
           fieldP AssetRemainingHealth (maybe (toId a `elem` otherDamageableAssetIds) (> 0)) (toId a)
-      filterM isHealthDamageable assets
+      filterM isHealthDamageable $ filter ((`notMember` leaving) . toId) assets
     AssetCanBeAssignedHorrorBy iid -> do
       modifiers' <- getModifiers (InvestigatorTarget iid)
+      leaving <- assetsLeavingPlay
       let
         otherDamageableAssetIds = flip mapMaybe modifiers' $ \case
           CanAssignHorrorToAsset aid -> Just aid
@@ -3371,7 +3430,7 @@ getAssetsMatching' matcher = do
       let
         isSanityDamageable a =
           fieldP AssetRemainingSanity (maybe (toId a `elem` otherDamageableAssetIds) (> 0)) (toId a)
-      filterM isSanityDamageable assets
+      filterM isSanityDamageable $ filter ((`notMember` leaving) . toId) assets
     AssetCanBeDamagedBySource source -> flip filterM as \asset -> do
       mods <- getModifiers asset
       flip allM mods $ \case
@@ -3734,6 +3793,7 @@ referencesOutOfPlay = any isOutOfPlayReference . universe
     OutOfPlayEnemy {} -> True
     IncludeOutOfPlayEnemy {} -> True
     DefeatedEnemy {} -> True
+    EnemyWasAt {} -> True
     EnemyWithPlacement p -> isOutOfPlayPlacement p
     EnemyFacedownInThreatAreaOf {} -> True
     _ -> False
@@ -5114,6 +5174,7 @@ instance Projection Investigator where
       InvestigatorName -> pure investigatorName
       InvestigatorSettings -> pure investigatorSettings
       InvestigatorTaboo -> pure investigatorTaboo
+      InvestigatorCardPool -> pure investigatorCardPool
       InvestigatorSealedChaosTokens -> pure investigatorSealedChaosTokens
       InvestigatorRemainingActions -> pure $ investigatorRemainingActions
       InvestigatorAdditionalActions -> getAdditionalActions attrs
@@ -5226,7 +5287,12 @@ instance Projection Investigator where
       InvestigatorSideDeck -> pure investigatorSideDeck
       InvestigatorDecks -> pure investigatorDecks
       InvestigatorDiscard -> pure investigatorDiscard
-      InvestigatorClass -> pure investigatorClass
+      InvestigatorClass -> case investigatorForm of
+        TransfiguredForm inner ->
+          pure
+            $ let iinvestigator = lookupInvestigator (InvestigatorId inner) investigatorPlayerId
+               in (toAttrs iinvestigator).classSymbol
+        _ -> pure investigatorClass
       InvestigatorActionsTaken -> pure investigatorActionsTaken
       InvestigatorActionsPerformed -> pure investigatorActionsPerformed
       InvestigatorSlots -> do

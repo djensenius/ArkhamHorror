@@ -25,7 +25,7 @@ instance RunMessage MysteriesRemain where
 
       chooseOrRunOne iid
         $ [ Label
-              "$cards.label.mysteriesRemain.placeClueFromBank"
+              "$cards.label.mysteriesRemain.placeClue"
               [PlaceClues (toSource attrs) (toTarget location) 1]
           ]
         <> [ Label "$label.discoverAtYourLocation count=i:1" [Msg.DiscoverClues iid $ discoverPure did location attrs 1]

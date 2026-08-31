@@ -21,7 +21,6 @@
     }
   },
   "label": {
-    "chooseWhoReadsActII": "Choose who will read Act II of The King in Yellow",
     "above": "Place Above",
     "below": "Place Below",
     "right": "Place to the Right",
@@ -71,6 +70,9 @@
     },
     "xp": {
       "bonus": "Gains insight into the machinations of the Tattered King."
+    },
+    "label": {
+      "chooseWhoReadsActII": "Choose who will read Act II of The King in Yellow"
     }
   }
 }

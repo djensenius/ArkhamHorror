@@ -1,0 +1,18 @@
+{
+  "c88023": {
+    "art": "c88023",
+    "cardId": "00000000-0000-0000-0000-000000000386",
+    "cardsUnderneath": [],
+    "flipped": false,
+    "flippedArt": "c88023b",
+    "id": "c88023",
+    "meta": null,
+    "otherSide": null,
+    "placement": {
+      "tag": "Unplaced"
+    },
+    "removeAfterResolution": true,
+    "sealedChaosTokens": [],
+    "tokens": []
+  }
+}

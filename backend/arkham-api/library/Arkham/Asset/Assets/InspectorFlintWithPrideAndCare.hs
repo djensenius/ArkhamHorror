@@ -40,7 +40,7 @@ instance RunMessage InspectorFlintWithPrideAndCare where
                   whenM (can.draw.cards iid) do
                     withI18n $ countVar 1 $ labeled' "drawCards" $ drawCards iid (attrs.ability 1) 1
                   unless (null others) do
-                    campaignI18n $ labeled' "inspectorFlint.expose" do
+                    labeledI "exposeConcealed" do
                       chooseTargetM iid others $ exposeConcealed iid (attrs.ability 1) . toId
               _ -> pure ()
           (_ : xs) -> go xs

@@ -30,6 +30,7 @@ instance RunMessage NightmarishVapors where
         when (canShuffleIn && (length cards >= 2 || remainingActions < 2)) do
           campaignI18n
             $ scope "nightmarishVapors"
+            $ countVar (length cards)
             $ labeled' "shuffleTekeliliIntoYourDeck"
             $ addTekelili iid cards
 

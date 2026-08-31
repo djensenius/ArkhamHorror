@@ -61,11 +61,11 @@
       "removeChaosToken": "Choose and remove any non-symbol token from the chaos bag, for the remainder of the campaign",
       "advancedReward": "Mr. Grey is in the victory display. Roland Banks may either upgrade Roland's .38 Special to its advanced version, or downgrade the advanced version of Cover Up to its original version",
       "doNotSwap": "Do not swap any cards",
-      "upgradeRolands38Special": "Upgrade Roland's .38 Special to its advanced version"
-    },
-    "advancedPenalty": "Roland Banks must either upgrade Cover Up to its advanced version, or downgrade the advanced version of Roland's .38 Special to its original version",
-    "downgradeCoverUp": "Downgrade the advanced version of Cover Up to its original version",
-    "upgradeCoverUp": "Upgrade Cover Up to its advanced version",
-    "downgradeRolands38Special": "Downgrade the advanced version of Roland's .38 Special to its original version"
+      "upgradeRolands38Special": "Upgrade Roland's .38 Special to its advanced version",
+      "advancedPenalty": "Roland Banks must either upgrade Cover Up to its advanced version, or downgrade the advanced version of Roland's .38 Special to its original version",
+      "downgradeCoverUp": "Downgrade the advanced version of Cover Up to its original version",
+      "downgradeRolands38Special": "Downgrade the advanced version of Roland's .38 Special to its original version",
+      "upgradeCoverUp": "Upgrade Cover Up to its advanced version"
+    }
   }
 }

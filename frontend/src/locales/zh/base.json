@@ -217,7 +217,6 @@
   "join": "加入",
   "joinGame": "加入游戏",
   "decks": "牌组",
-  "newDeck": "新牌组",
   "deckSyncedSuccessfully": "牌组同步成功",
   "areYouSureDeleteDeck": "你确定要删除这个牌组吗？",
   "noDecksMatchFilters": "没有符合过滤条件的牌组。",

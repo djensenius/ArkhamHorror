@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/movement.schema.json",
+  "title": "Movement",
+  "description": "Arkham.Movement.Movement (backend/arkham-api/library/Arkham/Movement.hs), used by InvestigatorAttrs.investigatorMovement (Maybe Movement) to represent an in-progress move. Deep Source/Target/Cost/Message payloads stay broad and out of scope for this contract slice (see cost.schema.json); only the stable top-level keys and the closed MovementMeans/Destination tags are constrained here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "moveSource",
+    "moveTarget",
+    "moveDestination",
+    "moveMeans",
+    "moveCancelable",
+    "movePayAdditionalCosts",
+    "moveAfter",
+    "moveAdditionalEnterCosts",
+    "moveSkipEngagement",
+    "moveId",
+    "moveForced",
+    "moveFromInPlay"
+  ],
+  "properties": {
+    "moveSource": {
+      "description": "Arkham.Source.Source. Broad tagged union, out of scope for this contract slice.",
+      "type": "object"
+    },
+    "moveTarget": {
+      "description": "Arkham.Target.Target. Broad tagged union, out of scope for this contract slice.",
+      "type": "object"
+    },
+    "moveDestination": {
+      "$ref": "#/$defs/destination"
+    },
+    "moveMeans": {
+      "$ref": "#/$defs/movementMeans"
+    },
+    "moveCancelable": {
+      "type": "boolean"
+    },
+    "movePayAdditionalCosts": {
+      "type": "boolean"
+    },
+    "moveAfter": {
+      "description": "[Arkham.Message.Message] queued to run once this movement resolves. Broad and recursive, out of scope for this contract slice.",
+      "type": "array"
+    },
+    "moveAdditionalEnterCosts": {
+      "$ref": "./cost.schema.json"
+    },
+    "moveSkipEngagement": {
+      "type": "boolean"
+    },
+    "moveId": {
+      "description": "MovementId (UUID), Arkham/Id.hs.",
+      "type": "string",
+      "format": "uuid"
+    },
+    "moveForced": {
+      "type": "boolean"
+    },
+    "moveFromInPlay": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "destination": {
+      "description": "Arkham.Movement.Destination = ToLocation LocationId | ToLocationMatching LocationMatcher, derived with Aeson's default TaggedObject sum encoding.",
+      "type": "object",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": ["tag", "contents"],
+          "properties": {
+            "tag": { "const": "ToLocation" },
+            "contents": {
+              "description": "LocationId (UUID).",
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["tag", "contents"],
+          "properties": {
+            "tag": { "const": "ToLocationMatching" },
+            "contents": {
+              "description": "Arkham.Matcher.LocationMatcher. Broad, out of scope for this contract slice.",
+              "type": "object"
+            }
+          }
+        }
+      ]
+    },
+    "movementMeans": {
+      "description": "Arkham.Movement.MovementMeans = Direct | OneAtATime | Towards | Place | TowardsN Int, derived with Aeson's default TaggedObject sum encoding. Because 'TowardsN' is not nullary, 'allNullaryToStringTag' does not apply to this type: every constructor -- including the 4 nullary ones -- encodes as a TaggedObject; nullary constructors simply omit the 'contents' key (verified against the real encoder: 'Direct' encodes as {\"tag\":\"Direct\"}, not a bare string).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tag"],
+          "properties": {
+            "tag": { "enum": ["Direct", "OneAtATime", "Towards", "Place"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tag", "contents"],
+          "properties": {
+            "tag": { "const": "TowardsN" },
+            "contents": { "type": "integer" }
+          }
+        }
+      ]
+    }
+  }
+}

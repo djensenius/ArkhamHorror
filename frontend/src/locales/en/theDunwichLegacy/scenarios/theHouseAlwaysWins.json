@@ -60,15 +60,13 @@
       "doNotSpend": "Do not spend resources"
     },
     "cheated": "Remember that you have \"cheated.\"",
-    "raiseTheStakes": {
-      "place": "Put Raise the Stakes into play in your threat area"
-    }
+    "raiseTheStakes": {}
   },
   "tooltips": {
     "laBellaLuna": {
       "resign": "This was a bust"
     },
-    "backAlley" : {
+    "backAlley": {
       "resign": "We can get out this way!"
     }
   },
@@ -76,6 +74,11 @@
     "label": {
       "putIntoPlay": "Put it into play",
       "doNotPutIntoPlay": "Do not put it into play"
+    }
+  },
+  "raiseTheStakes": {
+    "label": {
+      "place": "Put Raise the Stakes into play in your threat area"
     }
   }
 }
