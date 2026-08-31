@@ -273,9 +273,14 @@ underlying membership 'Map' a 'TestDB' \/ 'MonadPendingJoin' run already
 mutated. This is how this module proves the two entry points share ONE
 invariant without needing either module to expose its own private test
 harness: both interpreters are thin, and both delegate their reservation
-step to the identical pure semantics 'Api.Arkham.Epic.reserveEpicGroupMembership'
-itself implements, so threading the SAME 'Map' through both proves the
-cross-module claim.
+step to the identical pure semantics that production's
+'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' itself falls
+through to (the ordinary 'Api.Arkham.Epic.reserveEpicGroupMembership'
+formula, once its own legacy-seat check clears) -- this simplified
+interpreter deliberately omits legacy-seat modelling (there is no
+'legacySeats' field here) because only the shared ordinal-map invariant,
+not the legacy-reconciliation branch, is under test in this cross-module
+proof.
 -}
 newtype ClaimTestDB a = ClaimTestDB
   {unClaimTestDB :: State (Map (Epic.ArkhamEpicEventId, User.UserId) Int) a}

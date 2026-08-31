@@ -195,7 +195,10 @@ data FailAt
 mutable analogue of the @arkham_epic_members@ table's 'UniqueEpicMember'
 unique key (event, user) -> ordinal -- 'reserveClaimSeatMembership'
 actually reads AND writes it, exactly like the production
-'Api.Arkham.Epic.reserveEpicGroupMembership' it delegates to.
+'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' it delegates to
+(which itself falls through to the ordinary
+'Api.Arkham.Epic.reserveEpicGroupMembership' formula once its own
+legacy-seat check clears).
 'legacySeats' is an INDEPENDENT analogue of every OTHER game's linked
 'Entity.Arkham.Player.ArkhamPlayer' row for this (event, user) that
 predates the reservation machinery entirely -- a bare seat with no
