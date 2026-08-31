@@ -54,6 +54,7 @@ ghc-options:
 
 packages:
   - cards-discover
+  - devel-store-lock
   - arkham-api
   - validate
 

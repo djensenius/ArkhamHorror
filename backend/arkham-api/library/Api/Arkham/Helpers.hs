@@ -2,6 +2,7 @@
 
 module Api.Arkham.Helpers where
 
+import Api.Arkham.Lifecycle (raceManaged_)
 import Arkham.Card
 import Arkham.Classes hiding (Entity (..), select)
 import Arkham.Classes.HasGame
@@ -16,7 +17,7 @@ import Arkham.Random
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
 import Control.Concurrent.MVar qualified as MVar
-import Control.Exception (throwIO, try)
+import Control.Exception (throwIO)
 import Control.Lens hiding (from)
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow)
 import Control.Monad.Random (MonadRandom (..), StdGen)
@@ -45,7 +46,7 @@ import Entity.Arkham.Game
 import Entity.Arkham.LogEntry
 import GHC.Records
 import Import hiding (appLogger, (==.), (>=.))
-import UnliftIO.Async qualified as UA
+import UnliftIO.Exception qualified as UE
 
 newtype GameLog = GameLog {gameLogToLogEntries :: [Text]}
   deriving newtype (Monoid, Semigroup)
@@ -311,10 +312,31 @@ roomField = encodeUtf8 . gameIdToText
 currentEpoch :: IO Int
 currentEpoch = floor <$> getPOSIXTime
 
--- Best-effort wrapper: tracking room counts is observability, not
--- correctness, so we never let a Redis hiccup tear down a live session.
+{- | Best-effort wrapper: tracking room counts is observability, not
+correctness, so we never let a Redis hiccup tear down a live session.
+
+Uses 'UE.tryAny' (not 'Control.Exception.try' \@'SomeException'):
+every current call site is either directly on, or reachable from, a
+thread some other caller can legitimately deliver an asynchronous
+cancellation to -- most importantly 'pubSubSupervisor''s @watchdog@,
+which is one racer under 'Api.Arkham.Lifecycle.raceManaged_' and so
+must actually terminate on the 'Control.Exception.ThreadKilled' that
+function's own 'Api.Arkham.Lifecycle.cancelManagedThread' delivers to
+it; catching that here and looping again in @watchdog@\/@forever@'s
+next iteration would leave 'Api.Arkham.Lifecycle.cancelManagedThread''s
+'Control.Concurrent.MVar.readMVar' blocked forever, hanging
+'pubSubSupervisor' itself and, transitively, Foundation shutdown. The
+same reasoning applies to every other call site
+('releaseRoomIfEmpty', 'withRedis', the 'sweepStaleRooms' call inside
+'getRedisRoomCounts'): each already only ever wants to swallow a
+genuine, synchronous Redis\/network failure, never a caller's own
+cancellation (e.g. a WebSocket disconnect handler or admin request
+being torn down mid-flight). 'UE.tryAny' only ever catches genuinely
+synchronous exceptions; any asynchronous exception -- shutdown or
+otherwise -- always propagates unchanged.
+-}
 tryRedis_ :: MonadIO m => IO a -> m ()
-tryRedis_ action = void $ liftIO $ try @SomeException action
+tryRedis_ action = void $ liftIO $ UE.tryAny action
 
 -- Run a best-effort Redis action if a Redis broker is configured.
 withRedis :: (MonadIO m, HasApp m) => (Connection -> IO a) -> m ()
@@ -361,7 +383,17 @@ getRedisRoomCounts = do
     WebSocketBroker -> pure Nothing
     RedisBroker conn _ -> do
       now <- liftIO currentEpoch
-      result <- liftIO $ try @SomeException $ runRedis conn do
+      -- 'UE.tryAny' (not 'Control.Exception.try' \@'SomeException'): this
+      -- is reachable from an admin request handler's own Warp
+      -- request-worker thread, which its caller can legitimately
+      -- cancel (e.g. a disconnected admin client). Catching that
+      -- cancellation here and falling through to the @Just Map.empty@
+      -- "Redis hiccup" branch below would make a genuine cancellation
+      -- masquerade as a successful, merely-empty result instead of
+      -- actually terminating the request thread. 'UE.tryAny' only ever
+      -- catches genuinely synchronous exceptions (a real Redis\/network
+      -- failure); any asynchronous exception propagates unchanged.
+      result <- liftIO $ UE.tryAny $ runRedis conn do
         countsR <- hgetall roomsHashKey
         seenR <- hgetall roomsSeenHashKey
         pure (countsR, seenR)
@@ -393,19 +425,39 @@ sweepStaleRooms conn gameIds = for_ (nonEmpty $ map roomField gameIds) \fields -
 {- | Background heartbeat: every 'roomHeartbeatSeconds' refresh the seen
 timestamp for every game this pod still has live subscribers for. This
 keeps active games out of the staleness sweep even when nothing else
-(subscribe / unsubscribe) is writing to Redis. Run once per pod via
-'forkIO' from 'makeFoundation'.
+(subscribe / unsubscribe) is writing to Redis. Run once per pod, tracked
+via 'Api.Arkham.Lifecycle.spawnManagedThread' from 'Application.makeFoundation'
+and cancelled\/awaited by 'Application.shutdownApp'.
+
+Deliberately takes the broker and room registry directly rather than a
+whole 'App': 'Application.makeFoundation' needs to spawn this (and
+durably record its 'Api.Arkham.Lifecycle.ManagedThread' handle as
+'appRoomHeartbeatThread') before the 'App' value it would otherwise read
+from exists, and this avoids the self-referential construction that
+would otherwise require.
 -}
-roomHeartbeat :: App -> IO ()
-roomHeartbeat app = case appMessageBroker app of
+roomHeartbeat :: MessageBroker -> MVar (Map ArkhamGameId Room) -> IO ()
+roomHeartbeat broker gameRooms = case broker of
   WebSocketBroker -> pure ()
   RedisBroker conn _ -> forever do
     threadDelay (roomHeartbeatSeconds * 1000000)
-    rooms <- MVar.readMVar (appGameRooms app)
+    rooms <- MVar.readMVar gameRooms
     active <- catMaybes <$> traverse keepIfActive (Map.toList rooms)
     unless (null active) do
       now <- currentEpoch
-      void $ try @SomeException $ runRedis conn do
+      -- 'UE.tryAny' (not 'Control.Exception.try' \@'SomeException'): this
+      -- loop is tracked via 'Api.Arkham.Lifecycle.spawnManagedThread' and
+      -- cancelled\/awaited by 'Application.shutdownApp', so a shutdown
+      -- 'Control.Exception.ThreadKilled' delivered while inside
+      -- 'runRedis' must actually terminate this thread rather than being
+      -- caught here and silently absorbed into another 'forever'
+      -- iteration -- which would leave the managed thread's own
+      -- completion cell never filled, hanging Foundation shutdown
+      -- indefinitely. 'UE.tryAny' only ever catches genuinely synchronous
+      -- exceptions (a real Redis\/network failure), exactly the
+      -- best-effort case this is meant to tolerate; any asynchronous
+      -- exception -- shutdown or otherwise -- propagates unchanged.
+      void $ UE.tryAny $ runRedis conn do
         for_ active \gid ->
           void $ hset roomsSeenHashKey ((roomField gid, BS8.pack (show now)) :| [])
  where
@@ -483,9 +535,19 @@ pubSubSupervisor healthVar conn ctrl = go 1
   go backoff = do
     markPubSubAlive healthVar
     startedAt <- getCurrentTime
-    outcome <-
-      try @SomeException
-        $ UA.race_ (pubSubForever conn ctrl (markPubSubAlive healthVar)) watchdog
+    -- 'raceManaged_' (not 'UnliftIO.Async.race_'): this loop is tracked
+    -- via 'Api.Arkham.Lifecycle.spawnManagedThread' and
+    -- cancelled\/awaited by 'Application.shutdownApp'. 'race_' is built
+    -- on 'Control.Concurrent.Async.withAsync' for both branches, whose
+    -- own cleanup falls back to 'Control.Concurrent.Async.uninterruptibleCancel'
+    -- if the losing branch does not respond to cancellation quickly (e.g.
+    -- 'pubSubForever' blocked in a synchronous socket read) -- making a
+    -- shutdown cancellation of *this* thread hang until that loser
+    -- eventually finishes. 'raceManaged_' uses only ordinary,
+    -- always-interruptible cancellation throughout, so a shutdown
+    -- 'Control.Exception.ThreadKilled' targeting this thread can never be
+    -- turned uninterruptible by racing.
+    outcome <- raceManaged_ (pubSubForever conn ctrl (markPubSubAlive healthVar)) watchdog
     endedAt <- getCurrentTime
     putStrLn $ case outcome of
       Left e -> "pubsub subscriber died, reconnecting: " <> show e

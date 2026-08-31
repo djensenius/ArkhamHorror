@@ -1,3 +1,5 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module Api.Handler.Arkham.Replay (getApiV1ArkhamGameReplayR) where
 
 import Api.Arkham.Helpers
@@ -6,6 +8,7 @@ import Arkham.Game
 import Database.Esqueleto.Experimental
 import Entity.Arkham.Step
 import Import hiding (delete, on, (==.))
+import Network.HTTP.Types.Status qualified as Status
 
 data GetReplayJson = GetReplayJson
   { totalSteps :: Int
@@ -18,6 +21,13 @@ newtype ReplayId = ReplayId {id :: ArkhamGameId}
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
+-- | Stable, non-secret envelope for a replay that cannot be reconstructed
+-- from stored data. Deliberately omits the underlying patch error, which may
+-- reference internal game state shapes.
+newtype ReplayError = ReplayError {message :: Text}
+  deriving stock (Show, Generic)
+  deriving anyclass ToJSON
+
 getApiV1ArkhamGameReplayR :: ArkhamGameId -> Int -> Handler GetReplayJson
 getApiV1ArkhamGameReplayR gameId step = do
   Entity userId user <- getRequestUser
@@ -25,27 +35,40 @@ getApiV1ArkhamGameReplayR gameId step = do
     user.admin
     (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
     notFound
-    $ runDB do
-      ge <- get404 gameId
-      allChoices <- select do
-        steps <- from $ table @ArkhamStep
-        where_ $ steps.arkhamGameId ==. val gameId
-        orderBy [asc steps.step]
-        pure steps
+    $ do
+      (ge, allChoices) <- runDB do
+        ge <- get404 gameId
+        allChoices <- select do
+          steps <- from $ table @ArkhamStep
+          where_ $ steps.arkhamGameId ==. val gameId
+          orderBy [asc steps.step]
+          pure steps
+        pure (ge, allChoices)
       let gameJson = arkhamGameCurrentData ge
       let choices = map (arkhamStepChoice . entityVal) $ reverse $ drop step allChoices
-      let gameJson' = replayChoices gameJson [mconcat $ map choicePatchDown choices]
-
-      pure
-        $ GetReplayJson (length allChoices)
-        $ toPublicGame
-          ( Entity gameId
-              $ ArkhamGame
-                (arkhamGameName ge)
-                gameJson'
-                (arkhamGameStep ge)
-                (arkhamGameMultiplayerVariant ge)
-                (arkhamGameCreatedAt ge)
-                (arkhamGameUpdatedAt ge)
-          )
-          mempty
+      case replayChoices gameJson [mconcat $ map choicePatchDown choices] of
+        -- Stored patches failing to reconstruct is server-side data
+        -- corruption/incompatibility, not malformed client input, so we
+        -- respond 422 Unprocessable Entity rather than 400 or 500.
+        -- 'ReplayChoicesError' is opaque/nullary by construction -- the
+        -- underlying patch/parser error text is discarded at the source in
+        -- 'Arkham.Game.replayChoices' and never reaches this handler, so
+        -- only a static diagnostic (with the game id) is recorded
+        -- server-side.
+        Left ReplayChoicesPatchFailed -> do
+          $(logWarn) $ "replay reconstruction failed for game " <> toPathPiece gameId
+          sendStatusJSON Status.status422 $ ReplayError "Unable to reconstruct replay from stored data"
+        Right gameJson' ->
+          pure
+            $ GetReplayJson (length allChoices)
+            $ toPublicGame
+              ( Entity gameId
+                  $ ArkhamGame
+                    (arkhamGameName ge)
+                    gameJson'
+                    (arkhamGameStep ge)
+                    (arkhamGameMultiplayerVariant ge)
+                    (arkhamGameCreatedAt ge)
+                    (arkhamGameUpdatedAt ge)
+              )
+              mempty
