@@ -5,7 +5,18 @@
 //
 //   npm run build && node scripts/locale-catalog/verify-dist.mjs
 
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import {
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readSync,
+  realpathSync,
+} from 'node:fs'
 import { brotliDecompressSync, gunzipSync } from 'node:zlib'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,8 +49,30 @@ const MAX_INFLATE_SLACK = 4096
 // the digest the descriptor promises.
 const CHUNK_PATH = /^c\/([0-9a-f]{64})\.json$/
 const SCHEMA_DIR = resolve(FRONTEND_DIR, 'schemas/locale-catalog/v1')
+// The route this catalog is published at. `prod.nginxconf` serves exactly this
+// prefix, so a manifest that describes a different one describes something
+// nginx does not serve — and something this check would otherwise happily
+// verify somewhere else on disk.
+const ROUTE = '/locale-catalog'
+const ROUTE_MANIFEST = `${ROUTE}/manifest.json`
+const ROUTE_CHUNK_PREFIX = `${ROUTE}/c/`
 
 const problems = []
+
+/**
+ * Parses JSON into null-prototype objects and refuses a literal `__proto__`
+ * key. A manifest is untrusted input, and an inherited name that looks like a
+ * declared property is exactly how `additionalProperties: false` gets bypassed.
+ */
+function parseUntrustedJson(text) {
+  return JSON.parse(text, function reviver(key, value) {
+    if (key === '__proto__') throw new SyntaxError('__proto__ is not an allowed key')
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.assign(Object.create(null), value)
+    }
+    return value
+  })
+}
 
 function require(condition, message) {
   if (!condition) problems.push(message)
@@ -53,78 +86,92 @@ function require(condition, message) {
  * checked against the published contract before any of it is believed.
  */
 function validateAgainstSchema(value, schema, root, path = '', errors = []) {
-  if (schema.$ref) {
+  if (Object.hasOwn(schema, '$ref')) {
     const target = schema.$ref.replace(/^#\//, '').split('/')
     let resolved = root
-    for (const part of target) resolved = resolved?.[part]
+    for (const part of target) {
+      resolved = resolved !== null && typeof resolved === 'object' && Object.hasOwn(resolved, part)
+        ? resolved[part]
+        : undefined
+    }
     if (resolved === undefined) throw new Error(`unresolvable $ref ${schema.$ref}`)
     return validateAgainstSchema(value, resolved, root, path, errors)
   }
   const at = path === '' ? '<root>' : path
-  const type = schema.type
+  const type = Object.hasOwn(schema, 'type') ? schema.type : undefined
   const typeOf = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value
   if (type && type !== typeOf && !(type === 'integer' && Number.isInteger(value))) {
     errors.push(`${at} should be ${type}, is ${typeOf}`)
     return errors
   }
-  if (schema.const !== undefined && value !== schema.const) {
+  if (Object.hasOwn(schema, 'const') && value !== schema.const) {
     errors.push(`${at} should be ${JSON.stringify(schema.const)}`)
   }
-  if (schema.enum && !schema.enum.includes(value)) errors.push(`${at} is not one of the enum`)
+  if (Object.hasOwn(schema, 'enum') && !schema.enum.includes(value)) {
+    errors.push(`${at} is not one of the enum`)
+  }
   if (typeof value === 'string') {
-    if (schema.pattern && !new RegExp(schema.pattern, 'u').test(value)) {
+    if (Object.hasOwn(schema, 'pattern') && !new RegExp(schema.pattern, 'u').test(value)) {
       errors.push(`${at} does not match ${schema.pattern}`)
     }
-    if (schema.maxLength !== undefined && value.length > schema.maxLength) {
+    if (Object.hasOwn(schema, 'maxLength') && value.length > schema.maxLength) {
       errors.push(`${at} is longer than ${schema.maxLength}`)
     }
-    if (schema.minLength !== undefined && value.length < schema.minLength) {
+    if (Object.hasOwn(schema, 'minLength') && value.length < schema.minLength) {
       errors.push(`${at} is shorter than ${schema.minLength}`)
     }
   }
   if (typeof value === 'number') {
-    if (schema.minimum !== undefined && value < schema.minimum) errors.push(`${at} < minimum`)
-    if (schema.maximum !== undefined && value > schema.maximum) errors.push(`${at} > maximum`)
+    if (Object.hasOwn(schema, 'minimum') && value < schema.minimum) errors.push(`${at} < minimum`)
+    if (Object.hasOwn(schema, 'maximum') && value > schema.maximum) errors.push(`${at} > maximum`)
   }
   if (Array.isArray(value)) {
-    if (schema.minItems !== undefined && value.length < schema.minItems) {
+    if (Object.hasOwn(schema, 'minItems') && value.length < schema.minItems) {
       errors.push(`${at} has fewer than ${schema.minItems} items`)
     }
-    if (schema.maxItems !== undefined && value.length > schema.maxItems) {
+    if (Object.hasOwn(schema, 'maxItems') && value.length > schema.maxItems) {
       errors.push(`${at} has more than ${schema.maxItems} items`)
     }
-    if (schema.uniqueItems) {
+    if (Object.hasOwn(schema, 'uniqueItems') && schema.uniqueItems) {
       const seen = new Set(value.map((item) => JSON.stringify(item)))
       if (seen.size !== value.length) errors.push(`${at} has duplicate items`)
     }
-    if (schema.items) {
+    if (Object.hasOwn(schema, 'items')) {
       value.forEach((item, index) =>
         validateAgainstSchema(item, schema.items, root, `${at}[${index}]`, errors),
       )
     }
   }
   if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-    for (const name of schema.required ?? []) {
+    for (const name of Object.hasOwn(schema, 'required') ? schema.required : []) {
       if (!Object.hasOwn(value, name)) errors.push(`${at}.${name} is required`)
     }
-    for (const [name, entry] of Object.entries(value)) {
-      const property = schema.properties?.[name]
-      if (property === undefined) {
-        if (schema.additionalProperties === false) errors.push(`${at}.${name} is not allowed`)
-        else if (typeof schema.additionalProperties === 'object') {
-          validateAgainstSchema(entry, schema.additionalProperties, root, `${at}.${name}`, errors)
+    // `Object.hasOwn` throughout, and never `schema.properties?.[name]`:
+    // `__proto__`, `constructor` and `toString` are inherited names that would
+    // otherwise look like declared properties and slip past
+    // `additionalProperties: false`.
+    const properties = Object.hasOwn(schema, 'properties') ? schema.properties : {}
+    const additional = Object.hasOwn(schema, 'additionalProperties')
+      ? schema.additionalProperties
+      : undefined
+    for (const name of Object.keys(value)) {
+      const entry = value[name]
+      if (!Object.hasOwn(properties, name)) {
+        if (additional === false) errors.push(`${at}.${name} is not allowed`)
+        else if (additional !== undefined && typeof additional === 'object') {
+          validateAgainstSchema(entry, additional, root, `${at}.${name}`, errors)
         }
         continue
       }
-      validateAgainstSchema(entry, property, root, `${at}.${name}`, errors)
+      validateAgainstSchema(entry, properties[name], root, `${at}.${name}`, errors)
     }
   }
-  if (schema.not) {
+  if (Object.hasOwn(schema, 'not')) {
     if (validateAgainstSchema(value, schema.not, root, at, []).length === 0) {
       errors.push(`${at} matches a forbidden pattern`)
     }
   }
-  if (schema.oneOf) {
+  if (Object.hasOwn(schema, 'oneOf')) {
     const matches = schema.oneOf.filter(
       (branch) => validateAgainstSchema(value, branch, root, at, []).length === 0,
     )
@@ -142,6 +189,17 @@ function validateAgainstSchema(value, schema, root, path = '', errors = []) {
  * than followed — a link is a way to serve bytes from outside the route that
  * the digest check would happily bless.
  */
+/** The catalog root itself must be a real directory, not a link to one. */
+function rootIsContained() {
+  let status = null
+  try {
+    status = lstatSync(DIST_CATALOG)
+  } catch {
+    return false
+  }
+  return status.isDirectory() && !status.isSymbolicLink()
+}
+
 function safeCatalogPath(relativePath) {
   if (typeof relativePath !== 'string' || relativePath === '') return null
   if (relativePath !== relativePath.normalize('NFC')) return null
@@ -181,6 +239,38 @@ function safeCatalogPath(relativePath) {
     return null
   }
   return absolute
+}
+
+/**
+ * Reads a leaf without following anything, and proves what it read.
+ *
+ * The file is opened `O_NOFOLLOW`, then `fstat`ed *through that descriptor* and
+ * read from it, so the bytes hashed are the bytes of the inode that was
+ * checked — a path swapped between the check and the read cannot be smuggled
+ * in. A hard link (`nlink > 1`) is refused for the same reason a symlink is:
+ * the same bytes are reachable, and writable, from outside the catalog.
+ */
+function readContainedFile(absolute) {
+  let descriptor = null
+  try {
+    descriptor = openSync(absolute, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
+    const status = fstatSync(descriptor)
+    if (!status.isFile()) return { bytes: null, reason: 'is not a regular file' }
+    if (status.nlink !== 1) return { bytes: null, reason: `has ${status.nlink} hard links` }
+    const bytes = Buffer.alloc(status.size)
+    let read = 0
+    while (read < bytes.length) {
+      const chunk = readSync(descriptor, bytes, read, bytes.length - read, read)
+      if (chunk === 0) break
+      read += chunk
+    }
+    if (read !== bytes.length) return { bytes: null, reason: 'changed size while being read' }
+    return { bytes, reason: null }
+  } catch (error) {
+    return { bytes: null, reason: `cannot be opened without following links (${error.code ?? error.message})` }
+  } finally {
+    if (descriptor !== null) closeSync(descriptor)
+  }
 }
 
 function listFiles(directory, prefix = '') {
@@ -239,7 +329,9 @@ function verifyCompressedSiblings(expected) {
   for (const relative of expected) {
     const file = safeCatalogPath(relative)
     if (file === null) continue
-    const identity = readFileSync(file)
+    const identityRead = readContainedFile(file)
+    if (!require(identityRead.bytes !== null, `${relative} ${identityRead.reason}`)) continue
+    const identity = identityRead.bytes
     if (identity.length < PRECOMPRESS_MIN_BYTES) continue
     for (const [suffix, inflate] of [
       ['.gz', gunzipSync],
@@ -256,7 +348,9 @@ function verifyCompressedSiblings(expected) {
         continue
       }
       compressed.add(siblingRelative)
-      const packed = readFileSync(sibling)
+      const siblingRead = readContainedFile(sibling)
+      if (!require(siblingRead.bytes !== null, `${siblingRelative} ${siblingRead.reason}`)) continue
+      const packed = siblingRead.bytes
       if (
         !require(
           packed.length <= identity.length + MAX_COMPRESSED_OVERHEAD,
@@ -304,6 +398,9 @@ function verifyCatalog() {
   if (!require(existsSync(DIST_CATALOG), `${DIST_CATALOG} is missing — the build did not publish the catalog`)) {
     return
   }
+  if (!require(rootIsContained(), `${DIST_CATALOG} is not a real directory (a symlinked catalog root redirects everything below it)`)) {
+    return
+  }
   const manifestSchema = JSON.parse(readFileSync(join(SCHEMA_DIR, 'manifest.schema.json'), 'utf8'))
   const manifestPath = safeCatalogPath('manifest.json')
   if (
@@ -315,10 +412,14 @@ function verifyCatalog() {
     return
   }
 
-  const manifestBytes = readFileSync(manifestPath)
+  const manifestRead = readContainedFile(manifestPath)
+  if (!require(manifestRead.bytes !== null, `dist/locale-catalog/manifest.json ${manifestRead.reason}`)) {
+    return
+  }
+  const manifestBytes = manifestRead.bytes
   let manifest = null
   try {
-    manifest = JSON.parse(manifestBytes.toString('utf8'))
+    manifest = parseUntrustedJson(manifestBytes.toString('utf8'))
   } catch (error) {
     require(false, `dist/locale-catalog/manifest.json is not JSON (${error.message})`)
     return
@@ -338,6 +439,24 @@ function verifyCatalog() {
     return
   }
 
+  // The manifest must describe the route it is actually served at, and it must
+  // describe it consistently: nothing here is inferred from the manifest's own
+  // claims about where it lives.
+  const revisionPath = `${ROUTE}/r/${manifest.catalogRevision}/manifest.json`
+  require(manifest.basePath === ROUTE, `basePath is ${manifest.basePath}, not ${ROUTE}`)
+  require(
+    manifest.manifestPath === ROUTE_MANIFEST,
+    `manifestPath is ${manifest.manifestPath}, not ${ROUTE_MANIFEST}`,
+  )
+  require(
+    manifest.revisionManifestPath === revisionPath,
+    `revisionManifestPath is ${manifest.revisionManifestPath}, not the path its own revision derives (${revisionPath})`,
+  )
+  require(
+    manifest.chunkPathPrefix === ROUTE_CHUNK_PREFIX,
+    `chunkPathPrefix is ${manifest.chunkPathPrefix}, not ${ROUTE_CHUNK_PREFIX}`,
+  )
+
   const revisionRelative = `r/${manifest.catalogRevision}/manifest.json`
   const revisionManifest = safeCatalogPath(revisionRelative)
   if (
@@ -346,12 +465,16 @@ function verifyCatalog() {
       'the immutable revision manifest is missing from dist, is a symlink, or is not a regular file',
     )
   ) {
-    const revisionBytes = readFileSync(revisionManifest)
+    const revisionRead = readContainedFile(revisionManifest)
+    if (!require(revisionRead.bytes !== null, `the immutable revision manifest ${revisionRead.reason}`)) {
+      return
+    }
+    const revisionBytes = revisionRead.bytes
     require(revisionBytes.equals(manifestBytes), 'the stable and immutable manifests differ in dist')
     let revisionErrors = ['not JSON']
     try {
       revisionErrors = validateAgainstSchema(
-        JSON.parse(revisionBytes.toString('utf8')),
+        parseUntrustedJson(revisionBytes.toString('utf8')),
         manifestSchema,
         manifestSchema,
       )
@@ -401,9 +524,10 @@ function verifyCatalog() {
       ) {
         continue
       }
-      const bytes = readFileSync(file)
-      require(bytes.length === chunk.bytes, `${chunk.path} size mismatch in dist`)
-      require(sha256Hex(bytes) === chunk.sha256, `${chunk.path} digest mismatch in dist`)
+      const read = readContainedFile(file)
+      if (!require(read.bytes !== null, `${chunk.path} ${read.reason}`)) continue
+      require(read.bytes.length === chunk.bytes, `${chunk.path} size mismatch in dist`)
+      require(sha256Hex(read.bytes) === chunk.sha256, `${chunk.path} digest mismatch in dist`)
     }
   }
 

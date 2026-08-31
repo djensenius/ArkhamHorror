@@ -20,14 +20,20 @@ coverage.
 * The catalog fails closed on anything it can render but would render wrongly,
   and it publishes its gaps rather than hiding them: `backend.untranslatedKeys`
   (a key the backend emits that no locale file defines), `backend.variableGaps`
-  (a message that wants a substitution the backend was not seen to send), and
-  `{"form": "unsupported", "reason": …}` entries with no content.
+  (a message that wants a substitution the backend was not seen to send),
+  `backend.unknownVariableTypes` (a message whose slot the backend does not
+  fill in a form that slot can render), and `{"form": "unsupported", "reason":
+  …}` entries with no content. A key in `unknownVariableTypes` is published as
+  `unsupported` with reason `unusable-variable-type` **in every locale**, so no
+  consumer can mistake it for renderable content.
 * **A consumer MUST treat a missing key, an `unsupported` entry, or an entry
   whose declared variables it cannot supply as unavailable and non-actionable.**
   Rendering a raw key, a partial string, or a placeholder as if it were an
   instruction is a correctness bug in the consumer, not a fallback.
 * At the revision this was written, six backend-emitted keys have no text in
-  any locale file (the Vue client shows the raw key today for the same reason).
+  any locale file, and 23 more are published as unavailable because the backend
+  does not fill their slot in a form the message can render (the Vue client is
+  affected by both today, for the same reasons).
   They are listed, with the emitter site that needs the text, in
   `frontend/scripts/locale-catalog/known-gaps.json`. Closing them is a content
   change and follow-up work; it is not something this catalog can do, and it is
@@ -127,6 +133,11 @@ so a nested `image-set(url(/api/private))` cannot smuggle a resource through. A 
 from a placeholder (`class='{restfulNight3Status}'`) becomes a declared
 `styleVars` entry, so the hint survives as a typed variable instead of being
 dropped.
+
+Variable coverage is checked by role *and* type, not by name: the catalog
+declares a role for every slot, the backend registry proves a type for most
+names, and a slot the registry cannot type is not a pass. Those entries become
+`unsupported`.
 
 Variables are **never interpolated at generation time**. The backend's
 `I18nEntry.variables` are substituted by the client, exactly as vue-i18n does
@@ -357,14 +368,25 @@ old static root and vice versa).
 `frontend/scripts/locale-catalog/verify-dist.mjs` proves the built `dist/`
 really contains the catalog with matching digests and precompressed siblings.
 A restored manifest is untrusted input — it names every path that is read and
-every digest that is compared — so both manifests are validated against the
-published v1 schema, every chunk path must be exactly
-`<basePath>/c/<sha256>.json` with the name matching the digest the descriptor
-promises, every path component is `lstat`ed rather than followed (no symlinks,
-no non-regular files, no traversal, no absolute or platform paths, nothing
-outside the catalog), and the identity/`.gz`/`.br` artifact sets are compared
-with the manifest in both directions, so nothing unlisted can sit where nginx
-would serve it;
+every digest that is compared — so:
+
+* both manifests are validated against the published v1 schema, parsed into
+  null-prototype objects with `__proto__` refused, and checked with own-property
+  lookups throughout, so `constructor`/`toString` cannot pose as declared
+  fields;
+* the manifest must describe **the route it is served at**: `basePath`
+  `/locale-catalog`, `manifestPath` `/locale-catalog/manifest.json`,
+  `chunkPathPrefix` `/locale-catalog/c/` (all `const` in the schema), and a
+  `revisionManifestPath` that its own `catalogRevision` derives;
+* every chunk path is exactly `/locale-catalog/c/<sha256>.json` and the name
+  must be the digest the descriptor promises;
+* every path component is `lstat`ed rather than followed, the catalog root
+  included, and every artifact is opened `O_NOFOLLOW` then `fstat`ed and read
+  through that same descriptor — regular file, `nlink == 1` — so neither a
+  symlink, a hard link, nor a path swapped between the check and the read can
+  substitute bytes;
+* the identity/`.gz`/`.br` artifact sets are compared with the manifest in both
+  directions, so nothing unlisted can sit where nginx would serve it;
 the offline build runs the same check against its own output — before both of
 its cache-hit returns — and hashes every catalog provenance input into its
 cache key, so a stale `_deps/frontend` can never be reused.

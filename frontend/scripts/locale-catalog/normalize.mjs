@@ -409,6 +409,7 @@ export const UNSUPPORTED_REASONS = Object.freeze([
   'misplaced-table-content',
   'unresolved-link',
   'conflicting-variable-role',
+  'unusable-variable-type',
   'invalid-style-declaration',
   'unsupported-link-target',
   'link-cycle',

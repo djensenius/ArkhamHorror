@@ -31,21 +31,21 @@
       "pattern": "^1\\.[0-9a-f]{32}$"
     },
     "basePath": {
-      "$ref": "#/$defs/absolutePath"
+      "description": "The route this catalog is published at. Pinned: prod.nginxconf serves exactly this prefix.",
+      "const": "/locale-catalog"
     },
     "manifestPath": {
-      "$ref": "#/$defs/absolutePath"
+      "description": "Stable manifest URL. Pinned to the published route.",
+      "const": "/locale-catalog/manifest.json"
     },
     "revisionManifestPath": {
-      "$ref": "#/$defs/absolutePath"
+      "description": "Immutable manifest URL for this revision; must be the path catalogRevision derives.",
+      "type": "string",
+      "pattern": "^/locale-catalog/r/1\\.[0-9a-f]{32}/manifest\\.json$"
     },
     "chunkPathPrefix": {
-      "description": "Prefix of every content-addressed chunk URL. Chunk paths carry only the content digest, so an unchanged pack keeps its URL across revisions and stays available from replicas of either revision during a rolling deploy.",
-      "type": "string",
-      "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*/$",
-      "not": {
-        "pattern": "(^|/)\\.\\.?(/|$)"
-      }
+      "description": "Prefix of every content-addressed chunk URL. Chunk paths carry only the content digest, so an unchanged pack keeps its URL across revisions and stays available from replicas of either revision during a rolling deploy. Pinned to the published route.",
+      "const": "/locale-catalog/c/"
     },
     "digestAlgorithm": {
       "const": "sha256"
@@ -128,12 +128,9 @@
                   "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
                 },
                 "path": {
-                  "description": "Immutable, content-addressed absolute path. Its bytes can never change behind this URL.",
+                  "description": "Immutable, content-addressed absolute path under the published route. Its bytes can never change behind this URL.",
                   "type": "string",
-                  "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*\\.json$",
-                  "not": {
-                    "pattern": "(^|/)\\.\\.?(/|$)"
-                  }
+                  "pattern": "^/locale-catalog/c/[0-9a-f]{64}\\.json$"
                 },
                 "bytes": {
                   "$ref": "#/$defs/count"
@@ -193,7 +190,8 @@
         "requiredKeys",
         "untranslatedKeys",
         "variableGaps",
-        "dynamicSites"
+        "dynamicSites",
+        "unknownVariableTypes"
       ],
       "properties": {
         "artifactPath": {
@@ -251,6 +249,38 @@
         "dynamicSites": {
           "description": "Emission sites in the backend whose key or scope is not statically resolvable, as counted by the extractor.",
           "$ref": "#/$defs/count"
+        },
+        "unknownVariableTypes": {
+          "description": "Required keys whose message needs a variable the backend does not send in a form the slot can render. Those entries are published as `unsupported` with reason `unusable-variable-type`; a consumer must treat them as unavailable.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "variable",
+              "role",
+              "type"
+            ],
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/messageKey"
+              },
+              "variable": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]{1,64}$"
+              },
+              "role": {
+                "enum": [
+                  "text"
+                ]
+              },
+              "type": {
+                "type": "string",
+                "maxLength": 32
+              }
+            }
+          }
         }
       }
     },

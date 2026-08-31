@@ -154,8 +154,17 @@ test('every backend-emitted key the default locale translates renders', () => {
   }
 
   const translated = emitted.filter((key) => entries.has(key))
-  const unsupported = translated.filter((key) => entries.get(key).form === 'unsupported')
+  // The one exception is deliberate and visible: an entry whose slot the
+  // backend cannot fill is published as unsupported *and* listed in the
+  // manifest, so a consumer sees the hole rather than a broken instruction.
+  const unusable = new Set(built.manifest.backend.unknownVariableTypes.map((entry) => entry.key))
+  const unsupported = translated.filter(
+    (key) => entries.get(key).form === 'unsupported' && !unusable.has(key),
+  )
   assert.deepEqual(unsupported, [], 'backend-emitted keys may never be unsupported')
+  for (const key of unusable) {
+    assert.equal(entries.get(key)?.reason, 'unusable-variable-type', `${key} reason`)
+  }
   assert.equal(built.manifest.backend.emittedKeys, emitted.length)
   assert.deepEqual(
     built.manifest.backend.untranslatedKeys,
@@ -247,6 +256,7 @@ test('the published AST is closed, safe, and fully declared', () => {
     assert.ok(
       [
         'message-syntax-error',
+        'unusable-variable-type',
         'unsupported-message-syntax',
         'html-parse-error',
         'unsupported-element',
@@ -480,4 +490,56 @@ test('a conflict detail is truncated to the bound the schema publishes', () => {
   )
   const branch = schema.$defs.entry.oneOf.find((candidate) => candidate.properties?.detail)
   assert.equal(branch.properties.detail.maxLength, MAX_UNSUPPORTED_DETAIL)
+})
+
+test('a variable the backend cannot type makes the entry unavailable, in every locale', async () => {
+  const built = await buildCatalog({})
+  const listed = built.manifest.backend.unknownVariableTypes
+  assert.ok(Array.isArray(listed), 'the manifest must publish unknownVariableTypes')
+
+  // Nothing may be published as renderable while its slot is unproven.
+  for (const { key, variable, role, type } of listed) {
+    assert.ok(['text', 'icon'].includes(role), `${key}.${variable} has role ${role}`)
+    assert.notEqual(type, 'integer', `${key}.${variable} is integer and should have been accepted`)
+    for (const locale of built.manifest.locales) {
+      const entry = chunkFor(built.files, built.manifest, locale.locale, key)?.entries[key]
+      if (entry === undefined) continue
+      assert.equal(
+        entry.form,
+        'unsupported',
+        `${key} is still published as renderable in ${locale.locale}`,
+      )
+      assert.equal(entry.reason, 'unusable-variable-type', `${key} reason in ${locale.locale}`)
+    }
+  }
+
+  // …and the ones the source does prove stay supported, with their type.
+  const proven = 'edgeOfTheEarth.iceAndDeath.part3.investigatorSetup.body'
+  assert.equal(backendRegistry.keys.find((entry) => entry.key === proven).variables.find(
+    (variable) => variable.name === 'shelterValue',
+  ).type, 'integer')
+  assert.ok(
+    !listed.some((entry) => entry.key === proven),
+    'a proven integer variable was reported as unusable',
+  )
+  assert.equal(
+    chunkFor(built.files, built.manifest, built.manifest.defaultLocale, proven)?.entries[proven]
+      ?.form,
+    'message',
+  )
+})
+
+test('variable coverage compares role and type, not just the name', async () => {
+  const built = await buildCatalog({})
+  const listed = built.manifest.backend.unknownVariableTypes
+  // Every listed pair is a name the backend *does* send — the failure is what
+  // it sends, which a name-only check would have missed entirely.
+  for (const { key, variable } of listed.slice(0, 20)) {
+    const record = backendRegistry.keys.find((entry) => entry.key === key)
+    assert.ok(record, `${key} is not in the registry`)
+    assert.ok(
+      record.variables.some((declared) => declared.name === variable),
+      `${key} does not declare ${variable}; this should have been a missing-variable gap`,
+    )
+  }
 })

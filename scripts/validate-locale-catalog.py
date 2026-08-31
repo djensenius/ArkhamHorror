@@ -522,8 +522,18 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
         "the manifest's untranslated-key list does not match the catalog",
     )
 
+    # One deliberate exception: an entry whose slot the backend cannot fill is
+    # published as unsupported *and* named in the manifest, so a consumer sees
+    # the hole in the schema instead of a broken instruction.
+    unusable = {entry["key"] for entry in backend["unknownVariableTypes"]}
     for key in sorted(translated):
         entry = entries[key]
+        if key in unusable:
+            require(
+                entry["form"] == "unsupported" and entry.get("reason") == "unusable-variable-type",
+                f"{key} is listed in backend.unknownVariableTypes but is published as renderable",
+            )
+            continue
         require(
             entry["form"] != "unsupported",
             f"backend-emitted key {key} is unsupported ({entry.get('reason')}): it cannot be optional",
@@ -532,6 +542,8 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
     gaps = []
     for key in sorted(translated):
         entry = entries[key]
+        if entry["form"] == "unsupported":
+            continue
         needed = {
             variable["name"]
             for variable in entry["variables"]

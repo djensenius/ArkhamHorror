@@ -630,7 +630,70 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
     )
   }
 
-  // Entries the catalog cannot publish but that no required key depends on.
+  // Variable coverage. Two questions, not one: does the backend send this
+  // name at all, and does it send something the message can render?
+  //
+  // A name is not enough. The catalog declares a *role* for every variable and
+  // the registry proves a *type* for most of them; where the registry could
+  // not prove one, "unknown" is not a pass — a client cannot be told an entry
+  // is supported when nobody knows what will arrive in its slot. Those entries
+  // are published as `unsupported` and listed in the manifest, so a consumer
+  // sees the hole in the schema rather than discovering it at the table.
+  const ROLE_ACCEPTS = { text: new Set(['text', 'integer']) }
+  const variableGaps = []
+  const unknownVariableTypes = []
+  for (const key of [...requiredKeys].sort()) {
+    const record = backend.keys.get(key)
+    if (record === undefined) continue
+    const entry = defaultEntries.get(key)
+    if (entry.form === 'unsupported') continue
+
+    // Only a `text` slot is filled by the backend: an `icon` name is rendered
+    // by the client from its own icon set, and a `presentation` name only
+    // styles.
+    const needed = [...entry.variables, ...(entry.linkedVariables ?? [])].filter(
+      (variable) => variable.source === 'named' && variable.role === 'text',
+    )
+    const missing = needed
+      .filter((variable) => !record.variables.has(variable.name))
+      .map((variable) => variable.name)
+    if (missing.length > 0) {
+      variableGaps.push({
+        key,
+        missing,
+        declared: [...record.variables.keys()].sort(),
+        resolved: record.variables.size > 0,
+      })
+    }
+
+    const unusable = needed
+      .filter((variable) => record.variables.has(variable.name))
+      .map((variable) => ({ variable, type: record.variables.get(variable.name) }))
+      .filter(({ variable, type }) => !(ROLE_ACCEPTS[variable.role] ?? new Set()).has(type))
+    if (unusable.length === 0) continue
+
+    for (const { variable, type } of unusable) {
+      unknownVariableTypes.push({ key, variable: variable.name, role: variable.role, type })
+    }
+    // Every locale, not just the default: the entry is unrenderable because of
+    // what the backend sends, which does not vary by language.
+    const detail = unusable
+      .map(({ variable, type }) => `${variable.name} is ${type} for a ${variable.role} slot`)
+      .join('; ')
+    for (const entries of normalized.values()) {
+      const localeEntry = entries.get(key)
+      if (localeEntry === undefined || localeEntry.form === 'unsupported') continue
+      entries.set(key, {
+        form: 'unsupported',
+        reason: 'unusable-variable-type',
+        detail: truncateDetail(detail),
+      })
+    }
+  }
+  unknownVariableTypes.sort((a, b) => (a.key === b.key ? (a.variable < b.variable ? -1 : 1) : a.key < b.key ? -1 : 1))
+
+  // Every entry the catalog cannot publish, taken after the variable pass so a
+  // downgrade it made is visible here too.
   const unsupportedEntries = []
   for (const [locale, entries] of normalized) {
     for (const [key, entry] of entries) {
@@ -641,34 +704,12 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
     a.locale === b.locale ? (a.key < b.key ? -1 : 1) : a.locale < b.locale ? -1 : 1,
   )
 
-  // Variable coverage: a message that needs a substitution the backend never
-  // sends renders with a hole. Where the extractor resolved a key's variables,
-  // a contradiction is a hard failure; where it resolved none, the pairing is
-  // reported rather than guessed at (the extractor states its own dynamic
-  // coverage in the artifact).
-  const variableGaps = []
-  for (const key of [...requiredKeys].sort()) {
-    const record = backend.keys.get(key)
-    if (record === undefined) continue
-    const entry = defaultEntries.get(key)
-    if (entry.form === 'unsupported') continue
-    const needed = [...entry.variables, ...(entry.linkedVariables ?? [])]
-      .filter((variable) => variable.source === 'named' && variable.role === 'text')
-      .map((variable) => variable.name)
-    const missing = needed.filter((name) => !record.variables.has(name))
-    if (missing.length === 0) continue
-    if (record.variables.size > 0) {
-      variableGaps.push({ key, missing, declared: [...record.variables.keys()].sort(), resolved: true })
-    } else {
-      variableGaps.push({ key, missing, declared: [], resolved: false })
-    }
-  }
-
   const gaps = {
     sites: new Map(untranslated.map((key) => [key, backend.keys.get(key)?.site])),
     untranslatedKeys: untranslated,
     unsupportedEntries,
     variableGaps: variableGaps.map(({ key, missing }) => ({ key, missing })),
+    unknownVariableTypes,
   }
   enforceKnownGaps(gaps, options.updateKnownGaps === true)
 
@@ -789,6 +830,7 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
       emittedKeys: backend.keys.size,
       requiredKeys: requiredKeys.size,
       untranslatedKeys: untranslated,
+      unknownVariableTypes,
       variableGaps: variableGaps.map((gap) => ({
         key: gap.key,
         missing: gap.missing,
@@ -916,6 +958,10 @@ const JUSTIFICATIONS = Object.freeze({
     'the entry belongs to the web UI rather than gameplay (the About page), is never emitted by ' +
     'the backend, and carries markup — links, tables of contents — that the render AST does not ' +
     'model.',
+  'unusable-variable-type':
+    'the message needs a substitution the backend does not send in a form the slot can render, ' +
+    'so the entry is published as `unsupported` and a consumer must treat it as unavailable. It is ' +
+    'listed in the manifest under `backend.unknownVariableTypes`.',
   'source-syntax':
     'the source string is not valid vue-i18n message syntax, so neither the catalog nor the Vue ' +
     'client can render it; it is not backend-emitted.',
@@ -930,11 +976,14 @@ function enforceKnownGaps(actual, update) {
       'JUSTIFICATIONS. Regenerate deliberately with ' +
       '`node scripts/locale-catalog/generate.mjs --update-known-gaps`; every change must be reviewed.',
     justifications: JUSTIFICATIONS,
+    unknownVariableTypes: actual.unknownVariableTypes,
     unsupportedEntries: actual.unsupportedEntries.map((entry) => ({
       ...entry,
-      justification: previous.unsupportedEntries?.find(
-        (candidate) => candidate.key === entry.key && candidate.locale === entry.locale,
-      )?.justification,
+      justification:
+        previous.unsupportedEntries?.find(
+          (candidate) => candidate.key === entry.key && candidate.locale === entry.locale,
+        )?.justification ??
+        (entry.reason === 'unusable-variable-type' ? 'unusable-variable-type' : undefined),
     })),
     untranslatedKeys: actual.untranslatedKeys.map((key) => ({
       key,
@@ -982,6 +1031,7 @@ function enforceKnownGaps(actual, update) {
   compare('unsupported entry', rendered.unsupportedEntries, expected.unsupportedEntries)
   compare('untranslated key', rendered.untranslatedKeys, expected.untranslatedKeys)
   compare('variable gap', rendered.variableGaps, expected.variableGaps)
+  compare('unusable variable type', rendered.unknownVariableTypes, expected.unknownVariableTypes)
 
   if (differences.length > 0) {
     fail(

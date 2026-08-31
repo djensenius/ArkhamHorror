@@ -139,6 +139,22 @@ jq_manifest() {
   ' "${copy}/locale-catalog/manifest.json" "$1"
 }
 
+# Recompresses the manifests it rewrote, so a rejection proves the intended
+# rule and not a stale `.gz`/`.br` sibling.
+recompress_manifests() {
+  local copy="$1" file
+  while IFS= read -r file; do
+    [ -f "${file}.gz" ] && gzip -9 -c "$file" > "${file}.gz"
+    [ -f "${file}.br" ] && node -e '
+      const {brotliCompressSync, constants} = require("node:zlib")
+      const fs = require("fs")
+      fs.writeFileSync(process.argv[2], brotliCompressSync(fs.readFileSync(process.argv[1]), {
+        params: {[constants.BROTLI_PARAM_QUALITY]: 11},
+      }))
+    ' "$file" "${file}.br"
+  done < <(find "${copy}/locale-catalog" -name manifest.json)
+}
+
 mutate_manifest_and_expect_reject() {
   local label="$1" name="$2" script="$3"
   local copy="${WORK}/${name}"
@@ -146,6 +162,7 @@ mutate_manifest_and_expect_reject() {
   mkdir -p "$copy"
   cp -R "${DIST}/." "$copy/"
   jq_manifest "$copy" "$script"
+  recompress_manifests "$copy"
   if verify_cached_locale_catalog "$copy" >/dev/null 2>&1; then
     fail "${label} was accepted from a restored cache"
   fi
@@ -171,6 +188,26 @@ mutate_manifest_and_expect_reject "a schema-invalid manifest" schema-invalid \
   'manifest.digestAlgorithm = "md5"'
 mutate_manifest_and_expect_reject "an unknown manifest field" schema-extra \
   'manifest.somethingElse = true'
+
+# The manifest must describe the route it is actually served at.
+mutate_manifest_and_expect_reject "a manifest published at another route" route-base \
+  'manifest.basePath = "/outside-catalog"; for (const l of manifest.locales) for (const c of l.chunks) c.path = c.path.replace("/locale-catalog", "/outside-catalog"); manifest.manifestPath = "/outside-catalog/manifest.json"; manifest.chunkPathPrefix = "/outside-catalog/c/"; manifest.revisionManifestPath = manifest.revisionManifestPath.replace("/locale-catalog", "/outside-catalog")'
+mutate_manifest_and_expect_reject "a manifest that names another manifest URL" route-manifest \
+  'manifest.manifestPath = "/locale-catalog/other.json"'
+mutate_manifest_and_expect_reject "a revision manifest path its revision does not derive" route-revision \
+  'manifest.revisionManifestPath = "/locale-catalog/r/1." + "0".repeat(32) + "/manifest.json"'
+mutate_manifest_and_expect_reject "a chunk prefix that is not the served one" route-prefix \
+  'manifest.chunkPathPrefix = "/locale-catalog/chunks/"'
+
+# Inherited names must not look like declared properties.
+mutate_manifest_and_expect_reject "a constructor property" proto-constructor \
+  'manifest.constructor = "x"'
+mutate_manifest_and_expect_reject "a toString property" proto-tostring \
+  'manifest.toString = "x"'
+mutate_manifest_and_expect_reject "a nested prototype-like property" proto-nested \
+  'manifest.locales[0].chunks[0].constructor = "x"'
+mutate_manifest_and_expect_reject "a literal __proto__ key" proto-literal \
+  'Object.defineProperty(manifest, "__proto__", {value: {}, enumerable: true, configurable: true, writable: true})'
 
 # A symlink is a way to serve bytes from outside the route that the digest
 # check would otherwise bless, whether it is a chunk, a compressed sibling or a
@@ -199,6 +236,23 @@ symlink_and_expect_reject "a symlinked compressed sibling" symlink-gz \
   bash -c "rm -f '${SAMPLE_GZ}' && ln -s '${OUTSIDE}/chunk.json.gz' '${SAMPLE_GZ}'"
 symlink_and_expect_reject "a symlinked chunk directory" symlink-dir \
   bash -c "mv c c-real && ln -s c-real c"
+symlink_and_expect_reject "a hard-linked chunk" hardlink-chunk \
+  bash -c "rm -f '${SAMPLE_JSON}' && ln '${OUTSIDE}/chunk.json' '${SAMPLE_JSON}'"
+symlink_and_expect_reject "a hard-linked compressed sibling" hardlink-gz \
+  bash -c "rm -f '${SAMPLE_GZ}' && ln '${OUTSIDE}/chunk.json.gz' '${SAMPLE_GZ}'"
+symlink_and_expect_reject "a hard-linked manifest" hardlink-manifest \
+  bash -c "cp manifest.json '${OUTSIDE}/manifest.json' && rm -f manifest.json && ln '${OUTSIDE}/manifest.json' manifest.json"
+
+# The catalog root itself must be a real directory.
+ROOTLINK="${WORK}/rootlink"
+rm -rf "$ROOTLINK"
+mkdir -p "$ROOTLINK"
+cp -R "${DIST}/." "$ROOTLINK/"
+mv "${ROOTLINK}/locale-catalog" "${ROOTLINK}/locale-catalog-real"
+ln -s locale-catalog-real "${ROOTLINK}/locale-catalog"
+if verify_cached_locale_catalog "$ROOTLINK" >/dev/null 2>&1; then
+  fail "a symlinked catalog root was accepted from a restored cache"
+fi
 
 # The strict check (used after a real build) must still demand `public/`, and
 # it owns the destructive behaviour, so it gets its own throwaway copy.

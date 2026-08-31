@@ -200,7 +200,8 @@
                 "conflicting-variable-role",
                 "invalid-style-declaration",
                 "unsupported-link-target",
-                "link-cycle"
+                "link-cycle",
+                "unusable-variable-type"
               ]
             },
             "detail": {
