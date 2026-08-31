@@ -21,22 +21,38 @@
     "provenance"
   ],
   "properties": {
-    "schemaVersion": { "type": "string", "const": "1.0.0" },
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
     "catalogRevision": {
       "description": "Deterministic content revision: '1.' plus the first 32 hex characters of provenance.sha256.",
       "type": "string",
       "pattern": "^1\\.[0-9a-f]{32}$"
     },
-    "basePath": { "$ref": "#/$defs/absolutePath" },
-    "manifestPath": { "$ref": "#/$defs/absolutePath" },
-    "revisionManifestPath": { "$ref": "#/$defs/absolutePath" },
+    "basePath": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "manifestPath": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "revisionManifestPath": {
+      "$ref": "#/$defs/absolutePath"
+    },
     "chunkPathPrefix": {
       "description": "Prefix of every content-addressed chunk URL. Chunk paths carry only the content digest, so an unchanged pack keeps its URL across revisions and stays available from replicas of either revision during a rolling deploy.",
       "type": "string",
-      "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*/$"
+      "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*/$",
+      "not": {
+        "pattern": "(^|/)\\.\\.?(/|$)"
+      }
     },
-    "digestAlgorithm": { "const": "sha256" },
-    "defaultLocale": { "$ref": "#/$defs/locale" },
+    "digestAlgorithm": {
+      "const": "sha256"
+    },
+    "defaultLocale": {
+      "$ref": "#/$defs/locale"
+    },
     "languageResolution": {
       "description": "How the production web client resolves BCP-47 tags to catalog locales, so native clients match it exactly.",
       "type": "array",
@@ -44,10 +60,18 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["tag", "locale"],
+        "required": [
+          "tag",
+          "locale"
+        ],
         "properties": {
-          "tag": { "type": "string", "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$" },
-          "locale": { "$ref": "#/$defs/locale" }
+          "tag": {
+            "type": "string",
+            "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+          },
+          "locale": {
+            "$ref": "#/$defs/locale"
+          }
         }
       }
     },
@@ -57,31 +81,72 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["locale", "fallback", "chunks", "keys", "bytes"],
+        "required": [
+          "locale",
+          "fallback",
+          "chunks",
+          "keys",
+          "bytes"
+        ],
         "properties": {
-          "locale": { "$ref": "#/$defs/locale" },
-          "fallback": { "oneOf": [{ "$ref": "#/$defs/locale" }, { "type": "null" }] },
-          "keys": { "$ref": "#/$defs/count" },
-          "bytes": { "$ref": "#/$defs/count" },
+          "locale": {
+            "$ref": "#/$defs/locale"
+          },
+          "fallback": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/locale"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "keys": {
+            "$ref": "#/$defs/count"
+          },
+          "bytes": {
+            "$ref": "#/$defs/count"
+          },
           "chunks": {
             "type": "array",
             "minItems": 1,
             "items": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["pack", "path", "bytes", "sha256", "keys", "unsupportedKeys"],
+              "required": [
+                "pack",
+                "path",
+                "bytes",
+                "sha256",
+                "keys",
+                "unsupportedKeys"
+              ],
               "properties": {
-                "pack": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" },
+                "pack": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+                },
                 "path": {
                   "description": "Immutable, content-addressed absolute path. Its bytes can never change behind this URL.",
                   "type": "string",
                   "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*\\.json$",
-                  "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+                  "not": {
+                    "pattern": "(^|/)\\.\\.?(/|$)"
+                  }
                 },
-                "bytes": { "$ref": "#/$defs/count" },
-                "sha256": { "$ref": "#/$defs/sha256" },
-                "keys": { "$ref": "#/$defs/count" },
-                "unsupportedKeys": { "$ref": "#/$defs/count" }
+                "bytes": {
+                  "$ref": "#/$defs/count"
+                },
+                "sha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "keys": {
+                  "$ref": "#/$defs/count"
+                },
+                "unsupportedKeys": {
+                  "$ref": "#/$defs/count"
+                }
               }
             }
           }
@@ -91,13 +156,29 @@
     "totals": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["locales", "chunks", "bytes", "keys", "unsupportedKeys"],
+      "required": [
+        "locales",
+        "chunks",
+        "bytes",
+        "keys",
+        "unsupportedKeys"
+      ],
       "properties": {
-        "locales": { "$ref": "#/$defs/count" },
-        "chunks": { "$ref": "#/$defs/count" },
-        "bytes": { "$ref": "#/$defs/count" },
-        "keys": { "$ref": "#/$defs/count" },
-        "unsupportedKeys": { "$ref": "#/$defs/count" }
+        "locales": {
+          "$ref": "#/$defs/count"
+        },
+        "chunks": {
+          "$ref": "#/$defs/count"
+        },
+        "bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "keys": {
+          "$ref": "#/$defs/count"
+        },
+        "unsupportedKeys": {
+          "$ref": "#/$defs/count"
+        }
       }
     },
     "backend": {
@@ -115,16 +196,29 @@
         "dynamicSites"
       ],
       "properties": {
-        "artifactPath": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.json$" },
-        "artifactSha256": { "$ref": "#/$defs/sha256" },
-        "sourceSha256": { "$ref": "#/$defs/sha256" },
-        "emittedKeys": { "$ref": "#/$defs/count" },
-        "requiredKeys": { "$ref": "#/$defs/count" },
+        "artifactPath": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.json$"
+        },
+        "artifactSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sourceSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "emittedKeys": {
+          "$ref": "#/$defs/count"
+        },
+        "requiredKeys": {
+          "$ref": "#/$defs/count"
+        },
         "untranslatedKeys": {
           "description": "Keys the backend emits that no default-locale message translates. Clients render these as unavailable; the gate fails when the list changes without the artifact being regenerated.",
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/messageKey" }
+          "items": {
+            "$ref": "#/$defs/messageKey"
+          }
         },
         "variableGaps": {
           "description": "Required keys whose message needs a substitution the extracted backend record does not list. `resolved` marks the cases where the extractor did resolve that key's variables, so the mismatch is a genuine contradiction rather than an unresolved call site.",
@@ -132,11 +226,25 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["key", "missing", "resolved"],
+            "required": [
+              "key",
+              "missing",
+              "resolved"
+            ],
             "properties": {
-              "key": { "$ref": "#/$defs/messageKey" },
-              "missing": { "type": "array", "items": { "type": "string", "pattern": "^[A-Za-z0-9_]{1,64}$" } },
-              "resolved": { "type": "boolean" }
+              "key": {
+                "$ref": "#/$defs/messageKey"
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_]{1,64}$"
+                }
+              },
+              "resolved": {
+                "type": "boolean"
+              }
             }
           }
         },
@@ -162,7 +270,9 @@
         "generatorSha256"
       ],
       "properties": {
-        "sha256": { "$ref": "#/$defs/sha256" },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
         "outputSha256": {
           "description": "Digest of the rendered catalog content before it was addressed, so the revision changes when the output changes even if the inputs look the same.",
           "$ref": "#/$defs/sha256"
@@ -170,24 +280,45 @@
         "generator": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["name", "version"],
+          "required": [
+            "name",
+            "version"
+          ],
           "properties": {
-            "name": { "const": "arkham-locale-catalog" },
-            "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+            "name": {
+              "const": "arkham-locale-catalog"
+            },
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            }
           }
         },
-        "contractRevision": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$" },
+        "contractRevision": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)*$"
+        },
         "fixtureKeys": {
           "description": "Keys taken from the governed contract fixtures that this revision guarantees resolve in the default locale.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/messageKey" }
+          "items": {
+            "$ref": "#/$defs/messageKey"
+          }
         },
-        "localeSourceFiles": { "$ref": "#/$defs/count" },
-        "localeSourcesSha256": { "$ref": "#/$defs/sha256" },
-        "schemasSha256": { "$ref": "#/$defs/sha256" },
-        "generatorSha256": { "$ref": "#/$defs/sha256" }
+        "localeSourceFiles": {
+          "$ref": "#/$defs/count"
+        },
+        "localeSourcesSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "schemasSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "generatorSha256": {
+          "$ref": "#/$defs/sha256"
+        }
       }
     }
   },
@@ -195,16 +326,27 @@
     "absolutePath": {
       "type": "string",
       "pattern": "^/[A-Za-z0-9][A-Za-z0-9._/-]*$",
-      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+      "not": {
+        "pattern": "(^|/)\\.\\.?(/|$)"
+      }
     },
-    "locale": { "type": "string", "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$" },
+    "locale": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+    },
     "messageKey": {
       "description": "Dotted vue-i18n key, using the same grammar as the chunk schema so any key the catalog can publish can also be named here.",
       "type": "string",
       "maxLength": 512,
       "pattern": "^[^\\u0000-\\u001f\\u007f./\\\\\\ue000\\ue001]+(\\.[^\\u0000-\\u001f\\u007f./\\\\\\ue000\\ue001]+)*$"
     },
-    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "count": { "type": "integer", "minimum": 0 }
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    }
   }
 }

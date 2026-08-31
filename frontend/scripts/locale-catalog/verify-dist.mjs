@@ -119,6 +119,11 @@ function validateAgainstSchema(value, schema, root, path = '', errors = []) {
       validateAgainstSchema(entry, property, root, `${at}.${name}`, errors)
     }
   }
+  if (schema.not) {
+    if (validateAgainstSchema(value, schema.not, root, at, []).length === 0) {
+      errors.push(`${at} matches a forbidden pattern`)
+    }
+  }
   if (schema.oneOf) {
     const matches = schema.oneOf.filter(
       (branch) => validateAgainstSchema(value, branch, root, at, []).length === 0,
