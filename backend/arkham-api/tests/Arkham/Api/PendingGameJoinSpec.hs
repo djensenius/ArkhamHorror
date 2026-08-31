@@ -48,9 +48,10 @@ step it performs. This lets us assert:
   group of an event via the pending-lobby path is then rejected claiming a
   DIFFERENT group of the SAME event via claim-seat, and vice versa -- proving
   the two entry points cannot independently drift, because both ultimately
-  delegate to the identical 'Api.Arkham.Epic.reserveEpicGroupMembership'
-  primitive (mirrored here by the identical pure reservation semantics in
-  both instances below);
+  delegate to the identical, legacy-aware
+  'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' primitive
+  (mirrored here by the identical pure reservation semantics in both
+  instances below);
 * legacy-seat reconciliation -- a bare 'Entity.Arkham.Player.ArkhamPlayer'
   row in some OTHER game of this event with NO membership row at all,
   predating the reservation machinery entirely -- is modelled directly by
@@ -153,9 +154,12 @@ data FailAt
 mutable analogue of the @arkham_epic_members@ table's 'UniqueEpicMember'
 unique key (event, user) -> ordinal -- 'reservePendingJoinMembership'
 actually reads AND writes it, exactly like the production
-'Api.Arkham.Epic.reserveEpicGroupMembership' it delegates to, and exactly
-like "Arkham.Api.ClaimSeatSpec"'s own 'reserveClaimSeatMembership'
-analogue. 'legacySeats' is an INDEPENDENT analogue of every OTHER game's
+'Api.Arkham.Epic.reserveEpicGroupMembershipReconciling' it delegates to
+(which itself falls through to the ordinary
+'Api.Arkham.Epic.reserveEpicGroupMembership' formula once its own
+legacy-seat check clears), and exactly like
+"Arkham.Api.ClaimSeatSpec"'s own 'reserveClaimSeatMembership' analogue.
+'legacySeats' is an INDEPENDENT analogue of every OTHER game's
 linked 'Entity.Arkham.Player.ArkhamPlayer' row for this (event, user) that
 predates the reservation machinery entirely -- a bare seat with no
 membership row at all -- exactly what
