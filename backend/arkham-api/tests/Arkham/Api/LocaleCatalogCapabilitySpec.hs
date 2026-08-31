@@ -148,14 +148,60 @@ instance FromJSON AllowedDifferences where
   parseJSON = withObject "allowedDifferences" \o ->
     AllowedDifferences <$> o .: "disabled" <*> o .: "advertised"
 
+{- | @catalogRevisionChecks@: the same two-sided binding as
+@manifestUrlChecks@, for the revision grammar.
+-}
+data CatalogRevisionChecks = CatalogRevisionChecks
+  { schemaVersion :: Text
+  , accepted :: [AcceptedCatalogRevision]
+  , rejected :: [RejectedCatalogRevision]
+  }
+
+newtype AcceptedCatalogRevision = AcceptedCatalogRevision {configured :: Text}
+
+data RejectedCatalogRevision = RejectedCatalogRevision
+  { configured :: Text
+  , reason :: Text
+  }
+
+instance FromJSON CatalogRevisionChecks where
+  parseJSON = withObject "catalogRevisionChecks" \o ->
+    CatalogRevisionChecks <$> o .: "schemaVersion" <*> o .: "accepted" <*> o .: "rejected"
+
+instance FromJSON AcceptedCatalogRevision where
+  parseJSON = withObject "catalogRevisionChecks.accepted" \o ->
+    AcceptedCatalogRevision <$> o .: "configured"
+
+instance FromJSON RejectedCatalogRevision where
+  parseJSON = withObject "catalogRevisionChecks.rejected" \o ->
+    RejectedCatalogRevision <$> o .: "configured" <*> o .: "reason"
+
 data ContractManifest = ContractManifest
   { manifestUrlChecks :: ManifestUrlChecks
+  , catalogRevisionChecks :: CatalogRevisionChecks
   , legacyCompatibilityChecks :: LegacyCompatibility
   }
 
 instance FromJSON ContractManifest where
   parseJSON = withObject "contracts/manifest.json" \o ->
-    ContractManifest <$> o .: "manifestUrlChecks" <*> o .: "legacyCompatibilityChecks"
+    ContractManifest
+      <$> o .: "manifestUrlChecks"
+      <*> o .: "catalogRevisionChecks"
+      <*> o .: "legacyCompatibilityChecks"
+
+-- | The constructor name, as the governed table spells it.
+configErrorName :: LocaleCatalogConfigError -> Text
+configErrorName = \case
+  PartiallyConfigured _ -> "PartiallyConfigured"
+  InvalidManifestUrl _ -> "InvalidManifestUrl"
+  InvalidCatalogRevision _ -> "InvalidCatalogRevision"
+  UnsupportedSchemaVersion _ -> "UnsupportedSchemaVersion"
+  CatalogRevisionSchemaMismatch _ _ -> "CatalogRevisionSchemaMismatch"
+  InvalidManifestSha256 _ -> "InvalidManifestSha256"
+  InvalidLocaleTag _ _ -> "InvalidLocaleTag"
+  DuplicateLocaleTag _ -> "DuplicateLocaleTag"
+  TooManySupportedLocales _ -> "TooManySupportedLocales"
+  DefaultLocaleNotSupported _ -> "DefaultLocaleNotSupported"
 
 {- | Drop exactly the members a revision is allowed to differ in, so what is
 left has to be the 0.1.22 shape and nothing else.
@@ -191,7 +237,16 @@ spec = do
   catalog <- runIO loadSyntheticCatalog
   contractManifest <- runIO (loadContractJson "contracts/manifest.json" :: IO ContractManifest)
   let checks = contractManifest.manifestUrlChecks
+      revisions = contractManifest.catalogRevisionChecks
       legacy = contractManifest.legacyCompatibilityChecks
+      configWithRevision revision =
+        catalogConfig
+          "/locale-catalog/manifest.json"
+          revision
+          revisions.schemaVersion
+          "en"
+          "de,en"
+          (T.replicate 63 "0" <> "a")
 
   let fixtureCatalogEnv = catalogEnvFor catalog
       -- Every locale-catalog variable present but blank, which is how an
@@ -413,6 +468,22 @@ spec = do
     it "carries a digest of the manifest's real bytes, not a copied constant" do
       T.length catalog.manifestSha256 `shouldBe` 64
       catalog.manifestSha256 `shouldSatisfy` T.all (\c -> Char.isDigit c || (c >= 'a' && c <= 'f'))
+
+  describe "catalog revision binding" do
+    it "accepts exactly the revisions the governed contract table publishes" do
+      for_ revisions.accepted \row ->
+        (row.configured, first configErrorName (parseLocaleCatalogConfig (configWithRevision row.configured)))
+          `shouldSatisfy` (isRight . snd)
+
+    it "refuses every governed spelling for its stated reason" do
+      for_ revisions.rejected \row ->
+        (row.configured, first configErrorName (parseLocaleCatalogConfig (configWithRevision row.configured)))
+          `shouldBe` (row.configured, Left row.reason)
+
+    it "covers both a wrong major and a non-canonical one" do
+      let reasons = map (.reason) revisions.rejected
+      reasons `shouldSatisfy` elem "CatalogRevisionSchemaMismatch"
+      reasons `shouldSatisfy` elem "InvalidCatalogRevision"
 
   describe "compatibility with the pre-feature response" do
     it "keeps the exact legacy shape when no catalog is configured" do

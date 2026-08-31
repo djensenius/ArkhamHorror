@@ -508,6 +508,13 @@ both directions.
   and is what a split/static deployment configures explicitly. A client must
   not rewrite it onto another host, and must not accept a redirect to a
   different origin than the one the URL named.
+- **The catalog revision has one legal spelling.** While the catalog schema is
+  fixed at `1.0.0`, the only major a server will publish is `1`, spelled
+  canonically: `2.<hex>` belongs to a schema version this server does not
+  speak, and `01.<hex>`/`00.<hex>` are non-canonical spellings a client
+  comparing revisions as strings would read as different catalogs. All three
+  are startup failures, and `manifest.json`'s `catalogRevisionChecks` holds the
+  schema and the production parser to one table.
 - **The host means one thing to every client.** An absolute URL's host is
   either canonical dotted-decimal IPv4 (four octets `0-255`, no leading zeros)
   or a registered name whose final label is neither all-digits nor an `0x` hex
@@ -551,10 +558,17 @@ computed from committed sibling authorities:
 
     fixtures/locale-catalog-source-<locale>.json   miniature locale sources
     fixtures/locale-catalog-backend-registry.json  miniature emitted-key registry
-    fixtures/locale-catalog-generator.json         the generator identity
-    fixtures/locale-catalog-schemas.json           the schema set it renders against
     fixtures/locale-catalog-chunk-<sha256>.json    the rendered chunks
     fixtures/locale-catalog-manifest.json          derived from all of the above
+
+`provenance.generatorSha256` and `schemasSha256` are digests of the *real*
+inputs — `scripts/build-locale-catalog-fixture.py`'s own bytes and the
+published `frontend/schemas/locale-catalog/v1/` schemas — not of a committed
+description of them, which is what those fields mean in production. Editing
+either therefore moves the synthetic catalog revision, and every fixed value
+the v1 schemas already pin (`schemaVersion`, `basePath`, `manifestPath`,
+`chunkPathPrefix`, `digestAlgorithm`, the generator name) is read from their
+own `const` declarations rather than re-typed.
 
 - All of them are governed documents, so a digest the manifest publishes is
   always a digest of bytes this contract pins.
@@ -566,7 +580,10 @@ computed from committed sibling authorities:
   `dynamicSites`, `provenance.outputSha256`, `localeSourcesSha256`,
   `schemasSha256`, `generatorSha256`, `localeSourceFiles`, `fixtureKeys`,
   `provenance.sha256`, `catalogRevision` and `revisionManifestPath`. Its
-  self-tests mutate each of those in turn and require the check to fail.
+  self-tests mutate each of those in turn — and separately perturb every
+  provenance *input*: an edited generator source, an edited, renamed or dropped
+  v1 schema, a different generator name or version — and require the result to
+  change or the check to fail.
 - It is schema-valid against the published
   `frontend/schemas/locale-catalog/v1/` manifest *and* chunk schemas, is
   narrative-free (identifier-shaped values only), and is never regenerated from

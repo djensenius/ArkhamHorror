@@ -123,9 +123,10 @@
           "$comment": "Both branches end in a negative lookahead rather than '$'. ECMA-262 '$' and Python's re '$' disagree: Python's also matches immediately before a trailing newline, so a '$'-anchored pattern would let '/locale-catalog/manifest.json\\n' through this repository's own jsonschema-based validation while the server refuses it as a control character."
         },
         "catalogRevision": {
-          "description": "The catalog manifest's own `catalogRevision`. Its major component is the catalog schema's major version; the rest is the content digest the generator derived. Two servers reporting the same revision publish byte-identical catalogs, so a client may key its cache on this value alone.",
+          "description": "The catalog manifest's own `catalogRevision`. Its major component is the catalog schema's major version -- fixed at 1 while `schemaVersion` is 1.0.0, so this pattern pins it rather than accepting any major the server would reject; the rest is the content digest the generator derived. Two servers reporting the same revision publish byte-identical catalogs, so a client may key its cache on this value alone.",
           "type": "string",
-          "pattern": "^[0-9]+\\.[0-9a-f]{32}(?![\\s\\S])"
+          "pattern": "^1\\.[0-9a-f]{32}(?![\\s\\S])",
+          "$comment": "Base.Api.Types.LocaleCatalog.parseCatalogRevision requires a canonical major (no leading zeros) equal to the configured schemaVersion's major, so 2.<hex>, 01.<hex> and 00.<hex> are all startup failures. contracts/manifest.json's catalogRevisionChecks holds both sides to one table. A future catalog schema major would add a conditional branch here rather than loosening this pattern back to [0-9]+."
         },
         "schemaVersion": {
           "description": "The catalog manifest's `schemaVersion` (frontend/schemas/locale-catalog/v1/manifest.schema.json). A client that does not implement this exact version must treat the catalog as unavailable rather than guessing.",

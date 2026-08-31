@@ -787,6 +787,17 @@ for enum_boundary_index, check in enumerate(enum_boundary_checks):
 # other refuses fails a build.
 # ---------------------------------------------------------------------------
 
+def advertised_schema_versions() -> set:
+    """Catalog schema versions the governed capabilities fixtures advertise."""
+    versions = set()
+    for capabilities_path in capabilities_shapes.values():
+        document = load_governed_json(capabilities_path)
+        catalog = document.get("localeCatalog") if isinstance(document, dict) else None
+        if isinstance(catalog, dict) and "schemaVersion" in catalog:
+            versions.add(catalog["schemaVersion"])
+    return versions
+
+
 manifest_url_checks = manifest.get("manifestUrlChecks")
 require(
     isinstance(manifest_url_checks, dict),
@@ -856,6 +867,78 @@ require(
 )
 
 # ---------------------------------------------------------------------------
+# Catalog revision binding
+#
+# Same shape as manifestUrlChecks: one governed table, checked here against the
+# published schema and, in the backend spec, against the production config
+# parser. The schema must not be looser than the encoder -- a revision the
+# server refuses at startup must not be describable as a valid response.
+# ---------------------------------------------------------------------------
+
+catalog_revision_checks = manifest.get("catalogRevisionChecks")
+require(
+    isinstance(catalog_revision_checks, dict),
+    "manifest.json must declare a catalogRevisionChecks object binding the catalogRevision schema "
+    "and the production validator to one table",
+)
+require_entry_keys(
+    catalog_revision_checks,
+    ["schema", "pointer", "schemaVersion", "accepted", "rejected"],
+    entry_kind="catalogRevisionChecks",
+    index=0,
+)
+catalog_revision_schema_document = require_schema_document(
+    catalog_revision_checks["schema"], entry_kind="catalogRevisionChecks"
+)
+catalog_revision_sub_schema = resolve_json_pointer(
+    catalog_revision_schema_document, catalog_revision_checks["pointer"]
+)
+require(
+    isinstance(catalog_revision_sub_schema, dict),
+    f"catalogRevisionChecks pointer {catalog_revision_checks['pointer']!r} does not resolve to a "
+    "sub-schema",
+)
+catalog_revision_validator = make_validator(
+    preserve_schema_dialect(catalog_revision_schema_document, catalog_revision_sub_schema)
+)
+require(
+    isinstance(catalog_revision_checks["accepted"], list) and catalog_revision_checks["accepted"],
+    "catalogRevisionChecks.accepted must be a non-empty JSON array",
+)
+require(
+    isinstance(catalog_revision_checks["rejected"], list) and catalog_revision_checks["rejected"],
+    "catalogRevisionChecks.rejected must be a non-empty JSON array",
+)
+for revision_index, accepted in enumerate(catalog_revision_checks["accepted"]):
+    require_entry_keys(
+        accepted, ["configured"], entry_kind="catalogRevisionChecks.accepted", index=revision_index
+    )
+    errors = list(catalog_revision_validator.iter_errors(accepted["configured"]))
+    require(
+        not errors,
+        f"catalogRevisionChecks.accepted[{revision_index}]: the server publishes "
+        f"{accepted['configured']!r}, but the schema rejects it: {normalize_errors(errors)}",
+    )
+for revision_index, rejected in enumerate(catalog_revision_checks["rejected"]):
+    require_entry_keys(
+        rejected,
+        ["configured", "reason"],
+        entry_kind="catalogRevisionChecks.rejected",
+        index=revision_index,
+    )
+    require(
+        list(catalog_revision_validator.iter_errors(rejected["configured"])),
+        f"catalogRevisionChecks.rejected[{revision_index}]: the server refuses "
+        f"{rejected['configured']!r} as {rejected['reason']}, but the schema would accept it -- "
+        "the schema must never be looser than the encoder",
+    )
+require(
+    catalog_revision_checks["schemaVersion"] in advertised_schema_versions(),
+    "catalogRevisionChecks.schemaVersion must be a schema version the advertised fixture uses",
+)
+
+
+# ---------------------------------------------------------------------------
 # Locale catalog provenance
 #
 # The advertised `localeCatalog` block is not hand-maintained: it is derived
@@ -888,16 +971,21 @@ governed_catalog_files = sorted(
 )
 require(
     len(governed_catalog_files) >= 6,
-    "the synthetic catalog's authority files (sources, backend registry, generator, schema "
-    "descriptor, chunks, manifest) must all be governed documents; found "
-    f"{governed_catalog_files}",
+    "the synthetic catalog's authority files (locale sources, backend registry, chunks, manifest) "
+    f"must all be governed documents; found {governed_catalog_files}",
 )
-for role in ("backend-registry", "generator", "schemas", "source-", "chunk-"):
+for role in ("backend-registry", "source-", "chunk-", "manifest"):
     require(
         any(f"{CATALOG_FIXTURE_PREFIX}{role}" in path for path in governed_catalog_files),
         f"the synthetic catalog is missing its committed {role!r} authority; every digest and "
         "count in its manifest must be backed by governed bytes",
     )
+
+# `generatorSha256` and `schemasSha256` are digests of real repository sources
+# (the fixture generator and the published v1 schemas) rather than of committed
+# stand-ins, so they are checked where they are derived --
+# scripts/build-locale-catalog-fixture.py's own provenance self-tests, run by
+# `contracts:catalog-fixture` -- not against a governed descriptor here.
 
 # scripts/build-locale-catalog-fixture.py owns the derivation itself (and its
 # own mutation self-tests); `contracts:catalog-fixture` re-derives all of it.
@@ -1702,7 +1790,9 @@ print(
     f"{'check' if len(forward_compatibility_checks) == 1 else 'checks'}, "
     f"{len(enum_boundary_checks)} closed-enum boundary checks, "
     f"{len(manifest_url_checks['accepted'])} accepted and {len(manifest_url_checks['rejected'])} "
-    f"rejected manifest-URL bindings, the locale-catalog provenance binding "
+    f"rejected manifest-URL bindings, {len(catalog_revision_checks['accepted'])} accepted and "
+    f"{len(catalog_revision_checks['rejected'])} rejected catalog-revision bindings, "
+    f"the locale-catalog provenance binding "
     f"({CATALOG_MANIFEST_PATH}), and the {legacy_checks['baselineRevision']} legacy-shape "
     "baseline."
 )

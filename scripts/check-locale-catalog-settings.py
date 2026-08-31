@@ -37,6 +37,7 @@ generated catalog is free to differ from the synthetic fixture.
 
 import argparse
 import hashlib
+import json
 import os
 import shlex
 import subprocess
@@ -53,6 +54,7 @@ DEFAULT_MANIFEST = ROOT / "frontend" / "public" / "locale-catalog" / "manifest.j
 CATALOG_SCHEMA = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1" / "manifest.schema.json"
 CAPABILITIES_SCHEMA = "contracts/schemas/capabilities.schema.json"
 SYNTHETIC_MANIFEST = "contracts/fixtures/locale-catalog-manifest.json"
+CONTRACT_MANIFEST = "contracts/manifest.json"
 ADVERTISED_FIXTURE = "contracts/fixtures/capabilities-locale-catalog.json"
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
 
@@ -147,22 +149,72 @@ def make_validator(schema: dict, sub_schema: dict | None = None):
     return validator_class(target, format_checker=FormatChecker())
 
 
-def run_probe(command: list[str], environment: dict[str, str]) -> subprocess.CompletedProcess:
+def run_probe(
+    command: list[str],
+    environment: dict[str, str],
+    settings_files: list[Path] | None = None,
+) -> subprocess.CompletedProcess:
     """Run the production probe with exactly `environment` added to the current
     one, so an inherited ARKHAM_LOCALE_CATALOG_* value cannot mask a failure.
+
+    `settings_files` are passed as command-line arguments, which is how
+    `Application.loadAppSettingsArgs` takes runtime config files: they override
+    the compile-time `config/settings.yml` value, and the environment overrides
+    them in turn. Output is captured as raw bytes — the probe writes the
+    production encoder's output and nothing else, so a caller can assert those
+    bytes exactly.
     """
     child_environment = {
         key: value for key, value in os.environ.items() if not key.startswith("ARKHAM_LOCALE_CATALOG_")
     }
     child_environment.update(environment)
+    arguments = [str(path) for path in settings_files or []]
     return subprocess.run(
-        command,
+        command + arguments,
         env=child_environment,
         capture_output=True,
-        text=True,
         cwd=ROOT,
         check=False,
     )
+
+
+def encoded_capabilities(response: dict) -> bytes:
+    """The exact bytes aeson's generic `toEncoding` produces for
+    `ServerCapabilities`: declaration field order, no separator whitespace, no
+    trailing newline. Spelled out here so the probe's stdout can be asserted as
+    *bytes*, rather than being decoded and compared as a normalized value --
+    which is precisely the check that would miss a toEncoding/toJSON drift.
+    """
+    order = [
+        "schemaRevision",
+        "status",
+        "apiBasePath",
+        "nativeClientMinimumRevision",
+        "capabilities",
+        "localeCatalog",
+    ]
+    catalog_order = [
+        "manifestUrl",
+        "catalogRevision",
+        "schemaVersion",
+        "defaultLocale",
+        "supportedLocales",
+        "manifestSha256",
+    ]
+    ordered: dict[str, object] = {}
+    for key in order:
+        if key not in response:
+            continue
+        if key == "localeCatalog":
+            ordered[key] = {name: response[key][name] for name in catalog_order}
+        else:
+            ordered[key] = response[key]
+    require(
+        set(ordered) == set(response),
+        f"the response carries fields this encoder model does not order: "
+        f"{sorted(set(response) - set(ordered))}",
+    )
+    return json.dumps(ordered, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def check_with_probe(
@@ -170,19 +222,81 @@ def check_with_probe(
     capabilities_schema: dict,
     settings: dict[str, str],
     advertised: dict,
+    legacy_baseline: dict,
+    contract_revision: str,
+) -> None:
+    scratch = ROOT / "scratch-capability-probe"
+    scratch.mkdir(exist_ok=True)
+    try:
+        _check_with_probe(
+            command, capabilities_schema, settings, advertised, legacy_baseline,
+            contract_revision, scratch,
+        )
+    finally:
+        for path in sorted(scratch.glob("*")):
+            path.unlink()
+        scratch.rmdir()
+
+
+def write_settings_file(scratch: Path, name: str, values: dict[str, str]) -> Path:
+    """A runtime settings file in the production key spelling, passed to the
+    probe on the command line exactly as a deployment would."""
+    path = scratch / name
+    path.write_text(
+        "".join(f"{key}: {json.dumps(value)}\n" for key, value in sorted(values.items())),
+        encoding="utf-8",
+    )
+    return path
+
+
+SETTINGS_FILE_KEYS = {
+    "ARKHAM_LOCALE_CATALOG_MANIFEST_URL": "locale-catalog-manifest-url",
+    "ARKHAM_LOCALE_CATALOG_REVISION": "locale-catalog-revision",
+    "ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION": "locale-catalog-schema-version",
+    "ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE": "locale-catalog-default-locale",
+    "ARKHAM_LOCALE_CATALOG_LOCALES": "locale-catalog-locales",
+    "ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256": "locale-catalog-manifest-sha256",
+}
+
+
+def _check_with_probe(
+    command: list[str],
+    capabilities_schema: dict,
+    settings: dict[str, str],
+    advertised: dict,
+    legacy_baseline: dict,
+    contract_revision: str,
+    scratch: Path,
 ) -> None:
     printed = run_probe(command, settings)
     require(
         printed.returncode == 0,
-        f"the production probe refused the settings derived from the generated catalog: "
-        f"{printed.stderr.strip() or printed.stdout.strip()}",
+        "the production probe refused the settings derived from the generated catalog: "
+        f"{printed.stderr.decode('utf-8', 'replace').strip()}",
     )
-    try:
-        response = strict_json.strict_json_loads(printed.stdout.encode("utf-8"), source="<probe>")
-    except SystemExit:
-        raise
-    require(isinstance(response, dict), f"the probe did not print a JSON object: {printed.stdout!r}")
 
+    # Exact bytes first: the wire is toEncoding, and a decode-then-compare would
+    # not notice field reordering, added whitespace or a stray newline.
+    expected_advertised_bytes = encoded_capabilities(
+        {
+            "schemaRevision": contract_revision,
+            "status": legacy_baseline["status"],
+            "apiBasePath": legacy_baseline["apiBasePath"],
+            "nativeClientMinimumRevision": legacy_baseline["nativeClientMinimumRevision"],
+            "capabilities": sorted(
+                legacy_baseline["capabilities"] + [LOCALE_CATALOG_CAPABILITY]
+            ),
+            "localeCatalog": advertised,
+        }
+    )
+    require(
+        printed.stdout == expected_advertised_bytes,
+        "the production encoder's bytes are not what this contract describes.\n"
+        f"  emitted:  {printed.stdout!r}\n"
+        f"  expected: {expected_advertised_bytes!r}",
+    )
+
+    response = strict_json.strict_json_loads(printed.stdout, source="<probe>")
     errors = list(make_validator(capabilities_schema).iter_errors(response))
     require(
         not errors,
@@ -190,26 +304,143 @@ def check_with_probe(
         f"{CAPABILITIES_SCHEMA}: {[error.message for error in errors]}",
     )
     require(
-        response.get("localeCatalog") == advertised,
+        response["localeCatalog"] == advertised,
         "the production encoder did not advertise the generated catalog's own metadata: "
-        f"{response.get('localeCatalog')} != {advertised}",
-    )
-    require(
-        LOCALE_CATALOG_CAPABILITY in response.get("capabilities", []),
-        "the production encoder advertised a localeCatalog without its capability string",
+        f"{response['localeCatalog']} != {advertised}",
     )
 
     disabled = run_probe(command, {})
     require(
         disabled.returncode == 0,
-        f"the probe failed with no catalog configured at all: {disabled.stderr.strip()}",
+        f"the probe failed with no catalog configured at all: {disabled.stderr.decode()}",
     )
-    legacy = strict_json.strict_json_loads(disabled.stdout.encode("utf-8"), source="<probe>")
+    expected_disabled_bytes = encoded_capabilities({**legacy_baseline, "schemaRevision": contract_revision})
     require(
-        "localeCatalog" not in legacy
-        and LOCALE_CATALOG_CAPABILITY not in legacy.get("capabilities", []),
-        "an unconfigured deployment must serve the legacy field and capability shape, got "
-        f"{legacy}",
+        disabled.stdout == expected_disabled_bytes,
+        "an unconfigured deployment's bytes are not the legacy shape at this revision.\n"
+        f"  emitted:  {disabled.stdout!r}\n"
+        f"  expected: {expected_disabled_bytes!r}",
+    )
+
+    # The same configuration, supplied as a runtime settings file on the command
+    # line rather than through the environment, must produce identical bytes.
+    file_settings = write_settings_file(
+        scratch,
+        "settings-valid.yml",
+        {SETTINGS_FILE_KEYS[key]: value for key, value in settings.items()},
+    )
+    from_file = run_probe(command, {}, [file_settings])
+    require(
+        from_file.returncode == 0,
+        f"the probe refused a runtime settings file: {from_file.stderr.decode('utf-8', 'replace')}",
+    )
+    require(
+        from_file.stdout == printed.stdout,
+        "a command-line settings file and the environment produced different bytes",
+    )
+
+    # Precedence, as `loadAppSettingsArgs` actually defines it: a runtime
+    # settings file replaces the compile-time value outright, and the
+    # environment reaches a setting only through an `_env:` marker. A literal
+    # in a settings file therefore wins over the environment -- which is the
+    # safe direction, since it means an operator cannot be surprised by an
+    # inherited variable, and a bad settings file cannot be silently rescued.
+    literal_override = run_probe(
+        command,
+        {"ARKHAM_LOCALE_CATALOG_MANIFEST_URL": "https://static.example.org/l10n/manifest.json"},
+        [file_settings],
+    )
+    require(literal_override.returncode == 0, "the settings file was refused")
+    literal_response = strict_json.strict_json_loads(literal_override.stdout, source="<probe>")
+    require(
+        literal_response["localeCatalog"]["manifestUrl"]
+        == settings["ARKHAM_LOCALE_CATALOG_MANIFEST_URL"],
+        "a literal value in a command-line settings file must win over the environment",
+    )
+
+    # An `_env:` marker in that same file is how a deployment opts a setting
+    # back into the environment, with the file supplying the fallback.
+    env_marked_file = write_settings_file(
+        scratch,
+        "settings-env-marked.yml",
+        {
+            **{SETTINGS_FILE_KEYS[key]: value for key, value in settings.items()},
+            "locale-catalog-manifest-url": (
+                "_env:ARKHAM_LOCALE_CATALOG_MANIFEST_URL:"
+                + settings["ARKHAM_LOCALE_CATALOG_MANIFEST_URL"]
+            ),
+        },
+    )
+    marked_default = run_probe(command, {}, [env_marked_file])
+    require(
+        marked_default.returncode == 0
+        and strict_json.strict_json_loads(marked_default.stdout, source="<probe>")["localeCatalog"][
+            "manifestUrl"
+        ]
+        == settings["ARKHAM_LOCALE_CATALOG_MANIFEST_URL"],
+        "an unset _env: marker must fall back to the value the settings file supplies",
+    )
+    marked_override = run_probe(
+        command,
+        {"ARKHAM_LOCALE_CATALOG_MANIFEST_URL": "https://static.example.org/l10n/manifest.json"},
+        [env_marked_file],
+    )
+    require(marked_override.returncode == 0, "the _env: override was refused")
+    require(
+        strict_json.strict_json_loads(marked_override.stdout, source="<probe>")["localeCatalog"][
+            "manifestUrl"
+        ]
+        == "https://static.example.org/l10n/manifest.json",
+        "an environment variable must override the _env: marker's fallback",
+    )
+
+    # A settings file that is only partially filled in, with nothing else to
+    # complete it, must fail startup rather than advertise half a pointer.
+    partial_file = write_settings_file(
+        scratch,
+        "settings-partial.yml",
+        {"locale-catalog-manifest-url": settings["ARKHAM_LOCALE_CATALOG_MANIFEST_URL"]},
+    )
+    partial = run_probe(command, {}, [partial_file])
+    require(
+        partial.returncode != 0 and b"localeCatalog" not in partial.stdout,
+        "a partially configured settings file must fail startup",
+    )
+    # A runtime settings file is *merged* over the compile-time value rather
+    # than replacing it, so the keys it does not mention keep their `_env:`
+    # markers and the environment can still complete the configuration.
+    partial_with_env = run_probe(command, settings, [partial_file])
+    require(
+        partial_with_env.returncode == 0,
+        "a settings file is merged over the compile-time value, so the environment must still "
+        f"complete the keys it omits: {partial_with_env.stderr.decode('utf-8', 'replace')}",
+    )
+    require(
+        partial_with_env.stdout == printed.stdout,
+        "completing a partial settings file from the environment produced different bytes",
+    )
+
+    invalid_file = write_settings_file(
+        scratch,
+        "settings-invalid.yml",
+        {
+            **{SETTINGS_FILE_KEYS[key]: value for key, value in settings.items()},
+            "locale-catalog-manifest-url": "http://cdn.example.com/manifest.json",
+        },
+    )
+    invalid = run_probe(command, {}, [invalid_file])
+    require(
+        invalid.returncode != 0 and b"localeCatalog" not in invalid.stdout,
+        "an insecure manifest URL in a settings file must fail startup",
+    )
+    not_rescued = run_probe(
+        command,
+        {"ARKHAM_LOCALE_CATALOG_MANIFEST_URL": settings["ARKHAM_LOCALE_CATALOG_MANIFEST_URL"]},
+        [invalid_file],
+    )
+    require(
+        not_rescued.returncode != 0 and b"localeCatalog" not in not_rescued.stdout,
+        "an environment variable must not silently rescue an insecure literal in a settings file",
     )
 
     # Every setting, corrupted in turn: the server must refuse to start rather
@@ -220,6 +451,7 @@ def check_with_probe(
         ("ARKHAM_LOCALE_CATALOG_MANIFEST_URL", ""),
         ("ARKHAM_LOCALE_CATALOG_REVISION", "1.0.0"),
         ("ARKHAM_LOCALE_CATALOG_REVISION", "2" + settings["ARKHAM_LOCALE_CATALOG_REVISION"][1:]),
+        ("ARKHAM_LOCALE_CATALOG_REVISION", "0" + settings["ARKHAM_LOCALE_CATALOG_REVISION"]),
         ("ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION", "2.0.0"),
         ("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", "xx-not-a-locale-tag"),
         ("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", "sv"),
@@ -248,7 +480,7 @@ def check_with_probe(
             "configuration must fail startup, never be silently dropped",
         )
         require(
-            "localeCatalog" not in result.stdout,
+            b"localeCatalog" not in result.stdout,
             f"the server printed a catalog pointer while failing on {name}={value!r}",
         )
 
@@ -260,17 +492,16 @@ def check_with_probe(
     mismatched["ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"] = "a" * 64
     result = run_probe(command, mismatched)
     require(result.returncode == 0, "a well-formed digest must be accepted verbatim")
-    mismatched_response = strict_json.strict_json_loads(
-        result.stdout.encode("utf-8"), source="<probe>"
-    )
+    mismatched_response = strict_json.strict_json_loads(result.stdout, source="<probe>")
     require(
         mismatched_response["localeCatalog"]["manifestSha256"] == "a" * 64,
         "the server must advertise the digest it was configured with, so a client verifying the "
         "manifest sees the mismatch",
     )
     print(
-        f"locale-catalog capability probe: {len(corruptions)} corrupted settings each refused at "
-        "startup, and the production encoder's bytes match the generated catalog exactly."
+        f"locale-catalog capability probe: exact production toEncoding bytes for the advertised "
+        f"and disabled responses, command-line settings-file and environment precedence, and "
+        f"{len(corruptions)} corrupted settings each refused at startup."
     )
 
 
@@ -365,7 +596,17 @@ def main() -> None:
     )
 
     if arguments.probe:
-        check_with_probe(shlex.split(arguments.probe), capabilities_schema, settings, advertised)
+        contract_manifest = load_governed(CONTRACT_MANIFEST)
+        require(isinstance(contract_manifest, dict), f"{CONTRACT_MANIFEST} is not a JSON object")
+        legacy = contract_manifest["legacyCompatibilityChecks"]
+        check_with_probe(
+            shlex.split(arguments.probe),
+            capabilities_schema,
+            settings,
+            advertised,
+            legacy["baselineResponse"],
+            contract_manifest["schemaRevision"],
+        )
 
     print(
         "locale-catalog capability settings: the generated catalog "

@@ -1,31 +1,36 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 
 {- | Emit the exact @GET \/api\/v1\/capabilities@ bytes this deployment's
-environment produces, or fail the way the server would fail to start.
+configuration produces, or fail the way the server would fail to start.
 
-This is the deployment seam for the locale-catalog capability. It re-implements
-nothing: it loads settings through the same @loadYamlSettings@ call
-@Application.appMain@ uses (the embedded @config\/settings.yml@ plus the real
-process environment), builds the response through the handler's own body, and
-writes it with 'Data.Aeson.encode', which is defined as
-@encodingToLazyByteString . toEncoding@ — the same encoder the REST route
-serves. A configuration the server would refuse therefore exits non-zero here
-with the server's own diagnostic, and never prints a body.
+This is the deployment seam for the locale-catalog capability, and it
+re-implements nothing. Settings come from 'Application.loadAppSettingsArgs' —
+the very function @Application.appMain@ starts from, so config files named on
+the command line, the compile-time @config\/settings.yml@ fallback and
+environment overrides all apply in production precedence. The body comes from
+the handler's own 'capabilitiesResponse'. The bytes come from
+'Data.Aeson.encode', which is @encodingToLazyByteString . toEncoding@: the same
+encoder the REST route serves.
 
-@scripts\/check-locale-catalog-settings.py@ drives it with settings derived
-from a real generated catalog manifest, validates the bytes it prints against
-the governed schema, and corrupts each setting in turn to prove the failure.
+Nothing is appended to those bytes — not even a newline — so a caller can
+assert the production @toEncoding@ output exactly rather than a normalized
+re-encoding of it. A configuration the server would refuse exits non-zero with
+the server's own diagnostic and prints no body at all.
+
+@scripts\/check-locale-catalog-settings.py@ drives it from a real generated
+catalog manifest.
 -}
 module Main (main) where
 
+import Application (loadAppSettingsArgs)
 import Base.Api.Handler.Capabilities (capabilitiesResponse)
 import Data.Aeson qualified as Aeson
-import Data.ByteString.Lazy.Char8 qualified as LazyChar8
-import Data.Yaml.Config (loadYamlSettings, useEnv)
+import Data.ByteString.Lazy qualified as LazyByteString
 import Relude
-import Settings (configSettingsYmlValue)
+import System.IO (hSetBinaryMode)
 
 main :: IO ()
 main = do
-  settings <- loadYamlSettings [] [configSettingsYmlValue] useEnv
-  LazyChar8.putStrLn $ Aeson.encode (capabilitiesResponse settings)
+  settings <- loadAppSettingsArgs
+  hSetBinaryMode stdout True
+  LazyByteString.hPut stdout $ Aeson.encode (capabilitiesResponse settings)

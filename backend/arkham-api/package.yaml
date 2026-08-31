@@ -179,7 +179,6 @@ executables:
       - arkham-api
       - bytestring
       - relude
-      - yaml
     when:
       - condition: flag(library-only)
         buildable: false

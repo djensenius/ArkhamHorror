@@ -20,10 +20,13 @@ by a committed, narrative-free authority file under
 
     locale-catalog-source-<locale>.json  miniature locale sources
     locale-catalog-backend-registry.json miniature emitted-key registry
-    locale-catalog-generator.json        the generator identity it was built by
-    locale-catalog-schemas.json          the schema set it was rendered against
     locale-catalog-chunk-<sha256>.json   the rendered chunks, content-addressed
     locale-catalog-manifest.json         the v1 manifest, derived from the above
+
+`generatorSha256` and `schemasSha256` are the digests of the *real* inputs --
+this script's own bytes and the published v1 schemas -- rather than of a
+committed description of them, so editing either really does move the catalog
+revision, as it does in production.
 
 Every digest, count, path, `outputSha256` and provenance value in that manifest
 is *computed here* from those bytes -- nothing is asserted by hand. `--check`
@@ -58,9 +61,23 @@ FIXTURE_PREFIX = "locale-catalog-"
 CONTRACT_MANIFEST = "contracts/manifest.json"
 CATALOG_SCHEMA_DIR = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1"
 
-BASE_PATH = "/locale-catalog"
-CHUNK_PATH_PREFIX = f"{BASE_PATH}/c/"
-GENERATOR_NAME = "arkham-locale-catalog"
+# The generator's own sources and the schema set it renders against, hashed as
+# themselves rather than described by a committed stand-in: `generatorSha256`
+# is the digest of this script, `schemasSha256` the digest of the published v1
+# schemas. Editing either changes the catalog revision, which is exactly what
+# the production generator's provenance means -- and is why a change to this
+# script is followed by `mise run contracts:catalog-fixture-write`.
+GENERATOR_SOURCES = ("scripts/build-locale-catalog-fixture.py",)
+SCHEMA_SOURCES = (
+    "frontend/schemas/locale-catalog/v1/manifest.schema.json",
+    "frontend/schemas/locale-catalog/v1/chunk.schema.json",
+)
+
+# The one value this script contributes itself. Everything else -- the schema
+# version, the published routes, the digest algorithm, the generator name -- is
+# read out of the v1 schemas' own `const` declarations by `catalog_constants()`,
+# so no literal is spelled twice.
+GENERATOR_VERSION = "1.0.0"
 
 
 def require(condition: bool, message: str) -> None:
@@ -143,7 +160,7 @@ def build_backend_registry() -> bytes:
         | {UNTRANSLATED_KEY, UNSUPPORTED_KEY}
     )
     registry = {
-        "artifactVersion": "1.0.0",
+        "artifactVersion": GENERATOR_VERSION,
         "source": {
             "files": len(SOURCE_MESSAGES),
             "sha256": fileset_digest(list(build_sources().items())),
@@ -157,38 +174,60 @@ def build_backend_registry() -> bytes:
     return canonical_bytes(registry)
 
 
-def build_generator_descriptor() -> bytes:
-    return canonical_bytes(
-        {
-            "name": GENERATOR_NAME,
-            "version": "1.0.0",
-            "description": (
-                "Identity of the generator this synthetic catalog was built by. "
-                "scripts/build-locale-catalog-fixture.py is that generator; this file is the "
-                "committed authority its provenance.generatorSha256 is taken over."
-            ),
-        }
+def read_repository_files(relative_paths: tuple[str, ...]) -> list[tuple[str, bytes]]:
+    """Read real repository files as provenance inputs, by their repo-relative
+    path, so a rename counts as a change just as much as an edit does.
+    """
+    entries: list[tuple[str, bytes]] = []
+    for relative_path in relative_paths:
+        path = ROOT / relative_path
+        require(path.is_file(), f"missing provenance input {relative_path}")
+        entries.append((relative_path, path.read_bytes()))
+    return entries
+
+
+def catalog_constants() -> dict[str, str]:
+    """Every fixed value the v1 schemas already pin, read from their own `const`
+    declarations instead of being re-typed here. A schema that moved the
+    published route or the digest algorithm would move this fixture with it.
+    """
+    manifest_schema = strict_json.strict_json_load_path(CATALOG_SCHEMA_DIR / "manifest.schema.json")
+    chunk_schema = strict_json.strict_json_load_path(CATALOG_SCHEMA_DIR / "chunk.schema.json")
+
+    def const(schema: dict, *pointer: str) -> str:
+        node: object = schema
+        for segment in pointer:
+            require(
+                isinstance(node, dict) and segment in node,
+                f"the v1 schema has no {'/'.join(pointer)} to read a constant from",
+            )
+            node = node[segment]
+        require(
+            isinstance(node, dict) and isinstance(node.get("const"), str),
+            f"{'/'.join(pointer)} is not a string const in the v1 schema",
+        )
+        return node["const"]
+
+    schema_version = const(manifest_schema, "properties", "schemaVersion")
+    chunk_schema_version = const(chunk_schema, "$defs", "schemaVersion")
+    require(
+        schema_version == chunk_schema_version,
+        "the v1 manifest and chunk schemas disagree about schemaVersion "
+        f"({schema_version!r} vs {chunk_schema_version!r})",
     )
+    return {
+        "schemaVersion": schema_version,
+        "basePath": const(manifest_schema, "properties", "basePath"),
+        "manifestPath": const(manifest_schema, "properties", "manifestPath"),
+        "chunkPathPrefix": const(manifest_schema, "properties", "chunkPathPrefix"),
+        "digestAlgorithm": const(manifest_schema, "properties", "digestAlgorithm"),
+        "generatorName": const(
+            manifest_schema, "properties", "provenance", "properties", "generator", "properties", "name"
+        ),
+    }
 
 
-def build_schema_descriptor() -> bytes:
-    return canonical_bytes(
-        {
-            "schemaVersion": "1.0.0",
-            "documents": [
-                "frontend/schemas/locale-catalog/v1/manifest.schema.json",
-                "frontend/schemas/locale-catalog/v1/chunk.schema.json",
-            ],
-            "description": (
-                "The schema set this synthetic catalog is rendered against, named rather than "
-                "hashed: the v1 schemas are frontend-owned, and hashing their bytes here would "
-                "let an unrelated frontend edit churn a governed contract fixture."
-            ),
-        }
-    )
-
-
-def build_chunks() -> tuple[list[dict], dict[str, bytes]]:
+def build_chunks(constants: dict[str, str]) -> tuple[list[dict], dict[str, bytes]]:
     """Render one chunk per (locale, pack), content-addressed by its own bytes."""
     chunk_records: list[dict] = []
     chunk_files: dict[str, bytes] = {}
@@ -209,7 +248,7 @@ def build_chunks() -> tuple[list[dict], dict[str, bytes]]:
                     "detail": "synthetic fixture: published as unavailable on purpose",
                 }
             chunk = {
-                "schemaVersion": "1.0.0",
+                "schemaVersion": constants["schemaVersion"],
                 "locale": locale,
                 "fallback": None if locale == DEFAULT_LOCALE else DEFAULT_LOCALE,
                 "pack": pack,
@@ -222,7 +261,7 @@ def build_chunks() -> tuple[list[dict], dict[str, bytes]]:
                 {
                     "locale": locale,
                     "pack": pack,
-                    "path": f"{CHUNK_PATH_PREFIX}{digest}.json",
+                    "path": f"{constants['chunkPathPrefix']}{digest}.json",
                     "bytes": len(data),
                     "sha256": digest,
                     "keys": len(entries),
@@ -234,6 +273,40 @@ def build_chunks() -> tuple[list[dict], dict[str, bytes]]:
     return chunk_records, chunk_files
 
 
+def derive_provenance_sha256(
+    *,
+    output_sha256: str,
+    locale_sources_sha256: str,
+    schemas_sha256: str,
+    generator_sha256: str,
+    artifact_sha256: str,
+    backend_source_sha256: str,
+    contract_revision: str,
+    generator_name: str,
+    generator_version: str,
+    fixture_keys: list[str],
+) -> str:
+    """Bind the rendered output to every input that produced it, the way the
+    production generator's two-phase derivation does. Kept pure so
+    `run_provenance_input_self_tests` can prove each input is load-bearing.
+    """
+    return sha256_hex(
+        "\n".join(
+            [
+                f"outputSha256={output_sha256}",
+                f"localeSourcesSha256={locale_sources_sha256}",
+                f"schemasSha256={schemas_sha256}",
+                f"generatorSha256={generator_sha256}",
+                f"backendArtifactSha256={artifact_sha256}",
+                f"backendSourceSha256={backend_source_sha256}",
+                f"contractRevision={contract_revision}",
+                f"generator={generator_name}@{generator_version}",
+                "fixtureKeys=" + ",".join(fixture_keys),
+            ]
+        ).encode("utf-8")
+    )
+
+
 def build_all() -> dict[str, bytes]:
     contract_manifest = strict_json.strict_json_loads(
         strict_json.read_governed_worktree_bytes(ROOT, CONTRACT_MANIFEST),
@@ -242,13 +315,13 @@ def build_all() -> dict[str, bytes]:
     require(isinstance(contract_manifest, dict), "contracts/manifest.json is not an object")
     contract_revision = contract_manifest["schemaRevision"]
 
+    constants = catalog_constants()
+
     files: dict[str, bytes] = {}
     files.update(build_sources())
     files[f"{FIXTURE_PREFIX}backend-registry.json"] = build_backend_registry()
-    files[f"{FIXTURE_PREFIX}generator.json"] = build_generator_descriptor()
-    files[f"{FIXTURE_PREFIX}schemas.json"] = build_schema_descriptor()
 
-    chunk_records, chunk_files = build_chunks()
+    chunk_records, chunk_files = build_chunks(constants)
     files.update(chunk_files)
 
     registry = json.loads(files[f"{FIXTURE_PREFIX}backend-registry.json"])
@@ -280,42 +353,34 @@ def build_all() -> dict[str, bytes]:
     source_entries = [(path, data) for path, data in files.items() if path.startswith(f"{FIXTURE_PREFIX}source-")]
     output_sha256 = fileset_digest(list(chunk_files.items()))
     locale_sources_sha256 = fileset_digest(source_entries)
-    generator_sha256 = fileset_digest(
-        [(f"{FIXTURE_PREFIX}generator.json", files[f"{FIXTURE_PREFIX}generator.json"])]
-    )
-    schemas_sha256 = fileset_digest(
-        [(f"{FIXTURE_PREFIX}schemas.json", files[f"{FIXTURE_PREFIX}schemas.json"])]
-    )
+    generator_sha256 = fileset_digest(read_repository_files(GENERATOR_SOURCES))
+    schemas_sha256 = fileset_digest(read_repository_files(SCHEMA_SOURCES))
     artifact_sha256 = sha256_hex(files[f"{FIXTURE_PREFIX}backend-registry.json"])
 
     fixture_keys = sorted(registry["requiredKeys"])
 
-    # The provenance digest binds the rendered output to every input that
-    # produced it, exactly like the real generator's two-phase derivation.
-    provenance_input = "\n".join(
-        [
-            f"outputSha256={output_sha256}",
-            f"localeSourcesSha256={locale_sources_sha256}",
-            f"schemasSha256={schemas_sha256}",
-            f"generatorSha256={generator_sha256}",
-            f"backendArtifactSha256={artifact_sha256}",
-            f"backendSourceSha256={registry['source']['sha256']}",
-            f"contractRevision={contract_revision}",
-            f"generator={GENERATOR_NAME}@1.0.0",
-            "fixtureKeys=" + ",".join(fixture_keys),
-        ]
+    provenance_sha256 = derive_provenance_sha256(
+        output_sha256=output_sha256,
+        locale_sources_sha256=locale_sources_sha256,
+        schemas_sha256=schemas_sha256,
+        generator_sha256=generator_sha256,
+        artifact_sha256=artifact_sha256,
+        backend_source_sha256=registry["source"]["sha256"],
+        contract_revision=contract_revision,
+        generator_name=constants["generatorName"],
+        generator_version=GENERATOR_VERSION,
+        fixture_keys=fixture_keys,
     )
-    provenance_sha256 = sha256_hex(provenance_input.encode("utf-8"))
     catalog_revision = f"1.{provenance_sha256[:32]}"
 
     manifest = {
-        "schemaVersion": "1.0.0",
+        "schemaVersion": constants["schemaVersion"],
         "catalogRevision": catalog_revision,
-        "basePath": BASE_PATH,
-        "manifestPath": f"{BASE_PATH}/manifest.json",
-        "revisionManifestPath": f"{BASE_PATH}/r/{catalog_revision}/manifest.json",
-        "chunkPathPrefix": CHUNK_PATH_PREFIX,
-        "digestAlgorithm": "sha256",
+        "basePath": constants["basePath"],
+        "manifestPath": constants["manifestPath"],
+        "revisionManifestPath": f"{constants['basePath']}/r/{catalog_revision}/manifest.json",
+        "chunkPathPrefix": constants["chunkPathPrefix"],
+        "digestAlgorithm": constants["digestAlgorithm"],
         "defaultLocale": DEFAULT_LOCALE,
         "languageResolution": [{"tag": tag, "locale": locale} for tag, locale in LANGUAGE_RESOLUTION],
         "locales": locale_records,
@@ -342,7 +407,7 @@ def build_all() -> dict[str, bytes]:
         "provenance": {
             "sha256": provenance_sha256,
             "outputSha256": output_sha256,
-            "generator": {"name": GENERATOR_NAME, "version": "1.0.0"},
+            "generator": {"name": constants["generatorName"], "version": GENERATOR_VERSION},
             "contractRevision": contract_revision,
             "fixtureKeys": fixture_keys,
             "localeSourceFiles": len(source_entries),
@@ -470,7 +535,10 @@ def run_self_tests(files: dict[str, bytes]) -> None:
         ("provenance", {**manifest["provenance"], "fixtureKeys": ["setup"]}),
         (
             "provenance",
-            {**manifest["provenance"], "generator": {"name": GENERATOR_NAME, "version": "9.9.9"}},
+            {
+                **manifest["provenance"],
+                "generator": {**manifest["provenance"]["generator"], "version": "9.9.9"},
+            },
         ),
     ]
 
@@ -517,6 +585,93 @@ def run_self_tests(files: dict[str, bytes]) -> None:
     require(
         check_failure(files, {**committed, f"{FIXTURE_PREFIX}extra.json": b"{}\n"}) is not None,
         "Self-test failure: an unexpected extra authority file survived the derivation check",
+    )
+
+    run_provenance_input_self_tests(manifest)
+
+
+def run_provenance_input_self_tests(manifest: dict) -> None:
+    """`generatorSha256` and `schemasSha256` are digests of real repository
+    bytes, so prove they move: appending one byte to this script or to either
+    published v1 schema, renaming an input, or changing only the generator
+    version must each produce a different revision.
+    """
+    generator_inputs = read_repository_files(GENERATOR_SOURCES)
+    schema_inputs = read_repository_files(SCHEMA_SOURCES)
+    constants = catalog_constants()
+    provenance = manifest["provenance"]
+
+    require(
+        provenance["generatorSha256"] == fileset_digest(generator_inputs),
+        "Self-test failure: generatorSha256 is not the digest of this generator's own sources",
+    )
+    require(
+        provenance["schemasSha256"] == fileset_digest(schema_inputs),
+        "Self-test failure: schemasSha256 is not the digest of the published v1 schemas",
+    )
+
+    baseline = derive_provenance_sha256(
+        output_sha256=provenance["outputSha256"],
+        locale_sources_sha256=provenance["localeSourcesSha256"],
+        schemas_sha256=provenance["schemasSha256"],
+        generator_sha256=provenance["generatorSha256"],
+        artifact_sha256=manifest["backend"]["artifactSha256"],
+        backend_source_sha256=manifest["backend"]["sourceSha256"],
+        contract_revision=provenance["contractRevision"],
+        generator_name=constants["generatorName"],
+        generator_version=provenance["generator"]["version"],
+        fixture_keys=provenance["fixtureKeys"],
+    )
+    require(
+        baseline == provenance["sha256"],
+        "Self-test failure: the committed provenance digest is not what its own inputs derive",
+    )
+
+    def perturbed(**overrides: object) -> str:
+        arguments: dict[str, object] = {
+            "output_sha256": provenance["outputSha256"],
+            "locale_sources_sha256": provenance["localeSourcesSha256"],
+            "schemas_sha256": provenance["schemasSha256"],
+            "generator_sha256": provenance["generatorSha256"],
+            "artifact_sha256": manifest["backend"]["artifactSha256"],
+            "backend_source_sha256": manifest["backend"]["sourceSha256"],
+            "contract_revision": provenance["contractRevision"],
+            "generator_name": constants["generatorName"],
+            "generator_version": provenance["generator"]["version"],
+            "fixture_keys": provenance["fixtureKeys"],
+        }
+        arguments.update(overrides)
+        return derive_provenance_sha256(**arguments)
+
+    edited_generator = fileset_digest(
+        [(path, data + b"\n") for path, data in generator_inputs]
+    )
+    edited_schemas = fileset_digest([(path, data + b"\n") for path, data in schema_inputs])
+    renamed_schemas = fileset_digest(
+        [(path + ".moved", data) for path, data in schema_inputs]
+    )
+    partial_schemas = fileset_digest(schema_inputs[:1])
+
+    for label, digest in (
+        ("an edited generator source", perturbed(generator_sha256=edited_generator)),
+        ("an edited v1 schema", perturbed(schemas_sha256=edited_schemas)),
+        ("a renamed v1 schema", perturbed(schemas_sha256=renamed_schemas)),
+        ("a dropped v1 schema", perturbed(schemas_sha256=partial_schemas)),
+        ("a different generator version", perturbed(generator_version="9.9.9")),
+        ("a different generator name", perturbed(generator_name="something-else")),
+        ("a different contract revision", perturbed(contract_revision="0.0.1")),
+    ):
+        require(
+            digest != baseline,
+            f"Self-test failure: {label} left the provenance digest unchanged, so it is not "
+            "actually bound into the catalog revision",
+        )
+
+    require(
+        edited_generator != provenance["generatorSha256"]
+        and edited_schemas != provenance["schemasSha256"]
+        and renamed_schemas != provenance["schemasSha256"],
+        "Self-test failure: a mutated provenance input produced the same fileset digest",
     )
 
 

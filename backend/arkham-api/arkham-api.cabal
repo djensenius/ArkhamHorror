@@ -8372,7 +8372,6 @@ executable arkham-capabilities-probe
     , base
     , bytestring
     , relude
-    , yaml
   default-language: GHC2021
   if flag(library-only)
     buildable: False

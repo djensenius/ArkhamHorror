@@ -570,10 +570,12 @@ manifest: a small, fixed, committed test artifact with three locales and no
 narrative text. Nothing in it is asserted — every digest, count, path,
 `outputSha256` and provenance value is *computed* from committed sibling
 authorities (`locale-catalog-source-*.json`, `-backend-registry.json`,
-`-generator.json`, `-schemas.json`, `-chunk-*.json`) by
-`scripts/build-locale-catalog-fixture.py`, whose `--check` mode rebuilds the
-whole set and whose self-tests mutate each claimed field to prove the check
-bites. It is never generated from `frontend/src/locales/**`. The governed
+`-chunk-*.json`) by `scripts/build-locale-catalog-fixture.py`, whose `--check`
+mode rebuilds the whole set and whose self-tests mutate each claimed field to
+prove the check bites. `generatorSha256` and `schemasSha256` are digests of the
+real generator source and the published v1 schemas, so editing either moves the
+synthetic revision exactly as it would in production, and every value those
+schemas already pin as a `const` is read from them rather than re-typed. It is never generated from `frontend/src/locales/**`. The governed
 capabilities fixture derives every advertised value from its exact bytes, which
 is what lets the published contract stay still while catalog content moves: a
 translator fixing a typo changes the production catalog's revision and digest
@@ -594,10 +596,14 @@ shape can never drift into something no deployment can produce.
 rather than a model of it. `backend/arkham-api/app-capabilities-probe` loads
 settings through the same `loadYamlSettings` call `Application.appMain` uses,
 builds the response with the handler's own `capabilitiesResponse`, and prints
-`Data.Aeson.encode`'s bytes — the production `toEncoding` path. The driver
-validates those bytes against the governed schema and against the generated
-manifest's exact metadata, checks that an unconfigured run still serves the
-legacy shape, and then corrupts each setting in turn (insecure and ambiguous
+`Data.Aeson.encode`'s bytes — the production `toEncoding` path, with nothing
+appended, not even a newline. The driver asserts those **exact bytes** for both
+the advertised and the disabled response before decoding anything, validates
+them against the governed schema and the generated manifest's metadata,
+exercises runtime settings files on the command line (a literal wins over the
+environment; an `_env:` marker lets the environment through; a partial file is
+merged over the compile-time value; an insecure literal cannot be rescued), and
+then corrupts each setting in turn (insecure and ambiguous
 URLs, a malformed revision, a mismatched schema version, an invalid, duplicate
 or unsupported locale, a malformed digest, a value YAML reads as a number)
 requiring the server to refuse to start every time.
