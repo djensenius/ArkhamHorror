@@ -282,7 +282,7 @@ deleteApiV1ArkhamGameR gameId = do
       players <- from $ table @ArkhamPlayer
       where_ $ players.arkhamGameId ==. games.id
       where_ $ players.userId ==. val userId
-  deleteRoom gameId
+  void $ deleteRoom gameId
 
 data PlayabilityRequest = PlayabilityRequest
   { investigatorId :: InvestigatorId

@@ -8418,6 +8418,7 @@ test-suite spec
       Arkham.Api.MainStreetSwapPlanSpec
       Arkham.Api.MainStreetSwapSpec
       Arkham.Api.PendingGameJoinSpec
+      Arkham.Api.RoomCleanupSpec
       Arkham.Api.RunMessagesTimeoutSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec

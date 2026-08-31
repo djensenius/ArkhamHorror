@@ -80,6 +80,7 @@ import Arkham.Card.Id (nullCardId)
 import Arkham.Classes.Entity (attr, overAttrs)
 import Arkham.Difficulty (Difficulty (Standard))
 import Arkham.Entities (Entities (..))
+import Arkham.Epic.Types (EpicRole (GroupPlayer))
 import Arkham.Game (Game (..), newCampaign, newScenario, setInitialScenarioMeta)
 import Arkham.Id (InvestigatorId (..), LocationId (..), PlayerId (..))
 import Arkham.Investigator (lookupInvestigator)
@@ -93,7 +94,7 @@ import Data.Either (isLeft)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.UUID qualified as UUID
-import Database.Persist.Sql (toSqlKey)
+import Database.Persist.Sql (Entity (..), toSqlKey)
 import Entity.Arkham.Epic qualified as Epic
 import Entity.Arkham.Game qualified as GameEntity
 import Entity.Arkham.Player (ArkhamPlayer (..))
@@ -238,6 +239,17 @@ forceGame g = length (show g) `shouldSatisfy` (> 0)
 fixtureUserId :: Int -> User.UserId
 fixtureUserId = toSqlKey . fromIntegral
 
+{- | A synthetic 'Entity.Arkham.Epic.ArkhamEpicMember' row for one participant's
+existing 'GroupPlayer' membership, shaped exactly like what
+'lookupSwapMembership' returns in production (see 'validateSwapMembershipMove').
+The entity's own key is irrelevant to every assertion in this module -- only
+'arkhamEpicMemberGroupOrdinal' is ever consulted -- so it is always a fixed,
+arbitrary key.
+-}
+fixtureMembershipEntity :: Epic.ArkhamEpicEventId -> User.UserId -> Int -> Entity Epic.ArkhamEpicMember
+fixtureMembershipEntity eid userId ordinal =
+  Entity (Epic.ArkhamEpicMemberKey UUID.nil) (Epic.ArkhamEpicMember eid userId GroupPlayer (Just ordinal))
+
 {- | A synthetic 'Entity.Arkham.Player.ArkhamPlayer' row for one swap
 participant -- shaped exactly like what 'lockSwapPlayer' returns in
 production (see 'validateSwapPlayer'). Takes an explicit 'User.UserId' (see
@@ -288,12 +300,23 @@ data Step
     ResolvedGame Int (Maybe GameEntity.ArkhamGameId)
   | -- | one game was locked ('FOR UPDATE'), and whether it was still present
     LockedGame GameEntity.ArkhamGameId Bool
+  | -- | the Epic event was locked ('FOR UPDATE'), and whether it was still
+    -- present
+    LockedEvent Epic.ArkhamEpicEventId Bool
   | -- | one participant's 'Entity.Arkham.Player.ArkhamPlayer' row was locked
     -- ('FOR UPDATE'), and whether it was still present
     LockedPlayer PlayerId Bool
   | -- | one destination game was probed for a pre-existing occupant of the
     -- given user, and whether one was found
     CheckedDestinationOccupant GameEntity.ArkhamGameId User.UserId Bool
+  | -- | one participant's existing 'GroupPlayer' membership row was looked
+    -- up, and its ordinal if one was found ('Nothing' models a legacy seat
+    -- with no membership row at all)
+    LookedUpMembership User.UserId (Maybe Int)
+  | -- | one participant's 'GroupPlayer' membership ordinal was reconciled
+    -- (updated, or inserted for a legacy seat) to the given destination
+    -- ordinal
+    ReconciledMembership User.UserId Int
   | -- | the swap itself was performed, for this plan
     PerformedSwap MainStreetSwapPlan
   deriving stock (Eq, Show)
@@ -310,12 +333,21 @@ now produces in production -- so a test can assert
 'planAndExecuteMainStreetSwap' reports the corresponding
 'MainStreetSwapInvalidState' as an ordinary, successful 'Right' result,
 distinct from 'FailAtPerform' (a genuine aborting exception).
+
+'FailAtLockEvent', 'FailAtLookupMembership', and 'FailAtReconcileMembership'
+are the membership-reconciliation analogues: 'FailAtLookupMembership' and
+'FailAtReconcileMembership' are 0-based in the SAME ascending-'UserId'
+order 'swapMembershipMoves' itself produces (mirroring
+'FailAtLockPlayer''s own canonical-order convention).
 -}
 data FailAt
   = FailNever
   | FailAtResolve Int
   | FailAtLock Int
   | FailAtLockPlayer Int
+  | FailAtLockEvent
+  | FailAtLookupMembership Int
+  | FailAtReconcileMembership Int
   | FailAtPerform
   | InvalidStateAtPerform MainStreetSwapStateFailure
   deriving stock (Eq, Show)
@@ -345,6 +377,21 @@ it vanished concurrently."
 keyed exactly like 'lookupSwapDestinationOccupant' looks one up in
 production -- a present @(gameId, userId)@ key mapped to 'True' is "yes,
 some OTHER row already occupies this destination for this user."
+
+'eventPresent' models the Epic event vanishing concurrently before its own
+lock is taken (see 'MainStreetSwapEventVanished') -- structurally
+unreachable in production (see the Haddock on that constructor) but
+modeled the same defensive way 'gamePresence' models a game vanishing.
+
+'membershipRows' models one participant's existing 'GroupPlayer'
+'Entity.Arkham.Epic.ArkhamEpicMember' row -- keyed by 'User.UserId',
+mirroring how 'lookupSwapMembership' looks one up in production -- an
+absent key (or one mapped to 'Nothing') is "a legacy seat with no
+membership row at all," exactly like 'Api.Arkham.Epic.selectUserEpicSeatOrdinals'
+models it. Reconciling a membership (via 'reconcileSwapMembership')
+updates THIS map in place, so a later call in the SAME (or a threaded,
+sequential) run observes the up-to-date ordinal, exactly like a real
+committed write would.
 -}
 data TestState = TestState
   { steps :: [Step]
@@ -352,14 +399,20 @@ data TestState = TestState
   , gamePresence :: Map GameEntity.ArkhamGameId Bool
   , playerRows :: Map PlayerId (Maybe ArkhamPlayer)
   , destinationOccupants :: Map (GameEntity.ArkhamGameId, User.UserId) Bool
+  , eventPresent :: Bool
+  , membershipRows :: Map User.UserId (Maybe Int)
   , resolveCallCount :: Int
   , lockCallCount :: Int
   , playerLockCallCount :: Int
+  , lookupMembershipCallCount :: Int
+  , reconcileMembershipCallCount :: Int
   }
 
 -- | The common case: both requested ordinals resolve to distinct, present
 -- games, zero steps recorded yet, no player rows configured (only needed by
--- the 'lockAndValidateSwapPlayers' persistence-seam tests below).
+-- the 'lockAndValidateSwapPlayers' persistence-seam tests below). The event
+-- is present and no membership rows are configured by default, since
+-- neither is relevant to this spec block's sequencing assertions.
 fixtureTestState :: Map Int (Maybe GameEntity.ArkhamGameId) -> Map GameEntity.ArkhamGameId Bool -> TestState
 fixtureTestState relations gamePresence =
   TestState
@@ -368,9 +421,13 @@ fixtureTestState relations gamePresence =
     , gamePresence
     , playerRows = mempty
     , destinationOccupants = mempty
+    , eventPresent = True
+    , membershipRows = mempty
     , resolveCallCount = 0
     , lockCallCount = 0
     , playerLockCallCount = 0
+    , lookupMembershipCallCount = 0
+    , reconcileMembershipCallCount = 0
     }
 
 
@@ -387,9 +444,34 @@ fixturePlayerTestState playerRows destinationOccupants =
     , gamePresence = mempty
     , playerRows
     , destinationOccupants
+    , eventPresent = True
+    , membershipRows = mempty
     , resolveCallCount = 0
     , lockCallCount = 0
     , playerLockCallCount = 0
+    , lookupMembershipCallCount = 0
+    , reconcileMembershipCallCount = 0
+    }
+
+-- | State for the 'reconcileSwapMemberships' persistence-seam tests below:
+-- only 'membershipRows' is relevant, since that function never calls
+-- 'resolveSwapGame', 'lockSwapGame'\/'lockSwapEvent', or
+-- 'lockSwapPlayer'\/'lookupSwapDestinationOccupant'.
+fixtureMembershipTestState :: Map User.UserId (Maybe Int) -> TestState
+fixtureMembershipTestState membershipRows =
+  TestState
+    { steps = []
+    , relations = mempty
+    , gamePresence = mempty
+    , playerRows = mempty
+    , destinationOccupants = mempty
+    , eventPresent = True
+    , membershipRows
+    , resolveCallCount = 0
+    , lockCallCount = 0
+    , playerLockCallCount = 0
+    , lookupMembershipCallCount = 0
+    , reconcileMembershipCallCount = 0
     }
 
 {- | A pure interpreter of 'MonadMainStreetSwap': records every step it is
@@ -415,6 +497,15 @@ runTestDB :: FailAt -> TestState -> TestDB a -> (Either String a, [Step])
 runTestDB failAt initial action =
   let (result, finalState) = runState (runExceptT (runReaderT (unTestDB action) failAt)) initial
    in (result, finalState.steps)
+
+-- | Like 'runTestDB', but also returns the FINAL 'TestState' -- needed only
+-- by tests that thread one call's committed membership state into a
+-- SECOND, sequential call (see "reverse\/idempotent claim after a completed
+-- swap" below), mirroring how a second real swap would observe the first
+-- one's already-committed 'ArkhamEpicMember' rows.
+runTestDBWithState :: FailAt -> TestState -> TestDB a -> (Either String a, TestState)
+runTestDBWithState failAt initial action =
+  runState (runExceptT (runReaderT (unTestDB action) failAt)) initial
 
 failIfConfigured :: FailAt -> TestDB ()
 failIfConfigured this = do
@@ -454,7 +545,28 @@ instance MonadMainStreetSwap TestDB where
     recordStep (CheckedDestinationOccupant gid userId occupied)
     pure occupied
 
-  performMainStreetSwap plan _firstRaw _secondRaw = do
+  lockSwapEvent _eid = do
+    failIfConfigured FailAtLockEvent
+    present <- gets (.eventPresent)
+    recordStep (LockedEvent fixtureEventId present)
+    pure present
+
+  lookupSwapMembership eid userId = do
+    occurrence <- gets (.lookupMembershipCallCount)
+    failIfConfigured (FailAtLookupMembership occurrence)
+    modify \s -> s {lookupMembershipCallCount = occurrence + 1}
+    mOrdinal <- gets (Map.findWithDefault Nothing userId . (.membershipRows))
+    recordStep (LookedUpMembership userId mOrdinal)
+    pure $ fixtureMembershipEntity eid userId <$> mOrdinal
+
+  reconcileSwapMembership _eid userId ordinal = do
+    occurrence <- gets (.reconcileMembershipCallCount)
+    failIfConfigured (FailAtReconcileMembership occurrence)
+    modify \s -> s {reconcileMembershipCallCount = occurrence + 1}
+    modify \s -> s {membershipRows = Map.insert userId (Just ordinal) s.membershipRows}
+    recordStep (ReconciledMembership userId ordinal)
+
+  performMainStreetSwap _eventId _firstOrdinal _secondOrdinal plan _firstRaw _secondRaw = do
     failIfConfigured FailAtPerform
     recordStep (PerformedSwap plan)
     configured <- ask
@@ -474,6 +586,7 @@ spec = do
   validateEntityMapIdentitySpec
   swapInvestigatorStateEndToEndSpec
   lockAndValidateSwapPlayersSpec
+  mainStreetSwapMembershipReconciliationSpec
 
 mainStreetSwapSequencingSpec :: Spec
 mainStreetSwapSequencingSpec = describe "planAndExecuteMainStreetSwap (Main Street swap decision sequencing)" do
@@ -1292,3 +1405,148 @@ lockAndValidateSwapPlayersSpec =
           -- gid1 (ascending) is still probed FIRST (and reports no conflict there), before the
           -- gid2 probe that actually finds one.
           [LockedPlayer pid1 True, LockedPlayer pid2 True, CheckedDestinationOccupant gid1 user2 False, CheckedDestinationOccupant gid2 user1 True]
+
+{- | Unit tests for 'reconcileSwapMemberships'\/'swapMembershipMoves'\/
+'validateSwapMembershipMove' -- the Epic 'GroupPlayer' membership-ordinal
+reconciliation a completed swap must perform, in the SAME locked
+transaction, so that a later 'Api.Arkham.Epic.reserveEpicGroupMembership'
+call observes each participant's CURRENT destination ordinal rather than
+their stale pre-swap one. This is the production-used seam
+'performMainStreetSwap' calls (see its Haddock, and the 'SqlPersistT
+Handler' instance) immediately after 'lockAndValidateSwapPlayers'
+validates both locked player rows, and strictly before either game's own
+'ArkhamGame'\/'ArkhamPlayer' rows are written.
+
+As with 'lockAndValidateSwapPlayersSpec' above, both participants' existing
+membership rows are looked up (via 'lookupSwapMembership') and validated
+(via 'validateSwapMembershipMove') BEFORE either is written (via
+'reconcileSwapMembership') -- so a single stale move rejects the WHOLE
+swap's membership reconciliation, with zero writes for either participant,
+exactly mirroring 'lockAndValidateSwapPlayers''s own
+"attempt/read both, then inspect together" shape.
+
+'GroupPlayer' is the only role 'lookupSwapMembership'\/'reconcileSwapMembership'
+ever reference (both the production instance and 'fixtureMembershipEntity'
+hard-code it) -- because 'UniqueEpicMember (event, user, role)' scopes
+every row to exactly one role, an Organizer's own separate membership row
+(if any) is a structurally different key and is never read, validated, or
+written by this reconciliation, preserving "Organizer is a separate role"
+without needing any runtime branch here.
+-}
+mainStreetSwapMembershipReconciliationSpec :: Spec
+mainStreetSwapMembershipReconciliationSpec =
+  describe "reconcileSwapMemberships / swapMembershipMoves (Epic GroupPlayer ordinal reconciliation, production-used)" do
+    let user1 = fixtureUserId 1
+        user2 = fixtureUserId 2
+        gid1 = fixtureGameId 1
+        gid2 = fixtureGameId 2
+        player1 = fixtureArkhamPlayer user1 gid1 rolandId
+        player2 = fixtureArkhamPlayer user2 gid2 daisyId
+        -- Participant 1 came from ordinal 1 (gid1's group) and moves to
+        -- ordinal 2; participant 2 came from ordinal 2 and moves to
+        -- ordinal 1 -- exactly the two 'MainStreetSwapMembershipMove's a
+        -- 1<->2 swap implies.
+        moves = swapMembershipMoves 1 2 player1 player2
+        run failAt state_ = runTestDB failAt state_ (reconcileSwapMemberships fixtureEventId moves)
+        runState_ failAt state_ = runTestDBWithState failAt state_ (reconcileSwapMemberships fixtureEventId moves)
+
+    it "swapMembershipMoves is sorted ascending by UserId regardless of participant argument order" do
+      swapMembershipMoves 1 2 player1 player2 `shouldBe` swapMembershipMoves 2 1 player2 player1
+      map (.userId) moves `shouldBe` sort (map (.userId) moves)
+
+    it "both participants holding existing membership at exactly their expected SOURCE ordinal reconcile successfully, ascending UserId order" do
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Just 1), (user2, Just 2)])
+          (result, log_) = run FailNever state_
+      result `shouldBe` Right (Right ())
+      log_
+        `shouldBe` [ LookedUpMembership user1 (Just 1)
+                   , LookedUpMembership user2 (Just 2)
+                   , ReconciledMembership user1 2
+                   , ReconciledMembership user2 1
+                   ]
+
+    it "a participant with NO existing membership row (a legacy seat) still succeeds, inserting a fresh row at the destination ordinal" do
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Nothing), (user2, Just 2)])
+          (result, log_) = run FailNever state_
+      result `shouldBe` Right (Right ())
+      log_
+        `shouldBe` [ LookedUpMembership user1 Nothing
+                   , LookedUpMembership user2 (Just 2)
+                   , ReconciledMembership user1 2
+                   , ReconciledMembership user2 1
+                   ]
+
+    it "BOTH participants having no existing membership (both legacy seats) succeeds, inserting fresh rows for both" do
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Nothing), (user2, Nothing)])
+          (result, log_) = run FailNever state_
+      result `shouldBe` Right (Right ())
+      log_
+        `shouldBe` [ LookedUpMembership user1 Nothing
+                   , LookedUpMembership user2 Nothing
+                   , ReconciledMembership user1 2
+                   , ReconciledMembership user2 1
+                   ]
+
+    it "a participant's existing membership at a STALE (unexpected) ordinal rejects the WHOLE reconciliation, with ZERO writes for either participant" do
+      -- user1 is claimed to be moving FROM ordinal 1, but its persisted
+      -- membership row says ordinal 3 -- exactly the "authorization table
+      -- and this swap's own assumption have fallen out of sync" case.
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Just 3), (user2, Just 2)])
+          (result, log_) = run FailNever state_
+      result `shouldBe` Right (Left MainStreetSwapMembershipStale)
+      log_ `shouldBe` [LookedUpMembership user1 (Just 3), LookedUpMembership user2 (Just 2)]
+
+    it "a SECOND participant's stale membership is reported even though the first validated fine, and BOTH lookups still happened before either write" do
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Just 1), (user2, Just 99)])
+          (result, log_) = run FailNever state_
+      result `shouldBe` Right (Left MainStreetSwapMembershipStale)
+      log_ `shouldBe` [LookedUpMembership user1 (Just 1), LookedUpMembership user2 (Just 99)]
+
+    it "reverse/idempotent claim: reconciling the SAME pair back after a completed swap validates against the just-committed (not the original pre-swap) ordinals" do
+      let initial = fixtureMembershipTestState (Map.fromList [(user1, Just 1), (user2, Just 2)])
+          (firstResult, committedState) = runState_ FailNever initial
+      firstResult `shouldBe` Right (Right ())
+      committedState.membershipRows `shouldBe` Map.fromList [(user1, Just 2), (user2, Just 1)]
+      -- Now swap BACK: this time each participant's SOURCE ordinal is the
+      -- ordinal they just moved TO. If reconciliation had not actually
+      -- committed the first swap's writes, this would incorrectly fail
+      -- with MainStreetSwapMembershipStale against the stale, pre-swap
+      -- ordinals (1 and 2, reversed from what the moves now expect).
+      let reverseMoves = swapMembershipMoves 2 1 player1 player2
+          (reverseResult, reverseLog) =
+            runTestDB FailNever (committedState {steps = []}) (reconcileSwapMemberships fixtureEventId reverseMoves)
+      reverseResult `shouldBe` Right (Right ())
+      reverseLog
+        `shouldBe` [ LookedUpMembership user1 (Just 2)
+                   , LookedUpMembership user2 (Just 1)
+                   , ReconciledMembership user1 1
+                   , ReconciledMembership user2 2
+                   ]
+
+    it "a failure looking up the FIRST participant's membership cannot produce a success-shaped result, and no membership is ever reconciled" do
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Just 1), (user2, Just 2)])
+          (result, log_) = run (FailAtLookupMembership 0) state_
+      result `shouldSatisfy` isLeft
+      log_ `shouldBe` []
+
+    it "a failure looking up the SECOND participant's membership proves the first was genuinely looked up first, and still commits no write" do
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Just 1), (user2, Just 2)])
+          (result, log_) = run (FailAtLookupMembership 1) state_
+      result `shouldSatisfy` isLeft
+      log_ `shouldBe` [LookedUpMembership user1 (Just 1)]
+
+    it "a failure reconciling the FIRST participant's membership cannot produce a success-shaped result" do
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Just 1), (user2, Just 2)])
+          (result, log_) = run (FailAtReconcileMembership 0) state_
+      result `shouldSatisfy` isLeft
+      log_ `shouldBe` [LookedUpMembership user1 (Just 1), LookedUpMembership user2 (Just 2)]
+
+    it "a failure reconciling the SECOND participant's membership proves the first write was genuinely attempted first" do
+      let state_ = fixtureMembershipTestState (Map.fromList [(user1, Just 1), (user2, Just 2)])
+          (result, log_) = run (FailAtReconcileMembership 1) state_
+      result `shouldSatisfy` isLeft
+      log_
+        `shouldBe` [ LookedUpMembership user1 (Just 1)
+                   , LookedUpMembership user2 (Just 2)
+                   , ReconciledMembership user1 2
+                   ]

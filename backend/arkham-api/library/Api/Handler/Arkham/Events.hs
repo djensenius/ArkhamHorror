@@ -407,7 +407,7 @@ deleteApiV1ArkhamEventR eid = do
       permissionDenied "Only the event organizer may perform this action"
     EventDeletionDeleted gameIds -> do
       for_ gameIds deleteRoom
-      deleteEventRoom eid
+      void $ deleteEventRoom eid
 
 {- | Organizer correction for the one user-adjustable Blob pool. Internal keys
 (health, act gates/generations, timer state) are never writable through the

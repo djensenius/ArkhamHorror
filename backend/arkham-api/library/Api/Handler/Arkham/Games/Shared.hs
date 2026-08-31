@@ -7,6 +7,7 @@ module Api.Handler.Arkham.Games.Shared where
 import Api.Arkham.Epic (
   applyEpicDeltasLocked,
   canonicalEpicGameLockOrder,
+  lockEpicEventRow,
   lookupGameEvent,
   mkEpicEnv,
   modifySharedStateLockedWith,
@@ -24,6 +25,7 @@ import Arkham.Classes.HasQueue
 import Arkham.Effect.Types (effectTarget)
 import Arkham.Entities (Entities (..), entitiesActs)
 import Arkham.Epic.Types (
+  EpicRole (GroupPlayer),
   GroupOrdinal (..),
   SharedEventState,
   SharedKey (
@@ -1125,6 +1127,33 @@ data MainStreetSwapStateFailure
     -- internally consistent). Checked for BOTH games, before any
     -- readiness\/placement\/membership check or transformation ever runs.
     MainStreetSwapInvalidEntityMap
+  | -- | The Epic event this swap belongs to vanished concurrently between
+    -- both linked games being locked (see 'lockSwapGame') and this swap's
+    -- own event-row lock being taken (see 'lockSwapEvent'). Structurally
+    -- unreachable in production: the only writer that can remove an Epic
+    -- event, 'Api.Handler.Arkham.Events.deleteEpicEventAggregate', must
+    -- itself lock every one of the event's linked games FIRST, in the
+    -- identical canonical order this swap already locked its own two
+    -- games in (see 'MainStreetSwapPlan'), so it cannot have already
+    -- committed the event's removal while this transaction still holds
+    -- those same game locks. Handled as a typed outcome rather than
+    -- assumed impossible anyway, exactly like
+    -- 'Api.Handler.Arkham.PendingGames.PendingJoinEventVanished'.
+    MainStreetSwapEventVanished
+  | -- | Once both participants' 'Entity.Arkham.Player.ArkhamPlayer' rows
+    -- are locked and validated, one participant's EXISTING
+    -- 'GroupPlayer' 'Entity.Arkham.Epic.ArkhamEpicMember' membership row
+    -- (if any -- a legacy seat with none at all is always valid, see
+    -- 'validateSwapMembershipMove') is recorded under some ordinal OTHER
+    -- than the group this swap expects them to currently occupy: the
+    -- authorization table and this swap's own assumptions about which
+    -- group each participant currently belongs to have fallen out of
+    -- sync (a prior partial write, a direct mutation of one without the
+    -- other, or a genuinely concurrent reservation this swap's own game
+    -- locks did not serialize against). Checked for BOTH participants,
+    -- strictly BEFORE either's membership row -- or either game's\/
+    -- player's row -- is actually written; see 'reconcileSwapMemberships'.
+    MainStreetSwapMembershipStale
   deriving stock (Eq, Show)
 
 {- | The result of attempting to plan and execute a Main Street group swap,
@@ -1252,12 +1281,59 @@ class Monad m => MonadMainStreetSwap m where
   -- were already locked in -- so two concurrent swaps sharing a
   -- destination game can never probe it in opposite orders.
   lookupSwapDestinationOccupant :: ArkhamGameId -> UserId -> ArkhamPlayerId -> m Bool
+  -- | Row-lock the Epic event this swap belongs to ('FOR UPDATE' in
+  -- production, via 'Api.Arkham.Epic.lockEpicEventRow') and report whether
+  -- it is still present -- mirroring
+  -- 'Api.Handler.Arkham.Events.MonadEpicEventDeletion.lockEpicEvent''s own
+  -- plain-'Bool' contract, since neither caller ever needs the locked
+  -- row's CONTENT, only that it is still there. Called from
+  -- 'performMainStreetSwap' AFTER both games in the plan are already
+  -- locked (see 'lockSwapGame') but BEFORE either participant's player
+  -- row is locked (see 'lockSwapPlayer') -- the same game(s)->event->player
+  -- order 'Api.Handler.Arkham.Game.Debug.planAndExecuteClaimSeat' and
+  -- 'Api.Handler.Arkham.PendingGames.planAndExecutePendingJoin' share for
+  -- any writer that touches both a game and the event. Serializes this
+  -- swap's own membership reconciliation ('lookupSwapMembership',
+  -- 'reconcileSwapMembership') against every other writer that creates or
+  -- mutates this event's 'Entity.Arkham.Epic.ArkhamEpicMember' rows.
+  -- 'False' covers the event vanishing concurrently -- structurally
+  -- unreachable once both linked games are already locked (see
+  -- 'MainStreetSwapEventVanished'), but handled as a typed outcome rather
+  -- than assumed impossible.
+  lockSwapEvent :: ArkhamEpicEventId -> m Bool
+  -- | Look up (a plain, non-locking read -- safe once 'lockSwapEvent'
+  -- already holds this event's row exclusively, mirroring
+  -- 'Api.Arkham.Epic.reserveEpicGroupMembership''s own precondition) one
+  -- user's CURRENT 'GroupPlayer' 'Entity.Arkham.Epic.ArkhamEpicMember' row
+  -- for this event, if any. 'Nothing' covers a legacy seat with no
+  -- membership row at all (see
+  -- 'Api.Arkham.Epic.selectUserEpicSeatOrdinals'); at most one row can
+  -- ever exist per @(event, user, role)@, by
+  -- 'Entity.Arkham.Epic.UniqueEpicMember's own unique key, so "duplicate"
+  -- is unreachable by construction here, not merely unchecked. Called
+  -- once per participant, in 'swapMembershipMoves''s deterministic
+  -- ascending 'UserId' order, both attempted before either result is
+  -- inspected (see 'reconcileSwapMemberships').
+  lookupSwapMembership :: ArkhamEpicEventId -> UserId -> m (Maybe (Entity ArkhamEpicMember))
+  -- | Idempotently set one user's 'GroupPlayer' membership ordinal for
+  -- this event to @ordinal@: updates the existing row if
+  -- 'lookupSwapMembership' found one, or inserts a fresh one for a legacy
+  -- seat with none. Called ONLY from 'reconcileSwapMemberships', and only
+  -- after 'validateSwapMembershipMove' has already confirmed BOTH
+  -- participants' existing rows (if any) carry their expected SOURCE
+  -- ordinal -- so this never overwrites a membership row this swap did
+  -- not itself just validate, and never runs for just one participant
+  -- while the other fails.
+  reconcileSwapMembership :: ArkhamEpicEventId -> UserId -> Int -> m ()
   -- | Perform the actual investigator swap using the two ALREADY-LOCKED
   -- game rows 'planAndExecuteMainStreetSwap' passes in (never re-read from
-  -- storage): compute each side's new state, lock and validate both
-  -- participants' 'Entity.Arkham.Player.ArkhamPlayer' rows (see
-  -- 'lockSwapPlayer', 'validateSwapPlayer'), and persist all four rows if,
-  -- and only if, every precondition on the locked game AND player state
+  -- storage): compute each side's new state, lock the Epic event (see
+  -- 'lockSwapEvent'), lock and validate both participants'
+  -- 'Entity.Arkham.Player.ArkhamPlayer' rows (see 'lockSwapPlayer',
+  -- 'validateSwapPlayer'), reconcile both participants' Epic 'GroupPlayer'
+  -- membership ordinals to their destination groups (see
+  -- 'reconcileSwapMemberships'), and persist all rows if, and only if,
+  -- every precondition on the locked game, player, AND membership state
   -- actually supports the swap. Returns 'Left' (and performs no write,
   -- spend, or side effect whatsoever) if it does not -- see
   -- 'MainStreetSwapStateFailure' for every distinct cause -- so a caller
@@ -1266,9 +1342,18 @@ class Monad m => MonadMainStreetSwap m where
   -- games in the plan are confirmed locked and present. Never called for
   -- 'MainStreetSwapMissing' or 'MainStreetSwapSameGame'. The two
   -- 'ArkhamGame' arguments correspond to the plan's 'firstGameId' and
-  -- 'secondGameId' respectively, NOT to canonical lock order.
+  -- 'secondGameId' respectively, NOT to canonical lock order; the
+  -- 'ArkhamEpicEventId' and the two 'Int' ordinals are the SAME event id
+  -- and requested ordinals 'planAndExecuteMainStreetSwap' itself already
+  -- resolved 'firstGameId'\/'secondGameId' from.
   performMainStreetSwap
-    :: MainStreetSwapPlan -> ArkhamGame -> ArkhamGame -> m (Either MainStreetSwapStateFailure ())
+    :: ArkhamEpicEventId
+    -> Int
+    -> Int
+    -> MainStreetSwapPlan
+    -> ArkhamGame
+    -> ArkhamGame
+    -> m (Either MainStreetSwapStateFailure ())
 
 {- | The Main Street swap decision:
 
@@ -1320,7 +1405,7 @@ planAndExecuteMainStreetSwap eventId firstOrdinal secondOrdinal = do
               let lockedById = Map.fromList (zip plan.lockOrder lockedGames)
               case (Map.lookup firstGameId lockedById, Map.lookup secondGameId lockedById) of
                 (Just firstRaw, Just secondRaw) -> do
-                  result <- performMainStreetSwap plan firstRaw secondRaw
+                  result <- performMainStreetSwap eventId firstOrdinal secondOrdinal plan firstRaw secondRaw
                   pure $ either MainStreetSwapInvalidState (const (MainStreetSwapCompleted plan)) result
                 -- Unreachable by construction: 'plan.lockOrder' is built
                 -- from exactly [firstGameId, secondGameId] (deduplicated),
@@ -1422,6 +1507,72 @@ checkSwapDestinationOccupancy firstGameId firstPid firstPlayer secondGameId seco
     lookupSwapDestinationOccupant destGameId incomingUserId excludedPid
   pure $ if or occupied then Left MainStreetSwapDestinationOccupied else Right ()
 
+{- | One participant's Epic 'GroupPlayer' membership move: their ordinal
+authorization needs to follow them from the group they occupied BEFORE the
+swap (@sourceOrdinal@) to the group they occupy AFTER it
+(@destinationOrdinal@), mirroring the 'Entity.Arkham.Player.ArkhamPlayer'
+row move 'performMainStreetSwap' itself performs. Carries the plain
+'UserId' rather than a locked 'ArkhamPlayer' row: once
+'validateSwapParticipantUsers' has run, that is the only identity this
+move needs.
+-}
+data MainStreetSwapMembershipMove = MainStreetSwapMembershipMove
+  { userId :: UserId
+  , sourceOrdinal :: Int
+  , destinationOrdinal :: Int
+  }
+  deriving stock (Eq, Show)
+
+{- | Build the two membership moves a completed swap implies: the first
+participant moves from @firstOrdinal@ to @secondOrdinal@, the second moves
+the other way. Sorted ascending by 'UserId' -- defense in depth alongside
+the exclusive event lock 'lockSwapEvent' already holds -- so two
+concurrent swaps could never reconcile the same pair of users' memberships
+in opposite orders even if they somehow raced past that lock.
+-}
+swapMembershipMoves :: Int -> Int -> ArkhamPlayer -> ArkhamPlayer -> [MainStreetSwapMembershipMove]
+swapMembershipMoves firstOrdinal secondOrdinal firstPlayer secondPlayer =
+  sortOn (.userId)
+    [ MainStreetSwapMembershipMove (arkhamPlayerUserId firstPlayer) firstOrdinal secondOrdinal
+    , MainStreetSwapMembershipMove (arkhamPlayerUserId secondPlayer) secondOrdinal firstOrdinal
+    ]
+
+{- | A legacy seat with no existing 'GroupPlayer' membership row
+(@Nothing@) always validates -- there is nothing stale to detect. An
+EXISTING row must carry exactly @move.sourceOrdinal@: any other ordinal
+means the authorization table and this swap's own assumption about which
+group @move.userId@ currently occupies have fallen out of sync (see
+'MainStreetSwapMembershipStale'), and this move -- and, by
+'reconcileSwapMemberships', the WHOLE swap -- must be rejected before
+either participant's row is written.
+-}
+validateSwapMembershipMove
+  :: MainStreetSwapMembershipMove -> Maybe (Entity ArkhamEpicMember) -> Either MainStreetSwapStateFailure ()
+validateSwapMembershipMove _ Nothing = Right ()
+validateSwapMembershipMove move (Just (Entity _ member)) =
+  when (arkhamEpicMemberGroupOrdinal member /= Just move.sourceOrdinal) $
+    Left MainStreetSwapMembershipStale
+
+{- | Look up BOTH participants' current 'GroupPlayer' membership rows (via
+'lookupSwapMembership', safe once 'lockSwapEvent' already holds this
+event's row exclusively) and validate BOTH (via 'validateSwapMembershipMove')
+before writing EITHER -- mirroring 'lockAndValidateSwapPlayers''s own
+"attempt both, then inspect together" shape. Only once both validate does
+'reconcileSwapMembership' actually move each participant's membership
+ordinal to their destination group; a single invalid move rejects the
+whole swap and performs no write for either participant.
+-}
+reconcileSwapMemberships
+  :: MonadMainStreetSwap m
+  => ArkhamEpicEventId -> [MainStreetSwapMembershipMove] -> m (Either MainStreetSwapStateFailure ())
+reconcileSwapMemberships eventId moves = do
+  existing <- for moves \move -> lookupSwapMembership eventId move.userId
+  case traverse (uncurry validateSwapMembershipMove) (zip moves existing) of
+    Left failure -> pure (Left failure)
+    Right _ -> do
+      for_ moves \move -> reconcileSwapMembership eventId move.userId move.destinationOrdinal
+      pure (Right ())
+
 instance MonadMainStreetSwap (SqlPersistT Handler) where
   resolveSwapGame eid ordinal = do
     mGroup <-
@@ -1459,39 +1610,57 @@ instance MonadMainStreetSwap (SqlPersistT Handler) where
         , ArkhamPlayerId P.!=. excludedPid
         ]
         []
-  performMainStreetSwap plan firstRaw secondRaw =
+  lockSwapEvent = fmap isJust . lockEpicEventRow
+  lookupSwapMembership eid userId = P.getBy (UniqueEpicMember eid userId GroupPlayer)
+  reconcileSwapMembership eid userId ordinal = do
+    existing <- P.getBy (UniqueEpicMember eid userId GroupPlayer)
+    case existing of
+      Just (Entity mid _) -> P.update mid [ArkhamEpicMemberGroupOrdinal P.=. Just ordinal]
+      Nothing -> void $ P.insert (ArkhamEpicMember eid userId GroupPlayer (Just ordinal))
+  performMainStreetSwap eventId firstOrdinal secondOrdinal plan firstRaw secondRaw =
     case swapInvestigatorState (arkhamGameCurrentData firstRaw) (arkhamGameCurrentData secondRaw) of
       Left failure -> pure (Left failure)
       Right transform -> do
         -- Game locks (via 'lockSwapGame', already held by the time
         -- 'performMainStreetSwap' is called -- see 'planAndExecuteMainStreetSwap')
-        -- come first; participant player-row locks come SECOND (see
-        -- 'lockAndValidateSwapPlayers').
-        playerLockResult <- lockAndValidateSwapPlayers plan.firstGameId plan.secondGameId transform
-        case playerLockResult of
-          Left failure -> pure (Left failure)
-          Right _validatedPlayers -> do
-            let
-              firstStep = arkhamGameStep firstRaw + 1
-              secondStep = arkhamGameStep secondRaw + 1
-            -- 'updateGet' throws if its key does not exist, rather than
-            -- silently affecting zero rows: defense in depth on top of
-            -- the fact that every key updated here was already
-            -- confirmed present and locked, in this same transaction,
-            -- moments ago (games via 'lockSwapGame', players via
-            -- 'lockSwapPlayer'). No key here is ever re-derived from
-            -- anywhere but that same lock.
-            _ <-
-              P.updateGet
-                plan.firstGameId
-                [ArkhamGameCurrentData P.=. transform.firstGame', ArkhamGameStep P.=. firstStep]
-            _ <-
-              P.updateGet
-                plan.secondGameId
-                [ArkhamGameCurrentData P.=. transform.secondGame', ArkhamGameStep P.=. secondStep]
-            _ <- P.updateGet (coerce transform.firstPid) [ArkhamPlayerArkhamGameId P.=. plan.secondGameId]
-            _ <- P.updateGet (coerce transform.secondPid) [ArkhamPlayerArkhamGameId P.=. plan.firstGameId]
-            pure (Right ())
+        -- come first; the Epic event lock (via 'lockSwapEvent') comes
+        -- SECOND -- the same game(s)->event order claim-seat and
+        -- pending-join share; participant player-row locks come THIRD
+        -- (see 'lockAndValidateSwapPlayers').
+        eventStillPresent <- lockSwapEvent eventId
+        if not eventStillPresent
+          then pure (Left MainStreetSwapEventVanished)
+          else do
+            playerLockResult <- lockAndValidateSwapPlayers plan.firstGameId plan.secondGameId transform
+            case playerLockResult of
+              Left failure -> pure (Left failure)
+              Right (firstPlayer, secondPlayer) -> do
+                let moves = swapMembershipMoves firstOrdinal secondOrdinal firstPlayer secondPlayer
+                membershipResult <- reconcileSwapMemberships eventId moves
+                case membershipResult of
+                  Left failure -> pure (Left failure)
+                  Right () -> do
+                    let
+                      firstStep = arkhamGameStep firstRaw + 1
+                      secondStep = arkhamGameStep secondRaw + 1
+                    -- 'updateGet' throws if its key does not exist, rather than
+                    -- silently affecting zero rows: defense in depth on top of
+                    -- the fact that every key updated here was already
+                    -- confirmed present and locked, in this same transaction,
+                    -- moments ago (games via 'lockSwapGame', players via
+                    -- 'lockSwapPlayer'). No key here is ever re-derived from
+                    -- anywhere but that same lock.
+                    _ <-
+                      P.updateGet
+                        plan.firstGameId
+                        [ArkhamGameCurrentData P.=. transform.firstGame', ArkhamGameStep P.=. firstStep]
+                    _ <-
+                      P.updateGet
+                        plan.secondGameId
+                        [ArkhamGameCurrentData P.=. transform.secondGame', ArkhamGameStep P.=. secondStep]
+                    _ <- P.updateGet (coerce transform.firstPid) [ArkhamPlayerArkhamGameId P.=. plan.secondGameId]
+                    _ <- P.updateGet (coerce transform.secondPid) [ArkhamPlayerArkhamGameId P.=. plan.firstGameId]
+                    pure (Right ())
 
 {- | Resolve the ELSE! Main Street group swap (see 'computeMainStreetSwap' for
 exactly what state moves between the two games).
@@ -2191,16 +2360,89 @@ toGameDetailsEntry (Entity gameId game) playerCount =
 still connected. Unlike 'releaseGameRoomIfEmpty' this ignores the subscriber
 count, but it must still tear the Redis subscription down or the controller
 keeps a callback for a channel nothing will ever publish to again.
+
+Runs strictly AFTER 'Api.Handler.Arkham.Events.deleteApiV1ArkhamEventR' has
+already committed the deletion via 'runDB': a teardown failure here can
+never roll back, and must never fake, that already-committed success. See
+'RoomCleanupOutcome' for what this reports, and 'attemptRoomTeardown' for
+the exact per-room decision, factored out so tests can exercise it
+directly against a stubbed, deliberately-failing unsubscribe action,
+without a live server.
 -}
-deleteRoom :: ArkhamGameId -> Handler ()
-deleteRoom = forceDeleteRoom appGameRooms
+deleteRoom :: ArkhamGameId -> Handler RoomCleanupOutcome
+deleteRoom = forceDeleteRoom "game" appGameRooms
 
-deleteEventRoom :: ArkhamEpicEventId -> Handler ()
-deleteEventRoom = forceDeleteRoom appEventRooms
+deleteEventRoom :: ArkhamEpicEventId -> Handler RoomCleanupOutcome
+deleteEventRoom = forceDeleteRoom "event" appEventRooms
 
-forceDeleteRoom :: Ord k => (App -> MVar (Map k Room)) -> k -> Handler ()
-forceDeleteRoom roomsOf key = do
+{- | The typed result of one 'forceDeleteRoom' attempt, reported to the caller
+instead of being silently swallowed. No bounded-retry loop is layered on
+top of this: the codebase's one existing retry abstraction
+('Api.Arkham.Lifecycle''s 'ManagedCleanup'\/'ManagedReleasePlan') exists to
+compose ordered release steps across acquired AWS-credential-supervisor
+resources, an unrelated domain with its own acquisition ordering
+invariants -- forcing that machinery onto a single best-effort Redis
+unsubscribe would be overengineering, not reuse. Instead,
+'RoomCleanupUnsubscribeFailed' deliberately leaves the room reachable (see
+'attemptRoomTeardown') so a future manual or background cleanup pass has
+something to retry against, rather than fabricating new scheduling
+infrastructure this fix does not need.
+-}
+data RoomCleanupOutcome
+  = -- | No room was tracked under this key at all (already cleaned up, or
+    -- this game\/event never had any live subscriber to begin with).
+    RoomCleanupAbsent
+  | -- | A room was present and its subscription was torn down
+    -- successfully; it has been removed from the rooms map.
+    RoomCleanupClean
+  | -- | A room was present but tearing down its subscription failed
+    -- synchronously (see 'attemptRoomTeardown' for why only synchronous
+    -- failures are ever caught here). The room is deliberately left IN
+    -- the map rather than dropped.
+    RoomCleanupUnsubscribeFailed SomeException
+  deriving stock Show
+
+forceDeleteRoom :: (Ord k, Show k) => Text -> (App -> MVar (Map k Room)) -> k -> Handler RoomCleanupOutcome
+forceDeleteRoom kind roomsOf key = do
   roomsVar <- getsYesod roomsOf
-  liftIO $ modifyMVar_ roomsVar \rooms -> do
-    for_ (Map.lookup key rooms) $ tryRedis_ . join . readTVarIO . roomUnsubscribe
-    pure $ Map.delete key rooms
+  outcome <- liftIO $ modifyMVar roomsVar (attemptRoomTeardown key)
+  case outcome of
+    RoomCleanupUnsubscribeFailed e ->
+      $(logWarn)
+        $ "Epic post-deletion room cleanup failed for "
+        <> kind
+        <> " "
+        <> tshow key
+        <> ": "
+        <> tshow e
+    RoomCleanupAbsent -> pure ()
+    RoomCleanupClean -> pure ()
+  pure outcome
+
+{- | The exact per-room teardown 'forceDeleteRoom' performs, factored out to
+operate directly on the rooms map (never on the 'MVar' or 'App' itself) so
+tests can exercise this SAME decision against a constructed 'Room' with a
+stubbed, deliberately-failing unsubscribe action -- no live server, 'MVar',
+or 'App' required.
+
+'UE.tryAny' (via the unqualified 'tryAny' already imported here) only
+ever catches a genuine, synchronous teardown failure -- exactly like
+'tryRedis_' \/ 'releaseRoomIfEmpty' -- so a caller's own cancellation (e.g.
+the admin request driving this deletion itself being torn down mid-flight)
+always propagates unchanged rather than being mistaken for a completed
+cleanup.
+
+The room is removed from the returned map ONLY when teardown actually
+succeeded, or there was nothing tracked to begin with. On a synchronous
+failure it is deliberately left IN the map: dropping it would discard the
+only reachable handle to its still-registered callback, turning an
+outstanding, retryable leak into a permanently unretryable one.
+-}
+attemptRoomTeardown :: Ord k => k -> Map k Room -> IO (Map k Room, RoomCleanupOutcome)
+attemptRoomTeardown key rooms = case Map.lookup key rooms of
+  Nothing -> pure (rooms, RoomCleanupAbsent)
+  Just r -> do
+    result <- tryAny $ join $ readTVarIO (roomUnsubscribe r)
+    pure $ case result of
+      Right () -> (Map.delete key rooms, RoomCleanupClean)
+      Left e -> (rooms, RoomCleanupUnsubscribeFailed e)
