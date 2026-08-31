@@ -2372,10 +2372,15 @@ on a repeated deletion -- impossible for an event because the repeat
 returns a nondisclosing 404 before cleanup.
 -}
 deleteRoom :: ArkhamGameId -> Handler RoomCleanupOutcome
-deleteRoom = forceDeleteRoom "game" appGameRooms
+deleteRoom key = mask $ \restore ->
+  prepareDeleteRoom key >>= restore
 
 deleteEventRoom :: ArkhamEpicEventId -> Handler RoomCleanupOutcome
-deleteEventRoom = forceDeleteRoom "event" appEventRooms
+deleteEventRoom key = mask $ \restore ->
+  prepareForceDeleteRoom "event" appEventRooms key >>= restore
+
+prepareDeleteRoom :: ArkhamGameId -> Handler (Handler RoomCleanupOutcome)
+prepareDeleteRoom = prepareForceDeleteRoom "game" appGameRooms
 
 {- | Establish ownership for every game and event room from one committed event
 deletion before executing any unsubscribe. The short handoff is
@@ -2385,6 +2390,11 @@ requeued and every later room already durably owned.
 -}
 deleteEventRooms :: [ArkhamGameId] -> ArkhamEpicEventId -> Handler ()
 deleteEventRooms gameIds eventId = mask $ \restore -> do
+  cleanup <- prepareDeleteEventRooms gameIds eventId
+  restore cleanup
+
+prepareDeleteEventRooms :: [ArkhamGameId] -> ArkhamEpicEventId -> Handler (Handler ())
+prepareDeleteEventRooms gameIds eventId = do
   gameRooms <- getsYesod appGameRooms
   eventRooms <- getsYesod appEventRooms
   (gameCleanups, eventCleanup) <-
@@ -2392,20 +2402,30 @@ deleteEventRooms gameIds eventId = mask $ \restore -> do
       games <- traverse (prepareRoomCleanup CleanupForced gameRooms) gameIds
       event <- prepareRoomCleanup CleanupForced eventRooms eventId
       pure (zip gameIds games, event)
-  restore do
+  pure do
     for_ gameCleanups \(gameId, prepared) ->
       for_ prepared $ finishForcedRoomCleanup "game" gameId
     for_ eventCleanup $ finishForcedRoomCleanup "event" eventId
 
 forceDeleteRoom :: (Ord k, Show k) => Text -> (App -> MVar (Map k Room)) -> k -> Handler RoomCleanupOutcome
 forceDeleteRoom kind roomsOf key = mask $ \restore -> do
+  cleanup <- prepareForceDeleteRoom kind roomsOf key
+  restore cleanup
+
+prepareForceDeleteRoom
+  :: (Ord k, Show k)
+  => Text
+  -> (App -> MVar (Map k Room))
+  -> k
+  -> Handler (Handler RoomCleanupOutcome)
+prepareForceDeleteRoom kind roomsOf key = do
   roomsVar <- getsYesod roomsOf
   prepared <-
     liftIO $ uninterruptibleMask_ $
       prepareRoomCleanup CleanupForced roomsVar key
-  case prepared of
+  pure $ case prepared of
     Nothing -> pure RoomCleanupAbsent
-    Just cleanup -> restore $ finishForcedRoomCleanup kind key cleanup
+    Just cleanup -> finishForcedRoomCleanup kind key cleanup
 
 finishForcedRoomCleanup
   :: (Ord k, Show k) => Text -> k -> PreparedRoomCleanup k -> Handler RoomCleanupOutcome

@@ -276,7 +276,7 @@ putApiV1ArkhamGameRawR gameId = do
 deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
-  mask $ \_ -> do
+  mask $ \restore -> do
     runDB $ delete do
       games <- from $ table @ArkhamGame
       where_ $ games.id ==. val gameId
@@ -284,7 +284,8 @@ deleteApiV1ArkhamGameR gameId = do
         players <- from $ table @ArkhamPlayer
         where_ $ players.arkhamGameId ==. games.id
         where_ $ players.userId ==. val userId
-    void $ deleteRoom gameId
+    cleanup <- prepareDeleteRoom gameId
+    void $ restore cleanup
 
 data PlayabilityRequest = PlayabilityRequest
   { investigatorId :: InvestigatorId

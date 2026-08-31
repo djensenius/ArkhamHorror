@@ -45,7 +45,7 @@ import Api.Arkham.Helpers
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.Games.Shared (
   broadcastSharedToEvent,
-  deleteEventRooms,
+  prepareDeleteEventRooms,
   getEventGroupContributions,
   getEventGroupGameIds,
   propagateShared,
@@ -399,14 +399,15 @@ live server.
 deleteApiV1ArkhamEventR :: ArkhamEpicEventId -> Handler ()
 deleteApiV1ArkhamEventR eid = do
   userId <- getRequestUserId
-  mask $ \_ -> do
+  mask $ \restore -> do
     outcome <- runDB $ deleteEpicEventAggregate eid userId
     case outcome of
       EventDeletionMissing -> notFound
       EventDeletionForbidden ->
         permissionDenied "Only the event organizer may perform this action"
-      EventDeletionDeleted gameIds ->
-        deleteEventRooms gameIds eid
+      EventDeletionDeleted gameIds -> do
+        cleanup <- prepareDeleteEventRooms gameIds eid
+        restore cleanup
 
 {- | Organizer correction for the one user-adjustable Blob pool. Internal keys
 (health, act gates/generations, timer state) are never writable through the
