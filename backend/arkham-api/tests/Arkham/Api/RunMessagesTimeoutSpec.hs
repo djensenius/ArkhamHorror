@@ -121,9 +121,11 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
     (timeoutOutcome :: Either RunMessagesTimeout ()) `shouldBe` Right ()
 
   it "a genuinely slow action's timeout is reported under the SAME budget value it was given, not a hard-coded production constant, proving the seam is parameterized rather than reusing a fixed 30s budget" do
-    -- A distinct, larger budget than 'shortBudgetMicros' -- still small
-    -- enough to keep this spec fast, but comfortably above the sub-20ms
-    -- range that proved flaky under CI scheduling/GC pauses.
+    -- A distinct budget from 'shortBudgetMicros' (proving the seam
+    -- genuinely uses whichever value it's given, not a memoized constant
+    -- from an earlier test) -- still small enough to keep this spec fast,
+    -- but comfortably above the sub-20ms range that proved flaky under CI
+    -- scheduling/GC pauses.
     let otherBudgetMicros = 100 * 1000 -- 100ms
     outcome <-
       try
