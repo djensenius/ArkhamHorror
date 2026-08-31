@@ -1,0 +1,29 @@
+{
+  "schemaRevision": "0.1.23",
+  "status": "baseline-incomplete",
+  "apiBasePath": "/api/v1",
+  "nativeClientMinimumRevision": "0.1.0",
+  "capabilities": [
+    "events.shared-state-versioning",
+    "games.step-probe",
+    "i18n.locale-catalog.v1",
+    "websockets.authorization-header",
+    "websockets.spectator-read-only"
+  ],
+  "localeCatalog": {
+    "manifestUrl": "/locale-catalog/manifest.json",
+    "catalogRevision": "1.c5f4828c5dcde2c11707c5b926b3f324",
+    "schemaVersion": "1.0.0",
+    "defaultLocale": "en",
+    "supportedLocales": [
+      "de",
+      "en",
+      "es",
+      "fr",
+      "it",
+      "ko",
+      "zh"
+    ],
+    "manifestSha256": "cdf9d565e7b6e710e8504a8e79f58bdd60c9dc044f2edc796819dc269e275ff3"
+  }
+}

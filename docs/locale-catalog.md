@@ -484,8 +484,7 @@ sources by a frontend build step, and its schemas live under
 `contracts/manifest.json`, because governed contract artifacts there are bound
 to the backend's real Aeson encoders
 (`backend/arkham-api/tests/Arkham/Api/JsonContractsSpec.hs`) and nothing in
-this catalog is produced by the backend. `contracts/` revision `0.1.22` is
-untouched by this change.
+this catalog is produced by the backend.
 
 The binding to the contract is still machine-verifiable in both directions:
 the catalog's required key set is extracted from
@@ -493,9 +492,69 @@ the catalog's required key set is extracted from
 `contracts/fixtures/question-read-with-cards.json`, and the manifest records
 those fixtures' digests plus `contracts/manifest.json`'s `schemaRevision`.
 
-A backend capability advertising this catalog (issue #53) needs exactly two
-values, both available without guessing: the stable manifest URL
-(`manifestPath`, `/locale-catalog/manifest.json`) and `catalogRevision`. The
-manifest served at that URL is byte-identical to the one at
+## Advertising the catalog
+
+A catalog nobody can find is not useful to a native client, and a client that
+has to guess `arkhamhorror.app` is not a client of *this* deployment. Contract
+revision `0.1.23` therefore adds an optional `localeCatalog` object and the
+`i18n.locale-catalog.v1` identifier to `GET /api/v1/capabilities`
+([`contracts/README.md`](../contracts/README.md#locale-catalog-discovery)).
+The backend still never holds, proxies or re-encodes catalog content: it
+publishes six values that describe where *this* server's catalog is and what it
+must hash to.
+
+It is deployment configuration, so a hosted and a self-hosted install can
+differ without recompiling anything
+(`backend/arkham-api/config/settings.yml`):
+
+| Setting | Environment variable | Example |
+| --- | --- | --- |
+| `locale-catalog-manifest-url` | `ARKHAM_LOCALE_CATALOG_MANIFEST_URL` | `/locale-catalog/manifest.json` |
+| `locale-catalog-revision` | `ARKHAM_LOCALE_CATALOG_REVISION` | the manifest's `catalogRevision` |
+| `locale-catalog-schema-version` | `ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION` | the manifest's `schemaVersion`, `1.0.0` |
+| `locale-catalog-default-locale` | `ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE` | the manifest's `defaultLocale`, `en` |
+| `locale-catalog-locales` | `ARKHAM_LOCALE_CATALOG_LOCALES` | the manifest's `locales[].locale`, comma-separated |
+| `locale-catalog-manifest-sha256` | `ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256` | `sha256` of the bytes served at the manifest URL |
+
+Every one of them blank (the default) means the deployment publishes no
+pointer, and the capabilities response keeps its exact pre-`0.1.23` shape —
+no object, no identifier. Supplying some but not all of them is a startup
+error rather than a silent fallback to that legacy shape, so a half-removed
+pointer cannot quietly disappear from a running deployment.
+
+**The manifest URL is bound deliberately, not parsed permissively.** The
+preferred value is the same-origin absolute path this catalog already
+publishes; it needs no hostname, so the same configuration works for every
+deployment of this server. An absolute URL is accepted only for a split/static
+deployment and only over `https`. `http`, scheme-relative `//host/…`,
+credentials in the authority, a query, a fragment, percent-escapes, `.`/`..`
+segments, backslashes, platform paths such as `C:\…`, control characters,
+non-ASCII, and any path not ending in `.json` are all refused at startup —
+this is not a generic URL parser being strict, it is an allow-list of the two
+spellings the contract defines, normalized to one form each (lowercase scheme
+and host, redundant `:443` dropped). Startup also rejects an unsupported
+`schemaVersion`, a malformed `catalogRevision`, a revision that does not belong
+to the configured schema version, a digest that is not 64 lowercase hex
+characters, an invalid or duplicated locale tag (compared *after*
+canonicalization, so `en-us` and `en-US` collide), and a default locale that is
+not in the supported list. Diagnostics name the setting and the environment
+variable but never echo the manifest URL, because a mistyped URL is exactly
+where credentials end up.
+
+Because generation is deterministic, the values are derivable from the
+manifest the deployment just built:
+
+```sh
+ARKHAM_LOCALE_CATALOG_REVISION=$(jq -r .catalogRevision manifest.json)
+ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION=$(jq -r .schemaVersion manifest.json)
+ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE=$(jq -r .defaultLocale manifest.json)
+ARKHAM_LOCALE_CATALOG_LOCALES=$(jq -r '[.locales[].locale] | join(",")' manifest.json)
+ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256=$(shasum -a 256 manifest.json | cut -d' ' -f1)
+```
+
+The manifest served at `manifestPath` is byte-identical to the one at
 `revisionManifestPath`, so pinning `sha256(manifest bytes)` is well defined,
-and every chunk digest hangs off it.
+and every chunk digest hangs off it. A deployment that rolls the catalog
+forward must update the revision and digest together with the static root;
+until it does, a client verifying the digest correctly rejects the new
+manifest instead of trusting it.

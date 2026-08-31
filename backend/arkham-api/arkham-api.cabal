@@ -8118,6 +8118,7 @@ library
       Base.Api.Handler.Settings
       Base.Api.Types.Account
       Base.Api.Types.Capabilities
+      Base.Api.Types.LocaleCatalog
       Base.Util
       Config
       Entity
@@ -8388,6 +8389,7 @@ test-suite spec
       Arkham.Api.GameStreamSpec
       Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
+      Arkham.Api.LocaleCatalogCapabilitySpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.ArcaneInitiateSpec
@@ -8748,6 +8750,8 @@ test-suite spec
       Auth.JWTSpec
       Entity.AnswerSpec
       Helpers.Achievements
+      Helpers.AppSettings
+      Helpers.LocaleCatalog
       Helpers.Message
       Helpers.UltimatumsAndBoons
       SpecHook
@@ -8807,4 +8811,5 @@ test-suite spec
     , text
     , time
     , uuid
+    , yaml
   default-language: GHC2021

@@ -37,6 +37,127 @@
         "type": "string",
         "pattern": "^[a-z][a-z0-9.-]+$"
       }
+    },
+    "localeCatalog": {
+      "$ref": "#/$defs/localeCatalog"
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "The object and its capability string are produced from one Maybe in Base.Api.Types.Capabilities.serverCapabilities, so neither can appear without the other.",
+      "if": {
+        "properties": {
+          "localeCatalog": {}
+        },
+        "required": [
+          "localeCatalog"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "contains": {
+              "const": "i18n.locale-catalog.v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "contains": {
+              "const": "i18n.locale-catalog.v1"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "localeCatalog": {}
+        },
+        "required": [
+          "localeCatalog"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "localeCatalog": {
+      "title": "Locale catalog pointer",
+      "description": "Optional, additive pointer to the deployment-owned locale catalog (docs/locale-catalog.md), present exactly when the server advertises `i18n.locale-catalog.v1`. It carries no narrative text: it binds catalog state to this server profile so a client can fetch, verify and cache the catalog without assuming any particular host. A client that does not understand this object ignores it, and a server that omits it is not a legacy server -- it is a deployment that publishes no catalog.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifestUrl",
+        "catalogRevision",
+        "schemaVersion",
+        "defaultLocale",
+        "supportedLocales",
+        "manifestSha256"
+      ],
+      "properties": {
+        "manifestUrl": {
+          "description": "The single authority for where the catalog manifest lives: either a same-origin absolute path, resolved against the origin this response came from (preferred, and what a hosted deployment publishes), or an explicitly configured absolute https URL for a split/static deployment. There is deliberately no separate origin or base-path field that could disagree with it. The server rejects anything else -- http, scheme-relative, credentials, query, fragment, percent-escapes, dot segments and platform paths all fail startup rather than reaching a client.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "oneOf": [
+            {
+              "title": "sameOriginPath",
+              "pattern": "^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\.json$"
+            },
+            {
+              "title": "absoluteHttpsUrl",
+              "pattern": "^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*(:[1-9][0-9]{0,4})?/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\.json$"
+            }
+          ],
+          "not": {
+            "pattern": "(^|/)\\.\\.?(/|$)"
+          }
+        },
+        "catalogRevision": {
+          "description": "The catalog manifest's own `catalogRevision`. Its major component is the catalog schema's major version; the rest is the content digest the generator derived. Two servers reporting the same revision publish byte-identical catalogs, so a client may key its cache on this value alone.",
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9a-f]{32}$"
+        },
+        "schemaVersion": {
+          "description": "The catalog manifest's `schemaVersion` (frontend/schemas/locale-catalog/v1/manifest.schema.json). A client that does not implement this exact version must treat the catalog as unavailable rather than guessing.",
+          "type": "string",
+          "enum": [
+            "1.0.0"
+          ]
+        },
+        "defaultLocale": {
+          "description": "The catalog's `defaultLocale`; always a member of `supportedLocales`.",
+          "$ref": "#/$defs/locale"
+        },
+        "supportedLocales": {
+          "description": "The catalog's published locales, in canonical BCP-47 spelling and ascending order, so the response does not depend on configuration order.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/locale"
+          },
+          "$comment": "maxItems matches the published v1 catalog manifest's own locales bound and is enforced at startup by Base.Api.Types.LocaleCatalog.localeCatalogMaxSupportedLocales, so a deployment can never serve a response this schema would reject."
+        },
+        "manifestSha256": {
+          "description": "SHA-256 of the manifest bytes served at `manifestUrl`. A client that downloads a manifest whose digest differs must discard it; the algorithm is fixed here rather than negotiated through a separate field.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "locale": {
+      "$comment": "Same grammar as the v1 catalog manifest's locale tags.",
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
     }
   }
 }

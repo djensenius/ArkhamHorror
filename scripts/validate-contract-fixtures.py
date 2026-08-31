@@ -103,22 +103,64 @@ capabilities_fixtures = [
     if fixture.get("schema") == "contracts/schemas/capabilities.schema.json"
 ]
 
-require(
-    len(capabilities_fixtures) == 1,
-    "manifest.json must register exactly one capabilities fixture",
-)
-capabilities = load_governed_json(capabilities_fixtures[0]["path"])
+# The capabilities response has exactly two production shapes, and both are
+# registered as real Aeson-encoded fixtures: the legacy one a deployment
+# without a locale catalog serves (no `localeCatalog`, no
+# `i18n.locale-catalog.v1`), and the one a deployment that publishes a catalog
+# serves. Every one of them must still agree with this manifest's own
+# identity, and must keep the object and its capability string together --
+# that pairing is what a client relies on to gate the optional behavior, and
+# in the backend both come from a single `Maybe` (see
+# Base.Api.Types.Capabilities.serverCapabilities).
+LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
 
-require(isinstance(capabilities, dict), "capabilities.json must be an object")
-for field in ("schemaRevision", "status", "apiBasePath"):
-    require(
-        capabilities.get(field) == manifest.get(field),
-        f"capabilities.json {field} must match manifest.json",
-    )
 require(
-    capabilities.get("nativeClientMinimumRevision")
-    == manifest.get("compatibility", {}).get("nativeClientMinimumRevision"),
-    "capabilities.json nativeClientMinimumRevision must match manifest compatibility",
+    len(capabilities_fixtures) >= 1,
+    "manifest.json must register at least one capabilities fixture",
+)
+
+capabilities_shapes: dict[bool, str] = {}
+for capabilities_fixture in capabilities_fixtures:
+    capabilities_path = capabilities_fixture["path"]
+    capabilities = load_governed_json(capabilities_path)
+
+    require(isinstance(capabilities, dict), f"{capabilities_path} must be an object")
+    for field in ("schemaRevision", "status", "apiBasePath"):
+        require(
+            capabilities.get(field) == manifest.get(field),
+            f"{capabilities_path} {field} must match manifest.json",
+        )
+    require(
+        capabilities.get("nativeClientMinimumRevision")
+        == manifest.get("compatibility", {}).get("nativeClientMinimumRevision"),
+        f"{capabilities_path} nativeClientMinimumRevision must match manifest compatibility",
+    )
+
+    capability_strings = capabilities.get("capabilities")
+    require(
+        isinstance(capability_strings, list),
+        f"{capabilities_path} capabilities must be an array",
+    )
+    advertises_catalog = LOCALE_CATALOG_CAPABILITY in capability_strings
+    has_catalog_object = "localeCatalog" in capabilities
+    require(
+        advertises_catalog == has_catalog_object,
+        f"{capabilities_path} must advertise {LOCALE_CATALOG_CAPABILITY} exactly when it "
+        "carries a localeCatalog object",
+    )
+    require(
+        has_catalog_object not in capabilities_shapes,
+        f"{capabilities_path} duplicates the "
+        f"{'locale-catalog' if has_catalog_object else 'legacy'} capabilities shape already "
+        f"registered by {capabilities_shapes.get(has_catalog_object)}",
+    )
+    capabilities_shapes[has_catalog_object] = capabilities_path
+
+require(
+    set(capabilities_shapes) == {False, True},
+    "manifest.json must register both the legacy capabilities fixture and the "
+    "locale-catalog one, so the optional field's presence and its exact absence are "
+    f"both governed; got {sorted(capabilities_shapes.values())}",
 )
 
 for relative_path in documents:

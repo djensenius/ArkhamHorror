@@ -41,6 +41,10 @@ constructor.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.
+- The response carries exactly one optional field, `localeCatalog`, paired with
+  `i18n.locale-catalog.v1` (see
+  [Locale catalog discovery](#locale-catalog-discovery)). Its absence is a
+  normal, current server that publishes no catalog — not an old one.
 - Backend tests bind the response to the production encoder, while contract
   validation also requires its revision, status, base path, and compatibility
   floor to equal `manifest.json`.
@@ -460,15 +464,54 @@ every document listed there is bound to the backend's real Aeson encoders in
 catalog is generated from `frontend/src/locales/**` by the frontend build and
 never touches the backend. It is therefore versioned independently by its own
 `schemaVersion` (`frontend/schemas/locale-catalog/v1/`) and revisioned by a
-digest of its sources; revision `0.1.22` of this contract is unchanged by it.
+digest of its sources.
+
+The backend's own, governed side of this boundary is the optional
+`localeCatalog` object in `capabilities.schema.json` (see
+[Locale catalog discovery](#locale-catalog-discovery) below), which points at
+the catalog and pins its digest without ever carrying catalog content.
 
 The two boundaries are still bound to each other mechanically: the catalog's
 required key set is extracted from `fixtures/question-read.json` and
 `fixtures/question-read-with-cards.json`, and its manifest records those
 fixtures' SHA-256 digests together with this manifest's `schemaRevision`, so a
 catalog can always be traced to the contract revision it was generated for.
-When the backend starts advertising the catalog, it needs only the stable
-manifest URL and `catalogRevision` from that manifest.
+
+### Locale catalog discovery
+
+`GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
+identifier and the additive `localeCatalog` object. Both come from one `Maybe`
+in `Base.Api.Types.Capabilities.serverCapabilities`, so a client can never see
+one without the other, and `capabilities.schema.json` states that pairing in
+both directions.
+
+- **Absence is not legacy.** A server that omits the field and the identifier
+  is a deployment that publishes no catalog. A client must treat story keys as
+  unresolvable rather than probe a guessed catalog path, exactly as it must for
+  any other absent capability.
+- **`manifestUrl` is the only authority.** There is deliberately no separate
+  origin or base-path field to disagree with it. A relative value (the hosted
+  form, `/locale-catalog/manifest.json`) is resolved against the origin the
+  capabilities response itself came from; an absolute value is always `https`
+  and is what a split/static deployment configures explicitly. A client must
+  not rewrite it onto another host, and must not accept a redirect to a
+  different origin than the one the URL named.
+- **Trust is pinned, not assumed.** `manifestSha256` is the SHA-256 of the
+  manifest bytes served at `manifestUrl`; a manifest that does not hash to it
+  must be discarded rather than used. Every chunk digest then hangs off that
+  verified manifest.
+- **Caching.** `catalogRevision` is content-derived, so two servers reporting
+  the same revision publish byte-identical catalogs and a client may key its
+  cache on that value alone. `schemaVersion` is the catalog manifest's own
+  version: a client that does not implement it must treat the catalog as
+  unavailable rather than guess at the shape.
+- **Compatibility.** The field is additive under this contract's existing
+  unknown-field rule. The Vue client reads none of it and is unaffected, and an
+  older native client that ignores unknown fields keeps working unchanged.
+
+Advertising is deployment configuration, not a build-time constant: see the
+`locale-catalog-*` settings in `backend/arkham-api/config/settings.yml` and
+["Advertising the catalog"](../docs/locale-catalog.md#advertising-the-catalog).
 
 ## Achievements
 

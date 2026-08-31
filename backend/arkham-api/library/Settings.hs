@@ -11,6 +11,12 @@
 -- declared in the Foundation.hs file.
 module Settings where
 
+import Base.Api.Types.LocaleCatalog
+  ( LocaleCatalog
+  , LocaleCatalogConfig(..)
+  , parseLocaleCatalogConfig
+  , renderLocaleCatalogConfigError
+  )
 import Control.Exception qualified as Exception
 import Data.Aeson
   (FromJSON(..), Result(..), Value, fromJSON, withObject, (.!=), (.:), (.:?))
@@ -90,6 +96,13 @@ data AppSettings = AppSettings
     , appMailtrapApiToken :: Token
     , appBugsnagApiKey :: Text
     , appAssetHost :: Maybe Text
+    , appLocaleCatalog :: Maybe LocaleCatalog
+    -- ^ Optional, additive locale-catalog pointer advertised through
+    -- @GET \/api\/v1\/capabilities@. 'Nothing' when the deployment has not
+    -- configured one, in which case the capabilities response keeps its
+    -- legacy shape exactly. A supplied-but-invalid configuration fails this
+    -- parse -- and therefore startup -- rather than being silently dropped;
+    -- see 'Base.Api.Types.LocaleCatalog.parseLocaleCatalogConfig'.
     , appWebsocketCompression :: Bool
     -- ^ permessage-deflate on the game/event websockets. Defaults on; it takes
     -- a 206 KB 'PublicGame' update to ~33 KB. It is also the one thing on that
@@ -126,6 +139,18 @@ instance FromJSON AppSettings where
         appBugsnagApiKey <- o .: "bugsnag-api-token"
         appAssetHost <- o .:? "asset-host"
         appWebsocketCompression <- o .:? "websocket-compression" .!= True
+
+        localeCatalogConfig <- LocaleCatalogConfig
+            <$> o .:? "locale-catalog-manifest-url"
+            <*> o .:? "locale-catalog-revision"
+            <*> o .:? "locale-catalog-schema-version"
+            <*> o .:? "locale-catalog-default-locale"
+            <*> o .:? "locale-catalog-locales"
+            <*> o .:? "locale-catalog-manifest-sha256"
+        appLocaleCatalog <-
+            either (fail . T.unpack . renderLocaleCatalogConfigError) pure
+                $ parseLocaleCatalogConfig localeCatalogConfig
+
         pure AppSettings {..}
 
 -- | Raw bytes at compile time of @config/settings.yml@
