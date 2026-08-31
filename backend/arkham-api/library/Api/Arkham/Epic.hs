@@ -12,10 +12,12 @@ module Api.Arkham.Epic where
 
 import Arkham.Card.CardCode (CardCode (..))
 import Arkham.Epic.Types
+import Data.List.Extra (nubOrd)
 import Data.Set qualified as Set
 import Data.Time.Clock (getCurrentTime)
 import Database.Esqueleto.Experimental hiding (update, (=.))
 import Entity.Arkham.Epic
+import Entity.Arkham.Player
 import Import hiding (on, (==.))
 import Import qualified as P
 
@@ -39,6 +41,215 @@ lookupGameEvent gameId = do
   pure $ case rows of
     (evt, Value ordinal) : _ -> Just (evt, GroupOrdinal ordinal)
     [] -> Nothing
+
+{- | The result of attempting to reserve a user's 'Arkham.Epic.Types.GroupPlayer'
+membership for an Epic event under a specific group ordinal, via
+'Entity.Arkham.Epic.UniqueEpicMember's own unique key (event, user, role).
+This is the ONE typed answer to "is this user\/event\/ordinal combination
+allowed to proceed", shared by every entry point that can create the FIRST
+'ArkhamEpicMember' row for a user in an event --
+'Api.Handler.Arkham.Game.Debug.postApiV1ArkhamGameClaimSeatR' and
+'Api.Handler.Arkham.PendingGames.putApiV1ArkhamPendingGameR' both delegate
+to it via the legacy-aware 'reserveEpicGroupMembershipReconciling' -- so
+the "one event group per user" invariant and its conflict semantics
+cannot independently drift between entry points that share it.
+-}
+data EpicGroupReservation
+  = -- | Either a freshly-inserted row, or a pre-existing row already under
+    -- the SAME ordinal (e.g. re-claiming a seat in a group this user
+    -- previously left, if this game's own player row was since removed).
+    -- Either way, the caller may proceed.
+    EpicGroupReserved
+  | -- | A pre-existing row under a DIFFERENT ordinal. No row was inserted or
+    -- modified.
+    EpicGroupReservationConflict
+  deriving stock (Eq, Show)
+
+{- | Row-lock an Epic event ('FOR UPDATE' in production) and report its
+CURRENT row if still present, or 'Nothing' if it never existed or vanished
+concurrently. Reused by every writer that must serialize against the event
+row -- 'Api.Handler.Arkham.Events.deleteEpicEventAggregate' (after every
+linked game is already locked; see that module's
+'Api.Handler.Arkham.Events.MonadEpicEventDeletion' production instance) and
+'Api.Handler.Arkham.Game.Debug.planAndExecuteClaimSeat' (after its own
+single game lock; see 'Api.Handler.Arkham.Game.Debug.MonadClaimSeat') -- so
+this lock is always taken from the game(s)-then-event side of the one
+shared cross-path lock-order invariant, never the reverse.
+-}
+lockEpicEventRow
+  :: MonadIO m
+  => ArkhamEpicEventId
+  -> ReaderT SqlBackend m (Maybe (Entity ArkhamEpicEvent))
+lockEpicEventRow eid = do
+  locked <- select do
+    e <- from $ table @ArkhamEpicEvent
+    where_ $ e.id ==. val eid
+    locking forUpdate
+    pure e
+  pure $ listToMaybe locked
+
+{- | Attempt to reserve this user's 'Arkham.Epic.Types.GroupPlayer' membership
+for the given event under the requested ordinal, via
+'Entity.Arkham.Epic.UniqueEpicMember's unique key.
+
+The caller MUST already hold the event row's 'FOR UPDATE' lock (see
+'lockEpicEventRow') before calling this: only then is the underlying
+check-then-insert race-free. 'Database.Persist.insertBy' itself only
+pre-checks the unique key with a plain 'SELECT' before inserting -- two
+concurrent callers reserving for DIFFERENT games of the SAME event never
+share a game lock, so without the event row locked first, both could pass
+that pre-check before either commits (a lost-conflict false negative), or
+one could lose an actual concurrent 'INSERT' race and surface a raw
+unique-constraint violation as an untyped exception instead of a typed
+result. With the event already locked exclusively, at most one caller can
+ever be inside this function for a given event at a time, so the ordinary
+check-then-insert behavior is sufficient by construction and cannot race.
+-}
+reserveEpicGroupMembership
+  :: MonadIO m
+  => ArkhamEpicEventId
+  -> UserId
+  -> Int
+  -> ReaderT SqlBackend m EpicGroupReservation
+reserveEpicGroupMembership eid userId ordinal = do
+  result <- P.insertBy $ ArkhamEpicMember eid userId GroupPlayer (Just ordinal)
+  pure $ case result of
+    Right _ -> EpicGroupReserved
+    Left (Entity _ existing)
+      | arkhamEpicMemberGroupOrdinal existing == Just ordinal -> EpicGroupReserved
+      | otherwise -> EpicGroupReservationConflict
+
+{- | Every distinct Epic group ordinal, for this event, in which this user
+currently holds an 'Entity.Arkham.Player.ArkhamPlayer' row -- independent
+of whether an 'Entity.Arkham.Epic.ArkhamEpicMember' membership row exists
+for any of them at all. This is the LEGACY-aware half of the "one event
+group per user" invariant: a seat created before this reservation
+machinery existed (or by any bug that let one slip through despite it) has
+NO membership row, so a bare 'Entity.Arkham.Epic.UniqueEpicMember' check
+alone cannot see it -- 'reserveEpicGroupMembershipReconciling' is the
+typed decision built on top of this query. The caller MUST already hold
+the event row's 'FOR UPDATE' lock (see 'lockEpicEventRow') before calling
+this, exactly like 'reserveEpicGroupMembership': every game linked to this
+event is read here through a plain, non-locking join against the
+ALREADY-locked event's own 'Entity.Arkham.Epic.ArkhamEpicGroup' rows and
+'Entity.Arkham.Player.ArkhamPlayer', acquiring no NEW lock on any of those
+other game rows -- so this cannot introduce a game-after-event lock
+acquisition, preserving the one global game(s)-before-event order.
+-}
+selectUserEpicSeatOrdinals :: MonadIO m => ArkhamEpicEventId -> UserId -> ReaderT SqlBackend m [Int]
+selectUserEpicSeatOrdinals eid userId = do
+  rows <- select $ distinct do
+    (grp :& player) <-
+      from
+        $ table @ArkhamEpicGroup
+        `innerJoin` table @ArkhamPlayer
+          `on` (\(grp :& player) -> just player.arkhamGameId ==. grp.arkhamGameId)
+    where_ $ grp.arkhamEpicEventId ==. val eid
+    where_ $ player.userId ==. val userId
+    pure grp.ordinal
+  pure $ map (\(Value o) -> o) rows
+
+{- | Reserve this user's 'Arkham.Epic.Types.GroupPlayer' membership for the
+given event under the requested ordinal, but FIRST reconcile against any
+LEGACY seat -- an 'Entity.Arkham.Player.ArkhamPlayer' row in some OTHER
+game linked to this event with NO corresponding membership row (see
+'selectUserEpicSeatOrdinals') -- that 'reserveEpicGroupMembership' alone,
+keyed only off 'Entity.Arkham.Epic.UniqueEpicMember', cannot see:
+
+* No existing seat in ANY game of this event: reserve normally, identical
+  to calling 'reserveEpicGroupMembership' directly.
+* Every existing seat (there may be more than one, e.g. two DIFFERENT
+  group ordinals aliased to the SAME game -- see
+  'canonicalEpicGameLockOrder''s own Haddoc for why that is schema-legal)
+  is in the SAME ordinal as the one requested: idempotently create\/confirm
+  the membership row for that ordinal ("repair" -- the only branch that can
+  ever insert a membership row for a user who already holds an
+  unreconciled bare seat, and the SAME branch a request that is ALSO
+  "already joined" to the target game takes, since that target game's own
+  ordinal is by definition one of this user's seated ordinals -- see
+  'Api.Handler.Arkham.Game.Debug.planAndExecuteClaimSeat' and
+  'Api.Handler.Arkham.PendingGames.planPendingJoinMembership', both of
+  which call this BEFORE deciding "already joined\/already a member" so
+  the repair is never skipped for that branch).
+* Any seat in a DIFFERENT ordinal (whether alone or alongside the
+  requested one): 'EpicGroupReservationConflict', with NO write attempted
+  at all -- not even the reservation 'insertBy' 'reserveEpicGroupMembership'
+  would otherwise perform.
+
+Both entry points that can create a user's FIRST 'Entity.Arkham.Epic.ArkhamEpicMember'
+row for an event -- 'Api.Handler.Arkham.Game.Debug.MonadClaimSeat' and
+'Api.Handler.Arkham.PendingGames.MonadPendingJoin' -- delegate to THIS
+function (never 'reserveEpicGroupMembership' directly) precisely so the
+legacy-aware reconciliation cannot independently drift between them. The
+caller MUST already hold the event row's 'FOR UPDATE' lock (see
+'lockEpicEventRow') before calling this, exactly like
+'reserveEpicGroupMembership' itself -- this performs no locking of its
+own, only the one already-covered read and (conditionally) the one
+already-covered write.
+-}
+reserveEpicGroupMembershipReconciling
+  :: MonadIO m
+  => ArkhamEpicEventId
+  -> UserId
+  -> Int
+  -> ReaderT SqlBackend m EpicGroupReservation
+reserveEpicGroupMembershipReconciling eid userId ordinal = do
+  seatedOrdinals <- selectUserEpicSeatOrdinals eid userId
+  if any (/= ordinal) seatedOrdinals
+    then pure EpicGroupReservationConflict
+    else reserveEpicGroupMembership eid userId ordinal
+
+{- | The one canonical lock order for a set of Epic-linked games: ascending by
+'ArkhamGameId' itself -- Haskell's own 'Ord' instance for the id, NEVER a
+database @ORDER BY@/collation, and, critically, NEVER a group's ordinal --
+with duplicates collapsed to a single occurrence each.
+
+This must be independent of which SUBSET of an event's linked games a
+particular caller happens to have resolved, and independent of each game's
+group ordinal entirely. Two different production writers only ever see
+different, overlapping subsets of one event's linked games:
+'Api.Handler.Arkham.Events.deleteEpicEventAggregate' locks every game
+linked to an event, while
+'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan' locks only the two
+games a single swap request resolved. An earlier version of this function
+ordered by @(group ordinal, game id)@, with game id only a tie-break -- that
+is NOT subset-independent: consider one event with three groups, ordinal 0
+and ordinal 2 both linked to game A, and ordinal 1 linked to a different
+game B. Deletion, handed all three refs, would sort by ordinal first and
+lock @[A, B]@ (A's lowest ordinal, 0, sorts before B's ordinal 1). A swap
+naming ordinals 2 and 1 -- a perfectly ordinary request, since it never
+sees ordinal 0 at all -- would sort ITS two refs by ordinal and lock
+@[B, A]@: B (ordinal 1) before A (ordinal 2). Same underlying pair of
+games, opposite lock order, a real cross-path deadlock. Ordering by the
+game id's OWN 'Ord' instance instead has no such dependency on which
+ordinals happen to be present in a given caller's subset: for any set of
+games, or any subset of them, the relative order of any two IDs that both
+appear is fixed by the ids alone, and can never disagree between callers
+that see different subsets of the same underlying games.
+
+Ordinals remain meaningful elsewhere -- deciding WHICH group/game a request
+refers to, and (for a swap) which one is semantically "first" vs "second"
+for the actual swap and its response -- but never for deciding lock
+ACQUISITION order. See 'Api.Handler.Arkham.Events.selectLinkedGameIds' and
+'Api.Handler.Arkham.Games.Shared.mainStreetSwapPlan', both of which now
+extract and pass plain 'ArkhamGameId's to this function rather than a
+richer ordinal-carrying type, so a caller cannot accidentally reintroduce
+ordinal into the ordering by construction.
+
+'nubOrd' (an 'Ord'-based set, not a pairwise/adjacency-dependent scan) keeps
+only the first surviving occurrence of each distinct id and drops every
+later one, regardless of how far apart the duplicates land in the input --
+'deleteEpicEventAggregate' can be handed ids for arbitrarily many linked
+games in one event, and nothing forbids two different groups (however far
+apart their ordinals are) from referencing the SAME game. A redundant
+re-lock of an already-held row is harmless under PostgreSQL's semantics
+(re-locking a row a transaction already holds is a no-op), but every
+distinct game should still appear exactly once here, as an explicit
+invariant of this function, not an accident of what happens to be
+harmless.
+-}
+canonicalEpicGameLockOrder :: [ArkhamGameId] -> [ArkhamGameId]
+canonicalEpicGameLockOrder = nubOrd . sort
 
 {- | Build a per-action 'EpicEnv': the current shared state in an 'IORef' plus an
 empty delta buffer that the run loop appends to.

@@ -180,4 +180,4 @@ getRoomData = do
               }
 
 deleteApiV1AdminRoomR :: ArkhamGameId -> Handler ()
-deleteApiV1AdminRoomR = deleteRoom
+deleteApiV1AdminRoomR = void . deleteRoom

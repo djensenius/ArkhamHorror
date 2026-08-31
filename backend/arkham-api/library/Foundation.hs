@@ -55,6 +55,7 @@ import Network.Bugsnag.Exception (AsException (..))
 import Network.Bugsnag.Yesod (bugsnagYesodMiddleware)
 import Network.HTTP.Client.Conduit (HasHttpManager (..), Manager)
 import Orphans ()
+import PendingCleanupOwner (CleanupReceipt)
 import Yesod.Core.Types (Logger)
 import Yesod.Core.Unsafe qualified as Unsafe
 import "bugsnag" Network.Bugsnag qualified as Bugsnag
@@ -84,10 +85,19 @@ data Room = Room
   , roomUnsubscribe :: TVar (IO ())
   {- ^ Tears down this room's single Redis subscription. There is exactly one
   subscription per channel per pod, owned by the room rather than by any
-  one WebSocket, and it is created and destroyed under the rooms 'MVar'
-  (see 'getRoomIn' / 'releaseRoomIfEmpty') so that "room is in the map"
-  and "channel is subscribed" can never disagree. 'pure ()' when no Redis
-  broker is configured.
+  one WebSocket. 'pure ()' when no Redis broker is configured.
+  -}
+  , roomCleanupReceipt :: TVar (Maybe CleanupReceipt)
+  {- ^ The one outstanding fire-and-forget cleanup receipt for this room.
+  Repeated disconnect/delete paths atomically reuse it.
+  -}
+  , roomCleanupForced :: TVar Bool
+  {- ^ Once deletion requests forced cleanup, an older empty-only retry is
+  upgraded rather than replaced with a duplicate receipt.
+  -}
+  , roomCleanupInProgress :: TVar Bool
+  {- ^ Prevents a join from attaching while unsubscribe is running without
+  holding the global rooms 'MVar' across that network action.
   -}
   }
 
@@ -117,7 +127,10 @@ newRoom chn = atomically do
   next <- newTVar 0
   cache <- newTVar Nothing
   unsub <- newTVar (pure ())
-  pure $ Room subs next chn cache unsub
+  cleanupReceipt <- newTVar Nothing
+  cleanupForced <- newTVar False
+  cleanupInProgress <- newTVar False
+  pure $ Room subs next chn cache unsub cleanupReceipt cleanupForced cleanupInProgress
 
 {- | Register a new WebSocket subscriber on the room. Returns the
 subscription id (used to unsubscribe) and the bounded queue the

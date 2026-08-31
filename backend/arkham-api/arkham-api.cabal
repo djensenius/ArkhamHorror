@@ -8402,7 +8402,10 @@ test-suite spec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
       Arkham.Api.AwsEnvSupervisorLifecycleSpec
       Arkham.Api.AwsEnvSupervisorSpec
+      Arkham.Api.ClaimSeatSpec
+      Arkham.Api.EpicGameLockOrderSpec
       Arkham.Api.Events.EventCreationSpec
+      Arkham.Api.Events.EventDeletionSpec
       Arkham.Api.Events.EventListSpec
       Arkham.Api.Events.EventStreamAuthSpec
       Arkham.Api.GameBugUploadSpec
@@ -8412,6 +8415,11 @@ test-suite spec
       Arkham.Api.GameStreamSpec
       Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
+      Arkham.Api.MainStreetSwapPlanSpec
+      Arkham.Api.MainStreetSwapSpec
+      Arkham.Api.PendingGameJoinSpec
+      Arkham.Api.RoomCleanupSpec
+      Arkham.Api.RunMessagesTimeoutSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.ArcaneInitiateSpec
