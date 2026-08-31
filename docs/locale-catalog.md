@@ -415,7 +415,9 @@ every digest that is compared — so:
   offline fresh build, the offline cache hit, the offline packager (verifying
   the tree in its final destination, which is also what makes `--skip-frontend`
   unable to package an unverified catalog), and the Docker frontend stage before
-  its `dist` is copied into the runtime image;
+  its `dist` is copied into the runtime image. Publication keeps a rollback copy
+  where the filesystem allows one and falls back to replace-in-place on a
+  layered filesystem, where renaming a lower-layer directory is `EXDEV`;
 * the manifest and each chunk are checked against each other, not just against
   their digests: one content path belongs to exactly one descriptor, and every
   chunk is validated against the closed v1 chunk schema and must agree with its

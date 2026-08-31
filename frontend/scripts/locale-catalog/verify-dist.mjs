@@ -778,15 +778,28 @@ function publishVerifiedSnapshot() {
       mkdirSync(dirname(target), { recursive: true, mode: 0o700 })
       writeFileSync(target, bytes, { mode: 0o600, flag: 'wx' })
     }
+    // Renaming the existing catalog aside keeps a rollback copy, which is the
+    // better order — but on a layered filesystem (an image build, where the
+    // catalog still lives on a lower layer) that rename is EXDEV. There the
+    // old tree is removed first; the snapshot is already complete, and the
+    // verified buffers are still in memory, so a failure after that point is
+    // recoverable by writing them again.
     const retired = `${DIST_CATALOG}.replaced-${process.pid}`
-    renameSync(DIST_CATALOG, retired)
+    let rolledAside = false
+    try {
+      renameSync(DIST_CATALOG, retired)
+      rolledAside = true
+    } catch (error) {
+      if (error.code !== 'EXDEV') throw error
+      rmSync(DIST_CATALOG, { recursive: true, force: true })
+    }
     try {
       renameSync(staging, DIST_CATALOG)
     } catch (error) {
-      renameSync(retired, DIST_CATALOG)
+      if (rolledAside) renameSync(retired, DIST_CATALOG)
       throw error
     }
-    rmSync(retired, { recursive: true, force: true })
+    if (rolledAside) rmSync(retired, { recursive: true, force: true })
     chmodSync(DIST_CATALOG, 0o755)
   } catch (error) {
     rmSync(staging, { recursive: true, force: true })

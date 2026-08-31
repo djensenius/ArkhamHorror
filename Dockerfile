@@ -13,8 +13,10 @@ COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js 
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY ./frontend /opt/arkham/src/frontend
 # The locale-catalog generator (run by npm's prebuild) derives its required-key
-# set from the governed contract fixtures, so they have to be in the image.
+# set from the governed contract fixtures and from the backend's emitted-key
+# registry, so both have to be in the image.
 COPY ./contracts /opt/arkham/src/contracts
+COPY ./backend/arkham-api/i18n-emitted-keys.json /opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json
 ENV VITE_ASSET_HOST=${ASSET_HOST}
 RUN npm run build
 # The image copies `dist` out of this stage, so the catalog is verified here and
