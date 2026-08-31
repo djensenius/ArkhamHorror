@@ -109,22 +109,23 @@
           "oneOf": [
             {
               "title": "sameOriginPath",
-              "pattern": "^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\.json$"
+              "pattern": "^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\.json(?![\\s\\S])"
             },
             {
               "title": "absoluteHttpsUrl",
-              "$comment": "Exactly what Base.Api.Types.LocaleCatalog.parseManifestUrl emits: lowercase scheme and host, LDH labels, a port in 1-65535 with the redundant :443 already normalized away, and an absolute .json path.",
-              "pattern": "^https://[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*(:(?!443/)(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\.json$"
+              "$comment": "Exactly what Base.Api.Types.LocaleCatalog.parseManifestUrl emits: lowercase scheme and host, a port in 1-65535 with the redundant :443 already normalized away, and an absolute .json path. The host is either canonical dotted-decimal IPv4 (four octets 0-255, no leading zeros) or a registered name whose final label is neither all-digits nor an 0x hex literal -- the two lookaheads. That is WHATWG's 'ends in a number' rule: without it, 127.1, 2130706433, 0x7f000001 and 01.02.03.04 would all be published as hosts that different clients resolve differently. contracts/manifest.json's manifestUrlChecks pins this pattern and the Haskell validator to the same accepted/rejected table.",
+              "pattern": "^https://(?:(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}|(?:[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*(?![0-9]+(?::|/))(?!0x[0-9a-f]*(?::|/))[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(:(?!443/)(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\.json(?![\\s\\S])"
             }
           ],
           "not": {
             "pattern": "(^|/)\\.\\.?(/|$)"
-          }
+          },
+          "$comment": "Both branches end in a negative lookahead rather than '$'. ECMA-262 '$' and Python's re '$' disagree: Python's also matches immediately before a trailing newline, so a '$'-anchored pattern would let '/locale-catalog/manifest.json\\n' through this repository's own jsonschema-based validation while the server refuses it as a control character."
         },
         "catalogRevision": {
           "description": "The catalog manifest's own `catalogRevision`. Its major component is the catalog schema's major version; the rest is the content digest the generator derived. Two servers reporting the same revision publish byte-identical catalogs, so a client may key its cache on this value alone.",
           "type": "string",
-          "pattern": "^[0-9]+\\.[0-9a-f]{32}$"
+          "pattern": "^[0-9]+\\.[0-9a-f]{32}(?![\\s\\S])"
         },
         "schemaVersion": {
           "description": "The catalog manifest's `schemaVersion` (frontend/schemas/locale-catalog/v1/manifest.schema.json). A client that does not implement this exact version must treat the catalog as unavailable rather than guessing.",
@@ -151,7 +152,7 @@
         "manifestSha256": {
           "description": "SHA-256 of the manifest bytes served at `manifestUrl`. A client that downloads a manifest whose digest differs must discard it; the algorithm is fixed here rather than negotiated through a separate field.",
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
         }
       }
     },
@@ -159,7 +160,7 @@
       "$comment": "The v1 catalog manifest's locale grammar, narrowed to the canonical BCP-47 casing Base.Api.Types.LocaleCatalog.canonicalLocaleTag actually emits: lowercase language, titlecase four-letter script, uppercase two-letter region, lowercase everything else. The two lookaheads are what reject a lowercase two- or four-letter subtag (en-us, zh-hant) that the server would have canonicalized before publishing it.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[a-z]{2,3}(-(?:[A-Z]{2}|[A-Z][a-z]{3}|(?![a-z]{2}(?:-|$))(?![a-z]{4}(?:-|$))[a-z0-9]{2,8}))*$"
+      "pattern": "^[a-z]{2,3}(-(?:[A-Z]{2}|[A-Z][a-z]{3}|(?![a-z]{2}(?:-|$))(?![a-z]{4}(?:-|$))[a-z0-9]{2,8}))*(?![\\s\\S])"
     }
   }
 }

@@ -237,6 +237,8 @@ tests:
       - mtl
       - persistent
       - random
+      - base16-bytestring
+      - cryptohash-sha256
       - relude
       - text
       - time

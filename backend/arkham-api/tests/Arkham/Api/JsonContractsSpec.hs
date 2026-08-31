@@ -64,35 +64,15 @@ import Entity.Arkham.Achievement qualified as AchievementEntity
 import Entity.Arkham.Deck qualified as DeckEntity
 import Entity.Arkham.Game qualified as ArkhamGame
 import Entity.Notification (Notification (..))
-import Helpers.LocaleCatalog (fixtureCatalogEnv, runtimeCapabilities)
+import Helpers.Contracts (loadContractJson)
 import System.IO.Error qualified as IOError
+import Helpers.LocaleCatalog (catalogEnvFor, loadSyntheticCatalog, runtimeCapabilities)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Random (mkStdGen)
 import TestImport
 
 loadFixture :: FilePath -> IO Aeson.Value
-loadFixture fileName = findFixture fixturePaths
- where
-  fixturePaths =
-    [ "contracts/fixtures/" <> fileName
-    , "../contracts/fixtures/" <> fileName
-    , "../../contracts/fixtures/" <> fileName
-    ]
-
-  findFixture = \case
-    [] ->
-      fail
-        $ "Could not find contract fixture "
-        <> fileName
-        <> "; searched: "
-        <> show fixturePaths
-    path : remainingPaths -> IOError.tryIOError (Aeson.eitherDecodeFileStrict' path) >>= \case
-      Left err
-        | IOError.isDoesNotExistError err -> findFixture remainingPaths
-        | otherwise -> IOError.ioError err
-      Right (Left err) ->
-        fail $ "Could not decode contract fixture " <> fileName <> " at " <> path <> ": " <> err
-      Right (Right fixture) -> pure fixture
+loadFixture fileName = loadContractJson ("contracts/fixtures/" <> fileName)
 
 {- | Re-decode a value's *actual wire bytes* (@Aeson.encode@, which is
 defined as @encodingToLazyByteString . toEncoding@) back into a 'Value' for
@@ -974,7 +954,10 @@ spec = describe "Native client contract fixtures" do
 
   it "matches the runtime server-capabilities encoder when a locale catalog is advertised" do
     fixture <- loadFixture "capabilities-locale-catalog.json"
-    response <- capabilitiesFor fixtureCatalogEnv
+    -- Configured from the committed synthetic catalog manifest's real bytes,
+    -- so this fixture cannot quietly self-attest a revision or digest that no
+    -- artifact in this repository actually has.
+    response <- capabilitiesFor . catalogEnvFor =<< loadSyntheticCatalog
 
     Aeson.toJSON response `shouldBe` fixture
     viaWireEncoding response `shouldBe` fixture

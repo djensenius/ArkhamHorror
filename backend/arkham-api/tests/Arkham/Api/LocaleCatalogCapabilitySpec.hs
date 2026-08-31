@@ -1,3 +1,6 @@
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NoFieldSelectors #-}
+
 {- | Startup configuration and runtime handler behavior for the optional
 locale-catalog pointer in @GET \/api\/v1\/capabilities@ (see
 "Base.Api.Types.LocaleCatalog").
@@ -14,21 +17,16 @@ module Arkham.Api.LocaleCatalogCapabilitySpec (spec) where
 
 import Base.Api.Types.Capabilities (ServerCapabilities (..))
 import Base.Api.Types.LocaleCatalog
+import Data.Aeson (FromJSON (..), withObject, (.:))
+import Data.Char qualified as Char
 import Data.List qualified as List
 import Data.Text qualified as T
 import Helpers.AppSettings
+import Helpers.Contracts (loadContractJson)
 import Helpers.LocaleCatalog
 import Relude
 import Settings (AppSettings (..))
 import Test.Hspec
-
--- | Every locale-catalog variable present but blank, which is how an operator
--- turns the pointer off without editing the settings file.
-blankCatalogEnv :: [(Text, Text)]
-blankCatalogEnv = [(name, "") | (name, _) <- fixtureCatalogEnv]
-
-withEnv :: [(Text, Text)] -> [(Text, Text)]
-withEnv overrides = overrideEnv overrides fixtureCatalogEnv
 
 responseFor :: [(Text, Text)] -> Either Text ServerCapabilities
 responseFor = runtimeCapabilities
@@ -70,38 +68,64 @@ catalogConfig url revision schemaVersion locale locales digest =
     (Just locales)
     (Just digest)
 
+{- | A configuration whose only interesting values are the ones under test.
+The revision and digest are well-formed but arbitrary: these cases are about
+the locale and schema-version rules, and binding them to the synthetic
+manifest would say nothing extra.
+-}
 configWith :: Text -> Text -> Text -> LocaleCatalogConfig
 configWith schemaVersion locale locales =
-  catalogConfig "/locale-catalog/manifest.json" fixtureCatalogRevision schemaVersion locale locales fixtureCatalogDigest
+  catalogConfig
+    "/locale-catalog/manifest.json"
+    "1.00000000000000000000000000000000"
+    schemaVersion
+    locale
+    locales
+    (T.replicate 64 "0")
 
-{- | One sample per 'ManifestUrlRejection'. The spec asserts this table covers
-every constructor, so a rejection can never be added to the type — or made
-unreachable by a reordered guard — without a case that proves it fires.
+{- | @contracts\/manifest.json@'s @manifestUrlChecks@ table, read here so the
+schema and this validator are held to one governed list rather than to two
+hand-maintained copies. @scripts\/validate-contract-fixtures.py@ drives the
+same rows through the published JSON Schema.
 -}
-manifestUrlRejections :: [(Text, ManifestUrlRejection)]
-manifestUrlRejections =
-  [ ("/" <> T.replicate 512 "a" <> ".json", ManifestUrlTooLong)
-  , ("/locale-catalog/manifest.json\n", ManifestUrlControlCharacter)
-  , ("/locale-catalog/manif\232st.json", ManifestUrlNonAscii)
-  , ("/locale catalog/manifest.json", ManifestUrlWhitespace)
-  , ("\\\\server\\share\\manifest.json", ManifestUrlBackslash)
-  , ("/locale-catalog/manifest.json#fragment", ManifestUrlFragment)
-  , ("/locale-catalog/manifest.json?revision=1", ManifestUrlQuery)
-  , ("/locale%2Dcatalog/manifest.json", ManifestUrlPercentEncoded)
-  , ("//cdn.example.com/locale-catalog/manifest.json", ManifestUrlSchemeRelative)
-  , ("http://cdn.example.com/locale-catalog/manifest.json", ManifestUrlInsecureScheme)
-  , ("ftp://cdn.example.com/locale-catalog/manifest.json", ManifestUrlUnsupportedScheme)
-  , ("C:/locale-catalog/manifest.json", ManifestUrlPlatformPath)
-  , ("locale-catalog/manifest.json", ManifestUrlNotAbsolute)
-  , ("https://user:secret@cdn.example.com/manifest.json", ManifestUrlCredentials)
-  , ("https://-cdn.example.com/manifest.json", ManifestUrlInvalidHost)
-  , ("https://cdn.example.com:0/manifest.json", ManifestUrlInvalidPort)
-  , ("https://cdn.example.com", ManifestUrlNotAbsolutePath)
-  , ("/locale-catalog//manifest.json", ManifestUrlEmptyPathSegment)
-  , ("/locale-catalog/../manifest.json", ManifestUrlDotSegment)
-  , ("/locale-catalog/manifest:1.json", ManifestUrlInvalidPathCharacter)
-  , ("/locale-catalog/manifest", ManifestUrlNotJsonPath)
-  ]
+data ManifestUrlChecks = ManifestUrlChecks
+  { accepted :: [AcceptedManifestUrl]
+  , rejected :: [RejectedManifestUrl]
+  }
+
+data AcceptedManifestUrl = AcceptedManifestUrl
+  { configured :: Text
+  , published :: Text
+  }
+  deriving stock (Eq, Show)
+
+data RejectedManifestUrl = RejectedManifestUrl
+  { configured :: Text
+  , reason :: Text
+  }
+  deriving stock (Eq, Show)
+
+instance FromJSON ManifestUrlChecks where
+  parseJSON = withObject "manifestUrlChecks" \o ->
+    ManifestUrlChecks <$> o .: "accepted" <*> o .: "rejected"
+
+instance FromJSON AcceptedManifestUrl where
+  parseJSON = withObject "manifestUrlChecks.accepted" \o ->
+    AcceptedManifestUrl <$> o .: "configured" <*> o .: "published"
+
+instance FromJSON RejectedManifestUrl where
+  parseJSON = withObject "manifestUrlChecks.rejected" \o ->
+    RejectedManifestUrl <$> o .: "configured" <*> o .: "reason"
+
+newtype ContractManifest = ContractManifest {manifestUrlChecks :: ManifestUrlChecks}
+
+instance FromJSON ContractManifest where
+  parseJSON = withObject "contracts/manifest.json" \o ->
+    ContractManifest <$> o .: "manifestUrlChecks"
+
+-- | The constructor name, as the governed table spells it.
+rejectionName :: ManifestUrlRejection -> Text
+rejectionName = show
 
 legacyCapabilities :: [Text]
 legacyCapabilities =
@@ -112,8 +136,19 @@ legacyCapabilities =
   ]
 
 spec :: Spec
-spec = describe "locale catalog capability" do
-  describe "when the deployment publishes no catalog" do
+spec = do
+  catalog <- runIO loadSyntheticCatalog
+  contractManifest <- runIO (loadContractJson "contracts/manifest.json" :: IO ContractManifest)
+  let checks = contractManifest.manifestUrlChecks
+
+  let fixtureCatalogEnv = catalogEnvFor catalog
+      -- Every locale-catalog variable present but blank, which is how an
+      -- operator turns the pointer off without editing the settings file.
+      blankCatalogEnv = [(name, "") | (name, _) <- fixtureCatalogEnv]
+      withEnv overrides = overrideEnv overrides fixtureCatalogEnv
+
+  describe "locale catalog capability" do
+   describe "when the deployment publishes no catalog" do
     it "parses with no locale-catalog environment at all" do
       configuredCatalogFor [] `shouldBe` Right Nothing
 
@@ -127,7 +162,7 @@ spec = describe "locale catalog capability" do
     it "keeps the exact legacy capability list" do
       capabilitiesFor [] `shouldBe` Right legacyCapabilities
 
-  describe "when the deployment publishes a catalog" do
+   describe "when the deployment publishes a catalog" do
     it "advertises the capability alongside the object" do
       catalogAdvertisedCoherently (responseFor fixtureCatalogEnv) `shouldBe` Right True
 
@@ -145,14 +180,17 @@ spec = describe "locale catalog capability" do
       manifestUrlFor fixtureCatalogEnv `shouldBe` Right "/locale-catalog/manifest.json"
 
     it "publishes the revision, schema version and digest it was configured with" do
-      fmap (.catalogRevision) (catalogFor fixtureCatalogEnv) `shouldBe` Right fixtureCatalogRevision
-      fmap (.schemaVersion) (catalogFor fixtureCatalogEnv) `shouldBe` Right "1.0.0"
-      fmap (.manifestSha256) (catalogFor fixtureCatalogEnv) `shouldBe` Right fixtureCatalogDigest
+      fmap (.catalogRevision) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.catalogRevision
+      fmap (.schemaVersion) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.schemaVersion
+      fmap (.manifestSha256) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.manifestSha256
 
     it "orders supported locales deterministically, whatever order they were configured in" do
+      -- catalogEnvFor deliberately configures the manifest's locales in
+      -- descending order, so ascending output can only come from the server.
       fmap (.supportedLocales) (catalogFor fixtureCatalogEnv)
-        `shouldBe` Right ["de", "en", "es", "fr", "it", "ko", "zh"]
-      fmap (.defaultLocale) (catalogFor fixtureCatalogEnv) `shouldBe` Right "en"
+        `shouldBe` Right (List.sort catalog.supportedLocales)
+      fmap (.defaultLocale) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.defaultLocale
+      catalog.supportedLocales `shouldSatisfy` ((> 1) . length)
 
     it "canonicalizes locale tags rather than publishing what was typed" do
       let environment =
@@ -164,7 +202,7 @@ spec = describe "locale catalog capability" do
         `shouldBe` Right ["en", "fr-CH", "pt-BR", "zh-Hant"]
       fmap (.defaultLocale) (catalogFor environment) `shouldBe` Right "en"
 
-  describe "self-hosted, split deployments" do
+   describe "self-hosted, split deployments" do
     it "accepts an absolute https manifest URL" do
       manifestUrlFor
         (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_URL", "https://static.example.org/l10n/manifest.json")])
@@ -185,7 +223,7 @@ spec = describe "locale catalog capability" do
         (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_URL", "https://static.example.org:8443/l10n/manifest.json")])
         `shouldBe` Right "https://static.example.org:8443/l10n/manifest.json"
 
-  describe "startup validation" do
+   describe "startup validation" do
     it "fails when the pointer is only partially configured" do
       let message = startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", "")])
       message `shouldSatisfy` T.isInfixOf "partially configured"
@@ -246,7 +284,7 @@ spec = describe "locale catalog capability" do
       message `shouldSatisfy` T.isInfixOf "locale-catalog-manifest-sha256"
       message `shouldSatisfy` T.isInfixOf "ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"
 
-  describe "configuration parsing" do
+   describe "configuration parsing" do
     it "reports no catalog when nothing is supplied" do
       parseLocaleCatalogConfig (LocaleCatalogConfig Nothing Nothing Nothing Nothing Nothing Nothing)
         `shouldBe` Right Nothing
@@ -280,14 +318,39 @@ spec = describe "locale catalog capability" do
       parseLocaleCatalogConfig (configWith "1.0.0" "en" "en,e n$")
         `shouldBe` Left (InvalidLocaleTag SupportedLocalesSetting "e?n?")
 
-  describe "manifest URL binding" do
-    it "accepts the hosted, same-origin path" do
-      parseManifestUrl "/locale-catalog/manifest.json"
-        `shouldBe` Right "/locale-catalog/manifest.json"
+   describe "manifest URL binding" do
+    it "publishes exactly what the governed contract table says it publishes" do
+      for_ checks.accepted \accepted ->
+        (accepted.configured, parseManifestUrl accepted.configured)
+          `shouldBe` (accepted.configured, Right accepted.published)
 
-    it "refuses every unsupported spelling for its stated reason" do
-      for_ manifestUrlRejections \(url, rejection) ->
-        (url, parseManifestUrl url) `shouldBe` (url, Left rejection)
+    it "refuses every governed spelling for its stated reason" do
+      for_ checks.rejected \refused ->
+        (refused.configured, first rejectionName (parseManifestUrl refused.configured))
+          `shouldBe` (refused.configured, Left refused.reason)
 
-    it "covers every rejection the type declares" do
-      List.sort (List.nub (map snd manifestUrlRejections)) `shouldBe` [minBound .. maxBound]
+    it "covers every rejection the closed type declares" do
+      List.sort (List.nub (map (.reason) checks.rejected))
+        `shouldBe` List.sort (map rejectionName [minBound .. maxBound])
+
+    it "never resolves a host a URL parser could read as an address" do
+      let numericHosts =
+            [ refused.configured
+            | refused <- checks.rejected
+            , refused.reason == "ManifestUrlAmbiguousNumericHost"
+            ]
+      numericHosts `shouldSatisfy` ((>= 8) . length)
+      for_ numericHosts \url ->
+        (url, parseManifestUrl url) `shouldBe` (url, Left ManifestUrlAmbiguousNumericHost)
+
+   describe "the synthetic catalog manifest the contract fixture is derived from" do
+    it "is the manifest the advertised pointer describes" do
+      fmap (.manifestUrl) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.manifestUrl
+      fmap (.catalogRevision) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.catalogRevision
+      fmap (.schemaVersion) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.schemaVersion
+      fmap (.defaultLocale) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.defaultLocale
+      fmap (.manifestSha256) (catalogFor fixtureCatalogEnv) `shouldBe` Right catalog.manifestSha256
+
+    it "carries a digest of the manifest's real bytes, not a copied constant" do
+      T.length catalog.manifestSha256 `shouldBe` 64
+      catalog.manifestSha256 `shouldSatisfy` T.all (\c -> Char.isDigit c || (c >= 'a' && c <= 'f'))

@@ -61,6 +61,14 @@ run = "uv run scripts/validate-catalog-serving.py"
 description = "Run the locale-catalog render-AST and generator tests"
 run = "npm --prefix frontend run test:locale-catalog"
 
+[tasks."locale-catalog:generate"]
+description = "Generate the public locale catalog into frontend/public/locale-catalog"
+run = "npm --prefix frontend run locale-catalog"
+
+[tasks."locale-catalog:capability-settings"]
+description = "Check a real generated catalog manifest can populate the ARKHAM_LOCALE_CATALOG_* settings and that the response it produces satisfies the governed capabilities schema"
+run = "uv run scripts/check-locale-catalog-settings.py"
+
 [tasks."locale-catalog:validate"]
 description = "Generate the public locale catalog and verify its schemas, digests, provenance, clean-clone reproducibility, and deploy seam"
 run = "uv run scripts/validate-locale-catalog.py"

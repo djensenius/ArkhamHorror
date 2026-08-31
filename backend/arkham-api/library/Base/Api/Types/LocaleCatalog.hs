@@ -179,6 +179,8 @@ data ManifestUrlRejection
   | ManifestUrlPlatformPath
   | ManifestUrlNotAbsolute
   | ManifestUrlCredentials
+  | ManifestUrlAddressLiteralHost
+  | ManifestUrlAmbiguousNumericHost
   | ManifestUrlInvalidHost
   | ManifestUrlInvalidPort
   | ManifestUrlNotAbsolutePath
@@ -384,7 +386,7 @@ parseHttpsUrl :: Text -> Either ManifestUrlRejection Text
 parseHttpsUrl rest = do
   let (authority, path) = T.break (== '/') rest
   when (T.any (== '@') authority) $ Left ManifestUrlCredentials
-  when (T.any (\c -> c == '[' || c == ']') authority) $ Left ManifestUrlInvalidHost
+  when (T.any (\c -> c == '[' || c == ']') authority) $ Left ManifestUrlAddressLiteralHost
   when (T.null path) $ Left ManifestUrlNotAbsolutePath
   validateManifestPath path
   let (rawHost, rawPort) = T.breakOn ":" authority
@@ -392,16 +394,38 @@ parseHttpsUrl rest = do
   port <- validatePort rawPort
   pure $ "https://" <> host <> port <> path
 
-{- | A registered name only: lowercase-normalized, dot-separated LDH labels
-(which also covers a dotted IPv4 literal). Address literals in brackets are
-refused by the caller, so there is no second host syntax to normalize.
+{- | Bind the authority to a host every client resolves identically.
+
+Lowercase-normalized, dot-separated LDH labels, and then exactly one of:
+
+* __canonical dotted-decimal IPv4__ — four decimal octets, each @0-255@, with
+  no leading-zero padding; or
+* __a registered DNS name that no URL parser will reinterpret as an address__.
+
+The second condition is the one that matters, and it is not merely
+cosmetic. WHATWG's host parser (and @inet_aton@ before it) treats a host whose
+final label is a number as IPv4 and accepts short, hex and octal forms, so
+@127.1@, @2130706433@, @0x7f000001@ and @01.02.03.04@ all mean @127.0.0.1@ —
+while a strict RFC 3986 reader, a Haskell client, and a browser can each
+disagree about @999.999@ or @1.2.3.4.5@. A manifest URL that means different
+things to different clients is exactly what this contract must never publish,
+so anything that is not unambiguously one of the two forms above is refused at
+startup rather than emitted.
+
+Address literals (@[::1]@, @[v7.x]@) are refused by the caller: there is no
+second host syntax to normalize here, so a bracketed literal can never reach a
+client in a non-canonical spelling.
 -}
 validateHost :: Text -> Either ManifestUrlRejection Text
-validateHost rawHost
-  | T.null rawHost = Left ManifestUrlInvalidHost
-  | T.length rawHost > 253 = Left ManifestUrlInvalidHost
-  | all isLabel labels = Right host
-  | otherwise = Left ManifestUrlInvalidHost
+validateHost rawHost = do
+  when (T.null rawHost || T.length rawHost > 253) $ Left ManifestUrlInvalidHost
+  unless (all isLabel labels) $ Left ManifestUrlInvalidHost
+  lastLabel <- maybe (Left ManifestUrlInvalidHost) Right (viaNonEmpty last labels)
+  if isCanonicalIpv4Host labels
+    then Right host
+    else do
+      when (readsAsNumericHost lastLabel) $ Left ManifestUrlAmbiguousNumericHost
+      Right host
  where
   host = T.toLower rawHost
   labels = T.splitOn "." host
@@ -411,6 +435,24 @@ validateHost rawHost
       && T.all (\c -> Char.isAsciiLower c || Char.isDigit c || c == '-') label
       && not ("-" `T.isPrefixOf` label)
       && not ("-" `T.isSuffixOf` label)
+
+-- | Exactly four decimal octets in @0-255@, spelled without leading zeros.
+isCanonicalIpv4Host :: [Text] -> Bool
+isCanonicalIpv4Host labels = length labels == 4 && all isCanonicalOctet labels
+ where
+  isCanonicalOctet label =
+    isCanonicalNumber label
+      && T.length label <= 3
+      && maybe False (<= 255) (readMaybe (toString label) :: Maybe Int)
+
+{- | WHATWG's \"ends in a number\" test, which is what decides whether a host
+is handed to the IPv4 parser at all: a final label that is all decimal digits,
+or an @0x@-prefixed hex literal (including a bare @0x@, which is zero).
+-}
+readsAsNumericHost :: Text -> Bool
+readsAsNumericHost label =
+  T.all Char.isDigit label
+    || maybe False (T.all isLowerHexDigit) (T.stripPrefix "0x" label)
 
 -- | An explicit @:443@ is dropped rather than published, so the same
 -- deployment cannot be described by two different strings.
@@ -553,6 +595,11 @@ renderManifestUrlRejection = \case
   ManifestUrlPlatformPath -> "it is a platform file path, not a URL"
   ManifestUrlNotAbsolute -> "it is neither an absolute path nor an absolute https URL"
   ManifestUrlCredentials -> "it carries credentials in its authority"
+  ManifestUrlAddressLiteralHost ->
+    "its host is a bracketed address literal, which this contract does not publish"
+  ManifestUrlAmbiguousNumericHost ->
+    "its host is a number that URL parsers disagree about; use canonical dotted-decimal"
+      <> " IPv4 (four octets, 0-255, no leading zeros) or a name whose last label is not numeric"
   ManifestUrlInvalidHost -> "its host is not a valid registered name"
   ManifestUrlInvalidPort -> "its port is not a number between 1 and 65535"
   ManifestUrlNotAbsolutePath -> "its path is missing or not absolute"

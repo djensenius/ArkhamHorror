@@ -356,6 +356,7 @@ header forms — against both, checking the selected encoding *and* the bytes.
     mise run locale-catalog:offline-cache-test   # the offline build's cache key covers every input
     mise run locale-catalog:offline-cache-hit-test  # a restored cache verifies without frontend/public
     mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
+    mise run locale-catalog:capability-settings  # a real manifest configures the advertised capability
     mise run locale-catalog:serving              # real nginx: status, cache, MIME, rollout
 
 `scripts/validate-locale-catalog.py` regenerates the catalog twice, rebuilds it
@@ -540,6 +541,45 @@ canonicalization, so `en-us` and `en-US` collide), and a default locale that is
 not in the supported list. Diagnostics name the setting and the environment
 variable but never echo the manifest URL, because a mistyped URL is exactly
 where credentials end up.
+
+**The host must mean the same thing to every client.** An absolute URL's host
+is accepted only as canonical dotted-decimal IPv4 — four decimal octets
+`0-255`, no leading-zero padding — or as a registered name whose final label is
+neither all decimal digits nor an `0x` hex literal. That last rule is WHATWG's
+"ends in a number" test, and it is not pedantry: `127.1`, `2130706433`,
+`0x7f000001` and `01.02.03.04` are every one of them `127.0.0.1` to a browser
+and to `inet_aton`, while a stricter RFC 3986 reader rejects them, and
+`999.999`, `256.0.0.1` or `1.2.3.4.5` are read differently again. A pointer
+that resolves to different places depending on who fetched it is precisely
+what this contract must not publish, so a bracketed address literal (`[::1]`)
+is refused outright rather than normalized. `contracts/manifest.json`'s
+`manifestUrlChecks` is the one governed table both the JSON Schema and the
+Haskell validator are held to.
+
+## Contract fixture versus production catalog
+
+Two different artifacts describe a catalog, and conflating them is the mistake
+this section exists to prevent.
+
+`contracts/fixtures/locale-catalog-manifest.json` is a **synthetic** v1
+manifest: a small, fixed, committed test artifact with three locales, no
+narrative text, and digests that are deterministic constants. It is never
+generated from `frontend/src/locales/**`. The governed capabilities fixture
+derives every advertised value from its exact bytes, which is what lets the
+published contract stay still while catalog content moves: a translator fixing
+a typo changes the production catalog's revision and digest and touches no
+governed byte.
+
+The catalog under `frontend/public/locale-catalog/` is the **production**
+artifact. Its revision and digest are runtime configuration, read by an
+operator (or a deploy script) out of the manifest the build just produced, and
+they are deliberately absent from `contracts/`. `mise run
+locale-catalog:capability-settings` closes the loop in CI: it derives the six
+settings from the real generated manifest, requires the `localeCatalog` object
+and the whole capabilities response they produce to satisfy the governed
+schema, and asserts the generated manifest is *not* the synthetic one — so the
+fixture can never quietly become a copy of production output, and the synthetic
+shape can never drift into something no deployment can produce.
 
 Because generation is deterministic, the values are derivable from the
 manifest the deployment just built:

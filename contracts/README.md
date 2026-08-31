@@ -496,6 +496,16 @@ both directions.
   and is what a split/static deployment configures explicitly. A client must
   not rewrite it onto another host, and must not accept a redirect to a
   different origin than the one the URL named.
+- **The host means one thing to every client.** An absolute URL's host is
+  either canonical dotted-decimal IPv4 (four octets `0-255`, no leading zeros)
+  or a registered name whose final label is neither all-digits nor an `0x` hex
+  literal. That is WHATWG's "ends in a number" rule: `127.1`, `2130706433`,
+  `0x7f000001` and `01.02.03.04` are all `127.0.0.1` to a browser and something
+  else to a stricter parser, and `999.999` or `1.2.3.4.5` are read differently
+  again. `manifest.json`'s `manifestUrlChecks` is the single governed table for
+  this: `contracts:fixtures` drives every row through the schema and the
+  backend spec drives the same rows through the production validator, so the
+  two can never diverge.
 - **Trust is pinned, not assumed.** `manifestSha256` is the SHA-256 of the
   manifest bytes served at `manifestUrl`; a manifest that does not hash to it
   must be discarded rather than used. Every chunk digest then hangs off that
@@ -512,6 +522,40 @@ both directions.
 Advertising is deployment configuration, not a build-time constant: see the
 `locale-catalog-*` settings in `backend/arkham-api/config/settings.yml` and
 ["Advertising the catalog"](../docs/locale-catalog.md#advertising-the-catalog).
+
+#### The fixture is synthetic; the catalog it points at is not
+
+`fixtures/capabilities-locale-catalog.json` must show a real, verifiable
+pointer, but a governed fixture cannot carry a *production* revision or digest:
+the catalog is regenerated from `frontend/src/locales/**` on every content
+change, and pinning its output here would force a contract revision bump every
+time a translator fixed a typo — while a stale copy would have the fixture
+self-attest a catalog no artifact in this repository has.
+
+So the fixture is derived, mechanically, from a committed **synthetic** v1
+catalog manifest, `fixtures/locale-catalog-manifest.json`:
+
+- it is a fixed test artifact, schema-valid against the published
+  `frontend/schemas/locale-catalog/v1/manifest.schema.json`, narrative-free
+  (a manifest is an index — paths, digests, counts and locale tags), and is
+  never regenerated from locale sources;
+- `contracts:fixtures` derives `schemaVersion`, `catalogRevision`,
+  `defaultLocale`, `supportedLocales` and `manifestSha256` from **that file's
+  exact bytes** and requires the advertised block to equal the result, so any
+  drift in either file fails. It also re-derives the manifest's own provenance
+  — `catalogRevision` from `provenance.sha256`, `revisionManifestPath` from
+  `catalogRevision`, every chunk path from its digest, `totals` from the
+  catalog's contents, `provenance.contractRevision` from this manifest's
+  `schemaRevision` — and self-tests prove those checks reject a mutated copy;
+- `Helpers.LocaleCatalog` feeds the **same bytes** through the production
+  settings pipeline, so the Haskell fixture assertions and the Python
+  derivation cannot disagree.
+
+The opposite risk — a synthetic shape no real deployment can produce — is
+closed by `locale-catalog:capability-settings`, which derives the settings from
+the manifest the frontend build actually generated and requires the response it
+produces to satisfy this schema, while asserting it stays *different* from the
+governed fixture. Nothing generated is ever hashed into `artifactHashes`.
 
 ## Achievements
 

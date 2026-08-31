@@ -8777,6 +8777,7 @@ test-suite spec
       Entity.AnswerSpec
       Helpers.Achievements
       Helpers.AppSettings
+      Helpers.Contracts
       Helpers.LocaleCatalog
       Helpers.Message
       Helpers.UltimatumsAndBoons
@@ -8824,8 +8825,10 @@ test-suite spec
     , amazonka-core
     , arkham-api
     , base
+    , base16-bytestring
     , bytestring
     , containers
+    , cryptohash-sha256
     , devel-store-lock
     , directory
     , exceptions

@@ -8,6 +8,7 @@
 # ///
 
 import copy
+import hashlib
 import re
 from pathlib import Path
 
@@ -776,6 +777,278 @@ for enum_boundary_index, check in enumerate(enum_boundary_checks):
         )
 
 
+# ---------------------------------------------------------------------------
+# Manifest URL binding
+#
+# One governed table (`manifestUrlChecks`), checked here against the published
+# schema and, in Arkham.Api.LocaleCatalogCapabilitySpec, against the
+# production Haskell validator. Neither side owns the table, so the schema and
+# the encoder cannot drift apart silently: a host spelling one accepts and the
+# other refuses fails a build.
+# ---------------------------------------------------------------------------
+
+manifest_url_checks = manifest.get("manifestUrlChecks")
+require(
+    isinstance(manifest_url_checks, dict),
+    "manifest.json must declare a manifestUrlChecks object binding the manifestUrl schema "
+    "and the production validator to one table",
+)
+require_entry_keys(
+    manifest_url_checks,
+    ["schema", "pointer", "accepted", "rejected"],
+    entry_kind="manifestUrlChecks",
+    index=0,
+)
+manifest_url_schema_document = require_schema_document(
+    manifest_url_checks["schema"], entry_kind="manifestUrlChecks"
+)
+manifest_url_sub_schema = resolve_json_pointer(
+    manifest_url_schema_document, manifest_url_checks["pointer"]
+)
+require(
+    isinstance(manifest_url_sub_schema, dict),
+    f"manifestUrlChecks pointer {manifest_url_checks['pointer']!r} does not resolve to a sub-schema",
+)
+manifest_url_validator = make_validator(
+    preserve_schema_dialect(manifest_url_schema_document, manifest_url_sub_schema)
+)
+
+require(
+    isinstance(manifest_url_checks["accepted"], list) and manifest_url_checks["accepted"],
+    "manifestUrlChecks.accepted must be a non-empty JSON array",
+)
+require(
+    isinstance(manifest_url_checks["rejected"], list) and manifest_url_checks["rejected"],
+    "manifestUrlChecks.rejected must be a non-empty JSON array",
+)
+
+for accepted_index, accepted in enumerate(manifest_url_checks["accepted"]):
+    require_entry_keys(
+        accepted, ["configured", "published"], entry_kind="manifestUrlChecks.accepted", index=accepted_index
+    )
+    published = accepted["published"]
+    errors = list(manifest_url_validator.iter_errors(published))
+    require(
+        not errors,
+        f"manifestUrlChecks.accepted[{accepted_index}]: the server would publish {published!r} for "
+        f"configured value {accepted['configured']!r}, but the schema rejects it: {normalize_errors(errors)}",
+    )
+
+for rejected_index, rejected in enumerate(manifest_url_checks["rejected"]):
+    require_entry_keys(
+        rejected, ["configured", "reason"], entry_kind="manifestUrlChecks.rejected", index=rejected_index
+    )
+    configured = rejected["configured"]
+    require(
+        list(manifest_url_validator.iter_errors(configured)),
+        f"manifestUrlChecks.rejected[{rejected_index}]: the server refuses {configured!r} as "
+        f"{rejected['reason']}, but the schema would accept it -- the schema is more permissive "
+        "than the encoder, which is the direction that lets an unsafe URL reach a client",
+    )
+
+configured_urls = [entry["configured"] for entry in manifest_url_checks["accepted"]] + [
+    entry["configured"] for entry in manifest_url_checks["rejected"]
+]
+require(
+    len(set(configured_urls)) == len(configured_urls),
+    "manifestUrlChecks must not configure the same URL twice; several accepted rows do share a "
+    "published URL on purpose, since normalization is exactly what they prove",
+)
+
+# ---------------------------------------------------------------------------
+# Locale catalog provenance
+#
+# The advertised `localeCatalog` block is not hand-maintained: it is derived
+# from the bytes of a committed, synthetic v1 catalog manifest
+# (`contracts/fixtures/locale-catalog-manifest.json`). That fixture is a test
+# artifact, never regenerated from frontend/src/locales/**, so publishing new
+# production catalog content does NOT churn this contract -- while any drift
+# between the two governed files fails here.
+# ---------------------------------------------------------------------------
+
+CATALOG_MANIFEST_PATH = "contracts/fixtures/locale-catalog-manifest.json"
+CATALOG_MANIFEST_SCHEMA = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1" / "manifest.schema.json"
+
+require(
+    CATALOG_MANIFEST_PATH in documents,
+    f"{CATALOG_MANIFEST_PATH} must be a governed document so its bytes are hash-pinned",
+)
+
+catalog_manifest_bytes = strict_json.read_governed_worktree_bytes(ROOT, CATALOG_MANIFEST_PATH)
+catalog_manifest = strict_json.strict_json_loads(
+    catalog_manifest_bytes, source=str(ROOT / CATALOG_MANIFEST_PATH)
+)
+require(isinstance(catalog_manifest, dict), f"{CATALOG_MANIFEST_PATH} must be a JSON object")
+
+# The v1 catalog schema is deliberately frontend-owned and NOT a governed
+# contract document (contracts/README.md), so it is loaded by path here rather
+# than registered -- the synthetic fixture is still held to the real, published
+# schema.
+require(CATALOG_MANIFEST_SCHEMA.is_file(), f"Missing catalog manifest schema: {CATALOG_MANIFEST_SCHEMA}")
+catalog_manifest_schema = load_json(CATALOG_MANIFEST_SCHEMA)
+catalog_schema_validator_class = validator_for(catalog_manifest_schema)
+catalog_schema_validator_class.check_schema(catalog_manifest_schema)
+catalog_schema_errors = list(
+    catalog_schema_validator_class(catalog_manifest_schema, format_checker=FormatChecker()).iter_errors(
+        catalog_manifest
+    )
+)
+require(
+    not catalog_schema_errors,
+    f"{CATALOG_MANIFEST_PATH} does not validate against the published v1 catalog manifest schema: "
+    f"{normalize_errors(catalog_schema_errors)}",
+)
+
+
+def derive_locale_catalog(catalog: dict, catalog_bytes: bytes) -> dict:
+    """The whole advertised block, derived from one manifest's exact bytes --
+    the same derivation `docs/locale-catalog.md` documents for a real
+    deployment, and the same one `Helpers.LocaleCatalog` drives the production
+    settings pipeline with.
+    """
+    return {
+        "manifestUrl": catalog["manifestPath"],
+        "catalogRevision": catalog["catalogRevision"],
+        "schemaVersion": catalog["schemaVersion"],
+        "defaultLocale": catalog["defaultLocale"],
+        "supportedLocales": sorted(record["locale"] for record in catalog["locales"]),
+        "manifestSha256": hashlib.sha256(catalog_bytes).hexdigest(),
+    }
+
+
+def check_catalog_manifest_provenance(catalog: dict, catalog_bytes: bytes, advertised: dict) -> str | None:
+    """Return a failure message, or None. Split out from the checks below so
+    `run_locale_catalog_provenance_self_test` can prove the gate has teeth by
+    running it against a mutated copy.
+    """
+    revision = catalog.get("catalogRevision")
+    provenance = catalog.get("provenance", {})
+    derived_revision = "1." + str(provenance.get("sha256", ""))[:32]
+    if revision != derived_revision:
+        return (
+            f"catalogRevision {revision!r} is not '1.' plus the first 32 hex characters of "
+            f"provenance.sha256 (expected {derived_revision!r})"
+        )
+
+    expected_revision_path = f"/locale-catalog/r/{revision}/manifest.json"
+    if catalog.get("revisionManifestPath") != expected_revision_path:
+        return (
+            f"revisionManifestPath {catalog.get('revisionManifestPath')!r} does not address "
+            f"catalogRevision {revision!r} (expected {expected_revision_path!r})"
+        )
+
+    if provenance.get("contractRevision") != manifest.get("schemaRevision"):
+        return (
+            f"provenance.contractRevision {provenance.get('contractRevision')!r} does not match "
+            f"manifest.json schemaRevision {manifest.get('schemaRevision')!r}"
+        )
+
+    locales = catalog.get("locales", [])
+    locale_tags = [record["locale"] for record in locales]
+    if len(set(locale_tags)) != len(locale_tags):
+        return f"locales are not unique: {locale_tags}"
+    if catalog.get("defaultLocale") not in locale_tags:
+        return f"defaultLocale {catalog.get('defaultLocale')!r} is not one of {locale_tags}"
+    for record in locales:
+        fallback = record.get("fallback")
+        if fallback is not None and fallback not in locale_tags:
+            return f"locale {record['locale']!r} falls back to unpublished {fallback!r}"
+        if record.get("keys") != sum(chunk["keys"] for chunk in record["chunks"]):
+            return f"locale {record['locale']!r} key count does not equal the sum of its chunks"
+        if record.get("bytes") != sum(chunk["bytes"] for chunk in record["chunks"]):
+            return f"locale {record['locale']!r} byte count does not equal the sum of its chunks"
+        for chunk in record["chunks"]:
+            expected_path = f"{catalog['chunkPathPrefix']}{chunk['sha256']}.json"
+            if chunk["path"] != expected_path:
+                return f"chunk {chunk['pack']!r} is not addressed by its own digest ({expected_path!r})"
+
+    for entry in catalog.get("languageResolution", []):
+        if entry["locale"] not in locale_tags:
+            return f"languageResolution maps {entry['tag']!r} to unpublished locale {entry['locale']!r}"
+
+    totals = catalog.get("totals", {})
+    expected_totals = {
+        "locales": len(locales),
+        "chunks": sum(len(record["chunks"]) for record in locales),
+        "bytes": sum(record["bytes"] for record in locales),
+        "keys": sum(record["keys"] for record in locales),
+        "unsupportedKeys": sum(
+            chunk["unsupportedKeys"] for record in locales for chunk in record["chunks"]
+        ),
+    }
+    if totals != expected_totals:
+        return f"totals {totals} do not equal the catalog's own contents {expected_totals}"
+
+    derived = derive_locale_catalog(catalog, catalog_bytes)
+    if advertised != derived:
+        return (
+            "the advertised localeCatalog block is not the one this manifest describes: "
+            f"{advertised} != {derived}"
+        )
+    return None
+
+
+advertised_locale_catalog = None
+for capabilities_path in capabilities_shapes.values():
+    capabilities_document = load_governed_json(capabilities_path)
+    if isinstance(capabilities_document, dict) and "localeCatalog" in capabilities_document:
+        advertised_locale_catalog = capabilities_document["localeCatalog"]
+
+require(
+    isinstance(advertised_locale_catalog, dict),
+    "the locale-catalog capabilities fixture must carry a localeCatalog object",
+)
+provenance_failure = check_catalog_manifest_provenance(
+    catalog_manifest, catalog_manifest_bytes, advertised_locale_catalog
+)
+require(
+    provenance_failure is None,
+    f"{CATALOG_MANIFEST_PATH} provenance check failed: {provenance_failure}",
+)
+
+
+def run_locale_catalog_provenance_self_test() -> None:
+    """Prove the provenance gate is discriminating rather than vacuous: a
+    one-character change to the manifest's bytes must be caught, because the
+    advertised digest no longer matches, and a revision that no longer derives
+    from its own provenance digest must be caught too.
+    """
+    mutated_bytes = catalog_manifest_bytes + b"\n"
+    require(
+        check_catalog_manifest_provenance(
+            catalog_manifest, mutated_bytes, advertised_locale_catalog
+        )
+        is not None,
+        "Self-test failure: the provenance gate accepted a manifest whose bytes no longer hash "
+        "to the advertised manifestSha256",
+    )
+
+    mutated_catalog = copy.deepcopy(catalog_manifest)
+    mutated_catalog["catalogRevision"] = "1." + "0" * 32
+    require(
+        check_catalog_manifest_provenance(
+            mutated_catalog, catalog_manifest_bytes, advertised_locale_catalog
+        )
+        is not None,
+        "Self-test failure: the provenance gate accepted a catalogRevision that does not derive "
+        "from its own provenance.sha256",
+    )
+
+    mutated_advertised = copy.deepcopy(advertised_locale_catalog)
+    mutated_advertised["supportedLocales"] = mutated_advertised["supportedLocales"][:1]
+    require(
+        check_catalog_manifest_provenance(
+            catalog_manifest, catalog_manifest_bytes, mutated_advertised
+        )
+        is not None,
+        "Self-test failure: the provenance gate accepted an advertised locale set that is not the "
+        "manifest's own",
+    )
+
+
+run_locale_catalog_provenance_self_test()
+
+
 def run_self_test() -> None:
     """Prove `diagnose_negative`'s exact-match semantics are actually
     discriminating: taking a real registered negative fixture and adding one
@@ -1234,5 +1507,8 @@ print(
     f"{'check' if len(canonical_integer_checks) == 1 else 'checks'}, "
     f"{len(forward_compatibility_checks)} forward-compatibility "
     f"{'check' if len(forward_compatibility_checks) == 1 else 'checks'}, "
-    f"and {len(enum_boundary_checks)} closed-enum boundary checks."
+    f"{len(enum_boundary_checks)} closed-enum boundary checks, "
+    f"{len(manifest_url_checks['accepted'])} accepted and {len(manifest_url_checks['rejected'])} "
+    f"rejected manifest-URL bindings, and the locale-catalog provenance binding "
+    f"({CATALOG_MANIFEST_PATH})."
 )

@@ -36,7 +36,8 @@
     "contracts/schemas/public-game.schema.json",
     "contracts/schemas/server-message.schema.json",
     "contracts/schemas/uuid-entity-map.schema.json",
-    "contracts/schemas/card-code-entity-map.schema.json"
+    "contracts/schemas/card-code-entity-map.schema.json",
+    "contracts/fixtures/locale-catalog-manifest.json"
   ],
   "fixtures": [
     {
@@ -1220,7 +1221,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\\\.json$'"
+          "messageContains": "does not match '^/(?:[A-Za-z0-9._~-]+/)*"
         },
         {
           "path": [
@@ -1228,7 +1229,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^https://[a-z0-9]"
+          "messageContains": "does not match '^https://(?:(25[0-5]|"
         }
       ]
     },
@@ -1300,7 +1301,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\\\.json$'"
+          "messageContains": "does not match '^/(?:[A-Za-z0-9._~-]+/)*"
         },
         {
           "path": [
@@ -1308,7 +1309,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^https://[a-z0-9]"
+          "messageContains": "does not match '^https://(?:(25[0-5]|"
         }
       ]
     },
@@ -1337,7 +1338,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\\\.json$'"
+          "messageContains": "does not match '^/(?:[A-Za-z0-9._~-]+/)*"
         },
         {
           "path": [
@@ -1345,7 +1346,7 @@
             "manifestUrl"
           ],
           "keyword": "pattern",
-          "messageContains": "does not match '^https://[a-z0-9]"
+          "messageContains": "does not match '^https://(?:(25[0-5]|"
         }
       ]
     },
@@ -1410,7 +1411,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "ae71e0aa263fbae260b1df102a8328ac568fa07121f3db4970b8cce878a880cb",
+    "contracts/fixtures/capabilities-locale-catalog.json": "f57bed6352b5d8d439b035e877f66a96e81a258a448964accf1b325b35ec8373",
     "contracts/fixtures/capabilities.json": "681006ec76cb04916fb2f79ac186bff80077faab1300157f1287720edffe3df5",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
@@ -1433,6 +1434,7 @@
     "contracts/fixtures/game-update.json": "ceb21a35691320516d3fe68b50d8115f092c4f32dd8f98d6240baeeeb73d07df",
     "contracts/fixtures/get-game.json": "f406071dca455c1d87a2192729dda30c08d037bedfc78b3bb3ffc998f7304b93",
     "contracts/fixtures/investigator-unhealed-horror-negative.json": "f251bd1a525fa0eb9508db084fbe7fb86928ec1ecb4472cf0c79cbaf9478762f",
+    "contracts/fixtures/locale-catalog-manifest.json": "00dee33a414020bce32d0056bf642b7584e337422d7acb4df2bacb22720c97a0",
     "contracts/fixtures/location-enemy-view.json": "fd2cc29b6ea081cfa340b02c93194433542ee27ea50c9e841c94d6ed37f419b4",
     "contracts/fixtures/mode-campaign-only.json": "b68d6e0422852684fd4ebdf2d6097bc6b65edda012cc91ccf38b55ca32b9213f",
     "contracts/fixtures/mode-campaign-scenario.json": "36a77bcf41059ca4a5d2c0e5bbd4d9ff3b429da2f6ddbc35d7fb1e1491e88c89",
@@ -1447,7 +1449,7 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "30ffb7177ef02d8041afaf67ae4a7ff50c2dccd2916a9a3a4b8b4a6d5f2cd672",
+    "contracts/manifest.json": "682dc8edaa41d636d7128f081fbb8862914b0b057bed3790e71192ced6e4d479",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
@@ -1455,7 +1457,7 @@
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
     "contracts/schemas/basic-choice-question.schema.json": "fc2f196adb2d12d5f95b88c9f6f328e50e7e91cadeeddc3bbb522cd6ece05087",
-    "contracts/schemas/capabilities.schema.json": "e806bab44b7df6b8e58a3f77fadc571ec1d44a6fb7fa28c7358b47226a3f8150",
+    "contracts/schemas/capabilities.schema.json": "ab06eea07bab53f4d36638cba7d0b4549c0d4bd1a1c7ebe0caac9a44bce8ec2b",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
     "contracts/schemas/chaos-bag.schema.json": "45c9a42563b5e13d054f5689a8acf578df81f45746445020628335794fce4339",
@@ -1507,5 +1509,190 @@
         "Z"
       ]
     }
-  ]
+  ],
+  "manifestUrlChecks": {
+    "description": "The one governed table both sides of the manifest-URL contract are held to. scripts/validate-contract-fixtures.py validates every 'published' value against the manifestUrl sub-schema located by 'pointer' and requires every 'configured' rejection to fail it, while Arkham.Api.LocaleCatalogCapabilitySpec drives the same rows through the production Base.Api.Types.LocaleCatalog.parseManifestUrl and requires the same verdict, the same normalized output, and the named ManifestUrlRejection constructor. The Haskell side additionally requires 'rejected' to name every constructor the closed type declares, so a new refusal cannot be added without a row here.",
+    "schema": "contracts/schemas/capabilities.schema.json",
+    "pointer": "/$defs/localeCatalog/properties/manifestUrl",
+    "accepted": [
+      {
+        "configured": "/locale-catalog/manifest.json",
+        "published": "/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "/locale-catalog/r/1.664fbfd6f2d7d9f7c7671303b16465ca/manifest.json",
+        "published": "/locale-catalog/r/1.664fbfd6f2d7d9f7c7671303b16465ca/manifest.json"
+      },
+      {
+        "configured": "https://static.example.org/l10n/manifest.json",
+        "published": "https://static.example.org/l10n/manifest.json"
+      },
+      {
+        "configured": "HTTPS://Static.Example.ORG/l10n/manifest.json",
+        "published": "https://static.example.org/l10n/manifest.json"
+      },
+      {
+        "configured": "https://static.example.org:443/l10n/manifest.json",
+        "published": "https://static.example.org/l10n/manifest.json"
+      },
+      {
+        "configured": "https://static.example.org:8443/l10n/manifest.json",
+        "published": "https://static.example.org:8443/l10n/manifest.json"
+      },
+      {
+        "configured": "https://localhost/locale-catalog/manifest.json",
+        "published": "https://localhost/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "https://3com.example/locale-catalog/manifest.json",
+        "published": "https://3com.example/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "https://127.0.0.1/locale-catalog/manifest.json",
+        "published": "https://127.0.0.1/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "https://0.0.0.0/locale-catalog/manifest.json",
+        "published": "https://0.0.0.0/locale-catalog/manifest.json"
+      },
+      {
+        "configured": "https://255.255.255.255/locale-catalog/manifest.json",
+        "published": "https://255.255.255.255/locale-catalog/manifest.json"
+      }
+    ],
+    "rejected": [
+      {
+        "configured": "/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+        "reason": "ManifestUrlTooLong"
+      },
+      {
+        "configured": "/locale-catalog/manifest.json\n",
+        "reason": "ManifestUrlControlCharacter"
+      },
+      {
+        "configured": "/locale-catalog/manif\u00e8st.json",
+        "reason": "ManifestUrlNonAscii"
+      },
+      {
+        "configured": "/locale catalog/manifest.json",
+        "reason": "ManifestUrlWhitespace"
+      },
+      {
+        "configured": "\\\\server\\share\\manifest.json",
+        "reason": "ManifestUrlBackslash"
+      },
+      {
+        "configured": "/locale-catalog/manifest.json#fragment",
+        "reason": "ManifestUrlFragment"
+      },
+      {
+        "configured": "/locale-catalog/manifest.json?revision=1",
+        "reason": "ManifestUrlQuery"
+      },
+      {
+        "configured": "/locale%2Dcatalog/manifest.json",
+        "reason": "ManifestUrlPercentEncoded"
+      },
+      {
+        "configured": "//cdn.example.com/locale-catalog/manifest.json",
+        "reason": "ManifestUrlSchemeRelative"
+      },
+      {
+        "configured": "http://cdn.example.com/locale-catalog/manifest.json",
+        "reason": "ManifestUrlInsecureScheme"
+      },
+      {
+        "configured": "ftp://cdn.example.com/locale-catalog/manifest.json",
+        "reason": "ManifestUrlUnsupportedScheme"
+      },
+      {
+        "configured": "C:/locale-catalog/manifest.json",
+        "reason": "ManifestUrlPlatformPath"
+      },
+      {
+        "configured": "locale-catalog/manifest.json",
+        "reason": "ManifestUrlNotAbsolute"
+      },
+      {
+        "configured": "https://user:secret@cdn.example.com/manifest.json",
+        "reason": "ManifestUrlCredentials"
+      },
+      {
+        "configured": "https://[::1]/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAddressLiteralHost"
+      },
+      {
+        "configured": "https://[v7.2130706433]/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAddressLiteralHost"
+      },
+      {
+        "configured": "https://127.1/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://2130706433/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://0x7f000001/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://0x/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://01.02.03.04/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://999.999/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://999.999.999.999/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://256.0.0.1/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://1.2.3.4.5/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://example.123/locale-catalog/manifest.json",
+        "reason": "ManifestUrlAmbiguousNumericHost"
+      },
+      {
+        "configured": "https://-cdn.example.com/manifest.json",
+        "reason": "ManifestUrlInvalidHost"
+      },
+      {
+        "configured": "https://cdn.example.com:0/manifest.json",
+        "reason": "ManifestUrlInvalidPort"
+      },
+      {
+        "configured": "https://cdn.example.com",
+        "reason": "ManifestUrlNotAbsolutePath"
+      },
+      {
+        "configured": "/locale-catalog//manifest.json",
+        "reason": "ManifestUrlEmptyPathSegment"
+      },
+      {
+        "configured": "/locale-catalog/../manifest.json",
+        "reason": "ManifestUrlDotSegment"
+      },
+      {
+        "configured": "/locale-catalog/manifest:1.json",
+        "reason": "ManifestUrlInvalidPathCharacter"
+      },
+      {
+        "configured": "/locale-catalog/manifest",
+        "reason": "ManifestUrlNotJsonPath"
+      }
+    ]
+  }
 }
