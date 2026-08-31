@@ -12,3 +12,6 @@ dependencies:
 
 library:
   source-dirs: library
+  exposed-modules:
+    - DevelStoreLock
+    - PendingCleanupOwner

@@ -37,11 +37,14 @@ This option provides significantly faster code reload compared to
 module DevelMain where
 
 import Api.Arkham.Lifecycle (
+  DevelStoreSchemaStale (..),
   RestartState (..),
   StopOutcome (..),
+  drainOwnedCleanup,
   getExistingStore,
   getOrCreateStore,
   restartManagedGeneration,
+  restartStateSchemaHash,
   shutdownThenDeliver,
   stopManagedGeneration,
  )
@@ -49,6 +52,7 @@ import Application (getApplicationRepl, shutdownApp)
 import Prelude
 
 import Control.Concurrent
+import Control.Exception (catch)
 import Foreign.Store
 import GHC.Word
 import Network.Wai.Handler.Warp
@@ -58,40 +62,70 @@ newStore is from foreign-store.
 A Store holds onto some data across ghci reloads
 -}
 update :: IO ()
-update = do
-  lock <- getOrCreateStore restartLockStore (newMVar NotStarted)
-  restartManagedGeneration
-    lock
-    killThread
-    getApplicationRepl
-    (\(_, site, _) -> shutdownApp site)
-    (\(port, _site, app) -> runSettings (setPort port defaultSettings) app)
-    -- 'shutdownThenDeliver' MUST finish (and deliver a result) before a
-    -- /later/ 'update' call's own retirement of this same generation
-    -- (inside 'restartManagedGeneration', which awaits this exact
-    -- @newDone@ before ever attempting to start a replacement) can
-    -- unblock -- but only on 'Right': signalling unconditionally, or
-    -- before shutdown actually finished, would let a replacement
-    -- foundation's supervisor start running concurrently with this one
-    -- still being torn down, or (if shutdown threw) with this one never
-    -- actually torn down at all. This ordering closes both an
-    -- overlapping-generations window and a would-be deadlock if shutdown
-    -- itself fails or is cancelled.
-    (\(_, site, _) _result newDone -> shutdownThenDeliver (shutdownApp site) newDone)
+update =
+  update' `catch` reportSchemaStale
+ where
+  update' = do
+    lock <- getOrCreateStore restartLockStore restartStateSchemaHash (newMVar NotStarted)
+    restartManagedGeneration
+      lock
+      killThread
+      getApplicationRepl
+      (\(_, site, _) -> shutdownApp site)
+      (\(port, _site, app) -> runSettings (setPort port defaultSettings) app)
+      -- 'shutdownThenDeliver' MUST finish (and deliver a result) before a
+      -- /later/ 'update' call's own retirement of this same generation
+      -- (inside 'restartManagedGeneration', which awaits this exact
+      -- @newDone@ before ever attempting to start a replacement) can
+      -- unblock -- but only on 'Right': signalling unconditionally, or
+      -- before shutdown actually finished, would let a replacement
+      -- foundation's supervisor start running concurrently with this one
+      -- still being torn down, or (if shutdown threw) with this one never
+      -- actually torn down at all. This ordering closes both an
+      -- overlapping-generations window and a would-be deadlock if shutdown
+      -- itself fails or is cancelled.
+      (\(_, site, _) _result newDone -> shutdownThenDeliver (shutdownApp site) newDone)
+    -- Opportunistically attempt to finish any cleanup capability a
+    -- /previous/ generation's own asynchronously-interrupted shutdown
+    -- durably transferred away (see 'drainOwnedCleanup''s own Haddock):
+    -- never blocks or fails @update@ itself if there is nothing pending,
+    -- or if what is pending still fails.
+    _ <- drainOwnedCleanup
+    pure ()
 
 -- | kill the server
 shutdown :: IO ()
-shutdown = do
-  mlock <- getExistingStore restartLockStore
-  case mlock of
-    -- no server running
-    Nothing -> putStrLn "no Yesod app running"
-    Just lock -> do
-      outcome <- stopManagedGeneration lock killThread
-      case outcome of
-        NothingWasRunning -> putStrLn "no Yesod app running"
-        StoppedCleanly -> putStrLn "Yesod app is shutdown"
-        StopFailed err -> putStrLn ("Yesod app shutdown FAILED (resources may not be released): " <> show err)
+shutdown =
+  shutdown' `catch` reportSchemaStale
+ where
+  shutdown' = do
+    mlock <- getExistingStore restartLockStore restartStateSchemaHash
+    case mlock of
+      -- no server running
+      Nothing -> putStrLn "no Yesod app running"
+      Just lock -> do
+        outcome <- stopManagedGeneration lock killThread
+        case outcome of
+          NothingWasRunning -> putStrLn "no Yesod app running"
+          StoppedCleanly -> putStrLn "Yesod app is shutdown"
+          StopFailed err -> putStrLn ("Yesod app shutdown FAILED (resources may not be released): " <> show err)
+    _ <- drainOwnedCleanup
+    pure ()
+
+-- | Report a stale-schema 'Foreign.Store' slot in a way that makes the
+-- only safe recovery (a full process\/GHCi restart -- never merely
+-- reloading again) unmistakable, rather than an opaque exception dump.
+reportSchemaStale :: DevelStoreSchemaStale -> IO ()
+reportSchemaStale (DevelStoreSchemaStale stored expected) =
+  putStrLn $
+    "DevelMain: restart-lock slot "
+      <> show restartLockStoreNum
+      <> " holds an incompatible, since-changed value (stored schema "
+      <> show stored
+      <> " /= current schema "
+      <> show expected
+      <> "). This process's Foreign.Store table is now stale: fully quit and\n"
+      <> "restart GHCi (do NOT simply :r and retry) before running update/shutdown again."
 
 {- | The single, authoritative 'Api.Arkham.Lifecycle.RestartState' cell:
 see its own Haddock for why this replaces the scaffold's original
@@ -163,11 +197,24 @@ stored type has changed is memory-unsafe in an already-running GHCi
 session that populated it under an old type -- a fresh slot avoids that
 rather than papering over it; a full GHCi restart (already the normal
 remedy whenever this module's own persisted types change) picks up the
-new slot cleanly. This slot is bumped again here because
-'Api.Arkham.Lifecycle.RestartState' itself gained a new constructor
-('Api.Arkham.Lifecycle.RetireFailed').
+new slot cleanly.
+
+This slot's own published value is now additionally tagged with
+'Api.Arkham.Lifecycle.RestartState''s own automatically-computed
+structural shape signature (see 'Api.Arkham.Lifecycle.restartStateSchemaHash'),
+rather than relying solely on hand-bumping this slot number: this
+constructor previously gained a new field
+('Api.Arkham.Lifecycle.RetireFailed') without this slot number itself
+being bumped to match, a MEDIUM-severity finding under independent
+review, precisely because a hand-maintained number is exactly the kind
+of discipline that is easy to forget. 'getOrCreateStore'\/'getExistingStore'
+now compare that tag against 'Api.Arkham.Lifecycle.restartStateSchemaHash'
+on every access and refuse (throwing 'Api.Arkham.Lifecycle.DevelStoreSchemaStale'
+-- see 'reportSchemaStale') to ever touch a value published under an
+incompatible shape, rather than either coercing it unsafely or silently
+orphaning it by overwriting it with a fresh default.
 -}
-restartLockStore :: Store (MVar (RestartState ThreadId))
+restartLockStore :: Store (Word64, MVar (RestartState ThreadId))
 restartLockStore = Store restartLockStoreNum
 
 restartLockStoreNum :: Word32

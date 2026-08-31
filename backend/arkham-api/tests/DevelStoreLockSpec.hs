@@ -1,9 +1,19 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+
 module DevelStoreLockSpec (spec) where
 
 import Arkham.Prelude
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (MVar)
-import DevelStoreLock (getExistingStore, getOrCreateStore)
+import Data.Proxy (Proxy (..))
+import DevelStoreLock (
+  StructuralHash (..),
+  VersionedAccess (..),
+  getExistingStore,
+  getExistingVersionedStore,
+  getOrCreateStore,
+  getOrCreateVersionedStore,
+ )
 import Foreign.Store (Store (..))
 import Test.Hspec
 
@@ -52,10 +62,10 @@ spec = describe "DevelStoreLock" do
     let store = Store 9_100_002 :: Store Int
     defaultRunCount <- newIORef (0 :: Int)
     let mkDefault = atomicModifyIORef' defaultRunCount (\n -> (n + 1, ())) >> pure 7
-    first <- getOrCreateStore store mkDefault
-    second <- getOrCreateStore store mkDefault
-    first `shouldBe` 7
-    second `shouldBe` 7
+    firstAccess <- getOrCreateStore store mkDefault
+    secondAccess <- getOrCreateStore store mkDefault
+    firstAccess `shouldBe` 7
+    secondAccess `shouldBe` 7
     readIORef defaultRunCount `shouldReturn` 1
 
   it "getExistingStore returns Nothing before anything has ever been published to a slot" do
@@ -109,3 +119,113 @@ spec = describe "DevelStoreLock" do
     -- And only ONE caller's default action ever actually ran, even
     -- though every one of them raced to be first.
     readIORef defaultRunCount `shouldReturn` 1
+
+  {- | Root-cause regression for the MEDIUM \"Foreign.Store schema
+  unsafely changed\" finding: a hand-maintained 'Foreign.Store' slot
+  number was previously the ONLY thing standing between an old-shaped
+  value still published at a slot and new code reading it as if it were
+  the new shape -- and that discipline had already failed once (see
+  "Api.Arkham.Lifecycle"\'s own Haddock on 'Api.Arkham.Lifecycle.RestartState').
+  These tests exercise 'getOrCreateVersionedStore'\/'getExistingVersionedStore'
+  and 'StructuralHash' directly against two local sample types
+  ('SampleShapeV1' and 'SampleShapeV2') that share a name-independent
+  \"is this the type whose shape changed\" role but have genuinely
+  different 'GHC.Generics' shapes (different constructor arity), so this
+  can prove automatic mismatch detection without needing an actual live
+  GHCi @:reload@ boundary (which cannot be reproduced inside a single
+  @hspec@ process -- see the module-level Haddock above).
+  -}
+  describe "schema-versioned access (getOrCreateVersionedStore / getExistingVersionedStore / StructuralHash)" do
+    it "structuralHash is stable across repeated calls for the same type" do
+      structuralHash (Proxy :: Proxy SampleShapeV1) `shouldBe` structuralHash (Proxy :: Proxy SampleShapeV1)
+
+    it "structuralHash differs between two types with genuinely different shapes (constructor arity changed)" do
+      structuralHash (Proxy :: Proxy SampleShapeV1)
+        `shouldNotBe` structuralHash (Proxy :: Proxy SampleShapeV2)
+
+    it "getOrCreateVersionedStore freshly publishes, tagged with the caller's own current hash, the first time a slot is used" do
+      let store = Store 9_100_101 :: Store (Word64, SampleShapeV1)
+          expected = structuralHash (Proxy :: Proxy SampleShapeV1)
+      access <- getOrCreateVersionedStore expected store (pure (SampleShapeV1 42))
+      case access of
+        FreshlyPublished (SampleShapeV1 n) -> n `shouldBe` 42
+        other -> expectationFailure ("expected FreshlyPublished, got " <> show other)
+
+    it "getOrCreateVersionedStore reuses the existing value (never re-running the default) when the expected hash still matches" do
+      let store = Store 9_100_102 :: Store (Word64, SampleShapeV1)
+          expected = structuralHash (Proxy :: Proxy SampleShapeV1)
+      defaultRunCount <- newIORef (0 :: Int)
+      let mkDefault = atomicModifyIORef' defaultRunCount (\n -> (n + 1, ())) >> pure (SampleShapeV1 7)
+      _ <- getOrCreateVersionedStore expected store mkDefault
+      secondAccess <- getOrCreateVersionedStore expected store mkDefault
+      case secondAccess of
+        ReusedExisting (SampleShapeV1 n) -> n `shouldBe` 7
+        other -> expectationFailure ("expected ReusedExisting, got " <> show other)
+      readIORef defaultRunCount `shouldReturn` 1
+
+    {- | The critical safety proof: a caller whose OWN current expected
+    hash no longer matches what was actually published (production: code
+    reloaded with a genuinely different shape for the same type name)
+    must be refused a 'VersionMismatch' -- and, crucially, must never
+    force\/read\/coerce the stale value to do so. This is proven here by
+    publishing a value that would itself throw if ever forced ('error'
+    inside a thunk, standing in for a heap object whose actual layout no
+    longer matches what a naive coercion would assume), then reading it
+    back under a deliberately different expected hash: if this test
+    completes without that 'error' ever firing, the mismatch was
+    detected purely from the hash tag, never from touching the value.
+
+    Mutation check: reverting 'getOrCreateVersionedStore'\/'getExistingVersionedStore'
+    to eagerly pattern-match \/ force the stored pair's second component
+    (rather than only ever comparing 'fst' before ever deciding whether
+    to look at 'snd') makes this test fail with the injected 'error'
+    instead of cleanly reporting 'VersionMismatch'.
+    -}
+    it "getOrCreateVersionedStore reports VersionMismatch, without ever forcing the stale value, when the expected hash no longer matches" do
+      let store = Store 9_100_103 :: Store (Word64, SampleShapeV1)
+          staleHash = structuralHash (Proxy :: Proxy SampleShapeV1)
+          currentExpected = structuralHash (Proxy :: Proxy SampleShapeV2)
+          poisonedValue = error "this stale value must never actually be forced"
+      -- Publish directly under the STALE hash (standing in for an older
+      -- incarnation's own publish), pairing it with a thunk that blows
+      -- up the instant anything ever demands it.
+      _ <- getOrCreateVersionedStore staleHash store (pure poisonedValue)
+      access <- getOrCreateVersionedStore currentExpected store (pure (error "mkDefault must not run either: the slot is not empty"))
+      access `shouldBe` VersionMismatch staleHash currentExpected
+
+    it "getExistingVersionedStore returns Nothing before anything has ever been published to a slot" do
+      let store = Store 9_100_104 :: Store (Word64, SampleShapeV1)
+          expected = structuralHash (Proxy :: Proxy SampleShapeV1)
+      getExistingVersionedStore expected store `shouldReturn` Nothing
+
+    it "getExistingVersionedStore observes ReusedExisting for exactly what getOrCreateVersionedStore published under a matching hash" do
+      let store = Store 9_100_105 :: Store (Word64, SampleShapeV1)
+          expected = structuralHash (Proxy :: Proxy SampleShapeV1)
+      _ <- getOrCreateVersionedStore expected store (pure (SampleShapeV1 99))
+      observed <- getExistingVersionedStore expected store
+      case observed of
+        Just (ReusedExisting (SampleShapeV1 n)) -> n `shouldBe` 99
+        other -> expectationFailure ("expected Just (ReusedExisting ...), got " <> show other)
+
+    it "getExistingVersionedStore also reports VersionMismatch (without forcing the value) for a mismatched hash" do
+      let store = Store 9_100_106 :: Store (Word64, SampleShapeV1)
+          staleHash = structuralHash (Proxy :: Proxy SampleShapeV1)
+          currentExpected = structuralHash (Proxy :: Proxy SampleShapeV2)
+      _ <- getOrCreateVersionedStore staleHash store (pure (error "this stale value must never actually be forced"))
+      observed <- getExistingVersionedStore currentExpected store
+      observed `shouldBe` Just (VersionMismatch staleHash currentExpected)
+
+-- | A local sample type used only to exercise 'StructuralHash' directly
+-- (see the @schema-versioned access@ tests above): deliberately a
+-- single-constructor, single-field shape.
+newtype SampleShapeV1 = SampleShapeV1 Int
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (StructuralHash)
+
+-- | A second local sample type with a genuinely different
+-- 'GHC.Generics' shape (two fields instead of one) -- standing in for
+-- \"the same type name, reloaded with an incompatible new shape\",
+-- without needing an actual live GHCi reload boundary.
+data SampleShapeV2 = SampleShapeV2 Int Int
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (StructuralHash)

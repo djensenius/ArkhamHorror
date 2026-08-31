@@ -33,6 +33,7 @@ import Api.Arkham.Lifecycle (
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
   cancelManagedThread,
+  drainOwnedCleanup,
   releaseAll,
   spawnManagedThread,
  )
@@ -426,8 +427,18 @@ shutdownApp app =
 -- 'shutdownApp' on it afterwards, whether @h@ succeeds or throws, so
 -- repeated GHCi\/REPL use never accumulates supervisor threads across
 -- calls.
+--
+-- Also opportunistically attempts 'drainOwnedCleanup' first: a
+-- /previous/ 'handler' call's own 'shutdownApp' may have been
+-- asynchronously interrupted mid-'releaseAll' and durably transferred
+-- its remaining, not-yet-confirmed-released steps away (see
+-- 'releaseAll''s own Haddock) rather than silently abandoning them;
+-- giving each subsequent call here a genuine, repeatedly-exercised
+-- chance to finish that leftover work is what makes that transfer
+-- meaningfully durable rather than merely deferred forever.
 handler :: Handler a -> IO a
 handler h = do
+  _ <- drainOwnedCleanup
   settings <- getAppSettings
   acquireWithUnconditionalRelease (makeFoundation settings) shutdownApp (flip unsafeHandler h)
 

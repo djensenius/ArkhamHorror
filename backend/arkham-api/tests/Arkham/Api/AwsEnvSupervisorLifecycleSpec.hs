@@ -40,24 +40,27 @@ import Api.Arkham.AwsEnvSupervisor (
  )
 import Api.Arkham.Helpers (tryRedis_)
 import Api.Arkham.Lifecycle (
-  ReleaseAllFailed (..),
   RestartState (..),
   StopOutcome (..),
   acquireTransferringOwnershipOnSuccess,
   acquireWithUnconditionalRelease,
+  drainOwnedCleanup,
   forkTransferringOwnership,
   forkTransferringOwnershipUsing,
+  newManagedCleanup,
+  newManagedReleasePlan,
   raceManaged_,
   releaseAll,
   restartManagedGeneration,
   restartManagedGenerationUsing,
+  runManagedCleanup,
+  runManagedReleasePlan,
   shutdownThenDeliver,
   stopManagedGeneration,
  )
 import Arkham.Prelude
 import Control.Concurrent (ThreadId, forkIO, forkIOWithUnmask, killThread, myThreadId, threadDelay)
 import Control.Exception qualified as Exception
-import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import GHC.Conc.Sync (ThreadStatus (..), threadStatus)
 import Test.Hspec
@@ -405,8 +408,9 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       -- Case 1: retained release genuinely succeeds on retry.
       succeedingRetryCalls <- newIORef (0 :: Int)
       let succeedingRetry = modifyIORef' succeedingRetryCalls (+ 1)
+      succeedingRetryCap <- newManagedCleanup [succeedingRetry]
       lockSucceeds <-
-        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) succeedingRetry)
+        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) succeedingRetryCap)
       outcomeSucceeds <- stopManagedGeneration lockSucceeds (\_ -> expectationFailure "cancel should never run: nothing is live")
       case outcomeSucceeds of
         StoppedCleanly -> pure ()
@@ -422,8 +426,9 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       -- failure is prepended to the history.
       let retryErr = userError "release failed again on retry"
           failingRetry = Exception.throwIO retryErr
+      failingRetryCap <- newManagedCleanup [failingRetry]
       lockFailsAgain <-
-        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) failingRetry)
+        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) failingRetryCap)
       outcomeFailsAgain <- stopManagedGeneration lockFailsAgain (\_ -> expectationFailure "cancel should never run: nothing is live")
       case outcomeFailsAgain of
         StopFailed err -> show err `shouldBe` show retryErr
@@ -433,7 +438,7 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         StartCleanupFailed _ observedHistory retainedRetry -> do
           NE.head observedHistory `shouldSatisfy` (\e -> show e == show retryErr)
           -- the exact same capability must still be retained, callable again
-          retainedRetry `shouldThrow` (\e -> show (e :: SomeException) == show retryErr)
+          runManagedCleanup retainedRetry `shouldThrow` (\e -> show (e :: SomeException) == show retryErr)
         _ -> expectationFailure "expected the lock to still read StartCleanupFailed, retaining the exact retry capability"
 
       -- Case 3: the retry attempt is itself asynchronously interrupted
@@ -447,8 +452,9 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       retryStarted <- newEmptyMVar
       stopperFinished <- newEmptyMVar
       let blockingRetry = putMVar retryStarted () >> forever (threadDelay 1000)
+      blockingRetryCap <- newManagedCleanup [blockingRetry]
       lockInterrupted <-
-        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) blockingRetry)
+        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) blockingRetryCap)
       stopperTid <- forkIO do
         outcome <-
           Exception.try @Exception.AsyncException
@@ -498,7 +504,9 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
             threadDelay 5000
             atomicModifyIORef' inFlight (\c -> (c - 1, ()))
             when (attemptNum < succeedOnAttempt) (Exception.throwIO (userError ("retry attempt " <> show attemptNum <> " deliberately fails")))
-      lock <- newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) retry)
+      lock <- do
+        retryCap <- newManagedCleanup [retry]
+        newMVar (StartCleanupFailed (Exception.toException spawnErr) (Exception.toException cleanupErr :| []) retryCap)
       resultsVar <- newMVar ([] :: [StopOutcome])
       let runCaller = do
             outcome <- stopManagedGeneration lock (\_ -> expectationFailure "cancel should never run: nothing is live")
@@ -1339,16 +1347,24 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     only on its FIRST invocation and succeeds trivially on any later one
     -- exactly like a real release whose underlying resource is still
     live and can genuinely be torn down on a second attempt. This lets
-    the test prove BOTH halves of the fix at once: cancellation still
-    propagates immediately (the second release has not run right after
-    the injected 'Exception.ThreadKilled'), AND the 'ReleaseAllFailed'
-    thrown out of 'releaseAll' carries a retry action that, when
-    genuinely invoked, completes what was interrupted rather than
-    abandoning it forever (both releases have run once that retry
-    action returns) -- see 'Api.Arkham.Lifecycle.ReleaseAllFailed''s own
-    Haddock for why the prior version of this function, which offered no
-    such retry capability at all, was itself the MEDIUM \"cleanup
-    progress\" finding.
+    the test prove ALL THREE aspects of the fix at once: cancellation
+    still propagates immediately (the second release has not run right
+    after the injected 'Exception.ThreadKilled'), the propagated
+    exception is the ORIGINAL, unwrapped 'Exception.ThreadKilled' itself
+    -- never a synchronously-shaped 'ReleaseAllFailed' (a MEDIUM
+    \"cleanup progress\" finding this round: wrapping cancellation that
+    way gave a caller with no durable place of its own to retain the
+    outstanding capability -- production: 'Application.handler' -- what
+    looked like an ordinary, already-classified failure for a shutdown
+    that was, in fact, still asynchronously in flight, with nothing left
+    responsible for finishing it) -- and the exact, still-outstanding
+    capability is nonetheless never abandoned: it is durably transferred
+    to 'Api.Arkham.Lifecycle.drainOwnedCleanup''s own global owner
+    /before/ that original exception is rethrown, and a later,
+    independent 'drainOwnedCleanup' call (standing in for
+    @app\/DevelMain.hs@\'s or 'Application.handler''s own opportunistic
+    calls) genuinely completes what cancellation interrupted (both
+    releases have run once it returns).
 
     Mutation check: reverting 'releaseAll' to plain 'Control.Exception.try'
     makes the cancellation-propagates assertion fail deterministically --
@@ -1356,12 +1372,16 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
     retry is ever invoked (plain 'try' catches the 'Exception.ThreadKilled',
     "succeeds" in registering it as this release's failure, and moves on
     to run the second release before ultimately re-raising). Reverting
-    'releaseAll' to throw a bare exception instead of 'ReleaseAllFailed'
-    (abandoning the interrupted release rather than retaining it) makes
-    the retry-recovery assertion fail: there would be no
-    'releaseAllFailedRetry' capability to invoke at all.
+    'releaseAll' to wrap the cancellation in 'ReleaseAllFailed' again (as
+    an earlier, rejected version of this fix did) makes the
+    \"propagated exception is the original 'Exception.ThreadKilled'\"
+    assertion fail. Reverting the async branch to simply rethrow without
+    ever calling 'PendingCleanupOwner.transferPendingCleanup' first makes
+    the final 'drainOwnedCleanup' recovery assertion fail: there would be
+    nothing durably owned left to drain, and @firstCalls@\/@secondRan@
+    would never advance.
     -}
-    it "propagates an asynchronous cancellation immediately, without running any later release, but retains a retry capability that later completes both" do
+    it "propagates the ORIGINAL asynchronous cancellation immediately, without running any later release, but durably transfers ownership so a later drainOwnedCleanup completes both" do
       firstReached <- newEmptyMVar
       neverFilled <- newEmptyMVar
       firstCalls <- newIORef (0 :: Int)
@@ -1383,38 +1403,49 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
       readIORef secondRan `shouldReturn` False
       case result of
         Left err -> case Exception.fromException err of
-          Just (ReleaseAllFailed _failures retryAction) -> do
-            -- The retained retry capability, when genuinely invoked,
-            -- completes what cancellation interrupted -- never abandons
-            -- it. The first release's second invocation (this retry)
-            -- now takes the trivial-success branch, and the second
-            -- release finally runs too.
-            retryAction
-            readIORef firstCalls `shouldReturn` 2
-            readIORef secondRan `shouldReturn` True
-          Nothing -> expectationFailure ("expected a ReleaseAllFailed carrying a retry capability, got " <> show err)
+          Just Exception.ThreadKilled -> pure ()
+          _ -> expectationFailure ("expected the ORIGINAL, unwrapped ThreadKilled to propagate out of releaseAll, got " <> show err)
         Right () -> expectationFailure "expected the injected ThreadKilled to propagate out of releaseAll"
+      -- Never abandoned: the exact, still-outstanding capability was
+      -- durably transferred away before that exception was rethrown, so
+      -- an independent later caller (standing in for DevelMain/handler's
+      -- own opportunistic calls) can genuinely finish it.
+      drainResult <- drainOwnedCleanup
+      case drainResult of
+        Right () -> pure ()
+        Left remaining -> expectationFailure ("expected drainOwnedCleanup to genuinely finish the transferred cleanup, but it still reports " <> show remaining)
+      readIORef firstCalls `shouldReturn` 2
+      readIORef secondRan `shouldReturn` True
 
     {- | End-to-end regression for the same MEDIUM finding, but through the
     real production path: 'shutdownThenDeliver' (as @app\/DevelMain.hs@
     uses it), a genuine 'Running' lock, and 'stopManagedGeneration'
-    itself -- rather than calling 'releaseAll' directly. Proves the
-    retained 'ReleaseAllFailed' capability set into 'RetireFailed' by
-    'stopManagedGeneration' (via 'classifyRetirementFailure') is
-    genuinely retried by a LATER 'stopManagedGeneration' call, not
-    silently abandoned: the first call observes 'StopFailed' with the
-    second release still not having run, and a second call completes the
-    interrupted release, reports 'StoppedCleanly', and clears the lock
-    to 'NotStarted'.
+    itself -- rather than calling 'releaseAll' directly. Proves that when
+    the retired generation's own shutdown was genuinely asynchronously
+    cancelled (never a purely synchronous 'ReleaseAllFailed'),
+    'classifyRetirementFailure' correctly reports NO local retry
+    capability (this module cannot itself prove one safe, and one was
+    never captured locally to begin with -- see 'RetireFailed''s own
+    Haddock), yet the interrupted cleanup is nonetheless never abandoned:
+    'releaseAll' already durably transferred it to the global owner
+    before rethrowing, so a later, independent 'drainOwnedCleanup' call
+    (standing in for @app\/DevelMain.hs@\'s own opportunistic call after
+    @shutdown@) genuinely completes it.
 
-    Mutation check: reverting 'RetireFailed''s retry field to always be
-    'Nothing' (or reverting 'stopManagedGeneration''s 'RetireFailed'
-    branch to unconditionally replay the stale failure, as it did before
-    this fix) makes the second 'stopManagedGeneration' call still report
-    'StopFailed' with @secondRan@ still 'False' forever, instead of
-    genuinely completing the release.
+    Mutation check: reverting the async branch of 'runManagedReleasePlan'
+    to skip 'PendingCleanupOwner.transferPendingCleanup' (abandoning the
+    interrupted release rather than transferring it) makes the final
+    'drainOwnedCleanup' assertion fail: there would be nothing durably
+    owned left to drain, and @firstCalls@\/@secondRan@ would never
+    advance. Reverting 'releaseAll' to wrap async cancellation back into
+    a synchronously-shaped 'ReleaseAllFailed' makes the
+    \"RetireFailed carries no local retry\" assertion fail (it would
+    incorrectly regain one), reintroducing a caller with no durable
+    place of its own (production: 'Application.handler') receiving what
+    looks like an ordinary, already-classified failure for a shutdown
+    still asynchronously in flight.
     -}
-    it "stopManagedGeneration genuinely retries (never abandons) a RetireFailed capability produced by a real cancelled releaseAll shutdown" do
+    it "stopManagedGeneration reports RetireFailed with no local retry after a genuinely cancelled releaseAll shutdown, but a later drainOwnedCleanup still completes it" do
       firstReached <- newEmptyMVar
       neverFilled <- newEmptyMVar
       firstCalls <- newIORef (0 :: Int)
@@ -1430,36 +1461,32 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
         shutdownThenDeliver (unmask (releaseAll [firstRelease, secondRelease])) done
       takeMVar firstReached
       lock <- newMVar (Running genTid done)
-      -- First stop attempt: 'stopManagedGeneration''s OWN internal
-      -- @cancel priorHandle@ delivers the cancellation that genuinely
-      -- interrupts the still-blocked first release (rather than this
-      -- test pre-empting it manually, which would race
-      -- 'stopManagedGeneration''s own cancellation); the generation's
-      -- own teardown is thereby genuinely interrupted mid-release, and
-      -- the second release must not have run.
-      firstStop <- stopManagedGeneration lock killThread
-      case firstStop of
+      -- 'stopManagedGeneration''s OWN internal @cancel priorHandle@
+      -- delivers the cancellation that genuinely interrupts the still-
+      -- blocked first release (rather than this test pre-empting it
+      -- manually, which would race 'stopManagedGeneration''s own
+      -- cancellation); the generation's own teardown is thereby
+      -- genuinely interrupted mid-release, and the second release must
+      -- not have run.
+      stopOutcome <- stopManagedGeneration lock killThread
+      case stopOutcome of
         StopFailed _ -> pure ()
-        _ -> expectationFailure ("expected the first stop to report StopFailed, got " <> show firstStop)
+        _ -> expectationFailure ("expected the stop to report StopFailed, got " <> show stopOutcome)
       readIORef secondRan `shouldReturn` False
-      afterFirstStop <- readMVar lock
-      case afterFirstStop of
-        RetireFailed _ _ (Just _) -> pure ()
-        RetireFailed _ _ Nothing -> expectationFailure "expected RetireFailed to carry a retriable capability, not Nothing"
+      afterStop <- readMVar lock
+      case afterStop of
+        RetireFailed _ _ Nothing -> pure ()
+        RetireFailed _ _ (Just _) -> expectationFailure "expected RetireFailed to carry NO local retry: it was never captured, ownership was transferred to the durable owner instead"
         _ -> expectationFailure "expected the lock to read RetireFailed after the interrupted teardown"
-      -- Second stop attempt: genuinely retries the SAME retained
-      -- capability, completing what was interrupted, rather than
-      -- replaying the stale failure forever.
-      secondStop <- stopManagedGeneration lock killThread
-      case secondStop of
-        StoppedCleanly -> pure ()
-        _ -> expectationFailure ("expected the second stop to genuinely complete the retry and report StoppedCleanly, got " <> show secondStop)
+      -- Never abandoned even though the LOCAL lock has nothing left to
+      -- retry: the interrupted release was durably transferred away,
+      -- and completes here.
+      drainResult <- drainOwnedCleanup
+      case drainResult of
+        Right () -> pure ()
+        Left remaining -> expectationFailure ("expected drainOwnedCleanup to genuinely finish the transferred cleanup, but it still reports " <> show remaining)
       readIORef firstCalls `shouldReturn` 2
       readIORef secondRan `shouldReturn` True
-      afterSecondStop <- readMVar lock
-      case afterSecondStop of
-        NotStarted -> pure ()
-        _ -> expectationFailure "expected the lock to clear to NotStarted once the retry genuinely completed"
 
   {- | Root-cause regression, on 'acquireTransferringOwnershipOnSuccess'
   itself, for the second MEDIUM \"cleanup-progress\" finding: the old
@@ -1493,6 +1520,125 @@ spec = describe "Foundation lifecycle bracketing (Application.hs composition pat
   the outer release would never even get its final successful attempt
   and the lock would never clear to 'NotStarted'.
   -}
+
+  {- | Direct, unit-level regression for the MEDIUM \"sync release
+  failures dropped\" finding against 'runManagedReleasePlan' itself
+  (production: entirely inside 'releaseAll'): its own structural
+  predecessor wrote back only @rest@ (whatever came strictly after the
+  failed action) as the retained plan, silently dropping the
+  synchronously-failed action itself out of the retry -- so a later
+  retry against that plan could report a clean pass without ever having
+  genuinely retried the one action that actually still needs releasing
+  (e.g. a still-live AWS supervisor). These tests exercise
+  'newManagedReleasePlan'\/'runManagedReleasePlan' directly rather than
+  only through 'releaseAll''s own all-or-nothing exception, so the
+  retained plan's own exact contents (not just what 'releaseAll'
+  ultimately throws) are directly observable.
+  -}
+  describe "ManagedReleasePlan (releaseAll's own retry capability: independent, attempt-every-action, retains only what genuinely still failed)" do
+    it "after a partial failure, retries only the synchronously-failed action -- an action that already succeeded is never re-attempted" do
+      failingCalls <- newIORef (0 :: Int)
+      succeedingCalls <- newIORef (0 :: Int)
+      let retryErr = userError "still failing"
+          -- Fails on its first invocation, succeeds on every later one --
+          -- exactly like a real release whose underlying resource is
+          -- still live and can genuinely be torn down on a retry.
+          failingAction = do
+            n <- atomicModifyIORef' failingCalls (\c -> (c + 1, c + 1))
+            when (n == 1) (Exception.throwIO retryErr)
+          succeedingAction = atomicModifyIORef' succeedingCalls (\c -> (c + 1, ()))
+      plan <- newManagedReleasePlan [failingAction, succeedingAction]
+
+      firstOutcome <- runManagedReleasePlan plan
+      case firstOutcome of
+        Left failures -> NE.length failures `shouldBe` 1
+        Right () -> expectationFailure "expected the first pass to report the synchronous failure"
+      -- Both actions were attempted this pass (the failure did not skip
+      -- the later, independent action)...
+      readIORef failingCalls `shouldReturn` 1
+      readIORef succeedingCalls `shouldReturn` 1
+
+      -- ...but only the FAILED action is genuinely retained: retrying
+      -- the SAME plan again must never re-run the action that already
+      -- succeeded.
+      secondOutcome <- runManagedReleasePlan plan
+      case secondOutcome of
+        Right () -> pure ()
+        Left failures -> expectationFailure ("expected the retry to genuinely succeed once the retained action stops failing, got " <> show failures)
+      readIORef failingCalls `shouldReturn` 2
+      readIORef succeedingCalls `shouldReturn` 1
+
+    {- | Mutation check proving the test above is load-bearing: reverting
+    'runManagedReleasePlan' to retain only the actions strictly after the
+    failed one (production's own former @writeIORef remainingRef rest@,
+    silently dropping the failed action itself) is verified by hand
+    against this exact test above -- see the accompanying commit
+    message's mutation-testing note; it is not repeated as an
+    independent test here because doing so faithfully requires actually
+    mutating 'runManagedReleasePlan' itself, not a local stand-in.
+    -}
+
+    {- | Deterministic (barrier-based, not timing-based) proof of the
+    companion MEDIUM \"progress update interruptible\/ledger
+    unserialized\" finding, directly against 'ManagedReleasePlan': many
+    concurrent callers racing 'runManagedReleasePlan' against the exact
+    same plan, where the sole retained action fails deterministically
+    for the first N-1 observed attempts and succeeds on the Nth, must
+    never observe two attempts of that action running at once (the
+    whole pass is one masked, 'MVar'-serialized transaction), and exactly
+    one caller ever observes the clean, successful pass.
+    -}
+    it "concurrent retries against the exact same plan serialize: the retained action is never invoked twice at once, and settles after exactly the expected number of attempts" do
+      let callerCount = 8 :: Int
+          succeedOnAttempt = 5 :: Int
+      inFlight <- newIORef (0 :: Int)
+      maxObservedInFlight <- newIORef (0 :: Int)
+      attemptCounter <- newIORef (0 :: Int)
+      let retryAction = do
+            n <- atomicModifyIORef' inFlight (\c -> (c + 1, c + 1))
+            atomicModifyIORef' maxObservedInFlight (\m -> (max m n, ()))
+            attemptNum <- atomicModifyIORef' attemptCounter (\c -> (c + 1, c + 1))
+            -- Give any (incorrectly) concurrent retry a genuine chance to
+            -- overlap before this one finishes.
+            threadDelay 5000
+            atomicModifyIORef' inFlight (\c -> (c - 1, ()))
+            when (attemptNum < succeedOnAttempt) (Exception.throwIO (userError ("retry attempt " <> show attemptNum <> " deliberately fails")))
+      plan <- newManagedReleasePlan [retryAction]
+      resultsVar <- newMVar ([] :: [Either (NonEmpty SomeException) ()])
+      finished <- mapM (const newEmptyMVar) [1 .. callerCount]
+      forM_ finished \doneVar ->
+        void $ forkIO do
+          outcome <- runManagedReleasePlan plan
+          modifyMVar_ resultsVar (pure . (outcome :))
+          putMVar doneVar ()
+      mapM_ takeMVar finished
+      -- Never re-entered: whichever single caller is genuinely attempting
+      -- the retained action at any moment, it is never overlapped by
+      -- another concurrent caller's own attempt.
+      readIORef maxObservedInFlight >>= (`shouldSatisfy` (<= (1 :: Int)))
+      -- The action is retried exactly enough times to succeed once --
+      -- never fewer (every caller genuinely serializes through the same
+      -- retained action) and never more (once it succeeds, it is
+      -- permanently dropped from the plan, so any caller whose own pass
+      -- runs afterwards sees an already-empty plan and never re-invokes
+      -- it, no matter how many callers are still racing).
+      readIORef attemptCounter `shouldReturn` succeedOnAttempt
+      results <- readMVar resultsVar
+      length results `shouldBe` callerCount
+      let isClean outcome = case outcome of
+            Right () -> True
+            Left _ -> False
+      -- Exactly the callers whose own pass genuinely attempted (and
+      -- failed) the action before it finally succeeded observe a
+      -- failure; every other caller -- whether it succeeded outright or
+      -- raced in after the plan had already emptied -- observes a clean
+      -- pass. (Once the retained action succeeds, the plan is
+      -- permanently empty, so every later concurrent caller trivially
+      -- observes a clean pass too -- this is not itself a bug: nothing
+      -- remains for them to retry.)
+      length (filter (not . isClean) results) `shouldBe` (succeedOnAttempt - 1)
+      length (filter isClean results) `shouldBe` (callerCount - (succeedOnAttempt - 1))
+
   describe "acquireTransferringOwnershipOnSuccess nested-release retry never re-runs an already-succeeded inner release" do
     it "the outer capability's retry only re-attempts what genuinely still remains, never a resource whose release already succeeded" do
       innerReleaseCalls <- newIORef (0 :: Int)
