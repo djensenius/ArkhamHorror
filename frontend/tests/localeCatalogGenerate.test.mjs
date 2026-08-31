@@ -28,6 +28,7 @@ const NODE_TYPES = new Set([
   'text',
   'var',
   'linked',
+  'table',
   'break',
   'rule',
   'paragraph',
@@ -53,7 +54,11 @@ function walkNodes(nodes, visit) {
   for (const node of nodes) {
     visit(node)
     if (node.type === 'list') for (const item of node.items) walkNodes(item.children, visit)
-    else if (Array.isArray(node.children)) walkNodes(node.children, visit)
+    else if (node.type === 'table') {
+      for (const row of [...node.head, ...node.body]) {
+        for (const cell of row.cells) walkNodes(cell.children, visit)
+      }
+    } else if (Array.isArray(node.children)) walkNodes(node.children, visit)
   }
 }
 

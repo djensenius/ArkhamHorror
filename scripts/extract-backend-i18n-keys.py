@@ -67,6 +67,19 @@ DSL_MODULES = {
 }
 
 # Scope combinators from Arkham/I18n.hs. `reset` clears the stack first.
+# How many arguments each scope primitive actually takes. Anything passed
+# beyond that is applied to the *result*, so it is outside the scope:
+# `unscoped (countVar 1 $ labeled' "x") do …` labels inside the reset but runs
+# the block in the caller's scope.
+SCOPE_ARITY = {
+    "scope": 2,
+    "unscoped": 1,
+    "withI18n": 1,
+    "cardI18n": 1,
+    "standaloneI18n": 2,
+    "popScope": 1,
+}
+
 SCOPE_PRIMITIVES = {
     "scope": {"reset": False, "literal_arg": 0},
     "cardI18n": {"reset": True, "segments": ["cards"]},
@@ -81,9 +94,15 @@ SCOPE_PRIMITIVES = {
 WRAPPERS = {
     # setup body = scope "setup" $ flavor (unscoped (setTitle "setup") >> body)
     "setup": {"push": ["setup"], "emits": [{"key": "setup", "unscoped": True}]},
-    "setup'": {"push": ["setup"], "emits": [{"key": "title"}]},
-    # additionalRules s body = scope "rules" $ scope s $ flavor (setTitle "title" >> body)
-    "additionalRules": {"push": ["rules"], "push_literal_arg": 0, "emits": [{"key": "title"}]},
+    # setup' body = scope "setup" $ flavor (setTitle "title" >> body)
+    "setup'": {"push": ["setup"], "emits": [{"key": "title", "scoped": True}]},
+    # additionalRules s =
+    #   scope "rules" $ scope s $ flavor (setTitle "title" >> compose (h3 "title" >> p "body"))
+    "additionalRules": {
+        "push": ["rules"],
+        "push_literal_arg": 0,
+        "emits": [{"key": "title", "scoped": True}, {"key": "body", "scoped": True}],
+    },
 }
 
 # Key-emitting helpers: which argument holds the key, and which suffixes the
@@ -232,14 +251,109 @@ def preprocess(source: bytes) -> bytes:
     return OPERATOR_QUESTION_MARK.sub(b"!", source)
 
 
-# Tokens that can start an emitted key. A module that does not parse is only
-# ever set aside if it provably contains none of them.
-EMITTER_TOKENS = re.compile(
-    rb"\b(?:ikey'?|i18n|i18nWithTitle|i18nEntry|storyI|setTitle|labeled'|labeledI|labeledI18n"
-    rb"|questionLabeled'|questionLabeledI|invalidLabeled'|skip_|resolution|resolutionWithXp"
-    # A trailing `\b` would never match after the apostrophe in `labeled'`.
-    rb"|toI18n|withVar|withVars|scope)(?![A-Za-z0-9_])|\bp\s+\"|\bli\s+\"|\bh[13]?\s+\"|\"\$"
-)
+# `rec` is a keyword to the grammar (RecursiveDo) but an ordinary identifier to
+# GHC unless that extension is on, and this codebase uses it as one.
+SOFT_KEYWORDS = (b"rec", b"proc", b"mdo")
+# `[n| (…) <- xs]`: the grammar wants whitespace before the comprehension bar.
+COMPREHENSION_BAR = re.compile(rb"(?<=[A-Za-z0-9_)\]])\| ")
+
+
+def code_mask(source: bytes) -> bytearray:
+    """Marks the bytes that are code, so repairs never touch text.
+
+    A rewrite inside a string literal could change an emitted key, and one
+    inside a comment is pointless; both are excluded by a single pass over the
+    module that tracks `--`/`{- -}` comments and string and character
+    literals.
+    """
+    mask = bytearray(b"\x01" * len(source))
+    index = 0
+    length = len(source)
+    while index < length:
+        byte = source[index : index + 1]
+        pair = source[index : index + 2]
+        if pair == b"{-":
+            depth = 1
+            index += 2
+            while index < length and depth:
+                if source[index : index + 2] == b"{-":
+                    depth += 1
+                    index += 2
+                elif source[index : index + 2] == b"-}":
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            mask[min(index, length) - 1 : index] = b"\x00" * 0
+            continue
+        if pair == b"--":
+            while index < length and source[index : index + 1] != b"\n":
+                mask[index] = 0
+                index += 1
+            continue
+        if byte == b'"':
+            mask[index] = 0
+            index += 1
+            while index < length:
+                mask[index] = 0
+                if source[index : index + 1] == b"\\":
+                    mask[index + 1 : index + 2] = b"\x00"
+                    index += 2
+                    continue
+                if source[index : index + 1] == b'"':
+                    index += 1
+                    break
+                index += 1
+            continue
+        if byte == b"'" and source[index : index + 3] in (b"'\\n'", b"' '") or (
+            byte == b"'" and index + 2 < length and source[index + 2 : index + 3] == b"'"
+            and source[index - 1 : index] not in (b"'",) and not source[index - 1 : index].isalnum()
+        ):
+            end = index + 3 if source[index + 2 : index + 3] == b"'" else index + 4
+            for position in range(index, min(end, length)):
+                mask[position] = 0
+            index = end
+            continue
+        index += 1
+    # Comment bodies are marked by the loop above; block comments are handled
+    # by masking their whole span here.
+    for match in re.finditer(rb"\{-.*?-\}", source, re.S):
+        for position in range(match.start(), match.end()):
+            mask[position] = 0
+    return mask
+
+
+def repair(source: bytes) -> bytes:
+    """Length-preserving rewrites for constructs the grammar mis-reads.
+
+    Applied only to a module that failed to parse, and only to code bytes, so
+    no string literal — and therefore no key — can be altered. Every rewrite
+    keeps byte offsets, so reported line numbers stay true.
+    """
+    mask = code_mask(source)
+    patched = bytearray(source)
+
+    for keyword in SOFT_KEYWORDS:
+        for match in re.finditer(rb"(?<![A-Za-z0-9_'])" + keyword + rb"(?![A-Za-z0-9_'])", source):
+            if not all(mask[position] for position in range(match.start(), match.end())):
+                continue
+            replacement = _safe_identifier(source, keyword)
+            patched[match.start() : match.end()] = replacement
+
+    for match in COMPREHENSION_BAR.finditer(bytes(patched)):
+        if all(mask[position] for position in range(match.start(), match.end())):
+            patched[match.start() : match.end()] = b" |"
+
+    return bytes(patched)
+
+
+def _safe_identifier(source: bytes, keyword: bytes) -> bytes:
+    """A same-length identifier the module does not already use."""
+    for digit in b"0123456789":
+        candidate = keyword[:1] + bytes([digit]) + keyword[2:]
+        if not re.search(rb"(?<![A-Za-z0-9_'])" + candidate + rb"(?![A-Za-z0-9_'])", source):
+            return candidate
+    raise SystemExit(f"backend-i18n: cannot rename {keyword!r} without colliding")
 
 
 def _relative_path(path: Path, library: Path | None) -> str:
@@ -252,34 +366,30 @@ def _relative_path(path: Path, library: Path | None) -> str:
 
 
 def parse_module(path: Path, source: bytes, library: Path | None = None):
-    """Parses one module, or proves it carries no i18n surface.
+    """Parses one module. A module that will not parse fails the run.
 
     tree-sitter's Haskell grammar does not cover every GHC extension this
-    codebase uses. `preprocess` neutralizes the ones that appear; anything left
-    is a module the extractor cannot read, and skipping it silently is exactly
-    how a registry goes stale. So an unparsed module is a hard failure unless a
-    lexical scan proves it contains no key-emitting token at all — and then it
-    is recorded, with its digest, in the artifact, so the waiver dies the
-    moment the file changes.
+    codebase uses. `preprocess` neutralizes the ones that appear everywhere and
+    `repair` handles the rest, on code bytes only, without moving a single
+    offset. What is left is a module the extractor cannot read — and there is
+    no safe way to skip one: a waiver rests on a lexical guess about what an
+    unreadable file contains, which is exactly the reasoning this registry
+    exists to replace.
     """
     tree = PARSER.parse(preprocess(source))
     if not tree.root_node.has_error:
-        return tree, None
+        return tree
+
+    repaired = PARSER.parse(repair(preprocess(source)))
+    if not repaired.root_node.has_error:
+        return repaired
 
     relative = _relative_path(path, library)
-    hits = sorted({match.group(0).decode("utf-8", "replace") for match in EMITTER_TOKENS.finditer(source)})
-    if hits:
-        raise SystemExit(
-            f"backend-i18n: {relative} does not parse (line {first_error(tree.root_node)}) and "
-            f"contains i18n tokens {hits[:5]} — extend `preprocess` or the grammar; the extractor "
-            "refuses to guess at a module it cannot read"
-        )
-    return None, {
-        "path": relative,
-        "sha256": hashlib.sha256(source).hexdigest(),
-        "reason": f"tree-sitter cannot parse this module (line {first_error(tree.root_node)})",
-        "emitterTokens": [],
-    }
+    raise SystemExit(
+        f"backend-i18n: {relative} does not parse (line {first_error(repaired.root_node)}) — "
+        "extend `preprocess`/`repair` or the grammar; the extractor will not skip a module it "
+        "cannot read"
+    )
 
 
 def first_error(node) -> int | None:
@@ -354,7 +464,7 @@ class ModuleIndex:
     def __init__(self):
         self.by_module: dict[str, dict] = {}
         self.aliases: dict[tuple[str, str], dict] = {}
-        self._closures: dict[tuple[str, str], list[str]] = {}
+        self._closures: dict[tuple[str, str, str], list[str]] = {}
 
     def add(self, module: str, record: dict) -> None:
         self.by_module[module] = record
@@ -372,7 +482,7 @@ class ModuleIndex:
                     break
         return list(definition.get("parameters", [])) if definition else []
 
-    def _providers_of(self, module: str, name: str) -> list[str]:
+    def _providers_of(self, module: str, name: str, table: str = "aliases") -> list[str]:
         record = self.by_module.get(module)
         if record is None:
             return []
@@ -384,8 +494,22 @@ class ModuleIndex:
                 continue
             if entry["hiding"] is not None and name in entry["hiding"]:
                 continue
-            providers.extend(self._exporters_of(entry["module"], name))
+            providers.extend(self._exporters_of(entry["module"], name, table))
         return list(dict.fromkeys(providers))
+
+    def defining_modules(self, module: str, name: str) -> list[str]:
+        """Where an unqualified top-level name used in `module` is defined.
+
+        Two scenarios each define their own `scenarioFlavorText`; resolving one
+        helper's callers by bare name would hand every scenario's entries to
+        every other. Scoping answers which definition a call site means.
+        """
+        record = self.by_module.get(module)
+        if record is None:
+            return []
+        if name in record["definitions"]:
+            return [module]
+        return self._providers_of(module, name, "definitions")
 
     def resolve_alias(
         self,
@@ -434,21 +558,21 @@ class ModuleIndex:
             return concrete[0]
         return effects[0]
 
-    def _exporters_of(self, module: str, name: str) -> list[str]:
+    def _exporters_of(self, module: str, name: str, table: str = "aliases") -> list[str]:
         """Modules that supply `name` when `module` is imported unqualified.
 
         Re-export chains are followed to their end. Cycles are broken with a
         visited set rather than a depth cap, because a cap silently answers
         "nothing exports this" for deep hubs and strands every key behind them.
         """
-        cached = self._closures.get((module, name))
+        cached = self._closures.get((module, name, table))
         if cached is not None:
             return cached
-        found = self._walk_exports(module, name, set())
-        self._closures[(module, name)] = found
+        found = self._walk_exports(module, name, set(), table)
+        self._closures[(module, name, table)] = found
         return found
 
-    def _walk_exports(self, module: str, name: str, visited: set[str]) -> list[str]:
+    def _walk_exports(self, module: str, name: str, visited: set[str], table: str = "aliases") -> list[str]:
         if module in visited:
             return []
         visited.add(module)
@@ -470,12 +594,12 @@ class ModuleIndex:
                     else:
                         targets.append(target)
 
-        if name in record["aliases"] and (
+        if name in record[table] and (
             exports_own_definitions or (exports is not None and name in exports["names"])
         ):
             found.append(module)
         for target in targets:
-            found.extend(self._walk_exports(target, name, visited))
+            found.extend(self._walk_exports(target, name, visited, table))
         return list(dict.fromkeys(found))
 
     @staticmethod
@@ -586,7 +710,7 @@ def scope_steps_of_expression(node, source: bytes, parameters: set[str]) -> list
 MAX_SCOPE_COMBINATIONS = 64
 
 
-def scope_alternatives(node, source: bytes, parameters: set[str], depth: int = 0):
+def scope_alternatives(node, source: bytes, parameters: set[str], depth: int = 0, context=None, site=None):
     """Every literal a scope expression can evaluate to, or None.
 
     `scope (if headedWest then "west" else "east")` and `scope version`, where
@@ -596,18 +720,24 @@ def scope_alternatives(node, source: bytes, parameters: set[str], depth: int = 0
     """
     if depth > 8:
         return None
+    site = site if site is not None else node
     if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
-        return scope_alternatives(significant_children(node)[0], source, parameters, depth + 1)
+        return scope_alternatives(significant_children(node)[0], source, parameters, depth + 1, context, site)
 
     literal = string_literal(node, source)
     if literal is not None:
         return [literal]
 
     if node.type == "conditional":
+        decided = decide_conditional(node, site, source) or decide_by_matching_condition(
+            node, site, source
+        )
+        if decided is not None:
+            return scope_alternatives(decided, source, parameters, depth + 1, context, site)
         branches = [child for child in significant_children(node) if child.type not in {"if", "then", "else"}]
         values: list[str] = []
         for branch in branches[1:]:
-            resolved = scope_alternatives(branch, source, parameters, depth + 1)
+            resolved = scope_alternatives(branch, source, parameters, depth + 1, context, site)
             if resolved is None:
                 return None
             values.extend(resolved)
@@ -627,7 +757,7 @@ def scope_alternatives(node, source: bytes, parameters: set[str], depth: int = 0
                 if body.type == "match":
                     inner = significant_children(body)
                     body = inner[-1] if inner else None
-                resolved = scope_alternatives(body, source, parameters, depth + 1) if body else None
+                resolved = scope_alternatives(body, source, parameters, depth + 1, context, site) if body else None
                 if resolved is None:
                     return None
                 values.extend(resolved)
@@ -639,24 +769,59 @@ def scope_alternatives(node, source: bytes, parameters: set[str], depth: int = 0
             return None
         binding = local_binding(node, name, source)
         if binding is not None:
-            return scope_alternatives(binding, source, parameters, depth + 1)
-        return parameter_alternatives(node, name, source, parameters, depth)
+            return scope_alternatives(binding, source, parameters, depth + 1, context, site)
+        return parameter_alternatives(node, name, source, parameters, depth, context)
 
     return None
 
 
-def parameter_alternatives(node, name: str, source: bytes, parameters: set[str], depth: int):
+class ParameterContext:
+    """Literal arguments a function's callers supply, per parameter position.
+
+    A local `let interlude k = ...` is answered from the block that binds it —
+    two blocks in the same module may bind the same name and mean different
+    things. A top-level helper is answered from every module, because its
+    callers usually live elsewhere; those requests are collected in one pass
+    and resolved in the next.
+    """
+
+    def __init__(self, values: dict | None = None):
+        self.values = values or {}
+        self.requests: set[tuple] = set()
+        self.requested_modules: set[str] = set()
+        self.module: str | None = None
+        self._variables: dict[str, str] = {}
+
+    def offer_variables(self, variables: dict[str, str]) -> None:
+        """Variables the answering call sites had in force."""
+        self._variables.update(variables)
+
+    def take_variables(self) -> dict[str, str]:
+        variables, self._variables = self._variables, {}
+        return variables
+
+    def request(self, function_name: str, position: int) -> None:
+        self.requests.add((self.module, function_name, position))
+        if self.module is not None:
+            self.requested_modules.add(self.module)
+
+
+def parameter_alternatives(node, name: str, source: bytes, parameters: set[str], depth: int, context):
     """Literals a function parameter can hold, taken from its call sites.
 
     `let interlude k = storyBuild $ setTitle "title" >> p k` is the campaign
-    idiom for a handful of interludes that share a layout. The keys are real
-    and static; they simply live one call away, so the call sites in the same
-    module are read and every literal argument in that position becomes a
-    requirement. If a single call site is unresolvable the whole parameter is,
-    because a partial answer would understate what the backend emits.
+    idiom for a handful of interludes that share a layout: the keys are real
+    and static, they just live one call away. Which call sites count is a
+    scoping question, not a name lookup — `TheDunwichLegacy` binds `interlude`
+    twice, once under `scope "interlude1"` and once under `scope "interlude2"`,
+    and reading both sets into both scopes invents keys that do not exist. So a
+    local binding is answered only from the block it is bound in, and a
+    top-level definition only from a cross-module pass. If a single call site
+    is unresolvable the whole parameter is, because a partial answer would
+    understate what the backend emits.
     """
     holder = node.parent
-    while holder is not None and holder.type not in {"function"}:
+    while holder is not None and holder.type != "function":
         holder = holder.parent
     if holder is None:
         return None
@@ -676,22 +841,57 @@ def parameter_alternatives(node, name: str, source: bytes, parameters: set[str],
         return None
     position = positions.index(name)
 
-    root = holder
-    while root.parent is not None:
-        root = root.parent
+    scope_root = lexical_scope_root(holder)
+    if scope_root is None:
+        # Top level: the callers are spread across the codebase, so this is
+        # answered by the cross-module pass rather than guessed at from the
+        # defining module alone.
+        if context is None:
+            return None
+        answer = context.values.get((context.module, function_name, position))
+        if answer is None:
+            context.request(function_name, position)
+            return None
+        # `sendI18n s = send $ ikey' s` is called as
+        # `cardNameVar a $ sendI18n "log.retaliate"`: the key and the variables
+        # both live at the call site, so both come back from it.
+        context.offer_variables(answer["variables"])
+        return list(answer["values"])
 
     values: list[str] = []
     found_call = False
-    for call in _call_sites(root, function_name, source):
-        arguments = call[1]
+    for _, arguments in _call_sites(scope_root, function_name, source):
         if len(arguments) <= position:
             return None
-        resolved = scope_alternatives(arguments[position], source, parameters, depth + 1)
+        resolved = scope_alternatives(arguments[position], source, parameters, depth + 1, context)
         if resolved is None:
             return None
         found_call = True
         values.extend(resolved)
     return sorted(set(values)) if found_call else None
+
+
+def lexical_scope_root(definition):
+    """The expression a local binding is visible in, or None when top level.
+
+    `let`/`where` bindings scope over the block that introduces them; a
+    definition reached only through `declarations` is top level.
+    """
+    BINDING_GROUPS = {"let", "local_binds", "where", "binds", "let_in", "declarations"}
+    ancestor = definition.parent
+    while ancestor is not None:
+        if ancestor.type == "declarations":
+            return None
+        if ancestor.type in BINDING_GROUPS:
+            # Climb out of the whole binding group (`function` -> `local_binds`
+            # -> `let`) to the block the bindings are visible in; the group
+            # itself holds only the definitions.
+            block = ancestor
+            while block.parent is not None and block.parent.type in BINDING_GROUPS:
+                block = block.parent
+            return block.parent if block.parent is not None else block
+        ancestor = ancestor.parent
+    return None
 
 
 def _call_sites(root, function_name: str, source: bytes):
@@ -702,12 +902,103 @@ def _call_sites(root, function_name: str, source: bytes):
         if node.type == "apply":
             application = flatten_application(node, source)
             if application is not None and application[0] == function_name:
-                calls.append(application)
+                calls.append((node, application[1]))
         for child in node.children:
             visit(child)
 
     visit(root)
     return calls
+
+
+def decide_conditional(node, site, source: bytes):
+    """Picks a branch when an enclosing `case` already fixed the condition.
+
+    `let version = if n == 1 then "version1" else "version2"` inside
+    `case n of 1 -> …; 2 -> …` is not two possibilities per branch: it is one.
+    Fanning out anyway would demand keys for a version that branch never
+    reaches.
+    """
+    children = [child for child in significant_children(node) if child.type not in {"if", "then", "else"}]
+    if len(children) != 3:
+        return None
+    condition, then_branch, else_branch = children
+    if condition.type != "infix":
+        return None
+    parts = infix_parts(condition, source)
+    if parts is None or parts[1] not in {"==", "/="}:
+        return None
+    left, operator, right = parts
+    left_text = text_of(left, source).strip()
+    right_text = text_of(right, source).strip()
+    if INTEGER_ARGUMENT.fullmatch(right_text):
+        scrutinee, literal = left_text, right_text
+    elif INTEGER_ARGUMENT.fullmatch(left_text):
+        scrutinee, literal = right_text, left_text
+    else:
+        return None
+
+    for case_scrutinee, pattern in _case_bindings(site, source):
+        if case_scrutinee != scrutinee or not INTEGER_ARGUMENT.fullmatch(pattern):
+            continue
+        equal = pattern == literal
+        holds = equal if operator == "==" else not equal
+        return then_branch if holds else else_branch
+    return None
+
+
+def decide_by_matching_condition(node, site, source: bytes):
+    """Picks the branch an enclosing `if` on the same condition already chose.
+
+    `scope (if headedWest then "west" else "east")` wrapping
+    `if headedWest then li "a" else li "b"` names two entries, not four.
+    """
+    children = [child for child in significant_children(node) if child.type not in {"if", "then", "else"}]
+    if len(children) != 3:
+        return None
+    condition, then_branch, else_branch = children
+    wanted = _normalized(text_of(condition, source))
+    for enclosing, branch in _conditional_branches(site, source):
+        if _normalized(enclosing) == wanted:
+            return then_branch if branch == "then" else else_branch
+    return None
+
+
+def _normalized(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _conditional_branches(node, source: bytes):
+    """(condition text, "then"|"else") for every `if` around `node`."""
+    child = node
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type == "conditional":
+            parts = [c for c in significant_children(ancestor) if c.type not in {"if", "then", "else"}]
+            if len(parts) == 3 and child is not None:
+                if parts[1].id == child.id:
+                    yield text_of(parts[0], source), "then"
+                elif parts[2].id == child.id:
+                    yield text_of(parts[0], source), "else"
+        child = ancestor
+        ancestor = ancestor.parent
+
+
+def _case_bindings(node, source: bytes):
+    """(scrutinee, pattern) for every `case … of` alternative around `node`."""
+    child = node
+    ancestor = node.parent
+    while ancestor is not None:
+        if ancestor.type == "alternative":
+            patterns = significant_children(ancestor)
+            case_node = ancestor.parent
+            while case_node is not None and case_node.type != "case":
+                case_node = case_node.parent
+            if case_node is not None and patterns:
+                scrutinee = significant_children(case_node)
+                if scrutinee:
+                    yield text_of(scrutinee[0], source).strip(), text_of(patterns[0], source).strip()
+        child = ancestor
+        ancestor = ancestor.parent
 
 
 def local_binding(node, name: str, source: bytes):
@@ -801,7 +1092,21 @@ def scope_template(node, source: bytes, parameters: set[str]) -> list[dict] | No
     return None
 
 
-def _steps_for_call(name: str, args, source: bytes, parameters: set[str]) -> list[dict]:
+def wrapper_prefix(wrapper: dict, args, source: bytes) -> list[str] | None:
+    """The scope segments a wrapper pushes around its own keys."""
+    prefix = list(wrapper.get("push", []))
+    if "push_literal_arg" in wrapper:
+        index = wrapper["push_literal_arg"]
+        if len(args) <= index:
+            return None
+        value = string_literal(args[index], source)
+        if value is None:
+            return None
+        prefix.append(value)
+    return prefix
+
+
+def _steps_for_call(name: str, args, source: bytes, parameters: set[str], context=None, site=None) -> list[dict]:
     primitive = SCOPE_PRIMITIVES.get(name)
     if primitive is not None:
         steps: list[dict] = []
@@ -815,7 +1120,7 @@ def _steps_for_call(name: str, args, source: bytes, parameters: set[str]) -> lis
                 if template is not None:
                     steps.append({"kind": "template_scope", "parts": template})
                 else:
-                    alternatives = scope_alternatives(argument, source, parameters)
+                    alternatives = scope_alternatives(argument, source, parameters, 0, context, site)
                     if alternatives is None:
                         return [{"kind": "dynamic", "value": f"{name} non-literal scope"}]
                     steps.append(
@@ -888,6 +1193,21 @@ def collect_aliases(tree, source: bytes) -> dict[str, dict]:
 
     visit(tree.root_node)
     return aliases
+
+
+def top_level_definitions(tree, source: bytes) -> set[str]:
+    """Names this module defines at the top level."""
+    names: set[str] = set()
+    for child in tree.root_node.children:
+        if child.type != "declarations":
+            continue
+        for declaration in child.children:
+            if declaration.type not in {"function", "bind"}:
+                continue
+            head = significant_children(declaration)
+            if head and head[0].type == "variable":
+                names.add(text_of(head[0], source))
+    return names
 
 
 def module_name_of(tree, source: bytes) -> str | None:
@@ -1048,6 +1368,39 @@ def _enclosing_call(node, source: bytes) -> str | None:
     return None
 
 
+def local_helper(node, source: bytes):
+    """The local `let`/`where` helper this emitter is defined inside, if any.
+
+    `let gideonEntry k = setTitle "title" >> compose.green (p "header" >> p k)`
+    emits nothing where it is written: the scope — and often the key — belong
+    to `scope "gideonMizrah" $ flavor $ gideonEntry "gideon1"`. Reading the
+    definition's own scope would file the entry one level too high.
+    """
+    holder = node.parent
+    while holder is not None:
+        if holder.type in {"function", "bind"}:
+            root = lexical_scope_root(holder)
+            children = significant_children(holder)
+            if root is not None and children and children[0].type == "variable":
+                parameters: list[str] = []
+                for child in children[1:-1]:
+                    if child.type == "variable":
+                        parameters.append(text_of(child, source))
+                    elif child.type == "patterns":
+                        parameters.extend(
+                            text_of(pattern, source) for pattern in significant_children(child)
+                        )
+                return {
+                    "name": text_of(children[0], source),
+                    "holder": holder,
+                    "root": root,
+                    "parameters": parameters,
+                }
+            return None
+        holder = holder.parent
+    return None
+
+
 def bind_alias_arguments(parameters: list[str], arguments, source: bytes) -> dict[str, str]:
     """Binds literal call-site arguments to an alias's parameters.
 
@@ -1070,7 +1423,7 @@ def bind_alias_arguments(parameters: list[str], arguments, source: bytes) -> dic
 INTEGER_ARGUMENT = re.compile(r"-?\d+")
 
 
-def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str):
+def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, context=None, stop=None):
     """Walks ancestors, collecting the scope stack in force at `node`."""
     effects: list[dict] = []
     variables: dict[str, str] = {}
@@ -1078,11 +1431,17 @@ def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str):
     child = node
     parent = node.parent
     while parent is not None:
+        if stop is not None and parent.id == stop.id:
+            break
         if parent.type == "apply":
             application = flatten_application(parent, source)
             if application is not None:
                 name, args = application
-                if args and args[-1].id != child.id and not _contains(args[-1], node):
+                arity = SCOPE_ARITY.get(name)
+                scoped = args[arity - 1] if arity is not None and len(args) >= arity else (
+                    args[-1] if args else None
+                )
+                if scoped is not None and scoped.id != child.id and not _contains(scoped, node):
                     pass
                 else:
                     effects.append({"name": name, "args": args})
@@ -1109,7 +1468,9 @@ def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str):
     dynamic: str | None = None
     saw_reset = False
     for effect in reversed(effects):
-        steps = _steps_for_call(effect["name"], effect["args"], source, set())
+        # `node` is the emitting call: an enclosing `case` around it can decide
+        # a conditional scope that wraps the whole case.
+        steps = _steps_for_call(effect["name"], effect["args"], source, set(), context, node)
         if not steps and effect["name"].endswith("I18n"):
             steps = [{"kind": "alias", "name": effect["name"], "arguments": effect["args"]}]
         for step in steps:
@@ -1157,13 +1518,15 @@ def _collect_variables(name: str, args, source: bytes, variables: dict[str, str]
     # supply their numbers. Without them every one of those keys looks like it
     # renders a variable the backend never sends.
     if name == "withVars" and args:
-        for pair_name in _pair_names(args[0], source):
-            variables.setdefault(pair_name, "text")
+        for pair_name, value in _pair_bindings(args[0], source):
+            variables.setdefault(pair_name, value_type(value, source))
         return
-    if name == "withVar" and args:
+    if name == "withVar" and len(args) >= 1:
         variable = string_literal(args[0], source)
         if variable is not None:
-            variables.setdefault(variable, "text")
+            variables.setdefault(
+                variable, value_type(args[1], source) if len(args) > 1 else "unknown"
+            )
         return
 
     binder = VARIABLE_BINDERS.get(name)
@@ -1178,9 +1541,9 @@ def _collect_variables(name: str, args, source: bytes, variables: dict[str, str]
             variables[variable] = named
 
 
-def _pair_names(node, source: bytes) -> list[str]:
-    """Names bound by an Aeson-style `["a" .= x, "b" .= y]` list."""
-    names = []
+def _pair_bindings(node, source: bytes) -> list[tuple[str, object]]:
+    """Name/value pairs of an Aeson-style `["a" .= x, "b" .= y]` list."""
+    bindings = []
 
     def visit(current):
         if current.type == "infix":
@@ -1188,13 +1551,42 @@ def _pair_names(node, source: bytes) -> list[str]:
             if parts is not None and parts[1] == ".=":
                 literal = string_literal(parts[0], source)
                 if literal is not None:
-                    names.append(literal)
+                    bindings.append((literal, parts[2]))
                 return
         for child in current.children:
             visit(child)
 
     visit(node)
-    return names
+    return bindings
+
+
+# Shapes that betray a number without a type checker. Everything else is
+# reported as `unknown`: `withVars ["shelterValue" .= n]` binds an `Int`, and
+# calling that `text` because the binder is generic is a false statement about
+# the wire.
+NUMERIC_CALLS = {"length", "count", "sum", "toInteger", "fromIntegral", "genericLength"}
+NUMERIC_OPERATORS = {"+", "-", "*", "`div`", "`max`", "`min`"}
+
+
+def value_type(node, source: bytes) -> str:
+    """The type of a bound value where the syntax proves one."""
+    if node is None:
+        return "unknown"
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return value_type(significant_children(node)[0], source)
+    if string_literal(node, source) is not None:
+        return "text"
+    text = text_of(node, source).strip()
+    if INTEGER_ARGUMENT.fullmatch(text):
+        return "integer"
+    if node.type == "infix":
+        parts = infix_parts(node, source)
+        if parts is not None and parts[1] in NUMERIC_OPERATORS:
+            return "integer"
+    application = flatten_application(node, source)
+    if application is not None and application[0] in NUMERIC_CALLS:
+        return "integer"
+    return "unknown"
 
 
 def label_key(stack: list[str], key: str) -> list[str]:
@@ -1217,7 +1609,15 @@ def enclosing_definition(node, source: bytes) -> str | None:
     return name
 
 
-def extract_module(path: Path, source: bytes, tree, index: ModuleIndex, module: str, library: Path | None = None):
+def extract_module(
+    path: Path,
+    source: bytes,
+    tree,
+    index: ModuleIndex,
+    module: str,
+    library: Path | None = None,
+    context=None,
+):
     emitted: dict[str, dict] = {}
     dynamic: list[dict] = []
     pending: list[dict] = []
@@ -1249,17 +1649,31 @@ def extract_module(path: Path, source: bytes, tree, index: ModuleIndex, module: 
                     handle(node, name, emitter, args)
                 wrapper = WRAPPERS.get(name)
                 if wrapper is not None:
-                    for emit in wrapper.get("emits", []):
-                        handle(
-                            node,
-                            name,
-                            {
-                                "literal": emit["key"],
-                                "suffixes": [""],
-                                "reset": emit.get("unscoped", False),
-                            },
-                            args,
-                        )
+                    # A wrapper's own keys sit under the scope the wrapper
+                    # pushes, not the caller's: `additionalRules "stepsOfSlumber"`
+                    # writes `rules.stepsOfSlumber.title`, not `title`.
+                    prefix = wrapper_prefix(wrapper, args, source)
+                    if prefix is None:
+                        for emit in wrapper.get("emits", []):
+                            record_dynamic(node, f"{name} non-literal scope", name)
+                            break
+                    else:
+                        for emit in wrapper.get("emits", []):
+                            leaf = (
+                                ".".join([*prefix, emit["key"]])
+                                if emit.get("scoped")
+                                else emit["key"]
+                            )
+                            handle(
+                                node,
+                                name,
+                                {
+                                    "literal": leaf,
+                                    "suffixes": [""],
+                                    "reset": emit.get("unscoped", False),
+                                },
+                                args,
+                            )
         elif node.type == "string":
             literal = string_literal(node, source)
             match = DOLLAR_KEY.fullmatch(literal) if literal else None
@@ -1284,16 +1698,151 @@ def extract_module(path: Path, source: bytes, tree, index: ModuleIndex, module: 
         for child in node.children:
             visit(child)
 
+    def emit_through_helper(node, name, emitter, helper, keys, call_site_variables, key_node):
+        """Emits a local helper's keys once per call site, in that site's scope."""
+        inner_stack, inner_variables, inner_dynamic, inner_reset = enclosing_scope(
+            node, source, index, module, context, helper["holder"]
+        )
+        if inner_dynamic is not None:
+            record_dynamic(node, inner_dynamic, name)
+            return
+
+        # When the key is the helper's own parameter, each call site supplies
+        # its own key, so keys and scopes are paired per call rather than
+        # multiplied together.
+        parameter_index = None
+        if key_node is not None and key_node.type == "variable":
+            parameter = text_of(key_node, source)
+            if parameter in helper["parameters"]:
+                parameter_index = helper["parameters"].index(parameter)
+        if parameter_index is None and keys is None:
+            record_dynamic(node, "non-literal key", name)
+            return
+
+        # A helper that anchors its own scope (`showOutcome key = scenarioI18n
+        # $ ...`) does not need its callers for the scope — only, possibly, for
+        # the key.
+        if inner_reset and parameter_index is None:
+            variables = dict(inner_variables)
+            variables.update(call_site_variables)
+            for variable, kind in emitter.get("vars", {}).items():
+                variables[variable] = kind
+            emit(node, name, emitter, inner_stack, keys, variables)
+            return
+
+        calls = _call_sites(helper["root"], helper["name"], source)
+        if not calls:
+            # Defined but never called in its own block: nothing is emitted.
+            return
+
+        for call_node, call_arguments in calls:
+            call_stack, call_variables, call_dynamic, call_reset = enclosing_scope(
+                call_node, source, index, module, context
+            )
+            if call_dynamic is not None:
+                record_dynamic(call_node, call_dynamic, name)
+                return
+
+            if parameter_index is None:
+                call_keys = list(keys)
+            else:
+                if len(call_arguments) <= parameter_index:
+                    continue
+                resolved = scope_alternatives(
+                    call_arguments[parameter_index], source, set(), 0, context, call_node
+                )
+                if resolved is None:
+                    record_dynamic(call_arguments[parameter_index], "non-literal key", name)
+                    return
+                call_keys = resolved
+
+            variables = dict(inner_variables)
+            variables.update(call_variables)
+            variables.update(call_site_variables)
+            for variable, kind in emitter.get("vars", {}).items():
+                variables[variable] = kind
+
+            if inner_reset:
+                # The helper anchors its own scope; the call site only supplied
+                # the key.
+                emit(node, name, emitter, inner_stack, call_keys, variables)
+                continue
+
+            if not call_reset:
+                # The call site's own scope is relative too; hand the whole
+                # thing to the caller-scope pass rather than anchoring it here.
+                pending.append(
+                    {
+                        "module": module,
+                        "function": enclosing_definition(call_node, source),
+                        "file": relative,
+                        "line": node.start_point[0] + 1,
+                        "emitter": name,
+                        "keys": list(call_keys),
+                        "relativeScope": [*call_stack, *inner_stack],
+                        "label": bool(emitter.get("label")),
+                        "suffixes": list(emitter.get("suffixes", [""])),
+                        "variables": variables,
+                    }
+                )
+                continue
+
+            emit(node, name, emitter, [*call_stack, *inner_stack], call_keys, variables)
+
+    def emit(node, name, emitter, stack, keys, variables):
+        combinations = expand_scope(stack)
+        if combinations is None:
+            record_dynamic(node, "too many scope alternatives", name)
+            return
+        for resolved_stack in combinations:
+            for key in keys:
+                for suffix in emitter.get("suffixes", [""]):
+                    leaf = f"{key}{suffix}"
+                    segments = (
+                        label_key(resolved_stack, leaf)
+                        if emitter.get("label")
+                        else [*resolved_stack, leaf]
+                    )
+                    if not all(segments):
+                        record_dynamic(node, "empty scope segment", name)
+                        continue
+                    full = ".".join(segments)
+                    if KEY_PATTERN.fullmatch(full) is None:
+                        record_dynamic(node, "partial key (runtime remainder)", name)
+                        continue
+                    entry = emitted.setdefault(full, {"key": full, "variables": {}, "sites": []})
+                    entry["variables"].update(variables)
+                    entry["sites"].append(
+                        {"file": relative, "line": node.start_point[0] + 1, "emitter": name}
+                    )
+
     def handle(node, name, emitter, args):
+        key_node = None
+        call_site_variables = {}
         if "literal" in emitter:
             keys = [emitter["literal"]]
         else:
             index_of_arg = emitter["arg"]
             if len(args) <= index_of_arg:
                 return
+            key_node = args[index_of_arg]
             key = string_literal(args[index_of_arg], source)
-            keys = [key] if key is not None else scope_alternatives(args[index_of_arg], source, set())
-            if keys is None:
+            helper_here = local_helper(node, source)
+            if (
+                key is None
+                and helper_here is not None
+                and key_node.type == "variable"
+                and text_of(key_node, source) in helper_here["parameters"]
+            ):
+                keys = None
+            else:
+                keys = (
+                    [key]
+                    if key is not None
+                    else scope_alternatives(args[index_of_arg], source, set(), 0, context, node)
+                )
+            call_site_variables = context.take_variables() if context is not None else {}
+            if keys is None and helper_here is None:
                 if not i18n_context(node, source):
                     # `p x` in Arkham.Prelude is function application, not the
                     # flavor-text DSL. Without a single i18n construct anywhere
@@ -1302,7 +1851,14 @@ def extract_module(path: Path, source: bytes, tree, index: ModuleIndex, module: 
                 record_dynamic(args[index_of_arg], "non-literal key", name)
                 return
 
-        stack, variables, dynamic_reason, saw_reset = enclosing_scope(node, source, index, module)
+        helper = local_helper(node, source) if "literal" not in emitter else None
+        if helper is not None:
+            emit_through_helper(node, name, emitter, helper, keys, call_site_variables, key_node)
+            return
+
+        stack, variables, dynamic_reason, saw_reset = enclosing_scope(
+            node, source, index, module, context
+        )
         if dynamic_reason is not None:
             record_dynamic(node, dynamic_reason, name)
             return
@@ -1310,6 +1866,8 @@ def extract_module(path: Path, source: bytes, tree, index: ModuleIndex, module: 
             stack = []
             saw_reset = True
         variables = dict(variables)
+        if "literal" not in emitter:
+            variables.update(call_site_variables)
         for variable, kind in emitter.get("vars", {}).items():
             variables[variable] = kind
 
@@ -1336,55 +1894,38 @@ def extract_module(path: Path, source: bytes, tree, index: ModuleIndex, module: 
             )
             return
 
-        combinations = expand_scope(stack)
-        if combinations is None:
-            record_dynamic(node, "too many scope alternatives", name)
-            return
-        for resolved_stack in combinations:
-          for key in keys:
-            for suffix in emitter.get("suffixes", [""]):
-                leaf = f"{key}{suffix}"
-                segments = (
-                    label_key(resolved_stack, leaf)
-                    if emitter.get("label")
-                    else [*resolved_stack, leaf]
-                )
-                if not all(segments):
-                    record_dynamic(node, "empty scope segment", name)
-                    continue
-                full = ".".join(segments)
-                if KEY_PATTERN.fullmatch(full) is None:
-                    record_dynamic(node, "partial key (runtime remainder)", name)
-                    continue
-                entry = emitted.setdefault(
-                    full, {"key": full, "variables": {}, "sites": []}
-                )
-                entry["variables"].update(variables)
-                entry["sites"].append(
-                    {"file": relative, "line": node.start_point[0] + 1, "emitter": name}
-                )
+        emit(node, name, emitter, stack, keys, variables)
 
     visit(tree.root_node)
     return emitted, dynamic, pending
 
 
-def caller_scopes(parsed, index, wanted: set[str]) -> dict[str, set[tuple[str, ...]]]:
-    """Scopes in force at every call site of the given function names.
+def _is_top_level(index, key: tuple[str, str]) -> bool:
+    record = index.by_module.get(key[0])
+    return record is not None and key[1] in record["definitions"]
+
+
+def caller_scopes(parsed, index, wanted: set[tuple[str, str]]) -> dict[tuple[str, str], set[tuple]]:
+    """Scopes in force at every call site of the given helper.
 
     Scenario and campaign modules routinely factor emission into a helper with
     a `HasI18n` constraint (`setupTheGathering`, ...) whose scope is supplied
-    by its caller. When every call site agrees on one scope, that scope is the
-    helper's scope; when they disagree, the site stays dynamic.
+    by its caller. Which helper a call site means is a scoping question — two
+    modules may define the same helper name — so a call only answers for the
+    module the name resolves to there. When every call site agrees on one
+    scope, that scope is the helper's scope; when they disagree, the site stays
+    dynamic.
     """
-    found: dict[str, set[tuple[str, ...]]] = {name: set() for name in wanted}
+    found: dict[tuple[str, str], set[tuple]] = {key: set() for key in wanted}
     if not wanted:
         return found
+    names = {name for _, name in wanted}
 
     for path, source, tree, module in parsed:
         def visit(node):
             if node.type == "variable":
                 name = text_of(node, source)
-                if name in wanted:
+                if name in names:
                     parent = node.parent
                     is_definition = (
                         parent is not None
@@ -1393,20 +1934,97 @@ def caller_scopes(parsed, index, wanted: set[str]) -> dict[str, set[tuple[str, .
                         and significant_children(parent)[0].id == node.id
                     )
                     if not is_definition:
-                        stack, _, dynamic_reason, saw_reset = enclosing_scope(
-                            node, source, index, module
-                        )
-                        # Only an anchored scope (one that began with a
-                        # reset such as withI18n/campaignI18n) can define a
-                        # helper's scope; a relative one would just defer the
-                        # question to its own caller.
-                        if dynamic_reason is None and saw_reset:
-                            found[name].add(tuple(stack))
+                        origins = index.defining_modules(module, name)
+                        targets = [
+                            key
+                            for key in wanted
+                            if key[1] == name
+                            and (
+                                key[0] in origins
+                                # A `let`/`where` helper is not exported at all:
+                                # only its own module can be talking about it.
+                                or (key[0] == module and not _is_top_level(index, key))
+                            )
+                        ]
+                        if targets:
+                            stack, _, dynamic_reason, saw_reset = enclosing_scope(
+                                node, source, index, module
+                            )
+                            # Only an anchored scope (one that began with a
+                            # reset such as withI18n/campaignI18n) can define a
+                            # helper's scope; a relative one would just defer
+                            # the question to its own caller.
+                            if dynamic_reason is None and saw_reset:
+                                for key in targets:
+                                    found[key].add(tuple(stack))
             for child in node.children:
                 visit(child)
 
         visit(tree.root_node)
     return found
+
+
+def collect_parameter_values(parsed, requests, index: ModuleIndex) -> dict:
+    """Literal arguments every call site in the codebase passes, per request.
+
+    Top-level helpers such as `campaignFlavorText entry = ... scope entry ...`
+    are called from the campaign and scenario modules, not from the module that
+    defines them, so their keys only exist once every caller has been read.
+    Which definition a call site means is a scoping question: two scenarios
+    each define `scenarioFlavorText`, and a request is only answered by callers
+    for whom the name resolves to the module that made the request. A request
+    whose call sites are not all literal stays unresolved rather than being
+    answered from the subset that happened to be readable.
+    """
+    wanted: dict[str, list[tuple]] = {}
+    for request in requests:
+        wanted.setdefault(request[1], []).append(request)
+    collected: dict[tuple, list[str] | None] = {request: [] for request in requests}
+    variables: dict[tuple, dict[str, str]] = {request: {} for request in requests}
+
+    for _, source, tree, module in parsed:
+
+        def visit(node):
+            if node.type == "apply":
+                application = flatten_application(node, source)
+                if application is not None and application[0] in wanted:
+                    name, arguments = application
+                    origins = index.defining_modules(module, name)
+                    for request in wanted[name]:
+                        defining_module, _, position = request
+                        if defining_module not in origins:
+                            continue
+                        if len(origins) > 1:
+                            # The name is ambiguous at this call site; answering
+                            # from it could attribute one helper's keys to
+                            # another.
+                            collected[request] = None
+                            continue
+                        if len(arguments) <= position:
+                            # A partial application; the real call supplies the
+                            # argument further out, and that outer `apply` is
+                            # visited too.
+                            continue
+                        resolved = scope_alternatives(arguments[position], source, set())
+                        if resolved is None:
+                            collected[request] = None
+                        elif collected[request] is not None:
+                            collected[request].extend(resolved)
+                            _, site_variables, dynamic_reason, _ = enclosing_scope(
+                                node, source, index, module
+                            )
+                            if dynamic_reason is None:
+                                variables[request].update(site_variables)
+            for child in node.children:
+                visit(child)
+
+        visit(tree.root_node)
+
+    return {
+        request: {"values": sorted(set(values)), "variables": variables[request]}
+        for request, values in collected.items()
+        if values
+    }
 
 
 def build_artifact(dynamic_report: Path | None = None, library: Path | None = None) -> dict:
@@ -1418,13 +2036,9 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
     index = ModuleIndex()
     parsed = []
 
-    unparsed = []
     for path in files:
         source = path.read_bytes()
-        tree, waiver = parse_module(path, source, library)
-        if waiver is not None:
-            unparsed.append(waiver)
-            continue
+        tree = parse_module(path, source, library)
         module = module_name_of(tree, source)
         if module is None:
             continue
@@ -1434,22 +2048,42 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
                 "imports": imports_of(tree, source),
                 "exports": exports_of(tree, source),
                 "aliases": collect_aliases(tree, source),
+                "definitions": top_level_definitions(tree, source),
             },
         )
         parsed.append((path, source, tree, module))
 
-    emitted: dict[str, dict] = {}
-    dynamic: list[dict] = []
-    pending: list[dict] = []
     digest = hashlib.sha256()
     for path, source, tree, module in parsed:
         digest.update(_relative_path(path, library).encode("utf-8"))
         digest.update(hashlib.sha256(source).digest())
+
+    # Pass one resolves everything that can be answered from a single module
+    # and records which top-level helper parameters need their callers.
+    context = ParameterContext()
+    results: dict[str, tuple] = {}
+    for path, source, tree, module in parsed:
         if module in DSL_MODULES:
             continue
-        module_keys, module_dynamic, module_pending = extract_module(
-            path, source, tree, index, module, library
-        )
+        context.module = module
+        results[module] = extract_module(path, source, tree, index, module, library, context)
+
+    # Pass two answers those requests from every call site in the codebase and
+    # re-reads only the modules that asked.
+    if context.requests:
+        values = collect_parameter_values(parsed, context.requests, index)
+        answered = ParameterContext(values)
+        for path, source, tree, module in parsed:
+            if module not in context.requested_modules or module in DSL_MODULES:
+                continue
+            answered.module = module
+            results[module] = extract_module(path, source, tree, index, module, library, answered)
+
+    emitted: dict[str, dict] = {}
+    dynamic: list[dict] = []
+    pending: list[dict] = []
+    for module in sorted(results):
+        module_keys, module_dynamic, module_pending = results[module]
         dynamic.extend(module_dynamic)
         pending.extend(module_pending)
         for key, entry in module_keys.items():
@@ -1458,10 +2092,10 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
             existing["sites"].extend(entry["sites"])
 
     # Resolve helper functions whose scope comes from their call sites.
-    wanted = {site["function"] for site in pending if site["function"]}
+    wanted = {(site["module"], site["function"]) for site in pending if site["function"]}
     scopes = caller_scopes(parsed, index, wanted)
     for site in pending:
-        candidates = scopes.get(site["function"] or "", set())
+        candidates = scopes.get((site["module"], site["function"]), set())
         if len(candidates) != 1:
             dynamic.append(
                 {
@@ -1562,7 +2196,6 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
             "files": len(parsed),
             "sha256": digest.hexdigest(),
         },
-        "unparsedModules": sorted(unparsed, key=lambda entry: entry["path"]),
         "keys": keys,
         "dynamicSites": {
             "total": len(dynamic),

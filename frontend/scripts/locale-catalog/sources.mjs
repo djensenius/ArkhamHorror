@@ -171,6 +171,12 @@ export function toolchainVersions(frontendDir) {
 // reference, so the last writer of any key is exactly the file whose tag the
 // composed tree carries.
 const OWNER_TAG = '__localeCatalogOwner'
+// The module's own root object carries a second, non-enumerable tag. Spreads
+// copy enumerable properties only, so the tag survives exactly when a file is
+// mounted *by reference* (`{ returnToTheForgottenAge: theForgottenAge }`) —
+// which is how an alias mount is recognized even when every one of its leaves
+// was overridden.
+const MODULE_TAG = '__localeCatalogModule'
 
 function ownershipTagger(root) {
   return {
@@ -210,7 +216,14 @@ function ownershipTagger(root) {
           return value
         }
         const __rawDefault = ${value}
-        export default __tag(__rawDefault)
+        const __tagged = __tag(__rawDefault)
+        if (__tagged !== null && typeof __tagged === 'object') {
+          Object.defineProperty(__tagged, ${JSON.stringify(MODULE_TAG)}, {
+            value: __owner,
+            enumerable: false,
+          })
+        }
+        export default __tagged
       `
     },
   }
@@ -257,7 +270,7 @@ export async function loadOwnershipTrees(frontendDir) {
     for (const locale of bundle.supportedLocales) {
       trees[locale] = (await bundle.loadLocaleMessages(locale)).messages
     }
-    return { trees, ownerKey: OWNER_TAG }
+    return { trees, ownerKey: OWNER_TAG, moduleKey: MODULE_TAG }
   } finally {
     rmSync(outDir, { recursive: true, force: true })
   }

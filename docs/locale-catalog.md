@@ -69,7 +69,7 @@ plural branch, and both declare every variable they reference in `variables`.
 | type | meaning |
 | --- | --- |
 | `text` | literal text (entities already decoded) |
-| `var` | typed placeholder; `source` is `named` (`{name}`) or `list` (`{0}`), `role` is `text` or `icon` |
+| `var` | typed placeholder; `source` is `named` (`{name}`) or `list` (`{0}`), `role` is `text`, `icon`, or `presentation` (only ever reaches a `class`/`style`/`data-*` attribute, so a client with no value for it loses styling, never an instruction) |
 | `linked` | vue-i18n `@:key` / `@:{var}` reference, with optional `upper`/`lower`/`capitalize` modifier |
 | `paragraph`, `group` | block containers with `styles` presentation hints |
 | `heading` | `level` 1–6 with `styles` |
@@ -78,9 +78,11 @@ plural branch, and both declare every variable they reference in `variables`.
 | `break`, `rule` | `<br>`, `<hr>` |
 | `image` | semantic asset reference: `role` (`encounterSet`, `card`, `token`, `chaosToken`, `campaign`, `homebrew`, `extra`, `other`), `assetPath` relative to `/img/arkham/`, `styles`, and optional `alt`, `width`, `align` |
 | `cardRef` | text that names a card (`code`) plus its `children`; the web client shows that card's art on hover |
+| `table` | `head` and `body` rows of cells (`header`, `styles`, `children`); the Dream-Eaters epilogue matrix is an instruction, so it keeps its structure |
 
-A `paragraph` may also carry `data`: an allowlisted `data-*` value (currently
-only `count`) holding either a declared variable or a short literal token. It
+A `paragraph`, `table` or table cell may also carry `data`: an allowlisted
+`data-*` value (`count`, `selected`, `epilogue`) holding either a declared
+variable or a short literal token. It
 is data, never markup — the vote counters in *Congress of the Keys* mirror
 their count into an attribute the stylesheet reads, and a client that ignores
 `data` still renders the instruction.
@@ -133,11 +135,24 @@ Presentation modifiers (`p.green`, `li.validate cond "key"`) keep their key, and
 amount-prompt labels are recorded under `choice.` exactly as the web client
 resolves them.
 
+Resolution is also **scope-aware in both directions**. Which definition a name
+means is decided by Haskell scoping, so two campaigns that each define
+`scenarioFlavorText`, or one module that binds `let interlude k` twice under
+two different `scope`s, never share their call sites. A local helper is filed
+under the scope of the call site that invokes it, not the one it was written
+in. A scope primitive only scopes the arguments it actually takes, so
+`unscoped (countVar 1 $ labeled' "x") do …` resets the label and leaves the
+block alone. And a condition that an enclosing `case`/`if` already decided is
+not fanned out: `scope (if headedWest then "west" else "east")` around
+`if headedWest then li "a" else li "b"` names two keys, not four.
+
 Three fail-closed rules keep the registry honest:
 
-* a module tree-sitter cannot parse is a **hard failure** unless a lexical scan
-  proves it contains no i18n token at all, and then it is recorded — with its
-  digest — in `unparsedModules`, so the waiver dies when the file changes;
+* a module tree-sitter cannot parse is a **hard failure**. `preprocess` and
+  `repair` neutralize the GHC constructs the grammar mis-reads — on code bytes
+  only, never inside a string literal, and without moving an offset — and there
+  is no waiver: skipping a module rests on a lexical guess about what an
+  unreadable file contains, which is the reasoning this registry replaces;
 * every site that cannot be resolved is committed in full in `dynamicSites`
   with a reason from a **closed vocabulary** (`runtime-key`, `runtime-scope`,
   `caller-scope`, `partial-key`, `scope-underflow`); an unclassifiable reason
@@ -153,13 +168,22 @@ build consumes it and **fails** if any emitted key that the default locale
 translates is unsupported — those keys are gameplay content, not decoration.
 Keys the backend emits that no locale translates at all are a content gap in
 the locale sources, not a rendering failure: writing the missing prose is not
-something a build tool can do. Those, the entries whose markup the AST refuses,
+something a build tool can do. Where the gap was an emitter naming a key no
+locale ever had, the emitter was corrected to the canonical entry that does
+exist (`cards.label.protectingTheAnirniq.return`,
+`…teachingsOfTheOrder.removeAFloodTokenFromANon_sanctum_Location`,
+`…yigsMercy.refused`, …) or the entry was moved to the key the backend and the
+Vue client both ask for — both of which fix the web client too, which shows the
+raw key today. Those, the entries whose markup the AST refuses,
 and the keys whose text wants a variable the backend was not seen to send are
 therefore pinned in `frontend/scripts/locale-catalog/known-gaps.json`. The
 build **fails** when a gap appears that is not on that list *and* when a listed
 gap has been fixed, so the set can only move deliberately
-(`--update-known-gaps`, reviewed in the diff). The file is part of the
-generator's provenance, so changing it changes the catalog revision. The same
+(`--update-known-gaps`, reviewed in the diff). Every entry carries a
+justification from a closed list (`missing-from-locale-sources`,
+`web-only-chrome`, `source-syntax`) and the build fails if one does not. The
+file is part of the generator's provenance, so changing it changes the catalog
+revision. The same
 sets are also reported in the manifest under `backend.untranslatedKeys` and
 `backend.variableGaps`.
 
@@ -176,11 +200,12 @@ the reason is one of a closed set: `message-syntax-error`,
 `misplaced-list-item`, `unresolved-link`, `unsupported-link-target`,
 `link-cycle`, `conflicting-variable-role`.
 
-At the revision this was written that is 6 of 38,817 entries (0.015%), and
-**none of them is a key the backend emits**: 5 `unsupported-element`
-(`<a href>` on the About page, one `<table>`) and 1 `message-syntax-error` (a
-`<style>` block whose CSS braces are not valid vue-i18n message syntax). They
-are pinned in `known-gaps.json`. Source typos that used to swallow prose in the
+At the revision this was written that is 5 of 38,817 entries (0.013%), and
+**none of them is a key the backend emits**: 4 `unsupported-element`
+(`<a href>` and a table of contents on the About page — web chrome, never sent
+by the backend) and 1 `message-syntax-error` (a `<style>` block whose CSS
+braces are not valid vue-i18n message syntax, so the Vue client cannot render
+it either). They are pinned, with justifications, in `known-gaps.json`. Source typos that used to swallow prose in the
 web client too — `<p.`/`<li.`/`<pSon`/`<?p`/`<<ul` instead of a closed tag, a
 `<ul>` whose first `<li>` was missing, an unterminated `<li`, a Korean
 paragraph opened with `<끔찍한`, a linked key with a misspelled target, and two
@@ -236,7 +261,10 @@ be lost silently:
 * **Composition collisions.** Ownership is taken from the module graph, not
   from matching values: a Vite plugin boxes every JSON string leaf with the
   file it came from, so each leaf in the composed tree has exactly one owner
-  even when two files declare the same short string. A file whose keys were
+  even when two files declare the same short string. It is checked per
+  *(file, mount, leaf)*: a file mounted twice — an alias such as
+  `returnToTheForgottenAge` — must survive at every mount, and a mount reached
+  by reference is recorded even when every one of its leaves was overridden. A file whose keys were
   overridden by another spread, or whose content is not in the composed tree at
   all (a translated file no module imports), fails the build naming the file
   that won. This is how the Spanish `label` namespace and the Chinese
@@ -246,8 +274,9 @@ Generation then fails — rather than publishing a partial catalog — on an uns
 key/pack/locale identifier, a key longer than the schema's bound, a non-string
 leaf, an undeclared variable, a variable whose declared role contradicts its
 use, a link that cannot be resolved (missing target, unsupported target, or a
-cycle — the whole link graph is resolved with fallbacks before anything is
-published), a required key that is missing or unsupported, a chunk or catalog
+cycle — the whole link graph is resolved with fallbacks, to a fixed point, so a
+conflict or a downgrade deep in the graph propagates to every ancestor that
+renders through it), a required key that is missing or unsupported, a chunk or catalog
 that exceeds its size/count bound, or an output path that escapes the output
 directory.
 
@@ -268,6 +297,7 @@ can be logged or leaked by these routes.
     mise run locale-catalog:backend-keys-test    # the key extractor's own rules, on synthetic modules
     mise run locale-catalog:backend-keys-check   # backend emitted-key registry drift
     mise run locale-catalog:offline-cache-test   # the offline build's cache key covers every input
+    mise run locale-catalog:offline-cache-hit-test  # a restored cache verifies without frontend/public
     mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
     mise run locale-catalog:serving              # real nginx: status, cache, MIME, rollout
 
@@ -302,7 +332,12 @@ cache key, so a stale `_deps/frontend` can never be reused.
 `offline/scripts/test-frontend-cache-hash.sh` runs that production hash
 function against a synthetic tree and mutates each input class in turn,
 including the cases where an input is missing and the hash must fail rather
-than quietly hash nothing. All of it runs in the `Locale catalog` GitHub Actions
+than quietly hash nothing. A cache restores `offline/_deps` and not
+`frontend/public`, so the cache-hit path verifies the restored output against
+its *own* manifest (`verify-dist.mjs --dist-only`) and treats a failure as a
+cache miss to rebuild from, never as a reason to delete a usable output;
+`offline/scripts/test-frontend-cache-hit.sh` drives those branches with
+`frontend/public/locale-catalog` absent. All of it runs in the `Locale catalog` GitHub Actions
 workflow.
 
 ## Ownership

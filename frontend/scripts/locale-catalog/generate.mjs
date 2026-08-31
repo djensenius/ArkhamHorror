@@ -48,6 +48,8 @@ export const SCHEMA_VERSION = '1.0.0'
 export const GENERATOR_NAME = 'arkham-locale-catalog'
 export const GENERATOR_VERSION = '1.0.0'
 export const BASE_PATH = '/locale-catalog'
+// A downgrade can expose another conflict; this bounds the settling loop.
+const MAX_LINK_ROUNDS = 32
 export const DEFAULT_OUTPUT_DIR = join(FRONTEND_DIR, 'public', 'locale-catalog')
 
 const SCHEMA_FILES = [
@@ -193,7 +195,7 @@ function assertSourceIntegrity(frontendDir, sourceFiles, sources, ownership) {
       if (file.path.startsWith(`src/locales/${locale}/`)) return true
       return composesHomebrew && file.path.startsWith('homebrew/')
     })
-    const result = analyzeComposition(composed, contributors, ownership.ownerKey)
+    const result = analyzeComposition(composed, contributors, ownership.ownerKey, ownership.moduleKey)
     for (const finding of result.findings) findings.push({ locale, ...finding })
   }
 
@@ -396,65 +398,103 @@ export function resolveLinkedVariables(normalized, defaultLocale) {
 
   let conflicts = 0
   for (const [locale, entries] of normalized) {
-    const cache = new Map()
+    // A conflict found deep in the graph makes every ancestor that renders
+    // through it unrenderable too, and downgrading an entry can expose a
+    // conflict in its own parents. So this runs to a fixed point rather than
+    // in one pass: keep resolving until a round changes nothing.
+    for (let round = 0; ; round += 1) {
+      if (round > MAX_LINK_ROUNDS) fail(`link resolution did not settle for ${locale}`)
+      const cache = new Map()
 
-    const collect = (key, seen) => {
-      const cached = cache.get(key)
-      if (cached !== undefined) return cached
-      if (seen.has(key)) return new Map()
-      seen.add(key)
+      const collect = (key, seen) => {
+        const cached = cache.get(key)
+        if (cached !== undefined) return cached
+        if (seen.has(key)) return { variables: new Map(), broken: null }
+        seen.add(key)
 
-      const entry = entryOf(locale, key)
-      if (entry === undefined || entry.form === 'unsupported') return new Map()
-
-      const variables = new Map()
-      for (const variable of entry.variables) {
-        variables.set(`${variable.source}:${variable.name}`, variable)
-      }
-      for (const target of staticLinkTargets(entry)) {
-        for (const [id, variable] of collect(target, seen)) {
-          if (!variables.has(id)) variables.set(id, variable)
+        const entry = entryOf(locale, key)
+        if (entry === undefined) return { variables: new Map(), broken: `${key} is missing` }
+        if (entry.form === 'unsupported') {
+          return { variables: new Map(), broken: `${key} is ${entry.reason}` }
         }
-      }
-      cache.set(key, variables)
-      return variables
-    }
 
-    for (const [key, entry] of entries) {
-      if (entry.form === 'unsupported') continue
-      const targets = staticLinkTargets(entry)
-      if (targets.length === 0) continue
-
-      const own = new Map(entry.variables.map((variable) => [`${variable.source}:${variable.name}`, variable]))
-      const linked = new Map()
-      let conflict = null
-      for (const target of targets) {
-        for (const [id, variable] of collect(target, new Set([key]))) {
-          const existing = own.get(id) ?? linked.get(id)
-          if (existing !== undefined && existing.role !== variable.role) {
-            conflict = `${id} is ${existing.role} here and ${variable.role} in ${target}`
-            break
+        const variables = new Map()
+        for (const variable of entry.variables) {
+          variables.set(`${variable.source}:${variable.name}`, variable)
+        }
+        let broken = null
+        for (const target of staticLinkTargets(entry)) {
+          const descendant = collect(target, seen)
+          if (descendant.broken !== null) {
+            broken ??= descendant.broken
+            continue
           }
-          if (!own.has(id)) linked.set(id, variable)
+          for (const [id, variable] of descendant.variables) {
+            const existing = variables.get(id)
+            if (existing !== undefined && existing.role !== variable.role) {
+              broken ??= `${id} is ${existing.role} in ${key} and ${variable.role} in ${target}`
+              continue
+            }
+            if (!variables.has(id)) variables.set(id, variable)
+          }
         }
-        if (conflict !== null) break
+        const answer = { variables, broken }
+        cache.set(key, answer)
+        return answer
       }
 
-      if (conflict !== null) {
-        entries.set(key, {
-          form: 'unsupported',
-          reason: 'conflicting-variable-role',
-          detail: conflict.slice(0, 120),
-        })
-        conflicts += 1
-        continue
-      }
+      let changed = false
+      for (const [key, entry] of entries) {
+        if (entry.form === 'unsupported') continue
+        const targets = staticLinkTargets(entry)
+        if (targets.length === 0) continue
 
-      if (linked.size > 0) {
-        entry.linkedVariables = [...linked.values()].sort(
-          (a, b) => a.source.localeCompare(b.source) || a.name.localeCompare(b.name),
+        const own = new Map(
+          entry.variables.map((variable) => [`${variable.source}:${variable.name}`, variable]),
         )
+        const linked = new Map()
+        let conflict = null
+        for (const target of targets) {
+          const descendant = collect(target, new Set([key]))
+          if (descendant.broken !== null) {
+            conflict ??= descendant.broken
+            continue
+          }
+          for (const [id, variable] of descendant.variables) {
+            const existing = own.get(id) ?? linked.get(id)
+            if (existing !== undefined && existing.role !== variable.role) {
+              conflict ??= `${id} is ${existing.role} here and ${variable.role} in ${target}`
+              continue
+            }
+            if (!own.has(id)) linked.set(id, variable)
+          }
+        }
+
+        if (conflict !== null) {
+          entries.set(key, {
+            form: 'unsupported',
+            reason: 'conflicting-variable-role',
+            detail: conflict.slice(0, 160),
+          })
+          conflicts += 1
+          changed = true
+          continue
+        }
+
+        const resolved =
+          linked.size > 0
+            ? [...linked.values()].sort(
+                (a, b) => a.source.localeCompare(b.source) || a.name.localeCompare(b.name),
+              )
+            : undefined
+        if (canonicalJson(resolved ?? null) !== canonicalJson(entry.linkedVariables ?? null)) {
+          if (resolved === undefined) delete entry.linkedVariables
+          else entry.linkedVariables = resolved
+          changed = true
+        }
       }
+
+      if (!changed) break
     }
   }
   return conflicts
@@ -848,14 +888,42 @@ export function diffCatalog(files, outputDir) {
  * fails the build; a hole that has been fixed also fails, so the list can only
  * be shrunk deliberately.
  */
+const JUSTIFICATIONS = Object.freeze({
+  'missing-from-locale-sources':
+    'the backend emits this key but no locale file defines it, so there is no text to publish; ' +
+    'the Vue client renders the raw key today for the same reason. Writing the missing prose is ' +
+    'a content change, not a build change.',
+  'web-only-chrome':
+    'the entry belongs to the web UI rather than gameplay (the About page), is never emitted by ' +
+    'the backend, and carries markup — links, tables of contents — that the render AST does not ' +
+    'model.',
+  'source-syntax':
+    'the source string is not valid vue-i18n message syntax, so neither the catalog nor the Vue ' +
+    'client can render it; it is not backend-emitted.',
+})
+
 function enforceKnownGaps(actual, update) {
   const path = resolve(REPO_ROOT, 'frontend/scripts/locale-catalog/known-gaps.json')
+  const previous = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {}
   const rendered = {
     $comment:
-      'Known, reviewed holes in the locale catalog. Regenerate deliberately with ' +
+      'Known, reviewed holes in the locale catalog. Every entry needs a justification from ' +
+      'JUSTIFICATIONS. Regenerate deliberately with ' +
       '`node scripts/locale-catalog/generate.mjs --update-known-gaps`; every change must be reviewed.',
-    unsupportedEntries: actual.unsupportedEntries,
-    untranslatedKeys: actual.untranslatedKeys,
+    justifications: JUSTIFICATIONS,
+    unsupportedEntries: actual.unsupportedEntries.map((entry) => ({
+      ...entry,
+      justification: previous.unsupportedEntries?.find(
+        (candidate) => candidate.key === entry.key && candidate.locale === entry.locale,
+      )?.justification,
+    })),
+    untranslatedKeys: actual.untranslatedKeys.map((key) => ({
+      key,
+      justification:
+        (Array.isArray(previous.untranslatedKeys)
+          ? previous.untranslatedKeys.find((candidate) => candidate?.key === key)?.justification
+          : undefined) ?? 'missing-from-locale-sources',
+    })),
     variableGaps: actual.variableGaps,
   }
   if (update) {
@@ -864,7 +932,20 @@ function enforceKnownGaps(actual, update) {
   }
   if (!existsSync(path)) fail(`${path} is missing; the catalog will not publish unreviewed gaps`)
 
-  const expected = JSON.parse(readFileSync(path, 'utf8'))
+  const expected = previous
+  const unjustified = [
+    ...(expected.unsupportedEntries ?? []),
+    ...(expected.untranslatedKeys ?? []),
+  ].filter((entry) => !Object.hasOwn(JUSTIFICATIONS, entry?.justification))
+  if (unjustified.length > 0) {
+    fail(
+      `known-gaps.json carries ${unjustified.length} entry/entries without a justification from ` +
+        `${Object.keys(JUSTIFICATIONS).join(', ')}: ${unjustified
+          .map((entry) => entry.key)
+          .slice(0, 10)
+          .join(', ')}`,
+    )
+  }
   const differences = []
   const compare = (label, actualList, expectedList) => {
     const actualSet = new Set(actualList.map((entry) => canonicalJson(entry)))

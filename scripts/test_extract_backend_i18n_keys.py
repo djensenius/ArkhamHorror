@@ -284,6 +284,180 @@ def test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure() -> No
     FAILURES.append("an unparsable module containing i18n tokens was accepted")
 
 
+def test_same_named_local_scopes_do_not_share_their_call_sites() -> None:
+    # TheDunwichLegacy binds `interlude` twice, under two different scopes.
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Campaign.hs": """module Test.Campaign where
+
+import Test.Helpers
+
+run = campaignI18n $ do
+  scope "one" $ do
+    let interlude k = story $ p k
+    interlude "alpha"
+  scope "two" $ do
+    let interlude k = story $ p k
+    interlude "beta"
+""",
+        }
+    )
+    check(
+        keys == {"standalone.testCampaign.one.alpha", "standalone.testCampaign.two.beta"},
+        f"same-named local scopes were conflated: {sorted(keys)}",
+    )
+
+
+def test_a_local_helper_is_scoped_by_its_call_site() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "codex" $ do
+  let entry k = setTitle "title" >> p k
+  scope "firstPerson" $ flavor $ entry "one"
+  scope "secondPerson" $ flavor $ entry "two"
+""",
+        }
+    )
+    for expected in (
+        "standalone.testCampaign.codex.firstPerson.one",
+        "standalone.testCampaign.codex.secondPerson.two",
+    ):
+        check(expected in keys, f"call-site scope missing {expected}: {sorted(keys)}")
+    check(
+        "standalone.testCampaign.codex.one" not in keys,
+        "a local helper was filed under its definition's scope",
+    )
+
+
+def test_a_top_level_helper_is_resolved_across_modules_but_not_across_definitions() -> None:
+    modules = {
+        "Test/Helpers.hs": HELPERS,
+        "Test/First/Helpers.hs": """module Test.First.Helpers where
+
+import Test.Helpers
+
+scenarioFlavorText entry = campaignI18n $ scope "first" $ scope entry $ p "body"
+""",
+        "Test/Second/Helpers.hs": """module Test.Second.Helpers where
+
+import Test.Helpers
+
+scenarioFlavorText entry = campaignI18n $ scope "second" $ scope entry $ p "body"
+""",
+        "Test/FirstScenario.hs": """module Test.FirstScenario where
+
+import Test.First.Helpers
+
+run = flavor $ scenarioFlavorText "introOne"
+""",
+        "Test/SecondScenario.hs": """module Test.SecondScenario where
+
+import Test.Second.Helpers
+
+run = flavor $ scenarioFlavorText "introTwo"
+""",
+    }
+    keys = keys_of(modules)
+    check(
+        "standalone.testCampaign.first.introOne.body" in keys
+        and "standalone.testCampaign.second.introTwo.body" in keys,
+        f"cross-module helper arguments not resolved: {sorted(keys)}",
+    )
+    check(
+        "standalone.testCampaign.first.introTwo.body" not in keys
+        and "standalone.testCampaign.second.introOne.body" not in keys,
+        "two helpers with the same name shared their call sites",
+    )
+
+
+def test_a_condition_that_already_chose_a_branch_is_not_fanned_out() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run headedWest = campaignI18n $ do
+  scope (if headedWest then "west" else "east") $ story $ do
+    if headedWest then li "westOnly" else li "eastOnly"
+""",
+        }
+    )
+    check(
+        keys == {"standalone.testCampaign.west.westOnly", "standalone.testCampaign.east.eastOnly"},
+        f"a correlated condition was fanned out: {sorted(keys)}",
+    )
+
+
+def test_a_scope_primitive_does_not_scope_arguments_it_never_takes() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run iid = campaignI18n $ scope "resolutions" $ chooseOneM iid do
+  unscoped (countVar 1 $ labeled' "rootLabel") do
+    gainXp iid attrs (ikey "scopedKey") 2
+""",
+        }
+    )
+    check(
+        "standalone.testCampaign.resolutions.scopedKey" in keys,
+        f"`unscoped` leaked into an argument it does not take: {sorted(keys)}",
+    )
+    check(
+        "label.rootLabel" in keys,
+        f"`unscoped` did not reset the scope of the label it wraps: {sorted(keys)}",
+    )
+
+
+def test_a_wrapper_emits_under_the_scope_it_pushes() -> None:
+    keys = keys_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ scope "someScenario" $ additionalRules "openSky"
+""",
+        }
+    )
+    for expected in (
+        "standalone.testCampaign.someScenario.rules.openSky.title",
+        "standalone.testCampaign.someScenario.rules.openSky.body",
+    ):
+        check(expected in keys, f"wrapper key missing {expected}: {sorted(keys)}")
+
+
+def test_a_presentation_emitter_keeps_a_module_from_being_waived() -> None:
+    # The waiver is gone entirely, but a module that only emits through a
+    # presentation modifier must still be a hard failure when it cannot parse.
+    try:
+        registry_of(
+            {
+                "Test/Broken.hs": (
+                    "module Test.Broken where\n\n"
+                    "run = case x of\n"
+                    "  ) -> p.green \"broken.key\"\n"
+                )
+            }
+        )
+    except SystemExit as error:
+        check("does not parse" in str(error), f"unexpected failure message: {error}")
+        return
+    FAILURES.append("an unparsable module emitting through p.green was accepted")
+
+
 def test_committed_registry_properties() -> None:
     artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
     keys = {entry["key"] for entry in artifact["keys"]}
@@ -303,11 +477,10 @@ def test_committed_registry_properties() -> None:
     check("actions" not in keys, "the $actions false positive is back")
     check("choice.actions" in keys, "the amount label lost its choice. scope")
 
-    for waiver in artifact["unparsedModules"]:
-        check(
-            waiver["emitterTokens"] == [],
-            f"{waiver['path']} was waived despite carrying i18n tokens",
-        )
+    check(
+        "unparsedModules" not in artifact,
+        "the registry still carries a parse waiver; every module must parse",
+    )
 
     classes = set(artifact["dynamicSites"]["byClass"])
     check(

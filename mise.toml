@@ -49,6 +49,10 @@ run = "uv run scripts/test_extract_backend_i18n_keys.py"
 description = "Check the offline build's cache key really covers every locale-catalog provenance input"
 run = "bash offline/scripts/test-frontend-cache-hash.sh"
 
+[tasks."locale-catalog:offline-cache-hit-test"]
+description = "Check the offline build's cache-hit branches verify a restored dist without frontend/public"
+run = "bash offline/scripts/test-frontend-cache-hit.sh"
+
 [tasks."locale-catalog:serving"]
 description = "Boot prod.nginxconf and the offline package's nginx config and verify catalog status, cache, MIME and rolling-deploy behavior"
 run = "uv run scripts/validate-catalog-serving.py"

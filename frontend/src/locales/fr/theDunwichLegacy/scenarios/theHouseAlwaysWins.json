@@ -59,13 +59,16 @@
       "doNotSpend": "Ne pas dépenser"
     },
     "cheated": "Souvenez-vous que vous avez « triché »",
-    "raiseTheStakes": {
-      "place": "Mettre en jeu Augmenter la Mise dans votre zone de menace."
-    }
+    "raiseTheStakes": {}
   },
   "tooltips": {
     "laBellaLuna": {
       "resign": "C'est un fiasco."
+    }
+  },
+  "raiseTheStakes": {
+    "label": {
+      "place": "Mettre en jeu Augmenter la Mise dans votre zone de menace."
     }
   }
 }

@@ -95,10 +95,11 @@
           ]
         },
         "role": {
-          "description": "text: substituted verbatim. icon: production replaceIcons() renders this name as an icon glyph.",
+          "description": "text: substituted verbatim. icon: production replaceIcons() renders this name as an icon glyph. presentation: the name only reaches a class/style/data-* attribute, so a client that has no value for it loses styling, never an instruction.",
           "enum": [
             "text",
-            "icon"
+            "icon",
+            "presentation"
           ]
         }
       }
@@ -593,6 +594,47 @@
               "$ref": "#/$defs/nodes"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "styles",
+            "head",
+            "body"
+          ],
+          "properties": {
+            "type": {
+              "const": "table"
+            },
+            "styles": {
+              "$ref": "#/$defs/styles"
+            },
+            "style": {
+              "$ref": "#/$defs/styleDeclarations"
+            },
+            "styleVars": {
+              "$ref": "#/$defs/styleVariables"
+            },
+            "data": {
+              "$ref": "#/$defs/dataValues"
+            },
+            "head": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/tableRow"
+              }
+            },
+            "body": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/tableRow"
+              }
+            }
+          }
         }
       ]
     },
@@ -708,7 +750,9 @@
         "properties": {
           "name": {
             "enum": [
-              "count"
+              "count",
+              "selected",
+              "epilogue"
             ]
           },
           "text": {
@@ -748,6 +792,61 @@
             ]
           }
         ]
+      }
+    },
+    "tableRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "styles",
+        "cells"
+      ],
+      "properties": {
+        "styles": {
+          "$ref": "#/$defs/styles"
+        },
+        "style": {
+          "$ref": "#/$defs/styleDeclarations"
+        },
+        "styleVars": {
+          "$ref": "#/$defs/styleVariables"
+        },
+        "data": {
+          "$ref": "#/$defs/dataValues"
+        },
+        "cells": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "header",
+              "styles",
+              "children"
+            ],
+            "properties": {
+              "header": {
+                "type": "boolean"
+              },
+              "styles": {
+                "$ref": "#/$defs/styles"
+              },
+              "style": {
+                "$ref": "#/$defs/styleDeclarations"
+              },
+              "styleVars": {
+                "$ref": "#/$defs/styleVariables"
+              },
+              "data": {
+                "$ref": "#/$defs/dataValues"
+              },
+              "children": {
+                "$ref": "#/$defs/nodes"
+              }
+            }
+          }
+        }
       }
     }
   }

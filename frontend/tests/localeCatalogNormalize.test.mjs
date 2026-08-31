@@ -119,9 +119,43 @@ test('a class built from a placeholder becomes a declared style variable', () =>
     styleVars: [{ name: 'restfulNight3Status', source: 'named' }],
     children: [{ type: 'text', value: 'x' }],
   })
+  // Only ever reached through `class`, so a client that has no value for it
+  // loses styling, never an instruction.
   assert.deepEqual(result.variables, [
-    { name: 'restfulNight3Status', source: 'named', role: 'text' },
+    { name: 'restfulNight3Status', source: 'named', role: 'presentation' },
   ])
+})
+
+test('a table becomes rows and cells, never markup', () => {
+  const result = normalize(
+    "<table class='matrix' data-selected='{count}'><thead><tr><th>H</th></tr></thead>" +
+      "<tbody><tr><td data-epilogue='1'>One</td></tr></tbody></table>",
+  )
+  const table = result.nodes[0]
+  assert.equal(table.type, 'table')
+  assert.deepEqual(table.styles, ['matrix'])
+  assert.deepEqual(table.data, [{ name: 'selected', variable: { name: 'count', source: 'named' } }])
+  assert.equal(table.head.length, 1)
+  assert.equal(table.head[0].cells[0].header, true)
+  assert.deepEqual(table.head[0].cells[0].children, [{ type: 'text', value: 'H' }])
+  assert.equal(table.body[0].cells[0].header, false)
+  assert.deepEqual(table.body[0].cells[0].data, [{ name: 'epilogue', text: '1' }])
+  assert.deepEqual(result.variables, [{ name: 'count', source: 'named', role: 'presentation' }])
+})
+
+test('table content the model does not describe is refused, not flattened', () => {
+  // parse5 foster-parents stray elements out of a table exactly as a browser
+  // does, so those cases are covered by the element rules; what reaches the
+  // table walker is a `td` outside a table and attributes it cannot carry.
+  for (const [html, reason] of [
+    ['<td>orphan</td>', 'unsupported-element'],
+    ["<table><tr><td onclick='x()'>x</td></tr></table>", 'unsupported-attribute'],
+    ["<table><tr><td style='background:red'>x</td></tr></table>", 'invalid-style-declaration'],
+  ]) {
+    const result = normalize(html)
+    assert.equal(result.form, 'unsupported', `${html} should be unsupported`)
+    assert.equal(result.reason, reason, `${html} reason`)
+  }
 })
 
 test('card references keep the card code, never an image', () => {
@@ -302,7 +336,6 @@ test('unsupported and unsafe input is refused, never partially rendered', () => 
     ["<img src='{setImgPath}/../../../../etc/passwd.png' />", 'image-path-escape'],
     ["<img src='{name}.png' />", 'placeholder-in-attribute'],
     ['{setImgPath}/loose.png', 'asset-variable-outside-image'],
-    ['<table><tr><td>x</td></tr></table>', 'unsupported-element'],
     ['<p a"b=c>x</p>', 'html-parse-error'],
     ['@.bogus:other.key', 'unsupported-message-syntax'],
     ['\uE0000\uE001', 'message-syntax-error'],

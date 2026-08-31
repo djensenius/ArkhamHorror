@@ -101,6 +101,17 @@ verify_locale_catalog() {
     fi
 }
 
+# Verifies a build output restored from a cache. It is checked against its own
+# manifest only: `frontend/public/locale-catalog` is generated during a build
+# and a cache restores just `offline/_deps`, so comparing against it would fail
+# on every fresh checkout. A failure here means the cache is unusable, not that
+# the tree is broken, so it is reported as a cache miss and the caller rebuilds.
+verify_cached_locale_catalog() {
+    local output="$1"
+    substep "Verifying the cached locale catalog in ${output}"
+    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --dist-only)
+}
+
 # ── Build frontend ────────────────────────────────────────────────────────────
 
 build_frontend() {
@@ -116,11 +127,15 @@ build_frontend() {
         local stored_hash
         stored_hash="$(cat "$FRONTEND_BUILT_MARKER" 2>/dev/null || echo '')"
         if [ "$current_hash" = "$stored_hash" ] && [ -d "$FRONTEND_OUTPUT" ] && [ -f "${FRONTEND_OUTPUT}/index.html" ]; then
-            info "Frontend source unchanged (hash matches), skipping build"
-            verify_locale_catalog "$FRONTEND_OUTPUT"
-            return 0
+            if verify_cached_locale_catalog "$FRONTEND_OUTPUT"; then
+                info "Frontend source unchanged (hash matches), skipping build"
+                return 0
+            fi
+            info "Cached frontend output has no usable locale catalog; rebuilding"
+            rm -rf "$FRONTEND_OUTPUT" "$FRONTEND_BUILT_MARKER"
+        else
+            info "Frontend source changed; rebuild required"
         fi
-        info "Frontend source changed; rebuild required"
     fi
 
     # CI cache hit: if artifacts exist but the stamp does not, we still need to validate the source hash
@@ -128,13 +143,16 @@ build_frontend() {
     local hash_record="${FRONTEND_OUTPUT}/source_hash"
     if [ -d "$FRONTEND_OUTPUT" ] && [ -f "${FRONTEND_OUTPUT}/index.html" ]; then
         if [ -f "$hash_record" ] && [ "$(cat "$hash_record" 2>/dev/null)" = "$current_hash" ]; then
-            info "Frontend artifacts already exist and the source is unchanged (CI cache hit), skipping build"
-            verify_locale_catalog "$FRONTEND_OUTPUT"
-            echo "$current_hash" > "$FRONTEND_BUILT_MARKER"
-            return 0
+            if verify_cached_locale_catalog "$FRONTEND_OUTPUT"; then
+                info "Frontend artifacts already exist and the source is unchanged (CI cache hit), skipping build"
+                echo "$current_hash" > "$FRONTEND_BUILT_MARKER"
+                return 0
+            fi
+            info "Cached frontend output has no usable locale catalog; rebuilding"
+        else
+            # Artifacts exist but source changed, so rebuild is required
+            info "Frontend artifacts are stale (source hash mismatch); rebuilding"
         fi
-        # Artifacts exist but source changed, so rebuild is required
-        info "Frontend artifacts are stale (source hash mismatch); rebuilding"
         rm -rf "$FRONTEND_OUTPUT"
     fi
 

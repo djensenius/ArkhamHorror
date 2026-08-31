@@ -44,6 +44,11 @@ test('duplicates are found at every depth, in arrays, and for equal values', () 
 // Vite plugin produces it, so these exercise the real attribution rules rather
 // than a value-matching approximation.
 const OWNER = '__localeCatalogOwner'
+const MODULE = '__localeCatalogModule'
+const mounted = (tree, file) => {
+  Object.defineProperty(tree, MODULE, { value: file, enumerable: false })
+  return tree
+}
 const owned = (text, file) => {
   const boxed = new String(text)
   boxed[OWNER] = file
@@ -63,7 +68,7 @@ test('a partially overridden contributor is reported with the file that won', ()
   assert.equal(findings.length, 1)
   assert.equal(findings[0].file, first)
   assert.equal(findings[0].kind, 'content-lost')
-  assert.deepEqual(findings[0].examples, [`outro -> ${second}`, 'extra'])
+  assert.deepEqual(findings[0].examples, [`scenario.outro -> ${second}`, 'scenario.extra'])
   assert.equal(findings[0].count, 2)
 })
 
@@ -136,6 +141,26 @@ test('a file mounted under two aliases is attributed to both', () => {
   }
   const files = [{ path: shared, tree: { intro: 'shared intro' } }]
   assert.deepEqual(analyzeComposition(composed, files, OWNER).findings, [])
+})
+
+test('a file mounted twice must survive at every mount', () => {
+  // `returnToTheForgottenAge` mounts the same file under two names; content
+  // overridden at one of them is lost there even though it survives elsewhere.
+  const shared = 'src/locales/en/shared.json'
+  const other = 'src/locales/en/other.json'
+  const composed = {
+    first: mounted({ intro: owned('shared intro', shared) }, shared),
+    second: mounted({ intro: owned('other intro', other) }, shared),
+  }
+  const files = [
+    { path: shared, tree: { intro: 'shared intro' } },
+    { path: other, tree: { intro: 'other intro' } },
+  ]
+
+  const { findings } = analyzeComposition(composed, files, OWNER, MODULE)
+  const lost = findings.find((finding) => finding.file === shared)
+  assert.ok(lost, 'an overridden alias mount was not reported')
+  assert.deepEqual(lost.examples, [`second.intro -> ${other}`])
 })
 
 test('an intact composition reports nothing', () => {

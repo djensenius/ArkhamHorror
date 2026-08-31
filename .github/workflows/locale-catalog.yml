@@ -53,6 +53,8 @@ jobs:
       - name: Verify the catalog ships in the build output
         run: node scripts/locale-catalog/verify-dist.mjs
         working-directory: frontend
+      # The offline cache restores a build output without `frontend/public`.
+      - run: mise run locale-catalog:offline-cache-hit-test
       # The offline packager builds into its own output directory; a second,
       # incremental build there must precompress that directory rather than the
       # default one.

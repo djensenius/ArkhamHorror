@@ -109,10 +109,21 @@ const STYLE_ATTRIBUTES = new Set(['class', 'style'])
 // reads. The name is meaningful to a client, so it is carried as typed data
 // rather than dropped — but only the names on this list, and only holding a
 // declared variable or a short literal token.
-const DATA_ATTRIBUTES = new Map([['data-count', 'count']])
+const DATA_ATTRIBUTES = new Map([
+  ['data-count', 'count'],
+  ['data-selected', 'selected'],
+  ['data-epilogue', 'epilogue'],
+])
 const PARAGRAPH_ATTRIBUTES = new Set(['class', 'style', ...DATA_ATTRIBUTES.keys()])
 const DATA_TEXT_PATTERN = /^[A-Za-z0-9_.:-]{1,64}$/
 const GROUP_ATTRIBUTES = new Set(['class', 'style', 'data-image-id'])
+// A campaign matrix (`theDreamEaters.flavorText.epilogueMatrix`) is a real
+// instruction: it tells players which epilogue to read. Tables are therefore
+// modelled structurally — rows and cells — rather than refused or flattened.
+const TABLE_ELEMENTS = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td'])
+const TABLE_ATTRIBUTES = new Set(['class', 'style', ...DATA_ATTRIBUTES.keys()])
+const MAX_TABLE_ROWS = 64
+const MAX_TABLE_CELLS = 32
 const IMAGE_ATTRIBUTES = new Set(['class', 'style', 'src', 'alt', 'width', 'align'])
 const NO_ATTRIBUTES = new Set()
 
@@ -121,6 +132,7 @@ function allowedAttributesFor(tagName) {
   if (tagName === 'br' || tagName === 'hr' || EMPHASIS_ELEMENTS.has(tagName)) return NO_ATTRIBUTES
   if (GROUP_ELEMENTS.has(tagName)) return GROUP_ATTRIBUTES
   if (tagName === 'p') return PARAGRAPH_ATTRIBUTES
+  if (TABLE_ELEMENTS.has(tagName)) return TABLE_ATTRIBUTES
   if (
     tagName === 'ul' ||
     tagName === 'ol' ||
@@ -394,6 +406,7 @@ export const UNSUPPORTED_REASONS = Object.freeze([
   'image-path-escape',
   'invalid-style-token',
   'misplaced-list-item',
+  'misplaced-table-content',
   'unresolved-link',
   'conflicting-variable-role',
   'invalid-style-declaration',
@@ -733,6 +746,90 @@ function convertChildren(parent, placeholders) {
   return out
 }
 
+/**
+ * A table as rows of cells. `thead` rows are kept separate from `tbody` rows so
+ * a client knows which are headers without inspecting cell types, and every
+ * cell records whether it was a `th`.
+ */
+function tableNode(element, placeholders, styles, styleVariables, attributes) {
+  const head = []
+  const body = []
+
+  const readRow = (row) => {
+    const rowAttributes = attributeMap(row, TABLE_ATTRIBUTES)
+    const rowStyles = styleTokens(rowAttributes, 'tr', placeholders)
+    const cells = []
+    for (const cell of row.childNodes ?? []) {
+      if (cell.nodeName === '#text') {
+        if (cell.value.trim() === '') continue
+        throw unsupported('misplaced-table-content', 'text directly inside a table row')
+      }
+      if (cell.nodeName === '#comment') continue
+      if (cell.tagName !== 'th' && cell.tagName !== 'td') {
+        throw unsupported('unsupported-element', `${cell.tagName} inside a table row`)
+      }
+      const cellAttributes = attributeMap(cell, TABLE_ATTRIBUTES)
+      const cellStyles = styleTokens(cellAttributes, cell.tagName, placeholders)
+      cells.push(
+        withPresentation(
+          {
+            header: cell.tagName === 'th',
+            styles: cellStyles.tokens,
+            children: convertChildren(cell, placeholders),
+          },
+          cellAttributes,
+          cell.tagName,
+          cellStyles.variables,
+          placeholders,
+        ),
+      )
+    }
+    if (cells.length > MAX_TABLE_CELLS) {
+      throw unsupported('unsupported-element', `table row with ${cells.length} cells`)
+    }
+    return withPresentation(
+      { styles: rowStyles.tokens, cells },
+      rowAttributes,
+      'tr',
+      rowStyles.variables,
+      placeholders,
+    )
+  }
+
+  const readSection = (section, into) => {
+    for (const row of section.childNodes ?? []) {
+      if (row.nodeName === '#text') {
+        if (row.value.trim() === '') continue
+        throw unsupported('misplaced-table-content', 'text directly inside a table')
+      }
+      if (row.nodeName === '#comment') continue
+      if (row.tagName !== 'tr') {
+        throw unsupported('unsupported-element', `${row.tagName} inside a table`)
+      }
+      into.push(readRow(row))
+    }
+  }
+
+  for (const child of element.childNodes ?? []) {
+    if (child.nodeName === '#text') {
+      if (child.value.trim() === '') continue
+      throw unsupported('misplaced-table-content', 'text directly inside a table')
+    }
+    if (child.nodeName === '#comment') continue
+    if (child.tagName === 'thead') readSection(child, head)
+    else if (child.tagName === 'tbody' || child.tagName === 'tfoot') readSection(child, body)
+    else if (child.tagName === 'tr') body.push(readRow(child))
+    else throw unsupported('unsupported-element', `${child.tagName} inside a table`)
+  }
+
+  if (head.length + body.length > MAX_TABLE_ROWS) {
+    throw unsupported('unsupported-element', `table with ${head.length + body.length} rows`)
+  }
+
+  const node = { type: 'table', styles, head, body }
+  return withPresentation(node, attributes, 'table', styleVariables, placeholders)
+}
+
 function listNode(element, placeholders, ordered, styles, styleVariables, attributes) {
   const items = []
   for (const child of element.childNodes ?? []) {
@@ -841,6 +938,16 @@ function convertNode(node, placeholders, out) {
     out.push(listNode(node, placeholders, tagName === 'ol', tokens, variables, attributes))
     return
   }
+  if (tagName === 'table') {
+    const { tokens, variables } = styleTokens(attributes, tagName, placeholders)
+    out.push(tableNode(node, placeholders, tokens, variables, attributes))
+    return
+  }
+  if (tagName === 'tr' || tagName === 'th' || tagName === 'td') {
+    // Reachable only if the source puts one outside a table; browsers drop it,
+    // and guessing at a table around it would invent structure.
+    throw unsupported('unsupported-element', `${tagName} outside a table`)
+  }
   if (EMPHASIS_ELEMENTS.has(tagName)) {
     out.push({
       type: 'emphasis',
@@ -895,23 +1002,42 @@ function sortedVariables(variables) {
  * message key) rather than letting the last occurrence win and publishing a
  * declaration that contradicts the nodes.
  */
+/**
+ * `presentation` is weaker than the other roles, not in conflict with them: the
+ * same name may style one node and be read aloud in another, and a name that
+ * only ever reaches a `class`/`style`/`data-*` attribute changes appearance,
+ * never an instruction. Keeping that distinction is what lets the build demand
+ * every *instruction* variable from the backend without also demanding the
+ * inert ones (`data-selected='{count}'` on the Dream-Eaters epilogue matrix).
+ */
 function declareVariable(into, declaration) {
   const id = `${declaration.source}:${declaration.name}`
   const existing = into.get(id)
-  if (existing !== undefined && existing.role !== declaration.role) {
-    throw unsupported('conflicting-variable-role', `${id} is both ${existing.role} and ${declaration.role}`)
+  if (existing === undefined) {
+    into.set(id, declaration)
+    return
   }
-  into.set(id, declaration)
+  if (existing.role === declaration.role) return
+  if (declaration.role === 'presentation') return
+  if (existing.role === 'presentation') {
+    into.set(id, declaration)
+    return
+  }
+  throw unsupported('conflicting-variable-role', `${id} is both ${existing.role} and ${declaration.role}`)
 }
 
 function collectVariables(nodes, into) {
   for (const node of nodes) {
     for (const variable of node.styleVars ?? []) {
-      declareVariable(into, { name: variable.name, source: variable.source, role: 'text' })
+      declareVariable(into, { name: variable.name, source: variable.source, role: 'presentation' })
     }
     for (const value of node.data ?? []) {
       if (value.variable !== undefined) {
-        declareVariable(into, { name: value.variable.name, source: value.variable.source, role: 'text' })
+        declareVariable(into, {
+          name: value.variable.name,
+          source: value.variable.source,
+          role: 'presentation',
+        })
       }
     }
     if (node.type === 'var') {
@@ -927,9 +1053,34 @@ function collectVariables(nodes, into) {
     } else if (node.type === 'list') {
       for (const item of node.items) {
         for (const variable of item.styleVars ?? []) {
-          declareVariable(into, { name: variable.name, source: variable.source, role: 'text' })
+          declareVariable(into, { name: variable.name, source: variable.source, role: 'presentation' })
         }
         collectVariables(item.children, into)
+      }
+    } else if (node.type === 'table') {
+      for (const row of [...node.head, ...node.body]) {
+        for (const variable of row.styleVars ?? []) {
+          declareVariable(into, { name: variable.name, source: variable.source, role: 'presentation' })
+        }
+        for (const cell of row.cells) {
+          for (const variable of cell.styleVars ?? []) {
+            declareVariable(into, {
+              name: variable.name,
+              source: variable.source,
+              role: 'presentation',
+            })
+          }
+          for (const value of cell.data ?? []) {
+            if (value.variable !== undefined) {
+              declareVariable(into, {
+                name: value.variable.name,
+                source: value.variable.source,
+                role: 'presentation',
+              })
+            }
+          }
+          collectVariables(cell.children, into)
+        }
       }
     } else if (Array.isArray(node.children)) {
       collectVariables(node.children, into)
@@ -1007,31 +1158,36 @@ export function staticLinkTargets(entry) {
 /** Every variable referenced by a normalized entry's nodes, for declaration checks. */
 export function referencedVariables(entry) {
   const referenced = new Map()
+  // A name may be referenced both for presentation and as text; the text
+  // reference is the stronger claim and the one a client must satisfy.
+  const reference = (variable, role) => {
+    const id = `${variable.source}:${variable.name}`
+    const existing = referenced.get(id)
+    if (existing !== undefined && existing.role !== 'presentation') return
+    referenced.set(id, { name: variable.name, source: variable.source, role })
+  }
   const visit = (node) => {
-    for (const variable of node.styleVars ?? []) {
-      referenced.set(`${variable.source}:${variable.name}`, {
-        name: variable.name,
-        source: variable.source,
-        role: 'text',
-      })
+    for (const variable of node.styleVars ?? []) reference(variable, 'presentation')
+    for (const value of node.data ?? []) {
+      if (value.variable !== undefined) reference(value.variable, 'presentation')
     }
     for (const item of node.items ?? []) {
-      for (const variable of item.styleVars ?? []) {
-        referenced.set(`${variable.source}:${variable.name}`, {
-          name: variable.name,
-          source: variable.source,
-          role: 'text',
-        })
+      for (const variable of item.styleVars ?? []) reference(variable, 'presentation')
+    }
+    for (const row of [...(node.head ?? []), ...(node.body ?? [])]) {
+      for (const variable of row.styleVars ?? []) reference(variable, 'presentation')
+      for (const cell of row.cells ?? []) {
+        for (const variable of cell.styleVars ?? []) reference(variable, 'presentation')
+        for (const value of cell.data ?? []) {
+          if (value.variable !== undefined) reference(value.variable, 'presentation')
+        }
+        walkNodes(cell.children, visit)
       }
     }
     if (node.type === 'var') {
-      referenced.set(`${node.source}:${node.name}`, { name: node.name, source: node.source, role: node.role })
+      reference(node, node.role)
     } else if (node.type === 'linked' && node.target.kind === 'variable') {
-      referenced.set(`${node.target.source}:${node.target.name}`, {
-        name: node.target.name,
-        source: node.target.source,
-        role: 'text',
-      })
+      reference(node.target, 'text')
     }
   }
   if (entry.form === 'message') walkNodes(entry.nodes, visit)

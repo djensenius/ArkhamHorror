@@ -15,6 +15,7 @@ const FRONTEND_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'
 
 // `--dist <dir>` lets the offline packager point at its own build output; the
 // default is the directory prod.nginxconf serves.
+const DIST_ONLY = process.argv.includes('--dist-only')
 const distIndex = process.argv.indexOf('--dist')
 if (distIndex !== -1 && (process.argv[distIndex + 1] ?? '').trim() === '') {
   console.error('locale-catalog: --dist requires a directory')
@@ -75,9 +76,15 @@ if (require(existsSync(DIST_CATALOG), `${DIST_CATALOG} is missing — the build 
     }
 
     // Vite copies public/ verbatim, so the served bytes must equal the bytes
-    // the generator wrote during prebuild.
+    // the generator wrote during prebuild. `--dist-only` skips that comparison
+    // for a build output restored from a cache, where `public/` belongs to a
+    // tree that no longer exists; everything above still checks the output
+    // against its own manifest, which is what makes a cached artifact usable.
     const publicCatalog = join(FRONTEND_DIR, 'public', 'locale-catalog')
-    if (require(existsSync(publicCatalog), 'public/locale-catalog is missing — prebuild did not run')) {
+    if (
+      !DIST_ONLY &&
+      require(existsSync(publicCatalog), 'public/locale-catalog is missing — prebuild did not run')
+    ) {
       const published = listJson(publicCatalog)
       require(
         published.length === expected.size,

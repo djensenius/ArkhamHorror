@@ -105,9 +105,26 @@ function leafEntries(value, prefix, out) {
  * whose declared content is not in the composed tree under its own name is a
  * finding.
  */
-export function analyzeComposition(composed, files, ownerKey) {
+export function analyzeComposition(composed, files, ownerKey, moduleKey) {
   const ownerOf = new Map()
   const ownedByFile = new Map()
+  // Mounts a file reaches by reference. A mount whose every leaf was
+  // overridden owns nothing, so it cannot be inferred from the leaves.
+  const mountedAt = new Map()
+  if (moduleKey !== undefined) {
+    const walkMounts = (node, path) => {
+      if (node === null || typeof node !== 'object' || node instanceof String) return
+      const owner = node[moduleKey]
+      if (typeof owner === 'string') {
+        if (!mountedAt.has(owner)) mountedAt.set(owner, new Set())
+        mountedAt.get(owner).add(path)
+      }
+      for (const [key, value] of Object.entries(node)) {
+        walkMounts(value, path === '' ? key : `${path}.${key}`)
+      }
+    }
+    walkMounts(composed, '')
+  }
   for (const [path, value] of leafEntries(composed, '', new Map())) {
     if (!(value instanceof String)) continue
     const owner = value[ownerKey]
@@ -124,7 +141,7 @@ export function analyzeComposition(composed, files, ownerKey) {
     if (declared.length === 0) continue
 
     const owned = ownedByFile.get(path) ?? new Set()
-    if (owned.size === 0) {
+    if (owned.size === 0 && (mountedAt.get(path)?.size ?? 0) === 0) {
       findings.push({
         file: path,
         kind: 'no-surviving-content',
@@ -135,16 +152,22 @@ export function analyzeComposition(composed, files, ownerKey) {
       continue
     }
 
-    // Mount points, derived from the paths this file actually owns. A file may
-    // legitimately be mounted more than once (an alias such as
-    // returnToTheForgottenAge), so every mount is kept.
+    // Mount points, derived from the paths this file actually owns. Each owned
+    // path is explained by its *longest* matching declared key, so a file that
+    // declares `cost.addToHand` is read as mounted at `label`, not at both
+    // `label` and `label.cost`. A file may legitimately be mounted more than
+    // once (an alias such as returnToTheForgottenAge), and every such mount is
+    // kept.
     const declaredSet = new Set(declared)
-    const mounts = new Set()
+    const byLength = [...declaredSet].sort((a, b) => b.length - a.length)
+    const mounts = new Set(mountedAt.get(path) ?? [])
     for (const path_ of owned) {
-      for (const leaf of declaredSet) {
-        if (path_ === leaf) mounts.add('')
-        else if (path_.endsWith(`.${leaf}`)) mounts.add(path_.slice(0, path_.length - leaf.length - 1))
+      if (declaredSet.has(path_)) {
+        mounts.add('')
+        continue
       }
+      const leaf = byLength.find((candidate) => path_.endsWith(`.${candidate}`))
+      if (leaf !== undefined) mounts.add(path_.slice(0, path_.length - leaf.length - 1))
     }
     if (mounts.size === 0) {
       findings.push({
@@ -157,23 +180,21 @@ export function analyzeComposition(composed, files, ownerKey) {
       continue
     }
 
+    // Ownership is per (file, mount, leaf): a file mounted twice — an alias
+    // such as returnToTheForgottenAge, or a shared pack included by two
+    // campaigns — must survive at *every* mount. Accepting "it survived
+    // somewhere" hides a mount where another file overrode it.
     const overridden = []
     const dropped = []
-    for (const leaf of declared) {
-      let survives = false
-      let winner
-      for (const mount of mounts) {
+    for (const mount of [...mounts].sort()) {
+      for (const leaf of declared) {
         const composedPath = mount === '' ? leaf : `${mount}.${leaf}`
         const owner = ownerOf.get(composedPath)
-        if (owner === path) {
-          survives = true
-          break
-        }
-        if (owner !== undefined) winner ??= owner
+        if (owner === path) continue
+        const where = mount === '' ? '<root>' : mount
+        if (owner !== undefined) overridden.push(`${where}.${leaf} -> ${owner}`)
+        else dropped.push(`${where}.${leaf}`)
       }
-      if (survives) continue
-      if (winner !== undefined) overridden.push(`${leaf} -> ${winner}`)
-      else dropped.push(leaf)
     }
 
     if (overridden.length > 0 || dropped.length > 0) {

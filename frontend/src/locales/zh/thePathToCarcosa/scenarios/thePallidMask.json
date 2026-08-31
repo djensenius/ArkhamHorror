@@ -15,7 +15,6 @@
     }
   },
   "label": {
-    "chooseWhoReadsActII": "选择谁将阅读《黄衣之王》第二幕",
     "above": "置于上方",
     "below": "置于下方",
     "right": "置于右方",
@@ -65,6 +64,9 @@
     },
     "xp": {
       "bonus": "洞见了褴褛之王的阴谋"
+    },
+    "label": {
+      "chooseWhoReadsActII": "选择谁将阅读《黄衣之王》第二幕"
     }
   }
 }
