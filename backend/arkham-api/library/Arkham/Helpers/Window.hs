@@ -956,6 +956,14 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             , extendedCardMatch card cardMatcher
             ]
         _ -> noMatch
+    Matcher.DiscardedFromHandBatch timing whoMatcher sourceMatcher ->
+      guardTiming timing $ \case
+        Window.DiscardedFromHandBatch who source' _ ->
+          andM
+            [ matchWho iid who whoMatcher
+            , sourceMatches source' sourceMatcher
+            ]
+        _ -> noMatch
     Matcher.AssetWouldBeDiscarded timing assetMatcher -> guardTiming timing $ \case
       Window.WouldBeDiscarded (AssetTarget aid) -> elem aid <$> select assetMatcher
       _ -> noMatch
@@ -1038,7 +1046,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
       guardTiming timing $ \case
         Window.InvestigatorDefeated defeatedBy who ->
           andM
-            [ matchWho iid who whoMatcher
+            [ matchWho iid who whoMatcher.includeEliminated
             , defeatedByMatches defeatedBy defeatedByMatcher
             ]
         _ -> noMatch

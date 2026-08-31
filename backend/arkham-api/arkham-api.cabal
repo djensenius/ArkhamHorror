@@ -2456,6 +2456,7 @@ library
       Arkham.Deck
       Arkham.DeckBuilding.Adjustment
       Arkham.Decklist
+      Arkham.Decklist.CardPool
       Arkham.Decklist.RandomBasicWeakness
       Arkham.Decklist.Type
       Arkham.Decks
@@ -8438,6 +8439,7 @@ test-suite spec
       Arkham.Asset.Assets.HardKnocks2Spec
       Arkham.Asset.Assets.HardKnocksSpec
       Arkham.Asset.Assets.HeirloomOfHyperboreaSpec
+      Arkham.Asset.Assets.HelplessPassengerSpec
       Arkham.Asset.Assets.HolyRosarySpec
       Arkham.Asset.Assets.Hyperawareness2Spec
       Arkham.Asset.Assets.HyperawarenessSpec
@@ -8452,6 +8454,7 @@ test-suite spec
       Arkham.Asset.Assets.MacheteSpec
       Arkham.Asset.Assets.MagnifyingGlass1Spec
       Arkham.Asset.Assets.MagnifyingGlassSpec
+      Arkham.Asset.Assets.MeatCleaverSpec
       Arkham.Asset.Assets.MedicalTextsSpec
       Arkham.Asset.Assets.MiguelsKnapsackSpec
       Arkham.Asset.Assets.MitchBrownSpec
@@ -8571,6 +8574,7 @@ test-suite spec
       Arkham.Event.Events.HiddenPocketSpec
       Arkham.Event.Events.HotStreak4Spec
       Arkham.Event.Events.IllTakeThatSpec
+      Arkham.Event.Events.JoinTheCaravan1Spec
       Arkham.Event.Events.LieInWaitSpec
       Arkham.Event.Events.LiveAndLearnSpec
       Arkham.Event.Events.LookWhatIFoundSpec
@@ -8697,6 +8701,7 @@ test-suite spec
       Arkham.Treachery.Cards.RexsCurseSpec
       Arkham.Treachery.Cards.RookieMistakeSpec
       Arkham.Treachery.Cards.SearchingForIzzieSpec
+      Arkham.Treachery.Cards.SelfDestructiveSpec
       Arkham.Treachery.Cards.ShockingDiscoverySpec
       Arkham.Treachery.Cards.SmiteTheWickedAdvancedSpec
       Arkham.Treachery.Cards.SmiteTheWickedSpec
