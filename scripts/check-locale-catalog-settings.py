@@ -84,9 +84,15 @@ def derive_settings(catalog: dict, catalog_bytes: bytes) -> dict[str, str]:
 
 
 def advertised_from_settings(settings: dict[str, str]) -> dict:
-    """The `localeCatalog` object the backend builds from those settings:
-    locale tags canonicalized and published in ascending order (see
-    Base.Api.Types.LocaleCatalog.parseSupportedLocales).
+    """The `localeCatalog` object the backend builds from those settings.
+
+    `Base.Api.Types.LocaleCatalog.parseSupportedLocales` canonicalizes each tag
+    and then publishes them in ascending order. Canonicalization is *not*
+    re-implemented here: `require_canonical_locales` below asserts the
+    generated manifest's tags are already canonical, which is what makes plain
+    sorting the whole of the remaining transformation — and is itself worth
+    knowing, since a generator that started emitting `zh-hant` would make the
+    advertised list stop matching the manifest's own tags.
     """
     return {
         "manifestUrl": settings["ARKHAM_LOCALE_CATALOG_MANIFEST_URL"],
@@ -96,6 +102,26 @@ def advertised_from_settings(settings: dict[str, str]) -> dict:
         "supportedLocales": sorted(settings["ARKHAM_LOCALE_CATALOG_LOCALES"].split(",")),
         "manifestSha256": settings["ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"],
     }
+
+
+def require_canonical_locales(capabilities_schema: dict, settings: dict[str, str]) -> None:
+    """Every locale the generated catalog publishes must already be in the
+    canonical BCP-47 spelling `contracts/schemas/capabilities.schema.json`'s
+    `$defs.locale` encodes, so the backend's canonicalization is the identity
+    on real generated input.
+    """
+    validator = make_validator(capabilities_schema, capabilities_schema["$defs"]["locale"])
+    tags = settings["ARKHAM_LOCALE_CATALOG_LOCALES"].split(",") + [
+        settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"]
+    ]
+    for tag in tags:
+        errors = list(validator.iter_errors(tag))
+        require(
+            not errors,
+            f"the generated catalog publishes locale {tag!r}, which is not the canonical spelling "
+            "the server would advertise; the advertised list would then differ from the "
+            f"manifest's own tags: {[error.message for error in errors]}",
+        )
 
 
 def make_validator(schema: dict, sub_schema: dict | None = None):
@@ -146,6 +172,7 @@ def main() -> None:
     require(isinstance(capabilities_schema, dict), f"{CAPABILITIES_SCHEMA} is not a JSON object")
     locale_catalog_schema = capabilities_schema["$defs"]["localeCatalog"]
 
+    require_canonical_locales(capabilities_schema, settings)
     advertised = advertised_from_settings(settings)
     advertised_errors = list(
         make_validator(capabilities_schema, locale_catalog_schema).iter_errors(advertised)
