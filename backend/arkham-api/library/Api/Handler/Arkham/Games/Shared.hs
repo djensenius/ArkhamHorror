@@ -2364,15 +2364,12 @@ keeps a callback for a channel nothing will ever publish to again.
 Runs strictly AFTER 'Api.Handler.Arkham.Events.deleteApiV1ArkhamEventR' has
 already committed the deletion via 'runDB': a teardown failure here can
 never roll back, and must never fake, that already-committed success. See
-'RoomCleanupOutcome' for what this reports and 'attemptRoomTeardown' for
-the exact per-room decision (both defined in 'Api.Arkham.Helpers', shared
-with 'releaseRoomIfEmpty' so the same identity\/retry discipline applies
-to both the ordinary last-subscriber release and this forced path), and
-'registerRoomCleanupRetry' for how a failure here is durably retried
-later (via 'roomHeartbeat') rather than only ever being retried by a
-repeated deletion -- which, for an event, is impossible: a second delete
-of an already-deleted 'ArkhamEpicEvent' returns a nondisclosing 404
-before ever reaching this cleanup.
+'RoomCleanupOutcome' for what this reports and 'prepareRoomCleanup' for
+the durable pre-attempt handoff (shared with 'releaseRoomIfEmpty' so the
+same identity\/retry discipline applies to ordinary disconnect and forced
+deletion). A failure remains owned for 'roomHeartbeat' rather than relying
+on a repeated deletion -- impossible for an event because the repeat
+returns a nondisclosing 404 before cleanup.
 -}
 deleteRoom :: ArkhamGameId -> Handler RoomCleanupOutcome
 deleteRoom = forceDeleteRoom "game" appGameRooms
@@ -2380,21 +2377,42 @@ deleteRoom = forceDeleteRoom "game" appGameRooms
 deleteEventRoom :: ArkhamEpicEventId -> Handler RoomCleanupOutcome
 deleteEventRoom = forceDeleteRoom "event" appEventRooms
 
+{- | Establish ownership for every game and event room from one committed event
+deletion before executing any unsubscribe. The short handoff is
+uninterruptibly masked; after it completes, each receipt is attempted
+individually. Cancellation during one attempt therefore leaves that receipt
+requeued and every later room already durably owned.
+-}
+deleteEventRooms :: [ArkhamGameId] -> ArkhamEpicEventId -> Handler ()
+deleteEventRooms gameIds eventId = mask $ \restore -> do
+  gameRooms <- getsYesod appGameRooms
+  eventRooms <- getsYesod appEventRooms
+  (gameCleanups, eventCleanup) <-
+    liftIO $ uninterruptibleMask_ do
+      games <- traverse (prepareRoomCleanup CleanupForced gameRooms) gameIds
+      event <- prepareRoomCleanup CleanupForced eventRooms eventId
+      pure (zip gameIds games, event)
+  restore do
+    for_ gameCleanups \(gameId, prepared) ->
+      for_ prepared $ finishForcedRoomCleanup "game" gameId
+    for_ eventCleanup $ finishForcedRoomCleanup "event" eventId
+
 forceDeleteRoom :: (Ord k, Show k) => Text -> (App -> MVar (Map k Room)) -> k -> Handler RoomCleanupOutcome
-forceDeleteRoom kind roomsOf key = do
+forceDeleteRoom kind roomsOf key = mask $ \restore -> do
   roomsVar <- getsYesod roomsOf
-  (outcome, attempted) <-
-    liftIO $ modifyMVar roomsVar \rooms -> case Map.lookup key rooms of
-      Nothing -> pure (rooms, (RoomCleanupAbsent, Nothing))
-      Just r -> do
-        (rooms', out) <- attemptRoomTeardown key rooms
-        pure (rooms', (out, Just r))
+  prepared <-
+    liftIO $ uninterruptibleMask_ $
+      prepareRoomCleanup CleanupForced roomsVar key
+  case prepared of
+    Nothing -> pure RoomCleanupAbsent
+    Just cleanup -> restore $ finishForcedRoomCleanup kind key cleanup
+
+finishForcedRoomCleanup
+  :: (Ord k, Show k) => Text -> k -> PreparedRoomCleanup k -> Handler RoomCleanupOutcome
+finishForcedRoomCleanup kind key prepared = do
+  outcome <- liftIO $ executePreparedRoomCleanup prepared
   case outcome of
     RoomCleanupUnsubscribeFailed e -> do
-      -- A forced deletion teardown ignores subscriber count on retry too
-      -- ('const True'): the game\/event is already gone, so occupancy is
-      -- never a reason to skip finishing this cleanup.
-      receipt <- for attempted \r -> liftIO $ registerRoomCleanupRetry (const True) roomsVar key r
       -- Never log the raw exception ('SomeException''s own 'Show'
       -- instance can include arbitrary connection\/message text) --
       -- only a closed failure category plus structured, non-sensitive
@@ -2408,8 +2426,9 @@ forceDeleteRoom kind roomsOf key = do
         <> " category="
         <> tshow (classifyRoomCleanupFailure e)
         <> " retryReceipt="
-        <> maybe "unregistered" tshow receipt
+        <> tshow prepared.preparedReceipt
     RoomCleanupAbsent -> pure ()
     RoomCleanupStillOccupied -> pure () -- unreachable: this path never checks occupancy
     RoomCleanupClean -> pure ()
+    RoomCleanupInProgress -> pure ()
   pure outcome

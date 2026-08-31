@@ -8,15 +8,19 @@ import Control.Exception (AsyncException (ThreadKilled))
 import Control.Exception qualified as E
 import PendingCleanupOwner (
   CleanupReceipt,
+  CleanupAttempt (..),
   PendingCleanupOwner,
   ReceiptOutcome (..),
   attemptCleanupReceipt,
   drainPendingCleanup,
+  drainPendingCleanupBounded,
   hasPendingCleanup,
   newPendingCleanupOwner,
   transferPendingCleanup,
+  transferPendingCleanupEphemeralOnce,
  )
 import Test.Hspec
+import System.Timeout qualified as Timeout
 
 -- | 'ReceiptOutcome' has no useful 'Eq' instance (its 'ReceiptFailed'
 -- constructor carries a 'SomeException', which doesn't have one), so
@@ -370,6 +374,83 @@ spec = describe "PendingCleanupOwner" do
       case outcome of
         ReceiptFailed _ -> pure ()
         other -> expectationFailure ("expected ReceiptFailed, got " <> show other)
+
+  describe "ephemeral coalesced ownership" do
+    it "atomically reuses one outstanding receipt and removes its slot/entry exactly once on success without changing retained receipt polling" do
+      owner <- newPendingCleanupOwner
+      slot <- newTVarIO Nothing
+      shouldFail <- newIORef True
+      attempts <- newIORef (0 :: Int)
+      let action = do
+            atomicModifyIORef' attempts (\n -> (n + 1, ()))
+            failing <- readIORef shouldFail
+            pure $
+              if failing
+                then CleanupFailed (toException $ userError "still unavailable")
+                else CleanupComplete
+      receipt1 <- transferPendingCleanupEphemeralOnce owner slot action
+      receipt2 <- transferPendingCleanupEphemeralOnce owner slot action
+      receipt2 `shouldBe` receipt1
+      attemptCleanupReceipt owner receipt1 >>= \case
+        ReceiptFailed _ -> pure ()
+        other -> expectationFailure ("expected ReceiptFailed, got " <> show other)
+      receipt3 <- transferPendingCleanupEphemeralOnce owner slot action
+      receipt3 `shouldBe` receipt1
+      writeIORef shouldFail False
+      attemptCleanupReceipt owner receipt1 >>= expectReceiptSucceeded
+      readTVarIO slot `shouldReturn` Nothing
+      hasPendingCleanup owner `shouldReturn` False
+      readIORef attempts `shouldReturn` 2
+      -- An ephemeral receipt remains truthfully pollable as succeeded even
+      -- after explicit removal, but never reruns the action.
+      attemptCleanupReceipt owner receipt1 >>= expectReceiptSucceeded
+      readIORef attempts `shouldReturn` 2
+      receipt4 <- transferPendingCleanupEphemeralOnce owner slot (pure CleanupComplete)
+      receipt4 `shouldNotBe` receipt1
+      attemptCleanupReceipt owner receipt4 >>= expectReceiptSucceeded
+
+  describe "bounded fixed-snapshot draining" do
+    it "returns despite continuous registration and leaves work arriving during the snapshot for a later tick" do
+      owner <- newPendingCleanupOwner
+      attempts <- newIORef (0 :: Int)
+      nestedReceipt <- newIORef Nothing
+      let action = do
+            atomicModifyIORef' attempts (\n -> (n + 1, ()))
+            receipt <- transferPendingCleanup owner action
+            writeIORef nestedReceipt (Just receipt)
+            pure (Right ())
+      _ <- transferPendingCleanup owner action
+      completed <- Timeout.timeout 500_000 $ drainPendingCleanupBounded owner 1 50_000
+      completed `shouldBe` Just ()
+      readIORef attempts `shouldReturn` 1
+      hasPendingCleanup owner `shouldReturn` True
+      Just receipt <- readIORef nestedReceipt
+      attemptCleanupReceipt owner receipt >>= expectReceiptSucceeded
+
+    it "times out a blocked receipt, advances later work fairly on the next capped tick, and leaves the blocked capability retriable" do
+      owner <- newPendingCleanupOwner
+      release <- newEmptyMVar
+      blockerRan <- newIORef (0 :: Int)
+      laterRan <- newIORef False
+      blockedReceipt <-
+        transferPendingCleanup owner do
+          atomicModifyIORef' blockerRan (\n -> (n + 1, ()))
+          takeMVar release
+          pure (Right ())
+      laterReceipt <-
+        transferPendingCleanup owner do
+          writeIORef laterRan True
+          pure (Right ())
+      firstTick <- Timeout.timeout 500_000 $ drainPendingCleanupBounded owner 1 20_000
+      firstTick `shouldBe` Just ()
+      readIORef laterRan `shouldReturn` False
+      secondTick <- Timeout.timeout 500_000 $ drainPendingCleanupBounded owner 1 20_000
+      secondTick `shouldBe` Just ()
+      readIORef laterRan `shouldReturn` True
+      attemptCleanupReceipt owner laterReceipt >>= expectReceiptSucceeded
+      putMVar release ()
+      attemptCleanupReceipt owner blockedReceipt >>= expectReceiptSucceeded
+      readIORef blockerRan `shouldReturn` 2
 
   describe "hasPendingCleanup" do
     it "reports False for a freshly constructed owner and True while an entry remains queued/running, then False once terminated" do

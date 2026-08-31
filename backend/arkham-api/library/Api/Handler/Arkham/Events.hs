@@ -45,8 +45,7 @@ import Api.Arkham.Helpers
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
 import Api.Handler.Arkham.Games.Shared (
   broadcastSharedToEvent,
-  deleteEventRoom,
-  deleteRoom,
+  deleteEventRooms,
   getEventGroupContributions,
   getEventGroupGameIds,
   propagateShared,
@@ -95,7 +94,7 @@ import Database.Esqueleto.Experimental hiding (isNothing, update, (=.))
 import Database.Persist qualified as P
 import Entity.Arkham.Step (ActionDiff (..), ArkhamStep (..), Choice (..))
 import Import hiding (on, (==.))
-import UnliftIO.Exception (catch)
+import UnliftIO.Exception (catch, mask)
 import Yesod.WebSockets (WebSocketsT, webSocketsOptions)
 
 -- Request bodies --------------------------------------------------------------
@@ -400,14 +399,14 @@ live server.
 deleteApiV1ArkhamEventR :: ArkhamEpicEventId -> Handler ()
 deleteApiV1ArkhamEventR eid = do
   userId <- getRequestUserId
-  outcome <- runDB $ deleteEpicEventAggregate eid userId
-  case outcome of
-    EventDeletionMissing -> notFound
-    EventDeletionForbidden ->
-      permissionDenied "Only the event organizer may perform this action"
-    EventDeletionDeleted gameIds -> do
-      for_ gameIds deleteRoom
-      void $ deleteEventRoom eid
+  mask $ \_ -> do
+    outcome <- runDB $ deleteEpicEventAggregate eid userId
+    case outcome of
+      EventDeletionMissing -> notFound
+      EventDeletionForbidden ->
+        permissionDenied "Only the event organizer may perform this action"
+      EventDeletionDeleted gameIds ->
+        deleteEventRooms gameIds eid
 
 {- | Organizer correction for the one user-adjustable Blob pool. Internal keys
 (health, act gates/generations, timer state) are never writable through the

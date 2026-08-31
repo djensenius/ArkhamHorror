@@ -75,12 +75,17 @@ exercise, a database at all.
 module Arkham.Api.RoomCleanupSpec (spec) where
 
 import Api.Arkham.Helpers (
+  PreparedRoomCleanup (..),
   RoomCleanupFailureCategory (..),
+  RoomCleanupMode (..),
   RoomCleanupOutcome (..),
   attemptRoomTeardown,
   classifyRoomCleanupFailure,
+  executePreparedRoomCleanup,
+  prepareRoomCleanup,
   registerRoomCleanupRetry,
   retryRoomTeardown,
+  runRoomHeartbeatTick,
  )
 import Api.Arkham.Lifecycle (drainOwnedCleanup)
 import Control.Concurrent (forkIO, threadDelay)
@@ -90,18 +95,24 @@ import Data.Map.Strict qualified as Map
 import Data.UUID qualified as UUID
 import Entity.Arkham.Epic qualified as Epic
 import Entity.Arkham.Game qualified as GameEntity
-import Foundation (Room (..), newRoom, roomClientCount, subscribeToRoom)
-import PendingCleanupOwner (ReceiptOutcome (..), attemptCleanupReceipt, globalPendingCleanupOwner)
+import Foundation (Room (..), newRoom, roomClientCount, subscribeToRoom, unsubscribeFromRoom)
+import PendingCleanupOwner (
+  CleanupAttempt (..),
+  ReceiptOutcome (..),
+  attemptCleanupReceipt,
+  drainPendingCleanupBounded,
+  globalPendingCleanupOwner,
+  newPendingCleanupOwner,
+  transferPendingCleanup,
+ )
+import System.Timeout qualified as Timeout
 import TestImport
 
--- | 'Either SomeException ()' has no 'Eq' instance ('SomeException' can't
--- reasonably have one), so 'shouldBe' can't be used against
--- 'retryRoomTeardown''s own result type directly; assert the success case
--- by pattern match instead.
-shouldBeRightUnit :: HasCallStack => Either SomeException () -> Expectation
-shouldBeRightUnit = \case
-  Right () -> pure ()
-  Left e -> expectationFailure $ "expected Right (), got Left: " <> show e
+shouldBeCleanupComplete :: HasCallStack => CleanupAttempt -> Expectation
+shouldBeCleanupComplete = \case
+  CleanupComplete -> pure ()
+  CleanupFailed e -> expectationFailure $ "expected CleanupComplete, got failure: " <> show e
+  CleanupDeferred -> expectationFailure "expected CleanupComplete, got CleanupDeferred"
 
 -- | 'ReceiptOutcome' likewise has no 'Eq' instance (it carries a
 -- 'SomeException' in its 'ReceiptFailed' case); assert the specific
@@ -156,7 +167,7 @@ fixtureEventId tag = Epic.ArkhamEpicEventKey $ UUID.fromWords 0 0 0 (fromIntegra
 
 spec :: Spec
 spec = do
-  describe "attemptRoomTeardown (per-room teardown decision, production-used)" do
+  describe "attemptRoomTeardown (isolated low-level unsubscribe decision)" do
     it "an absent key reports RoomCleanupAbsent and leaves the map completely unchanged" do
       let rooms = Map.empty :: Map Int Room
       (rooms', outcome) <- attemptRoomTeardown (1 :: Int) rooms
@@ -244,30 +255,30 @@ spec = do
         Right () -> expectationFailure "expected the cancellation to propagate, not be converted into a RoomCleanupClean/Failed outcome"
 
   describe "retryRoomTeardown (the exact closure durably registered for retry)" do
-    it "is a no-op success (Right ()) when nothing is tracked under this key at all" do
+    it "completes without an unsubscribe when nothing is tracked under this key" do
       roomsVar <- newMVar (Map.empty :: Map Int Room)
       expected <- fixtureCleanRoom
-      result <- retryRoomTeardown (const True) roomsVar 1 expected
-      shouldBeRightUnit result
+      result <- retryRoomTeardown CleanupForced roomsVar 1 expected
+      shouldBeCleanupComplete result
 
-    it "still reports Left and leaves the room retained when the unsubscribe still fails" do
+    it "reports CleanupFailed and leaves the room retained when unsubscribe still fails" do
       let boom = ErrorCall "still failing"
       room <- fixtureFailingRoom (toException boom)
       roomsVar <- newMVar (Map.fromList [(1 :: Int, room)])
-      result <- retryRoomTeardown (const True) roomsVar 1 room
+      result <- retryRoomTeardown CleanupForced roomsVar 1 room
       case result of
-        Left e -> case fromException e of
+        CleanupFailed e -> case fromException e of
           Just (ErrorCall msg) -> msg `shouldBe` "still failing"
           Nothing -> expectationFailure $ "expected the stubbed ErrorCall, got: " <> show e
-        Right () -> expectationFailure "expected Left, the unsubscribe stub always fails"
+        other -> expectationFailure $ "expected CleanupFailed, got " <> show other
       rooms' <- readMVar roomsVar
       Map.member 1 rooms' `shouldBe` True
 
     it "succeeds and removes the room once the unsubscribe eventually succeeds" do
       room <- fixtureCleanRoom
       roomsVar <- newMVar (Map.fromList [(1 :: Int, room)])
-      result <- retryRoomTeardown (const True) roomsVar 1 room
-      shouldBeRightUnit result
+      result <- retryRoomTeardown CleanupForced roomsVar 1 room
+      shouldBeCleanupComplete result
       rooms' <- readMVar roomsVar
       Map.member 1 rooms' `shouldBe` False
 
@@ -277,15 +288,15 @@ spec = do
       newerRoom <- newRoom fixtureChannel
       atomically $ writeTVar newerRoom.roomUnsubscribe (writeIORef invoked True)
       roomsVar <- newMVar (Map.fromList [(1 :: Int, newerRoom)])
-      result <- retryRoomTeardown (const True) roomsVar 1 staleFailingRoom
-      shouldBeRightUnit result
+      result <- retryRoomTeardown CleanupForced roomsVar 1 staleFailingRoom
+      shouldBeCleanupComplete result
       readIORef invoked `shouldReturn` False
       rooms' <- readMVar roomsVar
       case Map.lookup 1 rooms' of
         Just r | roomUnsubscribe r == roomUnsubscribe newerRoom -> pure ()
         _ -> expectationFailure "expected the map to still hold the exact newer room instance, untouched"
 
-    it "is a no-op success under an ORDINARY (non-forced) eligibility guard when the room has regained a live subscriber, and never invokes its unsubscribe" do
+    it "defers under an ordinary eligibility guard when the room has regained a live subscriber, and never invokes unsubscribe" do
       invoked <- newIORef False
       room <- newRoom fixtureChannel
       atomically $ writeTVar room.roomUnsubscribe (writeIORef invoked True)
@@ -293,20 +304,22 @@ spec = do
       n <- roomClientCount room
       n `shouldBe` 1
       roomsVar <- newMVar (Map.fromList [(1 :: Int, room)])
-      result <- retryRoomTeardown (== 0) roomsVar 1 room
-      shouldBeRightUnit result
+      result <- retryRoomTeardown CleanupWhenEmpty roomsVar 1 room
+      case result of
+        CleanupDeferred -> pure ()
+        other -> expectationFailure $ "expected CleanupDeferred, got " <> show other
       readIORef invoked `shouldReturn` False
       rooms' <- readMVar roomsVar
       Map.member 1 rooms' `shouldBe` True
 
-    it "DOES tear the room down regardless of occupancy under a FORCED (const True) eligibility guard, matching forceDeleteRoom's semantics" do
+    it "tears the room down regardless of occupancy in forced mode, matching forceDeleteRoom's semantics" do
       room <- fixtureCleanRoom
       _ <- subscribeToRoom room
       n <- roomClientCount room
       n `shouldBe` 1
       roomsVar <- newMVar (Map.fromList [(1 :: Int, room)])
-      result <- retryRoomTeardown (const True) roomsVar 1 room
-      shouldBeRightUnit result
+      result <- retryRoomTeardown CleanupForced roomsVar 1 room
+      shouldBeCleanupComplete result
       rooms' <- readMVar roomsVar
       Map.member 1 rooms' `shouldBe` False
 
@@ -328,17 +341,17 @@ spec = do
 
       -- First retry (standing in for another disconnect, or an early
       -- heartbeat tick): still fails, room stays retained.
-      retry1 <- retryRoomTeardown (const True) roomsVar gid room
+      retry1 <- retryRoomTeardown CleanupForced roomsVar gid room
       case retry1 of
-        Left _ -> pure ()
-        Right () -> expectationFailure "expected the first retry to still fail"
+        CleanupFailed _ -> pure ()
+        other -> expectationFailure $ "expected the first retry to fail, got " <> show other
       afterRetry1 <- readMVar roomsVar
       Map.member gid afterRetry1 `shouldBe` True
 
       -- Later retry (standing in for roomHeartbeat's periodic
       -- drainOwnedCleanup-driven call): finally succeeds, room removed.
-      retry2 <- retryRoomTeardown (const True) roomsVar gid room
-      shouldBeRightUnit retry2
+      retry2 <- retryRoomTeardown CleanupForced roomsVar gid room
+      shouldBeCleanupComplete retry2
       afterRetry2 <- readMVar roomsVar
       Map.member gid afterRetry2 `shouldBe` False
 
@@ -355,24 +368,198 @@ spec = do
       _ <- swapMVar roomsVar rooms1
       Map.member eid rooms1 `shouldBe` True
 
-      retry1 <- retryRoomTeardown (const True) roomsVar eid room
+      retry1 <- retryRoomTeardown CleanupForced roomsVar eid room
       case retry1 of
-        Left _ -> pure ()
-        Right () -> expectationFailure "expected the first retry to still fail"
+        CleanupFailed _ -> pure ()
+        other -> expectationFailure $ "expected the first retry to fail, got " <> show other
       afterRetry1 <- readMVar roomsVar
       Map.member eid afterRetry1 `shouldBe` True
 
-      retry2 <- retryRoomTeardown (const True) roomsVar eid room
-      shouldBeRightUnit retry2
+      retry2 <- retryRoomTeardown CleanupForced roomsVar eid room
+      shouldBeCleanupComplete retry2
       afterRetry2 <- readMVar roomsVar
       Map.member eid afterRetry2 `shouldBe` False
+
+  describe "durable per-room cleanup ownership" do
+    it "hands off every game/event room before post-commit cancellation can interrupt an unsubscribe" do
+      gameStarted <- newEmptyMVar
+      neverFinishGame <- newEmptyMVar
+      gameRoom <- newRoom fixtureChannel
+      atomically $
+        writeTVar gameRoom.roomUnsubscribe do
+          putMVar gameStarted ()
+          takeMVar neverFinishGame
+      eventRuns <- newIORef (0 :: Int)
+      eventRoom <- newRoom fixtureChannel
+      atomically $
+        writeTVar eventRoom.roomUnsubscribe $
+          atomicModifyIORef' eventRuns (\n -> (n + 1, ()))
+      let gid = fixtureGameId 31
+          eid = fixtureEventId 31
+      gameRooms <- newMVar $ Map.singleton gid gameRoom
+      eventRooms <- newMVar $ Map.singleton eid eventRoom
+
+      -- This is the exact masked handoff shape used by deleteEventRooms:
+      -- both domains are owned before either ticket is executed.
+      (Just gameCleanup, Just eventCleanup) <-
+        Exception.uninterruptibleMask_ $
+          (,) <$> prepareRoomCleanup CleanupForced gameRooms gid
+            <*> prepareRoomCleanup CleanupForced eventRooms eid
+      isJust <$> readTVarIO gameRoom.roomCleanupReceipt `shouldReturn` True
+      isJust <$> readTVarIO eventRoom.roomCleanupReceipt `shouldReturn` True
+
+      gameDone <- newEmptyMVar
+      gameTid <- forkIO $ putMVar gameDone =<< Exception.try @SomeException (executePreparedRoomCleanup gameCleanup)
+      takeMVar gameStarted
+      throwTo gameTid ThreadKilled
+      takeMVar gameDone >>= \case
+        Left e -> fromException e `shouldBe` Just ThreadKilled
+        Right outcome -> expectationFailure $ "expected cancellation, got " <> show outcome
+
+      -- The event cleanup is independent of the cancelled request and
+      -- remains directly executable from its already-owned receipt.
+      executePreparedRoomCleanup eventCleanup >>= \case
+        RoomCleanupClean -> pure ()
+        outcome -> expectationFailure $ "expected event cleanup to succeed, got " <> show outcome
+      readIORef eventRuns `shouldReturn` 1
+      Map.member eid <$> readMVar eventRooms `shouldReturn` False
+
+      -- Cancellation requeued the game receipt and reopened the retained map
+      -- entry before propagating, so a later owner can finish it.
+      atomically $ writeTVar gameRoom.roomUnsubscribe (pure ())
+      executePreparedRoomCleanup gameCleanup >>= \case
+        RoomCleanupClean -> pure ()
+        outcome -> expectationFailure $ "expected game retry to succeed, got " <> show outcome
+      Map.member gid <$> readMVar gameRooms `shouldReturn` False
+      readTVarIO gameRoom.roomCleanupReceipt `shouldReturn` Nothing
+      readTVarIO eventRoom.roomCleanupReceipt `shouldReturn` Nothing
+
+    it "coalesces repeated failures for one room into one receipt and retires the owner/map exactly once" do
+      attempts <- newIORef (0 :: Int)
+      room <- newRoom fixtureChannel
+      atomically $
+        writeTVar room.roomUnsubscribe do
+          atomicModifyIORef' attempts (\n -> (n + 1, ()))
+          throwIO $ ErrorCall "redis unavailable"
+      rooms <- newMVar $ Map.singleton ("same-room" :: Text) room
+      Just prepared <- prepareRoomCleanup CleanupForced rooms "same-room"
+      duplicate1 <- registerRoomCleanupRetry CleanupForced rooms "same-room" room
+      duplicate2 <- registerRoomCleanupRetry CleanupForced rooms "same-room" room
+      duplicate1 `shouldBe` prepared.preparedReceipt
+      duplicate2 `shouldBe` prepared.preparedReceipt
+
+      executePreparedRoomCleanup prepared >>= \case
+        RoomCleanupUnsubscribeFailed _ -> pure ()
+        outcome -> expectationFailure $ "expected unsubscribe failure, got " <> show outcome
+      duplicate3 <- registerRoomCleanupRetry CleanupForced rooms "same-room" room
+      duplicate3 `shouldBe` prepared.preparedReceipt
+      readIORef attempts `shouldReturn` 1
+      Map.member "same-room" <$> readMVar rooms `shouldReturn` True
+
+      atomically $ writeTVar room.roomUnsubscribe $ atomicModifyIORef' attempts (\n -> (n + 1, ()))
+      executePreparedRoomCleanup prepared >>= \case
+        RoomCleanupClean -> pure ()
+        outcome -> expectationFailure $ "expected successful retry, got " <> show outcome
+      executePreparedRoomCleanup prepared >>= \case
+        RoomCleanupClean -> pure ()
+        outcome -> expectationFailure $ "expected retired receipt to stay successful, got " <> show outcome
+      readIORef attempts `shouldReturn` 2
+      Map.member "same-room" <$> readMVar rooms `shouldReturn` False
+      readTVarIO room.roomCleanupReceipt `shouldReturn` Nothing
+
+    it "defers one empty-only receipt across rejoin and reuses it on the later disconnect without double-unsubscribe" do
+      room <- fixtureFlakyRoom 1 (toException $ ErrorCall "first disconnect fails")
+      rooms <- newMVar $ Map.singleton ("rejoin" :: Text) room
+      Just firstCleanup <- prepareRoomCleanup CleanupWhenEmpty rooms "rejoin"
+      executePreparedRoomCleanup firstCleanup >>= \case
+        RoomCleanupUnsubscribeFailed _ -> pure ()
+        outcome -> expectationFailure $ "expected first failure, got " <> show outcome
+
+      (subId, _) <- subscribeToRoom room
+      executePreparedRoomCleanup firstCleanup >>= \case
+        RoomCleanupStillOccupied -> pure ()
+        outcome -> expectationFailure $ "expected rejoined room to remain occupied, got " <> show outcome
+      Map.member "rejoin" <$> readMVar rooms `shouldReturn` True
+      readTVarIO room.roomCleanupReceipt `shouldReturn` Just firstCleanup.preparedReceipt
+
+      unsubscribeFromRoom room subId
+      Just secondCleanup <- prepareRoomCleanup CleanupWhenEmpty rooms "rejoin"
+      secondCleanup.preparedReceipt `shouldBe` firstCleanup.preparedReceipt
+      executePreparedRoomCleanup secondCleanup >>= \case
+        RoomCleanupClean -> pure ()
+        outcome -> expectationFailure $ "expected later disconnect cleanup, got " <> show outcome
+      Map.member "rejoin" <$> readMVar rooms `shouldReturn` False
+      readTVarIO room.roomCleanupReceipt `shouldReturn` Nothing
+
+    it "upgrades a deferred empty-only generation to forced cleanup without creating a second receipt" do
+      runs <- newIORef (0 :: Int)
+      room <- newRoom fixtureChannel
+      atomically $ writeTVar room.roomUnsubscribe $ atomicModifyIORef' runs (\n -> (n + 1, ()))
+      _ <- subscribeToRoom room
+      rooms <- newMVar $ Map.singleton ("forced-upgrade" :: Text) room
+      Just ordinaryCleanup <- prepareRoomCleanup CleanupWhenEmpty rooms "forced-upgrade"
+      executePreparedRoomCleanup ordinaryCleanup >>= \case
+        RoomCleanupStillOccupied -> pure ()
+        outcome -> expectationFailure $ "expected deferred ordinary cleanup, got " <> show outcome
+      readIORef runs `shouldReturn` 0
+
+      Just forcedCleanup <- prepareRoomCleanup CleanupForced rooms "forced-upgrade"
+      forcedCleanup.preparedReceipt `shouldBe` ordinaryCleanup.preparedReceipt
+      executePreparedRoomCleanup forcedCleanup >>= \case
+        RoomCleanupClean -> pure ()
+        outcome -> expectationFailure $ "expected forced cleanup to finish, got " <> show outcome
+      readIORef runs `shouldReturn` 1
+      Map.member "forced-upgrade" <$> readMVar rooms `shouldReturn` False
+      readTVarIO room.roomCleanupReceipt `shouldReturn` Nothing
+
+    it "does not hold the rooms MVar while the network unsubscribe is blocked" do
+      started <- newEmptyMVar
+      neverFinish <- newEmptyMVar
+      room <- newRoom fixtureChannel
+      atomically $
+        writeTVar room.roomUnsubscribe do
+          putMVar started ()
+          takeMVar neverFinish
+      rooms <- newMVar $ Map.singleton (1 :: Int) room
+      Just prepared <- prepareRoomCleanup CleanupForced rooms 1
+      done <- newEmptyMVar
+      tid <- forkIO $ putMVar done =<< Exception.try @SomeException (executePreparedRoomCleanup prepared)
+      takeMVar started
+      isJust <$> tryReadMVar rooms `shouldReturn` True
+      throwTo tid ThreadKilled
+      takeMVar done >>= \case
+        Left e -> fromException e `shouldBe` Just ThreadKilled
+        Right outcome -> expectationFailure $ "expected cancellation, got " <> show outcome
+      atomically $ writeTVar room.roomUnsubscribe (pure ())
+      executePreparedRoomCleanup prepared >>= \case
+        RoomCleanupClean -> pure ()
+        outcome -> expectationFailure $ "expected retry success, got " <> show outcome
+
+  describe "bounded heartbeat cleanup" do
+    it "refreshes the active-room work first and still returns when an unrelated cleanup action blocks" do
+      owner <- newPendingCleanupOwner
+      blocker <- newEmptyMVar
+      _ <-
+        transferPendingCleanup owner do
+          takeMVar blocker
+          pure (Right ())
+      refreshed <- newIORef False
+      completed <-
+        Timeout.timeout 500_000 $
+          runRoomHeartbeatTick
+            (writeIORef refreshed True)
+            (drainPendingCleanupBounded owner 1 20_000)
+      completed `shouldBe` Just ()
+      readIORef refreshed `shouldReturn` True
+      putMVar blocker ()
+      drainPendingCleanupBounded owner 1 20_000
 
   describe "registerRoomCleanupRetry (durably hands a failure off to the real, process-global PendingCleanupOwner)" do
     it "genuinely registers a still-failing capability, observable and independently pollable via its own returned receipt" do
       let boom = ErrorCall "redis unavailable, registration test"
       room <- fixtureFailingRoom (toException boom)
       roomsVar <- newMVar (Map.fromList [("registration-still-failing" :: Text, room)])
-      receipt <- registerRoomCleanupRetry (const True) roomsVar "registration-still-failing" room
+      receipt <- registerRoomCleanupRetry CleanupForced roomsVar "registration-still-failing" room
       outcome <- attemptCleanupReceipt globalPendingCleanupOwner receipt
       case outcome of
         ReceiptFailed _ -> pure ()
@@ -405,7 +592,7 @@ spec = do
       case outcome1 of
         RoomCleanupUnsubscribeFailed _ -> pure ()
         other -> expectationFailure $ "expected the first attempt to fail, got: " <> show other
-      receipt <- registerRoomCleanupRetry (const True) roomsVar key room
+      receipt <- registerRoomCleanupRetry CleanupForced roomsVar key room
       outcome2 <- attemptCleanupReceipt globalPendingCleanupOwner receipt
       shouldBeReceiptSucceeded outcome2
       -- Polling again observes the same already-resolved outcome, never
@@ -430,7 +617,7 @@ spec = do
       case outcome1 of
         RoomCleanupUnsubscribeFailed _ -> pure ()
         other -> expectationFailure $ "expected the first attempt to fail, got: " <> show other
-      _receipt <- registerRoomCleanupRetry (const True) roomsVar key room
+      _receipt <- registerRoomCleanupRetry CleanupForced roomsVar key room
       -- Retry until the shared owner's drain has actually picked this
       -- capability up: a concurrent, unrelated caller could in principle
       -- claim-and-run it between registration and our first drain call,

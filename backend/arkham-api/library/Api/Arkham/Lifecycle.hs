@@ -60,6 +60,7 @@ module Api.Arkham.Lifecycle (
   restartStateSchemaHash,
   DevelStoreSchemaStale (..),
   drainOwnedCleanup,
+  drainOwnedCleanupBounded,
   PendingCleanupOwner.CleanupReceipt,
   PendingCleanupOwner.ReceiptOutcome (..),
 ) where
@@ -1234,6 +1235,13 @@ getExistingStoreCheckingLegacySlot legacySlot store expected = do
 drainOwnedCleanup :: IO (Either [SomeException] ())
 drainOwnedCleanup = PendingCleanupOwner.drainPendingCleanup globalPendingCleanupOwner
 
+-- | Fixed-snapshot, fair, time-capped cleanup pass for periodic background
+-- work. Unlike 'drainOwnedCleanup', this cannot absorb an unbounded stream of
+-- new registrations or block forever in one unrelated capability.
+drainOwnedCleanupBounded :: Int -> Int -> IO ()
+drainOwnedCleanupBounded =
+  PendingCleanupOwner.drainPendingCleanupBounded globalPendingCleanupOwner
+
 {- | Start (or restart) a managed generation, fully serialized against
 every other call (including concurrent ones) via @lock@: if a previous
 generation is 'Running', cancel it and genuinely await its own dedicated
@@ -1568,6 +1576,10 @@ stopManagedGeneration lock cancel = mask $ \restore -> do
             -- serializes every caller, but kept total regardless) is
             -- already running this exact receipt right now: never race
             -- it, just report the same stale failure again this once.
+            putMVar lock priorState >> pure (StopFailed (NE.head failuresSoFar))
+          Right PendingCleanupOwner.ReceiptDeferred ->
+            -- Retained lifecycle capabilities never deliberately defer, but
+            -- keep this consumer total if a future capability does.
             putMVar lock priorState >> pure (StopFailed (NE.head failuresSoFar))
     StartCleanupFailed originalErr cleanupErrs retryRelease -> do
       -- The outer 'try' only ever fires for a genuinely asynchronous

@@ -53,6 +53,7 @@ import Entity.Answer
 import Entity.Arkham.GameRaw
 import Entity.Arkham.Step
 import Import hiding (delete, exists, on, (==.))
+import UnliftIO.Exception (mask)
 import Yesod.WebSockets
 
 {- | Step counter only: one indexed Int column, no game JSON touched, no lock.
@@ -275,14 +276,15 @@ putApiV1ArkhamGameRawR gameId = do
 deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
-  runDB $ delete do
-    games <- from $ table @ArkhamGame
-    where_ $ games.id ==. val gameId
-    where_ $ exists do
-      players <- from $ table @ArkhamPlayer
-      where_ $ players.arkhamGameId ==. games.id
-      where_ $ players.userId ==. val userId
-  void $ deleteRoom gameId
+  mask $ \_ -> do
+    runDB $ delete do
+      games <- from $ table @ArkhamGame
+      where_ $ games.id ==. val gameId
+      where_ $ exists do
+        players <- from $ table @ArkhamPlayer
+        where_ $ players.arkhamGameId ==. games.id
+        where_ $ players.userId ==. val userId
+    void $ deleteRoom gameId
 
 data PlayabilityRequest = PlayabilityRequest
   { investigatorId :: InvestigatorId

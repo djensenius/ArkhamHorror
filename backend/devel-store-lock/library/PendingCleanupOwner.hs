@@ -75,9 +75,12 @@ module PendingCleanupOwner (
   globalPendingCleanupOwner,
   newPendingCleanupOwner,
   CleanupReceipt,
+  CleanupAttempt (..),
   ReceiptOutcome (..),
   transferPendingCleanup,
+  transferPendingCleanupEphemeralOnce,
   drainPendingCleanup,
+  drainPendingCleanupBounded,
   attemptCleanupReceipt,
   hasPendingCleanup,
 ) where
@@ -94,6 +97,9 @@ import Control.Concurrent.STM (
   writeTVar,
  )
 import Control.Exception (SomeException, mask, throwIO, try)
+import Control.Monad (void, when)
+import Data.Foldable (for_)
+import Data.Functor ((<&>))
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
@@ -101,6 +107,7 @@ import Data.Map.Strict qualified as Map
 import Data.Set (Set)
 import Data.Set qualified as Set
 import System.IO.Unsafe (unsafePerformIO)
+import System.Timeout qualified as Timeout
 import Prelude
 
 -- | An opaque, comparable identity for exactly one durably-transferred
@@ -113,25 +120,42 @@ newtype CleanupReceipt = CleanupReceipt Integer
   deriving stock (Eq, Ord, Show)
 
 -- | One transferred capability's own current state.
+data CleanupAttempt
+  = CleanupComplete
+  | CleanupFailed SomeException
+  | CleanupDeferred
+  deriving stock (Show)
+
+data CleanupCapability = CleanupCapability
+  { capabilityAction :: IO CleanupAttempt
+  , capabilityOnSuccess :: CleanupReceipt -> STM ()
+  }
+
+data ClaimedOutcome
+  = ClaimedSucceeded
+  | ClaimedFailed (NonEmpty SomeException)
+  | ClaimedDeferred
+
 data Entry
   = -- | Not currently claimed by anyone; safe for the next caller
     -- (whether 'drainPendingCleanup' or 'attemptCleanupReceipt') to
     -- atomically claim.
-    Queued (IO (Either SomeException ()))
+    Queued CleanupCapability
   | -- | Currently claimed, and its own 'IO' action is genuinely running
     -- right now (outside this 'Control.Concurrent.STM.TVar''s own
     -- transactions) -- present specifically so a second, concurrent
     -- caller can observe this and skip it, rather than racing to run the
     -- exact same capability twice.
     Running
-  | -- | Confirmed complete: nothing further to ever attempt again. Kept
-    -- (rather than removed) so a later, repeated 'attemptCleanupReceipt'
-    -- against the exact same receipt (production:
+  | -- | Confirmed complete for a retained lifecycle receipt: nothing further
+    -- to ever attempt again. Kept so a later, repeated
+    -- 'attemptCleanupReceipt' against the exact same receipt (production:
     -- 'Api.Arkham.Lifecycle.stopManagedGeneration', retrying a
     -- 'Api.Arkham.Lifecycle.RetireFailed' lock any number of times) can
     -- always truthfully report success, rather than "receipt not
     -- found" ambiguously meaning either "never existed" or "already
-    -- long finished".
+    -- long finished". Fire-and-forget entries registered through
+    -- 'transferPendingCleanupEphemeralOnce' are instead removed on success.
     Terminated
 
 -- | An opaque handle to a durable, keyed collection of not-yet-finished
@@ -139,6 +163,7 @@ data Entry
 data PendingCleanupOwner = PendingCleanupOwner
   { pcoEntries :: TVar (Map CleanupReceipt Entry)
   , pcoNextId :: TVar Integer
+  , pcoDrainCursor :: TVar (Maybe CleanupReceipt)
   }
 
 -- | Build a fresh, independently-owned 'PendingCleanupOwner' -- for
@@ -146,7 +171,11 @@ data PendingCleanupOwner = PendingCleanupOwner
 -- 'globalPendingCleanupOwner' so every caller across the whole process
 -- shares the exact same durable owner.
 newPendingCleanupOwner :: IO PendingCleanupOwner
-newPendingCleanupOwner = PendingCleanupOwner <$> newTVarIO Map.empty <*> newTVarIO 0
+newPendingCleanupOwner =
+  PendingCleanupOwner
+    <$> newTVarIO Map.empty
+    <*> newTVarIO 0
+    <*> newTVarIO Nothing
 
 -- | The single, process-global owner shared by both @DevelMain@'s
 -- restart protocol and @Application.handler@\/@Application.appMain@ --
@@ -171,8 +200,53 @@ transferPendingCleanup :: PendingCleanupOwner -> IO (Either SomeException ()) ->
 transferPendingCleanup owner action = atomically $ do
   n <- stateTVar (pcoNextId owner) (\next -> (next, next + 1))
   let receipt = CleanupReceipt n
-  modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued action))
+      capability =
+        CleanupCapability
+          { capabilityAction =
+              action <&> \case
+                Right () -> CleanupComplete
+                Left err -> CleanupFailed err
+          , capabilityOnSuccess = \completedReceipt ->
+              modifyTVar' (pcoEntries owner) (Map.insert completedReceipt Terminated)
+          }
+  modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued capability))
   pure receipt
+
+{- | Register fire-and-forget cleanup at most once for the identity represented
+by @receiptSlot@. Concurrent and repeated callers atomically reuse the same
+outstanding receipt. On success the owner removes the entry and clears the slot
+in the same STM transaction, so room cleanup does not leave permanent
+'Terminated' entries while lifecycle callers using 'transferPendingCleanup'
+retain their pollable receipt semantics unchanged. 'CleanupDeferred' leaves the
+same receipt queued and in the slot, allowing an eligibility change to resume
+the same generation without a duplicate.
+-}
+transferPendingCleanupEphemeralOnce
+  :: PendingCleanupOwner
+  -> TVar (Maybe CleanupReceipt)
+  -> IO CleanupAttempt
+  -> IO CleanupReceipt
+transferPendingCleanupEphemeralOnce owner receiptSlot action = atomically $ do
+  entries <- readTVar (pcoEntries owner)
+  current <- readTVar receiptSlot
+  case current >>= \receipt -> fmap (\entry -> (receipt, entry)) (Map.lookup receipt entries) of
+    Just (receipt, Queued _) -> pure receipt
+    Just (receipt, Running) -> pure receipt
+    _ -> do
+      n <- stateTVar (pcoNextId owner) (\next -> (next, next + 1))
+      let receipt = CleanupReceipt n
+          capability =
+            CleanupCapability
+              { capabilityAction = action
+              , capabilityOnSuccess = \completedReceipt -> do
+                  modifyTVar' (pcoEntries owner) (Map.delete completedReceipt)
+                  slotValue <- readTVar receiptSlot
+                  when (slotValue == Just completedReceipt) $
+                    writeTVar receiptSlot Nothing
+              }
+      writeTVar receiptSlot (Just receipt)
+      writeTVar (pcoEntries owner) (Map.insert receipt (Queued capability) entries)
+      pure receipt
 
 {- | Atomically claim the single, first still-'Queued' entry (in
 ascending receipt order, i.e. oldest transfer first) whose receipt is
@@ -186,10 +260,10 @@ is requeued by 'attemptClaimed' exactly as before, but a single drain
 pass must not re-claim it and loop on it forever while never reaching
 any different, later-queued entry.
 -}
-claimNextExcluding :: PendingCleanupOwner -> Set CleanupReceipt -> STM (Either () (CleanupReceipt, IO (Either SomeException ())))
+claimNextExcluding :: PendingCleanupOwner -> Set CleanupReceipt -> STM (Either () (CleanupReceipt, CleanupCapability))
 claimNextExcluding owner excluded = do
   entries <- readTVar (pcoEntries owner)
-  case [(receipt, action) | (receipt, Queued action) <- Map.toAscList entries, receipt `Set.notMember` excluded] of
+  case [(receipt, capability) | (receipt, Queued capability) <- Map.toAscList entries, receipt `Set.notMember` excluded] of
     [] -> pure (Left ())
     (claimed@(receipt, _) : _) -> do
       writeTVar (pcoEntries owner) (Map.insert receipt Running entries)
@@ -197,22 +271,21 @@ claimNextExcluding owner excluded = do
 
 {- | Atomically decide whether (and how) 'attemptCleanupReceipt' may
 proceed against one specific, already-known receipt: already 'Terminated'
-(or, vacuously, entirely unknown -- never actually reachable given this
-module's own construction, since no entry is ever removed) reports
+(or an ephemeral receipt already removed after success) reports
 'ReceiptSucceeded' directly without ever attempting anything; already
 'Running' (some other, concurrent caller has already claimed it) reports
 'ReceiptBusy'; otherwise claims it exactly like 'claimNextExcluding'.
 -}
-claimSpecific :: PendingCleanupOwner -> CleanupReceipt -> STM (Either ReceiptOutcome (CleanupReceipt, IO (Either SomeException ())))
+claimSpecific :: PendingCleanupOwner -> CleanupReceipt -> STM (Either ReceiptOutcome (CleanupReceipt, CleanupCapability))
 claimSpecific owner receipt = do
   entries <- readTVar (pcoEntries owner)
   case Map.lookup receipt entries of
     Nothing -> pure (Left ReceiptSucceeded)
     Just Terminated -> pure (Left ReceiptSucceeded)
     Just Running -> pure (Left ReceiptBusy)
-    Just (Queued action) -> do
+    Just (Queued capability) -> do
       writeTVar (pcoEntries owner) (Map.insert receipt Running entries)
-      pure (Right (receipt, action))
+      pure (Right (receipt, capability))
 
 {- | Atomically claim (via @claimSTM@) and, if anything was claimed, run
 that one capability's own 'IO' action (entirely outside any
@@ -222,8 +295,9 @@ that one capability's own 'IO' action (entirely outside any
 /again/ mid-retry -- without any risk of deadlocking against its own
 claim), then atomically commit its outcome:
 
-* success -> 'Terminated' (never attempted again, but a future poll of
-  the same receipt still truthfully reports success);
+* success -> retained as 'Terminated' or atomically removed, according to the
+  explicit transfer API used (either way a future poll truthfully reports
+  success);
 * a synchronous, data-shaped failure -> back to 'Queued' (available for
   the very next attempt, exactly unchanged, so this receipt's own
   history of who-has-tried-so-far is entirely the caller's own concern
@@ -261,23 +335,26 @@ not itself such a point until after it has already committed.
 -}
 attemptClaimed
   :: PendingCleanupOwner
-  -> STM (Either r (CleanupReceipt, IO (Either SomeException ())))
-  -> IO (Either r (CleanupReceipt, Either (NonEmpty SomeException) ()))
+  -> STM (Either r (CleanupReceipt, CleanupCapability))
+  -> IO (Either r (CleanupReceipt, ClaimedOutcome))
 attemptClaimed owner claimSTM = mask $ \restore -> do
   claimed <- atomically claimSTM
   case claimed of
     Left notClaimed -> pure (Left notClaimed)
-    Right (receipt, action) -> do
-      outcome <- try @SomeException (restore action)
+    Right (receipt, capability) -> do
+      outcome <- try @SomeException (restore (capabilityAction capability))
       case outcome of
-        Right (Right ()) -> do
-          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt Terminated)
-          pure (Right (receipt, Right ()))
-        Right (Left err) -> do
-          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued action))
-          pure (Right (receipt, Left (err :| [])))
+        Right CleanupComplete -> do
+          atomically $ capabilityOnSuccess capability receipt
+          pure (Right (receipt, ClaimedSucceeded))
+        Right (CleanupFailed err) -> do
+          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued capability))
+          pure (Right (receipt, ClaimedFailed (err :| [])))
+        Right CleanupDeferred -> do
+          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued capability))
+          pure (Right (receipt, ClaimedDeferred))
         Left threwErr -> do
-          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued action))
+          atomically $ modifyTVar' (pcoEntries owner) (Map.insert receipt (Queued capability))
           throwIO threwErr
 
 {- | Attempt every capability currently owned, claiming (and running) one
@@ -300,15 +377,11 @@ fresh, never-yet-attempted receipt) is never excluded by this pass's own
 @attempted@ set, so independent, concurrently-arriving work is still
 picked up within the very same call, exactly as before.
 
-Returns 'Right' @()@ once nothing eligible remains queued (whether
-because nothing ever was, or because every capability attempted this
-call genuinely succeeded), or 'Left' the complete list of synchronous
-failures collected along the way (continuing to attempt independent,
-later entries even after an earlier one fails synchronously -- exactly
-like 'Api.Arkham.Lifecycle.ManagedReleasePlan''s own single pass). A
-persistently failing entry is left safely 'Queued' for a genuinely
-/later/, separate call to retry -- this function itself never loops on
-it more than once.
+Returns 'Right' @()@ when this pass observed no synchronous failures, or
+'Left' the complete list of synchronous failures collected along the
+way (continuing to attempt independent, later entries after a failure).
+A deliberately deferred or failing entry remains safely 'Queued' for a
+later pass; this function never loops on either more than once per call.
 -}
 drainPendingCleanup :: PendingCleanupOwner -> IO (Either [SomeException] ())
 drainPendingCleanup owner = go Set.empty []
@@ -317,8 +390,42 @@ drainPendingCleanup owner = go Set.empty []
     claimed <- attemptClaimed owner (claimNextExcluding owner attempted)
     case claimed of
       Left () -> pure (if null failuresAcc then Right () else Left (reverse failuresAcc))
-      Right (receipt, Right ()) -> go (Set.insert receipt attempted) failuresAcc
-      Right (receipt, Left errs) -> go (Set.insert receipt attempted) (reverse (NE.toList errs) ++ failuresAcc)
+      Right (receipt, ClaimedSucceeded) -> go (Set.insert receipt attempted) failuresAcc
+      Right (receipt, ClaimedDeferred) -> go (Set.insert receipt attempted) failuresAcc
+      Right (receipt, ClaimedFailed errs) -> go (Set.insert receipt attempted) (reverse (NE.toList errs) ++ failuresAcc)
+
+{- | Attempt a fixed, fair snapshot of at most @maxEntries@ queued
+capabilities. Each individual attempt is capped at @attemptTimeoutMicros@;
+timed-out actions are cancellation-safely requeued by 'attemptClaimed'. New
+registrations are never pulled into the current pass, and a rotating cursor
+prevents an old blocked or persistently failing entry from starving later
+work across ticks.
+-}
+drainPendingCleanupBounded :: PendingCleanupOwner -> Int -> Int -> IO ()
+drainPendingCleanupBounded owner maxEntries attemptTimeoutMicros = do
+  receipts <- atomically snapshot
+  for_ receipts $ \receipt ->
+    void $
+      Timeout.timeout
+        (max 1 attemptTimeoutMicros)
+        (attemptClaimed owner (claimSpecific owner receipt))
+ where
+  snapshot = do
+    entries <- readTVar (pcoEntries owner)
+    cursor <- readTVar (pcoDrainCursor owner)
+    let queued = [receipt | (receipt, Queued _) <- Map.toAscList entries]
+        ordered = case cursor of
+          Nothing -> queued
+          Just previous ->
+            let (before, after) = span (<= previous) queued
+             in after <> before
+        selected = take (max 0 maxEntries) ordered
+    for_ (lastMay selected) $ writeTVar (pcoDrainCursor owner) . Just
+    pure selected
+
+  lastMay = \case
+    [] -> Nothing
+    xs -> Just (last xs)
 
 -- | The outcome of one 'attemptCleanupReceipt' call against a specific
 -- receipt.
@@ -340,6 +447,10 @@ data ReceiptOutcome
     -- made no attempt at all, to avoid ever running the same capability
     -- twice at once.
     ReceiptBusy
+  | -- | The capability remains outstanding but deliberately performed no
+    -- failing action this time (for example, an empty-only room cleanup
+    -- whose room currently has a rejoined subscriber).
+    ReceiptDeferred
   deriving stock (Show)
 
 {- | Poll, and if currently safe to do so, attempt exactly the one
@@ -366,8 +477,9 @@ attemptCleanupReceipt owner receipt = do
   result <- attemptClaimed owner (claimSpecific owner receipt)
   pure $ case result of
     Left alreadyResolved -> alreadyResolved
-    Right (_, Right ()) -> ReceiptSucceeded
-    Right (_, Left errs) -> ReceiptFailed errs
+    Right (_, ClaimedSucceeded) -> ReceiptSucceeded
+    Right (_, ClaimedFailed errs) -> ReceiptFailed errs
+    Right (_, ClaimedDeferred) -> ReceiptDeferred
 
 -- | Whether anything at all is currently owned (queued or actively
 -- running; excludes 'Terminated' entries) -- for tests\/introspection
