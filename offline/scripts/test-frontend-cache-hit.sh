@@ -99,8 +99,12 @@ mutate_and_expect_reject() {
   fi
 }
 
+# No pipe here: `ls … | head -1` makes `ls` die of SIGPIPE, which `pipefail`
+# then turns into a failing script (exit 141) on Linux.
 pick_compressed() {
-  ( cd "${DIST}/locale-catalog" && ls c/*.json.gz | head -1 )
+  local files=("${DIST}/locale-catalog"/c/*.json.gz)
+  local first="${files[0]}"
+  printf '%s' "${first#"${DIST}/locale-catalog/"}"
 }
 SAMPLE_GZ="$(pick_compressed)"
 SAMPLE_JSON="${SAMPLE_GZ%.gz}"
