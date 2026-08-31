@@ -652,11 +652,24 @@ instance ToJSON WithDeckSize where
         $ case investigatorForm attrs of
           TransfiguredForm inner ->
             let iinvestigator = lookupInvestigator (InvestigatorId inner) attrs.player
-             in KeyMap.insert "class" (toJSON (toAttrs iinvestigator).classSymbol) o
-          _ -> o
+             in KeyMap.insert "class" (toJSON (toAttrs iinvestigator).classSymbol) (withoutCardPool o)
+          _ -> withoutCardPool o
     _ -> error "failed to serialize investigator"
    where
     attrs = toAttrs i
+    -- `cardPool` (InvestigatorAttrs' `investigatorCardPool`, added for
+    -- deck-building card-pool restrictions) rides along on `Investigator`'s
+    -- ToJSON because that same instance also round-trips full internal game
+    -- state (`Entities`/`Game`'s persistence, undo, replay). It has never
+    -- been part of the governed `contracts/manifest.json` 0.1.22 wire
+    -- contract (see `contracts/schemas/investigator.schema.json` and
+    -- `contracts/fixtures/get-game.json`/`game-update.json`), so strip it
+    -- here, at the public REST/WebSocket projection boundary, rather than
+    -- silently widening the wire contract out from under pinned native
+    -- clients. This mirrors this module's existing tombstone-blinding
+    -- comment: one seam, applied once, covers every published investigator
+    -- view (in-play, otherInvestigators, killedInvestigators).
+    withoutCardPool = KeyMap.delete "cardPool"
 
 withSkillTestModifiers :: HasGame m => ChaosToken -> m (With ChaosToken Value)
 withSkillTestModifiers token = do
