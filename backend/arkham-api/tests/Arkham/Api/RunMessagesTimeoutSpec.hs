@@ -20,8 +20,8 @@ This lets us assert:
 * an action that runs LONGER than the budget is genuinely interrupted (not
   merely raced against and ignored): a shared 'IORef' proves the action's
   own "I finished" flag is never set -- checked BOTH immediately after
-  'runWithMessagesTimeout' returns AND again well after the action's own
-  internal delay would have elapsed, so a hypothetical future
+  'runWithMessagesTimeout' returns AND again a short while after the
+  action's own internal delay would have elapsed, so a hypothetical future
   implementation that raced a detached worker thread against a timer
   (instead of relying on GHC's genuinely-interrupting, same-thread
   'System.Timeout.timeout') and merely returned early while the worker
@@ -73,9 +73,13 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
     result <- runWithMessagesTimeout fixtureGameId shortBudgetMicros (pure (42 :: Int))
     result `shouldBe` 42
 
-  it "an action that runs LONGER than the budget is genuinely interrupted -- its own 'finished' flag is never set, checked both immediately and again well after its internal delay would have elapsed -- and RunMessagesTimeout propagates with the exact game id and budget supplied" do
+  it "an action that runs LONGER than the budget is genuinely interrupted -- its own 'finished' flag is never set, checked both immediately and again a short while after its internal delay would have elapsed -- and RunMessagesTimeout propagates with the exact game id and budget supplied" do
     finished <- newIORef False
-    let internalDelayMicros = shortBudgetMicros * 20
+    -- 4x the budget (not 20x) keeps this test's added wall time to well
+    -- under half a second (budget + 3 * internalDelayMicros below) while
+    -- still giving 'timeout' an ample, non-flaky window to fire well
+    -- before this delay would otherwise elapse.
+    let internalDelayMicros = shortBudgetMicros * 4
     outcome <-
       try
         $ runWithMessagesTimeout fixtureGameId shortBudgetMicros do
@@ -83,7 +87,7 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
           writeIORef finished True
     (outcome :: Either RunMessagesTimeout ()) `shouldBe` Left (RunMessagesTimeout fixtureGameId shortBudgetMicros)
     readIORef finished `shouldReturn` False
-    -- Wait well past 'internalDelayMicros' -- long enough for the action to
+    -- Wait past 'internalDelayMicros' -- long enough for the action to
     -- have set 'finished' had it kept running in the background after
     -- 'runWithMessagesTimeout' returned -- and re-check. This is what
     -- actually distinguishes a GENUINE cancellation from a mere race where
@@ -91,7 +95,9 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
     -- unobserved: the immediate check alone cannot tell the two apart, but
     -- this second, delayed check would catch a future implementation that
     -- raced a detached worker thread instead of relying on GHC's
-    -- genuinely-interrupting, same-thread 'System.Timeout.timeout'.
+    -- genuinely-interrupting, same-thread 'System.Timeout.timeout'. Only
+    -- 2x 'internalDelayMicros' (not 20x, as this module's whole suite
+    -- should stay comfortably under a second).
     threadDelay (internalDelayMicros * 2)
     readIORef finished `shouldReturn` False
 

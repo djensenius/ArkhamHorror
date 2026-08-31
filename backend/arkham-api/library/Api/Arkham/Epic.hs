@@ -48,10 +48,11 @@ membership for an Epic event under a specific group ordinal, via
 This is the ONE typed answer to "is this user\/event\/ordinal combination
 allowed to proceed", shared by every entry point that can create the FIRST
 'ArkhamEpicMember' row for a user in an event --
-'Api.Handler.Arkham.Game.Debug.postApiV1ArkhamGameClaimSeatR' delegates to it
-via 'reserveEpicGroupMembership' -- so the "one event group per user"
-invariant and its conflict semantics cannot independently drift between
-entry points that share it.
+'Api.Handler.Arkham.Game.Debug.postApiV1ArkhamGameClaimSeatR' and
+'Api.Handler.Arkham.PendingGames.putApiV1ArkhamPendingGameR' both delegate
+to it via the legacy-aware 'reserveEpicGroupMembershipReconciling' -- so
+the "one event group per user" invariant and its conflict semantics
+cannot independently drift between entry points that share it.
 -}
 data EpicGroupReservation
   = -- | Either a freshly-inserted row, or a pre-existing row already under
