@@ -17,10 +17,6 @@
     "1": "Lunacy’s Reward",
     "2": "Lost Soul"
   },
-  "label": {
-    "doubt": "Doubt",
-    "conviction": "Conviction"
-  },
   "key": {
     "theStrangerIsOnToYou": "The Stranger is on to you",
     "chasingTheStranger": "Chasing the Stranger",
@@ -76,12 +72,12 @@
     }
   },
   "label": {
+    "doubt": "Doubt",
+    "conviction": "Conviction",
     "gainAdditionalXp": "Choose {name} to gain 1 additional XP",
     "youngPsychopath": {
       "fight": "Young Psycopath gets +3 fight until the end of the investigation phase"
-    },
-    "conviction": "Conviction",
-    "doubt": "Doubt"
+    }
   },
   "interlude1": {
     "title": "Interlude I: Lunacy’s Reward",

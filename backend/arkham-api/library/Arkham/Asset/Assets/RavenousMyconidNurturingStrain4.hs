@@ -80,10 +80,10 @@ instance RunMessage RavenousMyconidNurturingStrain4 where
               <> oneOf [AssetWithDamage, AssetWithHorror]
           )
       chooseOrRunOne iid
-        $ [ Label "$cards.label.ravenousMyconidNurturingStrain4.healFromMyconid" [DoStep n (ForChoice 1 msg)] | hasDamage
+        $ [ Label "$cards.label.ravenousMyconidNurturingStrain4.heal" [DoStep n (ForChoice 1 msg)] | hasDamage
           ]
         <> [ Label
-            "$cards.label.ravenousMyconidNurturingStrain4.moveDamageToMyconid"
+            "$cards.label.ravenousMyconidNurturingStrain4.moveThatMuch"
             [DoStep n (ForChoice 2 msg), CheckDefeated (attrs.ability 2) (toTarget attrs)]
            | canMoveDamage
            ]

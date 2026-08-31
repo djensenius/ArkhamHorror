@@ -27,7 +27,7 @@ instance RunMessage YigsMercy where
       yigsFury <- getRecordCount YigsFury
       chooseOneM iid $ scenarioI18n do
         if yigsFury >= 16
-          then labeled' "yigsMercy.refuses" nothing
+          then labeled' "yigsMercy.refused" nothing
           else do
             labeled' "yigsMercy.reject" do
               exhaustWith attrs ichtaca

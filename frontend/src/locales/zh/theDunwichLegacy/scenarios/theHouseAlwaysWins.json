@@ -60,16 +60,19 @@
       "doNotSpend": "不花费资源"
     },
     "cheated": "记住，你\"“作弊”\"了。",
-    "raiseTheStakes": {
-      "place": "将“提高赌注”放置在你的威胁区域。"
-    }
+    "raiseTheStakes": {}
   },
   "tooltips": {
     "laBellaLuna": {
       "resign": "真是一团稀巴烂。"
     },
-    "backAlley" : {
+    "backAlley": {
       "resign": "我们可以从这出去!"
+    }
+  },
+  "raiseTheStakes": {
+    "label": {
+      "place": "将“提高赌注”放置在你的威胁区域。"
     }
   }
 }

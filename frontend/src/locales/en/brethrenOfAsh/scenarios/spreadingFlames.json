@@ -28,18 +28,6 @@
       }
     ]
   },
-  "tokens": {
-    "easyStandard": {
-      "skull": "-X. X is the current act number.",
-      "tablet": "-1. Reveal another token. If you fail, take 1 damage.",
-      "elderThing": "-3. If you fail by 2 or more, draw the topmost copy of Fire! in the encounter discard pile, if able."
-    },
-    "hardExpert": {
-      "skull": "-X. X is 1 more than the current act number.",
-      "tablet": "-2. Reveal another token. If you fail, take 1 damage.",
-      "elderThing": "-4. If you fail, draw the topmost copy of Fire! in the encounter discard pile, if able."
-    }
-  },
   "label": {
     "searchingForDrArmitage": {
       "drawFromDiscard": "Only search discard",
@@ -53,15 +41,15 @@
     "setOutOfPlay": "Set all 5 copies of the Fire! treachery, the Dr. Henry Armitage story asset, and the Servant of Flame enemy aside, out of play."
   },
   "tokens": {
-    "hardExpert": {
-      "skull": "-X. X is the current act number + 1.",
-      "tablet": "-2. Reveal another token. If you fail, take 1 damage.",
-      "elderThing": "-4. If you fail, if able, draw the top card of the encounter discard pile with the title Fire!."
-    },
     "easyStandard": {
       "skull": "-X. X is the current act number.",
       "tablet": "-1. Reveal another token. If you fail, take 1 damage.",
       "elderThing": "-3. If you fail by 2 or more, if able, draw the top card of the encounter discard pile with the title Fire!."
+    },
+    "hardExpert": {
+      "skull": "-X. X is the current act number + 1.",
+      "tablet": "-2. Reveal another token. If you fail, take 1 damage.",
+      "elderThing": "-4. If you fail, if able, draw the top card of the encounter discard pile with the title Fire!."
     }
   },
   "intro": {

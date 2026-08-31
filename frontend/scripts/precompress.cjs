@@ -110,7 +110,23 @@ function precompressDir(dir) {
 module.exports = { brotliSync, gzipSync, precompressDir }
 
 if (require.main === module) {
-  const dist = path.resolve(__dirname, '..', 'dist')
+  // Which directory to compress: an explicit --dist, else PRECOMPRESS_DIST
+  // (set by a build that used Vite's --outDir), else the default dist/. Without
+  // this, `npm run build -- --outDir X` compressed a stale default directory
+  // and left X uncompressed.
+  const flagIndex = process.argv.indexOf('--dist')
+  if (flagIndex !== -1 && (process.argv[flagIndex + 1] || '').trim() === '') {
+    console.error('precompress: --dist requires a directory')
+    process.exit(1)
+  }
+  const requested =
+    flagIndex !== -1
+      ? process.argv[flagIndex + 1]
+      : (process.env.PRECOMPRESS_DIST || '').trim() || null
+
+  const dist = requested
+    ? path.resolve(requested)
+    : path.resolve(__dirname, '..', 'dist')
   if (!fs.existsSync(dist)) {
     console.error(`precompress: ${dist} does not exist — run the build first`)
     process.exit(1)
@@ -122,7 +138,7 @@ if (require.main === module) {
   const pct = gz > 0 ? (100 - (br / gz) * 100).toFixed(1) : '0.0'
 
   console.log(
-    `precompress: ${files} files (${skipped} too small), ` +
+    `precompress: ${dist}: ${files} files (${skipped} too small), ` +
       `${mb(raw)} MB raw -> ${mb(gz)} MB gzip -> ${mb(br)} MB brotli ` +
       `(brotli is ${pct}% smaller than gzip) in ${((Date.now() - started) / 1000).toFixed(1)}s`,
   )

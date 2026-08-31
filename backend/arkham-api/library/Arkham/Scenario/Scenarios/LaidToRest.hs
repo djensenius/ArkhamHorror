@@ -318,7 +318,7 @@ instance RunMessage LaidToRest where
           for_ mJim \jim -> do
             hasTrumpet <- hasCampaignCard jim Assets.jimsTrumpet
             hasAdvancedRhapsody <- hasCampaignCard jim Treacheries.finalRhapsodyAdvanced
-            scenarioI18n $ scope "label" $ chooseOneM jim do
+            scenarioI18n $ chooseOneM jim do
               when hasTrumpet $ labeled' "upgradeJimsTrumpet" do
                 removeCampaignCardFromDeck jim Assets.jimsTrumpet
                 addCampaignCardToDeck jim DoNotShuffleIn Assets.jimsTrumpetAdvanced
@@ -335,7 +335,7 @@ instance RunMessage LaidToRest where
             hasRhapsody <- hasCampaignCard jim Treacheries.finalRhapsody
             hasAdvancedTrumpet <- hasCampaignCard jim Assets.jimsTrumpetAdvanced
             when (hasRhapsody || hasAdvancedTrumpet) do
-              scenarioI18n $ scope "label" $ chooseOrRunOneM jim do
+              scenarioI18n $ chooseOrRunOneM jim do
                 when hasRhapsody $ labeled' "upgradeFinalRhapsody" do
                   removeCampaignCardFromDeck jim Treacheries.finalRhapsody
                   addCampaignCardToDeck jim DoNotShuffleIn Treacheries.finalRhapsodyAdvanced

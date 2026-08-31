@@ -1,9 +1,5 @@
 {
   "heading": "Scenario IV",
-  "label": {
-    "placeMonsterUnderActDeck": "Randomly choose an enemy from among the set-aside Monster enemies and place it beneath the act deck without looking at it",
-    "automaticFail": "This test automatically fails"
-  },
   "tokens": {
     "easyStandard": {
       "skull": "-1. If you fail, randomly choose an enemy from among the set-aside _Monster_ enemies and place it beneath the act deck without looking at it.",
@@ -58,13 +54,13 @@
     }
   },
   "label": {
+    "placeMonsterUnderActDeck": "Randomly choose an enemy from among the set-aside Monster enemies and place it beneath the act deck without looking at it",
+    "automaticFail": "This test automatically fails",
     "cloudedMemory": {
       "forget": "Forget something an investigator has \"remembered\" from an ability on a location. (It is no longer true.)",
       "chooseForget": "Forget something an investigator has \"remembered\" from an ability on a location. (It is no longer true.)",
       "horror": "Take 1 horror and Clouded Memory gains surge."
-
     },
-    "placeMonsterUnderActDeck": "Randomly choose an enemy from among the set-aside Monster enemies and place it beneath the act deck without looking at it",
     "thisTestAutomaticallyFails": "This test automatically fails",
     "infirmary": {
       "healDamage": "Heal 1 damage and take 1 direct horror",

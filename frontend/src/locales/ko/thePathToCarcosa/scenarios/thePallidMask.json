@@ -15,7 +15,6 @@
     }
   },
   "label": {
-    "chooseWhoReadsActII": "누가 『황색의 왕』 제2막을 읽을지 선택",
     "above": "위쪽에 배치",
     "below": "아래쪽에 배치",
     "right": "오른쪽에 배치",
@@ -65,6 +64,9 @@
     },
     "xp": {
       "bonus": "누더기 왕의 음모에 대한 통찰력을 얻음."
+    },
+    "label": {
+      "chooseWhoReadsActII": "누가 『황색의 왕』 제2막을 읽을지 선택"
     }
   }
 }

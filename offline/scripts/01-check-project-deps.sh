@@ -2,7 +2,7 @@
 # =============================================================================
 # 01-check-project-deps.sh - Install project dependencies
 # Versions are kept strictly aligned with docker-compose.yml:
-#   GHC 9.14.1 / PostgreSQL 14.15 / Node.js 22 LTS / Stack latest
+#   GHC 9.14.1 / PostgreSQL 14.15 / Node.js 26 / Stack latest
 #
 # Installation strategy:
 #   - Download prebuilt binaries for GHC / Stack / Node.js from the official sites
@@ -129,22 +129,30 @@ install_ghc_and_stack() {
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 2. Node.js 22 LTS (prebuilt binary)
+# 2. Node.js 26 (prebuilt binary)
 # ═════════════════════════════════════════════════════════════════════════════
 
 install_nodejs() {
     step "Installing Node.js"
 
-    if [ -f "$STAMP_NODE" ]; then
-        info "Node.js already installed, skipping"
-        export PATH="${DEPS_DIR}/node/bin:${PATH}"; return 0
-    fi
+    # Keep this aligned with mise.toml, the Dockerfile and frontend/package.json
+    # `engines`: the locale-catalog generator refuses to run on any other
+    # version, because the published catalog revision is bound to it exactly.
+    local node_ver="26.7.0"
+
     if [ -x "${DEPS_DIR}/node/bin/node" ]; then
-        info "Node.js already present, skipping"
-        export PATH="${DEPS_DIR}/node/bin:${PATH}"; touch "$STAMP_NODE"; return 0
+        local installed_ver
+        installed_ver="$("${DEPS_DIR}/node/bin/node" --version 2>/dev/null | sed 's/^v//')"
+        if [ "$installed_ver" = "$node_ver" ]; then
+            info "Node.js ${installed_ver} already present, skipping"
+            export PATH="${DEPS_DIR}/node/bin:${PATH}"; touch "$STAMP_NODE"; return 0
+        fi
+        warn "Node.js ${installed_ver} is installed but ${node_ver} is required; reinstalling"
+        rm -rf "${DEPS_DIR}/node" "$STAMP_NODE"
+    elif [ -f "$STAMP_NODE" ]; then
+        rm -f "$STAMP_NODE"
     fi
 
-    local node_ver="22.12.0"
     local node_archive=""
     case "$PLATFORM" in
         macos-arm64)   node_archive="node-v${node_ver}-darwin-arm64.tar.gz" ;;

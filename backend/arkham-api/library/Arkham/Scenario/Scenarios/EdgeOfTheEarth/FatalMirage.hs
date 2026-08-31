@@ -238,7 +238,8 @@ instance RunMessage FatalMirage where
                 unless atPrison do
                   labeled' "moveToPrisonOfMemories" $ moveTo_ Tablet iid Locations.prisonOfMemories
                 whenCanShuffleIn iid tekelili do
-                  labeled' "shuffleTekeliliIntoYourDeck"
+                  countVar (length tekelili)
+                    $ labeled' "shuffleTekeliliIntoYourDeck"
                     $ addTekelili iid tekelili
         ElderThing ->
           chooseSelectM iid (EnemyWithTrait Eidolon) \enemy -> placeDoom ElderThing enemy 1

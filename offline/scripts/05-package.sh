@@ -846,6 +846,34 @@ http {
   client_body_temp_path "$DATA_DIR/nginx_temp";
   proxy_temp_path       "$DATA_DIR/nginx_temp";
   map \$http_upgrade \$connection_upgrade { default upgrade; '' close; }
+  # Locale-catalog cache policy: immutable only for the content-addressed and
+  # revision-addressed paths, and only on a status that carries a payload.
+  map \$uri \$catalog_path_cache {
+    default                    "public, max-age=0, must-revalidate";
+    "~^/locale-catalog/[cr]/"  "public, max-age=31536000, immutable";
+  }
+  # Brotli negotiation, identical to prod.nginxconf: a client that sends
+  # \`br;q=0\` has refused brotli (RFC 9110 §12.5.3), so a positive token is
+  # required and any zero-weighted \`br\` vetoes it. Unrecognised parameters
+  # fall back to gzip or identity.
+  map \$http_accept_encoding \$br_acceptable {
+    default 0;
+    "~*(^|,)[ \\t]*br[ \\t]*(;[ \\t]*q=(0\\.\\d*[1-9]\\d*|1(\\.0{1,3})?)[ \\t]*)?(,|\$)" 1;
+  }
+  map \$http_accept_encoding \$br_refused {
+    default 0;
+    "~*(^|,)[ \\t]*br[ \\t]*;[ \\t]*q=0(\\.0{1,3})?[ \\t]*(,|\$)" 1;
+  }
+  map "\$br_acceptable\$br_refused" \$accepts_br {
+    default 0;
+    "10"    1;
+  }
+  map \$status \$catalog_cache_control {
+    default "no-store";
+    200     \$catalog_path_cache;
+    206     \$catalog_path_cache;
+    304     \$catalog_path_cache;
+  }
   server {
     listen $NGINX_PORT;
     server_name localhost;
@@ -853,6 +881,40 @@ http {
     location / {
       root "$frontend_root";
       try_files \$uri \$uri/ /index.html;
+    }
+    # The published locale catalog, with the same guarantees as the hosted
+    # deployment: JSON MIME, nosniff, immutable caching for content-addressed
+    # and revision paths, revalidation for the mutable manifest, and — because
+    # `^~` beats the SPA catch-all — a real 404 for anything missing instead of
+    # index.html. Error statuses are never storable (see the \$status map),
+    # so a client that races a package upgrade cannot cache a 404.
+    location ^~ /locale-catalog/ {
+      root "$frontend_root";
+      default_type application/json;
+      gzip_static on;
+
+      # Brotli delivery, mirroring prod.nginxconf: an `if` block is a nested
+      # configuration level and add_header does not inherit into one that
+      # declares its own, so the shared headers are repeated inside it. The
+      # response still carries exactly one of each, which
+      # scripts/validate-catalog-serving.py asserts against real nginx for this
+      # config as well as for prod.
+      set \$br "";
+      if (\$accepts_br) { set \$br "y"; }
+      if (-f "\$request_filename.br") { set \$br "\${br}f"; }
+      if (\$br = "yf") {
+        add_header Cache-Control \$catalog_cache_control always;
+        add_header Vary "Accept-Encoding" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Content-Encoding "br" always;
+        rewrite ^(.*)\$ \$1.br break;
+      }
+
+      add_header Cache-Control \$catalog_cache_control always;
+      add_header X-Content-Type-Options "nosniff" always;
+      add_header Vary "Accept-Encoding" always;
+      # Whole-file fetches only, as in prod.nginxconf.
+      max_ranges 0;
     }
     # Card image routing:
     # 1. user cards/
@@ -2047,6 +2109,17 @@ main() {
     # Copy frontend
     substep "Copy: ${FRONTEND_SRC}/ → ${PKG_DIR}/game/frontend/dist/"
     cp -r "${FRONTEND_SRC}/"* "${PKG_DIR}/game/frontend/dist/"
+
+    # The copy above reads a tree this script does not own, and `--skip-frontend`
+    # can hand it one nobody verified. The packaged catalog is therefore verified
+    # *here*, in its final destination, and republished from the verified buffers
+    # — so the bytes nginx serves out of the package are the bytes that passed.
+    substep "Verifying the packaged locale catalog"
+    if ! (cd "${PROJECT_ROOT}/frontend" \
+            && node scripts/locale-catalog/verify-dist.mjs \
+                 --dist "${PKG_DIR}/game/frontend/dist" --dist-only --publish); then
+        die "  ✗ The packaged frontend does not contain a valid locale catalog"
+    fi
 
     # Copy PostgreSQL
     substep "Copy PostgreSQL binaries ..."
