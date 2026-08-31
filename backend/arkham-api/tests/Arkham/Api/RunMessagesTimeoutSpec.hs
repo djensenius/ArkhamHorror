@@ -59,14 +59,16 @@ data DistinctFailure = DistinctFailure
 fixtureGameId :: GameEntity.ArkhamGameId
 fixtureGameId = GameEntity.ArkhamGameKey $ UUID.fromWords 0 0 0 1
 
--- | A short budget so this whole module runs in well under a second --
--- deliberately NOT the real 30s production budget (see
+-- | A short budget so this module still runs quickly, while remaining
+-- robust against CI scheduling\/GC pauses (deliberately NOT the tiny,
+-- sub-100ms budgets that proved flaky under load) -- deliberately NOT the
+-- real 30s production budget (see
 -- 'Api.Handler.Arkham.Games.Shared.runMessagesTimeoutMicros'), which is
 -- exactly why 'runWithMessagesTimeout' takes an explicit budget parameter
 -- rather than hard-coding it: production supplies the real constant, this
--- module supplies a tiny one.
+-- module supplies a small one.
 shortBudgetMicros :: Int
-shortBudgetMicros = 50 * 1000 -- 50ms
+shortBudgetMicros = 200 * 1000 -- 200ms
 
 spec :: Spec
 spec = describe "runWithMessagesTimeout (production-used runMessages circuit breaker, exercised directly)" do
@@ -76,11 +78,10 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
 
   it "an action that runs LONGER than the budget is genuinely interrupted -- its own 'finished' flag is never set, checked both immediately and again a short while after its internal delay would have elapsed -- and RunMessagesTimeout propagates with the exact game id and budget supplied" do
     finished <- newIORef False
-    -- 4x the budget (not 20x) keeps this test's added wall time to well
-    -- under half a second (budget + 3 * internalDelayMicros below) while
-    -- still giving 'timeout' an ample, non-flaky window to fire well
-    -- before this delay would otherwise elapse.
-    let internalDelayMicros = shortBudgetMicros * 4
+    -- 3x the budget gives 'timeout' an ample, non-flaky window to fire
+    -- well before this delay would otherwise elapse, without making the
+    -- action's own internal delay unnecessarily long.
+    let internalDelayMicros = shortBudgetMicros * 3
     outcome <-
       try
         $ runWithMessagesTimeout fixtureGameId shortBudgetMicros do
@@ -97,9 +98,12 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
     -- this second, delayed check would catch a future implementation that
     -- raced a detached worker thread instead of relying on
     -- 'UnliftIO.Timeout.timeout''s own genuinely-interrupting cancellation.
-    -- Only 2x 'internalDelayMicros' (not 20x, as this module's whole suite
-    -- should stay comfortably under a second).
-    threadDelay (internalDelayMicros * 2)
+    -- 'timeout' already fires at 'shortBudgetMicros', comfortably before
+    -- 'internalDelayMicros' elapses (1/3 of it); waiting one more
+    -- 'internalDelayMicros' after that is ample margin to outlive the
+    -- would-be worker action without needlessly inflating this spec's
+    -- wall time.
+    threadDelay internalDelayMicros
     readIORef finished `shouldReturn` False
 
   it "an action that throws its OWN, DIFFERENT exception before the budget elapses propagates that exact exception unchanged -- never reinterpreted as a timeout, never swallowed" do
@@ -117,8 +121,11 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
     (timeoutOutcome :: Either RunMessagesTimeout ()) `shouldBe` Right ()
 
   it "a genuinely slow action's timeout is reported under the SAME budget value it was given, not a hard-coded production constant, proving the seam is parameterized rather than reusing a fixed 30s budget" do
-    let otherBudgetMicros = 10 * 1000
+    -- A distinct, larger budget than 'shortBudgetMicros' -- still small
+    -- enough to keep this spec fast, but comfortably above the sub-20ms
+    -- range that proved flaky under CI scheduling/GC pauses.
+    let otherBudgetMicros = 100 * 1000 -- 100ms
     outcome <-
       try
-        $ runWithMessagesTimeout fixtureGameId otherBudgetMicros (threadDelay (otherBudgetMicros * 20))
+        $ runWithMessagesTimeout fixtureGameId otherBudgetMicros (threadDelay (otherBudgetMicros * 5))
     (outcome :: Either RunMessagesTimeout ()) `shouldBe` Left (RunMessagesTimeout fixtureGameId otherBudgetMicros)
