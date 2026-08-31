@@ -24,9 +24,10 @@ by a committed, narrative-free authority file under
     locale-catalog-manifest.json         the v1 manifest, derived from the above
 
 `generatorSha256` and `schemasSha256` are the digests of the *real* inputs --
-this script's own bytes and the published v1 schemas -- rather than of a
-committed description of them, so editing either really does move the catalog
-revision, as it does in production.
+every repository-local module this generator executes (its own bytes plus the
+`scripts/` import closure, `strict_json` included) and the published v1 schemas
+-- rather than of a committed description of them, so editing any of them
+really does move the catalog revision, as it does in production.
 
 Every digest, count, path, `outputSha256` and provenance value in that manifest
 is *computed here* from those bytes -- nothing is asserted by hand. `--check`
@@ -41,6 +42,7 @@ revision bump is regenerated with `mise run contracts:catalog-fixture`.
 """
 
 import argparse
+import ast
 import copy
 import hashlib
 import json
@@ -63,11 +65,13 @@ CATALOG_SCHEMA_DIR = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1"
 
 # The generator's own sources and the schema set it renders against, hashed as
 # themselves rather than described by a committed stand-in: `generatorSha256`
-# is the digest of this script, `schemasSha256` the digest of the published v1
+# is the digest of every repository-local module this script executes (see
+# `generator_sources()`), `schemasSha256` the digest of the published v1
 # schemas. Editing either changes the catalog revision, which is exactly what
 # the production generator's provenance means -- and is why a change to this
 # script is followed by `mise run contracts:catalog-fixture-write`.
-GENERATOR_SOURCES = ("scripts/build-locale-catalog-fixture.py",)
+GENERATOR_ENTRY = "scripts/build-locale-catalog-fixture.py"
+GENERATOR_MODULE_DIR = "scripts"
 SCHEMA_SOURCES = (
     "frontend/schemas/locale-catalog/v1/manifest.schema.json",
     "frontend/schemas/locale-catalog/v1/chunk.schema.json",
@@ -172,6 +176,66 @@ def build_backend_registry() -> bytes:
         "unknownVariableTypes": [],
     }
     return canonical_bytes(registry)
+
+
+def generator_sources() -> tuple[str, ...]:
+    """Every repository-local module this generator actually executes.
+
+    Hashing only this file would leave behavior-bearing source out of the
+    provenance: the derivation runs `strict_json`'s readers and parsers too, and
+    a future helper would join them silently. So the set is the *import closure*
+    of the entry module, computed from each module's own AST and restricted to
+    modules that live in `scripts/` -- a new local import is picked up
+    automatically rather than having to be remembered here, and a dropped or
+    renamed one changes the digest because it is bound to the path as well as
+    the bytes.
+
+    Relative imports and `scripts/` packages are refused rather than
+    approximated: neither exists today, and silently under-approximating the
+    closure is the exact failure this function is here to prevent.
+    """
+    module_dir = ROOT / GENERATOR_MODULE_DIR
+    pending = [GENERATOR_ENTRY]
+    closure: set[str] = set()
+
+    while pending:
+        relative_path = pending.pop()
+        if relative_path in closure:
+            continue
+        path = ROOT / relative_path
+        require(path.is_file(), f"missing generator source {relative_path}")
+        closure.add(relative_path)
+
+        tree = ast.parse(path.read_bytes(), filename=relative_path)
+        for node in ast.walk(tree):
+            imported: list[str] = []
+            if isinstance(node, ast.Import):
+                imported = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                require(
+                    node.level == 0,
+                    f"{relative_path} uses a relative import, which this closure does not model; "
+                    "keep generator helpers as plain sibling modules in scripts/",
+                )
+                if node.module:
+                    imported = [node.module]
+            for name in imported:
+                top_level = name.split(".")[0]
+                candidate = module_dir / f"{top_level}.py"
+                package = module_dir / top_level
+                require(
+                    not package.is_dir(),
+                    f"{relative_path} imports the local package {top_level!r}, which this closure "
+                    "does not model; keep generator helpers as single modules",
+                )
+                if candidate.is_file():
+                    pending.append(candidate.relative_to(ROOT).as_posix())
+
+    require(
+        GENERATOR_ENTRY in closure,
+        "the generator source closure lost its own entry module",
+    )
+    return tuple(sorted(closure))
 
 
 def read_repository_files(relative_paths: tuple[str, ...]) -> list[tuple[str, bytes]]:
@@ -353,7 +417,7 @@ def build_all() -> dict[str, bytes]:
     source_entries = [(path, data) for path, data in files.items() if path.startswith(f"{FIXTURE_PREFIX}source-")]
     output_sha256 = fileset_digest(list(chunk_files.items()))
     locale_sources_sha256 = fileset_digest(source_entries)
-    generator_sha256 = fileset_digest(read_repository_files(GENERATOR_SOURCES))
+    generator_sha256 = fileset_digest(read_repository_files(generator_sources()))
     schemas_sha256 = fileset_digest(read_repository_files(SCHEMA_SOURCES))
     artifact_sha256 = sha256_hex(files[f"{FIXTURE_PREFIX}backend-registry.json"])
 
@@ -596,7 +660,8 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
     published v1 schema, renaming an input, or changing only the generator
     version must each produce a different revision.
     """
-    generator_inputs = read_repository_files(GENERATOR_SOURCES)
+    sources = generator_sources()
+    generator_inputs = read_repository_files(sources)
     schema_inputs = read_repository_files(SCHEMA_SOURCES)
     constants = catalog_constants()
     provenance = manifest["provenance"]
@@ -605,6 +670,16 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
         provenance["generatorSha256"] == fileset_digest(generator_inputs),
         "Self-test failure: generatorSha256 is not the digest of this generator's own sources",
     )
+    require(
+        GENERATOR_ENTRY in sources and f"{GENERATOR_MODULE_DIR}/strict_json.py" in sources,
+        "Self-test failure: the generator source closure must contain this module and every local "
+        f"helper it executes; got {sources}",
+    )
+    for source in sources:
+        require(
+            (ROOT / source).is_file(),
+            f"Self-test failure: the generator source closure names a missing file {source}",
+        )
     require(
         provenance["schemasSha256"] == fileset_digest(schema_inputs),
         "Self-test failure: schemasSha256 is not the digest of the published v1 schemas",
@@ -643,8 +718,24 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
         arguments.update(overrides)
         return derive_provenance_sha256(**arguments)
 
-    edited_generator = fileset_digest(
-        [(path, data + b"\n") for path, data in generator_inputs]
+    edited_generator = fileset_digest([(path, data + b"\n") for path, data in generator_inputs])
+    edited_helper = fileset_digest(
+        [
+            (path, data + b"\n" if path != GENERATOR_ENTRY else data)
+            for path, data in generator_inputs
+        ]
+    )
+    added_local_import = fileset_digest(
+        generator_inputs + [(f"{GENERATOR_MODULE_DIR}/new_helper.py", b"# a new local helper\n")]
+    )
+    dropped_helper = fileset_digest(
+        [(path, data) for path, data in generator_inputs if path == GENERATOR_ENTRY]
+    )
+    renamed_helper = fileset_digest(
+        [
+            (path if path == GENERATOR_ENTRY else path + ".moved", data)
+            for path, data in generator_inputs
+        ]
     )
     edited_schemas = fileset_digest([(path, data + b"\n") for path, data in schema_inputs])
     renamed_schemas = fileset_digest(
@@ -654,6 +745,10 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
 
     for label, digest in (
         ("an edited generator source", perturbed(generator_sha256=edited_generator)),
+        ("an edited generator helper", perturbed(generator_sha256=edited_helper)),
+        ("a newly imported local helper", perturbed(generator_sha256=added_local_import)),
+        ("a dropped generator helper", perturbed(generator_sha256=dropped_helper)),
+        ("a renamed generator helper", perturbed(generator_sha256=renamed_helper)),
         ("an edited v1 schema", perturbed(schemas_sha256=edited_schemas)),
         ("a renamed v1 schema", perturbed(schemas_sha256=renamed_schemas)),
         ("a dropped v1 schema", perturbed(schemas_sha256=partial_schemas)),
@@ -667,11 +762,21 @@ def run_provenance_input_self_tests(manifest: dict) -> None:
             "actually bound into the catalog revision",
         )
 
+    for label, digest in (
+        ("an edited generator source", edited_generator),
+        ("an edited generator helper", edited_helper),
+        ("a newly imported local helper", added_local_import),
+        ("a dropped generator helper", dropped_helper),
+        ("a renamed generator helper", renamed_helper),
+    ):
+        require(
+            digest != provenance["generatorSha256"],
+            f"Self-test failure: {label} produced the same generator fileset digest",
+        )
     require(
-        edited_generator != provenance["generatorSha256"]
-        and edited_schemas != provenance["schemasSha256"]
+        edited_schemas != provenance["schemasSha256"]
         and renamed_schemas != provenance["schemasSha256"],
-        "Self-test failure: a mutated provenance input produced the same fileset digest",
+        "Self-test failure: a mutated schema input produced the same fileset digest",
     )
 
 

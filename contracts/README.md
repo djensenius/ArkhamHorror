@@ -515,6 +515,14 @@ both directions.
   comparing revisions as strings would read as different catalogs. All three
   are startup failures, and `manifest.json`'s `catalogRevisionChecks` holds the
   schema and the production parser to one table.
+- **Every grammar is ASCII.** Digests, revisions, locale tags, hosts and ports
+  are compared by clients as strings, so a character that merely looks like a
+  digit or a letter is refused rather than folded: an Arabic-Indic or fullwidth
+  digit, a Cyrillic confusable, and a KELVIN SIGN that Unicode lowercasing would
+  turn into an ASCII `k` all fail startup. The backend spells its character
+  ranges out rather than relying on which of `isDigit`/`isNumber`/`isAlphaNum`
+  is ASCII, and folds case ASCII-only so normalization can never invent an ASCII
+  character. Both governed tables carry non-ASCII rows.
 - **The host means one thing to every client.** An absolute URL's host is
   either canonical dotted-decimal IPv4 (four octets `0-255`, no leading zeros)
   or a registered name whose final label is neither all-digits nor an `0x` hex
@@ -562,10 +570,14 @@ computed from committed sibling authorities:
     fixtures/locale-catalog-manifest.json          derived from all of the above
 
 `provenance.generatorSha256` and `schemasSha256` are digests of the *real*
-inputs — `scripts/build-locale-catalog-fixture.py`'s own bytes and the
-published `frontend/schemas/locale-catalog/v1/` schemas — not of a committed
-description of them, which is what those fields mean in production. Editing
-either therefore moves the synthetic catalog revision, and every fixed value
+inputs — every repository-local module the generator executes and the published
+`frontend/schemas/locale-catalog/v1/` schemas — not of a committed description
+of them, which is what those fields mean in production. The generator's source
+set is its own `scripts/` **import closure**, computed from each module's AST,
+so `strict_json` is included and a helper added later cannot be left out by
+forgetting to list it; a dropped or renamed module changes the digest too,
+because it is bound to the path as well as the bytes. Editing any of them
+therefore moves the synthetic catalog revision, and every fixed value
 the v1 schemas already pin (`schemaVersion`, `basePath`, `manifestPath`,
 `chunkPathPrefix`, `digestAlgorithm`, the generator name) is read from their
 own `const` declarations rather than re-typed.
@@ -581,8 +593,9 @@ own `const` declarations rather than re-typed.
   `schemasSha256`, `generatorSha256`, `localeSourceFiles`, `fixtureKeys`,
   `provenance.sha256`, `catalogRevision` and `revisionManifestPath`. Its
   self-tests mutate each of those in turn — and separately perturb every
-  provenance *input*: an edited generator source, an edited, renamed or dropped
-  v1 schema, a different generator name or version — and require the result to
+  provenance *input*: an edited generator source or helper, a newly imported
+  local helper, a dropped or renamed helper, an edited, renamed or dropped v1
+  schema, a different generator name or version — and require the result to
   change or the check to fail.
 - It is schema-valid against the published
   `frontend/schemas/locale-catalog/v1/` manifest *and* chunk schemas, is

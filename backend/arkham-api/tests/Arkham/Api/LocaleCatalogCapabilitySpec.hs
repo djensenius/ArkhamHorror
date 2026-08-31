@@ -469,6 +469,44 @@ spec = do
       T.length catalog.manifestSha256 `shouldBe` 64
       catalog.manifestSha256 `shouldSatisfy` T.all (\c -> Char.isDigit c || (c >= 'a' && c <= 'f'))
 
+  describe "non-ASCII lookalikes" do
+    -- Every grammar here is a wire grammar, and the schemas that mirror it are
+    -- ASCII. A digit or letter that only looks like one has to be refused, or a
+    -- client comparing by string equality would read a different catalog.
+    it "refuses a digest whose hex is not ASCII" do
+      startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", T.replicate 63 "0" <> "\1632")])
+        `shouldSatisfy` T.isInfixOf "64 lowercase hex characters"
+
+    it "refuses a digest of fullwidth digits" do
+      startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256", T.replicate 64 "\65296")])
+        `shouldSatisfy` T.isInfixOf "64 lowercase hex characters"
+
+    it "refuses a locale subtag spelled with a Cyrillic confusable" do
+      startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", "de,d\1072")])
+        `shouldSatisfy` T.isInfixOf "invalid locale tag"
+
+    it "refuses a region subtag of fullwidth digits" do
+      startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", "en-\65296\65296")])
+        `shouldSatisfy` T.isInfixOf "invalid locale tag"
+
+    it "refuses a host that only becomes ASCII under Unicode case folding" do
+      -- \8490 (KELVIN SIGN) lowercases to 'k'; the URL is refused as non-ASCII
+      -- before any normalization can turn it into a name that looks legitimate.
+      startupErrorFor
+        (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_URL", "https://\8490elvin.example/manifest.json")])
+        `shouldSatisfy` T.isInfixOf "non-ASCII"
+
+    it "refuses a port written in Arabic-Indic digits" do
+      startupErrorFor
+        (withEnv [("ARKHAM_LOCALE_CATALOG_MANIFEST_URL", "https://cdn.example.com:\1632\1632\1632\1632/manifest.json")])
+        `shouldSatisfy` T.isInfixOf "non-ASCII"
+
+    it "canonicalizes only ASCII case, so a folded lookalike cannot become a locale" do
+      -- \304 (LATIN CAPITAL LETTER I WITH DOT ABOVE) is not an ASCII letter, so
+      -- it is refused rather than folded to 'i'.
+      startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", "de,\304t")])
+        `shouldSatisfy` T.isInfixOf "invalid locale tag"
+
   describe "catalog revision binding" do
     it "accepts exactly the revisions the governed contract table publishes" do
       for_ revisions.accepted \row ->

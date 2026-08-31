@@ -314,7 +314,7 @@ parseCatalogRevision schemaVersion raw = case T.breakOn "." raw of
     , isCanonicalNumber major
     , T.length digest == 32
     , T.all isLowerHexDigit digest ->
-        if major == T.takeWhile Char.isDigit schemaVersion
+        if major == T.takeWhile isAsciiDigit schemaVersion
           then Right raw
           else Left $ CatalogRevisionSchemaMismatch (excerpt raw) schemaVersion
   _ -> Left $ InvalidCatalogRevision (excerpt raw)
@@ -324,12 +324,25 @@ parseSha256 raw
   | T.length raw == 64, T.all isLowerHexDigit raw = Right raw
   | otherwise = Left $ InvalidManifestSha256 (excerpt raw)
 
+{- | ASCII only, spelled as a range.
+
+Every grammar in this module is a wire grammar: the schemas that mirror it use
+@[0-9]@ and @[a-f]@, and a client comparing a digest or a revision by string
+equality has no notion of a numeric character outside ASCII. @Data.Char@'s
+@isDigit@ happens to agree — unlike its @isNumber@ and @isAlphaNum@, which
+accept @\1632@ (Arabic-Indic zero) and friends — but relying on that leaves the
+reader to know which of three near-identical predicates was meant, so the range
+is written out here instead.
+-}
+isAsciiDigit :: Char -> Bool
+isAsciiDigit c = c >= '0' && c <= '9'
+
 isLowerHexDigit :: Char -> Bool
-isLowerHexDigit c = Char.isDigit c || (c >= 'a' && c <= 'f')
+isLowerHexDigit c = isAsciiDigit c || (c >= 'a' && c <= 'f')
 
 isCanonicalNumber :: Text -> Bool
 isCanonicalNumber t =
-  not (T.null t) && T.all Char.isDigit t && (t == "0" || not ("0" `T.isPrefixOf` t))
+  not (T.null t) && T.all isAsciiDigit t && (t == "0" || not ("0" `T.isPrefixOf` t))
 
 -- * Locales
 
@@ -366,24 +379,43 @@ canonicalLocaleTag raw = do
     p : rest -> Just (p, rest)
   guard $ T.length primary >= 2 && T.length primary <= 3 && T.all isAsciiAlpha primary
   guard $ all isSubtag subtags
-  pure $ T.intercalate "-" (T.toLower primary : map canonicalSubtag subtags)
+  pure $ T.intercalate "-" (asciiToLower primary : map canonicalSubtag subtags)
  where
   isSubtag t = T.length t >= 2 && T.length t <= 8 && T.all isAsciiAlphaNum t
 
   canonicalSubtag t
     | T.length t == 4, T.all isAsciiAlpha t = titlecase t
-    | T.length t == 2, T.all isAsciiAlpha t = T.toUpper t
-    | otherwise = T.toLower t
+    | T.length t == 2, T.all isAsciiAlpha t = asciiToUpper t
+    | otherwise = asciiToLower t
 
   titlecase t = case T.uncons t of
     Nothing -> t
-    Just (c, rest) -> T.cons (Char.toUpper c) (T.toLower rest)
+    Just (c, rest) -> T.cons (asciiUpperChar c) (asciiToLower rest)
 
 isAsciiAlpha :: Char -> Bool
 isAsciiAlpha c = Char.isAsciiLower c || Char.isAsciiUpper c
 
+{- | Case folding that cannot invent an ASCII character.
+
+@Data.Text@'s 'T.toLower' is full Unicode: @\8490@ (KELVIN SIGN) folds to
+@\'k\'@, so a Unicode-lowercasing pass over an unvalidated authority could turn
+a non-ASCII host into one that then passes an ASCII label check.
+'parseManifestUrl' already refuses non-ASCII input before any of this runs, but
+normalization that is only safe because of a check several guards away is a
+trap; these fold ASCII and leave everything else alone, so each function is
+safe on its own terms.
+-}
+asciiToLower :: Text -> Text
+asciiToLower = T.map \c -> if Char.isAsciiUpper c then Char.toLower c else c
+
+asciiToUpper :: Text -> Text
+asciiToUpper = T.map asciiUpperChar
+
+asciiUpperChar :: Char -> Char
+asciiUpperChar c = if Char.isAsciiLower c then Char.toUpper c else c
+
 isAsciiAlphaNum :: Char -> Bool
-isAsciiAlphaNum c = isAsciiAlpha c || Char.isDigit c
+isAsciiAlphaNum c = isAsciiAlpha c || isAsciiDigit c
 
 -- * Manifest URL
 
@@ -458,12 +490,12 @@ validateHost rawHost = do
       when (readsAsNumericHost lastLabel) $ Left ManifestUrlAmbiguousNumericHost
       Right host
  where
-  host = T.toLower rawHost
+  host = asciiToLower rawHost
   labels = T.splitOn "." host
   isLabel label =
     not (T.null label)
       && T.length label <= 63
-      && T.all (\c -> Char.isAsciiLower c || Char.isDigit c || c == '-') label
+      && T.all (\c -> Char.isAsciiLower c || isAsciiDigit c || c == '-') label
       && not ("-" `T.isPrefixOf` label)
       && not ("-" `T.isSuffixOf` label)
 
@@ -482,7 +514,7 @@ or an @0x@-prefixed hex literal (including a bare @0x@, which is zero).
 -}
 readsAsNumericHost :: Text -> Bool
 readsAsNumericHost label =
-  T.all Char.isDigit label
+  T.all isAsciiDigit label
     || maybe False (T.all isLowerHexDigit) (T.stripPrefix "0x" label)
 
 -- | An explicit @:443@ is dropped rather than published, so the same
@@ -513,7 +545,7 @@ validateManifestPath path
 
 stripSchemeCI :: Text -> Text -> Maybe Text
 stripSchemeCI scheme raw
-  | T.toLower (T.take (T.length scheme) raw) == scheme = Just $ T.drop (T.length scheme) raw
+  | asciiToLower (T.take (T.length scheme) raw) == scheme = Just $ T.drop (T.length scheme) raw
   | otherwise = Nothing
 
 -- | @C:\/…@ and friends, checked before 'hasScheme' because a drive letter

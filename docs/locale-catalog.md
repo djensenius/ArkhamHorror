@@ -573,8 +573,11 @@ authorities (`locale-catalog-source-*.json`, `-backend-registry.json`,
 `-chunk-*.json`) by `scripts/build-locale-catalog-fixture.py`, whose `--check`
 mode rebuilds the whole set and whose self-tests mutate each claimed field to
 prove the check bites. `generatorSha256` and `schemasSha256` are digests of the
-real generator source and the published v1 schemas, so editing either moves the
-synthetic revision exactly as it would in production, and every value those
+real inputs — the generator's whole `scripts/` import closure (computed from
+each module's AST, so `strict_json` is covered and a later helper cannot be
+omitted) and the published v1 schemas — so editing, adding, dropping or
+renaming any of them moves the synthetic revision exactly as it would in
+production, and every value those
 schemas already pin as a `const` is read from them rather than re-typed. It is never generated from `frontend/src/locales/**`. The governed
 capabilities fixture derives every advertised value from its exact bytes, which
 is what lets the published contract stay still while catalog content moves: a
