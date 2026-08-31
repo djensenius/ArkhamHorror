@@ -129,7 +129,7 @@
     },
     "lostInTheClouds": {
       "eachInvestigatorTakesHorror": "Each investigator takes 2 direct horror",
-      "resolveWinds": "Resolve the Forced effect on the Eastern Winds/Western Winds story card as if you had drawn a non-{eldersign} symbol token"
+      "resolveWinds": "Resolve the Forced effect on the Eastern Winds/Western Winds story card as if you had drawn a non-{elderSign} symbol token"
     }
   },
   "tooltips": {

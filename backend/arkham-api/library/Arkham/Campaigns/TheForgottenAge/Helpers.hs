@@ -309,7 +309,7 @@ pickSupplies iid resupply metadata supplies cont = do
       availableSupply s = s `notElem` chosenSupplies || s `elem` [Provisions, Medicine, Gasoline]
       affordableSupplies = filter ((<= pointsRemaining) . supplyCost) supplies
       availableSupplies = filter availableSupply affordableSupplies
-      choices = Label "$done" [] : map (\s -> supplyLabel s [PickSupply iid s, cont]) availableSupplies
+      choices = Label "$label.done" [] : map (\s -> supplyLabel s [PickSupply iid s, cont]) availableSupplies
     push $ Ask player $ PickSupplies {..}
 
 supplyLabel :: Supply -> [Message] -> UI Message

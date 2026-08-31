@@ -60,9 +60,7 @@
       "doNotSpend": "자원을 소비하지 않음"
     },
     "cheated": "“속임수를 썼다”라고 기억합니다",
-    "raiseTheStakes": {
-      "place": "‘판돈 올려!’를 플레이 영역 중 당신의 위협 영역에 둡니다."
-    }
+    "raiseTheStakes": {}
   },
   "tooltips": {
     "laBellaLuna": {
@@ -70,6 +68,11 @@
     },
     "backAlley": {
       "resign": "이리로 탈출할 수 있겠어!"
+    }
+  },
+  "raiseTheStakes": {
+    "label": {
+      "place": "‘판돈 올려!’를 플레이 영역 중 당신의 위협 영역에 둡니다."
     }
   }
 }

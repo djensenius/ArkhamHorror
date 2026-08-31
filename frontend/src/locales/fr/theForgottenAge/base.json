@@ -83,11 +83,9 @@
       "resign": "Rentrons au campement, nous résoudrons ce mystère demain"
     }
   },
-   "standalone": {
+  "standalone": {
     "paths": "les investigateurs ont le droit de choisir combien de chemins ils connaissent (choisissez un chiffre entre 0 et 5). Plus vous connaissez de chemins, plus le scénario sera facile et rapide."
-
   },
-
   "prologue": {
     "earthIsNotOurs": {
       "title": "La Terre ne nous appartient pas",
@@ -100,7 +98,6 @@
       "expeditionLeader": "Choisissez le chef de l’expédition"
     },
     "pickSupplies": "<p class='basic'>Alejandro étant mis au ban des milieux académiques, le financement de son expédition est limité. Chaque investigateur doit choisir de l’équipement à emporter pour l’expédition. Dans la section « Équipement » du Carnet de Campagne, indiquez pour chaque investigateur l’équipement qu’il choisit d’emporter. (<em>Remarque : les Provisions et les Médicaments peuvent être sélectionnés plusieurs fois en inscrivant plusieurs fois leurs noms et en dépensant le nombre correspondant de points d’équipement à chaque fois.</em>)</p><ul><li><p class='basic'>Chaque investigateur a le droit de dépenser des points d’équipement pour acheter un ou plusieurs éléments de la liste ci-après. La quantité de points d’équipement disponible pour chaque investigateur dépend du nombre d’investigateur dans la campagne :</p><p class='basic'><strong>1 investigateur :</strong> 10 points d’équipement</p><p class='basic'><strong>2 investigateurs :</strong> 7 points d’équipement chacun</p><p class='basic'><strong>3 investigateurs :</strong> 5 points d’équipement chacun</p><p class='basic'><strong>4 investigateurs :</strong> 4 points d’équipement chacun</p></li><li><p class='basic'>Les descriptions ci-dessous donnent un bref aperçu de la manière dont chaque équipement peut être utilisé durant la campagne. Choisissez judicieusement.</p></li></ul>"
-
   },
   "interlude1": {
     "blanket": "<p class='basic'>Vérifiez votre équipement. Chaque investigateur possédant un duvet lit _Sommeil Réparateur_. Les autres lisent _Sommeil Agité_.</p>",
@@ -156,10 +153,10 @@
   "interlude4": {
     "title": "Interlude IV : Les Captifs",
     "checkProcess": {
-        "body": "Vérifiez votre Carnet de Campagne. Si le processus a échoué, chaque investigateur révèle un pion Chaos pris au hasard dans la réserve du Chaos. Consultez la liste ci-dessous pour déterminer quel effet secondaire résulte de votre mésaventure. Si le processus a échoué de manière spectaculaire, chaque investigateur révèle deux pions Chaos au lieu d’un seul, résout celui qui se trouve le plus bas dans la liste ci-dessous et ignore l’autre.",
-        "noIllEffects": "Chaque investigateur qui révèle un pion {'{'}elderSign{'}'}  ou +1 ne subit aucun effet néfaste.",
-        "outOfBodyExperience": "Chaque investigateur qui révèle un pion {'{'}skull{'}'} ou n’importe quel nombre autre que +1 gagne la faiblesse Expérience Extra-Corporelle et doit l’ajouter à son deck.",
-        "bodyOfAYithian": "Chaque investigateur qui révèle un pion {'{'}cultist{'}'}, {'{'}tablet{'}'}, {'{'}elderThing{'}'}, or {'{'}autoFail{'}'} doit utiliser la carte Investigateur Corps de Yithien pour le reste de la campagne. Il gagne également la faiblesse Expérience Extra-Corporelle et doit l’ajouter à son deck."
+      "body": "Vérifiez votre Carnet de Campagne. Si le processus a échoué, chaque investigateur révèle un pion Chaos pris au hasard dans la réserve du Chaos. Consultez la liste ci-dessous pour déterminer quel effet secondaire résulte de votre mésaventure. Si le processus a échoué de manière spectaculaire, chaque investigateur révèle deux pions Chaos au lieu d’un seul, résout celui qui se trouve le plus bas dans la liste ci-dessous et ignore l’autre.",
+      "noIllEffects": "Chaque investigateur qui révèle un pion {'{'}elderSign{'}'}  ou +1 ne subit aucun effet néfaste.",
+      "outOfBodyExperience": "Chaque investigateur qui révèle un pion {'{'}skull{'}'} ou n’importe quel nombre autre que +1 gagne la faiblesse Expérience Extra-Corporelle et doit l’ajouter à son deck.",
+      "bodyOfAYithian": "Chaque investigateur qui révèle un pion {'{'}cultist{'}'}, {'{'}tablet{'}'}, {'{'}elderThing{'}'}, or {'{'}autoFail{'}'} doit utiliser la carte Investigateur Corps de Yithien pour le reste de la campagne. Il gagne également la faiblesse Expérience Extra-Corporelle et doit l’ajouter à son deck."
     },
     "checkAMindRecovered": {
       "body": "Vérifiez la réserve du Chaos et le Carnet de Campagne. Si tous les points suivants sont vrais, l’investigateur principal lit _Un Esprit Recouvré_. Sinon, l’investigateur principal lit _Perdu à Jamais_ à la place.",
@@ -175,11 +172,13 @@
     "provisions": "Vérifiez votre équipement. Les investigateurs doivent rayer collectivement une unité de provisions par investigateur. Pour chaque unité de provisions qu’ils ne peuvent pas rayer, choisissez un investigateur qui lit _Épuisement des Vivres_.",
     "lowOnRations": "<p>_Épuisement des Vivres_ : Plusieurs heures ont passé et la fatigue vous empêche d’aller plus loin. Chaque centimètre carré de votre corps n’est plus que douleur. Il n’y a rien à manger dans cette caverne désolée, si ce n’est quelques champignons par-ci par-là. Mais même si la tentation se fait de plus en plus pressante, vous ignorez lesquels sont comestibles…</p><p class='basic right'>Vous débutez le scénario suivant avec 3 ressources de moins.</p>",
     "medicine": "Vérifiez votre équipement. Chaque investigateur possédant des médicaments a le droit d’en rayer une unité de son équipement pour choisir une faiblesse Empoisonné du deck de n’importe quel investigateur et l’en retirer. Chaque investigateur qui possède encore une faiblesse Empoisonné dans son deck lit _Le Poison se Propage_.",
-    "doNotUseMedicine": "Ne pas utiliser les médicaments",
     "thePoisonSpreads": "<p>_Le Poison se Propage_ : Le poison s’est répandu dans presque chaque partie de votre corps. Vous êtes pâle, suant et enfiévré. Rester debout est un effort en soi, et vous ne trouvez aucun repos la nuit malgré votre fatigue. Il ne reste que peu de temps avant que le poison ne vous ôte la vie.</p><p class='basic right'>Vous subissez 1 traumatisme physique.</p>",
     "blanket": "<p>Après avoir descendu des centaines et des centaines de marches, vous décidez de vous arrêter pour prendre un peu de repos. Bien que votre montre indique que la nuit est tombée, l’absence de lumière naturelle commence à altérer votre horloge interne. N’ayant aucun palier en vue, chacun des membres de votre groupe choisit l’une des innombrables marches pour s’y allonger et tenter de dormir.</p><p class='basic right'>Vérifiez votre équipement. Chaque investigateur qui possède un duvet lit _Sommeil Réparateur_. Les autres lisent _Sommeil Agité_.</p>",
     "restfulSleep": "<p>_Sommeil Réparateur_ : Bien que vous rêviez d’un bon lit douillet, votre duvet vous protège au moins du froid qui règne dans la caverne. Le « matin » arrive. Vous dormiriez bien encore un peu, mais le temps presse : vous devez atteindre le Nexus aussi vite que possible.</p><p class='basic right'>Vous ne subissez aucun effet néfaste.</p>",
-    "tossingAndTurning": "<p>_Sommeil Agité_ : Vous peinez à trouver le sommeil. Vos couches de vêtements vous protègent à peine du froid mordant qui règne dans la caverne souterraine, et vous frissonnez pendant des heures avant que le sommeil n’ait finalement raison de vous. Vous vous réveillez toutes les heures, ou peu s’en faut, et vous manquez de tomber de votre marche à chaque fois que vous vous retournez. Quand le « matin » arrive, vous êtes encore plus épuisé qu’avant de vous coucher.</p><p class='basic right'>Vous subissez 1 traumatisme physique ou mental (vous choisissez).</p>"
+    "tossingAndTurning": "<p>_Sommeil Agité_ : Vous peinez à trouver le sommeil. Vos couches de vêtements vous protègent à peine du froid mordant qui règne dans la caverne souterraine, et vous frissonnez pendant des heures avant que le sommeil n’ait finalement raison de vous. Vous vous réveillez toutes les heures, ou peu s’en faut, et vous manquez de tomber de votre marche à chaque fois que vous vous retournez. Quand le « matin » arrive, vous êtes encore plus épuisé qu’avant de vous coucher.</p><p class='basic right'>Vous subissez 1 traumatisme physique ou mental (vous choisissez).</p>",
+    "label": {
+      "doNotUseMedicine": "Ne pas utiliser les médicaments"
+    }
   },
   "interlude5": {
     "xp": {

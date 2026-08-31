@@ -38,7 +38,7 @@ instance RunMessage ProtectingTheAnirniq2 where
           canReturn <- can.have.cards.leaveDiscard owner
           when (canDraw || canReturn) do
             chooseOne iid
-              $ [Label "$cards.label.protectingTheAnirniq2.returnAssetToOwner" [AddToHand owner [c]] | canReturn]
-              <> [Label "$cards.label.protectingTheAnirniq2.ownerDraws3" [DrawCards owner (newCardDraw attrs iid 3)] | canDraw]
+              $ [Label "$cards.label.protectingTheAnirniq.return" [AddToHand owner [c]] | canReturn]
+              <> [Label "$cards.label.protectingTheAnirniq.draw" [DrawCards owner (newCardDraw attrs iid 3)] | canDraw]
       pure e
     _ -> ProtectingTheAnirniq2 <$> liftRunMessage msg attrs

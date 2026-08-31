@@ -34,7 +34,7 @@ instance RunMessage ButterflySwords5 where
           when ((n + 1 == 2) && not attrs.exhausted) do
             msgs <- capture $ withCost iid (exhaust attrs) $ do
               skillTestModifier sid (attrs.ability 1) iid (DamageDealt 1)
-            chooseOne iid [Label "$cards.label.butterflySwords5.doNotExhaust" [], Label "$cards.label.butterflySwords5.exhaustForDamage" msgs]
+            chooseOne iid [Label "$label.doNotExhaust" [], Label "$cards.label.butterflySwords5.exhaustToDo1Damage" msgs]
 
           pure $ ButterflySwords5 $ setMeta @Int (n + 1) attrs
     AfterSkillTestEnds (isAbilitySource attrs 1 -> True) _ _ -> do

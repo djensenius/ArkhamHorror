@@ -27,8 +27,8 @@ instance RunMessage SupplicantOfTheGoat where
   runMessage msg e@(SupplicantOfTheGoat attrs) = runQueueT $ case msg of
     UseThisAbility iid (isSource attrs -> True) 1 -> do
       chooseOneM iid $ campaignI18n do
-        labeled' "supplicantOfTheGoat.seal" do
+        labeled' "sealMoonToken" do
           selectOne (chaosToken_ (ChaosTokenFaceIs MoonToken)) >>= traverse_ (sealChaosToken iid iid)
-        labeled' "supplicantOfTheGoat.attack" $ initiateEnemyAttack attrs (attrs.ability 1) iid
+        labeledI "thisEnemyAttacksYou" $ initiateEnemyAttack attrs (attrs.ability 1) iid
       pure e
     _ -> SupplicantOfTheGoat <$> liftRunMessage msg attrs

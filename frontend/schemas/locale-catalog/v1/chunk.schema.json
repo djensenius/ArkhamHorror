@@ -1,0 +1,854 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/schemas/locale-catalog/v1/chunk.schema.json",
+  "title": "Arkham Horror locale catalog chunk (v1)",
+  "description": "One locale/pack slice of the published locale catalog. Entries are normalized render ASTs derived from frontend/src/locales/**; they never contain HTML, scripts, styles, URLs, or image bytes, and variables are declared rather than interpolated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "locale",
+    "fallback",
+    "pack",
+    "entries"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "$ref": "#/$defs/schemaVersion"
+    },
+    "locale": {
+      "$ref": "#/$defs/locale"
+    },
+    "fallback": {
+      "description": "Locale a client resolves a missing key or linked reference against; null for the default locale.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/locale"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pack": {
+      "$ref": "#/$defs/pack"
+    },
+    "entries": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/messageKey"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "locale": {
+      "type": "string",
+      "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+    },
+    "pack": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+    },
+    "messageKey": {
+      "description": "Dotted vue-i18n key. A segment may hold any character the locale sources use except a dot, path separator, control character, or private-use sentinel.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f./\\\\\\ue000\\ue001]+(\\.[^\\u0000-\\u001f\\u007f./\\\\\\ue000\\ue001]+)*$"
+    },
+    "styleToken": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9-]{0,63}$"
+    },
+    "styles": {
+      "description": "Non-executable presentation hints copied from the source class attribute. Clients may ignore any token.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/styleToken"
+      },
+      "uniqueItems": true
+    },
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "source",
+        "role"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_]{1,64}$"
+        },
+        "source": {
+          "description": "named: {name} placeholder supplied by I18nEntry.variables. list: {0} positional placeholder.",
+          "enum": [
+            "named",
+            "list"
+          ]
+        },
+        "role": {
+          "description": "text: substituted verbatim. icon: production replaceIcons() renders this name as an icon glyph. presentation: the name only reaches a class/style/data-* attribute, so a client that has no value for it loses styling, never an instruction.",
+          "enum": [
+            "text",
+            "icon",
+            "presentation"
+          ]
+        }
+      }
+    },
+    "entry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "form",
+            "nodes",
+            "variables"
+          ],
+          "properties": {
+            "form": {
+              "const": "message"
+            },
+            "nodes": {
+              "$ref": "#/$defs/nodes"
+            },
+            "variables": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/variable"
+              }
+            },
+            "linkedVariables": {
+              "description": "Variables the entries this one links to require. A link renders with the parent's variables, so a client must supply these too; they are listed separately from the entry's own so the origin stays visible.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/variable"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "form",
+            "cases",
+            "variables"
+          ],
+          "properties": {
+            "form": {
+              "const": "plural"
+            },
+            "cases": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/nodes"
+              }
+            },
+            "variables": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/variable"
+              }
+            },
+            "linkedVariables": {
+              "description": "Variables the entries this one links to require. A link renders with the parent's variables, so a client must supply these too; they are listed separately from the entry's own so the origin stays visible.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/variable"
+              }
+            }
+          }
+        },
+        {
+          "description": "Markup or message syntax this catalog revision refuses to reinterpret. Never partially rendered, never silently dropped.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "form",
+            "reason",
+            "detail"
+          ],
+          "properties": {
+            "form": {
+              "const": "unsupported"
+            },
+            "reason": {
+              "enum": [
+                "message-syntax-error",
+                "unsupported-message-syntax",
+                "html-parse-error",
+                "unsupported-element",
+                "unsupported-attribute",
+                "placeholder-in-attribute",
+                "asset-variable-outside-image",
+                "unsupported-image-source",
+                "image-path-escape",
+                "invalid-style-token",
+                "misplaced-list-item",
+                "unresolved-link",
+                "conflicting-variable-role",
+                "invalid-style-declaration",
+                "unsupported-link-target",
+                "link-cycle",
+                "unusable-variable-type"
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "maxLength": 120
+            }
+          }
+        }
+      ]
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "node": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "value"
+          ],
+          "properties": {
+            "type": {
+              "const": "text"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "name",
+            "source",
+            "role"
+          ],
+          "properties": {
+            "type": {
+              "const": "var"
+            },
+            "name": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_]{1,64}$"
+            },
+            "source": {
+              "enum": [
+                "named",
+                "list"
+              ]
+            },
+            "role": {
+              "enum": [
+                "text",
+                "icon"
+              ]
+            }
+          }
+        },
+        {
+          "description": "vue-i18n linked message (@:key / @:{var}); resolved by the client against this locale, then the fallback locale.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "target",
+            "modifier"
+          ],
+          "properties": {
+            "type": {
+              "const": "linked"
+            },
+            "modifier": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "upper",
+                    "lower",
+                    "capitalize"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "target": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "key"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "static"
+                    },
+                    "key": {
+                      "$ref": "#/$defs/messageKey"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "name",
+                    "source"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "variable"
+                    },
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_]{1,64}$"
+                    },
+                    "source": {
+                      "enum": [
+                        "named",
+                        "list"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "break",
+                "rule"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "styles",
+            "children"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "paragraph",
+                "group"
+              ]
+            },
+            "styles": {
+              "$ref": "#/$defs/styles"
+            },
+            "children": {
+              "$ref": "#/$defs/nodes"
+            },
+            "style": {
+              "$ref": "#/$defs/styleDeclarations"
+            },
+            "styleVars": {
+              "$ref": "#/$defs/styleVariables"
+            },
+            "data": {
+              "$ref": "#/$defs/dataValues"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "level",
+            "styles",
+            "children"
+          ],
+          "properties": {
+            "type": {
+              "const": "heading"
+            },
+            "level": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6
+            },
+            "styles": {
+              "$ref": "#/$defs/styles"
+            },
+            "children": {
+              "$ref": "#/$defs/nodes"
+            },
+            "style": {
+              "$ref": "#/$defs/styleDeclarations"
+            },
+            "styleVars": {
+              "$ref": "#/$defs/styleVariables"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "style",
+            "children"
+          ],
+          "properties": {
+            "type": {
+              "const": "emphasis"
+            },
+            "style": {
+              "enum": [
+                "bold",
+                "italic",
+                "underline",
+                "strikethrough",
+                "small",
+                "smallCaps"
+              ]
+            },
+            "children": {
+              "$ref": "#/$defs/nodes"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "ordered",
+            "styles",
+            "items"
+          ],
+          "properties": {
+            "type": {
+              "const": "list"
+            },
+            "ordered": {
+              "type": "boolean"
+            },
+            "styles": {
+              "$ref": "#/$defs/styles"
+            },
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "styles",
+                  "children"
+                ],
+                "properties": {
+                  "styles": {
+                    "$ref": "#/$defs/styles"
+                  },
+                  "children": {
+                    "$ref": "#/$defs/nodes"
+                  },
+                  "style": {
+                    "$ref": "#/$defs/styleDeclarations"
+                  },
+                  "styleVars": {
+                    "$ref": "#/$defs/styleVariables"
+                  }
+                }
+              }
+            },
+            "style": {
+              "$ref": "#/$defs/styleDeclarations"
+            },
+            "styleVars": {
+              "$ref": "#/$defs/styleVariables"
+            },
+            "implicit": {
+              "description": "The source used bare <li> elements with no list around them; browsers render them as a list, so the catalog states one explicitly.",
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "description": "Semantic reference to an asset the deployment already serves under /img/arkham/. Never image bytes, never an absolute or external URL.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "role",
+            "assetPath",
+            "styles"
+          ],
+          "properties": {
+            "type": {
+              "const": "image"
+            },
+            "styles": {
+              "$ref": "#/$defs/styles"
+            },
+            "role": {
+              "enum": [
+                "encounterSet",
+                "card",
+                "token",
+                "chaosToken",
+                "campaign",
+                "homebrew",
+                "extra",
+                "other"
+              ]
+            },
+            "assetPath": {
+              "type": "string",
+              "maxLength": 248,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.(png|jpe?g|avif|svg|webp)$",
+              "not": {
+                "pattern": "(^|/)\\.\\.(/|$)"
+              }
+            },
+            "alt": {
+              "type": "string",
+              "maxLength": 240
+            },
+            "style": {
+              "$ref": "#/$defs/styleDeclarations"
+            },
+            "styleVars": {
+              "$ref": "#/$defs/styleVariables"
+            },
+            "width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096
+            },
+            "align": {
+              "enum": [
+                "left",
+                "right",
+                "center",
+                "justify"
+              ]
+            }
+          }
+        },
+        {
+          "description": "Text that names a specific card. The web client shows that card's art on hover; the catalog carries only the card code, never an image.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "code",
+            "styles",
+            "children"
+          ],
+          "properties": {
+            "type": {
+              "const": "cardRef"
+            },
+            "code": {
+              "type": "string",
+              "pattern": "^:?[A-Za-z0-9][A-Za-z0-9:_-]{1,31}$"
+            },
+            "styles": {
+              "$ref": "#/$defs/styles"
+            },
+            "style": {
+              "$ref": "#/$defs/styleDeclarations"
+            },
+            "styleVars": {
+              "$ref": "#/$defs/styleVariables"
+            },
+            "children": {
+              "$ref": "#/$defs/nodes"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "styles",
+            "head",
+            "body"
+          ],
+          "properties": {
+            "type": {
+              "const": "table"
+            },
+            "styles": {
+              "$ref": "#/$defs/styles"
+            },
+            "style": {
+              "$ref": "#/$defs/styleDeclarations"
+            },
+            "styleVars": {
+              "$ref": "#/$defs/styleVariables"
+            },
+            "data": {
+              "$ref": "#/$defs/dataValues"
+            },
+            "head": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/tableRow"
+              }
+            },
+            "body": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/$defs/tableRow"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "styleDeclarations": {
+      "description": "Inline CSS from the source, parsed into structured declarations. Values are restricted to a safe charset, a url() is only kept as a resolved semantic asset, and a client may ignore the whole list.",
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "property",
+              "value"
+            ],
+            "properties": {
+              "property": {
+                "type": "string",
+                "pattern": "^(--)?[A-Za-z][A-Za-z0-9-]{0,31}$"
+              },
+              "value": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9 .,%#()/_-]{1,64}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "property",
+              "asset"
+            ],
+            "properties": {
+              "property": {
+                "type": "string",
+                "pattern": "^(--)?[A-Za-z][A-Za-z0-9-]{0,31}$"
+              },
+              "asset": {
+                "$ref": "#/$defs/assetReference"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "styleVariables": {
+      "description": "Style hints supplied at runtime: the client substitutes the same variable value the backend sends, then treats it as a style token.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "source"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_]{1,64}$"
+          },
+          "source": {
+            "enum": [
+              "named",
+              "list"
+            ]
+          }
+        }
+      }
+    },
+    "assetReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "assetPath"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "encounterSet",
+            "card",
+            "token",
+            "chaosToken",
+            "campaign",
+            "homebrew",
+            "extra",
+            "other"
+          ]
+        },
+        "assetPath": {
+          "type": "string",
+          "maxLength": 248,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*\\.(png|jpe?g|avif|svg|webp)$",
+          "not": {
+            "pattern": "(^|/)\\.\\.(/|$)"
+          }
+        }
+      }
+    },
+    "dataValues": {
+      "description": "Allowlisted data-* values carried as typed data. Each holds either a declared variable or a short literal token; clients must never treat them as markup.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "count",
+              "selected",
+              "epilogue"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+          },
+          "variable": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "source"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]{1,64}$"
+              },
+              "source": {
+                "enum": [
+                  "named",
+                  "list"
+                ]
+              }
+            }
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "text"
+            ]
+          },
+          {
+            "required": [
+              "variable"
+            ]
+          }
+        ]
+      }
+    },
+    "tableRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "styles",
+        "cells"
+      ],
+      "properties": {
+        "styles": {
+          "$ref": "#/$defs/styles"
+        },
+        "style": {
+          "$ref": "#/$defs/styleDeclarations"
+        },
+        "styleVars": {
+          "$ref": "#/$defs/styleVariables"
+        },
+        "data": {
+          "$ref": "#/$defs/dataValues"
+        },
+        "cells": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "header",
+              "styles",
+              "children"
+            ],
+            "properties": {
+              "header": {
+                "type": "boolean"
+              },
+              "styles": {
+                "$ref": "#/$defs/styles"
+              },
+              "style": {
+                "$ref": "#/$defs/styleDeclarations"
+              },
+              "styleVars": {
+                "$ref": "#/$defs/styleVariables"
+              },
+              "data": {
+                "$ref": "#/$defs/dataValues"
+              },
+              "children": {
+                "$ref": "#/$defs/nodes"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

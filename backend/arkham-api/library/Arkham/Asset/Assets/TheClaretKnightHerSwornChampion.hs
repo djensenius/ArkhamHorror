@@ -89,8 +89,8 @@ instance RunMessage TheClaretKnightHerSwornChampion where
       let whenCanHoldToken tkn = whenM (matches aid (AssetCanHaveUses tkn))
       chooseOrRunOneM iid $ withI18n do
         whenCanHoldToken Charge $ labeled' "charge" $ addUses attrs aid Charge 1
-        whenCanHoldToken Ammo $ labeled' "ammo" $ addUses attrs aid Ammo 1
-        whenCanHoldToken Supply $ labeled' "supply" $ addUses attrs aid Supply 1
+        whenCanHoldToken Ammo $ labeled "$token.Ammo" $ addUses attrs aid Ammo 1
+        whenCanHoldToken Supply $ labeled "$token.Supply" $ addUses attrs aid Supply 1
         whenCanHoldToken Secret $ labeled' "secret" $ addUses attrs aid Secret 1
       pure a
     _ -> TheClaretKnightHerSwornChampion <$> liftRunMessage msg attrs
