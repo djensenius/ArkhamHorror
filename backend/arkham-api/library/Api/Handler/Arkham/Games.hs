@@ -277,15 +277,21 @@ deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
   mask $ \restore -> do
-    runDB $ delete do
-      games <- from $ table @ArkhamGame
-      where_ $ games.id ==. val gameId
-      where_ $ exists do
-        players <- from $ table @ArkhamPlayer
-        where_ $ players.arkhamGameId ==. games.id
-        where_ $ players.userId ==. val userId
-    cleanup <- prepareDeleteRoom gameId
-    void $ restore cleanup
+    gameRemains <- runDB do
+      delete do
+        games <- from $ table @ArkhamGame
+        where_ $ games.id ==. val gameId
+        where_ $ exists do
+          players <- from $ table @ArkhamPlayer
+          where_ $ players.arkhamGameId ==. games.id
+          where_ $ players.userId ==. val userId
+      isJust <$> selectOne do
+        games <- from $ table @ArkhamGame
+        where_ $ games.id ==. val gameId
+        pure games.id
+    unless gameRemains do
+      cleanup <- prepareDeleteRoom gameId
+      void $ restore cleanup
 
 data PlayabilityRequest = PlayabilityRequest
   { investigatorId :: InvestigatorId
