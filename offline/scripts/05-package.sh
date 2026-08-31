@@ -2100,6 +2100,17 @@ main() {
     substep "Copy: ${FRONTEND_SRC}/ → ${PKG_DIR}/game/frontend/dist/"
     cp -r "${FRONTEND_SRC}/"* "${PKG_DIR}/game/frontend/dist/"
 
+    # The copy above reads a tree this script does not own, and `--skip-frontend`
+    # can hand it one nobody verified. The packaged catalog is therefore verified
+    # *here*, in its final destination, and republished from the verified buffers
+    # — so the bytes nginx serves out of the package are the bytes that passed.
+    substep "Verifying the packaged locale catalog"
+    if ! (cd "${PROJECT_ROOT}/frontend" \
+            && node scripts/locale-catalog/verify-dist.mjs \
+                 --dist "${PKG_DIR}/game/frontend/dist" --dist-only --publish); then
+        die "  ✗ The packaged frontend does not contain a valid locale catalog"
+    fi
+
     # Copy PostgreSQL
     substep "Copy PostgreSQL binaries ..."
     for b in postgres initdb pg_ctl pg_isready psql pg_dump pg_restore; do

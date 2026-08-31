@@ -92,10 +92,13 @@ compute_frontend_hash() {
 }
 
 # Fails the build unless the locale catalog really is in `$1`.
+# `--publish` on every path, fresh build included: the catalog that leaves this
+# function is written from the buffers the verifier hashed, so nothing that
+# touches the tree afterwards can change what is packaged.
 verify_locale_catalog() {
     local output="$1"
-    substep "Verifying the locale catalog in ${output}"
-    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output"); then
+    substep "Verifying and republishing the locale catalog in ${output}"
+    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --publish); then
         rm -rf "$output" "$FRONTEND_BUILT_MARKER"
         die "  ✗ The build output in ${output} does not contain a valid locale catalog"
     fi

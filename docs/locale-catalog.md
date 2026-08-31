@@ -411,8 +411,22 @@ every digest that is compared — so:
 * `--publish` closes the last gap between "these bytes were correct when I read
   them" and "these are the bytes that will be served": the catalog is rewritten
   from the verified buffers into a fresh mode-0700 directory and moved into
-  place with `rename`. The offline cache-hit path uses it, so what the package
-  serves is exactly what was verified;
+  place with `rename`. **Every path that ends up serving bytes uses it** — the
+  offline fresh build, the offline cache hit, the offline packager (verifying
+  the tree in its final destination, which is also what makes `--skip-frontend`
+  unable to package an unverified catalog), and the Docker frontend stage before
+  its `dist` is copied into the runtime image;
+* the manifest and each chunk are checked against each other, not just against
+  their digests: one content path belongs to exactly one descriptor, and every
+  chunk is validated against the closed v1 chunk schema and must agree with its
+  descriptor on locale, fallback, pack, entry count, unsupported count and byte
+  count. Manifest totals — locales, keys, chunks, bytes, unsupported keys — are
+  all recomputed from the descriptors;
+* the tree is enumerated by streaming `opendirSync`, counting every entry
+  (directories included) as it arrives, against a fixed topology: the manifest
+  and exactly `c/` and `r/<revision>/` at bounded depth. A directory that is
+  broader, deeper or differently shaped than a catalog is refused before it is
+  walked, so a flood costs one `readdir` step rather than an array;
 * `O_NOFOLLOW` and `O_DIRECTORY` are required to exist, since `undefined | 0`
   would silently turn a no-follow open into an ordinary one;
 * the identity/`.gz`/`.br` artifact sets are compared with the manifest in both

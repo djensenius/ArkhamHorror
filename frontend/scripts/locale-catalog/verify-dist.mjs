@@ -8,6 +8,7 @@
 import {
   chmodSync,
   closeSync,
+  opendirSync,
   constants as fsConstants,
   existsSync,
   fstatSync,
@@ -424,19 +425,96 @@ function readContainedFile(absolute, maxBytes) {
  * could contain. A directory full of files is not a reason to build an
  * unbounded array in memory before deciding it is invalid.
  */
-function listFiles(directory, prefix = '', out = [], budget = { left: MAX_CATALOG_ARTIFACTS }) {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (budget.left <= 0) return { paths: out, overflowed: true }
-    const path = prefix === '' ? entry.name : `${prefix}/${entry.name}`
-    if (entry.isDirectory()) {
-      const nested = listFiles(join(directory, entry.name), path, out, budget)
-      if (nested.overflowed) return nested
-      continue
+/**
+ * Streams the catalog's tree, entry by entry, against a closed topology.
+ *
+ * `readdirSync` materializes a whole directory before anyone can object to its
+ * size, so this uses `opendirSync` and decides about each entry as it arrives.
+ * Every entry counts against the budget — directories included — and the shape
+ * is fixed in advance: the root holds the manifest and exactly `c/` and `r/`,
+ * `c/` holds content-addressed leaves, `r/` holds one revision directory of
+ * manifests. Anything broader or deeper is refused before it is walked, so a
+ * directory with millions of entries costs one `readdir` step, not an array.
+ */
+const CATALOG_TOPOLOGY = {
+  '': { directories: new Set(['c', 'r']), leaf: /^manifest\.json(\.gz|\.br)?$/ },
+  c: { directories: new Set(), leaf: /^[0-9a-f]{64}\.json(\.gz|\.br)?$/ },
+  r: { directories: 'revision', leaf: null },
+}
+const REVISION_DIRECTORY = /^1\.[0-9a-f]{32}$/
+const MAX_CATALOG_DEPTH = 2
+
+function listFiles(directory) {
+  const paths = []
+  const pending = [{ absolute: directory, prefix: '', depth: 0 }]
+  let budget = MAX_CATALOG_ARTIFACTS
+
+  while (pending.length > 0) {
+    const current = pending.pop()
+    if (current.depth > MAX_CATALOG_DEPTH) {
+      return { paths, overflowed: true, reason: `${current.prefix} is deeper than a catalog can be` }
     }
-    budget.left -= 1
-    out.push(path)
+    const shape =
+      current.depth === 0
+        ? CATALOG_TOPOLOGY['']
+        : current.prefix === 'c'
+          ? CATALOG_TOPOLOGY.c
+          : current.prefix === 'r'
+            ? CATALOG_TOPOLOGY.r
+            : REVISION_DIRECTORY.test(current.prefix.slice(2))
+              ? { directories: new Set(), leaf: /^manifest\.json(\.gz|\.br)?$/ }
+              : null
+    if (shape === null) {
+      return { paths, overflowed: true, reason: `${current.prefix} is not a directory a catalog has` }
+    }
+
+    let handle = null
+    try {
+      handle = opendirSync(current.absolute)
+      for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+        // Counted the moment it is seen, before anything is stored.
+        budget -= 1
+        if (budget < 0) {
+          return { paths, overflowed: true, reason: `more than ${MAX_CATALOG_ARTIFACTS} entries` }
+        }
+        const path = current.prefix === '' ? entry.name : `${current.prefix}/${entry.name}`
+        if (entry.isDirectory()) {
+          const allowed =
+            shape.directories === 'revision'
+              ? REVISION_DIRECTORY.test(entry.name)
+              : shape.directories.has(entry.name)
+          if (!allowed) {
+            return { paths, overflowed: true, reason: `${path} is not a directory a catalog has` }
+          }
+          pending.push({
+            absolute: join(current.absolute, entry.name),
+            prefix: path,
+            depth: current.depth + 1,
+          })
+          continue
+        }
+        if (!entry.isFile()) {
+          return { paths, overflowed: true, reason: `${path} is not a regular file` }
+        }
+        if (shape.leaf === null || !shape.leaf.test(entry.name)) {
+          return { paths, overflowed: true, reason: `${path} is not an artifact a catalog has` }
+        }
+        paths.push(path)
+      }
+    } catch (error) {
+      return { paths, overflowed: true, reason: `${current.prefix || '.'}: ${error.code ?? error.message}` }
+    } finally {
+      if (handle !== null) {
+        try {
+          handle.closeSync()
+        } catch {
+          // already closed by the iterator
+        }
+      }
+    }
   }
-  return { paths: out, overflowed: budget.left <= 0 }
+
+  return { paths, overflowed: false, reason: null }
 }
 
 function listJson(directory) {
@@ -455,7 +533,7 @@ function verifyPublicMirror(expected) {
     return
   }
   const listed = listJson(publicCatalog)
-  if (!require(!listed.overflowed, 'public/locale-catalog holds more artifacts than a catalog can')) {
+  if (!require(!listed.overflowed, `public/locale-catalog is not a catalog shape: ${listed.reason}`)) {
     return
   }
   const published = listed.paths
@@ -537,7 +615,7 @@ function verifyCompressedSiblings(expected) {
   // Anything else under the catalog is unaccounted for: nginx would happily
   // serve it for a path the manifest never promised.
   const present = listFiles(DIST_CATALOG)
-  if (!require(!present.overflowed, `dist/locale-catalog holds more than ${MAX_CATALOG_ARTIFACTS} artifacts`)) {
+  if (!require(!present.overflowed, `dist/locale-catalog is not a catalog shape: ${present.reason}`)) {
     return
   }
   for (const relative of present.paths) {
@@ -576,6 +654,7 @@ function preflightDescriptors(manifest) {
   let totalKeys = 0
   let totalChunks = 0
   let totalBytes = 0
+  let totalUnsupported = 0
 
   for (const locale of manifest.locales) {
     let localeKeys = 0
@@ -607,15 +686,16 @@ function preflightDescriptors(manifest) {
         continue
       }
 
+      // A chunk carries its own locale, fallback and pack, so one content path
+      // belongs to exactly one descriptor. Two descriptors sharing a path would
+      // mean the same bytes claiming two identities.
       const seen = paths.get(relative)
       if (seen !== undefined) {
-        // The same content may legitimately be shared by two locales, but it
-        // must be described identically and read once.
-        if (seen.bytes !== chunk.bytes || seen.keys !== chunk.keys) {
-          problems.push(`${chunk.path} is described twice with different sizes`)
-        }
+        problems.push(
+          `${chunk.path} is claimed by ${seen.locale}/${seen.chunk.pack} and ${locale.locale}/${chunk.pack}`,
+        )
       } else {
-        paths.set(relative, chunk)
+        paths.set(relative, { chunk, locale: locale.locale, fallback: locale.fallback ?? null })
         totalChunks += 1
         totalBytes += chunk.bytes
       }
@@ -627,6 +707,7 @@ function preflightDescriptors(manifest) {
 
       localeKeys += chunk.keys
       localeBytes += chunk.bytes
+      totalUnsupported += chunk.unsupportedKeys
     }
 
     if (localeKeys !== locale.keys) {
@@ -643,6 +724,16 @@ function preflightDescriptors(manifest) {
   }
   if (totalBytes > MAX_CATALOG_BYTES) {
     problems.push(`the manifest's chunks total ${totalBytes} bytes, over the ${MAX_CATALOG_BYTES}-byte ceiling`)
+  }
+  if (manifest.totals.locales !== manifest.locales.length) {
+    problems.push(
+      `the manifest claims ${manifest.totals.locales} locales, it lists ${manifest.locales.length}`,
+    )
+  }
+  if (manifest.totals.unsupportedKeys !== totalUnsupported) {
+    problems.push(
+      `the manifest claims ${manifest.totals.unsupportedKeys} unsupported keys, its descriptors total ${totalUnsupported}`,
+    )
   }
   if (manifest.totals.keys !== totalKeys) {
     problems.push(`the manifest claims ${manifest.totals.keys} keys, its descriptors total ${totalKeys}`)
@@ -816,7 +907,9 @@ function verifyCatalog() {
   if (preflight.problems.length > 0) return
 
   const expected = new Set(['manifest.json', revisionRelative, ...preflight.paths.keys()])
-  for (const [relative, chunk] of preflight.paths) {
+  const chunkSchema = JSON.parse(readFileSync(join(SCHEMA_DIR, 'chunk.schema.json'), 'utf8'))
+  for (const [relative, claim] of preflight.paths) {
+    const chunk = claim.chunk
     const file = safeCatalogPath(relative)
     if (
       !require(
@@ -833,6 +926,41 @@ function verifyCatalog() {
       continue
     }
     recordVerified(relative, read.bytes)
+
+    // The descriptor and the chunk it points at must agree about what the
+    // chunk *is*, not merely about its digest: a closed chunk carries one
+    // locale, one fallback and one pack.
+    let parsed = null
+    try {
+      parsed = parseUntrustedJson(read.bytes.toString('utf8'))
+    } catch (error) {
+      require(false, `${chunk.path} is not JSON (${error.message})`)
+      continue
+    }
+    const chunkErrors = validateAgainstSchema(parsed, chunkSchema, chunkSchema)
+    if (
+      !require(
+        chunkErrors.length === 0,
+        `${chunk.path} does not satisfy the v1 chunk schema: ${chunkErrors.slice(0, 3).join('; ')}`,
+      )
+    ) {
+      continue
+    }
+    const entries = Object.keys(parsed.entries)
+    const unsupported = entries.filter((key) => parsed.entries[key].form === 'unsupported').length
+    for (const [what, actual, promised] of [
+      ['locale', parsed.locale, claim.locale],
+      ['fallback', parsed.fallback ?? null, claim.fallback],
+      ['pack', parsed.pack, chunk.pack],
+      ['entry count', entries.length, chunk.keys],
+      ['unsupported count', unsupported, chunk.unsupportedKeys],
+      ['byte count', read.bytes.length, chunk.bytes],
+    ]) {
+      require(
+        actual === promised,
+        `${chunk.path} has ${what} ${JSON.stringify(actual)}, the manifest promises ${JSON.stringify(promised)}`,
+      )
+    }
   }
 
   for (const relative of listJson(DIST_CATALOG).paths) {

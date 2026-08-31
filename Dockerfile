@@ -17,6 +17,11 @@ COPY ./frontend /opt/arkham/src/frontend
 COPY ./contracts /opt/arkham/src/contracts
 ENV VITE_ASSET_HOST=${ASSET_HOST}
 RUN npm run build
+# The image copies `dist` out of this stage, so the catalog is verified here and
+# republished from the verified buffers: what the next stage copies — and what
+# nginx serves — is exactly what passed, not an intermediate tree that happened
+# to be correct when the build finished.
+RUN node scripts/locale-catalog/verify-dist.mjs --publish
 
 FROM ubuntu:22.04 AS base
 

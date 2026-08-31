@@ -15,6 +15,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+# Captured before anything sourced below can reassign SCRIPT_DIR.
+PROD_SCRIPTS="$SCRIPT_DIR"
 FRONTEND_DIR="${REPO_ROOT}/frontend"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/offline-cache-hit.XXXXXX")"
@@ -46,7 +48,7 @@ if [ -d "$PUBLIC_CATALOG" ]; then
 fi
 
 # Load the production verification helpers without running the build.
-sed -n '1,/^# ── Build frontend/p' "${SCRIPT_DIR}/03-build-frontend.sh" \
+sed -n '1,/^# ── Build frontend/p' "${PROD_SCRIPTS}/03-build-frontend.sh" \
   | grep -v -e '^source ' -e '^init_paths' -e '^activate_deps_path' \
   | sed -e 's/^FRONTEND_DIR=.*/:/' -e 's/^FRONTEND_OUTPUT=.*/:/' -e 's/^FRONTEND_BUILT_MARKER=.*/:/' \
   > "${WORK}/verify.sh"
@@ -344,6 +346,54 @@ mkdir -p "$STRICT"
 cp -R "${DIST}/." "$STRICT/"
 if verify_locale_catalog "$STRICT" >/dev/null 2>&1; then
   fail "the post-build check passed without frontend/public/locale-catalog"
+fi
+
+# Every path that ends up serving bytes must publish the verified snapshot, not
+# merely check an intermediate tree. These assert the wiring in the production
+# seams; the behaviour itself is proven by the swap tests above.
+assert_publishes() {
+  local label="$1" file="$2" pattern="$3"
+  if ! grep -qE -- "$pattern" "$file"; then
+    fail "${label} does not publish the verified snapshot (${file})"
+  fi
+}
+
+assert_publishes "the offline frontend build" \
+  "${PROD_SCRIPTS}/03-build-frontend.sh" \
+  'verify-dist\.mjs --dist "\$output" --publish'
+assert_publishes "the offline cache-hit path" \
+  "${PROD_SCRIPTS}/03-build-frontend.sh" \
+  'verify-dist\.mjs --dist "\$output" --dist-only --publish'
+assert_publishes "the offline packager" \
+  "${PROD_SCRIPTS}/05-package.sh" \
+  'verify-dist\.mjs \\$'
+assert_publishes "the offline packager's final tree" \
+  "${PROD_SCRIPTS}/05-package.sh" \
+  'PKG_DIR.*game/frontend/dist" --dist-only --publish'
+assert_publishes "the Docker frontend stage" \
+  "${REPO_ROOT}/Dockerfile" \
+  'verify-dist\.mjs --publish'
+
+# `--skip-frontend` skips the build, so the packager — not the build — is what
+# stands between an unverified `_deps/frontend` and the package.
+if ! grep -q 'Verifying the packaged locale catalog' "${PROD_SCRIPTS}/05-package.sh"; then
+  fail "the packager does not verify the tree it just copied, so --skip-frontend can package an unverified catalog"
+fi
+
+# The packaged destination is a plain directory copy, so publishing into it must
+# work exactly as it does for a restored cache.
+PACKAGED="${WORK}/packaged"
+rm -rf "$PACKAGED"
+mkdir -p "${PACKAGED}/game/frontend/dist"
+cp -R "${DIST}/." "${PACKAGED}/game/frontend/dist/"
+if ! (cd "${REPO_ROOT}/frontend" && node scripts/locale-catalog/verify-dist.mjs \
+        --dist "${PACKAGED}/game/frontend/dist" --dist-only --publish >/dev/null 2>&1); then
+  fail "the packaged tree could not be verified and republished"
+fi
+if (cd "${REPO_ROOT}/frontend" && LOCALE_CATALOG_VERIFY_HOOK="printf tampered > \"\$DIST_CATALOG/${SAMPLE_JSON}\"" \
+      node scripts/locale-catalog/verify-dist.mjs \
+        --dist "${PACKAGED}/game/frontend/dist" --dist-only --publish >/dev/null 2>&1); then
+  fail "a leaf replaced during packaging verification was accepted"
 fi
 
 if [ "$failures" -ne 0 ]; then
