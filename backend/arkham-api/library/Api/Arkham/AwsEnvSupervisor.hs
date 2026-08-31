@@ -3894,28 +3894,51 @@ awsEnvSupervisorInternalSpec = describe "AWS Env supervisor" do
                       flood (n + 1)
           _ <- forkIO (flood 0 >> putMVar floodDoneGate ())
           outcome <- Exception.try @Exception.IOException release
-          -- The flood may still have in-flight iterations queued after
-          -- 'release' itself has already returned/thrown (it stops
-          -- retrying the instant 'cancelManagedThread' genuinely
+          -- The flood may still have exactly one 'Exception.throwTo'
+          -- already in flight (blocked waiting for delivery) at the
+          -- instant 'release' itself has already returned/thrown (it
+          -- stops retrying the instant 'cancelManagedThread' genuinely
           -- succeeds, which can happen before the flood's own bounded
-          -- 200 iterations are exhausted) -- drain it so a later test
-          -- can never observe a stray delivery from this one.
-          writeIORef floodStopRef True
-          takeMVar floodDoneGate
-          delivered <- readIORef deliveryCount
-          -- Only assert on the exception itself when at least one probe
-          -- is confirmed to have actually landed (see 'deliveryCount'
-          -- above): with 200 iterations spaced 1ms apart racing this
-          -- generation's own genuine (typically sub-millisecond)
-          -- cancellation, this is true in practice on every run, but
-          -- this test must never itself flake merely because the race
-          -- happened not to land on some particular run.
-          when (delivered > 0) $ case outcome of
-            Left e -> show e `shouldBe` show probe
-            Right () -> expectationFailure "a probe was confirmed delivered, yet release swallowed it instead of rethrowing it"
-          -- This holds unconditionally, whether or not the race landed:
-          -- 'release' never returns\/throws until 'cancelManagedThread'
-          -- has genuinely observed the target's own completion.
+          -- 200 iterations are exhausted): that one in-flight delivery
+          -- can land at any later interruptible point in THIS thread,
+          -- not only inside 'release''s own 'Exception.try' above --
+          -- including during the drain below. Such a stray, late
+          -- delivery is expected\/harmless noise unrelated to what this
+          -- test asserts (it says nothing about 'release''s own
+          -- behavior, which was already fully captured in 'outcome'
+          -- above), so it is caught and discarded here rather than
+          -- being allowed to escape as an uncaught exception and fail
+          -- this test for reasons unrelated to its own assertions.
+          drainOutcome <- Exception.try @Exception.IOException do
+            writeIORef floodStopRef True
+            takeMVar floodDoneGate
+            readIORef deliveryCount
+          case drainOutcome of
+            Right delivered ->
+              -- Only assert on the exception itself when at least one
+              -- probe is confirmed to have actually landed (see
+              -- 'deliveryCount' above): with 200 iterations spaced 1ms
+              -- apart racing this generation's own genuine (typically
+              -- sub-millisecond) cancellation, this is true in practice
+              -- on every run, but this test must never itself flake
+              -- merely because the race happened not to land on some
+              -- particular run.
+              when (delivered > 0) $ case outcome of
+                Left e -> show e `shouldBe` show probe
+                Right () -> expectationFailure "a probe was confirmed delivered, yet release swallowed it instead of rethrowing it"
+            Left _ ->
+              -- A stray probe landed after 'release' already returned,
+              -- outside the window it itself guards: nothing meaningful
+              -- can be asserted about 'outcome' from this run (exactly
+              -- like the "never landed at all" case above), but this is
+              -- not itself a failure. The forked flood thread has
+              -- already observed 'floodStopRef' and will terminate on
+              -- its own without further attention here.
+              pure ()
+          -- This holds unconditionally, whether or not the race landed
+          -- (or landed late, outside the drain above): 'release' never
+          -- returns\/throws until 'cancelManagedThread' has genuinely
+          -- observed the target's own completion.
           status <- threadStatus targetTid
           status `shouldSatisfy` isTerminatedStatus
         _ -> expectationFailure "expected managedEnvAcquisition to produce a Ref for a far-future expiration, not a static Auth"
