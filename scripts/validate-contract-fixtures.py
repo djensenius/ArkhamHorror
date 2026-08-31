@@ -116,8 +116,11 @@ capabilities_fixtures = [
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
 
 require(
-    len(capabilities_fixtures) >= 1,
-    "manifest.json must register at least one capabilities fixture",
+    len(capabilities_fixtures) == 2,
+    "manifest.json must register exactly two capabilities fixtures -- the legacy shape a "
+    "deployment without a catalog serves and the one it serves with a catalog -- so both the "
+    "optional field's presence and its exact absence are governed; got "
+    f"{[fixture['path'] for fixture in capabilities_fixtures]}",
 )
 
 capabilities_shapes: dict[bool, str] = {}
@@ -157,11 +160,13 @@ for capabilities_fixture in capabilities_fixtures:
     )
     capabilities_shapes[has_catalog_object] = capabilities_path
 
+# The loop above already refuses a duplicate shape, so with exactly two
+# fixtures this can only fail if both are the same shape -- named separately
+# because that failure reads very differently from a miscount.
 require(
     set(capabilities_shapes) == {False, True},
-    "manifest.json must register both the legacy capabilities fixture and the "
-    "locale-catalog one, so the optional field's presence and its exact absence are "
-    f"both governed; got {sorted(capabilities_shapes.values())}",
+    "manifest.json registers two capabilities fixtures of the same shape; one must carry a "
+    f"localeCatalog object and one must not; got {sorted(capabilities_shapes.values())}",
 )
 
 for relative_path in documents:
