@@ -120,6 +120,86 @@ mutate_and_expect_reject "an unlisted compressed artifact" extra-gz \
 mutate_and_expect_reject "a decompression bomb" bomb-gz \
   bash -c "head -c 8000000 /dev/zero | gzip -c > '${SAMPLE_GZ}'"
 
+# A restored manifest is untrusted input: it names every path that gets read and
+# every digest that gets compared, so a cache must not be able to point the
+# verifier — or nginx — at anything but a content-addressed chunk inside the
+# catalog.
+jq_manifest() {
+  local copy="$1"; shift
+  node -e '
+    const fs = require("fs")
+    const path = process.argv[1]
+    const mutate = new Function("manifest", process.argv[2])
+    const manifest = JSON.parse(fs.readFileSync(path, "utf8"))
+    mutate(manifest)
+    const bytes = JSON.stringify(manifest)
+    fs.writeFileSync(path, bytes)
+    const revision = path.replace(/manifest\.json$/, "") + "r/" + manifest.catalogRevision + "/manifest.json"
+    if (fs.existsSync(revision)) fs.writeFileSync(revision, bytes)
+  ' "${copy}/locale-catalog/manifest.json" "$1"
+}
+
+mutate_manifest_and_expect_reject() {
+  local label="$1" name="$2" script="$3"
+  local copy="${WORK}/${name}"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp -R "${DIST}/." "$copy/"
+  jq_manifest "$copy" "$script"
+  if verify_cached_locale_catalog "$copy" >/dev/null 2>&1; then
+    fail "${label} was accepted from a restored cache"
+  fi
+}
+
+mutate_manifest_and_expect_reject "a traversing chunk path" traversal \
+  'manifest.locales[0].chunks[0].path = manifest.basePath + "/../../../etc/passwd"'
+mutate_manifest_and_expect_reject "an encoded traversing chunk path" traversal-encoded \
+  'manifest.locales[0].chunks[0].path = manifest.basePath + "/c/%2e%2e/%2e%2e/secret.json"'
+mutate_manifest_and_expect_reject "a doubled separator chunk path" traversal-double \
+  'manifest.locales[0].chunks[0].path = manifest.basePath + "/c//" + manifest.locales[0].chunks[0].sha256 + ".json"'
+mutate_manifest_and_expect_reject "a dot-segment chunk path" traversal-dot \
+  'manifest.locales[0].chunks[0].path = manifest.basePath + "/c/./" + manifest.locales[0].chunks[0].sha256 + ".json"'
+mutate_manifest_and_expect_reject "an absolute chunk path" absolute \
+  'manifest.locales[0].chunks[0].path = "/etc/passwd"'
+mutate_manifest_and_expect_reject "a platform chunk path" platform \
+  'manifest.locales[0].chunks[0].path = manifest.basePath + "/c\\\\windows\\\\system32"'
+mutate_manifest_and_expect_reject "a chunk whose name and digest disagree" digest-path \
+  'manifest.locales[0].chunks[0].sha256 = "0".repeat(64)'
+mutate_manifest_and_expect_reject "a non content-addressed chunk path" not-addressed \
+  'manifest.locales[0].chunks[0].path = manifest.basePath + "/chunks/en-core.json"'
+mutate_manifest_and_expect_reject "a schema-invalid manifest" schema-invalid \
+  'manifest.digestAlgorithm = "md5"'
+mutate_manifest_and_expect_reject "an unknown manifest field" schema-extra \
+  'manifest.somethingElse = true'
+
+# A symlink is a way to serve bytes from outside the route that the digest
+# check would otherwise bless, whether it is a chunk, a compressed sibling or a
+# whole directory.
+symlink_and_expect_reject() {
+  local label="$1" name="$2"; shift 2
+  local copy="${WORK}/${name}"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp -R "${DIST}/." "$copy/"
+  ( cd "${copy}/locale-catalog" && "$@" )
+  if verify_cached_locale_catalog "$copy" >/dev/null 2>&1; then
+    fail "${label} was accepted from a restored cache"
+  fi
+}
+
+OUTSIDE="${WORK}/outside"
+mkdir -p "$OUTSIDE"
+cp "${DIST}/locale-catalog/${SAMPLE_JSON}" "${OUTSIDE}/chunk.json"
+cp "${DIST}/locale-catalog/${SAMPLE_GZ}" "${OUTSIDE}/chunk.json.gz"
+
+# Even with byte-identical content, the artifact must live inside the catalog.
+symlink_and_expect_reject "a symlinked chunk with matching bytes" symlink-chunk \
+  bash -c "rm -f '${SAMPLE_JSON}' && ln -s '${OUTSIDE}/chunk.json' '${SAMPLE_JSON}'"
+symlink_and_expect_reject "a symlinked compressed sibling" symlink-gz \
+  bash -c "rm -f '${SAMPLE_GZ}' && ln -s '${OUTSIDE}/chunk.json.gz' '${SAMPLE_GZ}'"
+symlink_and_expect_reject "a symlinked chunk directory" symlink-dir \
+  bash -c "mv c c-real && ln -s c-real c"
+
 # The strict check (used after a real build) must still demand `public/`, and
 # it owns the destructive behaviour, so it gets its own throwaway copy.
 STRICT="${WORK}/strict"

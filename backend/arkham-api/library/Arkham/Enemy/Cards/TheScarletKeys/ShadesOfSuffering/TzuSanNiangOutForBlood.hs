@@ -56,10 +56,10 @@ instance RunMessage TzuSanNiangOutForBlood where
             labeled' "takeHorror" $ assignHorror iid (attrs.ability 1) 1
         | even x -> assignDamageAndHorror iid (attrs.ability 1) half half
         | otherwise -> do
-            chooseOneM iid $ scenarioI18n do
-              labeled' "tzuSanNiangOutForBlood.damage"
+            chooseOneM iid $ withI18n $ countVar (half + 1) do
+              labeled' "takeDamage"
                 $ assignDamageAndHorror iid (attrs.ability 1) (half + 1) half
-              labeled' "tzuSanNiangOutForBlood.horror"
+              labeled' "takeHorror"
                 $ assignDamageAndHorror iid (attrs.ability 1) half (half + 1)
       pure e
     _ -> TzuSanNiangOutForBlood <$> liftRunMessage msg attrs

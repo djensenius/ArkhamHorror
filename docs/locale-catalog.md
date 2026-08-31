@@ -10,6 +10,29 @@ It is a technical distribution and content-provenance boundary, not a new
 license grant: the deployment already serves this text to browsers, and the
 catalog moves nothing into a client repository.
 
+## What this is, and what it is not
+
+This is **infrastructure**: a versioned, verifiable resource that publishes the
+locale text the deployment already has, and that states in its own schema what
+it could not publish. It is **not** a claim of complete native gameplay
+coverage.
+
+* The catalog fails closed on anything it can render but would render wrongly,
+  and it publishes its gaps rather than hiding them: `backend.untranslatedKeys`
+  (a key the backend emits that no locale file defines), `backend.variableGaps`
+  (a message that wants a substitution the backend was not seen to send), and
+  `{"form": "unsupported", "reason": …}` entries with no content.
+* **A consumer MUST treat a missing key, an `unsupported` entry, or an entry
+  whose declared variables it cannot supply as unavailable and non-actionable.**
+  Rendering a raw key, a partial string, or a placeholder as if it were an
+  instruction is a correctness bug in the consumer, not a fallback.
+* At the revision this was written, six backend-emitted keys have no text in
+  any locale file (the Vue client shows the raw key today for the same reason).
+  They are listed, with the emitter site that needs the text, in
+  `frontend/scripts/locale-catalog/known-gaps.json`. Closing them is a content
+  change and follow-up work; it is not something this catalog can do, and it is
+  not claimed here.
+
 ## What is published
 
     /locale-catalog/manifest.json                index (revalidates by ETag)
@@ -332,7 +355,16 @@ shell, and that a rolling deploy works in both directions (new manifest against
 old static root and vice versa).
 
 `frontend/scripts/locale-catalog/verify-dist.mjs` proves the built `dist/`
-really contains the catalog with matching digests and precompressed siblings;
+really contains the catalog with matching digests and precompressed siblings.
+A restored manifest is untrusted input — it names every path that is read and
+every digest that is compared — so both manifests are validated against the
+published v1 schema, every chunk path must be exactly
+`<basePath>/c/<sha256>.json` with the name matching the digest the descriptor
+promises, every path component is `lstat`ed rather than followed (no symlinks,
+no non-regular files, no traversal, no absolute or platform paths, nothing
+outside the catalog), and the identity/`.gz`/`.br` artifact sets are compared
+with the manifest in both directions, so nothing unlisted can sit where nginx
+would serve it;
 the offline build runs the same check against its own output — before both of
 its cache-hit returns — and hashes every catalog provenance input into its
 cache key, so a stale `_deps/frontend` can never be reused.
