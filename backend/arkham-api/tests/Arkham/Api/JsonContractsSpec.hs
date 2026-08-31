@@ -27,6 +27,7 @@ import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
 import Arkham.Classes.HasGame (getGame)
 import Arkham.Difficulty (Difficulty (Easy, Standard))
 import Arkham.Decklist (ArkhamDBDecklist (..))
+import Arkham.Decklist.CardPool (ArkhamBuildCardPool (..))
 import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
 import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
@@ -642,6 +643,71 @@ fixtureInvestigatorNegativeUnhealedHorror = unsafePerformIO $ runAgainstFixtureB
     _ -> error "fixtureInvestigatorNegativeUnhealedHorror: expected a PublicGame object"
 {-# NOINLINE fixtureInvestigatorNegativeUnhealedHorror #-}
 
+{- | Regression coverage for a real production drift: upstream's
+'investigatorCardPool' field (@Maybe ArkhamBuildCardPool@,
+Investigator\/Types.hs, added to support @arkham.build@ deck-pool
+restrictions) rides along on 'InvestigatorAttrs'\' TH-derived @ToJSON@
+because that same instance also has to round-trip full internal game state
+(@Arkham.Game.Json@\/@Entities@ persistence, undo, replay). Nothing removed
+@cardsUnderneath@ or any other governed field; the actual regression was
+this new field silently and *additively* widening the public wire contract:
+production started emitting @"cardPool": null@ in every investigator view,
+a key @contracts\/schemas\/investigator.schema.json@ (@additionalProperties:
+false@) and the governed 0.1.22 fixtures never declared.
+
+The fix is a fork-only compatibility shim in @Arkham\/Game.hs@'s
+'WithDeckSize' @ToJSON@ instance -- the single seam every public
+investigator view (in-play @investigators@, @otherInvestigators@,
+@killedInvestigators@) already passes through to add @deckSize@ -- that
+strips @cardPool@ back out before it reaches the wire, restoring exact
+0.1.22 behavior without touching 'InvestigatorAttrs'\' own encoder/decoder
+(so saved games with a real card pool still round-trip) and without
+bumping the contract revision.
+
+This fixture proves both halves at once, using one real, running fixture
+investigator (never a hand-authored payload): with a genuine, non-'Nothing'
+'investigatorCardPool' actually set via 'cardPoolL',
+
+  * the investigator's own @Investigator@\/'InvestigatorAttrs' encoder still
+    emits @cardPool@ with real (non-null) content, proving internal
+    persistence is untouched, and
+  * the same investigator's public @PublicGame@ projection -- both
+    @Aeson.toJSON@ and the @toEncoding@-driven 'viaWireEncoding' wire bytes,
+    so a hand-written @toEncoding@ couldn't silently reintroduce the leak on
+    just one of those two paths -- has no @cardPool@ key at all (not merely
+    a @null@ one), while unrelated existing fields like @cardsUnderneath@
+    remain present and unchanged, proving the shim is scoped to exactly the
+    one additive key it targets.
+-}
+fixtureInvestigatorCardPoolShim
+  :: (Aeson.Value, Aeson.Value, Aeson.Value)
+  -- ^ (internal InvestigatorAttrs encoding, public toJSON, public viaWireEncoding)
+fixtureInvestigatorCardPoolShim = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+      pool = ArkhamBuildCardPool ["cycle:core"]
+  testApp <- get
+  liftIO $ atomicModifyIORef' (game testApp) \g ->
+    (g & entitiesL . investigatorsL . ix iid %~ overAttrs (cardPoolL ?~ pool), ())
+  game <- getGame
+  let
+    modifiedInvestigator = game ^?! entitiesL . investigatorsL . ix iid
+    internalEncoding = Aeson.toJSON modifiedInvestigator
+    publicGame = PublicGame fixtureGameId "Contract fixture game" ["Contract fixture log entry."] game
+    extractInvestigator :: Aeson.Value -> Aeson.Value
+    extractInvestigator = \case
+      Aeson.Object top -> case AesonKeyMap.lookup "investigators" top of
+        Just (Aeson.Object invs) -> case AesonKeyMap.lookup (AesonKey.fromText "c01001") invs of
+          Just investigatorValue -> investigatorValue
+          Nothing -> error "fixtureInvestigatorCardPoolShim: missing c01001 in investigators"
+        _ -> error "fixtureInvestigatorCardPoolShim: missing investigators object"
+      _ -> error "fixtureInvestigatorCardPoolShim: expected a PublicGame object"
+  pure
+    ( internalEncoding
+    , extractInvestigator (Aeson.toJSON publicGame)
+    , extractInvestigator (viaWireEncoding publicGame)
+    )
+{-# NOINLINE fixtureInvestigatorCardPoolShim #-}
+
 {- | Real production evidence for the UUID-keyed entity-map key class shared
 by @enemies@\/@assets@\/@treacheries@\/@events@\/@skills@\/@concealed@ (all
 @EntityMap a = Map (EntityId a) a@ where @EntityId a@ is a UUID-backed
@@ -1106,6 +1172,32 @@ spec = describe "Native client contract fixtures" do
   it "matches the real investigator encoder for a negative unhealedHorrorThisRound (issue: investigator.schema.json incorrectly had a minimum:0 even though production's min 0 . subtract amount in Runner/Damage.hs genuinely emits negative values on the wire when over-healing)" do
     fixture <- loadFixture "investigator-unhealed-horror-negative.json"
     fixtureInvestigatorNegativeUnhealedHorror `shouldBe` fixture
+
+  it "keeps investigatorCardPool out of the public wire while leaving it in the internal encoder (regression: InvestigatorAttrs' TH-derived ToJSON, shared by internal persistence (Arkham.Game.Json/Entities) and the public PublicGame projection alike, started leaking a bare \"cardPool\": null onto every real investigator view the moment investigatorCardPool existed at all -- an additive drift investigator.schema.json's additionalProperties:false never allowed and the governed 0.1.22 fixtures never declared; contracts:validate stayed green throughout because it only checks fixtures against schemas, never against this real encoder. WithDeckSize's ToJSON in Game.hs now strips cardPool at that one public seam. This proves both the shim and its scope with one real, non-Nothing investigatorCardPool set via cardPoolL: the investigator's own InvestigatorAttrs encoding still carries it (persistence/round-trip untouched), while the same investigator pulled from PublicGame's \"investigators\" map -- via both toJSON and the toEncoding-driven wire bytes, so a hand-written toEncoding can't reintroduce the leak on only one path -- has no cardPool key at all, with cardsUnderneath left present and unaffected" do
+    let (internalEncoding, publicToJson, publicWireEncoding) = fixtureInvestigatorCardPoolShim
+        hasKey k = \case
+          Aeson.Object o -> AesonKeyMap.member (AesonKey.fromText k) o
+          _ -> False
+        lookupKey k = \case
+          Aeson.Object o -> AesonKeyMap.lookup (AesonKey.fromText k) o
+          _ -> Nothing
+
+    -- The internal InvestigatorAttrs/persistence encoder must still emit the
+    -- real, non-null cardPool value: this fix must never touch save/undo/replay.
+    hasKey "cardPool" internalEncoding `shouldBe` True
+    lookupKey "cardPool" internalEncoding `shouldNotBe` Just Aeson.Null
+    lookupKey "cardPool" internalEncoding
+      `shouldBe` Just (Aeson.toJSON (ArkhamBuildCardPool ["cycle:core"]))
+
+    -- Neither public wire path (plain toJSON, nor the toEncoding-driven
+    -- wire-byte path) may emit a cardPool key at all -- not even a null one.
+    hasKey "cardPool" publicToJson `shouldBe` False
+    hasKey "cardPool" publicWireEncoding `shouldBe` False
+
+    -- Unrelated, previously-governed fields must remain present and
+    -- unaffected by the shim.
+    hasKey "cardsUnderneath" publicToJson `shouldBe` True
+    hasKey "cardsUnderneath" publicWireEncoding `shouldBe` True
 
   it "matches the real UUID-keyed entity-map encoder (issue: PublicGame's enemies/assets/treacheries/events/skills/concealed/question/cards maps had no propertyNames constraint at all; every real get-game/game-update fixture keeps them empty, so this focused fixture proves the shared uuidMapKey grammar against a genuinely non-empty, real createEnemy-built map)" do
     fixture <- loadFixture "uuid-entity-map.json"
