@@ -119,6 +119,122 @@ function require(condition, message) {
   return condition
 }
 
+// The assertion keywords `validateAgainstSchema` actually evaluates, and the
+// annotations it may ignore. Anything outside these two sets is a keyword this
+// evaluator does not implement, and ignoring it would silently widen the
+// contract — `propertyNames` was exactly that: the chunk schema constrains
+// entry keys with it, and an unimplemented keyword let `bad/key` through.
+const SUPPORTED_SCHEMA_KEYWORDS = new Set([
+  '$ref',
+  'additionalProperties',
+  'const',
+  'enum',
+  'items',
+  'maxItems',
+  'maxLength',
+  'maximum',
+  'minItems',
+  'minLength',
+  'minimum',
+  'not',
+  'oneOf',
+  'pattern',
+  'properties',
+  'propertyNames',
+  'required',
+  'type',
+  'uniqueItems',
+])
+
+// Annotations carry no assertion, so skipping them changes nothing.
+const ANNOTATION_SCHEMA_KEYWORDS = new Set([
+  '$comment',
+  '$defs',
+  '$id',
+  '$schema',
+  'default',
+  'deprecated',
+  'description',
+  'examples',
+  'title',
+])
+
+/**
+ * Refuses a schema this evaluator cannot fully enforce.
+ *
+ * Run once per schema document at load, before any instance is checked. A
+ * keyword the evaluator does not implement is a hole in a closed contract, so
+ * the verifier stops rather than validating against a weaker schema than the
+ * one the generator published. Only schema positions are walked, so a property
+ * *named* `enum` or `items` is not mistaken for a keyword.
+ */
+function assertSupportedSchema(schema, where, path = '<root>') {
+  if (typeof schema === 'boolean') {
+    if (schema !== false) {
+      throw new Error(`${where}: ${path} is a boolean schema this verifier does not implement`)
+    }
+    return
+  }
+  if (schema === null || typeof schema !== 'object' || Array.isArray(schema)) {
+    throw new Error(`${where}: ${path} is not a schema object`)
+  }
+  for (const keyword of Object.keys(schema)) {
+    if (ANNOTATION_SCHEMA_KEYWORDS.has(keyword)) continue
+    if (!SUPPORTED_SCHEMA_KEYWORDS.has(keyword)) {
+      throw new Error(
+        `${where}: ${path} uses "${keyword}", which this verifier does not evaluate`,
+      )
+    }
+    // Draft 2020-12 evaluates `$ref` *alongside* its siblings; this evaluator
+    // delegates to the target and stops, so a sibling assertion would be
+    // dropped. Refused rather than silently weakened.
+    if (Object.hasOwn(schema, '$ref') && keyword !== '$ref') {
+      throw new Error(`${where}: ${path} places "${keyword}" beside a "$ref"`)
+    }
+  }
+  for (const keyword of ['items', 'not', 'propertyNames']) {
+    if (Object.hasOwn(schema, keyword)) {
+      assertSupportedSchema(schema[keyword], where, `${path}.${keyword}`)
+    }
+  }
+  if (Object.hasOwn(schema, 'additionalProperties') && schema.additionalProperties !== false) {
+    assertSupportedSchema(schema.additionalProperties, where, `${path}.additionalProperties`)
+  }
+  if (Object.hasOwn(schema, 'oneOf')) {
+    if (!Array.isArray(schema.oneOf)) throw new Error(`${where}: ${path}.oneOf is not an array`)
+    schema.oneOf.forEach((branch, index) =>
+      assertSupportedSchema(branch, where, `${path}.oneOf[${index}]`),
+    )
+  }
+  for (const keyword of ['properties', '$defs']) {
+    if (!Object.hasOwn(schema, keyword)) continue
+    const map = schema[keyword]
+    if (map === null || typeof map !== 'object' || Array.isArray(map)) {
+      throw new Error(`${where}: ${path}.${keyword} is not an object`)
+    }
+    for (const name of Object.keys(map)) {
+      assertSupportedSchema(map[name], where, `${path}.${keyword}.${name}`)
+    }
+  }
+}
+
+/**
+ * Reads a published v1 schema and refuses to proceed unless this evaluator
+ * implements every assertion in it.
+ *
+ * Node has no bundled JSON Schema implementation, and this verifier runs at
+ * deploy seams where `node_modules/` does not exist yet — the offline cache-hit
+ * branch verifies a restored build *before* dependencies are installed, and
+ * `05-package.sh` verifies a packaged tree that has none — so a pinned
+ * Draft 2020-12 validator cannot be imported here. The closed keyword set above
+ * is what keeps the hand-written evaluator honest instead.
+ */
+function loadSchema(name) {
+  const schema = JSON.parse(readFileSync(join(SCHEMA_DIR, name), 'utf8'))
+  assertSupportedSchema(schema, `frontend/schemas/locale-catalog/v1/${name}`)
+  return schema
+}
+
 /**
  * The subset of JSON Schema the v1 manifest uses, evaluated against the schema
  * file itself. A cached manifest is untrusted input: everything downstream —
@@ -194,8 +310,18 @@ function validateAgainstSchema(value, schema, root, path = '', errors = []) {
     const additional = Object.hasOwn(schema, 'additionalProperties')
       ? schema.additionalProperties
       : undefined
+    // `propertyNames` is what closes an open map: chunk entries are keyed by
+    // the published message-key grammar, and without this a key like `bad/key`
+    // would be carried by an otherwise schema-valid chunk.
+    const propertyNames = Object.hasOwn(schema, 'propertyNames') ? schema.propertyNames : undefined
     for (const name of Object.keys(value)) {
       const entry = value[name]
+      if (propertyNames !== undefined) {
+        const nameErrors = validateAgainstSchema(name, propertyNames, root, `${at}.<name>`, [])
+        if (nameErrors.length > 0) {
+          errors.push(`${at} has a property name ${JSON.stringify(name)}: ${nameErrors[0]}`)
+        }
+      }
       if (!Object.hasOwn(properties, name)) {
         if (additional === false) errors.push(`${at}.${name} is not allowed`)
         else if (additional !== undefined && typeof additional === 'object') {
@@ -642,9 +768,11 @@ function verifyCompressedSiblings(expected) {
  *
  * Totals are self-attested: a manifest can claim a small catalog and then list
  * the same 8 MiB chunk four thousand times, or list one `(locale, pack)` twice
- * with different digests. Everything here is recomputed from the descriptors —
- * per-locale and global key, chunk and byte counts — and each unique content
- * path is read exactly once.
+ * with different digests, or split one locale across two records so each looks
+ * complete while neither is. Everything here is recomputed from the
+ * descriptors — per-locale and global key, chunk and byte counts — over locale
+ * records that are required to be unique, and each unique content path is read
+ * exactly once.
  */
 function preflightDescriptors(manifest) {
   const problems = []
@@ -656,7 +784,74 @@ function preflightDescriptors(manifest) {
   let totalBytes = 0
   let totalUnsupported = 0
 
+  // A locale is a whole catalog slice: its record carries the fallback every
+  // client applies and the key/byte totals a client checks itself against. Two
+  // records for one locale mean neither is that slice, and a client that reads
+  // the first is silently missing whatever the second holds. One record per
+  // locale, decided before anything is counted.
+  const records = new Map()
   for (const locale of manifest.locales) {
+    if (records.has(locale.locale)) {
+      problems.push(`${locale.locale} is listed more than once`)
+      continue
+    }
+    records.set(locale.locale, locale)
+  }
+  if (problems.length > 0) return { problems, paths }
+
+  // Fallback is a resolution chain, and a client walks it. Every target has to
+  // exist in this catalog, nothing may fall back to itself, and the chain has
+  // to terminate — at the default locale, which is the one record that ends it.
+  const defaultRecord = records.get(manifest.defaultLocale)
+  if (defaultRecord === undefined) {
+    problems.push(`the default locale ${manifest.defaultLocale} is not published`)
+  } else if (defaultRecord.fallback !== null) {
+    problems.push(
+      `the default locale ${manifest.defaultLocale} falls back to ${defaultRecord.fallback}`,
+    )
+  }
+  for (const [name, record] of records) {
+    if (record.fallback === null) {
+      if (name !== manifest.defaultLocale) {
+        problems.push(`${name} has no fallback but is not the default locale`)
+      }
+      continue
+    }
+    if (record.fallback === name) {
+      problems.push(`${name} falls back to itself`)
+      continue
+    }
+    if (!records.has(record.fallback)) {
+      problems.push(`${name} falls back to ${record.fallback}, which is not published`)
+      continue
+    }
+    const seen = new Set([name])
+    let cursor = record.fallback
+    while (cursor !== null && records.has(cursor) && !seen.has(cursor)) {
+      seen.add(cursor)
+      cursor = records.get(cursor).fallback
+    }
+    if (cursor !== null) {
+      problems.push(`${name}'s fallback chain does not terminate at ${manifest.defaultLocale}`)
+    } else if (!seen.has(manifest.defaultLocale)) {
+      problems.push(`${name}'s fallback chain ends outside the default locale`)
+    }
+  }
+
+  // Language resolution is the same contract for native clients that the web
+  // client applies to a BCP-47 tag. A tag listed twice has no answer, and a tag
+  // pointing at a locale this catalog does not publish has no payload.
+  const tags = new Set()
+  for (const rule of manifest.languageResolution) {
+    const tag = rule.tag.toLowerCase()
+    if (tags.has(tag)) problems.push(`the language tag ${rule.tag} resolves to more than one locale`)
+    tags.add(tag)
+    if (!records.has(rule.locale)) {
+      problems.push(`the language tag ${rule.tag} resolves to unpublished locale ${rule.locale}`)
+    }
+  }
+
+  for (const locale of records.values()) {
     let localeKeys = 0
     let localeBytes = 0
     for (const chunk of locale.chunks) {
@@ -725,9 +920,9 @@ function preflightDescriptors(manifest) {
   if (totalBytes > MAX_CATALOG_BYTES) {
     problems.push(`the manifest's chunks total ${totalBytes} bytes, over the ${MAX_CATALOG_BYTES}-byte ceiling`)
   }
-  if (manifest.totals.locales !== manifest.locales.length) {
+  if (manifest.totals.locales !== records.size) {
     problems.push(
-      `the manifest claims ${manifest.totals.locales} locales, it lists ${manifest.locales.length}`,
+      `the manifest claims ${manifest.totals.locales} locales, it publishes ${records.size}`,
     )
   }
   if (manifest.totals.unsupportedKeys !== totalUnsupported) {
@@ -821,7 +1016,11 @@ function verifyCatalog() {
   if (!require(ancestry === null, `${DIST_CATALOG} has an unsafe ancestor: ${ancestry}`)) {
     return
   }
-  const manifestSchema = JSON.parse(readFileSync(join(SCHEMA_DIR, 'manifest.schema.json'), 'utf8'))
+  // Both schemas are loaded — and audited for keywords this evaluator does not
+  // implement — before a single artifact is read, so an unenforceable contract
+  // stops the run rather than weakening a later check.
+  const manifestSchema = loadSchema('manifest.schema.json')
+  const chunkSchema = loadSchema('chunk.schema.json')
   const manifestPath = safeCatalogPath('manifest.json')
   if (
     !require(
@@ -920,7 +1119,6 @@ function verifyCatalog() {
   if (preflight.problems.length > 0) return
 
   const expected = new Set(['manifest.json', revisionRelative, ...preflight.paths.keys()])
-  const chunkSchema = JSON.parse(readFileSync(join(SCHEMA_DIR, 'chunk.schema.json'), 'utf8'))
   for (const [relative, claim] of preflight.paths) {
     const chunk = claim.chunk
     const file = safeCatalogPath(relative)
@@ -1018,6 +1216,11 @@ function verifyCatalog() {
 
 try {
   verifyCatalog()
+} catch (error) {
+  // A schema this evaluator cannot enforce, or any other failure to complete
+  // the checks, is a failed verification — never a pass.
+  problems.push(`the verifier could not complete: ${error.message}`)
+  if (process.env.LOCALE_CATALOG_DEBUG) console.error(error)
 } finally {
   for (const pin of pinnedDirectories) closeSync(pin.descriptor)
 }

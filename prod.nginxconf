@@ -40,11 +40,37 @@ http {
     304     $cache_control;
   }
 
-  # Does this client accept brotli? Matched as a whole word so it can't be
-  # fooled by a token like "brotli-ish" or a future "xbr".
-  map $http_accept_encoding $accepts_br {
-    default      0;
-    "~*(^|,)\s*br\s*(;|,|$)" 1;
+  # Does this client accept brotli?
+  #
+  # `Accept-Encoding: br;q=0` means the exact opposite of `br` — RFC 9110 §12.5.3
+  # defines qvalue 0 as "not acceptable" — so matching the token alone sends
+  # brotli to a client that explicitly refused it. Negotiation is therefore
+  # split in two: a token has to appear in a *positive* form, and no `br` token
+  # anywhere in the header may carry `q=0`.
+  #
+  # Positive means bare `br` (no weight, which defaults to 1) or a weight that
+  # is greater than zero: `q=1`, `q=1.0`, `q=0.5`, `q=0.001`. Matching is
+  # case-insensitive and tolerates the optional whitespace RFC 9110 allows
+  # around the list separators and after `;`. A `br` carrying any parameter
+  # this does not recognise matches neither map and falls back to gzip or
+  # identity, which are always available — the safe direction. `*` is likewise
+  # not treated as brotli, matching what nginx's own gzip module does.
+  #
+  # Whole-token matching is what keeps `brotli-ish` and `xbr` out.
+  map $http_accept_encoding $br_acceptable {
+    default 0;
+    "~*(^|,)[ \t]*br[ \t]*(;[ \t]*q=(0\.\d*[1-9]\d*|1(\.0{1,3})?)[ \t]*)?(,|$)" 1;
+  }
+
+  # `br` explicitly refused anywhere in the header, at any weight that is zero.
+  map $http_accept_encoding $br_refused {
+    default 0;
+    "~*(^|,)[ \t]*br[ \t]*;[ \t]*q=0(\.0{1,3})?[ \t]*(,|$)" 1;
+  }
+
+  map "$br_acceptable$br_refused" $accepts_br {
+    default 0;
+    "10"    1;
   }
 
   gzip on;
@@ -171,8 +197,9 @@ http {
     # of falling through to the SPA shell and answering a JSON fetch with HTML.
     #
     # `Vary: Accept-Encoding` is set here on the brotli branch and by the
-    # http-level `gzip_vary on` (which covers gzip_static) on every other
-    # response, so a shared cache never reuses one encoding for another.
+    # location's own unconditional `add_header` on every other response, so a
+    # shared cache never reuses one encoding for another. `gzip_vary` is turned
+    # off inside the location so the header is stated exactly once.
     #
     # Chunk URLs under /locale-catalog/c/ carry only a content digest, so a
     # pack that did not change keeps its URL across revisions and remains
@@ -182,6 +209,10 @@ http {
     location ^~ /locale-catalog/ {
       default_type application/json;
       gzip off;
+      # `Vary` is stated unconditionally below, so nginx must not add its own:
+      # `gzip_vary on` at the http level applies to gzip_static as well, and a
+      # gzip or identity response would otherwise carry the header twice.
+      gzip_vary off;
 
       # An `if` block is a nested configuration level, and add_header does not
       # inherit into a level that declares its own — which is why the shared

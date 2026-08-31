@@ -336,6 +336,18 @@ falling through to the SPA shell and answering a JSON fetch with HTML. There
 are no cookies, tokens, or request-specific data involved, so nothing sensitive
 can be logged or leaked by these routes.
 
+Brotli is negotiated rather than pattern-matched. `Accept-Encoding: br;q=0`
+means brotli is *not* acceptable (RFC 9110 §12.5.3), so the config requires a
+positive `br` token — bare, or weighted above zero — and lets any zero-weighted
+`br` veto the encoding for the whole request. Matching is case-insensitive and
+tolerates the optional whitespace around list separators; a `br` token carrying
+a parameter the config does not recognise, and `*`, both fall back to gzip or
+identity rather than guessing. `Vary: Accept-Encoding` is stated exactly once on
+every branch (`gzip_vary` is off inside the location precisely so nginx does not
+add a second copy). The offline package's generated config applies the same
+rules, and `scripts/validate-catalog-serving.py` drives the whole matrix — 27
+header forms — against both, checking the selected encoding *and* the bytes.
+
 ## Verification
 
     mise run locale-catalog:test                 # render-AST, source-integrity and generator tests
@@ -374,10 +386,22 @@ really contains the catalog with matching digests and precompressed siblings.
 A restored manifest is untrusted input — it names every path that is read and
 every digest that is compared — so:
 
-* both manifests are validated against the published v1 schema, parsed into
-  null-prototype objects with `__proto__` refused, and checked with own-property
-  lookups throughout, so `constructor`/`toString` cannot pose as declared
-  fields;
+* both manifests, and every chunk, are validated against the published v1
+  schemas, parsed into null-prototype objects with `__proto__` refused, and
+  checked with own-property lookups throughout, so `constructor`/`toString`
+  cannot pose as declared fields. The evaluator is hand-written — this script
+  runs at deploy seams where `node_modules/` does not exist yet, so it cannot
+  import a validator — and it is held honest by a closed keyword set: each
+  schema document is audited when it is loaded, and any assertion keyword the
+  evaluator does not implement stops the run instead of being ignored. That is
+  what makes `propertyNames` binding, which is how entry keys are held to the
+  published message-key grammar;
+* locale records are checked as a resolution graph: each locale appears exactly
+  once (a locale split across two records would leave a client reading a slice
+  that only looks complete), the default locale appears once and is the only one
+  without a fallback, and every fallback and language-resolution target is a
+  published locale. Self-references, cycles and chains that never reach the
+  default are refused, as is a language tag that resolves two ways;
 * the manifest must describe **the route it is served at**: `basePath`
   `/locale-catalog`, `manifestPath` `/locale-catalog/manifest.json`,
   `chunkPathPrefix` `/locale-catalog/c/` (all `const` in the schema), and a
@@ -392,8 +416,8 @@ every digest that is compared — so:
 * the manifest is checked against *itself* before anything is read: `(locale,
   pack)` pairs and content paths must be unique, a digest may name only one
   path, and every per-locale and global key/chunk/byte total is recomputed from
-  the descriptors and must match exactly — a manifest cannot attest small
-  totals and then list the same 8 MiB chunk four thousand times;
+  the unique locale records and must match exactly — a manifest cannot attest
+  small totals and then list the same 8 MiB chunk four thousand times;
 * the filesystem is enumerated with a budget and stops the moment it exceeds
   what a valid catalog could hold, so a directory flooded with unlisted files
   is refused without building an array of them;

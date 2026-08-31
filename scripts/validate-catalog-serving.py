@@ -235,6 +235,100 @@ def brotli_decompress(payload: bytes) -> bytes:
     return result.stdout
 
 
+# Every Accept-Encoding form the catalog route has to answer the same way in
+# prod.nginxconf and in the offline package, and the encoding each one must
+# produce. `br;q=0` is a *refusal* (RFC 9110 §12.5.3), so it may never be
+# answered with brotli however the rest of the header reads; a `br` carrying a
+# parameter the config does not recognise falls back rather than guessing.
+NEGOTIATION_CASES: tuple[tuple[str, str | None], ...] = (
+    ("br", "br"),
+    ("br;q=1", "br"),
+    ("br;q=1.000", "br"),
+    ("br;q=0.5", "br"),
+    ("br; q=0.001", "br"),
+    ("BR;Q=0.5", "br"),
+    ("gzip, br", "br"),
+    ("br, gzip", "br"),
+    ("  br ,  gzip  ", "br"),
+    ("gzip;q=0, br", "br"),
+    ("deflate;q=0.5, br;q=0.9, gzip;q=0.8", "br"),
+    ("br;q=0", None),
+    ("br;q=0.0", None),
+    ("br;q=0.000", None),
+    ("br;q=0,gzip", "gzip"),
+    ("br;q=0, gzip", "gzip"),
+    ("br ; q=0 , gzip", "gzip"),
+    ("BR;Q=0, gzip", "gzip"),
+    ("br;q=0, br", None),
+    ("br;q=0, gzip, br", "gzip"),
+    ("br;x=1, gzip", "gzip"),
+    ("brotli", None),
+    ("brotli, gzip", "gzip"),
+    ("xbr, gzip", "gzip"),
+    ("*", None),
+    ("identity", None),
+    ("", None),
+)
+
+
+def check_encoding_negotiation(label: str, path: str, identity: bytes, static_root: Path) -> None:
+    """Drives the whole Accept-Encoding matrix against real nginx.
+
+    Each case is checked for the encoding it must select *and* for the bytes it
+    hands back, so a config that merely omits `Content-Encoding` while serving
+    compressed bytes cannot pass. The cache and safety headers are re-checked on
+    every branch, because nginx's `if` is a nested configuration level and only
+    the branch that runs contributes its headers.
+    """
+    import gzip as gzip_module
+
+    stored = static_root / path.lstrip("/")
+    for accept, expected in NEGOTIATION_CASES:
+        status, headers, body = request(path, headers={"Accept-Encoding": accept})
+        shown = accept if accept != "" else "<empty>"
+        require(status == 200, f"{label} Accept-Encoding: {shown} returned {status}")
+        encoding = headers.get("content-encoding")
+        require(
+            encoding == expected,
+            f"{label} Accept-Encoding: {shown} was answered with "
+            f"{encoding or 'identity'}, expected {expected or 'identity'}",
+        )
+        if expected == "br":
+            require(
+                body == stored.with_name(f"{stored.name}.br").read_bytes(),
+                f"{label} Accept-Encoding: {shown} did not return the stored .br sibling",
+            )
+            require(
+                brotli_decompress(body) == identity,
+                f"{label} Accept-Encoding: {shown} returned a brotli body that is not the payload",
+            )
+        elif expected == "gzip":
+            require(
+                gzip_module.decompress(body) == identity,
+                f"{label} Accept-Encoding: {shown} returned a gzip body that is not the payload",
+            )
+        else:
+            require(
+                body == identity,
+                f"{label} Accept-Encoding: {shown} did not return the identity payload",
+            )
+        assert_headers(f"{label} {shown}", status, headers, expect_status=200, cache=IMMUTABLE)
+        require(
+            "accept-encoding" in headers.get("vary", "").lower(),
+            f"{label} Accept-Encoding: {shown} does not vary on Accept-Encoding",
+        )
+        for header in ("cache-control", "vary", "x-content-type-options"):
+            require(
+                headers.count(header) == 1,
+                f"{label} Accept-Encoding: {shown} carries {headers.count(header)} {header} headers",
+            )
+        require(
+            headers.count("content-encoding") <= 1,
+            f"{label} Accept-Encoding: {shown} carries {headers.count('content-encoding')} "
+            "content-encoding headers",
+        )
+
+
 def check_status_matrix(manifest: dict, label: str, static_root: Path) -> None:
     chunk = manifest["locales"][0]["chunks"][0]
     path = chunk["path"]
@@ -294,6 +388,7 @@ def check_status_matrix(manifest: dict, label: str, static_root: Path) -> None:
             headers.count(header) == 1,
             f"{label} brotli response carries {headers.count(header)} {header} headers",
         )
+    check_encoding_negotiation(label, path, body, static_root)
     for missing_status, missing_path in (
         (404, "/locale-catalog/c/does-not-exist.json"),
         (405, path),
@@ -428,7 +523,7 @@ def render_offline_conf(static_root: Path, destination: Path) -> Path:
     return conf
 
 
-def check_offline_serving(manifest: dict) -> None:
+def check_offline_serving(manifest: dict, static_root: Path) -> None:
     chunk = manifest["locales"][0]["chunks"][0]
 
     status, headers, body = request(chunk["path"])
@@ -460,6 +555,7 @@ def check_offline_serving(manifest: dict) -> None:
             headers.count(header) == 1,
             f"offline brotli response carries {headers.count(header)} {header} headers",
         )
+    check_encoding_negotiation("offline", chunk["path"], body, static_root)
 
     status, headers, body = request("/locale-catalog/c/0000.json")
     require(status == 404, f"offline: a missing chunk returned {status}, not 404")
@@ -515,7 +611,7 @@ def main() -> None:
 
     offline_conf = render_offline_conf(root_a, WORK / "offline")
     with Nginx(offline_conf, root_a, "arkham-catalog-offline"):
-        check_offline_serving(manifest_a)
+        check_offline_serving(manifest_a, root_a)
 
     shutil.rmtree(WORK, ignore_errors=True)
     print(

@@ -23,6 +23,16 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/offline-cache-hit.XXXXXX")"
 PUBLIC_CATALOG="${FRONTEND_DIR}/public/locale-catalog"
 STASHED="${WORK}/public-locale-catalog"
 restore() {
+  # A schema mutation is exercised against the real schema file, so it is put
+  # back before anything else — including on a failure path.
+  if [ -f "${WORK}/schema-backup/chunk.schema.json" ]; then
+    cp "${WORK}/schema-backup/chunk.schema.json" \
+      "${FRONTEND_DIR}/schemas/locale-catalog/v1/chunk.schema.json"
+  fi
+  if [ -f "${WORK}/schema-backup/manifest.schema.json" ]; then
+    cp "${WORK}/schema-backup/manifest.schema.json" \
+      "${FRONTEND_DIR}/schemas/locale-catalog/v1/manifest.schema.json"
+  fi
   if [ -d "$STASHED" ] && [ ! -d "$PUBLIC_CATALOG" ]; then
     mv "$STASHED" "$PUBLIC_CATALOG"
   fi
@@ -107,6 +117,170 @@ mutate_manifest_and_expect_reject() {
   fi
 }
 
+# Rewrites one chunk and keeps every number that describes it consistent with
+# the rewrite - digest, content path, byte count, key counts, per-locale and
+# global totals, and both compressed siblings. A rejection therefore proves the
+# rule under test rather than an arithmetic side effect, which the no-op
+# control below confirms.
+mutate_chunk() {
+  local copy="$1" script="$2"
+  node -e '
+    const fs = require("node:fs")
+    const path = require("node:path")
+    const { createHash } = require("node:crypto")
+    const zlib = require("node:zlib")
+    const root = process.argv[1]
+    const mutate = new Function("chunk", process.argv[2])
+    const manifestPath = path.join(root, "manifest.json")
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+    let target = null
+    for (const locale of manifest.locales) {
+      for (const chunk of locale.chunks) {
+        const relative = chunk.path.slice(manifest.basePath.length + 1)
+        const file = path.join(root, relative)
+        if (!fs.existsSync(`${file}.gz`) || !fs.existsSync(`${file}.br`)) continue
+        if (target === null || chunk.bytes < target.chunk.bytes) target = { locale, chunk, file }
+      }
+    }
+    if (target === null) throw new Error("no compressed chunk to mutate")
+    const parsed = JSON.parse(fs.readFileSync(target.file, "utf8"))
+    mutate(parsed)
+    const bytes = Buffer.from(JSON.stringify(parsed), "utf8")
+    const sha256 = createHash("sha256").update(bytes).digest("hex")
+    for (const suffix of ["", ".gz", ".br"]) fs.rmSync(`${target.file}${suffix}`, { force: true })
+    const next = path.join(root, "c", `${sha256}.json`)
+    fs.writeFileSync(next, bytes)
+    fs.writeFileSync(`${next}.gz`, zlib.gzipSync(bytes, { level: 9 }))
+    fs.writeFileSync(`${next}.br`, zlib.brotliCompressSync(bytes, {
+      params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 },
+    }))
+    const keys = Object.keys(parsed.entries)
+    const unsupported = keys.filter((key) => parsed.entries[key].form === "unsupported").length
+    const descriptor = target.chunk
+    target.locale.keys += keys.length - descriptor.keys
+    target.locale.bytes += bytes.length - descriptor.bytes
+    manifest.totals.keys += keys.length - descriptor.keys
+    manifest.totals.bytes += bytes.length - descriptor.bytes
+    manifest.totals.unsupportedKeys += unsupported - descriptor.unsupportedKeys
+    descriptor.path = `${manifest.basePath}/c/${sha256}.json`
+    descriptor.sha256 = sha256
+    descriptor.bytes = bytes.length
+    descriptor.keys = keys.length
+    descriptor.unsupportedKeys = unsupported
+    const serialized = JSON.stringify(manifest)
+    fs.writeFileSync(manifestPath, serialized)
+    const revision = path.join(root, "r", manifest.catalogRevision, "manifest.json")
+    if (fs.existsSync(revision)) fs.writeFileSync(revision, serialized)
+  ' "${copy}/locale-catalog" "$script"
+}
+
+prepare_chunk_mutation() {
+  local name="$1" script="$2"
+  local copy="${WORK}/${name}"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp -R "${DIST}/." "$copy/"
+  mutate_chunk "$copy" "$script"
+  recompress_manifests "$copy"
+  printf '%s' "$copy"
+}
+
+mutate_chunk_and_expect_reject() {
+  local label="$1" name="$2" script="$3" reason="${4:-}" copy
+  copy="$(prepare_chunk_mutation "$name" "$script")"
+  if verify_cached_locale_catalog "$copy" > "${WORK}/${name}.log" 2>&1; then
+    fail "${label} was accepted from a restored cache"
+    return
+  fi
+  if [ -n "$reason" ] && ! grep -q -- "$reason" "${WORK}/${name}.log"; then
+    fail "${label} was rejected, but not for ${reason}: $(tr '\n' ' ' < "${WORK}/${name}.log")"
+  fi
+}
+
+# Rewrites the manifest *and* the chunk bodies together, keeping every digest,
+# content path and total consistent with the rewrite. A locale's fallback is
+# recorded in both places, so a manifest-only mutation is caught by the
+# descriptor/chunk agreement rule long before the resolution graph is examined;
+# this is what makes a graph that is internally consistent but unresolvable
+# reachable as a test.
+rewrite_catalog_and_expect_reject() {
+  local label="$1" name="$2" script="$3"
+  local copy="${WORK}/${name}"
+  rm -rf "$copy"
+  mkdir -p "$copy"
+  cp -R "${DIST}/." "$copy/"
+  node -e '
+    const fs = require("node:fs")
+    const path = require("node:path")
+    const { createHash } = require("node:crypto")
+    const zlib = require("node:zlib")
+    const root = process.argv[1]
+    const manifestPath = path.join(root, "manifest.json")
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"))
+    const dirty = new Set()
+    const bodies = new Map()
+    const chunkOf = (descriptor) => {
+      const relative = descriptor.path.slice(manifest.basePath.length + 1)
+      if (!bodies.has(descriptor)) {
+        bodies.set(descriptor, JSON.parse(fs.readFileSync(path.join(root, relative), "utf8")))
+      }
+      dirty.add(descriptor)
+      return bodies.get(descriptor)
+    }
+    new Function("manifest", "chunkOf", process.argv[2])(manifest, chunkOf)
+    for (const locale of manifest.locales) {
+      for (const descriptor of locale.chunks) {
+        if (!dirty.has(descriptor)) continue
+        const previous = path.join(root, descriptor.path.slice(manifest.basePath.length + 1))
+        const bytes = Buffer.from(JSON.stringify(bodies.get(descriptor)), "utf8")
+        const sha256 = createHash("sha256").update(bytes).digest("hex")
+        const hadSiblings = fs.existsSync(`${previous}.gz`)
+        for (const suffix of ["", ".gz", ".br"]) fs.rmSync(`${previous}${suffix}`, { force: true })
+        const next = path.join(root, "c", `${sha256}.json`)
+        fs.writeFileSync(next, bytes)
+        if (hadSiblings) {
+          fs.writeFileSync(`${next}.gz`, zlib.gzipSync(bytes, { level: 9 }))
+          fs.writeFileSync(`${next}.br`, zlib.brotliCompressSync(bytes, {
+            params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 },
+          }))
+        }
+        const keys = Object.keys(bodies.get(descriptor).entries)
+        descriptor.path = `${manifest.basePath}/c/${sha256}.json`
+        descriptor.sha256 = sha256
+        descriptor.bytes = bytes.length
+        descriptor.keys = keys.length
+        descriptor.unsupportedKeys = keys.filter(
+          (key) => bodies.get(descriptor).entries[key].form === "unsupported",
+        ).length
+      }
+    }
+    // Totals are recomputed so the mutation cannot be rejected as arithmetic.
+    const sum = (chunks, field) => chunks.reduce((total, chunk) => total + chunk[field], 0)
+    manifest.totals = {
+      locales: manifest.locales.length,
+      chunks: manifest.locales.reduce((total, l) => total + l.chunks.length, 0),
+      bytes: 0,
+      keys: 0,
+      unsupportedKeys: 0,
+    }
+    for (const locale of manifest.locales) {
+      locale.keys = sum(locale.chunks, "keys")
+      locale.bytes = sum(locale.chunks, "bytes")
+      manifest.totals.keys += locale.keys
+      manifest.totals.bytes += locale.bytes
+      manifest.totals.unsupportedKeys += sum(locale.chunks, "unsupportedKeys")
+    }
+    const serialized = JSON.stringify(manifest)
+    fs.writeFileSync(manifestPath, serialized)
+    const revision = path.join(root, "r", manifest.catalogRevision, "manifest.json")
+    if (fs.existsSync(revision)) fs.writeFileSync(revision, serialized)
+  ' "${copy}/locale-catalog" "$script"
+  recompress_manifests "$copy"
+  if verify_cached_locale_catalog "$copy" > "${WORK}/${name}.log" 2>&1; then
+    fail "${label} was accepted from a restored cache"
+  fi
+}
+
 pick_compressed() {
   local files=("${DIST}/locale-catalog"/c/*.json.gz)
   local first="${files[0]}"
@@ -158,6 +332,83 @@ mutate_manifest_and_expect_reject "a locale whose totals contradict its chunks" 
   'manifest.locales[0].keys = manifest.locales[0].keys + 1'
 mutate_manifest_and_expect_reject "a self-attested oversized catalog" oversized-claim \
   'var one = manifest.locales[0].chunks[0]; manifest.locales[0].chunks = Array.from({length: 4094}, function (_, i) { return Object.assign({}, one, {pack: "p" + i, bytes: 8 * 1024 * 1024}) })'
+
+# A locale record is a whole catalog slice: one record per locale, one default
+# that ends the fallback chain, and every fallback or language-resolution target
+# published here. Split a locale in two and each record looks complete while
+# neither is.
+SECOND_LOCALE='manifest.locales.filter(function (l) { return l.locale !== manifest.defaultLocale })[0]'
+mutate_manifest_and_expect_reject "one locale split across two records" split-locale \
+  'var sum = function (chunks, field) { return chunks.reduce(function (a, c) { return a + c[field] }, 0) };
+   var l = manifest.locales.filter(function (x) { return x.chunks.length > 1 })[0];
+   var moved = l.chunks.splice(1);
+   l.keys = sum(l.chunks, "keys"); l.bytes = sum(l.chunks, "bytes");
+   manifest.locales.push({locale: l.locale, fallback: l.fallback, chunks: moved,
+     keys: sum(moved, "keys"), bytes: sum(moved, "bytes")});
+   manifest.totals.locales = manifest.locales.length'
+mutate_manifest_and_expect_reject "an unpublished default locale" default-missing \
+  'manifest.defaultLocale = "zz"'
+# The fallback a client walks is recorded in the record *and* in every chunk, so
+# these rewrite both and stay internally consistent: what is left is a
+# resolution graph that cannot be walked.
+RETARGET='var set = function (l, to) { l.fallback = to; l.chunks.forEach(function (c) { chunkOf(c).fallback = to }) };
+   var others = manifest.locales.filter(function (l) { return l.locale !== manifest.defaultLocale });
+   var self = manifest.locales.filter(function (l) { return l.locale === manifest.defaultLocale })[0];'
+rewrite_catalog_and_expect_reject "a default locale that falls back" default-falls-back \
+  "$RETARGET"' set(self, others[0].locale)'
+rewrite_catalog_and_expect_reject "a second locale that ends the chain" second-terminal \
+  "$RETARGET"' set(others[0], null)'
+rewrite_catalog_and_expect_reject "a fallback to an unpublished locale" fallback-missing \
+  "$RETARGET"' set(others[0], "zz")'
+rewrite_catalog_and_expect_reject "a locale that falls back to itself" fallback-self \
+  "$RETARGET"' set(others[0], others[0].locale)'
+rewrite_catalog_and_expect_reject "a fallback cycle that never reaches the default" fallback-cycle \
+  "$RETARGET"' set(others[0], others[1].locale); set(others[1], others[0].locale)'
+mutate_manifest_and_expect_reject "a language tag resolving to an unpublished locale" tag-missing \
+  'manifest.languageResolution[0].locale = "zz"'
+mutate_manifest_and_expect_reject "a language tag resolving two ways" tag-ambiguous \
+  'manifest.languageResolution.push({tag: manifest.languageResolution[0].tag,
+     locale: '"$SECOND_LOCALE"'.locale === manifest.languageResolution[0].locale
+       ? manifest.defaultLocale : '"$SECOND_LOCALE"'.locale})'
+
+# Entry keys are closed by the chunk schema's `propertyNames`, which an
+# evaluator that skips the keyword would ignore. The no-op control proves the
+# rewrite itself is accepted, so the rejections below are the key grammar.
+CONTROL="$(prepare_chunk_mutation chunk-control '')"
+if ! verify_cached_locale_catalog "$CONTROL" >/dev/null 2>&1; then
+  fail "a consistently rewritten chunk was rejected"
+fi
+mutate_chunk_and_expect_reject "an entry key outside the published grammar" entry-key \
+  'chunk.entries["bad/key"] = chunk.entries[Object.keys(chunk.entries)[0]]' 'property name'
+mutate_chunk_and_expect_reject "an entry key with a control character" entry-key-control \
+  'chunk.entries["bad\u0001key"] = chunk.entries[Object.keys(chunk.entries)[0]]' 'property name'
+mutate_chunk_and_expect_reject "an entry key over the published length" entry-key-long \
+  'chunk.entries["k".repeat(513)] = chunk.entries[Object.keys(chunk.entries)[0]]' 'property name'
+
+# A schema assertion this verifier does not implement must stop it. Ignoring an
+# unknown keyword validates against a weaker contract than the published one.
+mkdir -p "${WORK}/schema-backup"
+SCHEMA_V1="${FRONTEND_DIR}/schemas/locale-catalog/v1"
+for schema in chunk manifest; do
+  cp "${SCHEMA_V1}/${schema}.schema.json" "${WORK}/schema-backup/${schema}.schema.json"
+  node -e '
+    const fs = require("node:fs")
+    const schema = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+    schema.properties[process.argv[2]].minProperties = 1
+    fs.writeFileSync(process.argv[1], JSON.stringify(schema, null, 2) + "\n")
+  ' "${SCHEMA_V1}/${schema}.schema.json" \
+    "$([ "$schema" = chunk ] && echo entries || echo totals)"
+  if verify_cached_locale_catalog "$DIST" > "${WORK}/schema-${schema}.log" 2>&1; then
+    fail "an unimplemented keyword in the ${schema} schema was ignored"
+  elif ! grep -q 'does not evaluate' "${WORK}/schema-${schema}.log"; then
+    fail "the ${schema} schema was rejected, but not as an unimplemented keyword"
+  fi
+  cp "${WORK}/schema-backup/${schema}.schema.json" "${SCHEMA_V1}/${schema}.schema.json"
+  rm -f "${WORK}/schema-backup/${schema}.schema.json"
+done
+if ! verify_cached_locale_catalog "$DIST" >/dev/null 2>&1; then
+  fail "restoring the schemas did not restore verification"
+fi
 
 # An unlisted flood of sparse files must be refused by the bounded iterator,
 # without reading or sorting them.

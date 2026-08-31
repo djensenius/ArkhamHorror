@@ -852,11 +852,21 @@ http {
     default                    "public, max-age=0, must-revalidate";
     "~^/locale-catalog/[cr]/"  "public, max-age=31536000, immutable";
   }
-  # Does this client accept brotli? Matched as a whole word, exactly as
-  # prod.nginxconf does, so a token like "brotli-ish" cannot fool it.
-  map \$http_accept_encoding \$accepts_br {
+  # Brotli negotiation, identical to prod.nginxconf: a client that sends
+  # \`br;q=0\` has refused brotli (RFC 9110 §12.5.3), so a positive token is
+  # required and any zero-weighted \`br\` vetoes it. Unrecognised parameters
+  # fall back to gzip or identity.
+  map \$http_accept_encoding \$br_acceptable {
     default 0;
-    "~*(^|,)\\s*br\\s*(;|,|\$)" 1;
+    "~*(^|,)[ \\t]*br[ \\t]*(;[ \\t]*q=(0\\.\\d*[1-9]\\d*|1(\\.0{1,3})?)[ \\t]*)?(,|\$)" 1;
+  }
+  map \$http_accept_encoding \$br_refused {
+    default 0;
+    "~*(^|,)[ \\t]*br[ \\t]*;[ \\t]*q=0(\\.0{1,3})?[ \\t]*(,|\$)" 1;
+  }
+  map "\$br_acceptable\$br_refused" \$accepts_br {
+    default 0;
+    "10"    1;
   }
   map \$status \$catalog_cache_control {
     default "no-store";
