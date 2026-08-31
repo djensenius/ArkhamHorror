@@ -6,7 +6,8 @@ production-used circuit breaker BOTH 'Api.Handler.Arkham.Games.Shared.updateGame
 engine-setup block, which can itself make up to two back-to-back
 'runMessages' calls, wrapped ONCE with the SAME budget) delegate to for
 their own real DB transactions -- exercised directly, against real
-'System.Timeout.timeout' and real 'threadDelay', rather than through a
+'UnliftIO.Timeout.timeout' (the exact function 'runWithMessagesTimeout'
+imports and calls) and real 'threadDelay', rather than through a
 live database or the full Arkham game engine (building a realistic
 'Arkham.Game.Game' whose message queue provably never terminates is not a
 tractable unit-test fixture; this module instead proves the GENERIC
@@ -23,8 +24,8 @@ This lets us assert:
   'runWithMessagesTimeout' returns AND again a short while after the
   action's own internal delay would have elapsed, so a hypothetical future
   implementation that raced a detached worker thread against a timer
-  (instead of relying on GHC's genuinely-interrupting, same-thread
-  'System.Timeout.timeout') and merely returned early while the worker
+  (instead of relying on 'UnliftIO.Timeout.timeout''s own genuinely-
+  interrupting cancellation) and merely returned early while the worker
   kept running unobserved would still be caught -- and 'RunMessagesTimeout'
   -- the SAME typed exception 'updateGame' throws today, carrying the
   exact game id and budget supplied -- propagates OUT of
@@ -94,9 +95,9 @@ spec = describe "runWithMessagesTimeout (production-used runMessages circuit bre
     -- 'timeout' merely returns early while the action keeps running
     -- unobserved: the immediate check alone cannot tell the two apart, but
     -- this second, delayed check would catch a future implementation that
-    -- raced a detached worker thread instead of relying on GHC's
-    -- genuinely-interrupting, same-thread 'System.Timeout.timeout'. Only
-    -- 2x 'internalDelayMicros' (not 20x, as this module's whole suite
+    -- raced a detached worker thread instead of relying on
+    -- 'UnliftIO.Timeout.timeout''s own genuinely-interrupting cancellation.
+    -- Only 2x 'internalDelayMicros' (not 20x, as this module's whole suite
     -- should stay comfortably under a second).
     threadDelay (internalDelayMicros * 2)
     readIORef finished `shouldReturn` False
