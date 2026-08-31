@@ -438,6 +438,29 @@ def check_offline_serving(manifest: dict) -> None:
     status, headers, _ = request(manifest["manifestPath"])
     assert_headers("offline manifest", status, headers, expect_status=200, cache=REVALIDATE)
 
+    # Content negotiation must match prod: the stored .gz and .br are what an
+    # offline client gets, with one set of headers.
+    import gzip as gzip_module
+
+    status, headers, gzipped = request(chunk["path"], headers={"Accept-Encoding": "gzip"})
+    require(status == 200, f"offline gzip request returned {status}")
+    require(headers.get("content-encoding") == "gzip", "offline did not serve gzip_static")
+    require(gzip_module.decompress(gzipped) == body, "offline gzip payload differs from the identity body")
+    assert_headers("offline gzip", status, headers, expect_status=200, cache=IMMUTABLE)
+
+    status, headers, brotli_body = request(chunk["path"], headers={"Accept-Encoding": "br"})
+    require(status == 200, f"offline brotli request returned {status}")
+    require(headers.get("content-encoding") == "br", "offline did not serve the brotli sibling")
+    require(
+        brotli_decompress(brotli_body) == body,
+        "offline brotli body does not inflate to the identity payload",
+    )
+    for header in ("cache-control", "vary", "x-content-type-options", "content-encoding"):
+        require(
+            headers.count(header) == 1,
+            f"offline brotli response carries {headers.count(header)} {header} headers",
+        )
+
     status, headers, body = request("/locale-catalog/c/0000.json")
     require(status == 404, f"offline: a missing chunk returned {status}, not 404")
     require(b"<!DOCTYPE" not in body.upper(), "offline: a missing chunk was answered with the SPA shell")

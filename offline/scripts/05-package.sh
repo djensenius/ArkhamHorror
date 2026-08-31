@@ -852,6 +852,12 @@ http {
     default                    "public, max-age=0, must-revalidate";
     "~^/locale-catalog/[cr]/"  "public, max-age=31536000, immutable";
   }
+  # Does this client accept brotli? Matched as a whole word, exactly as
+  # prod.nginxconf does, so a token like "brotli-ish" cannot fool it.
+  map \$http_accept_encoding \$accepts_br {
+    default 0;
+    "~*(^|,)\\s*br\\s*(;|,|\$)" 1;
+  }
   map \$status \$catalog_cache_control {
     default "no-store";
     200     \$catalog_path_cache;
@@ -876,6 +882,24 @@ http {
       root "$frontend_root";
       default_type application/json;
       gzip_static on;
+
+      # Brotli delivery, mirroring prod.nginxconf: an `if` block is a nested
+      # configuration level and add_header does not inherit into one that
+      # declares its own, so the shared headers are repeated inside it. The
+      # response still carries exactly one of each, which
+      # scripts/validate-catalog-serving.py asserts against real nginx for this
+      # config as well as for prod.
+      set \$br "";
+      if (\$accepts_br) { set \$br "y"; }
+      if (-f "\$request_filename.br") { set \$br "\${br}f"; }
+      if (\$br = "yf") {
+        add_header Cache-Control \$catalog_cache_control always;
+        add_header Vary "Accept-Encoding" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Content-Encoding "br" always;
+        rewrite ^(.*)\$ \$1.br break;
+      }
+
       add_header Cache-Control \$catalog_cache_control always;
       add_header X-Content-Type-Options "nosniff" always;
       add_header Vary "Accept-Encoding" always;
