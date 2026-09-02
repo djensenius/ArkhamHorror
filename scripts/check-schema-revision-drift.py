@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# ///
 """Revision-drift gate for contracts/manifest.json.
 
 Rule (see contracts/README.md "Release immutability"): once a revision of the

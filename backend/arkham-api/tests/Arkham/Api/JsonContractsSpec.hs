@@ -48,6 +48,7 @@ import Arkham.UltimatumsAndBoons.Types
   )
 import Base.Api.Types.Account
 import Base.Api.Types.Capabilities
+import Base.Api.Types.LocaleCatalog (localeCatalogCapability)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
@@ -63,34 +64,15 @@ import Entity.Arkham.Achievement qualified as AchievementEntity
 import Entity.Arkham.Deck qualified as DeckEntity
 import Entity.Arkham.Game qualified as ArkhamGame
 import Entity.Notification (Notification (..))
+import Helpers.Contracts (loadContractJson)
 import System.IO.Error qualified as IOError
+import Helpers.LocaleCatalog (catalogEnvFor, loadSyntheticCatalog, runtimeCapabilities)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Random (mkStdGen)
 import TestImport
 
 loadFixture :: FilePath -> IO Aeson.Value
-loadFixture fileName = findFixture fixturePaths
- where
-  fixturePaths =
-    [ "contracts/fixtures/" <> fileName
-    , "../contracts/fixtures/" <> fileName
-    , "../../contracts/fixtures/" <> fileName
-    ]
-
-  findFixture = \case
-    [] ->
-      fail
-        $ "Could not find contract fixture "
-        <> fileName
-        <> "; searched: "
-        <> show fixturePaths
-    path : remainingPaths -> IOError.tryIOError (Aeson.eitherDecodeFileStrict' path) >>= \case
-      Left err
-        | IOError.isDoesNotExistError err -> findFixture remainingPaths
-        | otherwise -> IOError.ioError err
-      Right (Left err) ->
-        fail $ "Could not decode contract fixture " <> fileName <> " at " <> path <> ": " <> err
-      Right (Right fixture) -> pure fixture
+loadFixture fileName = loadContractJson ("contracts/fixtures/" <> fileName)
 
 {- | Re-decode a value's *actual wire bytes* (@Aeson.encode@, which is
 defined as @encodingToLazyByteString . toEncoding@) back into a 'Value' for
@@ -900,6 +882,34 @@ fixtureGameList =
   , FailedGameDetails "Contract fixture failed to load."
   ]
 
+{- | The exact response a deployment started with @environment@ would serve,
+built through the production handler body (@Base.Api.Handler.Capabilities@)
+rather than by constructing a 'ServerCapabilities' here, so the fixtures below
+are pinned to what the route actually answers.
+-}
+capabilitiesFor :: [(Text, Text)] -> IO ServerCapabilities
+capabilitiesFor environment = case runtimeCapabilities environment of
+  Left message -> fail $ "settings failed to parse: " <> Text.unpack message
+  Right response -> pure response
+
+{- | Strip exactly the two additive members the locale catalog contributes:
+the @localeCatalog@ object and its capability identifier. Everything else must
+be untouched, which is what makes the field additive for the Vue client and
+for every native client built before it existed.
+-}
+withoutLocaleCatalog :: Aeson.Value -> Aeson.Value
+withoutLocaleCatalog = \case
+  Aeson.Object fields ->
+    Aeson.Object
+      $ AesonKeyMap.mapWithKey withoutCapability
+      $ AesonKeyMap.delete "localeCatalog" fields
+  value -> value
+ where
+  withoutCapability key value = case (key, value) of
+    ("capabilities", Aeson.Array capabilities) ->
+      Aeson.toJSON $ filter (/= Aeson.String localeCatalogCapability) (toList capabilities)
+    _ -> value
+
 clientAnswerFixtures :: [(FilePath, Text)]
 clientAnswerFixtures =
   [ ("answer-question.json", "Answer")
@@ -935,10 +945,28 @@ answerConstructor = \case
 
 spec :: Spec
 spec = describe "Native client contract fixtures" do
-  it "matches the runtime server-capabilities encoder" do
+  it "matches the runtime server-capabilities encoder with no catalog configured" do
     fixture <- loadFixture "capabilities.json"
+    response <- capabilitiesFor []
 
-    Aeson.toJSON serverCapabilities `shouldBe` fixture
+    Aeson.toJSON response `shouldBe` fixture
+    viaWireEncoding response `shouldBe` fixture
+
+  it "matches the runtime server-capabilities encoder when a locale catalog is advertised" do
+    fixture <- loadFixture "capabilities-locale-catalog.json"
+    -- Configured from the committed synthetic catalog manifest's real bytes,
+    -- so this fixture cannot quietly self-attest a revision or digest that no
+    -- artifact in this repository actually has.
+    response <- capabilitiesFor . catalogEnvFor =<< loadSyntheticCatalog
+
+    Aeson.toJSON response `shouldBe` fixture
+    viaWireEncoding response `shouldBe` fixture
+
+  it "adds the locale catalog to the legacy response without changing anything else" do
+    legacy <- loadFixture "capabilities.json"
+    advertised <- loadFixture "capabilities-locale-catalog.json"
+
+    withoutLocaleCatalog advertised `shouldBe` legacy
 
   it "decodes the real create-game request" do
     request <-

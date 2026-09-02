@@ -8125,6 +8125,7 @@ library
       Base.Api.Handler.Settings
       Base.Api.Types.Account
       Base.Api.Types.Capabilities
+      Base.Api.Types.LocaleCatalog
       Base.Util
       Config
       Entity
@@ -8331,6 +8332,50 @@ executable arkham-api
   if flag(library-only)
     buildable: False
 
+executable arkham-capabilities-probe
+  main-is: Main.hs
+  other-modules:
+      Paths_arkham_api
+  hs-source-dirs:
+      app-capabilities-probe
+  default-extensions:
+      AllowAmbiguousTypes
+      BlockArguments
+      DataKinds
+      DeriveAnyClass
+      DerivingStrategies
+      DerivingVia
+      ExtendedDefaultRules
+      FunctionalDependencies
+      GADTs
+      LambdaCase
+      MultiWayIf
+      NoImplicitPrelude
+      NoMonomorphismRestriction
+      OverloadedLabels
+      OverloadedRecordDot
+      OverloadedStrings
+      PatternSynonyms
+      RecordWildCards
+      StrictData
+      TypeFamilies
+      TypeFamilyDependencies
+      TypeOperators
+      UndecidableInstances
+      ViewPatterns
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+  build-tool-depends:
+      cards-discover:cards-discover
+  build-depends:
+      aeson
+    , arkham-api
+    , base
+    , bytestring
+    , relude
+  default-language: GHC2021
+  if flag(library-only)
+    buildable: False
+
 executable arkham-replay
   main-is: Main.hs
   other-modules:
@@ -8412,6 +8457,7 @@ test-suite spec
       Arkham.Api.GameStreamSpec
       Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
+      Arkham.Api.LocaleCatalogCapabilitySpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.ArcaneInitiateSpec
@@ -8774,6 +8820,9 @@ test-suite spec
       DevelStoreLockSpec
       Entity.AnswerSpec
       Helpers.Achievements
+      Helpers.AppSettings
+      Helpers.Contracts
+      Helpers.LocaleCatalog
       Helpers.Message
       Helpers.UltimatumsAndBoons
       PendingCleanupOwnerSpec
@@ -8820,8 +8869,10 @@ test-suite spec
     , amazonka-core
     , arkham-api
     , base
+    , base16-bytestring
     , bytestring
     , containers
+    , cryptohash-sha256
     , devel-store-lock
     , directory
     , exceptions
@@ -8841,4 +8892,5 @@ test-suite spec
     , time
     , unordered-containers
     , uuid
+    , yaml
   default-language: GHC2021

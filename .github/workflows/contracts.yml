@@ -31,6 +31,8 @@ jobs:
         with:
           version: 2026.8.14
           cache: true
+      - run: mise run contracts:catalog-fixture
+      - run: mise run locale-catalog:python-boundary-test
       - run: mise run contracts:fixtures
       - run: mise run contracts:revision-drift
         env:

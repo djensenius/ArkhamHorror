@@ -13,3 +13,22 @@ asset-host: "_env:ASSET_HOST:"
 # permessage-deflate on the game/event websockets. Kill switch, so a suspected
 # compression regression can be bisected in production with a restart.
 websocket-compression: "_env:ARKHAM_WS_COMPRESSION:true"
+
+# Optional locale-catalog pointer advertised through GET /api/v1/capabilities
+# (capability "i18n.locale-catalog.v1"). The backend never serves catalog
+# content; these settings only describe where the deployment publishes it.
+#
+# Leave every one of them blank to disable the pointer: the capabilities
+# response then keeps its exact legacy field and capability shape (no
+# localeCatalog member, no i18n.locale-catalog.v1 identifier); schemaRevision
+# still reports this server's real contract revision. Supplying some but not all of
+# them is a startup error by design, so a half-removed pointer can never be
+# silently dropped, and an invalid value fails startup instead of advertising
+# a broken catalog. Prefer the same-origin relative path; an absolute URL must
+# be https. See docs/locale-catalog.md.
+locale-catalog-manifest-url: "_env:ARKHAM_LOCALE_CATALOG_MANIFEST_URL:"
+locale-catalog-revision: "_env:ARKHAM_LOCALE_CATALOG_REVISION:"
+locale-catalog-schema-version: "_env:ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION:"
+locale-catalog-default-locale: "_env:ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE:"
+locale-catalog-locales: "_env:ARKHAM_LOCALE_CATALOG_LOCALES:"
+locale-catalog-manifest-sha256: "_env:ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256:"

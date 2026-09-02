@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# dependencies = [
-#   "jsonschema==4.26.0",
-# ]
-# ///
 
 """Generation, schema, and provenance gate for the public locale catalog.
 
@@ -42,8 +36,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from jsonschema.validators import validator_for
-
+import json_schema_subset
 import strict_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -149,17 +142,16 @@ def git_tracked_files() -> set[str]:
     return {entry for entry in result.stdout.decode("utf-8").split("\0") if entry}
 
 
-def load_schemas() -> dict[str, object]:
+def load_schemas() -> dict[str, dict]:
     schemas = {}
     for name in ("manifest", "chunk"):
         schema = strict_json.strict_json_load_path(SCHEMA_DIR / f"{name}.schema.json")
-        validator_cls = validator_for(schema)
-        validator_cls.check_schema(schema)
+        json_schema_subset.check_schema(schema, source=f"{name} schema")
         require(
             schema.get("$id", "").endswith(f"/locale-catalog/v1/{name}.schema.json"),
             f"{name} schema is missing its versioned $id",
         )
-        schemas[name] = validator_cls(schema)
+        schemas[name] = schema
 
     raw = {
         name: strict_json.strict_json_load_path(SCHEMA_DIR / f"{name}.schema.json")
@@ -222,14 +214,14 @@ def required_keys_from_fixture(value: object, into: set[str]) -> set[str]:
     return into
 
 
-def validate_catalog(files: dict[str, bytes], schemas) -> dict:
+def validate_catalog(files: dict[str, bytes], schemas: dict[str, dict]) -> dict:
     require("manifest.json" in files, "manifest.json was not generated")
     manifest = strict_json.strict_json_loads(files["manifest.json"], source="manifest.json")
-    errors = sorted(schemas["manifest"].iter_errors(manifest), key=lambda error: str(list(error.path)))
+    errors = json_schema_subset.iter_errors(schemas["manifest"], manifest, source="manifest.json")
     require(
         not errors,
         "manifest does not satisfy the v1 manifest schema: "
-        + "; ".join(f"{list(error.path)}: {error.message}" for error in errors[:5]),
+        + "; ".join(errors[:5]),
     )
 
     revision = manifest["catalogRevision"]
@@ -312,11 +304,13 @@ def validate_catalog(files: dict[str, bytes], schemas) -> dict:
             require(relative == f"c/{digest}.json", f"{descriptor['path']} is not content-addressed")
 
             chunk = strict_json.strict_json_loads(content, source=descriptor["path"])
-            chunk_errors = sorted(schemas["chunk"].iter_errors(chunk), key=lambda error: str(list(error.path)))
+            chunk_errors = json_schema_subset.iter_errors(
+                schemas["chunk"], chunk, source=descriptor["path"]
+            )
             require(
                 not chunk_errors,
                 f"{descriptor['path']} does not satisfy the v1 chunk schema: "
-                + "; ".join(f"{list(error.path)}: {error.message}" for error in chunk_errors[:5]),
+                + "; ".join(chunk_errors[:5]),
             )
             require(
                 "catalogRevision" not in chunk,
@@ -474,7 +468,7 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
     unnoticed.
     """
     result = subprocess.run(
-        [shutil.which("uv") or "uv", "run", str(ROOT / BACKEND_EXTRACTOR), "--check"],
+        [str(ROOT / "scripts" / "run-locale-catalog-python.sh"), BACKEND_EXTRACTOR, "--check"],
         cwd=ROOT,
         capture_output=True,
         text=True,

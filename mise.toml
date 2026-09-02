@@ -5,11 +5,11 @@ uv = "0.12.6"
 
 [tasks."contracts:fixtures"]
 description = "Validate contract manifests, golden JSON fixtures, and negative regressions"
-run = "uv run scripts/validate-contract-fixtures.py"
+run = "bash scripts/run-locale-catalog-python.sh scripts/validate-contract-fixtures.py"
 
 [tasks."contracts:revision-drift"]
 description = "Enforce the schemaRevision monotonic-bump gate and artifact hash bindings for governed contract artifacts"
-run = "uv run scripts/check-schema-revision-drift.py"
+run = "bash scripts/run-locale-catalog-python.sh scripts/check-schema-revision-drift.py"
 
 [tasks."contracts:openapi"]
 description = "Lint the REST OpenAPI document"
@@ -21,11 +21,28 @@ run = "npx --yes @asyncapi/cli@6.0.2 validate contracts/asyncapi.yaml"
 
 [tasks."contracts:routes"]
 description = "Validate the exact backend route inventory"
-run = "uv run scripts/validate-route-inventory.py"
+run = "bash scripts/run-locale-catalog-python.sh scripts/validate-route-inventory.py"
+
+[tasks."contracts:catalog-fixture"]
+description = "Re-derive the synthetic locale-catalog fixture set from its committed authorities and verify every digest, count, path and provenance value"
+run = "bash scripts/run-locale-catalog-python.sh scripts/build-locale-catalog-fixture.py --check"
+
+[tasks."contracts:catalog-fixture-write"]
+description = "Rewrite the synthetic locale-catalog fixture set (run after a contract revision bump)"
+run = "bash scripts/run-locale-catalog-python.sh scripts/build-locale-catalog-fixture.py"
+
+[tasks."contracts:manifest-hashes"]
+description = "Refresh governed contract-artifact hashes after an intentional fixture or schema update"
+run = "bash scripts/run-locale-catalog-python.sh scripts/update-manifest-hashes.py"
+
+[tasks."locale-catalog:python-boundary-test"]
+description = "Run production-command adversarial checks for the isolated Python boundary"
+run = "bash scripts/run-locale-catalog-python.sh scripts/test_locale_catalog_python_boundary.py"
 
 [tasks."contracts:validate"]
 description = "Run every native-client contract check"
 depends = [
+  "contracts:catalog-fixture",
   "contracts:fixtures",
   "contracts:revision-drift",
   "contracts:openapi",
@@ -35,15 +52,15 @@ depends = [
 
 [tasks."locale-catalog:backend-keys"]
 description = "Re-derive the backend's emitted i18n key registry from the Haskell sources"
-run = "uv run scripts/extract-backend-i18n-keys.py"
+run = "bash scripts/run-locale-catalog-python.sh scripts/extract-backend-i18n-keys.py"
 
 [tasks."locale-catalog:backend-keys-check"]
 description = "Fail if the committed backend emitted-key registry has drifted from the Haskell sources"
-run = "uv run scripts/extract-backend-i18n-keys.py --check"
+run = "bash scripts/run-locale-catalog-python.sh scripts/extract-backend-i18n-keys.py --check"
 
 [tasks."locale-catalog:backend-keys-test"]
 description = "Run the backend emitted-key extractor's own tests (synthetic modules plus registry properties)"
-run = "uv run scripts/test_extract_backend_i18n_keys.py"
+run = "bash scripts/run-locale-catalog-python.sh scripts/test_extract_backend_i18n_keys.py"
 
 [tasks."locale-catalog:offline-cache-test"]
 description = "Check the offline build's cache key really covers every locale-catalog provenance input"
@@ -55,12 +72,24 @@ run = "bash offline/scripts/test-frontend-cache-hit.sh"
 
 [tasks."locale-catalog:serving"]
 description = "Boot prod.nginxconf and the offline package's nginx config and verify catalog status, cache, MIME and rolling-deploy behavior"
-run = "uv run scripts/validate-catalog-serving.py"
+run = "bash scripts/run-locale-catalog-python.sh scripts/validate-catalog-serving.py"
 
 [tasks."locale-catalog:test"]
 description = "Run the locale-catalog render-AST and generator tests"
 run = "npm --prefix frontend run test:locale-catalog"
 
+[tasks."locale-catalog:generate"]
+description = "Generate the public locale catalog into frontend/public/locale-catalog"
+run = "npm --prefix frontend run locale-catalog"
+
+[tasks."locale-catalog:capability-settings"]
+description = "Check a real generated catalog manifest can populate the ARKHAM_LOCALE_CATALOG_* settings and that the response it produces satisfies the governed capabilities schema"
+run = "bash scripts/run-locale-catalog-python.sh scripts/check-locale-catalog-settings.py"
+
+[tasks."locale-catalog:capability-probe"]
+description = "Run the real backend capabilities probe over a generated catalog manifest: production settings parsing, handler and toEncoding, plus a corrupted-setting startup-failure matrix"
+run = "bash scripts/run-locale-catalog-python.sh scripts/check-locale-catalog-settings.py --probe 'stack --stack-yaml backend/stack.yaml exec --system-ghc arkham-capabilities-probe --'"
+
 [tasks."locale-catalog:validate"]
 description = "Generate the public locale catalog and verify its schemas, digests, provenance, clean-clone reproducibility, and deploy seam"
-run = "uv run scripts/validate-locale-catalog.py"
+run = "bash scripts/run-locale-catalog-python.sh scripts/validate-locale-catalog.py"

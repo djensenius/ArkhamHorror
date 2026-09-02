@@ -53,3 +53,21 @@ jobs:
       run: stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks cards-discover && stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks
     - name: Run tests
       run: stack test --system-ghc
+
+    # The deployment seam: generate a *real* catalog and drive the production
+    # settings parser, capabilities handler and toEncoding over it, rather than
+    # modelling any of that in Python. Runs here because this is the job that
+    # already has the backend built.
+    - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      with:
+        version: 2026.8.14
+        cache: true
+    - name: Install frontend dependencies
+      run: npm ci
+      working-directory: ${{ github.workspace }}/frontend
+    - name: Generate the public locale catalog
+      run: mise run locale-catalog:generate
+      working-directory: ${{ github.workspace }}
+    - name: Verify the generated catalog configures the real capabilities handler
+      run: mise run locale-catalog:capability-probe
+      working-directory: ${{ github.workspace }}

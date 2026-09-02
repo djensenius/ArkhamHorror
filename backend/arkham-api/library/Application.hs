@@ -8,6 +8,7 @@
 
 module Application (
   appMain,
+  loadAppSettingsArgs,
   makeFoundation,
   makeLogWare,
   getAppSettings,
@@ -92,6 +93,7 @@ import Network.Wai.Middleware.RequestLogger (
   outputFormat,
  )
 import System.Log.FastLogger (defaultBufSize, newStdoutLoggerSet, toLogStr)
+import System.Environment (getEnvironment)
 import Text.Regex.Posix ((=~))
 
 -- Import all relevant handler modules here.
@@ -119,6 +121,7 @@ import Base.Api.Handler.Notifications
 import Base.Api.Handler.PasswordReset
 import Base.Api.Handler.Registration
 import Base.Api.Handler.Settings
+import Base.Api.Types.LocaleCatalog (validateLocaleCatalogEnvironment)
 import Handler.Health
 
 -- This line actually creates our YesodDispatch instance. It is the second half
@@ -341,18 +344,38 @@ warpSettings foundation =
       defaultSettings
 
 getAppSettings :: IO AppSettings
-getAppSettings = loadYamlSettings ["config/settings.yml"] [] useEnv
+getAppSettings = do
+  validateRawLocaleCatalogEnvironment
+  loadYamlSettings ["config/settings.yml"] [] useEnv
+
+{- | The settings an executable running this site starts from: any config
+files named on the command line, falling back to the compile-time
+@config\/settings.yml@ value, with environment variables overriding both.
+
+Shared with @arkham-capabilities-probe@ so the deployment seam exercises this
+exact precedence rather than a re-spelling of it.
+-}
+loadAppSettingsArgs :: IO AppSettings
+loadAppSettingsArgs = do
+  validateRawLocaleCatalogEnvironment
+  loadYamlSettingsArgs
+    -- fall back to compile-time values, set to [] to require values at runtime
+    [configSettingsYmlValue]
+    -- allow environment variables to override
+    useEnv
+
+validateRawLocaleCatalogEnvironment :: IO ()
+validateRawLocaleCatalogEnvironment = do
+  environment <- map (bimap toText toText) <$> getEnvironment
+  case validateLocaleCatalogEnvironment environment of
+    Left message -> fail (toString message)
+    Right () -> pure ()
 
 -- | The @main@ function for an executable running this site.
 appMain :: IO ()
 appMain = do
   -- Get the settings from all relevant sources
-  settings <-
-    loadYamlSettingsArgs
-      -- fall back to compile-time values, set to [] to require values at runtime
-      [configSettingsYmlValue]
-      -- allow environment variables to override
-      useEnv
+  settings <- loadAppSettingsArgs
 
   -- Opt-in performance metrics collector. Set ARKHAM_METRICS=1 (or any non-empty
   -- value besides "0"/"false") to enable global span timing; query the

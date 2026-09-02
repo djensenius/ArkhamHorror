@@ -41,6 +41,10 @@ constructor.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.
+- The response carries exactly one optional field, `localeCatalog`, paired with
+  `i18n.locale-catalog.v1` (see
+  [Locale catalog discovery](#locale-catalog-discovery)). Its absence is a
+  normal, current server that publishes no catalog — not an old one.
 - Backend tests bind the response to the production encoder, while contract
   validation also requires its revision, status, base path, and compatibility
   floor to equal `manifest.json`.
@@ -460,15 +464,185 @@ every document listed there is bound to the backend's real Aeson encoders in
 catalog is generated from `frontend/src/locales/**` by the frontend build and
 never touches the backend. It is therefore versioned independently by its own
 `schemaVersion` (`frontend/schemas/locale-catalog/v1/`) and revisioned by a
-digest of its sources; revision `0.1.22` of this contract is unchanged by it.
+digest of its sources.
+
+The backend's own, governed side of this boundary is the optional
+`localeCatalog` object in `capabilities.schema.json` (see
+[Locale catalog discovery](#locale-catalog-discovery) below), which points at
+the catalog and pins its digest without ever carrying catalog content.
 
 The two boundaries are still bound to each other mechanically: the catalog's
 required key set is extracted from `fixtures/question-read.json` and
 `fixtures/question-read-with-cards.json`, and its manifest records those
 fixtures' SHA-256 digests together with this manifest's `schemaRevision`, so a
 catalog can always be traced to the contract revision it was generated for.
-When the backend starts advertising the catalog, it needs only the stable
-manifest URL and `catalogRevision` from that manifest.
+
+### Locale catalog discovery
+
+`GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`
+identifier and the additive `localeCatalog` object. Both come from one `Maybe`
+in `Base.Api.Types.Capabilities.serverCapabilities`, so a client can never see
+one without the other, and `capabilities.schema.json` states that pairing in
+both directions.
+
+- **Absence is not legacy.** A server that omits the field and the identifier
+  is a deployment that publishes no catalog. A client must treat story keys as
+  unresolvable rather than probe a guessed catalog path, exactly as it must for
+  any other absent capability.
+- **Disabled is the legacy *shape*, not the legacy bytes.** A deployment with no
+  catalog serves no `localeCatalog` member, no `i18n.locale-catalog.v1`
+  identifier, and every other field — including the full capability list —
+  unchanged from `0.1.22`. `schemaRevision` still advances to `0.1.23`, because
+  it identifies this server's whole contract bundle rather than one optional
+  runtime feature; a server that under-reported it would lie to every client
+  that negotiates on it, and the monotonic bump is required for the bundle in
+  any case. Clients compare the three numeric revision components and ignore
+  unknown identifiers, so a client built against `0.1.22` is unaffected.
+  `manifest.json`'s `legacyCompatibilityChecks` pins that exact baseline body,
+  and both `contracts:fixtures` and the backend spec compare the real response
+  against it with the allowed differences normalized away.
+- **`manifestUrl` is the only authority.** There is deliberately no separate
+  origin or base-path field to disagree with it. A relative value (the hosted
+  form, `/locale-catalog/manifest.json`) is resolved against the origin the
+  capabilities response itself came from; an absolute value is always `https`
+  and is what a split/static deployment configures explicitly. A client must
+  not rewrite it onto another host, and must not accept a redirect to a
+  different origin than the one the URL named.
+- **The catalog revision has one legal spelling.** While the catalog schema is
+  fixed at `1.0.0`, the only major a server will publish is `1`, spelled
+  canonically: `2.<hex>` belongs to a schema version this server does not
+  speak, and `01.<hex>`/`00.<hex>` are non-canonical spellings a client
+  comparing revisions as strings would read as different catalogs. All three
+  are startup failures, and `manifest.json`'s `catalogRevisionChecks` holds the
+  schema and the production parser to one table.
+- **Configured values are ASCII, before anything is trimmed.** A setting is
+  refused on its *raw* spelling if it holds any non-ASCII character, so a value
+  wrapped in a no-break, thin or ideographic space, or a byte-order mark, is a
+  startup failure rather than something stripped down to a valid remainder —
+  otherwise the configured value and the value this contract describes would be
+  two different things. Only an ASCII space or tab is then trimmed; every other
+  control character is refused. (`Data.Yaml.Config` normalizes a trailing line
+  ending and a leading byte-order mark away before the settings parser runs, so
+  the parser is tested directly for those too, and the guarantee does not rest
+  on the layer above.)
+- **Every grammar is ASCII.** Digests, revisions, locale tags, hosts and ports
+  are compared by clients as strings, so a character that merely looks like a
+  digit or a letter is refused rather than folded: an Arabic-Indic or fullwidth
+  digit, a Cyrillic confusable, and a KELVIN SIGN that Unicode lowercasing would
+  turn into an ASCII `k` all fail startup. The backend spells its character
+  ranges out rather than relying on which of `isDigit`/`isNumber`/`isAlphaNum`
+  is ASCII, and folds case ASCII-only so normalization can never invent an ASCII
+  character. Both governed tables carry non-ASCII rows.
+- **The host means one thing to every client.** An absolute URL's host is
+  either canonical dotted-decimal IPv4 (four octets `0-255`, no leading zeros)
+  or a registered name whose final label is neither all-digits nor an `0x` hex
+  literal. That is WHATWG's "ends in a number" rule: `127.1`, `2130706433`,
+  `0x7f000001` and `01.02.03.04` are all `127.0.0.1` to a browser and something
+  else to a stricter parser, and `999.999` or `1.2.3.4.5` are read differently
+  again. `manifest.json`'s `manifestUrlChecks` is the single governed table for
+  this: `contracts:fixtures` drives every row through the schema and the
+  backend spec drives the same rows through the production validator, so the
+  two can never diverge.
+- **Trust is pinned, not assumed.** `manifestSha256` is the SHA-256 of the
+  manifest bytes served at `manifestUrl`; a manifest that does not hash to it
+  must be discarded rather than used. Every chunk digest then hangs off that
+  verified manifest.
+- **Caching.** `catalogRevision` is content-derived, so two servers reporting
+  the same revision publish byte-identical catalogs and a client may key its
+  cache on that value alone. `schemaVersion` is the catalog manifest's own
+  version: a client that does not implement it must treat the catalog as
+  unavailable rather than guess at the shape.
+- **Compatibility.** The field is additive under this contract's existing
+  unknown-field rule. The Vue client reads none of it and is unaffected, and an
+  older native client that ignores unknown fields keeps working unchanged.
+
+Advertising is deployment configuration, not a build-time constant: see the
+`locale-catalog-*` settings in `backend/arkham-api/config/settings.yml` and
+["Advertising the catalog"](../docs/locale-catalog.md#advertising-the-catalog).
+
+#### The fixture is synthetic; the catalog it points at is not
+
+`fixtures/capabilities-locale-catalog.json` must show a real, verifiable
+pointer, but a governed fixture cannot carry a *production* revision or digest:
+the catalog is regenerated from `frontend/src/locales/**` on every content
+change, and pinning its output here would force a contract revision bump every
+time a translator fixed a typo — while a stale copy would have the fixture
+self-attest a catalog no artifact in this repository has.
+
+So the fixture is derived, mechanically, from a committed **synthetic** v1
+catalog manifest, `fixtures/locale-catalog-manifest.json` — and that manifest
+in turn claims nothing it cannot prove. Every digest, count and path in it is
+computed from committed sibling authorities:
+
+    fixtures/locale-catalog-source-<locale>.json   miniature locale sources
+    fixtures/locale-catalog-backend-registry.json  miniature emitted-key registry
+    fixtures/locale-catalog-chunk-<sha256>.json    the rendered chunks
+    fixtures/locale-catalog-manifest.json          derived from all of the above
+
+`provenance.generatorSha256` and `schemasSha256` are digests of the *real*
+inputs — every repository-local module the generator executes and the published
+`frontend/schemas/locale-catalog/v1/` schemas — not of a committed description
+of them, which is what those fields mean in production. The generator's source
+set is its own `scripts/` **import closure**, computed from each module's AST,
+so `strict_json` is included and a helper added later cannot be left out by
+forgetting to list it; a dropped or renamed module changes the digest too,
+because it is bound to the path as well as the bytes. The boundary is
+fail-closed: sources must be plain non-symlink files inside `scripts/`, and a
+relative import, a package or repo-local module outside that tree, a dynamic
+`importlib`/`__import__`, an `exec`/`eval`, `sys.path`/`meta_path`/`path_hooks`
+machinery, or any import that is neither generator-local, standard-library nor
+one of the pinned dependencies is a refusal — each proven by injecting it into
+the real generator and helper sources' own AST. Editing any of them
+therefore moves the synthetic catalog revision, and every fixed value
+the v1 schemas already pin (`schemaVersion`, `basePath`, `manifestPath`,
+`chunkPathPrefix`, `digestAlgorithm`, the generator name) is read from their
+own `const` declarations rather than re-typed.
+
+- All of them are governed documents, so a digest the manifest publishes is
+  always a digest of bytes this contract pins.
+- `contracts:catalog-fixture`
+  (`scripts/build-locale-catalog-fixture.py --check`) rebuilds the whole set
+  from those inputs and requires the committed bytes to match exactly — chunk
+  digests and sizes, per-locale and total counts, `backend.artifactSha256`,
+  `sourceSha256`, `emittedKeys`, `requiredKeys`, `untranslatedKeys`,
+  `dynamicSites`, `provenance.outputSha256`, `localeSourcesSha256`,
+  `schemasSha256`, `generatorSha256`, `localeSourceFiles`, `fixtureKeys`,
+  `provenance.sha256`, `catalogRevision` and `revisionManifestPath`. Its
+  self-tests mutate each of those in turn — and separately perturb every
+  provenance *input*: an edited generator source or helper, a newly imported
+  local helper, a dropped or renamed helper, an edited, renamed or dropped v1
+  schema, a different generator name or version — and require the result to
+  change or the check to fail.
+- It is schema-valid against the published
+  `frontend/schemas/locale-catalog/v1/` manifest *and* chunk schemas, is
+  narrative-free (identifier-shaped values only), and is never regenerated from
+  `frontend/src/locales/**`.
+- `contracts:fixtures` then re-derives `schemaVersion`, `catalogRevision`,
+  `defaultLocale`, `supportedLocales` and `manifestSha256` from the manifest's
+  **exact bytes** and requires the advertised block to equal the result, and
+  separately fails if that revision is hard-coded anywhere else in the governed
+  set.
+- `Helpers.LocaleCatalog` feeds the **same bytes** through the production
+  settings pipeline, so the Haskell fixture assertions and the Python
+  derivation cannot disagree.
+
+Because the manifest binds `provenance.contractRevision`, a contract revision
+bump regenerates it: `mise run contracts:catalog-fixture-write`, then
+`scripts/update-manifest-hashes.py`.
+
+The opposite risk — a synthetic shape no real deployment can produce — is
+closed at the deployment seam. `locale-catalog:capability-settings` derives the
+settings from the manifest the frontend build actually generated and requires
+the response they produce to satisfy this schema, while asserting it stays
+*different* from the governed fixture. `locale-catalog:capability-probe` goes
+further and runs the backend: `backend/arkham-api/app-capabilities-probe` loads
+settings through the same `loadYamlSettings` call `Application.appMain` uses,
+builds the body with the handler's own `capabilitiesResponse`, and prints
+`Data.Aeson.encode`'s bytes — the production `toEncoding` path. Those bytes are
+validated against this schema and against the generated manifest's exact
+metadata, and every setting is then corrupted in turn to prove the server
+refuses to start rather than advertising a catalog a client cannot verify.
+Nothing generated is ever hashed into `artifactHashes`.
 
 ## Achievements
 
