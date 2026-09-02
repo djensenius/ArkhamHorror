@@ -127,7 +127,9 @@ def test_bytecode_and_wrong_interpreter() -> None:
 
 
 def test_dependency_and_source_tampering() -> None:
-    venv = Path(os.environ["ARKHAM_LOCALE_CATALOG_PYTHON_VENV"])
+    raw_venv = os.environ.get("ARKHAM_LOCALE_CATALOG_PYTHON_VENV")
+    require(raw_venv is not None, "test must run through the production locale-catalog Python launcher")
+    venv = Path(raw_venv)
     site_packages = venv / "lib" / "python3.14" / "site-packages"
     dependency = next(site_packages.glob("jsonschema/__init__.py"))
     record = next(site_packages.glob("jsonschema-*.dist-info/RECORD"))
