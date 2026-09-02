@@ -30,6 +30,7 @@ still never makes a network call or depends on a remote ref.
 """
 
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -769,13 +770,14 @@ def run_manifest_worktree_authority_self_tests() -> None:
         env = {
             **os.environ,
             **strict_json.THROWAWAY_GIT_COMMIT_ENV_OVERRIDES,
-            "CONTRACT_BASE_REF": base_ref,
             _MANIFEST_AUTHORITY_SELFTEST_SKIP_ENV: "1",
         }
-        for key in ("GITHUB_ACTIONS", "CI"):
-            env.pop(key, None)
         return subprocess.run(
-            [sys.executable, str(scratch_root / "scripts" / "check-schema-revision-drift.py")],
+            [
+                sys.executable,
+                str(scratch_root / "scripts" / "check-schema-revision-drift.py"),
+                base_ref,
+            ],
             cwd=scratch_root,
             capture_output=True,
             env=env,

@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import csv
 import hashlib
+import io
 import os
 from pathlib import Path
 import subprocess
 import tempfile
+import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -179,7 +182,61 @@ def test_dependency_and_source_tampering() -> None:
             path.write_bytes(original)
 
 
+def archive_immutable_test_tree() -> tempfile.TemporaryDirectory[str]:
+    directory = tempfile.TemporaryDirectory(prefix="locale-catalog-boundary-", dir=ROOT.parent)
+    scratch = Path(directory.name)
+    archive = subprocess.run(
+        ["/usr/bin/git", "-C", str(ROOT), "archive", "--format=tar", "HEAD"],
+        capture_output=True,
+        check=False,
+    )
+    require(archive.returncode == 0, "could not archive immutable HEAD for an isolated boundary test")
+    with tarfile.open(fileobj=io.BytesIO(archive.stdout), mode="r:") as contents:
+        names = [member.name for member in contents.getmembers()]
+        require(
+            all(name and not Path(name).is_absolute() and ".." not in Path(name).parts for name in names),
+            "immutable git archive contained an unsafe member path",
+        )
+        contents.extractall(scratch, filter="data")
+    return directory
+
+
+def run_isolated_child() -> None:
+    with archive_immutable_test_tree() as directory:
+        scratch = Path(directory)
+        result = subprocess.run(
+            [
+                str(scratch / "scripts" / "run-locale-catalog-python.sh"),
+                "scripts/test_locale_catalog_python_boundary.py",
+                "--scratch-child",
+            ],
+            cwd=scratch,
+            env=dict(os.environ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        require(
+            result.returncode == 0,
+            f"isolated production boundary child failed\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--scratch-child", action="store_true")
+    arguments = parser.parse_args()
+    if not arguments.scratch_child:
+        marker = ROOT / "locale-catalog-python-dependency-marker"
+        preserved = marker.read_bytes() if marker.exists() else None
+        run_isolated_child()
+        require(
+            preserved is None or (marker.exists() and marker.read_bytes() == preserved),
+            "isolated mutation test changed the canonical dependency-marker sentinel",
+        )
+        print("locale-catalog python boundary: isolated production adversarial checks passed")
+        return
+
     test_aliases_and_indirect_loaders()
     test_startup_hooks_and_path_shadowing()
     test_bytecode_and_wrong_interpreter()

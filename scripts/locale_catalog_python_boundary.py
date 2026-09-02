@@ -66,6 +66,7 @@ ALLOWED_IMPORTS = {
     "decimal",
     "hashlib",
     "gzip",
+    "io",
     "json",
     "math",
     "os",
@@ -77,6 +78,7 @@ ALLOWED_IMPORTS = {
     "sysconfig",
     "tempfile",
     "time",
+    "tarfile",
     "tomllib",
     "uuid",
     "urllib.error",
@@ -98,7 +100,7 @@ ALLOWED_IMPORTS = {
 
 SOURCE_SENSITIVE_IMPORTS = {
     "scripts/check-locale-catalog-settings.py": frozenset({"os", "shutil", "subprocess", "sys"}),
-    "scripts/check-schema-revision-drift.py": frozenset({"shutil", "subprocess", "sys"}),
+    "scripts/check-schema-revision-drift.py": frozenset({"os", "shutil", "subprocess", "sys"}),
     "scripts/extract-backend-i18n-keys.py": frozenset({"sys"}),
     "scripts/locale_catalog_runtime.py": frozenset({"importlib.metadata", "os", "runpy", "sys"}),
     "scripts/strict_json.py": frozenset({"os", "subprocess", "sys"}),
@@ -110,7 +112,7 @@ SOURCE_SENSITIVE_IMPORTS = {
 
 SOURCE_SENSITIVE_CAPABILITIES = {
     "scripts/check-locale-catalog-settings.py": frozenset({"os.environ", "shutil.rmtree", "subprocess.CompletedProcess", "subprocess.run", "sys.executable"}),
-    "scripts/check-schema-revision-drift.py": frozenset({"shutil.copyfile", "shutil.rmtree", "subprocess.CompletedProcess", "subprocess.run", "sys.argv", "sys.executable"}),
+    "scripts/check-schema-revision-drift.py": frozenset({"os.environ", "shutil.copyfile", "shutil.rmtree", "subprocess.CompletedProcess", "subprocess.run", "sys.argv", "sys.executable"}),
     "scripts/extract-backend-i18n-keys.py": frozenset({"sys.exit"}),
     "scripts/extract_backend_i18n_keys.py": frozenset({"sys.exit", "sys.stderr"}),
     "scripts/locale_catalog_runtime.py": frozenset(
@@ -277,6 +279,31 @@ class CapabilityVisitor(ast.NodeVisitor):
             return f"{parent}.{node.attr}" if parent is not None else None
         return None
 
+    def sensitive_value(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Call):
+            return None
+        capability = self.resolve(node)
+        if capability is not None and capability.split(".", 1)[0] in {
+            "builtins",
+            "importlib",
+            "os",
+            "runpy",
+            "subprocess",
+            "sys",
+            "urllib",
+        }:
+            return capability
+        for child in ast.iter_child_nodes(node):
+            found = self.sensitive_value(child)
+            if found is not None:
+                return found
+        return None
+
+    def reject_sensitive_escape(self, node: ast.AST, context: str) -> None:
+        capability = self.sensitive_value(node)
+        if capability is not None:
+            self.fail(f"{context} sensitive capability {capability}")
+
     def check_capability(self, capability: str) -> None:
         if capability in FORBIDDEN_CAPABILITIES:
             self.fail(f"uses forbidden dynamic capability {capability}")
@@ -336,6 +363,23 @@ class CapabilityVisitor(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
+        if self.relative_path == "scripts/locale_catalog_runtime.py":
+            return
+        if not (
+            self.relative_path in {
+                "scripts/check-schema-revision-drift.py",
+            }
+            and isinstance(node.value, ast.Dict)
+        ) and not (
+            self.relative_path == "scripts/strict_json.py"
+            and isinstance(node.value, ast.Dict)
+            and any(
+                isinstance(key, ast.Constant) and key.value == "GIT_INDEX_FILE"
+                for key in node.value.keys
+                if key is not None
+            )
+        ):
+            self.reject_sensitive_escape(node.value, "stores")
         capability = self.resolve(node.value)
         if capability is not None:
             self.check_capability(capability)
@@ -346,6 +390,7 @@ class CapabilityVisitor(ast.NodeVisitor):
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
         if node.value is not None:
             self.visit(node.value)
+            self.reject_sensitive_escape(node.value, "stores")
             capability = self.resolve(node.value)
             if capability is not None:
                 self.check_capability(capability)
@@ -354,6 +399,7 @@ class CapabilityVisitor(ast.NodeVisitor):
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         self.visit(node.value)
+        self.reject_sensitive_escape(node.value, "stores")
         capability = self.resolve(node.value)
         if capability is not None:
             self.check_capability(capability)
@@ -376,6 +422,8 @@ class CapabilityVisitor(ast.NodeVisitor):
             self.check_capability(capability)
         elif node.attr in FORBIDDEN_ATTRIBUTE_NAMES:
             self.fail(f"uses forbidden loader attribute {node.attr!r}")
+        elif node.attr == "load" and self.sensitive_value(node.value) is not None:
+            self.fail("uses a loader result through an unresolved sensitive chain")
 
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, (ast.Call, ast.Subscript)):
@@ -386,6 +434,31 @@ class CapabilityVisitor(ast.NodeVisitor):
         capability = self.resolve(node.func)
         if capability is not None:
             self.check_capability(capability)
+
+    def visit_Return(self, node: ast.Return) -> None:
+        if node.value is not None:
+            self.reject_sensitive_escape(node.value, "returns")
+        self.generic_visit(node)
+
+    def visit_Yield(self, node: ast.Yield) -> None:
+        if node.value is not None:
+            self.reject_sensitive_escape(node.value, "yields")
+        self.generic_visit(node)
+
+    def visit_YieldFrom(self, node: ast.YieldFrom) -> None:
+        self.reject_sensitive_escape(node.value, "yields")
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        for default in [*node.args.defaults, *(default for default in node.args.kw_defaults if default is not None)]:
+            self.reject_sensitive_escape(default, "uses as a default")
+        self.generic_visit(node)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.reject_sensitive_escape(node.body, "captures in a lambda")
+        self.generic_visit(node)
 
 
 def scan_python_closure(
