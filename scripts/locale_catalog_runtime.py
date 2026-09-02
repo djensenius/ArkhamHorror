@@ -15,6 +15,7 @@ import csv
 import hashlib
 import importlib.metadata
 import json
+import os
 from pathlib import Path
 import runpy
 import sys
@@ -23,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 PROFILE = SCRIPTS / "locale_catalog_python_runtime.json"
 LOCK = ROOT / "uv.lock"
-VENV = ROOT / ".venv"
+VENV_PREFIX = ".locale-catalog-python."
 
 
 def refuse(message: str) -> None:
@@ -79,7 +80,9 @@ def normalize_distribution_name(name: str) -> str:
     return name.lower().replace("_", "-").replace(".", "-")
 
 
-def verify_record(site_packages: Path, distribution: importlib.metadata.Distribution) -> set[Path]:
+def verify_record(
+    venv: Path, site_packages: Path, distribution: importlib.metadata.Distribution
+) -> set[Path]:
     record = distribution.read_text("RECORD")
     if record is None:
         refuse(f"{distribution.metadata['Name']} has no wheel RECORD")
@@ -89,7 +92,7 @@ def verify_record(site_packages: Path, distribution: importlib.metadata.Distribu
             refuse(f"{distribution.metadata['Name']} has malformed RECORD")
         path = (site_packages / row[0]).resolve()
         try:
-            path.relative_to(VENV.resolve())
+            path.relative_to(venv.resolve())
         except ValueError:
             refuse(f"{distribution.metadata['Name']} RECORD escapes the locked virtual environment")
         if path.is_symlink() or not path.is_file():
@@ -110,9 +113,19 @@ def verify_dependencies() -> Path:
 
     if LOCK.is_symlink() or not LOCK.is_file():
         refuse("missing regular uv.lock")
-    if VENV.is_symlink() or not VENV.is_dir():
-        refuse("missing regular .venv created by the locked synchronizer")
-    site_packages = VENV / "lib" / "python3.14" / "site-packages"
+    raw_venv = os.environ.get("ARKHAM_LOCALE_CATALOG_PYTHON_VENV")
+    if raw_venv is None:
+        refuse("missing invocation-owned virtual environment")
+    venv = Path(raw_venv)
+    if (
+        venv.parent != ROOT
+        or not venv.name.startswith(VENV_PREFIX)
+        or venv.is_symlink()
+        or not venv.is_dir()
+        or venv.resolve() != venv
+    ):
+        refuse("virtual environment is not this invocation's regular repository-owned directory")
+    site_packages = venv / "lib" / "python3.14" / "site-packages"
     if site_packages.is_symlink() or not site_packages.is_dir():
         refuse(f"missing exact dependency root {site_packages.relative_to(ROOT)}")
     lock = tomllib.loads(LOCK.read_text(encoding="utf-8"))
@@ -136,7 +149,7 @@ def verify_dependencies() -> Path:
         version = distribution.metadata["Version"]
         if version != expected[name]:
             refuse(f"installed {name} {version} differs from locked {expected[name]}")
-        recorded.update(verify_record(site_packages, distribution))
+        recorded.update(verify_record(venv, site_packages, distribution))
     root = site_packages.resolve()
     actual_files = {
         path.resolve()

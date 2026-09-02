@@ -127,7 +127,8 @@ def test_bytecode_and_wrong_interpreter() -> None:
 
 
 def test_dependency_and_source_tampering() -> None:
-    site_packages = ROOT / ".venv" / "lib" / "python3.14" / "site-packages"
+    venv = Path(os.environ["ARKHAM_LOCALE_CATALOG_PYTHON_VENV"])
+    site_packages = venv / "lib" / "python3.14" / "site-packages"
     dependency = next(site_packages.glob("jsonschema/__init__.py"))
     record = next(site_packages.glob("jsonschema-*.dist-info/RECORD"))
     original_dependency = dependency.read_bytes()
