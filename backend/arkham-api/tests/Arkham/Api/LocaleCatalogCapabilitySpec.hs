@@ -412,6 +412,18 @@ spec = do
       message `shouldSatisfy` T.isInfixOf "locale-catalog-manifest-sha256"
       message `shouldSatisfy` T.isInfixOf "ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256"
 
+    describe "raw environment validation before YAML substitution" do
+      for_ [minBound .. maxBound] \setting ->
+        for_ [("a carriage return", "\r"), ("a newline", "\n"), ("a CRLF", "\r\n"), ("a byte-order mark", "\xfeff")] \(label, forbidden) ->
+          it ("refuses " <> label <> " in " <> toString (localeCatalogSettingEnvVar setting)) do
+            let value =
+                  if setting == SupportedLocalesSetting
+                    then "en" <> forbidden <> ",de"
+                    else "trusted" <> forbidden <> "value"
+                message = startupErrorFor (withEnv [(localeCatalogSettingEnvVar setting, value)])
+            message `shouldSatisfy` T.isInfixOf "prohibited raw"
+            message `shouldSatisfy` T.isInfixOf (localeCatalogSettingEnvVar setting)
+
    describe "configuration parsing" do
     it "reports no catalog when nothing is supplied" do
       parseLocaleCatalogConfig (LocaleCatalogConfig Nothing Nothing Nothing Nothing Nothing Nothing)
@@ -547,7 +559,8 @@ spec = do
     -- would accept a no-break-space-wrapped value and then publish the ASCII
     -- remainder, making the configured value and the contract two different
     -- things.
-    let wrappers =
+    let wrappers :: [(Text, Text)]
+        wrappers =
           [ ("a no-break space", "\160")
           , ("a thin space", "\8201")
           , ("an ideographic space", "\12288")
@@ -568,14 +581,17 @@ spec = do
         for_ settingsUnderTest \name -> do
           let value = fromMaybe "" (List.lookup name fixtureCatalogEnv)
               message = startupErrorFor (withEnv [(name, wrapper <> value <> wrapper)])
-          (name, isInfixOf' message "non-ASCII character") `shouldBe` (name, True)
+              rejected =
+                isInfixOf' message "non-ASCII character"
+                  || isInfixOf' message "prohibited raw"
+          (name, rejected) `shouldBe` (name, True)
 
     it "refuses a non-ASCII wrapper around a single locale in the list" do
       let locales = fromMaybe "" (List.lookup "ARKHAM_LOCALE_CATALOG_LOCALES" fixtureCatalogEnv)
       startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", "\160" <> locales)])
-        `shouldSatisfy` T.isInfixOf "non-ASCII character"
+        `shouldSatisfy` (\message -> T.isInfixOf "non-ASCII character" message || T.isInfixOf "prohibited raw" message)
       startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_LOCALES", T.replace "," ",\160" locales)])
-        `shouldSatisfy` T.isInfixOf "non-ASCII character"
+        `shouldSatisfy` (\message -> T.isInfixOf "non-ASCII character" message || T.isInfixOf "prohibited raw" message)
 
     it "refuses a control character the settings layer does not normalize away" do
       -- Data.Yaml.Config re-parses each substituted value as a YAML scalar, so
@@ -605,14 +621,11 @@ spec = do
       first configErrorName (parseLocaleCatalogConfig (configWith revisions.schemaVersion "\65279en" "de,en"))
         `shouldBe` Left "NonAsciiSettingValue"
 
-    it "documents that the settings layer normalizes a trailing line ending away" do
-      -- A YAML scalar cannot carry its own line ending, so `en\n` arrives here
-      -- as `en`. Asserted rather than assumed: if that ever changed, the case
-      -- above is what would keep the value from being published.
+    it "refuses raw line endings and a BOM before YAML can normalize them" do
       for_ ([("\r", "en\r"), ("\n", "en\n"), ("\r\n", "en\r\n"), ("leading BOM", "\65279en")] :: [(Text, Text)])
         \(label, configured) ->
-          (label, responseFor (withEnv [("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", configured)]))
-            `shouldBe` (label, responseFor fixtureCatalogEnv)
+          (label, startupErrorFor (withEnv [("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", configured)]))
+            `shouldSatisfy` (\(_, message) -> T.isInfixOf "prohibited raw" message)
 
     it "trims only an ASCII space or tab, and still publishes the same catalog" do
       let padded = [(name, " \t" <> fromMaybe "" (List.lookup name fixtureCatalogEnv) <> "\t ") | name <- settingsUnderTest]

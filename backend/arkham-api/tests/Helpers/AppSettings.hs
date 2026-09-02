@@ -17,11 +17,13 @@ import Data.Aeson (Result (..), fromJSON)
 import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Yaml.Config (applyEnvValue)
+import Base.Api.Types.LocaleCatalog (validateLocaleCatalogEnvironment)
 import Relude
 import Settings (AppSettings, configSettingsYmlValue)
 
 loadAppSettings :: [(Text, Text)] -> Either Text AppSettings
-loadAppSettings environment =
+loadAppSettings environment = do
+  validateLocaleCatalogEnvironment environment
   case fromJSON (applyEnvValue False (asEnvironment environment) configSettingsYmlValue) of
     Error message -> Left (toText message)
     Success settings -> Right settings

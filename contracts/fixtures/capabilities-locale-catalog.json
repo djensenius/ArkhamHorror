@@ -12,7 +12,7 @@
   ],
   "localeCatalog": {
     "manifestUrl": "/locale-catalog/manifest.json",
-    "catalogRevision": "1.e9c11835d5d63b006c30c419e7dafe1e",
+    "catalogRevision": "1.dec68e5efeb73ce567f7fb8826d92642",
     "schemaVersion": "1.0.0",
     "defaultLocale": "en",
     "supportedLocales": [
@@ -20,6 +20,6 @@
       "en",
       "pt-BR"
     ],
-    "manifestSha256": "a61dd558ea69a248ceef54fe7e479f3ea6f4cd7bd54531cc539fc184ac520bdb"
+    "manifestSha256": "573c3b17f878d94b2d5edbfc0530143e0f783ab1618907bdd5901ea5b067e892"
   }
 }

@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# dependencies = [
-#   "jsonschema==4.26.0",
-#   "referencing==0.37.0",
-# ]
-# ///
 
 import copy
 import hashlib

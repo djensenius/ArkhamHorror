@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# ///
 
 """Serving gate for the published locale catalog, run against real nginx.
 

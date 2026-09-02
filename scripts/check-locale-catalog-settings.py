@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# dependencies = [
-#   "jsonschema==4.26.0",
-# ]
-# ///
 """Deployment seam: can a *real* generated catalog manifest configure the
 capability the backend advertises?
 
@@ -227,11 +221,12 @@ def check_with_probe(
     advertised: dict,
     legacy_baseline: dict,
     contract_revision: str,
+    scratch_factory=tempfile.mkdtemp,
 ) -> None:
     # A directory this invocation created, so the cleanup below can only ever
     # remove files this invocation wrote: a fixed name could collide with a
     # leftover or unrelated directory and delete someone else's work.
-    scratch = Path(tempfile.mkdtemp(prefix="scratch-capability-probe-", dir=ROOT))
+    scratch = Path(scratch_factory(prefix="scratch-capability-probe-", dir=ROOT))
     try:
         _check_with_probe(
             command, capabilities_schema, settings, advertised, legacy_baseline,
@@ -494,12 +489,6 @@ def _check_with_probe(
             "\u00a0" + settings["ARKHAM_LOCALE_CATALOG_MANIFEST_URL"] + "\u00a0",
         ),
         ("ARKHAM_LOCALE_CATALOG_REVISION", "\u2009" + settings["ARKHAM_LOCALE_CATALOG_REVISION"]),
-        # Trailing rather than leading: a *leading* U+FEFF is a YAML stream
-        # byte-order mark and is normalized away before the settings parser
-        # runs, exactly like a trailing newline. The parser refuses it either
-        # way (Arkham.Api.LocaleCatalogCapabilitySpec drives that case
-        # directly); what the deployment seam can observe is this one.
-        ("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"] + "\ufeff"),
         ("ARKHAM_LOCALE_CATALOG_LOCALES", settings["ARKHAM_LOCALE_CATALOG_LOCALES"].replace(",", ",\u3000")),
         (
             "ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256",
@@ -507,6 +496,15 @@ def _check_with_probe(
         ),
         ("ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE", settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"] + "\v"),
     ]
+    for name in SETTINGS:
+        for label, forbidden in (
+            ("carriage return", "\r"),
+            ("newline", "\n"),
+            ("CRLF", "\r\n"),
+            ("byte-order mark", "\ufeff"),
+        ):
+            value = settings[name] + forbidden + ("de" if name == "ARKHAM_LOCALE_CATALOG_LOCALES" else "x")
+            corruptions.append((name, value))
     for name, value in corruptions:
         corrupted = dict(settings)
         corrupted[name] = value
@@ -542,10 +540,65 @@ def _check_with_probe(
     )
 
 
+def run_scratch_cleanup_self_test() -> None:
+    """A legacy fixed-name directory must survive both setup and probe failure."""
+    legacy = ROOT / "scratch-capability-probe"
+    created_legacy = not legacy.exists()
+    if created_legacy:
+        legacy.mkdir()
+        sentinel = legacy / "do-not-delete"
+        sentinel.write_text("sentinel", encoding="utf-8")
+    before = sorted(
+        (path.relative_to(legacy).as_posix(), path.is_dir(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in legacy.rglob("*")
+    )
+    try:
+        try:
+            check_with_probe(
+                [sys.executable, "-c", "import sys; sys.exit(1)"],
+                {},
+                {},
+                {},
+                {},
+                "0.1.23",
+            )
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit("locale-catalog capability settings: failing probe unexpectedly succeeded")
+        try:
+            check_with_probe(
+                [sys.executable, "-c", "raise AssertionError('must not run')"],
+                {},
+                {},
+                {},
+                {},
+                "0.1.23",
+                scratch_factory=lambda **_arguments: (_ for _ in ()).throw(OSError("setup failed")),
+            )
+        except OSError:
+            pass
+        else:
+            raise SystemExit("locale-catalog capability settings: scratch setup failure unexpectedly succeeded")
+        require(
+            before
+            == sorted(
+                (path.relative_to(legacy).as_posix(), path.is_dir(), path.stat().st_size, path.stat().st_mtime_ns)
+                for path in legacy.rglob("*")
+            ),
+            "a failed setup or probe changed a legacy fixed-path sentinel",
+        )
+    finally:
+        if created_legacy:
+            sentinel.unlink()
+            legacy.rmdir()
+
+
 def main() -> None:
     strict_json.run_self_tests()
     strict_json.run_governed_bytes_self_tests()
     strict_json.run_governed_path_self_tests(ROOT)
+    run_scratch_cleanup_self_test()
 
     parser = argparse.ArgumentParser(description="Locale-catalog capability deployment seam")
     parser.add_argument("manifest", nargs="?", default=str(DEFAULT_MANIFEST))

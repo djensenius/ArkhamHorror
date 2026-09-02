@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# ///
 """Recompute contracts/manifest.json's `artifactHashes` field in place.
 
 Maintainer tool: run this any time a governed schema, fixture, or the
@@ -114,4 +111,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

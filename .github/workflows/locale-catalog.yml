@@ -29,6 +29,7 @@ jobs:
         working-directory: frontend
       - run: mise run locale-catalog:backend-keys-test
       - run: mise run locale-catalog:backend-keys-check
+      - run: mise run locale-catalog:python-boundary-test
       - run: mise run locale-catalog:validate
       # The governed capabilities fixture is bound to a committed *synthetic*
       # catalog manifest so publishing new catalog content never churns the

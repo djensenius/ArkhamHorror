@@ -291,6 +291,35 @@ revision. The manifest's `provenance` block republishes those digests, and the
 manifest pins every chunk's size and SHA-256, so a client can verify what it
 downloaded against what it was promised.
 
+The Python contract commands have an equally narrow, enforceable boundary.
+Every mise/CI entry point uses `scripts/run-locale-catalog-python.sh`, which
+starts only mise's CPython `3.14.7` with `-I -S -E -B`, checks its portable
+stdlib source digest, refuses repository bytecode/symlinks, and parses every
+declared `scripts/*.py` source with an alias-aware capability resolver before
+it imports a target. Dynamic import/evaluation, loaders, import-path state and
+undeclared dunder access are refused even when reached through aliases.
+`uv.lock` supplies hashes for every wheel and transitive dependency; the
+launcher reinstalls that complete locked closure before every command, then the
+bootstrap verifies the installed dependency set and each wheel `RECORD` before
+adding its site-packages directory. The catalog-only schema checks use the
+small fail-closed in-repository validator instead of `jsonschema`.
+
+This boundary assumes the checked-out repository, the exact mise CPython
+installation (including the stdlib required to start Python), the host
+shell/kernel, and the hash-verifying `uv` downloader are trusted. The stdlib
+digest is therefore a post-start provenance attestation, not a claim that this
+Python bootstrap can validate a compromised interpreter before it imports
+Python's own standard library. It
+does not claim to defend against an actor that can replace both the checked-in
+bootstrap and its committed provenance; it does make changed source, a changed
+runtime/stdlib provenance, startup hooks, shadow bytecode, an added import
+capability, or an altered locked dependency closure fail or be replaced from
+its lock-hashed artifact before a generator/check command can use it.
+The synthetic fixture hashes all declared executable sources, its launcher,
+lockfile, and runtime profile through `generatorSha256`, so the catalog
+revision moves with every such governed input without adding a Python-only
+field to the Node-produced public manifest.
+
 Before any of that, the sources themselves are checked for content that would
 be lost silently:
 

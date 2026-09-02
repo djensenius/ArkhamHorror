@@ -51,6 +51,7 @@ module Base.Api.Types.LocaleCatalog (
   parseLocaleCatalogSetting,
   parseManifestUrl,
   renderLocaleCatalogConfigError,
+  validateLocaleCatalogEnvironment,
 ) where
 
 import Data.Aeson (Object, ToJSON (..), Value (..), defaultOptions, genericToEncoding, genericToJSON, (.:?))
@@ -117,6 +118,30 @@ data LocaleCatalogSetting
   | SupportedLocalesSetting
   | ManifestSha256Setting
   deriving stock (Bounded, Enum, Eq, Ord, Show)
+
+{- | Refuse syntax-significant raw environment bytes before
+@Data.Yaml.Config.useEnv@ can parse or normalize them.
+
+Environment substitution reparses values as YAML before
+'parseLocaleCatalogSetting' receives them. A line ending can therefore be
+treated as insignificant YAML whitespace, which would make the raw configured
+value differ from the value this server advertises. This guard is separate
+from 'present': it applies only to process-environment input, while settings
+files and direct parser callers retain the normal parser behavior.
+-}
+validateLocaleCatalogEnvironment :: [(Text, Text)] -> Either Text ()
+validateLocaleCatalogEnvironment =
+  traverse_ \(name, value) ->
+    when
+      (name `elem` map localeCatalogSettingEnvVar [minBound .. maxBound] && hasForbiddenRawEnvironmentCharacter value)
+      $ Left
+      $ "locale catalog configuration is invalid: "
+      <> name
+      <> " contains a prohibited raw carriage return, newline, or UTF-8 byte-order mark"
+
+hasForbiddenRawEnvironmentCharacter :: Text -> Bool
+hasForbiddenRawEnvironmentCharacter =
+  T.any (\character -> character == '\r' || character == '\n' || character == '\xfeff')
 
 -- | @config\/settings.yml@ key for a setting.
 localeCatalogSettingKey :: LocaleCatalogSetting -> Text

@@ -1,0 +1,6 @@
+{
+  "implementation": "cpython",
+  "version": "3.14.7",
+  "cacheTag": "cpython-314",
+  "stdlibSha256": "21f0053951ad2427c735c962fc3986ced96ec93fdb5a9ec135b3e402639382d6"
+}
