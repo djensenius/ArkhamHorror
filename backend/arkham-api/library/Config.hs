@@ -6,6 +6,7 @@ module Config (
   -- * Locally defined
   configSettingsYml,
   getDevSettings,
+  loadYamlSettingsValuesUseEnv,
   makeYesodLogger,
 
   -- * Re-exports from Data.Yaml.Config
@@ -24,6 +25,8 @@ module Config (
 
 import Import.NoFoundation
 
+import Data.Aeson (Result (..), fromJSON)
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.List (lookup)
 import Data.Yaml.Config
 import Network.Wai.Handler.Warp
@@ -35,6 +38,31 @@ import Yesod.Core.Types (Logger (Logger))
 -- | Location of the default config file.
 configSettingsYml :: FilePath
 configSettingsYml = "config/settings.yml"
+
+{- | Apply the @useEnv@ branch of 'loadYamlSettings' to settings values that
+were already decoded from their runtime files.
+
+The locale-catalog preflight must inspect a parsed runtime file before any
+environment substitution and then consume that exact parsed value; rereading
+the pathname through 'loadYamlSettings' would leave a time-of-check/time-of-use
+gap. The merge and conversion here intentionally match
+'Data.Yaml.Config.loadYamlSettings': earlier values take precedence
+recursively, then the current environment is applied.
+-}
+loadYamlSettingsValuesUseEnv :: FromJSON settings => [Value] -> IO settings
+loadYamlSettingsValuesUseEnv values = do
+  value <- applyCurrentEnv False $ mergeSettingsValues values
+  case fromJSON value of
+    Error message -> error $ "Could not convert to expected type: " <> toText message
+    Success settings -> pure settings
+
+mergeSettingsValues :: [Value] -> Value
+mergeSettingsValues = \case
+  [] -> error "loadYamlSettings: No configuration provided"
+  headValue : rest -> foldl' mergeValues headValue rest
+ where
+  mergeValues (Object left) (Object right) = Object $ KeyMap.unionWith mergeValues left right
+  mergeValues left _ = left
 
 {- | Helper for getApplicationRepl. Looks up PORT and DISPLAY_PORT and prints
  appropriate messages.

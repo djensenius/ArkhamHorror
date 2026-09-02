@@ -52,6 +52,7 @@ module Base.Api.Types.LocaleCatalog (
   parseManifestUrl,
   renderLocaleCatalogConfigError,
   validateLocaleCatalogEnvironment,
+  validateLocaleCatalogRawEnvironmentValue,
 ) where
 
 import Data.Aeson (Object, ToJSON (..), Value (..), defaultOptions, genericToEncoding, genericToJSON, (.:?))
@@ -138,6 +139,37 @@ validateLocaleCatalogEnvironment =
       $ "locale catalog configuration is invalid: "
       <> name
       <> " contains a prohibited raw carriage return, newline, or UTF-8 byte-order mark"
+
+{- | Validate a locale-catalog value while it is still the exact process
+environment string. 'Data.Yaml.Config.useEnv' reparses selected values as YAML,
+so this runs the same raw-value and setting grammar checks before that parser
+can fold a representation into a different value.
+-}
+validateLocaleCatalogRawEnvironmentValue :: LocaleCatalogSetting -> Text -> Either Text ()
+validateLocaleCatalogRawEnvironmentValue setting raw
+  | hasForbiddenRawEnvironmentCharacter raw =
+      Left
+        $ "locale catalog configuration is invalid: "
+        <> localeCatalogSettingEnvVar setting
+        <> " contains a prohibited raw carriage return, newline, or UTF-8 byte-order mark"
+  | otherwise =
+      first
+        (const $ "locale catalog configuration is invalid: " <> settingName <> " has an invalid raw environment value")
+        $ validateRawEnvironmentSetting setting raw
+ where
+  settingName = localeCatalogSettingKey setting <> " (" <> localeCatalogSettingEnvVar setting <> ")"
+
+validateRawEnvironmentSetting :: LocaleCatalogSetting -> Text -> Either LocaleCatalogConfigError ()
+validateRawEnvironmentSetting setting raw = do
+  value <- present setting (Just raw)
+  for_ value \normalized ->
+    case setting of
+      ManifestUrlSetting -> void $ first InvalidManifestUrl $ parseManifestUrl normalized
+      CatalogRevisionSetting -> void $ parseCatalogRevisionParts normalized
+      SchemaVersionSetting -> void $ parseSchemaVersion normalized
+      DefaultLocaleSetting -> void $ parseLocaleTag DefaultLocaleSetting normalized
+      SupportedLocalesSetting -> void $ parseSupportedLocales normalized
+      ManifestSha256Setting -> void $ parseSha256 normalized
 
 hasForbiddenRawEnvironmentCharacter :: Text -> Bool
 hasForbiddenRawEnvironmentCharacter =
@@ -355,15 +387,19 @@ The cross-check against 'parseSchemaVersion''s result is what makes a
 than something a client has to notice for itself.
 -}
 parseCatalogRevision :: Text -> Text -> Either LocaleCatalogConfigError Text
-parseCatalogRevision schemaVersion raw = case T.breakOn "." raw of
+parseCatalogRevision schemaVersion raw = do
+  (major, digest) <- parseCatalogRevisionParts raw
+  if major == T.takeWhile isAsciiDigit schemaVersion
+    then Right $ major <> "." <> digest
+    else Left $ CatalogRevisionSchemaMismatch (excerpt (major <> "." <> digest)) schemaVersion
+
+parseCatalogRevisionParts :: Text -> Either LocaleCatalogConfigError (Text, Text)
+parseCatalogRevisionParts raw = case T.breakOn "." raw of
   (major, rest)
     | Just digest <- T.stripPrefix "." rest
     , isCanonicalNumber major
     , T.length digest == 32
-    , T.all isLowerHexDigit digest ->
-        if major == T.takeWhile isAsciiDigit schemaVersion
-          then Right raw
-          else Left $ CatalogRevisionSchemaMismatch (excerpt raw) schemaVersion
+    , T.all isLowerHexDigit digest -> Right (major, digest)
   _ -> Left $ InvalidCatalogRevision (excerpt raw)
 
 parseSha256 :: Text -> Either LocaleCatalogConfigError Text

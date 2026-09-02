@@ -95,6 +95,7 @@ library:
     - extra
     - fast-logger
     - file-embed
+    - filepath
     - foreign-store
     - hashable
     - hedis
@@ -107,6 +108,7 @@ library:
     - jose
     - lens
     - lens-aeson
+    - libyaml
     - mailtrap
     - monad-logger
     - monad-time

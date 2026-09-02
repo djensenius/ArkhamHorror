@@ -642,16 +642,17 @@ shape can never drift into something no deployment can produce.
 
 `mise run locale-catalog:capability-probe` closes it against the real backend
 rather than a model of it. `backend/arkham-api/app-capabilities-probe` loads
-settings through the same `loadYamlSettings` call `Application.appMain` uses,
-builds the response with the handler's own `capabilitiesResponse`, and prints
-`Data.Aeson.encode`'s bytes — the production `toEncoding` path, with nothing
-appended, not even a newline. The driver asserts those **exact bytes** for both
-the advertised and the disabled response before decoding anything, validates
-them against the governed schema and the generated manifest's metadata,
-exercises runtime settings files on the command line (a literal wins over the
-environment; an `_env:` marker lets the environment through; a partial file is
-merged over the compile-time value; an insecure literal cannot be rescued), and
-then corrupts each setting in turn (insecure and ambiguous
+settings through the same preflighted YAML startup path `Application.appMain`
+uses, builds the response with the handler's own `capabilitiesResponse`, and
+prints `Data.Aeson.encode`'s bytes — the production `toEncoding` path, with
+nothing appended, not even a newline. The driver asserts those **exact bytes**
+for both the advertised and the disabled response before decoding anything,
+validates them against the governed schema and the generated manifest's
+metadata, exercises runtime settings files on the command line (a literal wins
+over the environment; an `_env:` marker for a locale-catalog setting may name
+only that setting's canonical `ARKHAM_LOCALE_CATALOG_*` variable; a partial
+file is merged over the compile-time value; an insecure literal cannot be
+rescued), and then corrupts each setting in turn (insecure and ambiguous
 URLs, a malformed revision, a mismatched schema version, an invalid, duplicate
 or unsupported locale, a malformed digest, a value YAML reads as a number)
 requiring the server to refuse to start every time.

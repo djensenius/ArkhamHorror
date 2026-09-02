@@ -17,12 +17,12 @@ in, to satisfy the governed schema the backend's encoder is bound to.
 
 With `--probe`, it stops modelling the backend and *runs* it: the probe
 (`backend/arkham-api/app-capabilities-probe`) loads settings through the same
-`loadYamlSettings` call `Application.appMain` uses, builds the body through the
-handler's own `capabilitiesResponse`, and prints `Data.Aeson.encode`'s bytes --
-the production `toEncoding` path. Those bytes are validated against the
-governed schema and against the generated manifest's exact metadata, and then
-every setting is corrupted in turn to prove the server refuses to start rather
-than advertising a broken catalog.
+preflighted YAML settings path `Application.appMain` uses, builds the body
+through the handler's own `capabilitiesResponse`, and prints `Data.Aeson.encode`'s
+bytes -- the production `toEncoding` path. Those bytes are validated against
+the governed schema and against the generated manifest's exact metadata, and
+then every setting is corrupted in turn to prove the server refuses to start
+rather than advertising a broken catalog.
 
 Nothing generated is hashed, committed, or compared against contract bytes:
 this script asserts the *shape* is producible, and separately asserts the
@@ -247,6 +247,13 @@ def write_settings_file(scratch: Path, name: str, values: dict[str, str]) -> Pat
     return path
 
 
+def write_raw_settings_file(scratch: Path, name: str, content: str, *, bom: bool = False) -> Path:
+    """Write a deliberately shaped YAML settings file for the production probe."""
+    path = scratch / name
+    path.write_bytes((("\ufeff" if bom else "") + content).encode("utf-8"))
+    return path
+
+
 SETTINGS_FILE_KEYS = {
     "ARKHAM_LOCALE_CATALOG_MANIFEST_URL": "locale-catalog-manifest-url",
     "ARKHAM_LOCALE_CATALOG_REVISION": "locale-catalog-revision",
@@ -403,6 +410,218 @@ def _check_with_probe(
         ]
         == "https://static.example.org/l10n/manifest.json",
         "an environment variable must override the _env: marker's fallback",
+    )
+
+    # Every command-line settings-file spelling of the six canonical markers
+    # remains supported. Both the quoted and plain YAML scalars resolve to the
+    # same marker, and a file-level BOM remains YAML syntax rather than part of
+    # the marker. No other environment variable name is accepted below.
+    def canonical_markers(quoted: bool, defaults: bool = False) -> str:
+        lines = []
+        for environment_name in SETTINGS:
+            marker = f"_env:{environment_name}:"
+            if defaults:
+                marker += settings[environment_name]
+            value = json.dumps(marker) if quoted else marker
+            lines.append(f"{SETTINGS_FILE_KEYS[environment_name]}: {value}")
+        return "\n".join(lines) + "\n"
+
+    for quoted, label in ((True, "quoted"), (False, "plain")):
+        canonical_file = write_raw_settings_file(
+            scratch,
+            f"settings-canonical-{label}.yml",
+            canonical_markers(quoted, defaults=not quoted),
+            bom=quoted,
+        )
+        canonical_run = run_probe(command, settings, [canonical_file])
+        require(
+            canonical_run.returncode == 0 and canonical_run.stdout == printed.stdout,
+            f"the {label} canonical locale settings markers were refused",
+        )
+
+    canonical_defaults = write_raw_settings_file(
+        scratch,
+        "settings-canonical-defaults.yml",
+        canonical_markers(True, defaults=True),
+    )
+    canonical_default_run = run_probe(command, {}, [canonical_defaults])
+    require(
+        canonical_default_run.returncode == 0 and canonical_default_run.stdout == printed.stdout,
+        "an unset canonical locale settings marker did not use its YAML default",
+    )
+
+    # Anchors, aliases and YAML merge keys are first resolved by the same YAML
+    # loader as production, then inspected structurally. A canonical marker
+    # remains valid through that resolution.
+    anchored_markers = "\n".join(
+        [
+            "locale-catalog-base: &locale_catalog",
+            *[
+                f"  {SETTINGS_FILE_KEYS[environment_name]}: "
+                f"\"_env:{environment_name}:\""
+                for environment_name in SETTINGS
+            ],
+            "<<: *locale_catalog",
+            "",
+        ]
+    )
+    anchored_file = write_raw_settings_file(scratch, "settings-anchors-merge.yml", anchored_markers)
+    anchored_run = run_probe(command, settings, [anchored_file])
+    require(
+        anchored_run.returncode == 0 and anchored_run.stdout == printed.stdout,
+        "canonical locale settings markers did not survive anchors, aliases and merge keys",
+    )
+
+    included_file = write_raw_settings_file(
+        scratch,
+        "settings-included.yml",
+        canonical_markers(True),
+    )
+    include_parent = write_raw_settings_file(
+        scratch,
+        "settings-include-parent.yml",
+        f"!include {included_file.name}\n",
+    )
+    included_run = run_probe(command, settings, [include_parent])
+    require(
+        included_run.returncode == 0 and included_run.stdout == printed.stdout,
+        "canonical locale settings markers in an included runtime file were refused",
+    )
+    included_alias = write_raw_settings_file(
+        scratch,
+        "settings-included-alias.yml",
+        'locale-catalog-default-locale: "_env:LOCALE_ALIAS:"\n',
+    )
+    alias_include_parent = write_raw_settings_file(
+        scratch,
+        "settings-include-alias-parent.yml",
+        f"!include {included_alias.name}\n",
+    )
+    included_alias_run = run_probe(
+        command,
+        {**settings, "LOCALE_ALIAS": settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"]},
+        [alias_include_parent],
+    )
+    require(
+        included_alias_run.returncode != 0 and b"localeCatalog" not in included_alias_run.stdout,
+        "a noncanonical locale marker in an included runtime file was accepted",
+    )
+
+    # A noncanonical alias is refused before Data.Yaml.Config can substitute
+    # and normalize it. Exercise clean, CR, LF, CRLF and BOM aliases for every
+    # field, including the comma-separated supported-locales entry.
+    for environment_name in SETTINGS:
+        setting_key = SETTINGS_FILE_KEYS[environment_name]
+        alias_file = write_raw_settings_file(
+            scratch,
+            f"settings-alias-{setting_key}.yml",
+            f'{setting_key}: "_env:LOCALE_ALIAS:"\n',
+        )
+        for label, suffix in (
+            ("clean", ""),
+            ("CR", "\r"),
+            ("LF", "\n"),
+            ("CRLF", "\r\n"),
+            ("BOM", "\ufeff"),
+        ):
+            alias_value = settings[environment_name] + suffix
+            if environment_name == "ARKHAM_LOCALE_CATALOG_LOCALES":
+                alias_value += ",de"
+            alias_environment = dict(settings)
+            alias_environment["LOCALE_ALIAS"] = alias_value
+            aliased = run_probe(command, alias_environment, [alias_file])
+            require(
+                aliased.returncode != 0 and b"localeCatalog" not in aliased.stdout,
+                f"a {label} noncanonical alias was accepted for {setting_key}",
+            )
+
+        folded_alias = write_raw_settings_file(
+            scratch,
+            f"settings-folded-alias-{setting_key}.yml",
+            f"{setting_key}: >-\n  _env:LOCALE_ALIAS:\n",
+        )
+        folded = run_probe(
+            command,
+            {**settings, "LOCALE_ALIAS": settings[environment_name]},
+            [folded_alias],
+        )
+        require(
+            folded.returncode != 0 and b"localeCatalog" not in folded.stdout,
+            f"a folded noncanonical alias was accepted for {setting_key}",
+        )
+
+        for malformed in ("_env:", f"_env:{environment_name}", "_env::"):
+            malformed_file = write_raw_settings_file(
+                scratch,
+                f"settings-malformed-{setting_key}-{len(malformed)}.yml",
+                f"{setting_key}: {json.dumps(malformed)}\n",
+            )
+            malformed_run = run_probe(command, settings, [malformed_file])
+            require(
+                malformed_run.returncode != 0 and b"localeCatalog" not in malformed_run.stdout,
+                f"a malformed _env: mapping was accepted for {setting_key}",
+            )
+
+        canonical_marker_file = write_raw_settings_file(
+            scratch,
+            f"settings-raw-canonical-{setting_key}.yml",
+            f'{setting_key}: "_env:{environment_name}:"\n',
+        )
+        for label, suffix in (("CR", "\r"), ("LF", "\n"), ("CRLF", "\r\n"), ("BOM", "\ufeff")):
+            corrupted_environment = dict(settings)
+            raw_value = settings[environment_name] + suffix
+            if environment_name == "ARKHAM_LOCALE_CATALOG_LOCALES":
+                raw_value += ",de"
+            corrupted_environment[environment_name] = raw_value
+            canonical_corrupted = run_probe(command, corrupted_environment, [canonical_marker_file])
+            require(
+                canonical_corrupted.returncode != 0 and b"localeCatalog" not in canonical_corrupted.stdout,
+                f"a {label} canonical raw value was accepted for {setting_key}",
+            )
+
+    # Direct scalar values remain supported and continue through AppSettings'
+    # existing typed parser. A later file cannot hide an earlier bad marker.
+    plain_direct = write_raw_settings_file(
+        scratch,
+        "settings-direct-plain.yml",
+        "\n".join(
+            f"{SETTINGS_FILE_KEYS[environment_name]}: {settings[environment_name]}"
+            for environment_name in SETTINGS
+        )
+        + "\n",
+    )
+    direct_run = run_probe(command, {}, [plain_direct])
+    require(
+        direct_run.returncode == 0 and direct_run.stdout == printed.stdout,
+        "plain direct locale settings values were refused",
+    )
+
+    bad_alias_override = write_raw_settings_file(
+        scratch,
+        "settings-overridden-alias.yml",
+        'locale-catalog-default-locale: "_env:LOCALE_ALIAS:"\n',
+    )
+    overridden_alias = run_probe(command, {}, [file_settings, bad_alias_override])
+    require(
+        overridden_alias.returncode != 0 and b"localeCatalog" not in overridden_alias.stdout,
+        "a later settings file hid an earlier noncanonical locale alias",
+    )
+
+    duplicate_key = write_raw_settings_file(
+        scratch,
+        "settings-duplicate-locale.yml",
+        "\n".join(
+            [
+                'locale-catalog-default-locale: "_env:ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE:"',
+                'locale-catalog-default-locale: "en"',
+                "",
+            ]
+        ),
+    )
+    duplicate = run_probe(command, settings, [duplicate_key])
+    require(
+        duplicate.returncode != 0 and b"localeCatalog" not in duplicate.stdout,
+        "a duplicate locale settings key was accepted",
     )
 
     # A settings file that is only partially filled in, with nothing else to
