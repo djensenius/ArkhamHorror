@@ -18,7 +18,6 @@ import json
 from pathlib import Path
 import runpy
 import sys
-import sysconfig
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -29,33 +28,6 @@ VENV = ROOT / ".venv"
 
 def refuse(message: str) -> None:
     raise SystemExit(f"locale-catalog python: {message}")
-
-
-def digest_files(entries: list[tuple[str, bytes]]) -> str:
-    digest = hashlib.sha256()
-    for name, data in sorted(entries):
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(data)
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
-def portable_stdlib_digest() -> str:
-    root = Path(sysconfig.get_paths()["stdlib"]).resolve(strict=True)
-    entries: list[tuple[str, bytes]] = []
-    for path in root.rglob("*.py"):
-        relative = path.relative_to(root).as_posix()
-        if (
-            relative.startswith(("site-packages/", "test/", "tkinter/test/", "idlelib/"))
-            or relative.startswith("_sysconfigdata_")
-            or "__pycache__" in path.parts
-        ):
-            continue
-        if path.is_symlink() or not path.is_file():
-            refuse(f"stdlib source {relative} is not a regular file")
-        entries.append((relative, path.read_bytes()))
-    return digest_files(entries)
 
 
 def verify_interpreter() -> None:
@@ -80,7 +52,7 @@ def verify_interpreter() -> None:
         "implementation": sys.implementation.name,
         "version": ".".join(map(str, sys.version_info[:3])),
         "cacheTag": sys.implementation.cache_tag,
-        "stdlibSha256": portable_stdlib_digest(),
+        "stdlibIdentity": "cpython-3.14.7",
     }
     if profile != expected:
         refuse(

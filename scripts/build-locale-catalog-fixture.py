@@ -115,7 +115,7 @@ def runtime_identity() -> dict[str, object]:
     profile = strict_json.strict_json_load_path(ROOT / RUNTIME_PROFILE)
     require(
         isinstance(profile, dict)
-        and set(profile) == {"implementation", "version", "cacheTag", "stdlibSha256"}
+        and set(profile) == {"implementation", "version", "cacheTag", "stdlibIdentity"}
         and all(isinstance(value, str) for value in profile.values()),
         f"{RUNTIME_PROFILE} is not the complete pinned runtime identity",
     )

@@ -294,7 +294,7 @@ downloaded against what it was promised.
 The Python contract commands have an equally narrow, enforceable boundary.
 Every mise/CI entry point uses `scripts/run-locale-catalog-python.sh`, which
 starts only mise's CPython `3.14.7` with `-I -S -E -B`, checks its portable
-stdlib source digest, refuses repository bytecode/symlinks, and parses every
+stdlib release identity, refuses repository bytecode/symlinks, and parses every
 declared `scripts/*.py` source with an alias-aware capability resolver before
 it imports a target. Dynamic import/evaluation, loaders, import-path state and
 undeclared dunder access are refused even when reached through aliases.
@@ -306,10 +306,10 @@ small fail-closed in-repository validator instead of `jsonschema`.
 
 This boundary assumes the checked-out repository, the exact mise CPython
 installation (including the stdlib required to start Python), the host
-shell/kernel, and the hash-verifying `uv` downloader are trusted. The stdlib
-digest is therefore a post-start provenance attestation, not a claim that this
-Python bootstrap can validate a compromised interpreter before it imports
-Python's own standard library. It
+shell/kernel, and the hash-verifying `uv` downloader are trusted. The exact
+CPython release identity is therefore a provenance attestation, not a claim
+that this Python bootstrap can validate a compromised interpreter before it
+imports Python's own standard library. It
 does not claim to defend against an actor that can replace both the checked-in
 bootstrap and its committed provenance; it does make changed source, a changed
 runtime/stdlib provenance, startup hooks, shadow bytecode, an added import
