@@ -32,16 +32,15 @@ def refuse(message: str) -> None:
 
 
 def verify_interpreter() -> None:
-    flags = sys.flags
     if not (
         sys.implementation.name == "cpython"
         and sys.version_info[:3] == (3, 14, 7)
         and sys.implementation.cache_tag == "cpython-314"
-        and flags.isolated
-        and flags.no_site
-        and flags.ignore_environment
-        and flags.dont_write_bytecode
-        and flags.safe_path
+        and sys.flags.isolated
+        and sys.flags.no_site
+        and sys.flags.ignore_environment
+        and sys.flags.dont_write_bytecode
+        and sys.flags.safe_path
     ):
         refuse("requires CPython 3.14.7 / cpython-314 with -I -S -E -B")
     if sys.prefix != sys.base_prefix:

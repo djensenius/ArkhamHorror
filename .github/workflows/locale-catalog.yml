@@ -14,6 +14,10 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: /usr/bin/env -i HOME=/home/runner LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin /bin/bash --noprofile --norc -eo pipefail {0}
+
 jobs:
   catalog:
     name: Generation, schema, and provenance

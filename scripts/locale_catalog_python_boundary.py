@@ -66,16 +66,13 @@ ALLOWED_IMPORTS = {
     "decimal",
     "hashlib",
     "gzip",
-    "importlib.metadata",
     "json",
     "math",
     "os",
     "re",
-    "runpy",
     "shlex",
     "shutil",
     "stat",
-    "subprocess",
     "sys",
     "sysconfig",
     "tempfile",
@@ -97,6 +94,48 @@ ALLOWED_IMPORTS = {
     "strict_json",
     "json_schema_subset",
     "locale_catalog_python_boundary",
+}
+
+SOURCE_SENSITIVE_IMPORTS = {
+    "scripts/check-locale-catalog-settings.py": frozenset({"os", "shutil", "subprocess", "sys"}),
+    "scripts/check-schema-revision-drift.py": frozenset({"shutil", "subprocess", "sys"}),
+    "scripts/extract-backend-i18n-keys.py": frozenset({"sys"}),
+    "scripts/locale_catalog_runtime.py": frozenset({"importlib.metadata", "os", "runpy", "sys"}),
+    "scripts/strict_json.py": frozenset({"os", "subprocess", "sys"}),
+    "scripts/test_extract_backend_i18n_keys.py": frozenset({"sys"}),
+    "scripts/test_locale_catalog_python_boundary.py": frozenset({"os", "subprocess"}),
+    "scripts/validate-catalog-serving.py": frozenset({"os", "shutil", "subprocess", "sys", "urllib.request"}),
+    "scripts/validate-locale-catalog.py": frozenset({"shutil", "subprocess", "sys"}),
+}
+
+SOURCE_SENSITIVE_CAPABILITIES = {
+    "scripts/check-locale-catalog-settings.py": frozenset({"os.environ", "shutil.rmtree", "subprocess.CompletedProcess", "subprocess.run", "sys.executable"}),
+    "scripts/check-schema-revision-drift.py": frozenset({"shutil.copyfile", "shutil.rmtree", "subprocess.CompletedProcess", "subprocess.run", "sys.argv", "sys.executable"}),
+    "scripts/extract-backend-i18n-keys.py": frozenset({"sys.exit"}),
+    "scripts/extract_backend_i18n_keys.py": frozenset({"sys.exit", "sys.stderr"}),
+    "scripts/locale_catalog_runtime.py": frozenset(
+        {
+            "importlib.metadata",
+            "importlib.metadata.distributions",
+            "os.environ",
+            "runpy.run_path",
+            "sys.argv",
+            "sys.base_prefix",
+            "sys.executable",
+            "sys.flags",
+            "sys.implementation",
+            "sys.path",
+            "sys.path.insert",
+            "sys.prefix",
+            "sys.version_info",
+        }
+    ),
+    "scripts/strict_json.py": frozenset({"os.chmod", "os.environ", "os.fsync", "os.replace", "subprocess.run", "sys.float_info", "sys.stderr"}),
+    "scripts/test_extract_backend_i18n_keys.py": frozenset({"sys.exit", "sys.stderr"}),
+    "scripts/test_locale_catalog_python_boundary.py": frozenset({"os.environ", "os.pathsep", "subprocess.CompletedProcess", "subprocess.run"}),
+    "scripts/validate-catalog-serving.py": frozenset({"os.environ", "shutil.copyfile", "shutil.rmtree", "shutil.which", "subprocess.CompletedProcess", "subprocess.PIPE", "subprocess.run", "sys.exit", "urllib.error", "urllib.request", "urllib.request.Request", "urllib.request.urlopen"}),
+    "scripts/validate-locale-catalog.py": frozenset({"shutil.copyfile", "shutil.rmtree", "shutil.which", "subprocess.CompletedProcess", "subprocess.run", "sys.exit"}),
+    "scripts/validate-route-inventory.py": frozenset({"urllib.parse.urlparse"}),
 }
 
 ALLOWED_FROM_IMPORTS = {
@@ -172,8 +211,6 @@ FORBIDDEN_ATTRIBUTE_NAMES = frozenset(
     }
 )
 
-BOOTSTRAP_SOURCE = "scripts/locale_catalog_runtime.py"
-BOOTSTRAP_CAPABILITIES = frozenset({"runpy.run_path", "sys.path", "sys.path.insert"})
 FORBIDDEN_SYS_ATTRIBUTES = frozenset(
     {
         "meta_path",
@@ -241,21 +278,26 @@ class CapabilityVisitor(ast.NodeVisitor):
         return None
 
     def check_capability(self, capability: str) -> None:
-        if capability in BOOTSTRAP_CAPABILITIES and self.relative_path == BOOTSTRAP_SOURCE:
-            return
         if capability in FORBIDDEN_CAPABILITIES:
             self.fail(f"uses forbidden dynamic capability {capability}")
         if capability.startswith("importlib.") and not capability.startswith("importlib.metadata"):
             self.fail(f"uses forbidden import-loader capability {capability}")
         parts = capability.split(".")
         if len(parts) >= 2 and parts[0] == "sys" and parts[1] in FORBIDDEN_SYS_ATTRIBUTES:
-            self.fail(f"uses forbidden import-state capability {capability}")
+            grants = SOURCE_SENSITIVE_CAPABILITIES.get(self.relative_path, frozenset())
+            if not any(capability == grant or capability.startswith(grant + ".") for grant in grants):
+                self.fail(f"uses forbidden import-state capability {capability}")
         if parts[-1] in FORBIDDEN_ATTRIBUTE_NAMES:
             self.fail(f"uses forbidden loader capability {capability}")
         if len(parts) >= 2 and parts[0] == "os" and (
             parts[1].startswith("exec") or parts[1].startswith("spawn") or parts[1] in {"fork", "popen", "system"}
         ):
             self.fail(f"uses forbidden process capability {capability}")
+        sensitive_roots = {"importlib", "os", "runpy", "subprocess", "sys", "urllib"}
+        if parts[0] in sensitive_roots:
+            grants = SOURCE_SENSITIVE_CAPABILITIES.get(self.relative_path, frozenset())
+            if not any(capability == grant or capability.startswith(grant + ".") for grant in grants):
+                self.fail(f"uses undeclared source-local capability {capability}")
 
     def bind(self, target: ast.AST, capability: str | None) -> None:
         if capability is None:
@@ -268,7 +310,8 @@ class CapabilityVisitor(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            if alias.name not in ALLOWED_IMPORTS:
+            allowed = ALLOWED_IMPORTS | SOURCE_SENSITIVE_IMPORTS.get(self.relative_path, frozenset())
+            if alias.name not in allowed:
                 self.fail(f"imports undeclared module {alias.name!r}")
             self.imports.add(alias.name)
             bound = alias.asname or alias.name.split(".", 1)[0]
@@ -277,7 +320,8 @@ class CapabilityVisitor(ast.NodeVisitor):
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         if node.level or node.module is None:
             self.fail("uses a relative or anonymous import")
-        if node.module not in ALLOWED_IMPORTS:
+        allowed = ALLOWED_IMPORTS | SOURCE_SENSITIVE_IMPORTS.get(self.relative_path, frozenset())
+        if node.module not in allowed:
             self.fail(f"imports undeclared module {node.module!r}")
         allowed_members = ALLOWED_FROM_IMPORTS.get(node.module)
         for alias in node.names:
@@ -293,7 +337,9 @@ class CapabilityVisitor(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign) -> None:
         self.visit(node.value)
         capability = self.resolve(node.value)
-        self.check_capability(capability) if capability is not None else None
+        if capability is not None:
+            self.check_capability(capability)
+            self.fail(f"stores sensitive capability {capability} instead of calling it directly")
         for target in node.targets:
             self.bind(target, capability)
 
@@ -301,20 +347,24 @@ class CapabilityVisitor(ast.NodeVisitor):
         if node.value is not None:
             self.visit(node.value)
             capability = self.resolve(node.value)
-            self.check_capability(capability) if capability is not None else None
+            if capability is not None:
+                self.check_capability(capability)
+                self.fail(f"stores sensitive capability {capability} instead of calling it directly")
             self.bind(node.target, capability)
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
         self.visit(node.value)
         capability = self.resolve(node.value)
-        self.check_capability(capability) if capability is not None else None
+        if capability is not None:
+            self.check_capability(capability)
+            self.fail(f"stores sensitive capability {capability} instead of calling it directly")
         self.bind(node.target, capability)
 
     def visit_Name(self, node: ast.Name) -> None:
         if "__" in node.id and node.id not in ALLOWED_DUNDER_NAMES:
             self.fail(f"uses undeclared dunder name {node.id!r}")
         capability = self.resolve(node)
-        if capability is not None:
+        if capability is not None and capability.startswith("builtins."):
             self.check_capability(capability)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
@@ -328,6 +378,8 @@ class CapabilityVisitor(ast.NodeVisitor):
             self.fail(f"uses forbidden loader attribute {node.attr!r}")
 
     def visit_Call(self, node: ast.Call) -> None:
+        if isinstance(node.func, (ast.Call, ast.Subscript)):
+            self.fail("calls a value derived from a call result or subscript, which is not statically resolvable")
         self.visit(node.func)
         for argument in [*node.args, *(keyword.value for keyword in node.keywords)]:
             self.visit(argument)

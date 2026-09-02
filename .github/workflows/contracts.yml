@@ -19,6 +19,10 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: /usr/bin/env -i HOME=/home/runner LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin /bin/bash --noprofile --norc -eo pipefail {0}
+
 jobs:
   fixtures:
     name: Golden fixtures
@@ -34,9 +38,7 @@ jobs:
       - run: mise run contracts:catalog-fixture
       - run: mise run locale-catalog:python-boundary-test
       - run: mise run contracts:fixtures
-      - run: mise run contracts:revision-drift
-        env:
-          CONTRACT_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || github.event.inputs.base_sha }}
+      - run: mise run contracts:revision-drift -- "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || github.event.inputs.base_sha }}"
 
   openapi:
     name: OpenAPI

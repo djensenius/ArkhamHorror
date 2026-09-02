@@ -30,12 +30,12 @@ still never makes a network call or depends on a remote ref.
 """
 
 import hashlib
-import os
 import re
 import shutil
 import subprocess
 import sys
 import uuid
+import argparse
 from pathlib import Path
 
 import strict_json
@@ -175,112 +175,53 @@ def resolve_ref(ref: str) -> bool:
     return result.returncode == 0
 
 
-_HEX_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_HEX_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _ALL_ZERO_SHA_RE = re.compile(r"^0{7,40}$")
 
 
-def _is_ci_environment() -> bool:
-    """GitHub Actions always sets both of these to the literal string
-    'true' for every workflow run; checking both (rather than just one)
-    keeps this detection resilient to any single-variable spoofing in a
-    step's `env:` block, since a real Actions runner sets both consistently.
-    """
-    return os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("CI") == "true"
-
-
-def _is_repository_initialization() -> bool:
-    """The only case where an all-zero/missing base SHA is legitimate: this
-    push genuinely created the very first commit this repository has ever
-    had (so there is, by construction, no prior governed-artifact state to
-    have drifted from, and accepting it cannot weaken main -- there is no
-    main to weaken yet). Detected by there being no second reachable commit
-    from HEAD; never inferred merely from the base SHA being absent.
-    """
-    result = subprocess.run(
-        ["git", "rev-list", "--count", "HEAD"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return False
-    try:
-        commit_count = int(result.stdout.strip())
-    except ValueError:
-        return False
-    return commit_count <= 1
-
-
-def resolve_base_ref() -> str:
+def resolve_base_ref(base_sha: str | None, *, allow_local_fallback: bool) -> str:
     """Resolve the immutable base commit to diff governed contract artifacts
     against.
 
-    In CI (detected via the GitHub Actions-provided `GITHUB_ACTIONS`/`CI`
-    environment variables), the caller workflow *must* provide
-    `CONTRACT_BASE_REF` explicitly, sourced per trigger type from an
+    The caller workflow must provide the positional `base_sha` explicitly,
+    sourced per trigger type from an
     event-provided field that cannot be spoofed by the pushed branch itself:
       - `pull_request`: `github.event.pull_request.base.sha`
       - `push`:         `github.event.before`
       - `workflow_dispatch`: a required workflow input
 
-    This deliberately never infers a base from `fork/main`/`origin/main`/
-    `main`/current HEAD in CI: any of those can resolve to the very branch
-    being validated (e.g. a push where the remote-tracking `main` has
-    already been fast-forwarded to the pushed commit itself), which would
-    silently compare a revision to itself and let real drift through. A
-    missing, malformed, or all-zero SHA fails the gate closed rather than
-    silently falling back, except for the narrow, explicitly-checked
-    repository-initialization case.
-
-    Outside CI (local development), `CONTRACT_BASE_REF` is honored if set,
-    else this falls back to a documented, deterministic chain of local refs
-    for developer convenience -- this fallback path is never reachable in
-    CI.
+    This deliberately never reads a base reference from environment variables:
+    the sealed CI shell intentionally removes those variables. A missing,
+    malformed, all-zero, unresolvable, non-ancestor, or self SHA fails
+    closed. Local development can opt into a separately named fallback task,
+    which is never used by CI.
     """
-    env_ref = os.environ.get("CONTRACT_BASE_REF")
+    if base_sha is not None:
+        require(
+            _HEX_SHA_RE.fullmatch(base_sha) and not _ALL_ZERO_SHA_RE.fullmatch(base_sha),
+            f"base SHA must be exactly 40 lowercase non-zero hexadecimal characters, got {base_sha!r}.",
+        )
+        require(
+            resolve_ref(base_sha),
+            f"base SHA {base_sha!r} does not resolve to a commit in this checkout's local history.",
+        )
+        head_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        require(base_sha != head_sha, "base SHA must not name HEAD itself.")
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", base_sha, "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+        )
+        require(ancestor.returncode == 0, f"base SHA {base_sha!r} is not an ancestor of HEAD.")
+        return base_sha
 
-    if _is_ci_environment():
-        require(
-            bool(env_ref),
-            "CONTRACT_BASE_REF must be set explicitly in CI (from "
-            "github.event.pull_request.base.sha / github.event.before / a required "
-            "workflow_dispatch input) -- this gate never infers a base ref from "
-            "fork/main, origin/main, main, or a hardcoded fallback in CI, since any "
-            "of those can resolve to the branch being validated itself.",
-        )
-        if _ALL_ZERO_SHA_RE.fullmatch(env_ref or ""):
-            require(
-                _is_repository_initialization(),
-                f"CONTRACT_BASE_REF {env_ref!r} is the all-zero SHA git uses for "
-                "'no prior commit' (e.g. a newly created branch/ref), which is only "
-                "acceptable if this repository has no commit history at all yet; it "
-                "does, so refusing to silently skip the drift gate.",
-            )
-            require(
-                resolve_ref("HEAD"),
-                "Repository-initialization case detected but HEAD itself does not resolve.",
-            )
-            return "HEAD"
-        require(
-            _HEX_SHA_RE.fullmatch(env_ref),
-            f"CONTRACT_BASE_REF must be a valid hex git commit SHA (7-40 hex characters), "
-            f"got {env_ref!r}.",
-        )
-        require(
-            resolve_ref(env_ref),
-            f"CONTRACT_BASE_REF {env_ref!r} does not resolve to a commit in this checkout's "
-            "local history. Ensure the workflow's checkout step fetches enough history "
-            "(e.g. actions/checkout with fetch-depth: 0, or a targeted fetch of that SHA) "
-            "-- this gate never falls back to a network call.",
-        )
-        return env_ref
-
-    # Local development: honor an explicit override first, then fall back to
-    # a documented, deterministic chain of local refs (never reachable in CI).
-    candidate_refs = []
-    if env_ref:
-        candidate_refs.append(env_ref)
-    candidate_refs.extend(["fork/main", "origin/main", "main", FALLBACK_BASE_SHA])
+    require(
+        allow_local_fallback,
+        "an explicit 40-character lowercase base SHA is required; CI must pass the event base as a positional argument.",
+    )
+    candidate_refs = ["fork/main", "origin/main", "main", FALLBACK_BASE_SHA]
 
     attempted = []
     for ref in candidate_refs:
@@ -291,7 +232,7 @@ def resolve_base_ref() -> str:
             return ref
 
     raise SystemExit(
-        "Could not resolve any base ref with local git history (tried: "
+        "Could not resolve any local fallback base ref with local git history (tried: "
         f"{attempted}). This gate never falls back to a network call; ensure the "
         "checkout includes enough local history to resolve one of these refs, or set "
         "CONTRACT_BASE_REF explicitly."
@@ -690,109 +631,25 @@ def run_self_tests() -> None:
 
 def run_resolve_base_ref_self_tests() -> None:
     """Prove resolve_base_ref()'s CI-mode fail-closed behavior deterministically,
-    by toggling only environment variables it reads (restored via try/finally
-    regardless of outcome). This does still depend on a working local git
-    checkout: resolve_base_ref() and this function's own repository-
-    initialization check both invoke real local git plumbing (e.g. `git
-    rev-parse HEAD`), though never a remote ref or network call."""
-    saved_env = {
-        key: os.environ.get(key) for key in ("GITHUB_ACTIONS", "CI", "CONTRACT_BASE_REF")
-    }
-
-    def _restore() -> None:
-        for key, value in saved_env.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
-
-    def _set_ci(base_ref_value: str | None) -> None:
-        os.environ["GITHUB_ACTIONS"] = "true"
-        os.environ["CI"] = "true"
-        if base_ref_value is None:
-            os.environ.pop("CONTRACT_BASE_REF", None)
-        else:
-            os.environ["CONTRACT_BASE_REF"] = base_ref_value
-
-    try:
-        _set_ci(None)
+    against direct positional values. This still depends on a working local
+    checkout because resolving a valid ancestor invokes local git plumbing."""
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    for invalid in (None, "not-a-valid-sha", "0" * 40, "F" * 40, "f" * 40, head_sha):
         try:
-            resolve_base_ref()
+            resolve_base_ref(invalid, allow_local_fallback=False)
         except SystemExit:
             pass
         else:
-            raise SystemExit(
-                "Self-test failure: resolve_base_ref must fail closed in CI when "
-                "CONTRACT_BASE_REF is unset, not silently infer fork/main, origin/main, "
-                "main, or a hardcoded fallback."
-            )
-
-        _set_ci("not-a-valid-sha")
-        try:
-            resolve_base_ref()
-        except SystemExit:
-            pass
-        else:
-            raise SystemExit(
-                "Self-test failure: resolve_base_ref must reject a syntactically invalid "
-                "CONTRACT_BASE_REF in CI."
-            )
-
-        _set_ci("0000000000000000000000000000000000000000")
-        try:
-            resolve_base_ref()
-        except SystemExit:
-            pass
-        else:
-            raise SystemExit(
-                "Self-test failure: resolve_base_ref must reject the all-zero SHA in CI for "
-                "this repository (which has real commit history), not treat it as the "
-                "repository-initialization escape hatch."
-            )
-
-        _set_ci("0000000")
-        try:
-            resolve_base_ref()
-        except SystemExit:
-            pass
-        else:
-            raise SystemExit(
-                "Self-test failure: resolve_base_ref must reject a short all-zero SHA in CI "
-                "the same way as a full-length one."
-            )
-
-        _set_ci("ffffffffffffffffffffffffffffffffffffffff")
-        try:
-            resolve_base_ref()
-        except SystemExit:
-            pass
-        else:
-            raise SystemExit(
-                "Self-test failure: resolve_base_ref must reject a syntactically valid but "
-                "locally-unresolvable SHA in CI rather than silently falling back."
-            )
-
-        head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
-        ).stdout.strip()
-
-        _set_ci(head_sha)
-        require(
-            resolve_base_ref() == head_sha,
-            "Self-test failure: resolve_base_ref must honor an explicit, locally-resolvable "
-            "CONTRACT_BASE_REF in CI.",
-        )
-
-        for key in ("GITHUB_ACTIONS", "CI"):
-            os.environ.pop(key, None)
-        os.environ["CONTRACT_BASE_REF"] = head_sha
-        require(
-            resolve_base_ref() == head_sha,
-            "Self-test failure: resolve_base_ref must honor an explicit CONTRACT_BASE_REF "
-            "outside CI too.",
-        )
-    finally:
-        _restore()
+            raise SystemExit(f"Self-test failure: invalid explicit base {invalid!r} was accepted.")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD~1"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    require(
+        resolve_base_ref(base, allow_local_fallback=False) == base,
+        "Self-test failure: a valid explicit base SHA was not accepted.",
+    )
 
 
 def run_manifest_worktree_authority_self_tests() -> None:
@@ -1102,6 +959,14 @@ def run_manifest_worktree_authority_self_tests() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("base_sha", nargs="?", help="authoritative 40-character lowercase ancestor commit")
+    parser.add_argument(
+        "--allow-local-fallback",
+        action="store_true",
+        help="use the documented local fallback chain when no positional base SHA is supplied",
+    )
+    arguments = parser.parse_args()
     run_self_tests()
 
     head_manifest = load_head_manifest()
@@ -1130,7 +995,7 @@ def main() -> None:
         "Recompute and update artifactHashes whenever a governed artifact's content changes.",
     )
 
-    base_ref = resolve_base_ref()
+    base_ref = resolve_base_ref(arguments.base_sha, allow_local_fallback=arguments.allow_local_fallback)
     base_manifest = load_manifest_from_git_ref(base_ref)
     require(
         base_manifest is not None,

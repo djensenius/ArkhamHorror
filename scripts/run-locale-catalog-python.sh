@@ -2,7 +2,7 @@
 set -euo pipefail
 
 readonly ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly MISE_DATA_ROOT="${HOME}/.local/share/mise"
+readonly MISE_DATA_ROOT="${LOCALE_CATALOG_MISE_ROOT:-${HOME}/.local/share/mise}"
 readonly PYTHON="${MISE_DATA_ROOT}/installs/python/3.14.7/bin/python"
 readonly TRUSTED_PATH="${MISE_DATA_ROOT}/installs/node/26.7.0/bin:${MISE_DATA_ROOT}/installs/python/3.14.7/bin:${MISE_DATA_ROOT}/installs/uv/0.12.6/bin:/usr/local/.ghcup/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
@@ -13,6 +13,11 @@ if [[ ! -x "${PYTHON}" || "${#uv_candidates[@]}" -ne 1 ]]; then
   exit 1
 fi
 readonly UV="${uv_candidates[0]}"
+
+if [[ "${MISE_DATA_ROOT}" != */.local/share/mise || -L "${MISE_DATA_ROOT}" ]]; then
+  echo "locale-catalog python: LOCALE_CATALOG_MISE_ROOT must name a regular mise data root" >&2
+  exit 1
+fi
 
 if [[ "$("${PYTHON}" -c 'import sys; print(f"{sys.implementation.name} {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} {sys.implementation.cache_tag}")')" != "cpython 3.14.7 cpython-314" ]]; then
   echo "locale-catalog python: ${PYTHON} is not the required CPython 3.14.7 / cpython-314 runtime" >&2
