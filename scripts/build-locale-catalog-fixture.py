@@ -166,6 +166,7 @@ def runtime_identity() -> dict[str, object]:
             *RUNTIME_IDENTITY_KEYS,
             "stdlibSourceTreeSha256",
             "activeSysconfigSources",
+            "trustedSources",
             "interpreter",
             "uv",
             "externalTools",
@@ -214,6 +215,21 @@ def runtime_identity() -> dict[str, object]:
         )
         and profile["externalTools"]["node"]["version"] == "26.7.0",
         f"{RUNTIME_PROFILE} does not pin complete Python, uv, and Node binary identities",
+    )
+    require(
+        isinstance(profile["trustedSources"], dict)
+        and set(profile["trustedSources"]) == set(locale_catalog_python_boundary.TRUSTED_SOURCES)
+        and all(
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest)
+            for digest in profile["trustedSources"].values()
+        )
+        and all(
+            sha256_hex((ROOT / relative).read_bytes()) == digest
+            for relative, digest in profile["trustedSources"].items()
+        ),
+        f"{RUNTIME_PROFILE} does not pin the exact bytes of the trusted computing base",
     )
     require(
         isinstance(profile["stdlibModules"], dict)

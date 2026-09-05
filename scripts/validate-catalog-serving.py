@@ -190,7 +190,8 @@ def release_owned_work(work: Path, token: str, identity: tuple[int, int]) -> Non
 
 
 def build_catalog(frontend: Path, out: Path) -> dict:
-    result = run([tool("node"), str(frontend / "scripts" / "locale-catalog" / "generate.mjs"), "--out", str(out)], cwd=frontend)
+    generator = (frontend / "scripts" / "locale-catalog" / "generate.mjs").resolve()
+    result = run([tool("node"), str(generator), "--out", str(out)], cwd=frontend.resolve())
     require(result.returncode == 0, f"generation failed: {result.stdout}\n{result.stderr}")
 
     # The production build precompresses everything it publishes (gzip for

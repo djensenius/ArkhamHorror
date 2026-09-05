@@ -153,9 +153,14 @@ def run_generator(
     expect_success: bool = True,
 ):
     node = strict_json.trusted_node()
+    # Node decides it is the entry module by comparing `process.argv[1]` with
+    # the *resolved* `import.meta.url`, so a path that reaches the generator
+    # through a symlink loads it and runs nothing. Always hand it the resolved
+    # path; a governed check that silently proves nothing is worse than one
+    # that fails.
     result = subprocess.run(
-        [node, str(frontend / "scripts" / "locale-catalog" / "generate.mjs"), *args],
-        cwd=cwd or frontend,
+        [node, str((frontend / "scripts" / "locale-catalog" / "generate.mjs").resolve()), *args],
+        cwd=(cwd or frontend).resolve(),
         capture_output=True,
         text=True,
         check=False,

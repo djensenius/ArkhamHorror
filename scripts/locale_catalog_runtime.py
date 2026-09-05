@@ -32,6 +32,34 @@ enforces the repository side of that boundary, in order:
 Attestation is deliberately kept *out* of generated content: nothing measured
 here is mixed into a catalog manifest, provenance digest, or contract revision,
 so governed output stays byte-identical across hosts.
+
+Threat model
+------------
+
+**T1 (enforced).** Hostile or mistaken *committed* repository source, and the
+supply chain it names: a widened capability, a dynamic loader, unsafe
+deserialization, an added executable file, a redirected or buildable
+dependency, an unpinned tool. Each of those is refused against exactly pinned
+identities before governed code runs.
+
+**T2 (not claimed).** A concurrent same-UID process rewriting the interpreter,
+a governed source, an installed dependency or the Node inputs between the
+moment this module checks them and the moment they are used. Checking as late
+and as close to use as practical narrows that window, and the re-checks here
+detect stable-host tampering, but nothing in this process *prevents* a racing
+owner. CI runs each governed command in an isolated ephemeral job with no
+untrusted concurrent process; that isolation, not this module, is what closes
+T2.
+
+**T3 (out of scope).** ptrace/debugger attachment, Docker daemon or group
+control, write access to the Git object database or to a published artifact,
+and a compromised OS, kernel or runner.
+
+This module and `locale_catalog_python_boundary.py` are the repository-side
+trusted computing base: both are pinned by exact SHA-256 in
+`locale_catalog_python_runtime.json` and verified by the sealed shell *before*
+this interpreter starts, because a scanner that has already executed cannot
+authenticate itself.
 """
 
 from __future__ import annotations
@@ -49,6 +77,19 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 PROFILE = SCRIPTS / "locale_catalog_python_runtime.json"
 LOCK = ROOT / "uv.lock"
+PYPROJECT = ROOT / "pyproject.toml"
+# The repository-side trusted computing base, spelled here as well as in
+# `locale_catalog_python_boundary.TRUSTED_SOURCES` because this check has to run
+# *before* the analyzer is imported. `verify_source_tree` proves the two
+# declarations agree once importing it is safe.
+TRUSTED_SOURCES = frozenset(
+    {
+        "scripts/locale_catalog_python_boundary.py",
+        "scripts/locale_catalog_runtime.py",
+        "scripts/locale-catalog-python-sealed.sh",
+        "scripts/run-locale-catalog-python.sh",
+    }
+)
 WORKSPACE_PREFIX = ".locale-catalog-python."
 VENV_NAME = "venv"
 
@@ -133,6 +174,34 @@ def read_sealed_root() -> Path:
     if root.resolve() != root:
         refuse(f"LOCALE_CATALOG_MISE_ROOT {raw!r} must already be canonical")
     return root
+
+
+def verify_trusted_sources(profile: dict) -> None:
+    """Re-check the trusted computing base from inside the process it governs.
+
+    The sealed shell already checked these bytes before starting Python; doing
+    it again here means the digests the lock commits are proved by the same
+    process that relies on them, and a lock whose `trustedSources` block does
+    not name exactly the analyzer, this bootstrap and both shell stages is
+    refused (T1).
+    """
+    entries = profile.get("trustedSources")
+    if not isinstance(entries, dict) or set(entries) != set(TRUSTED_SOURCES):
+        refuse(
+            f"{PROFILE.relative_to(ROOT)} must pin exactly the trusted computing base "
+            f"{sorted(TRUSTED_SOURCES)}"
+        )
+    for relative_path, expected in sorted(entries.items()):
+        if not (isinstance(expected, str) and len(expected) == 64):
+            refuse(f"{PROFILE.relative_to(ROOT)} has no valid digest for {relative_path}")
+        path = ROOT / relative_path
+        if path.is_symlink() or not path.is_file():
+            refuse(f"trusted source {relative_path} is not a regular file")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            refuse(
+                f"trusted source {relative_path} does not match the identity committed in "
+                f"{PROFILE.relative_to(ROOT)}"
+            )
 
 
 def read_profile() -> dict:
@@ -539,7 +608,17 @@ def verify_scripts_directory_shape() -> None:
 
 
 def verify_source_tree() -> None:
-    from locale_catalog_python_boundary import SourceBoundaryError, all_executable_sources
+    from locale_catalog_python_boundary import (
+        TRUSTED_SOURCES as DECLARED_TRUSTED_SOURCES,
+        SourceBoundaryError,
+        all_executable_sources,
+    )
+
+    if DECLARED_TRUSTED_SOURCES != TRUSTED_SOURCES:
+        refuse(
+            "the capability analyzer and this bootstrap disagree about the trusted computing "
+            f"base: {sorted(DECLARED_TRUSTED_SOURCES)} vs {sorted(TRUSTED_SOURCES)}"
+        )
 
     for path in SCRIPTS.rglob("*"):
         if path.is_symlink():
@@ -608,11 +687,232 @@ def verify_record(venv: Path, site_packages: Path, name: str, metadata_dir: Path
     return recorded
 
 
+REQUIRED_PYTHON = "==3.14.7"
+REGISTRY_URL = "https://pypi.org/simple"
+FORBIDDEN_LOCK_SOURCES = ("git", "url", "path", "directory", "editable", "virtual")
+
+
+def platform_wheel_tokens() -> tuple[str, ...]:
+    """Tokens a wheel's platform tag must contain to be selectable here."""
+    if runtime_platform() == "darwin-arm64":
+        return ("macosx", "arm64", "universal2")
+    return ("manylinux", "musllinux", "linux", "x86_64")
+
+
+def wheel_is_compatible(filename: str) -> bool:
+    if not filename.endswith(".whl"):
+        return False
+    parts = filename[: -len(".whl")].split("-")
+    if len(parts) < 5:
+        return False
+    python_tags = parts[-3].split(".")
+    platform_tags = parts[-1].split(".")
+    if not any(tag.startswith(("py2", "py3", "cp3")) for tag in python_tags):
+        return False
+    if "any" in platform_tags:
+        return True
+    tokens = platform_wheel_tokens()
+    return any(any(token in tag for token in tokens) for tag in platform_tags)
+
+
+def attest_dependency_sources(destination: Path) -> None:
+    """Refuse a hostile project or lock *before* uv is allowed to start.
+
+    This runs in a throwaway interpreter that imports only the standard
+    library, executes no project code, creates no environment and builds
+    nothing. Its whole job is to guarantee that by the time uv starts there is
+    no source it could build, no PEP 517 backend it could invoke and no
+    artifact it could fetch that is not an exactly hash-pinned registry wheel
+    (T1).
+
+    The exact bytes it validated are then written into this invocation's own
+    project directory and uv is pointed at *that*, so what uv consumes is what
+    was checked rather than a second read of the same path. On the stable host
+    this boundary assumes, those are the same bytes; a concurrent same-UID
+    rewrite in between is T2 and is not claimed.
+    """
+    import tomllib
+
+    if destination.is_symlink() or not destination.is_dir() or any(destination.iterdir()):
+        refuse("the dependency attestor needs this invocation's own empty project directory")
+    if PYPROJECT.is_symlink() or not PYPROJECT.is_file():
+        refuse("missing regular pyproject.toml")
+    if LOCK.is_symlink() or not LOCK.is_file():
+        refuse("missing regular uv.lock")
+    project_bytes = PYPROJECT.read_bytes()
+    lock_bytes = LOCK.read_bytes()
+    try:
+        project = tomllib.loads(project_bytes.decode("utf-8"))
+        lock = tomllib.loads(lock_bytes.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        refuse(f"the dependency declaration is not readable TOML: {error}")
+
+    if "build-system" in project:
+        refuse(
+            "pyproject.toml declares a [build-system]; the sealed boundary never runs a PEP 517 "
+            "backend, so a project that asks for one is refused before uv starts"
+        )
+    tool = project.get("tool")
+    if isinstance(tool, dict) and isinstance(tool.get("uv"), dict) and "sources" in tool["uv"]:
+        refuse(
+            "pyproject.toml declares [tool.uv.sources]; the sealed boundary installs only "
+            "hash-pinned registry wheels and never a redirected source"
+        )
+    declared = project.get("project", {})
+    if declared.get("requires-python") != REQUIRED_PYTHON:
+        refuse(
+            f"pyproject.toml must pin requires-python to {REQUIRED_PYTHON}, got "
+            f"{declared.get('requires-python')!r}"
+        )
+    if lock.get("requires-python") != REQUIRED_PYTHON:
+        refuse(
+            f"uv.lock must pin requires-python to {REQUIRED_PYTHON}, got "
+            f"{lock.get('requires-python')!r}"
+        )
+    for dependency in declared.get("dependencies", []):
+        if "==" not in dependency:
+            refuse(f"project dependency {dependency!r} is not pinned to an exact version")
+
+    packages = lock.get("package")
+    if not isinstance(packages, list) or not packages:
+        refuse("uv.lock declares no packages")
+    root_name = normalize_distribution_name(declared.get("name", ""))
+    installable = 0
+    for package in packages:
+        name = package.get("name", "<unnamed>")
+        source = package.get("source")
+        if not isinstance(source, dict) or len(source) != 1:
+            refuse(f"uv.lock package {name} has no single declared source")
+        kind = next(iter(source))
+        if normalize_distribution_name(name) == root_name:
+            if kind != "virtual" or source["virtual"] != ".":
+                refuse(
+                    f"uv.lock root project {name} must be the virtual project itself, not a "
+                    f"{kind} source"
+                )
+            continue
+        if kind in FORBIDDEN_LOCK_SOURCES:
+            refuse(
+                f"uv.lock package {name} resolves through a {kind} source; the sealed boundary "
+                "installs registry wheels only"
+            )
+        if kind != "registry":
+            refuse(f"uv.lock package {name} uses unsupported source kind {kind!r}")
+        if source["registry"] != REGISTRY_URL:
+            refuse(f"uv.lock package {name} resolves against {source['registry']!r}, not {REGISTRY_URL}")
+        wheels = package.get("wheels")
+        if not isinstance(wheels, list) or not wheels:
+            refuse(f"uv.lock package {name} declares no wheels, so uv would have to build it")
+        compatible = 0
+        for wheel in wheels:
+            url = wheel.get("url", "")
+            digest = wheel.get("hash", "")
+            filename = url.rpartition("/")[2]
+            if not wheel_is_compatible(filename):
+                continue
+            compatible += 1
+            if not url.startswith("https://files.pythonhosted.org/"):
+                refuse(f"uv.lock package {name} declares a wheel outside the locked registry: {url!r}")
+            if not (
+                isinstance(digest, str)
+                and digest.startswith("sha256:")
+                and len(digest) == len("sha256:") + 64
+            ):
+                refuse(f"uv.lock package {name} has a selectable wheel without an exact sha256 hash")
+        if compatible == 0:
+            refuse(
+                f"uv.lock package {name} has no hash-pinned wheel compatible with "
+                f"{runtime_platform()}; uv would fall back to building from source"
+            )
+        installable += 1
+    if installable == 0:
+        refuse("uv.lock declares no installable registry distribution")
+
+    (destination / "pyproject.toml").write_bytes(project_bytes)
+    (destination / "uv.lock").write_bytes(lock_bytes)
+    print(
+        f"locale-catalog python: attested {installable} hash-pinned registry distributions for "
+        f"{runtime_platform()} before uv started",
+        file=sys.stderr,
+    )
+
+
+def attested_lock_path() -> Path:
+    """The lock bytes uv actually consumed, written by the attestor above."""
+    raw = os.environ.get("ARKHAM_LOCALE_CATALOG_LOCK_PROJECT")
+    if not raw:
+        refuse("missing this invocation's attested dependency project")
+    project = Path(raw)
+    if (
+        project.name != "project"
+        or project.parent != workspace_root()
+        or not project.parent.name.startswith(WORKSPACE_PREFIX)
+        or project.is_symlink()
+        or not project.is_dir()
+        or project.resolve() != project
+    ):
+        refuse("the attested dependency project is not this invocation's own workspace")
+    lock = project / "uv.lock"
+    if lock.is_symlink() or not lock.is_file():
+        refuse("the attested dependency project has no regular uv.lock")
+    if LOCK.is_symlink() or not LOCK.is_file():
+        refuse("missing regular uv.lock")
+    if lock.read_bytes() != LOCK.read_bytes():
+        refuse(
+            "the committed uv.lock no longer matches the bytes this invocation attested and "
+            "installed from; on a stable host that is a mid-run edit"
+        )
+    return lock
+
+
+def verify_installed_wheel_identity(
+    name: str, version: str, metadata_dir: Path, candidates: list[str]
+) -> None:
+    """Bind the installed distribution back to a hash-pinned locked wheel.
+
+    A wheel's `.dist-info/WHEEL` records the tags of the artifact it came from,
+    so an installation can be tied to the exact locked filenames whose SHA-256
+    uv verified at download time. This is an integrity check under the stable
+    host model (T1): it proves the installed tree corresponds to a locked,
+    hash-pinned artifact, not that a concurrent owner could not have edited it
+    afterwards (T2).
+    """
+    wheel_metadata = metadata_dir / "WHEEL"
+    if wheel_metadata.is_symlink() or not wheel_metadata.is_file():
+        refuse(f"{name} has no regular wheel WHEEL metadata")
+    tags = {
+        line[len("Tag:") :].strip()
+        for line in wheel_metadata.read_text(encoding="utf-8").splitlines()
+        if line.startswith("Tag:")
+    }
+    if not tags:
+        refuse(f"{name} wheel metadata declares no tag to bind against the lock")
+    matched = []
+    for filename in candidates:
+        parts = filename[: -len(".whl")].split("-") if filename.endswith(".whl") else []
+        if len(parts) < 5:
+            continue
+        if normalize_distribution_name(parts[0]) != name or parts[1] != version:
+            continue
+        locked_tags = {
+            f"{python}-{abi}-{platform}"
+            for python in parts[-3].split(".")
+            for abi in parts[-2].split(".")
+            for platform in parts[-1].split(".")
+        }
+        if locked_tags & tags:
+            matched.append(filename)
+    if not matched:
+        refuse(
+            f"installed {name} {version} does not correspond to any hash-pinned wheel "
+            f"{sorted(candidates)} that uv.lock records for this platform"
+        )
+
+
 def verify_dependencies() -> Path:
     import tomllib
 
-    if LOCK.is_symlink() or not LOCK.is_file():
-        refuse("missing regular uv.lock")
+    lock_path = attested_lock_path()
     raw_venv = os.environ.get("ARKHAM_LOCALE_CATALOG_PYTHON_VENV")
     if not raw_venv:
         refuse("missing invocation-owned virtual environment")
@@ -629,9 +929,16 @@ def verify_dependencies() -> Path:
     site_packages = venv / "lib" / "python3.14" / "site-packages"
     if site_packages.is_symlink() or not site_packages.is_dir():
         refuse(f"missing exact dependency root {site_packages.relative_to(ROOT)}")
-    lock = tomllib.loads(LOCK.read_text(encoding="utf-8"))
+    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
     expected = {
         normalize_distribution_name(package["name"]): package["version"]
+        for package in lock.get("package", [])
+        if package.get("source", {}).get("registry")
+    }
+    locked_wheels = {
+        normalize_distribution_name(package["name"]): [
+            wheel.get("url", "").rpartition("/")[2] for wheel in package.get("wheels", [])
+        ]
         for package in lock.get("package", [])
         if package.get("source", {}).get("registry")
     }
@@ -654,6 +961,7 @@ def verify_dependencies() -> Path:
     for name, (version, metadata_dir) in sorted(distributions.items()):
         if version != expected[name]:
             refuse(f"installed {name} {version} differs from locked {expected[name]}")
+        verify_installed_wheel_identity(name, version, metadata_dir, locked_wheels[name])
         recorded.update(verify_record(venv, site_packages, name, metadata_dir))
     root = site_packages.resolve()
     actual_files = {
@@ -703,11 +1011,26 @@ def write_source_manifest() -> None:
 def main() -> None:
     if len(sys.argv) < 2:
         refuse("expected a declared Python entry point")
+    if sys.argv[1] == "--attest-dependency-sources":
+        if len(sys.argv) != 3:
+            refuse("--attest-dependency-sources takes exactly one destination")
+        if not (
+            sys.flags.isolated
+            and sys.flags.no_site
+            and sys.flags.ignore_environment
+            and sys.flags.dont_write_bytecode
+        ):
+            refuse("the dependency attestor must run under -I -S -E -B")
+        if ".".join(map(str, sys.version_info[:3])) != "3.14.7":
+            refuse("the dependency attestor must run on the pinned CPython 3.14.7")
+        attest_dependency_sources(Path(sys.argv[2]))
+        return
     target = sys.argv[1]
     arguments = sys.argv[2:]
     sealed_root = read_sealed_root()
     runtime_home = read_runtime_home()
     profile = read_profile()
+    verify_trusted_sources(profile)
     verify_interpreter(profile, runtime_home)
     verify_pycache_prefix()
     stdlib_root, attested, variants, extensions = verify_stdlib(profile, runtime_home)

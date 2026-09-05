@@ -297,6 +297,44 @@ downloaded against what it was promised.
 
 The Python contract commands have an equally narrow, enforceable boundary.
 
+### What this boundary defends against, exactly
+
+The value of a boundary is in what it *refuses*, so it is worth being precise
+about which attacker it refuses and which it does not.
+
+**T1 — enforced.** Hostile or mistaken **committed repository source**, and the
+supply chain that source names. A widened import or capability, a dynamic
+loader, unsafe deserialization, a redirected or buildable dependency, an added
+executable file, an unpinned tool, a generator whose module graph reaches
+outside the hashed closure: every one of those is rejected *before* any
+governed code executes, against exactly pinned trusted-computing-base,
+toolchain and dependency identities, with deterministic provenance over the
+bytes that ran. This is the class a code review and a CI gate actually have to
+catch, and it is the class this boundary is built for.
+
+**T2 — not claimed.** A **concurrent process running as the same UID** that
+rewrites interpreter, source, dependency or Node bytes in the window between
+the moment they are verified and the moment they are used. The launcher checks
+as late and as close to use as it practically can, and several of its checks
+(the exit-side generator-closure re-check, the RECORD proof, the stdlib
+inventory) will *detect* many such rewrites — but detection is not prevention,
+and nothing here promises to win that race. POSIX file permissions are not
+treated as a boundary anywhere in this design. Where T2 is actually addressed
+is the environment: CI runs each governed command in an isolated ephemeral job
+with no untrusted concurrent process, and a maintainer running these tasks
+locally is trusting their own machine in exactly the same way they trust their
+own editor.
+
+**T3 — out of scope.** Debugger or `ptrace` attachment to a running process,
+control of the Docker daemon or membership of its group, write access to the
+Git object database or to an artifact after publication, and a compromised OS,
+kernel or runner. None of these is defended against, and none is pretended to
+be.
+
+Everything below should be read against that division: "verified before use"
+means T1-verified against a committed identity on a stable host, not
+race-proof.
+
 **One authoritative entry point.** Every mise/CI command that can generate,
 verify, update, approve, hash or revision-check a governed artifact goes
 through `scripts/run-locale-catalog-python.sh`. That file is deliberately a
@@ -333,6 +371,19 @@ The real backend-probe task also receives one explicit host authority:
 `LOCALE_CATALOG_STACK=/absolute/path/to/stack`; it rejects a bare `stack`
 command or any PATH lookup. CI captures the absolute path from the reviewed
 Haskell setup step and includes it in the otherwise empty shell environment.
+
+**The trusted computing base is authenticated first.** Four files decide
+whether anything else may run: both launcher shell stages, the capability
+analyzer `scripts/locale_catalog_python_boundary.py`, and the bootstrap
+`scripts/locale_catalog_runtime.py`. A scanner that has already executed cannot
+vouch for itself, so the sealed shell hashes all four against the
+`trustedSources` block committed in `scripts/locale_catalog_python_runtime.json`
+*before it starts any interpreter*, and the bootstrap re-checks the same block
+from inside the process it governs. They remain governed sources as well —
+capability-scanned and folded into provenance — but authentication comes first.
+The adversarial suite replaces the analyzer with a permissive scanner that
+writes a marker file at import time and proves both that the command fails and
+that the marker never appears.
 
 **Environment attestation.** Before the first Python byte runs, the sealed
 shell hashes the complete non-variant stdlib source inventory (path names and
@@ -406,19 +457,84 @@ Lexical scope snapshots prevent an inner parameter, class, branch or exception
 binding from erasing an outer sensitive alias; rebinding any such alias is
 itself a refusal. Anything the analyzer cannot resolve but can see is sensitive
 fails closed.
-`runpy`, `subprocess`, `os.system`/`spawn`/`exec`, importlib loaders,
-`zipimport`, `ctypes`, `pickle`/`marshal`/`shelve`, dynamic code objects,
-import-path mutation and dunder traversal are all rejected, including through
-aliases. The grant tables live in `scripts/locale_catalog_python_boundary.py`,
-which is itself a declared source: it is capability-scanned like any other and
-its bytes are folded into `generatorSha256`, so a grant cannot be widened
-without moving a governed contract hash.
 
-**Dependency boundary.** `uv.lock` supplies hashes for every wheel and
-transitive dependency; the launcher reinstalls that complete locked closure
-into this invocation's own workspace before every command, then the bootstrap
-verifies the installed dependency set and each wheel `RECORD` before adding its
-site-packages directory. The catalog-only schema checks use the small
+The analysis is path-sensitive and identity-preserving rather than
+last-writer-wins. `if`/`else`, `while`, `for`, `try`/`except`/`else`/`finally`,
+`match` and `with` are analyzed per branch and then *joined*: a name is
+everything it may be on any path that can reach the join. A branch that always
+returns or raises contributes nothing; `break` contributes its state to the
+code after the loop and `continue` to the next iteration; a loop is iterated to
+an actual fixpoint rather than a fixed number of passes, and a loop that will
+not converge is refused instead of truncated. Conditional expressions and
+short-circuit `and`/`or` join both operands. So a false `if`, a zero-iteration
+loop, an untaken `except` and a `break` can no longer erase a module identity
+another path bound.
+
+Identities also survive containers and captures. A module placed in a list,
+tuple, set, dict or comprehension is still that module when it comes back out
+through a subscript, a slice, iteration, unpacking, a starred target, a `match`
+capture (including sequence, mapping, class-attribute, `as` and `|` patterns),
+or a container method such as `pop`, `get` or `copy` — `holder = [strict_json][0]`
+followed by `holder.subprocess.run(...)` is refused exactly as the direct
+spelling is. A walrus inside a comprehension binds in the enclosing scope, and
+is tracked there. Where an identity would leave the reference the analyzer can
+resolve exactly — passed as a call argument, returned, yielded, interpolated
+into a t-string, captured by a lambda, used as a parameter default, stored into
+an attribute, a subscript or a class namespace, or bound to a name a
+`global`/`nonlocal` declaration connects to an outer scope — it fails closed.
+Writing into an imported module's namespace at all is a refusal. Python 3.14's
+`type` aliases, type parameters, and template strings are modelled explicitly,
+as are the `async` forms of `for`, `with` and `def`.
+
+Coverage is not assumed: every value-bearing and binding node type is named in
+an explicit dispatch table, and a node type that is *not* there is refused
+rather than walked generically, so a future language construct cannot silently
+become a hole. A self-test parses every governed source plus the whole payload
+and control matrix and requires that nothing in it is unmodelled.
+
+`runpy`, `subprocess`, `os.system`/`spawn`/`exec`, importlib loaders,
+`zipimport`, `ctypes`, `pickle`/`marshal`/`shelve`, `breakpoint` (which
+`PYTHONBREAKPOINT` redirects by dotted name, and which Python 3.14 lets take a
+pdb command script), dynamic code objects, import-path mutation and dunder
+traversal are all rejected, including through aliases. YAML is a sensitive root
+in its own right: only `yaml.safe_load` is grantable, and only in the one
+source that declares it, while `yaml.load`, `yaml.unsafe_load`,
+`yaml.full_load`, every loader class and constructor registration are forbidden
+outright. Modules that exist only as deserialization or archive-extraction
+surfaces are not in the shared allowlist at all. The grant tables live in
+`scripts/locale_catalog_python_boundary.py`, which is both a declared source
+and part of the trusted computing base: it is capability-scanned like any other
+*and* digest-pinned before it runs, and its bytes are folded into
+`generatorSha256`, so a grant cannot be widened without moving a governed
+contract hash.
+
+**Dependency boundary.** uv resolves, downloads, unpacks and *can build*
+distributions, and a PEP 517 backend is arbitrary code that would run before
+anything else got a say. So before uv starts, a throwaway interpreter runs the
+bootstrap's `--attest-dependency-sources` mode under `-I -S -E -B`: it imports
+only the standard library, executes no project code, creates no environment and
+builds nothing. It requires `requires-python == 3.14.7` in both `pyproject.toml`
+and `uv.lock`, exactly pinned project dependencies, no `[build-system]`, no
+`[tool.uv.sources]`, a root project that is the virtual project itself, and —
+for every other locked package — a single `registry` source pointing at the
+locked index with at least one `sha256`-pinned wheel whose tags fit the declared
+platform. A `git`, `url`, `path`, `directory` or `editable` source, a selectable
+wheel without an exact hash, a wheel outside the locked registry, or a
+distribution with no compatible wheel is refused before a virtual environment
+exists. The attestor then writes the exact bytes it validated into this
+invocation's own project directory and uv is pointed at *that* directory, so
+what uv consumes is what was checked rather than a second read of the same
+path; uv itself runs with `--locked --no-cache --link-mode copy --reinstall
+--no-dev --no-build --no-sources --no-install-project --no-install-local`.
+
+After installation the bootstrap verifies the installed distribution set
+against the same attested lock bytes: exact names and versions, every wheel
+`RECORD` hash reproduced, no unrecorded or missing file, no symlink, no
+bytecode, no `sitecustomize`/`usercustomize`, and each installed distribution
+bound back to a hash-pinned locked wheel candidate through its `WHEEL` tags.
+That `RECORD` proof is an *integrity* check under the stable-host model (T1):
+it proves the installed tree corresponds to the locked, hash-pinned artifacts,
+not that a concurrent same-UID process could not have edited it afterwards. The catalog-only schema checks use the small
 fail-closed in-repository validator instead of `jsonschema`: it implements
 exactly the keywords the published v1 schemas use, refuses every keyword,
 `$ref` spelling and dialect it does not implement rather than ignoring one, and
@@ -444,14 +560,32 @@ copy of the exact governed tree. It never writes inside the canonical worktree,
 and it re-checks byte for byte the canonical paths earlier revisions of it used
 to mutate.
 
-This boundary assumes the checked-out repository, the host shell/kernel, and
-the hash-verifying `uv` downloader are trusted. It does not claim to defend
-against an actor that can replace both the checked-in bootstrap and its
-committed toolchain lock; it does make changed source, a changed or injected
-stdlib module, a replaced interpreter binary, a symlinked or non-canonical
-toolchain root, startup hooks, shadow bytecode, an added import capability, a
-widened grant, or an altered locked dependency closure fail before a
-generator/check command can use it.
+This boundary assumes a stable host: the host shell and kernel, the
+hash-verifying `uv` downloader, and the absence of an untrusted concurrent
+same-UID process are trusted at the moment a command runs (T2/T3 above). It
+does not claim to defend against an actor who can replace both the checked-in
+trusted computing base *and* its committed toolchain lock. Within T1 it does
+make a changed governed source, a replaced capability analyzer or bootstrap, a
+changed or injected stdlib module, a replaced interpreter, Node or uv binary, a
+symlinked or non-canonical toolchain root, startup hooks, shadow bytecode, an
+added import capability, a widened grant, an unsafe deserializer, a PEP 517
+build backend, a redirected or unhashed dependency source, and a generator
+module graph that leaves the hashed closure all fail before a generator/check
+command can use them.
+
+**Node provenance order.** `locale-catalog:generate` binds the JavaScript side
+the same way. Before Node starts, the entry point resolves every static
+`import`/`export … from` specifier in the generator directory and requires each
+to be a `node:` builtin, a file inside that same directory, or a package
+`frontend/package-lock.json` pins; requires every dynamic `import(...)` to be
+one of the exact call texts the entry point declares, so a new module-graph
+edge cannot appear silently; and hashes the whole closure — every generator
+source, `package.json`, `package-lock.json` and the bound Node binary. After
+Node returns, the same closure is hashed again and drift fails the command. The
+Node generator hashes the same directory into the catalog's own `provenance`
+record, so the bytes validated here are the bytes provenance describes. This
+detects a stable-run change; it does not stop a concurrent same-UID rewrite
+(T2).
 
 The synthetic fixture hashes all declared executable sources, both launcher
 stages, the lockfile, and the toolchain lock through `generatorSha256`, so the

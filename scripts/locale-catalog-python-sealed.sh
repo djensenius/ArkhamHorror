@@ -16,7 +16,20 @@
 #      sealed `defaults.run.shell`, or a maintainer who names it deliberately).
 #      It is never defaulted, never derived from `$HOME`, and never guessed.
 #   2. `scripts/locale_catalog_python_runtime.json` -- the committed toolchain
-#      lock the runtime attests the interpreter and its stdlib bytes against.
+#      lock this stage attests the interpreter, its stdlib bytes, the external
+#      tools *and the repository-side trusted computing base* against.
+#
+# Threat model (see docs/locale-catalog.md for the full statement):
+#
+#   T1 (enforced)   Hostile or mistaken *committed* repository source. Every
+#                   identity below is checked against the committed lock before
+#                   the governed code that depends on it runs.
+#   T2 (not claimed) A concurrent same-UID process rewriting these files between
+#                   the check and the use. Checking early narrows the window and
+#                   catches stable-host tampering; it does not prevent a racing
+#                   owner. CI runs each command in an isolated ephemeral job.
+#   T3 (out of scope) ptrace/debuggers, the Docker daemon, the Git object
+#                   database, and a compromised OS, kernel or runner.
 set -euo pipefail
 
 if [[ "${LOCALE_CATALOG_SEALED_SHELL:-}" != "1" ]]; then
@@ -39,6 +52,8 @@ readonly FIND="/usr/bin/find"
 readonly SORT="/usr/bin/sort"
 readonly XARGS="/usr/bin/xargs"
 readonly STAT="/usr/bin/stat"
+readonly GREP="/usr/bin/grep"
+readonly SED="/usr/bin/sed"
 export LC_ALL=C
 if [[ -x /usr/bin/sha256sum && ! -L /usr/bin/sha256sum ]]; then
   readonly SHA256="/usr/bin/sha256sum"
@@ -56,6 +71,51 @@ die() {
 
 ROOT="$(cd -- "${BASH_SOURCE[0]%/*}/.." && pwd -P)"
 readonly ROOT
+readonly PROFILE="${ROOT}/scripts/locale_catalog_python_runtime.json"
+
+sha256_file() {
+  local path="$1" output
+  output="$("${SHA256}" -a 256 "${path}" 2>/dev/null)" ||
+    output="$("${SHA256}" "${path}")" ||
+    die "could not hash ${path} with the trusted system SHA-256 executable"
+  printf '%s\n' "${output%% *}"
+}
+
+# One committed digest, read out of the toolchain lock by exact key. The lock
+# is plain committed JSON with one digest per line, so this needs no parser --
+# and it refuses anything but exactly one 64-hex match for the key.
+lock_digest() {
+  local key="$1" matches count
+  matches="$("${GREP}" -oE "\"${key}\"[[:space:]]*:[[:space:]]*\"[0-9a-f]{64}\"" "${PROFILE}")" ||
+    die "the committed toolchain lock declares no digest for '${key}'"
+  count="$(printf '%s\n' "${matches}" | "${GREP}" -c .)"
+  [[ "${count}" == "1" ]] ||
+    die "the committed toolchain lock declares ${count} digests for '${key}', expected exactly one"
+  printf '%s\n' "${matches}" | "${SED}" -E 's/.*"([0-9a-f]{64})"$/\1/'
+}
+
+# The repository-side trusted computing base: the capability analyzer, the
+# bootstrap that runs it, and both launcher shell stages. The analyzer decides
+# whether every other governed source may run, so it cannot be allowed to vouch
+# for itself *after* executing -- its bytes are authenticated here, before this
+# stage starts any interpreter. (T1. A same-UID process that rewrites one of
+# these afterwards is T2 and is not claimed.)
+verify_trusted_source() {
+  local relative="$1" path="${ROOT}/$1" expected actual
+  [[ ! -L "${path}" && -f "${path}" ]] ||
+    die "trusted source '${relative}' is not a regular file"
+  expected="$(lock_digest "${relative}")"
+  actual="$(sha256_file "${path}")"
+  [[ "${actual}" == "${expected}" ]] ||
+    die "trusted source '${relative}' does not match the identity committed in ${PROFILE#"${ROOT}/"}"
+}
+
+[[ ! -L "${PROFILE}" && -f "${PROFILE}" ]] ||
+  die "the committed toolchain lock '${PROFILE}' is not a regular file"
+verify_trusted_source "scripts/run-locale-catalog-python.sh"
+verify_trusted_source "scripts/locale-catalog-python-sealed.sh"
+verify_trusted_source "scripts/locale_catalog_python_boundary.py"
+verify_trusted_source "scripts/locale_catalog_runtime.py"
 readonly SEALED_ROOT="${LOCALE_CATALOG_MISE_ROOT:?locale-catalog python: LOCALE_CATALOG_MISE_ROOT is required for authoritative commands; the *-local convenience tasks are not authoritative}"
 
 # The sealed toolchain root must be named exactly, absolutely, and canonically.
@@ -86,14 +146,6 @@ require_sealed_file() {
     die "${what} '${path}' does not have a readable parent directory"
   [[ "${canonical_parent}/${path##*/}" == "${path}" ]] ||
     die "${what} '${path}' traverses a symlinked toolchain directory"
-}
-
-sha256_file() {
-  local path="$1" output
-  output="$("${SHA256}" -a 256 "${path}" 2>/dev/null)" ||
-    output="$("${SHA256}" "${path}")" ||
-    die "could not hash ${path} with the trusted system SHA-256 executable"
-  printf '%s\n' "${output%% *}"
 }
 
 require_digest() {
@@ -270,6 +322,7 @@ readonly PYCACHE_PREFIX="${WORKSPACE}/pycache"
 readonly SITE_PACKAGES="${VENV}/lib/python3.14/site-packages"
 readonly RUNTIME_HOME="${WORKSPACE}/runtime"
 readonly SOURCE_MANIFEST="${WORKSPACE}/source-manifest"
+readonly LOCK_PROJECT="${WORKSPACE}/project"
 readonly SOURCE_REPOSITORY="${WORKSPACE}/repository"
 
 # Python still accepts valid unchecked .pyc files even with -B and
@@ -302,14 +355,34 @@ readonly RUNTIME_PYTHON="${RUNTIME_HOME}/bin/python3.14"
 require_digest "${RUNTIME_PYTHON}" "copied CPython 3.14.7" \
   "${PYTHON_DIGESTS[@]}"
 
+# uv resolves, downloads, unpacks and *can build* distributions, and a PEP 517
+# backend is arbitrary code that would run before anything else got a say. So
+# the project and lock are attested first by a throwaway interpreter that
+# imports only the standard library, executes no project code, creates no
+# environment and builds nothing. It writes the exact bytes it validated into
+# this invocation's own project directory, and uv is then pointed at *that*
+# directory -- so what uv consumes is what was checked, not a second read of a
+# file that could differ (T1). On a stable host those are the same bytes; a
+# racing same-UID owner is T2 and is not claimed.
+"${MKDIR}" "${LOCK_PROJECT}"
+/usr/bin/env -i \
+  HOME="${SCRATCH_HOME}" \
+  PATH="${TRUSTED_PATH}" \
+  "${RUNTIME_PYTHON}" -I -S -E -B -X "pycache_prefix=${PYCACHE_PREFIX}" \
+  "${ROOT}/scripts/locale_catalog_runtime.py" --attest-dependency-sources "${LOCK_PROJECT}"
+
 # `HOME` is this invocation's own empty directory: uv, git, and any helper that
-# consults it can never read or write the caller's real home.
+# consults it can never read or write the caller's real home.  Building,
+# redirected sources, local sources and project installation are all disabled,
+# so even a lock that somehow passed the attestor above could not run code.
 /usr/bin/env -i \
   HOME="${SCRATCH_HOME}" \
   PATH="${TRUSTED_PATH}" \
   UV_PROJECT_ENVIRONMENT="${VENV}" \
   UV_NO_CONFIG=1 \
-  "${UV}" sync --locked --no-cache --link-mode copy --reinstall --no-dev --no-install-project --python "${RUNTIME_PYTHON}" --quiet
+  "${UV}" sync --locked --no-cache --link-mode copy --reinstall --no-dev \
+  --no-build --no-sources --no-install-project --no-install-local \
+  --project "${LOCK_PROJECT}" --python "${RUNTIME_PYTHON}" --quiet
 purge_runtime_bytecode
 
 # Not `exec`: the EXIT trap above must still reclaim this invocation's
@@ -327,6 +400,7 @@ status=0
   ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" \
   ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX="${PYCACHE_PREFIX}" \
   ARKHAM_LOCALE_CATALOG_RUNTIME_HOME="${RUNTIME_HOME}" \
+  ARKHAM_LOCALE_CATALOG_LOCK_PROJECT="${LOCK_PROJECT}" \
   ARKHAM_LOCALE_CATALOG_SOURCE_MANIFEST="${SOURCE_MANIFEST}" \
   ARKHAM_LOCALE_CATALOG_SOURCE_MANIFEST_WRITE=1 \
   "${RUNTIME_PYTHON}" -I -S -E -B -X "pycache_prefix=${PYCACHE_PREFIX}" "${ROOT}/scripts/locale_catalog_runtime.py" "$@" || status=$?
@@ -377,6 +451,7 @@ cd "${SOURCE_REPOSITORY}"
   ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" \
   ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX="${PYCACHE_PREFIX}" \
   ARKHAM_LOCALE_CATALOG_RUNTIME_HOME="${RUNTIME_HOME}" \
+  ARKHAM_LOCALE_CATALOG_LOCK_PROJECT="${LOCK_PROJECT}" \
   ARKHAM_LOCALE_CATALOG_SOURCE_MANIFEST="${SOURCE_MANIFEST}" \
   "${RUNTIME_PYTHON}" -I -S -E -B -X "pycache_prefix=${PYCACHE_PREFIX}" -c '
 import runpy

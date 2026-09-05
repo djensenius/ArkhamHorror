@@ -799,7 +799,25 @@ environment before rebuilding that variable.
 The managed CPython, Node and uv binaries are likewise hashed before use and
 again from the bootstrap against the platform-specific digest identities in
 `scripts/locale_catalog_python_runtime.json`; an unsupported platform fails
-instead of accepting a merely version-shaped executable.
+instead of accepting a merely version-shaped executable. The same lock pins the
+repository-side trusted computing base -- both launcher shell stages, the
+capability analyzer and the bootstrap -- and the sealed shell authenticates all
+four *before* it starts any interpreter, because a scanner that has already
+executed cannot vouch for itself.
+
+Before uv runs at all, a non-executing attestor validates `pyproject.toml` and
+`uv.lock` under `-I -S -E -B` (Python `==3.14.7`, no `[build-system]`, no
+`[tool.uv.sources]`, a virtual root project, registry-only sources with no
+git/url/path/directory/editable redirect, and a hash-pinned wheel compatible
+with the declared platform), writes the exact validated bytes into the
+invocation's own project directory, and uv is pointed at that copy with
+`--no-build --no-sources --no-install-project --no-install-local`.
+
+These checks enforce T1 -- hostile or mistaken *committed* source and the
+supply chain it names -- on a stable host. They do not claim to win a race with
+a concurrent same-UID process (T2), and debuggers, the Docker daemon and the
+Git object database are out of scope (T3). `docs/locale-catalog.md` states the
+division in full.
 
 Every one of these commands is a `mise` task that runs through
 `scripts/run-locale-catalog-python.sh`; there is no documented or wired route

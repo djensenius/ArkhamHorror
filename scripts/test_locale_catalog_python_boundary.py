@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """Adversarial, ownership-safe tests for the sealed locale-catalog Python boundary.
 
+These probes test T1 -- hostile or mistaken *committed* repository source, and
+the supply chain it names. They plant a change, run the real authoritative
+command, and require a refusal. Where a probe tampers with a toolchain, source
+or dependency file, it does so on a quiet host and then runs the command: that
+demonstrates stable-host tamper detection, which is the guarantee this boundary
+makes. None of these probes claims resistance to a concurrent same-UID process
+rewriting bytes between a check and its use (T2); nothing here is a race, and
+nothing here should be read as one. CI runs each governed command in an
+isolated ephemeral job, which is where T2 is actually addressed. Debuggers, the
+Docker daemon, the Git object database and a compromised OS are T3 and out of
+scope. See docs/locale-catalog.md.
+
 Every probe in this file -- source, schema, dependency, interpreter, alias and
 tamper alike -- runs inside an *invocation-owned* temporary copy of the exact
 governed tree. Nothing here ever creates, overwrites, truncates, restores or
@@ -78,6 +90,10 @@ CANONICAL_WITNESS_PATHS = (
     "scripts/locale_catalog_runtime.py",
     "scripts/locale_catalog_python_runtime.json",
     "scripts/run-locale-catalog-python.sh",
+    "scripts/locale-catalog-python-sealed.sh",
+    "scripts/generate-locale-catalog.py",
+    "pyproject.toml",
+    "uv.lock",
     "frontend/schemas/locale-catalog/v1/manifest.schema.json",
     "contracts/manifest.json",
 )
@@ -269,8 +285,228 @@ SCOPE_BYPASS_SNIPPETS: dict[str, bytes] = {
     "import alias shadow": b"import subprocess\nimport json as subprocess\nsubprocess.Popen(['id'])\n",
 }
 
+# ---------------------------------------------------------------------------
+# The analyzer matrix: every reported bypass shape, and the controls that must
+# still be accepted. Payloads are spliced into a real governed source so they
+# reach the production analyzer as ordinary module-level code.
+# ---------------------------------------------------------------------------
+
+FUTURE_IMPORT = b"from __future__ import annotations\n"
+
+
+def splice_snippet(original: bytes, snippet: bytes) -> bytes:
+    """Put a payload where it will really be analyzed.
+
+    Code cannot precede `from __future__`, so a naive prepend into a source
+    that has one is refused as a syntax error and proves nothing about the
+    capability boundary.
+    """
+    index = original.find(FUTURE_IMPORT)
+    if index == -1:
+        return snippet + original
+    cut = index + len(FUTURE_IMPORT)
+    return original[:cut] + b"\n" + snippet + original[cut:]
+
+
+ANALYZER_PAYLOADS: dict[str, bytes] = {
+    "match capture": (
+        b"import strict_json\n\nmatch strict_json:\n    case holder:\n"
+        b"        holder.subprocess.run(['id'])\n"
+    ),
+    "match sequence capture": (
+        b"import strict_json\n\nmatch [strict_json]:\n    case [holder]:\n"
+        b"        holder.subprocess.run(['id'])\n"
+    ),
+    "match star capture": (
+        b"import strict_json\n\nmatch [strict_json]:\n    case [*rest]:\n"
+        b"        rest[0].subprocess.run(['id'])\n"
+    ),
+    "match mapping capture": (
+        b"import strict_json\n\nmatch {'m': strict_json}:\n    case {'m': holder}:\n"
+        b"        holder.subprocess.run(['id'])\n"
+    ),
+    "match mapping rest": (
+        b"import strict_json\n\nmatch {'m': strict_json}:\n    case {**rest}:\n"
+        b"        rest['m'].subprocess.run(['id'])\n"
+    ),
+    "match class attribute": (
+        b"import strict_json\nfrom pathlib import Path\n\nmatch strict_json:\n"
+        b"    case Path(subprocess=holder):\n        holder.run(['id'])\n"
+    ),
+    "match or capture": (
+        b"import strict_json\n\nmatch strict_json:\n    case 1 | holder:\n"
+        b"        holder.subprocess.run(['id'])\n"
+    ),
+    "match as capture": (
+        b"import strict_json\n\nmatch strict_json:\n    case object() as holder:\n"
+        b"        holder.subprocess.run(['id'])\n"
+    ),
+    "type alias value": b"import strict_json\n\ntype Alias = strict_json.subprocess\n",
+    "type parameter bound": (
+        b"import strict_json\n\n\ndef generic[T: strict_json.subprocess](value: T) -> T:\n"
+        b"    return value\n"
+    ),
+    "template string interpolation": b"import strict_json\n\nholder = t'{strict_json}'\n",
+    "class namespace module": b"import strict_json\n\n\nclass Holder:\n    module = strict_json\n",
+    "class namespace rebind": (
+        b"import strict_json\n\n\nclass Holder:\n    strict_json = strict_json\n"
+    ),
+    "container pop": (
+        b"import strict_json\n\nholder = [strict_json]\nholder.pop().subprocess.run(['id'])\n"
+    ),
+    "container get": (
+        b"import strict_json\n\nholder = {'m': strict_json}\n"
+        b"holder.get('m').subprocess.run(['id'])\n"
+    ),
+    "container copy index": (
+        b"import strict_json\n\nholder = [strict_json]\n"
+        b"holder.copy()[0].subprocess.run(['id'])\n"
+    ),
+    "container slice": (
+        b"import strict_json\n\nholder = [strict_json][0:1]\nholder[0].subprocess.run(['id'])\n"
+    ),
+    "container comprehension": (
+        b"import strict_json\n\nholder = [module for module in [strict_json]][0]\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "comprehension walrus leak": (
+        b"import strict_json\n\nvalues = [(holder := strict_json) for _ in range(1)]\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "global write": (
+        b"import strict_json\n\nEXPOSED = None\n\n\ndef expose():\n    global EXPOSED\n"
+        b"    EXPOSED = strict_json\n"
+    ),
+    "nonlocal write": (
+        b"import strict_json\n\n\ndef outer():\n    captured = None\n\n    def inner():\n"
+        b"        nonlocal captured\n        captured = strict_json\n\n    return inner\n"
+    ),
+    "false if": (
+        b"import strict_json\n\nif False:\n    holder = strict_json\nelse:\n    holder = None\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "true if reversed": (
+        b"import strict_json\n\nif True:\n    holder = None\nelse:\n    holder = strict_json\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "zero-iteration for": (
+        b"import strict_json\n\nholder = strict_json\nfor holder in []:\n    pass\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "zero-iteration while": (
+        b"import strict_json\n\nholder = strict_json\nwhile False:\n    holder = None\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "loop break carries": (
+        b"import strict_json\n\nholder = None\nfor value in range(3):\n"
+        b"    holder = strict_json\n    break\nholder.subprocess.run(['id'])\n"
+    ),
+    "loop continue carries": (
+        b"import strict_json\n\nholder = None\nfor value in range(3):\n    if value:\n"
+        b"        holder = strict_json\n        continue\n    holder = None\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "loop carried identity": (
+        b"import strict_json\n\nholder = None\nfor value in range(3):\n    later = holder\n"
+        b"    holder = strict_json\nlater.subprocess.run(['id'])\n"
+    ),
+    "untaken except": (
+        b"import strict_json\n\ntry:\n    holder = strict_json\nexcept Exception:\n"
+        b"    holder = None\nholder.subprocess.run(['id'])\n"
+    ),
+    "except prefix state": (
+        b"import strict_json\n\nholder = None\ntry:\n    holder = strict_json\n"
+        b"    raise ValueError\nexcept ValueError:\n    holder.subprocess.run(['id'])\n"
+    ),
+    "finally state": (
+        b"import strict_json\n\ntry:\n    holder = strict_json\nfinally:\n"
+        b"    holder.subprocess.run(['id'])\n"
+    ),
+    "conditional expression": (
+        b"import strict_json\n\nholder = strict_json if False else None\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "short circuit or": (
+        b"import strict_json\n\nholder = None or strict_json\nholder.subprocess.run(['id'])\n"
+    ),
+    "short circuit and": (
+        b"import strict_json\n\nholder = strict_json and strict_json\n"
+        b"holder.subprocess.run(['id'])\n"
+    ),
+    "async for capture": (
+        b"import strict_json\n\n\nasync def run():\n    async for holder in [strict_json]:\n"
+        b"        holder.subprocess.run(['id'])\n"
+    ),
+    "async with capture": (
+        b"import strict_json\n\n\nasync def run():\n    async with strict_json as holder:\n"
+        b"        holder.subprocess.run(['id'])\n"
+    ),
+    "await identity": (
+        b"import strict_json\n\n\nasync def run():\n    holder = await strict_json.thing\n"
+        b"    return holder\n"
+    ),
+    "subscript index": (
+        b"import strict_json\n\nholder = [strict_json][0]\nholder.subprocess.run(['id'])\n"
+    ),
+    "nested container": (
+        b"import strict_json\n\nholder = [[strict_json]][0][0]\nholder.subprocess.run(['id'])\n"
+    ),
+    "breakpoint builtin": b"breakpoint()\n",
+    "breakpoint commands argument": b"breakpoint(commands=['import os'])\n",
+    "aliased breakpoint": b"import builtins\nbuiltins.breakpoint()\n",
+    "imported breakpoint": b"from builtins import breakpoint as stop\nstop()\n",
+    "yaml load": b"import yaml\nyaml.load('x')\n",
+    "yaml unsafe_load": b"import yaml\nyaml.unsafe_load('x')\n",
+    "yaml full loader": b"import yaml\nyaml.load('x', Loader=yaml.FullLoader)\n",
+    "yaml unsafe loader": b"import yaml\nyaml.load('x', Loader=yaml.UnsafeLoader)\n",
+    "yaml constructor registration": b"import yaml\nyaml.add_constructor('!x', None)\n",
+    "yaml safe_load without a grant": b"import yaml\nyaml.safe_load('x')\n",
+    "tarfile extraction": b"import tarfile\ntarfile.open('x')\n",
+    "io module": b"import io\nio.open('x')\n",
+}
+
+# Code that must still be *accepted*: a fail-closed analyzer that refuses
+# ordinary Python is not a boundary, it is an outage.
+ANALYZER_CONTROLS: dict[str, bytes] = {
+    "plain conditional": b"holder = 1 if True else 2\n",
+    "loop accumulation": b"total = 0\nfor value in range(3):\n    total += value\n",
+    "loop with break and continue": (
+        b"for value in range(3):\n    if value:\n        continue\n    break\n"
+    ),
+    "match on data": (
+        b"value = 1\nmatch value:\n    case 1:\n        result = 'one'\n"
+        b"    case [first, *rest]:\n        result = first\n    case {'k': found}:\n"
+        b"        result = found\n    case _:\n        result = 'other'\n"
+    ),
+    "type alias and generics": (
+        b"type Alias = dict[str, int]\n\n\ndef generic[T](value: T) -> T:\n    return value\n"
+    ),
+    "formatted and template strings": (
+        b"name = 'x'\ntext = f'{name}!'\ntemplate = t'{name}!'\n"
+    ),
+    "class with data and methods": (
+        b"class Holder:\n    value = 1\n\n    def get(self):\n        return self.value\n"
+    ),
+    "comprehension walrus over data": (
+        b"values = [(doubled := value * 2) for value in range(3)]\nresult = doubled\n"
+    ),
+    "global data write": b"COUNT = 0\n\n\ndef bump():\n    global COUNT\n    COUNT = 1\n",
+    "try except else finally": (
+        b"try:\n    value = 1\nexcept ValueError:\n    value = 2\nelse:\n    value = 3\n"
+        b"finally:\n    value = 4\n"
+    ),
+    "nested containers of data": (
+        b"holder = [[1, 2], [3]]\nfirst = holder[0][0]\nsliced = holder[0:1]\n"
+    ),
+    "with statement": (
+        b"from pathlib import Path\n\nwith Path('x').open() as handle:\n    data = handle.read()\n"
+    ),
+}
+
+
 TAMPER_TARGETS = (
     "scripts/build-locale-catalog-fixture.py",
+    "scripts/locale-catalog-python-sealed.sh",
     "scripts/strict_json.py",
     "scripts/json_schema_subset.py",
     "scripts/locale_catalog_python_boundary.py",
@@ -557,7 +793,7 @@ def scan_rejects(tree: Path, reader, target: str, label: str, snippet: bytes) ->
     path = tree / target
     original = path.read_bytes()
     try:
-        path.write_bytes(snippet + original)
+        path.write_bytes(splice_snippet(original, snippet))
         rejected = False
         try:
             locale_catalog_python_boundary.scan_python_closure(FIXTURE_ENTRY, source_reader=reader)
@@ -596,7 +832,7 @@ def test_capability_matrix_end_to_end(scratch: Path, token: str) -> int:
             tree = create_probe_tree(scratch, "bypass", token, with_history=False)
             try:
                 path = tree / target
-                path.write_bytes(snippet + path.read_bytes())
+                path.write_bytes(splice_snippet(path.read_bytes(), snippet))
                 require_authoritative_failure(
                     f"{label} in {target}", tree, [FIXTURE_ENTRY, "--check"]
                 )
@@ -1421,6 +1657,321 @@ def test_parallel_self_tests(scratch: Path, token: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Probe: the production analyzer's soundness matrix (T1)
+# ---------------------------------------------------------------------------
+
+
+def analyzer_verdict(tree: Path, reader, target: str, snippet: bytes) -> str | None:
+    """Scan the governed closure with `snippet` spliced into `target`."""
+    path = tree / target
+    original = path.read_bytes()
+    try:
+        path.write_bytes(splice_snippet(original, snippet))
+        try:
+            locale_catalog_python_boundary.scan_python_closure(FIXTURE_ENTRY, source_reader=reader)
+        except locale_catalog_python_boundary.SourceBoundaryError as error:
+            return str(error)
+        return None
+    finally:
+        path.write_bytes(original)
+
+
+def test_analyzer_matrix(scratch: Path, token: str) -> int:
+    """Every reported analyzer bypass is refused; ordinary Python is not.
+
+    Both halves matter. A payload that is only refused as a *syntax* error
+    never reached the analyzer and proves nothing, so that is a failure too --
+    and a control that is refused would mean the fail-closed rules had eaten
+    the language.
+    """
+    tree = create_probe_tree(scratch, "analyzer-matrix", token, with_history=False)
+    try:
+        reader = probe_tree_reader(tree)
+        locale_catalog_python_boundary.scan_python_closure(FIXTURE_ENTRY, source_reader=reader)
+        checked = 0
+        for target in (FIXTURE_ENTRY, HELPER_SOURCE, GRANTED_SOURCE):
+            for label, snippet in sorted(ANALYZER_PAYLOADS.items()):
+                reason = analyzer_verdict(tree, reader, target, snippet)
+                require(
+                    reason is not None,
+                    f"the production analyzer accepted {label!r} in {target}",
+                )
+                require(
+                    "invalid Python source" not in reason,
+                    f"{label!r} in {target} was only refused as a syntax error, so it never "
+                    f"reached the analyzer: {reason}",
+                )
+                checked += 1
+            for label, snippet in sorted(ANALYZER_CONTROLS.items()):
+                reason = analyzer_verdict(tree, reader, target, snippet)
+                require(
+                    reason is None,
+                    f"the production analyzer refused the accepted control {label!r} in "
+                    f"{target}: {reason}",
+                )
+                checked += 1
+        return checked
+    finally:
+        release_probe_tree(tree, token)
+
+
+def test_analyzer_grammar_coverage() -> int:
+    """No value-bearing or binding node in the governed tree is unmodelled.
+
+    The analyzer refuses an unmodelled node at scan time, so a gap fails
+    closed either way; this turns that gap into a *reported* failure instead of
+    a mystery refusal, across every governed source plus a corpus exercising
+    constructs the governed sources do not currently use.
+    """
+    corpus = b"".join(
+        locale_catalog_python_boundary.read_source(relative)
+        for relative in sorted(locale_catalog_python_boundary.EXECUTABLE_SOURCES)
+    )
+    corpus += b"".join(sorted(ANALYZER_PAYLOADS.values()))
+    corpus += b"".join(sorted(ANALYZER_CONTROLS.values()))
+    unmodelled = locale_catalog_python_boundary.unmodelled_nodes_in(corpus)
+    require(
+        not unmodelled,
+        f"the capability analyzer does not model these grammar nodes: {unmodelled}",
+    )
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Probe: the trusted computing base is authenticated before it executes (T1)
+# ---------------------------------------------------------------------------
+
+TCB_PAYLOAD_MARKER = "locale-catalog-boundary-tcb-payload"
+
+
+def replacement_analyzer(marker: Path) -> bytes:
+    """A permissive scanner that announces itself the moment it is imported."""
+    return (
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+        "EXECUTABLE_SOURCES = frozenset()\n"
+        "ENTRY_POINTS = frozenset()\n"
+        "LOCAL_MODULE_SOURCES = {}\n"
+        "ALLOWED_IMPORTS = set()\n"
+        "SOURCE_SENSITIVE_IMPORTS = {}\n"
+        "TRUSTED_SOURCES = frozenset()\n"
+        "\n"
+        "class SourceBoundaryError(ValueError):\n"
+        "    pass\n"
+        "\n"
+        "def read_source(relative_path):\n"
+        "    return b''\n"
+        "\n"
+        "def scan_python_closure(entry, *, source_reader=None):\n"
+        "    return ()\n"
+        "\n"
+        "def all_executable_sources():\n"
+        "    return ()\n"
+    ).encode("utf-8")
+
+
+def test_trusted_source_replacement(scratch: Path, token: str) -> int:
+    """A replaced analyzer or bootstrap is refused before it can run.
+
+    The capability analyzer decides whether every other governed source may
+    execute, so it cannot be allowed to vouch for itself after executing. Each
+    trusted source is replaced in turn -- the analyzer with a payload-bearing
+    permissive scanner, the others with a byte change -- and the command must
+    fail against the digest committed in the toolchain lock. For the analyzer,
+    the payload marker proves the refusal happened before its top-level code
+    could run.
+    """
+    checked = 0
+    for relative_path in sorted(locale_catalog_python_boundary.TRUSTED_SOURCES):
+        tree = create_probe_tree(scratch, "trusted-source", token, with_history=False)
+        try:
+            marker = tree / TCB_PAYLOAD_MARKER
+            path = tree / relative_path
+            if relative_path == "scripts/locale_catalog_python_boundary.py":
+                path.write_bytes(replacement_analyzer(marker))
+            else:
+                path.write_bytes(path.read_bytes() + b"\n# trusted source tamper probe\n")
+            result = run_authoritative(tree, [FIXTURE_ENTRY, "--check"])
+            require(
+                result.returncode != 0
+                and "does not match the identity committed" in result.stderr,
+                f"a replaced trusted source ({relative_path}) was not refused against its "
+                f"committed digest\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            )
+            require(
+                not marker.exists(),
+                "the replacement capability analyzer executed its own top-level code before it "
+                "was authenticated",
+            )
+            checked += 1
+        finally:
+            release_probe_tree(tree, token)
+    return checked
+
+
+# ---------------------------------------------------------------------------
+# Probe: uv never starts against a project or lock that could execute code (T1)
+# ---------------------------------------------------------------------------
+
+UV_ATTESTOR_SUCCESS = "hash-pinned registry distributions"
+ATTRS_REGISTRY_SOURCE = 'source = { registry = "https://pypi.org/simple" }\nsdist'
+UV_ATTESTATION_CASES: dict[str, tuple[str, str, str, str]] = {
+    "a PEP 517 build backend": (
+        "pyproject.toml",
+        "[project]\n",
+        '[build-system]\nrequires = ["hostile-backend"]\nbuild-backend = "hostile.backend"\n\n[project]\n',
+        "never runs a PEP 517 backend",
+    ),
+    "a redirected tool.uv source": (
+        "pyproject.toml",
+        "[project]\n",
+        '[tool.uv.sources]\njsonschema = { git = "https://example.invalid/jsonschema" }\n\n[project]\n',
+        "[tool.uv.sources]",
+    ),
+    "a relaxed project interpreter pin": (
+        "pyproject.toml",
+        'requires-python = "==3.14.7"',
+        'requires-python = ">=3.14"',
+        "must pin requires-python",
+    ),
+    "an unpinned project dependency": (
+        "pyproject.toml",
+        '"jsonschema==4.26.0"',
+        '"jsonschema>=4.26.0"',
+        "not pinned to an exact version",
+    ),
+    "a git lock source": (
+        "uv.lock",
+        ATTRS_REGISTRY_SOURCE,
+        'source = { git = "https://example.invalid/attrs" }\nsdist',
+        "resolves through a git source",
+    ),
+    "a url lock source": (
+        "uv.lock",
+        ATTRS_REGISTRY_SOURCE,
+        'source = { url = "https://example.invalid/attrs.tar.gz" }\nsdist',
+        "resolves through a url source",
+    ),
+    "a path lock source": (
+        "uv.lock",
+        ATTRS_REGISTRY_SOURCE,
+        'source = { path = "vendor/attrs" }\nsdist',
+        "resolves through a path source",
+    ),
+    "a directory lock source": (
+        "uv.lock",
+        ATTRS_REGISTRY_SOURCE,
+        'source = { directory = "vendor/attrs" }\nsdist',
+        "resolves through a directory source",
+    ),
+    "an editable lock source": (
+        "uv.lock",
+        ATTRS_REGISTRY_SOURCE,
+        'source = { editable = "." }\nsdist',
+        "resolves through a editable source",
+    ),
+    "a non-sha256 wheel hash": (
+        "uv.lock",
+        'hash = "sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"',
+        'hash = "md5:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309"',
+        "without an exact sha256 hash",
+    ),
+    "a wheel outside the locked registry": (
+        "uv.lock",
+        'wheels = [\n    { url = "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl"',
+        'wheels = [\n    { url = "https://example.invalid/attrs-26.1.0-py3-none-any.whl"',
+        "outside the locked registry",
+    ),
+    "a relaxed locked interpreter pin": (
+        "uv.lock",
+        'requires-python = "==3.14.7"',
+        'requires-python = ">=3.14"',
+        "must pin requires-python",
+    ),
+    "a redirected root project": (
+        "uv.lock",
+        'source = { virtual = "." }',
+        'source = { editable = "." }',
+        "must be the virtual project itself",
+    ),
+}
+
+
+def require_refused_before_uv(label: str, tree: Path, expected: str) -> None:
+    result = run_authoritative(tree, [FIXTURE_ENTRY, "--check"])
+    require(
+        result.returncode != 0 and expected in result.stderr,
+        f"{label} was not refused before uv started\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+    )
+    require(
+        UV_ATTESTOR_SUCCESS not in result.stderr,
+        f"{label} reached the dependency attestor's success path, so uv ran\n"
+        f"stderr:\n{result.stderr}",
+    )
+    leftovers = sorted(tree.glob(f"{WORKSPACE_PREFIX}*/venv"))
+    require(
+        not leftovers,
+        f"{label} let uv create a virtual environment before it was refused: {leftovers}",
+    )
+
+
+def test_dependency_source_attestation(scratch: Path, token: str) -> int:
+    """A hostile project or lock is refused before any dependency code runs."""
+    checked = 0
+    for label, (relative_path, original, replacement, expected) in sorted(
+        UV_ATTESTATION_CASES.items()
+    ):
+        tree = create_probe_tree(scratch, "uv-attestation", token, with_history=False)
+        try:
+            path = tree / relative_path
+            text = path.read_text(encoding="utf-8")
+            require(
+                original in text,
+                f"probe setup failure: {relative_path} no longer contains the {label} anchor",
+            )
+            path.write_text(text.replace(original, replacement, 1), encoding="utf-8")
+            require_refused_before_uv(label, tree, expected)
+            checked += 1
+        finally:
+            release_probe_tree(tree, token)
+
+    tree = create_probe_tree(scratch, "uv-missing-wheel", token, with_history=False)
+    try:
+        lock = tree / "uv.lock"
+        text = lock.read_text(encoding="utf-8")
+        start = text.index('name = "attrs"')
+        wheels_start = text.index("wheels = [", start)
+        wheels_end = text.index("]\n", wheels_start) + 2
+        lock.write_text(text[:wheels_start] + text[wheels_end:], encoding="utf-8")
+        require_refused_before_uv("a locked distribution with no wheel", tree, "declares no wheels")
+        checked += 1
+    finally:
+        release_probe_tree(tree, token)
+
+    tree = create_probe_tree(scratch, "uv-incompatible-wheel", token, with_history=False)
+    try:
+        lock = tree / "uv.lock"
+        text = lock.read_text(encoding="utf-8")
+        start = text.index('name = "attrs"')
+        wheels_start = text.index("wheels = [", start)
+        wheels_end = text.index("]\n", wheels_start) + 2
+        replacement = (
+            'wheels = [\n    { url = "https://files.pythonhosted.org/packages/64/b4/'
+            'attrs-26.1.0-py3-none-solaris_11_sparc.whl", hash = "sha256:'
+            'c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309" },\n]\n'
+        )
+        lock.write_text(text[:wheels_start] + replacement + text[wheels_end:], encoding="utf-8")
+        require_refused_before_uv(
+            "a locked distribution with no compatible wheel", tree, "no hash-pinned wheel compatible"
+        )
+        checked += 1
+    finally:
+        release_probe_tree(tree, token)
+    return checked
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -1467,6 +2018,10 @@ def main() -> None:
     scratch, scratch_token = owned_scratch()
     totals: dict[str, int] = {}
     try:
+        totals["analyzer matrix"] = test_analyzer_matrix(scratch, token)
+        totals["analyzer grammar coverage"] = test_analyzer_grammar_coverage()
+        totals["trusted source replacement"] = test_trusted_source_replacement(scratch, token)
+        totals["dependency source attestation"] = test_dependency_source_attestation(scratch, token)
         totals["capability matrix"] = test_capability_bypass_matrix(scratch, token)
         totals["capability matrix end to end"] = test_capability_matrix_end_to_end(scratch, token)
         totals["target execution"] = test_validated_target_really_executes(scratch, token)
