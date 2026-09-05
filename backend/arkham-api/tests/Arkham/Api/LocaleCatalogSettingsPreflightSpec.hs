@@ -32,6 +32,7 @@ import Base.Api.Types.LocaleCatalog.SettingsPreflight (
   mergeSettingsValues,
   settingsSnapshotFromValues,
  )
+import Control.Concurrent (forkIO)
 import Control.Exception qualified as Exception
 import Data.Aeson (Value (..), object, (.=))
 import Data.Aeson.Key qualified as Key
@@ -44,13 +45,16 @@ import Relude
 import System.Directory (
   createDirectoryIfMissing,
   createFileLink,
+  doesPathExist,
   getCurrentDirectory,
   removeFile,
   removePathForcibly,
   renameFile,
+  renamePath,
  )
 import System.Environment (setEnv, unsetEnv)
 import System.FilePath ((</>), takeFileName)
+import System.Timeout (timeout)
 import Test.Hspec
 
 spec :: Spec
@@ -400,6 +404,176 @@ spec = sequential $ describe "locale catalog settings snapshot" do
         writeSettings settings "cycle: &cycle [*cycle]\n"
         captureAndLoad [settings] [] mempty `shouldFailWith` "anchor that is not defined yet"
 
+  describe "bounded sources" do
+    it "refuses a source that is not a regular file before reading it" do
+      -- A character device or a FIFO answers reads forever, so the type is
+      -- checked through the same handle the bytes would have come from. The
+      -- devices have to exist, or this example would prove nothing.
+      devices <- filterM doesPathExist ["/dev/zero", "/dev/random"]
+      devices `shouldSatisfy` not . null
+      for_ devices \device ->
+        captureAndLoad [device] [] mempty `shouldFailPromptlyWith` "not a regular file"
+
+    it "refuses a directory named as a settings source" do
+      withSettingsWorkspace "directory-source" \workspace ->
+        captureAndLoad [workspace] [] mempty `shouldFailPromptlyWith` "unable to read a settings source"
+
+    it "refuses a single source larger than the configured byte limit" do
+      withSettingsWorkspace "oversized-source" \workspace -> do
+        let settings = workspace </> "oversized.yml"
+        writeSettings settings ("key: " <> Text.replicate (5 * 1024 * 1024) "a" <> "\n")
+        captureAndLoad [settings] [] mempty `shouldFailPromptlyWith` "byte limit"
+
+    it "refuses sources whose combined bytes exceed the configured limit" do
+      withSettingsWorkspace "aggregate-bytes" \workspace -> do
+        let firstFile = workspace </> "first.yml"
+            secondFile = workspace </> "second.yml"
+            padding = Text.replicate (2 * 1024 * 1024 + 512) "a"
+        writeSettings firstFile ("first: " <> padding <> "\n")
+        writeSettings secondFile ("second: " <> padding <> "\n")
+        captureAndLoad [firstFile, secondFile] [] mempty `shouldFailPromptlyWith` "byte limit"
+
+    it "loads the bytes captured before a source was appended to" do
+      withSettingsWorkspace "appended-source" \workspace -> do
+        let settings = workspace </> "settings.yml"
+        writeSettings settings "before: true\n"
+        snapshot <- captureSettingsSnapshotWithEnvironment [settings] [] mempty
+        appendSettings settings "after: true\n"
+        value <- loadSettingsSnapshot snapshot :: IO Value
+        value `shouldBe` object ["before" .= True]
+
+    it "refuses an event-dense source promptly" do
+      withSettingsWorkspace "event-dense" \workspace -> do
+        let settings = workspace </> "dense.yml"
+        writeSettings settings ("[" <> Text.replicate 200000 "a," <> "a]\n")
+        captureAndLoad [settings] [] mempty `shouldFailPromptlyWith` "YAML event limit"
+
+    it "refuses a source that nests deeper than the configured limit promptly" do
+      withSettingsWorkspace "deep-nesting" \workspace -> do
+        let settings = workspace </> "deep.yml"
+            depth = 100000
+        writeSettings settings
+          $ "root: "
+          <> Text.replicate depth "["
+          <> "0"
+          <> Text.replicate depth "]"
+          <> "\n"
+        captureAndLoad [settings] [] mempty `shouldFailPromptlyWith` "nests deeper than"
+
+    it "refuses an alias expansion bomb promptly" do
+      withSettingsWorkspace "alias-bomb" \workspace -> do
+        let settings = workspace </> "bomb.yml"
+            anchorName index = "l" <> (show index :: Text)
+            expansion index = Text.intercalate "," (replicate 10 ("*" <> anchorName index))
+            leaf = "leaf: &l0 [" <> Text.intercalate "," (replicate 10 "\"x\"") <> "]"
+            level index =
+              "level" <> (show index :: Text) <> ": &" <> anchorName index <> " [" <> expansion (index - 1) <> "]"
+        writeSettings settings $ unlines (leaf : map level [1 .. (7 :: Int)])
+        captureAndLoad [settings] [] mempty `shouldFailPromptlyWith` "analysis limit"
+
+    it "still accepts nesting and event counts inside the configured bounds" do
+      withSettingsWorkspace "within-bounds" \workspace -> do
+        let settings = workspace </> "within-bounds.yml"
+            depth = 100
+        writeSettings settings
+          $ "root: "
+          <> Text.replicate depth "["
+          <> Text.intercalate "," (replicate 1000 "\"item\"")
+          <> Text.replicate depth "]"
+          <> "\n"
+        fromSnapshot <- captureAndLoad [settings] [] mempty
+        fromPackage <- YamlConfig.loadYamlSettings [settings] [] YamlConfig.ignoreEnv :: IO Value
+        fromSnapshot `shouldBe` fromPackage
+
+  describe "include resolution" do
+    it "gives every occurrence of one include spelling the same captured target" do
+      withSettingsWorkspace "duplicate-include" \workspace -> do
+        let root = workspace </> "root.yml"
+            link = workspace </> "link.yml"
+        writeSettings (workspace </> "first-target.yml") "value: from-first\n"
+        writeSettings (workspace </> "second-target.yml") "value: from-second\n"
+        writeSettings root
+          $ unlines
+            [ "left: !include link.yml"
+            , "right: !include link.yml"
+            ]
+        createFileLink "first-target.yml" link
+        snapshot <- captureSettingsSnapshotWithEnvironment [root] [] mempty
+        -- The retarget lands between capture and load, and between the two
+        -- occurrences of the spelling on the next capture; neither may split
+        -- the two branches or reach into the snapshot already taken.
+        removeFile link
+        createFileLink "second-target.yml" link
+        captured <- loadSettingsSnapshot snapshot :: IO Value
+        lookupKey "left" captured `shouldBe` lookupKey "right" captured
+        lookupKey "left" captured `shouldBe` Just (object ["value" .= ("from-first" :: Text)])
+        recaptured <- captureAndLoad [root] [] mempty
+        lookupKey "left" recaptured `shouldBe` lookupKey "right" recaptured
+        lookupKey "left" recaptured `shouldBe` Just (object ["value" .= ("from-second" :: Text)])
+
+    it "resolves and traverses a repeated include spelling exactly once" do
+      withSettingsWorkspace "repeated-include" \workspace -> do
+        let root = workspace </> "root.yml"
+            shared = workspace </> "shared.yml"
+            occurrences = 5000
+        writeSettings shared "value: shared\n"
+        writeSettings root
+          $ unlines
+            ["key" <> (show index :: Text) <> ": !include shared.yml" | index <- [1 .. occurrences :: Int]]
+        value <- captureAndLoad [root] [] mempty
+        lookupKey "key1" value `shouldBe` Just (object ["value" .= ("shared" :: Text)])
+        lookupKey ("key" <> show occurrences) value
+          `shouldBe` Just (object ["value" .= ("shared" :: Text)])
+
+    it "analyzes every occurrence of a duplicated include spelling" do
+      withSettingsWorkspace "duplicate-include-analysis" \workspace -> do
+        let root = workspace </> "root.yml"
+            included = workspace </> "included.yml"
+        writeSettings included "locale-catalog-default-locale: \"_env:LOCALE_ALIAS:\"\n"
+        writeSettings root
+          $ unlines
+            [ "left: !include included.yml"
+            , "right: !include included.yml"
+            ]
+        captureAndLoad [root] [] (environmentMap [("LOCALE_ALIAS", "en")])
+          `shouldFailWith` "must use only its canonical"
+
+    it "keeps duplicate spellings consistent while a symlink is retargeted underneath" do
+      withSettingsWorkspace "include-retarget-race" \workspace -> do
+        let root = workspace </> "root.yml"
+            link = workspace </> "link.yml"
+            staging = workspace </> "staging.yml"
+            retarget target = do
+              createFileLink target staging
+              renamePath staging link
+        writeSettings (workspace </> "first-target.yml") "value: from-first\n"
+        writeSettings (workspace </> "second-target.yml") "value: from-second\n"
+        writeSettings root
+          $ unlines
+            [ "left: !include link.yml"
+            , "right: !include link.yml"
+            ]
+        createFileLink "first-target.yml" link
+        retargeted <- newEmptyMVar
+        _ <-
+          forkIO
+            $ Exception.try @Exception.SomeException
+              (for_ [1 .. (400 :: Int)] \index -> retarget (if even index then "first-target.yml" else "second-target.yml"))
+            >>= putMVar retargeted
+        -- A retarget landing inside a capture may refuse the snapshot, which
+        -- is fail-closed; what it may never do is give one spelling's two
+        -- occurrences two different files.
+        loaded <- forM [1 .. (60 :: Int)] \_ -> do
+          result <- Exception.try (captureAndLoad [root] [] mempty)
+          case result of
+            Left (_ :: Exception.SomeException) -> pure (0 :: Int)
+            Right value -> do
+              lookupKey "left" value `shouldBe` lookupKey "right" value
+              pure 1
+        raced <- takeMVar retargeted
+        raced `shouldSatisfy` isRight
+        sum loaded `shouldSatisfy` (> 0)
+
 -- | Value lists whose merge alone distinguishes association order and bias.
 mergeMatrix :: [[Value]]
 mergeMatrix =
@@ -475,6 +649,9 @@ lookupKey name = \case
 writeSettings :: FilePath -> Text -> IO ()
 writeSettings path = writeFileBS path . encodeUtf8
 
+appendSettings :: FilePath -> Text -> IO ()
+appendSettings path = appendFileBS path . encodeUtf8
+
 {- | The snapshot refuses invalid configuration by failing the 'IO' action that
 would have produced settings, so a regression here is a value, not a diagnostic.
 -}
@@ -484,6 +661,20 @@ shouldFailWith action fragment =
     Right () -> expectationFailure "the settings snapshot was accepted"
     Left (exception :: Exception.SomeException) ->
       toText (Exception.displayException exception) `shouldSatisfy` Text.isInfixOf fragment
+
+{- | A bound the snapshot advertises has to be reached while the work is being
+done, so an adversarial source is refused rather than merely finished.
+-}
+shouldFailPromptlyWith :: IO a -> Text -> Expectation
+shouldFailPromptlyWith action fragment =
+  timeout promptMicroseconds (Exception.try (void action)) >>= \case
+    Nothing -> expectationFailure "the settings snapshot did not finish inside its bound"
+    Just (Right ()) -> expectationFailure "the settings snapshot was accepted"
+    Just (Left (exception :: Exception.SomeException)) ->
+      toText (Exception.displayException exception) `shouldSatisfy` Text.isInfixOf fragment
+
+promptMicroseconds :: Int
+promptMicroseconds = 30 * 1000 * 1000
 
 withEnvironmentVariable :: String -> String -> IO a -> IO a
 withEnvironmentVariable name value action =

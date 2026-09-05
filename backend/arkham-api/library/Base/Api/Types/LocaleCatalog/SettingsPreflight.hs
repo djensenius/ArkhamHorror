@@ -10,11 +10,15 @@ converts the result. This module reproduces that pipeline exactly, and adds
 only locale-catalog rejections on top of it:
 
 * every settings byte source — each command-line file, each transitive
-  @!include@, and the embedded default settings — is read exactly once, and
-  the raw-event analysis, the @!include@ expansion, the structural validation
-  and the decode that produces the final value all consume that one copy, so
-  a file that is rewritten, renamed or re-pointed after startup began cannot
-  change what this process loaded;
+  @!include@, and the embedded default settings — is read exactly once,
+  through one open handle and never past the snapshot's remaining byte
+  budget, and the raw-event analysis, the @!include@ expansion, the
+  structural validation and the decode that produces the final value all
+  consume that one copy, so a file that is rewritten, renamed or re-pointed
+  after startup began cannot change what this process loaded;
+* each @!include@ spelling in a source is resolved exactly once, so every
+  occurrence of it — and the capture, the analysis and the load — name the
+  same file even while something is retargeting a symlink underneath;
 * the process environment is read exactly once, and the same immutable map is
   used both to decide which raw values need checking and by
   @'applyEnvValue' False@;
@@ -24,9 +28,13 @@ only locale-catalog rejections on top of it:
   alias, an inline or sequence @\<\<@ merge, an @!include@, or a nested value
   under the setting's own key — even when a higher-precedence source overrides
   it;
-* traversal is bounded in include depth, include count, aggregate bytes,
-  expanded events and analysis steps, so a hostile settings tree fails fast
-  instead of exhausting the process.
+* every bound is charged while the work it bounds is being done rather than
+  after it: a source that is not a regular file is refused before it is read,
+  its bytes stop at the remaining budget, its YAML events and collection depth
+  are charged as libyaml emits them, and the analysis budget covers building
+  the raw nodes as well as walking them. Include depth, include count and
+  include-graph traversal are bounded the same way, so a hostile settings tree
+  fails fast instead of exhausting the process.
 
 Diagnostics name the setting and its canonical environment variable. A raw
 environment value is never included in a message and 'SettingsSnapshot' has no
@@ -56,13 +64,12 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as ByteString
-import Data.Conduit ((.|), runConduitRes)
+import Data.Conduit (ConduitT, (.|), await, runConduitRes)
 import Data.Conduit.List qualified as Conduit
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
-import Data.Text.Encoding.Error (lenientDecode)
 import Data.Yaml qualified as Yaml
 import Data.Yaml.Config (applyEnvValue)
 import Data.Yaml.Internal qualified as YamlInternal
@@ -70,6 +77,7 @@ import Relude
 import System.Directory (canonicalizePath)
 import System.Environment (getEnvironment)
 import System.FilePath ((</>), takeDirectory)
+import System.IO (hClose, hFileSize, openBinaryFile)
 import Text.Libyaml qualified as Libyaml
 
 {- | Everything startup is allowed to depend on: the settings values decoded
@@ -83,9 +91,8 @@ data SettingsSnapshot = SettingsSnapshot
 
 -- | One settings file, read once.
 data CapturedSource = CapturedSource
-  { sourceBytes :: !ByteString
-  , sourceEvents :: ![Libyaml.Event]
-  , sourceIncludes :: ![(ByteString, FilePath)]
+  { sourceEvents :: ![Libyaml.Event]
+  , sourceIncludes :: !(Map ByteString FilePath)
   }
 
 data CaptureState = CaptureState
@@ -104,7 +111,15 @@ data RawNode
   | RawSequence ![RawNode]
   | RawMapping ![(RawNode, RawNode)]
 
-type RawParse = State.StateT (Map Libyaml.AnchorName RawNode) (Either Text)
+{- | Materializing the raw nodes is itself charged against the analysis budget,
+so a source is refused while it is being turned into nodes rather than after.
+-}
+data RawParseState = RawParseState
+  { rawAnchors :: !(Map Libyaml.AnchorName RawNode)
+  , rawBudget :: !Int
+  }
+
+type RawParse = State.StateT RawParseState (Either Text)
 
 -- | Bounded analysis of the resolved raw nodes. Aliases are shared, so an
 -- alias-expansion bomb is refused instead of being walked.
@@ -124,6 +139,15 @@ maxSnapshotBytes = 4 * 1024 * 1024
 maxIncludeSteps :: Int
 maxIncludeSteps = 4096
 
+-- | Events one source may emit, charged as the parser emits them.
+maxSourceEvents :: Int
+maxSourceEvents = 128 * 1024
+
+-- | Collection nesting, charged as the parser emits it and again when the
+-- include-expanded stream is turned into nodes.
+maxNodeDepth :: Int
+maxNodeDepth = 256
+
 maxExpandedEvents :: Int
 maxExpandedEvents = 1024 * 1024
 
@@ -139,8 +163,20 @@ invalidYaml = withInvalidPrefix "unable to parse a settings YAML source"
 unreadableSource :: Text
 unreadableSource = withInvalidPrefix "unable to read a settings source"
 
+nonRegularSource :: Text
+nonRegularSource = withInvalidPrefix "a settings source is not a regular file"
+
 byteLimitExceeded :: Text
 byteLimitExceeded = withInvalidPrefix "settings sources exceed the configured byte limit"
+
+eventLimitExceeded :: Text
+eventLimitExceeded = withInvalidPrefix "a settings source exceeds the configured YAML event limit"
+
+depthLimitExceeded :: Text
+depthLimitExceeded = withInvalidPrefix "settings YAML nests deeper than the configured limit"
+
+analysisLimitExceeded :: Text
+analysisLimitExceeded = "settings YAML exceeds the configured analysis limit"
 
 withInvalidPrefix :: Text -> Text
 withInvalidPrefix message = invalidConfiguration <> ": " <> message
@@ -258,7 +294,7 @@ captureSourceGraph depth ancestors requestedPath = do
   source <- captureSource canonicalPath
   traverse_
     (captureSourceGraph (depth + 1) (canonicalPath : ancestors))
-    (map snd source.sourceIncludes)
+    (Map.elems source.sourceIncludes)
   pure canonicalPath
 
 chargeCaptureStep :: State.StateT CaptureState IO ()
@@ -268,7 +304,7 @@ chargeCaptureStep = do
     $ liftIO
     $ failSettings
     $ withInvalidPrefix "settings include graph exceeds the configured traversal limit"
-  State.modify' \state -> state {capturedSteps = steps - 1}
+  State.modify' \captured -> captured {capturedSteps = steps - 1}
 
 captureSource :: FilePath -> State.StateT CaptureState IO CapturedSource
 captureSource canonicalPath = do
@@ -280,25 +316,35 @@ captureSource canonicalPath = do
         $ liftIO
         $ failSettings
         $ withInvalidPrefix "settings include count exceeds the configured limit"
-      bytes <- liftIO $ readSnapshotBytes canonicalPath
-      let nextSize = current.capturedBytes + ByteString.length bytes
-      when (nextSize > maxSnapshotBytes) $ liftIO $ failSettings byteLimitExceeded
+      bytes <- liftIO $ readSnapshotBytes (maxSnapshotBytes - current.capturedBytes) canonicalPath
       events <- liftIO $ parseEvents bytes
       includePaths <- liftIO $ orFailInvalid $ rawIncludePaths events
-      includes <- liftIO $ traverse (resolveIncludePath canonicalPath) includePaths
-      let source =
-            CapturedSource {sourceBytes = bytes, sourceEvents = events, sourceIncludes = includes}
-      State.modify' \state ->
-        state
-          { capturedSources = Map.insert canonicalPath source state.capturedSources
-          , capturedBytes = nextSize
+      includes <- liftIO $ resolveIncludePaths canonicalPath includePaths
+      let source = CapturedSource {sourceEvents = events, sourceIncludes = includes}
+      State.modify' \captured ->
+        captured
+          { capturedSources = Map.insert canonicalPath source captured.capturedSources
+          , capturedBytes = captured.capturedBytes + ByteString.length bytes
           }
       pure source
 
-resolveIncludePath :: FilePath -> ByteString -> IO (ByteString, FilePath)
-resolveIncludePath canonicalPath includePath = do
-  let relative = TextEncoding.decodeUtf8With lenientDecode includePath
-  (includePath,) <$> canonicalSettingsPath (takeDirectory canonicalPath </> toString relative)
+{- | Resolve each distinct @!include@ spelling in one source exactly once.
+
+Two occurrences of the same spelling must name the same file: resolving them
+separately would let a symlink retargeted between the two lookups produce a
+target that is captured but never expanded, so the bytes this process read and
+the bytes it analyzed and loaded would no longer be the same set. The
+resolution recorded here is what capture, raw analysis and the load all use.
+-}
+resolveIncludePaths :: FilePath -> [ByteString] -> IO (Map ByteString FilePath)
+resolveIncludePaths canonicalPath = foldM resolveOnce mempty
+ where
+  resolveOnce resolved spelling
+    | Map.member spelling resolved = pure resolved
+    | otherwise = do
+        let relative = TextEncoding.decodeUtf8With lenientDecode spelling
+        target <- canonicalSettingsPath (takeDirectory canonicalPath </> toString relative)
+        pure $ Map.insert spelling target resolved
 
 canonicalSettingsPath :: FilePath -> IO FilePath
 canonicalSettingsPath path =
@@ -306,14 +352,79 @@ canonicalSettingsPath path =
     (canonicalizePath path)
     (\(_ :: Exception.IOException) -> failSettings unreadableSource)
 
-readSnapshotBytes :: FilePath -> IO ByteString
-readSnapshotBytes path =
-  Exception.catch
-    (ByteString.readFile path)
-    (\(_ :: Exception.IOException) -> failSettings unreadableSource)
+{- | Read one settings source through a single open handle, never reading more
+than the snapshot's remaining byte budget.
+
+The handle is the source's identity: its size and its bytes come from the same
+open file description, so a path re-pointed after the open cannot change what
+this process read. A source that is not a regular file — a FIFO, a device, a
+socket — has no size to check and could deliver bytes forever, so it is
+refused before any read rather than after one that never returns.
+-}
+readSnapshotBytes :: Int -> FilePath -> IO ByteString
+readSnapshotBytes remainingBudget path = do
+  when (remainingBudget < 0) $ failSettings byteLimitExceeded
+  Exception.bracket (openSnapshotSource path) hClose \handle -> do
+    size <- regularSourceSize handle
+    when (size > toInteger remainingBudget) $ failSettings byteLimitExceeded
+    bytes <- readSnapshotBudget handle
+    when (ByteString.length bytes > remainingBudget) $ failSettings byteLimitExceeded
+    pure bytes
+ where
+  openSnapshotSource source =
+    Exception.catch
+      (openBinaryFile source ReadMode)
+      (\(_ :: Exception.IOException) -> failSettings unreadableSource)
+
+  -- 'hFileSize' fails for anything but a regular file, which is exactly the
+  -- distinction this needs and the only one @base@ offers.
+  regularSourceSize handle =
+    Exception.catch
+      (hFileSize handle)
+      (\(_ :: Exception.IOException) -> failSettings nonRegularSource)
+
+  -- One byte past the budget is enough to prove a source that grew between
+  -- the size check and the read is over it.
+  readSnapshotBudget handle =
+    Exception.catch
+      (ByteString.hGet handle (remainingBudget + 1))
+      (\(_ :: Exception.IOException) -> failSettings unreadableSource)
 
 parseEvents :: ByteString -> IO [Libyaml.Event]
-parseEvents bytes = onMalformedYaml $ runConduitRes $ Libyaml.decode bytes .| Conduit.consume
+parseEvents bytes = do
+  events <- onMalformedYaml $ runConduitRes $ Libyaml.decode bytes .| boundedSourceEvents
+  orFail events
+
+{- | Collect one source's events with the event count and the collection depth
+charged as the parser emits them, so an event-dense or deeply nested source is
+refused while it is being parsed rather than after it has been materialized.
+Refusal stops the parser by returning, so the failure is one diagnostic rather
+than an exception thrown through the parser's own cleanup.
+-}
+boundedSourceEvents :: Monad m => ConduitT Libyaml.Event o m (Either Text [Libyaml.Event])
+boundedSourceEvents = go 0 0 id
+ where
+  go
+    :: Monad m
+    => Int
+    -> Int
+    -> ([Libyaml.Event] -> [Libyaml.Event])
+    -> ConduitT Libyaml.Event o m (Either Text [Libyaml.Event])
+  go !count !depth acc =
+    await >>= \case
+      Nothing -> pure $ Right (acc [])
+      Just event
+        | count >= maxSourceEvents -> pure $ Left eventLimitExceeded
+        | depth + eventDepthChange event > maxNodeDepth -> pure $ Left depthLimitExceeded
+        | otherwise -> go (count + 1) (depth + eventDepthChange event) (acc . (event :))
+
+eventDepthChange :: Libyaml.Event -> Int
+eventDepthChange = \case
+  Libyaml.EventMappingStart {} -> 1
+  Libyaml.EventSequenceStart {} -> 1
+  Libyaml.EventMappingEnd -> -1
+  Libyaml.EventSequenceEnd -> -1
+  _ -> 0
 
 {- | Turn the YAML parser's own failures into a startup diagnostic, and only
 those: an unrelated or asynchronous exception is left alone rather than being
@@ -358,7 +469,7 @@ expandSourceEvents sources root = State.evalStateT (go root) maxExpandedEvents
         target <-
           lift
             $ maybe (Left "a captured !include target is missing") Right
-            $ snd <$> find ((== bytes) . fst) source.sourceIncludes
+            $ Map.lookup bytes source.sourceIncludes
         included <- go target
         pure $ filter (`notElem` irrelevantEvents) included
       _ -> pure [event]
@@ -460,11 +571,21 @@ aliases the way @yaml@ does, then check every mapping — including the ones a
 -}
 analyzeRawEvents :: [Libyaml.Event] -> Either Text ()
 analyzeRawEvents events = do
-  documents <- parseRawDocuments events
-  State.evalStateT (traverse_ analyzeRawNode documents) maxAnalysisSteps
+  (documents, remaining) <- parseRawDocuments maxAnalysisSteps events
+  State.evalStateT (traverse_ analyzeRawNode documents) remaining
 
-parseRawDocuments :: [Libyaml.Event] -> Either Text [RawNode]
-parseRawDocuments events = State.evalStateT (go $ filter structural events) mempty
+{- | Turn one include-expanded event stream into nodes, charging the shared
+analysis budget per node and refusing nesting past the configured depth. The
+budget left over is what the analysis itself may spend, so materialization and
+analysis together stay inside one advertised bound.
+-}
+parseRawDocuments :: Int -> [Libyaml.Event] -> Either Text ([RawNode], Int)
+parseRawDocuments budget events = do
+  (documents, parsed) <-
+    State.runStateT
+      (go $ filter structural events)
+      RawParseState {rawAnchors = mempty, rawBudget = budget}
+  pure (documents, parsed.rawBudget)
  where
   structural = \case
     Libyaml.EventStreamStart -> False
@@ -475,50 +596,71 @@ parseRawDocuments events = State.evalStateT (go $ filter structural events) memp
 
   go [] = pure []
   go remaining = do
-    (node, rest) <- parseRawNode remaining
+    (node, rest) <- parseRawNode 0 remaining
     (node :) <$> go rest
 
-parseRawNode :: [Libyaml.Event] -> RawParse (RawNode, [Libyaml.Event])
-parseRawNode = \case
+parseRawNode :: Int -> [Libyaml.Event] -> RawParse (RawNode, [Libyaml.Event])
+parseRawNode depth = \case
   Libyaml.EventAlias anchor : rest -> do
-    anchors <- State.get
+    chargeRawStep
+    anchors <- State.gets (.rawAnchors)
     case Map.lookup anchor anchors of
       Nothing -> lift $ Left "settings YAML references an anchor that is not defined yet"
       Just node -> pure (node, rest)
-  Libyaml.EventScalar bytes _ _ anchor : rest ->
+  Libyaml.EventScalar bytes _ _ anchor : rest -> do
+    chargeRawStep
     (,rest) <$> defineRawAnchor anchor (RawScalar bytes)
   Libyaml.EventSequenceStart _ _ anchor : rest -> do
-    (values, remaining) <- parseRawSequence rest
+    chargeRawStep
+    nested <- descendRawNode depth
+    (values, remaining) <- parseRawSequence nested rest
     (,remaining) <$> defineRawAnchor anchor (RawSequence values)
   Libyaml.EventMappingStart _ _ anchor : rest -> do
-    (pairs, remaining) <- parseRawMapping rest
+    chargeRawStep
+    nested <- descendRawNode depth
+    (pairs, remaining) <- parseRawMapping nested rest
     (,remaining) <$> defineRawAnchor anchor (RawMapping pairs)
   _ -> lift $ Left "malformed settings YAML"
+
+chargeRawStep :: RawParse ()
+chargeRawStep = do
+  budget <- State.gets (.rawBudget)
+  when (budget <= 0) $ lift $ Left analysisLimitExceeded
+  State.modify' \parsed -> parsed {rawBudget = budget - 1}
+
+{- | An include-expanded stream can nest deeper than any single source did, so
+depth is charged here as well as while each source was parsed.
+-}
+descendRawNode :: Int -> RawParse Int
+descendRawNode depth
+  | depth >= maxNodeDepth = lift $ Left depthLimitExceeded
+  | otherwise = pure (depth + 1)
 
 -- | An anchor names a node only once that node is complete, and a repeated
 -- anchor name replaces the earlier one, which is what @yaml@ does.
 defineRawAnchor :: Libyaml.Anchor -> RawNode -> RawParse RawNode
 defineRawAnchor anchor node = do
-  for_ anchor \name -> State.modify' $ Map.insert name node
+  for_ anchor \name ->
+    State.modify' \parsed -> parsed {rawAnchors = Map.insert name node parsed.rawAnchors}
   pure node
 
-parseRawSequence :: [Libyaml.Event] -> RawParse ([RawNode], [Libyaml.Event])
-parseRawSequence = go []
+parseRawSequence :: Int -> [Libyaml.Event] -> RawParse ([RawNode], [Libyaml.Event])
+parseRawSequence depth = go []
  where
   go values = \case
     Libyaml.EventSequenceEnd : rest -> pure (reverse values, rest)
     events -> do
-      (value, remaining) <- parseRawNode events
+      (value, remaining) <- parseRawNode depth events
       go (value : values) remaining
 
-parseRawMapping :: [Libyaml.Event] -> RawParse ([(RawNode, RawNode)], [Libyaml.Event])
-parseRawMapping = go []
+parseRawMapping :: Int -> [Libyaml.Event] -> RawParse ([(RawNode, RawNode)], [Libyaml.Event])
+parseRawMapping depth = go []
  where
   go pairs = \case
     Libyaml.EventMappingEnd : rest -> pure (reverse pairs, rest)
     events -> do
-      (key, afterKey) <- parseRawNode events
-      (value, remaining) <- parseRawNode afterKey
+      (key, afterKey) <- parseRawNode depth events
+      (value, remaining) <- parseRawNode depth afterKey
       go ((key, value) : pairs) remaining
 
 analyzeRawNode :: RawNode -> Analysis ()
@@ -534,7 +676,7 @@ analyzeRawNode node = do
 chargeAnalysisStep :: Analysis ()
 chargeAnalysisStep = do
   remaining <- State.get
-  when (remaining <= 0) $ lift $ Left "settings YAML is too deeply aliased to analyze"
+  when (remaining <= 0) $ lift $ Left analysisLimitExceeded
   State.put (remaining - 1)
 
 {- | The locale settings one mapping represents, counting the keys a @\<\<@

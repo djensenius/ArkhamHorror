@@ -574,7 +574,20 @@ higher-precedence setting deliberately makes an inherited value irrelevant and
 a variable no locale setting names is never this deployment's to validate.
 Files and symlinks may change after that snapshot; startup continues from the
 captured bytes rather than rereading a path, and the same captured environment
-is what reaches every `_env:` marker.
+is what reaches every `_env:` marker. Each `!include` spelling in a file is
+resolved once, so repeating it names one file rather than racing a symlink per
+occurrence.
+
+Every one of those limits is charged while the work it bounds is happening, so
+a hostile or accidental settings source is refused rather than merely
+survived. A source that is not a regular file — a FIFO, a device, a socket —
+is refused before a byte is read; a source is read only up to the snapshot's
+remaining byte budget through the same handle its size was taken from; YAML
+events and collection nesting are charged as libyaml emits them; and building
+the raw nodes draws on the same budget as analyzing them. Include depth,
+include count and include-graph traversal are bounded the same way. A
+deployment that legitimately needs more than the defaults should split its
+configuration rather than expect startup to grow to fit it.
 
 **The manifest URL is bound deliberately, not parsed permissively.** The
 preferred value is the same-origin absolute path this catalog already

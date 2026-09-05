@@ -54,6 +54,10 @@ CONTRACT_MANIFEST = "contracts/manifest.json"
 ADVERTISED_FIXTURE = "contracts/fixtures/capabilities-locale-catalog.json"
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
 
+# Generous next to the sub-second refusals these cases expect, small enough
+# that a probe which blocks on a source is a failure rather than a hung job.
+PROBE_BOUND_TIMEOUT = 120.0
+
 SETTINGS = (
     "ARKHAM_LOCALE_CATALOG_MANIFEST_URL",
     "ARKHAM_LOCALE_CATALOG_REVISION",
@@ -149,6 +153,7 @@ def run_probe(
     command: list[str],
     environment: dict[str, str],
     settings_files: list[Path] | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the production probe with exactly `environment` added to the current
     one, so an inherited ARKHAM_LOCALE_CATALOG_* value cannot mask a failure.
@@ -166,13 +171,23 @@ def run_probe(
     }
     child_environment.update(environment)
     arguments = [str(path) for path in settings_files or []]
-    return subprocess.run(
-        command + arguments,
-        env=child_environment,
-        capture_output=True,
-        cwd=ROOT,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            command + arguments,
+            env=child_environment,
+            capture_output=True,
+            cwd=ROOT,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as expired:
+        # A bound the server advertises has to be reached while it is reading
+        # or parsing a source; a probe that has to be killed has already lost
+        # that argument, so this is a failure rather than a retry.
+        raise SystemExit(
+            "locale-catalog capability settings: the production probe did not finish within "
+            f"{timeout}s for {arguments}"
+        ) from expired
 
 
 def encoded_capabilities(response: dict) -> bytes:
@@ -733,6 +748,65 @@ def _check_with_probe(
     require(
         unrelated_invalid_run.returncode == 0 and unrelated_invalid_run.stdout == printed.stdout,
         "an invalid value for a variable no locale setting names changed startup",
+    )
+
+    # Every bound is charged while the work it bounds is being done. A source
+    # that is not a regular file can answer reads forever, an oversized,
+    # event-dense or deeply nested one can exhaust the process, and each of
+    # these must be refused rather than merely survived. The probe is given a
+    # deadline here for exactly that reason.
+    fifo_source = scratch / "settings-fifo.yml"
+    os.mkfifo(fifo_source)
+    fifo_run = run_probe(command, settings, [fifo_source], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        fifo_run.returncode != 0 and b"not a regular file" in fifo_run.stderr,
+        "a settings source that is not a regular file was read instead of refused",
+    )
+
+    oversized_source = write_raw_settings_file(
+        scratch, "settings-oversized.yml", "key: " + "a" * (5 * 1024 * 1024) + "\n"
+    )
+    oversized_run = run_probe(command, settings, [oversized_source], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        oversized_run.returncode != 0 and b"byte limit" in oversized_run.stderr,
+        "a settings source past the configured byte limit was accepted",
+    )
+
+    dense_source = write_raw_settings_file(
+        scratch, "settings-event-dense.yml", "[" + "a," * 200000 + "a]\n"
+    )
+    dense_run = run_probe(command, settings, [dense_source], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        dense_run.returncode != 0 and b"YAML event limit" in dense_run.stderr,
+        "an event-dense settings source was accepted",
+    )
+
+    deep_source = write_raw_settings_file(
+        scratch, "settings-deeply-nested.yml", "root: " + "[" * 100000 + "0" + "]" * 100000 + "\n"
+    )
+    deep_run = run_probe(command, settings, [deep_source], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        deep_run.returncode != 0 and b"nests deeper" in deep_run.stderr,
+        "a deeply nested settings source was accepted",
+    )
+
+    # One !include spelling is one file, however many times it appears: the
+    # occurrences must share a single resolution rather than each consuming the
+    # include-graph budget (and each racing a symlink) on its own.
+    shared_include = write_raw_settings_file(
+        scratch, "settings-shared-include.yml", canonical_markers(True)
+    )
+    repeated_include = write_raw_settings_file(
+        scratch,
+        "settings-repeated-include.yml",
+        "".join(f"copy{index}: !include {shared_include.name}\n" for index in range(5000))
+        + f"<<: !include {shared_include.name}\n",
+    )
+    repeated_run = run_probe(command, settings, [repeated_include], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        repeated_run.returncode == 0 and repeated_run.stdout == printed.stdout,
+        "a repeated !include spelling was resolved once per occurrence: "
+        f"{repeated_run.stderr.decode('utf-8', 'replace').strip()}",
     )
 
     # A settings file that is only partially filled in, with nothing else to
