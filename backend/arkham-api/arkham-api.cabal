@@ -8461,6 +8461,7 @@ test-suite spec
       Arkham.Api.GameUtilAccessSpec
       Arkham.Api.JsonContractsSpec
       Arkham.Api.LocaleCatalogCapabilitySpec
+      Arkham.Api.LocaleCatalogSettingsPreflightSpec
       Arkham.Asset.Assets.AncientAnkhSpec
       Arkham.Asset.Assets.Aquinnah1Spec
       Arkham.Asset.Assets.ArcaneInitiateSpec
@@ -8879,6 +8880,7 @@ test-suite spec
     , devel-store-lock
     , directory
     , exceptions
+    , filepath
     , foreign-store
     , hspec
     , hspec-expectations-lifted

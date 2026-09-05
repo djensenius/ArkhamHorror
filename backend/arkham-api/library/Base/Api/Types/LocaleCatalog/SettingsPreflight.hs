@@ -1,14 +1,44 @@
-{- | Fail-closed validation for locale-catalog environment mappings in runtime
-YAML settings files.
+{-# LANGUAGE ScopedTypeVariables #-}
 
-'Data.Yaml.Config.loadYamlSettingsArgs' decodes every command-line file with
-@!include@ support, left-biases them over the embedded settings value, and only
-then substitutes @_env:@ markers. This module deliberately examines every
-source first: an overridden file must not be able to hide a noncanonical
-environment alias behind a later, safe-looking value.
+{- | One immutable, bounded startup snapshot of the YAML settings sources and
+of the process environment.
+
+@yaml-0.11.11.2@'s 'Data.Yaml.Config.loadYamlSettings' decodes every runtime
+file with @!include@ support, right-associates a left-biased merge over those
+values and the compile-time values, applies one environment map, and then
+converts the result. This module reproduces that pipeline exactly, and adds
+only locale-catalog rejections on top of it:
+
+* every settings byte source — each command-line file, each transitive
+  @!include@, and the embedded default settings — is read exactly once, and
+  the raw-event analysis, the @!include@ expansion, the structural validation
+  and the decode that produces the final value all consume that one copy, so
+  a file that is rewritten, renamed or re-pointed after startup began cannot
+  change what this process loaded;
+* the process environment is read exactly once, and the same immutable map is
+  used both to decide which raw values need checking and by
+  @'applyEnvValue' False@;
+* every raw mapping is analyzed before YAML resolves merge keys, so a
+  noncanonical or malformed @_env:@ mapping for one of the six locale-catalog
+  settings is refused wherever it appears — including behind an anchor, an
+  alias, an inline or sequence @\<\<@ merge, an @!include@, or a nested value
+  under the setting's own key — even when a higher-precedence source overrides
+  it;
+* traversal is bounded in include depth, include count, aggregate bytes,
+  expanded events and analysis steps, so a hostile settings tree fails fast
+  instead of exhausting the process.
+
+Diagnostics name the setting and its canonical environment variable. A raw
+environment value is never included in a message and 'SettingsSnapshot' has no
+'Show' instance, so no configured secret can reach a log through this module.
 -}
 module Base.Api.Types.LocaleCatalog.SettingsPreflight (
-  preflightLocaleCatalogSettings,
+  SettingsSnapshot,
+  captureSettingsSnapshot,
+  captureSettingsSnapshotWithEnvironment,
+  loadSettingsSnapshot,
+  mergeSettingsValues,
+  settingsSnapshotFromValues,
   validateLocaleCatalogSettingsValues,
 ) where
 
@@ -16,178 +46,583 @@ import Base.Api.Types.LocaleCatalog (
   LocaleCatalogSetting,
   localeCatalogSettingEnvVar,
   localeCatalogSettingKey,
-  validateLocaleCatalogEnvironment,
   validateLocaleCatalogRawEnvironmentValue,
  )
-import Data.Aeson (Value (..))
+import Control.Exception qualified as Exception
+import Control.Monad (foldM)
+import Control.Monad.State.Strict qualified as State
+import Data.Aeson (FromJSON, Value (..), parseJSON)
 import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString qualified as ByteString
 import Data.Conduit ((.|), runConduitRes)
 import Data.Conduit.List qualified as Conduit
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
-import Data.Yaml.Include qualified as YamlInclude
+import Data.Text.Encoding qualified as TextEncoding
+import Data.Text.Encoding.Error (lenientDecode)
+import Data.Yaml qualified as Yaml
+import Data.Yaml.Config (applyEnvValue)
+import Data.Yaml.Internal qualified as YamlInternal
 import Relude
 import System.Directory (canonicalizePath)
+import System.Environment (getEnvironment)
 import System.FilePath ((</>), takeDirectory)
 import Text.Libyaml qualified as Libyaml
 
-{- | Decode and preflight exactly the runtime files and compile-time values
-that 'Data.Yaml.Config.loadYamlSettingsArgs' would load, before it can
-substitute any environment variable. The returned values are the exact
-runtime-file values the caller must merge and load.
+{- | Everything startup is allowed to depend on: the settings values decoded
+from the captured bytes, in @loadYamlSettings@ order, and the one environment
+map that will be applied to their merge.
 -}
-preflightLocaleCatalogSettings
+data SettingsSnapshot = SettingsSnapshot
+  { snapshotEnvironment :: !(KeyMap Text)
+  , snapshotValues :: ![Value]
+  }
+
+-- | One settings file, read once.
+data CapturedSource = CapturedSource
+  { sourceBytes :: !ByteString
+  , sourceEvents :: ![Libyaml.Event]
+  , sourceIncludes :: ![(ByteString, FilePath)]
+  }
+
+data CaptureState = CaptureState
+  { capturedSources :: !(Map FilePath CapturedSource)
+  , capturedBytes :: !Int
+  , capturedSteps :: !Int
+  }
+
+{- | A YAML node with anchors already resolved the way @yaml@ resolves them:
+an anchor is defined only once its node is complete, a later anchor of the
+same name replaces an earlier one, and an alias stands for whatever its
+anchor named at that point in the stream.
+-}
+data RawNode
+  = RawScalar !ByteString
+  | RawSequence ![RawNode]
+  | RawMapping ![(RawNode, RawNode)]
+
+type RawParse = State.StateT (Map Libyaml.AnchorName RawNode) (Either Text)
+
+-- | Bounded analysis of the resolved raw nodes. Aliases are shared, so an
+-- alias-expansion bomb is refused instead of being walked.
+type Analysis = State.StateT Int (Either Text)
+
+maxIncludeDepth :: Int
+maxIncludeDepth = 32
+
+maxSnapshotSources :: Int
+maxSnapshotSources = 256
+
+maxSnapshotBytes :: Int
+maxSnapshotBytes = 4 * 1024 * 1024
+
+-- | Include graphs may share sources, so depth and count alone do not bound
+-- the walk; this bounds the walk itself.
+maxIncludeSteps :: Int
+maxIncludeSteps = 4096
+
+maxExpandedEvents :: Int
+maxExpandedEvents = 1024 * 1024
+
+maxAnalysisSteps :: Int
+maxAnalysisSteps = 1024 * 1024
+
+invalidConfiguration :: Text
+invalidConfiguration = "locale catalog configuration is invalid"
+
+invalidYaml :: Text
+invalidYaml = withInvalidPrefix "unable to parse a settings YAML source"
+
+unreadableSource :: Text
+unreadableSource = withInvalidPrefix "unable to read a settings source"
+
+byteLimitExceeded :: Text
+byteLimitExceeded = withInvalidPrefix "settings sources exceed the configured byte limit"
+
+withInvalidPrefix :: Text -> Text
+withInvalidPrefix message = invalidConfiguration <> ": " <> message
+
+failSettings :: Text -> IO a
+failSettings = fail . toString
+
+-- | Fail on a diagnostic that already names the invalid configuration.
+orFail :: Either Text a -> IO a
+orFail = either failSettings pure
+
+-- | Fail on a diagnostic that describes only the problem.
+orFailInvalid :: Either Text a -> IO a
+orFailInvalid = either (failSettings . withInvalidPrefix) pure
+
+{- | Capture the command-line settings files, their transitive @!include@s,
+the embedded settings bytes and the complete process environment, once. The
+result is the only input 'loadSettingsSnapshot' consumes.
+-}
+captureSettingsSnapshot :: [FilePath] -> [ByteString] -> IO SettingsSnapshot
+captureSettingsSnapshot runtimeFiles embeddedBytes = do
+  environment <- environmentMap <$> getEnvironment
+  captureSettingsSnapshotWithEnvironment runtimeFiles embeddedBytes environment
+
+{- | The injectable variant, for deterministic callers and focused tests.
+Production obtains its environment through 'captureSettingsSnapshot'.
+-}
+captureSettingsSnapshotWithEnvironment
   :: [FilePath]
-  -> [Value]
-  -> [(Text, Text)]
-  -> IO [Value]
-preflightLocaleCatalogSettings runtimeFiles compileValues environment = do
-  runtimeValues <- traverse loadRuntimeSettingsValue runtimeFiles
-  either (fail . toString) pure
-    $ validateLocaleCatalogSettingsValues (runtimeValues <> compileValues)
-  either (fail . toString) pure $ validateLocaleCatalogEnvironment environment
+  -> [ByteString]
+  -> KeyMap Text
+  -> IO SettingsSnapshot
+captureSettingsSnapshotWithEnvironment runtimeFiles embeddedBytes environment = do
+  let embeddedSize = sum $ map ByteString.length embeddedBytes
+  when (embeddedSize > maxSnapshotBytes) $ failSettings byteLimitExceeded
+  (runtimeRoots, captured) <-
+    State.runStateT
+      (traverse (captureSourceGraph 0 []) runtimeFiles)
+      CaptureState {capturedSources = mempty, capturedBytes = embeddedSize, capturedSteps = maxIncludeSteps}
+  runtimeEvents <-
+    traverse (orFailInvalid . expandSourceEvents captured.capturedSources) runtimeRoots
+  traverse_ (orFailInvalid . analyzeRawEvents) runtimeEvents
+  runtimeValues <- traverse decodeExpandedValue runtimeEvents
+  embeddedValues <- traverse decodeEmbeddedValue embeddedBytes
+  let values = runtimeValues <> embeddedValues
+  orFailInvalid $ validateLocaleCatalogSettingsValues values
+  for_ (nonEmpty values) \nonEmptyValues ->
+    orFail $ validateCanonicalEnvironmentValues environment (mergeNonEmptySettingsValues nonEmptyValues)
+  pure SettingsSnapshot {snapshotEnvironment = environment, snapshotValues = values}
+
+{- | Build a no-files snapshot from settings values a caller already owns.
+Used by equivalence tests and by programmatic callers; production always goes
+through 'captureSettingsSnapshot'.
+-}
+settingsSnapshotFromValues :: KeyMap Text -> [Value] -> SettingsSnapshot
+settingsSnapshotFromValues environment values =
+  SettingsSnapshot {snapshotEnvironment = environment, snapshotValues = values}
+
+{- | Apply the captured environment to the captured values exactly as
+'Data.Yaml.Config.loadYamlSettings' does, then convert to the settings type.
+-}
+loadSettingsSnapshot :: FromJSON settings => SettingsSnapshot -> IO settings
+loadSettingsSnapshot snapshot =
+  case Yaml.parseEither parseJSON resolvedValue of
+    Left message -> error $ "Could not convert to expected type: " <> toText message
+    Right settings -> pure settings
+ where
+  resolvedValue =
+    applyEnvValue False snapshot.snapshotEnvironment
+      $ mergeSettingsValues snapshot.snapshotValues
+
+{- | @sconcat . fmap MergedValue@ from @Data.Yaml.Config@: right-associated,
+and left-biased at every object boundary. Any non-object on the left wins
+outright, which is what makes an earlier scalar or null hide everything after
+it.
+-}
+mergeSettingsValues :: [Value] -> Value
+mergeSettingsValues values =
+  case nonEmpty values of
+    Nothing -> error "loadYamlSettings: No configuration provided"
+    Just present -> mergeNonEmptySettingsValues present
+
+mergeNonEmptySettingsValues :: NonEmpty Value -> Value
+mergeNonEmptySettingsValues (value :| rest) =
+  case nonEmpty rest of
+    Nothing -> value
+    Just remaining -> mergeValues value (mergeNonEmptySettingsValues remaining)
+ where
+  mergeValues (Object left) (Object right) = Object $ KeyMap.unionWith mergeValues left right
+  mergeValues left _ = left
+
+environmentMap :: [(String, String)] -> KeyMap Text
+environmentMap = KeyMap.fromList . map (bimap (Key.fromText . toText) toText)
+
+{- | Read one settings file and every file it transitively includes, applying
+the same ancestor-cycle rule @Data.Yaml.Include@ uses. Returns the canonical
+path the captured bytes were read from.
+-}
+captureSourceGraph
+  :: Int
+  -> [FilePath]
+  -> FilePath
+  -> State.StateT CaptureState IO FilePath
+captureSourceGraph depth ancestors requestedPath = do
+  chargeCaptureStep
+  canonicalPath <- liftIO $ canonicalSettingsPath requestedPath
+  when (depth > maxIncludeDepth)
+    $ liftIO
+    $ failSettings
+    $ withInvalidPrefix "settings include depth exceeds the configured limit"
+  when (canonicalPath `elem` ancestors)
+    $ liftIO
+    $ failSettings
+    $ withInvalidPrefix "cyclic settings include"
+  source <- captureSource canonicalPath
   traverse_
-    (\(name, value) ->
-      for_ (settingForEnvironmentVariable name) \setting ->
-        either (fail . toString) pure $ validateLocaleCatalogRawEnvironmentValue setting value
-    )
-    environment
-  pure runtimeValues
+    (captureSourceGraph (depth + 1) (canonicalPath : ancestors))
+    (map snd source.sourceIncludes)
+  pure canonicalPath
 
--- | Check decoded, unresolved-for-environment settings values. This is
--- exported for focused specs; production callers should use
--- 'preflightLocaleCatalogSettings' so duplicate YAML keys and
--- @!include@ sources are checked too.
-validateLocaleCatalogSettingsValues :: [Value] -> Either Text ()
-validateLocaleCatalogSettingsValues = traverse_ validateValue
+chargeCaptureStep :: State.StateT CaptureState IO ()
+chargeCaptureStep = do
+  steps <- State.gets (.capturedSteps)
+  when (steps <= 0)
+    $ liftIO
+    $ failSettings
+    $ withInvalidPrefix "settings include graph exceeds the configured traversal limit"
+  State.modify' \state -> state {capturedSteps = steps - 1}
 
-loadRuntimeSettingsValue :: FilePath -> IO Value
-loadRuntimeSettingsValue path = do
-  resolved <-
-    YamlInclude.decodeFileEither path >>= \case
-      Left _ -> fail "locale catalog configuration is invalid: unable to parse a runtime settings file"
-      Right value -> pure value
-  validateRawYamlFile path
-  pure resolved
+captureSource :: FilePath -> State.StateT CaptureState IO CapturedSource
+captureSource canonicalPath = do
+  current <- State.get
+  case Map.lookup canonicalPath current.capturedSources of
+    Just source -> pure source
+    Nothing -> do
+      when (Map.size current.capturedSources >= maxSnapshotSources)
+        $ liftIO
+        $ failSettings
+        $ withInvalidPrefix "settings include count exceeds the configured limit"
+      bytes <- liftIO $ readSnapshotBytes canonicalPath
+      let nextSize = current.capturedBytes + ByteString.length bytes
+      when (nextSize > maxSnapshotBytes) $ liftIO $ failSettings byteLimitExceeded
+      events <- liftIO $ parseEvents bytes
+      includePaths <- liftIO $ orFailInvalid $ rawIncludePaths events
+      includes <- liftIO $ traverse (resolveIncludePath canonicalPath) includePaths
+      let source =
+            CapturedSource {sourceBytes = bytes, sourceEvents = events, sourceIncludes = includes}
+      State.modify' \state ->
+        state
+          { capturedSources = Map.insert canonicalPath source state.capturedSources
+          , capturedBytes = nextSize
+          }
+      pure source
 
-validateRawYamlFile :: FilePath -> IO ()
-validateRawYamlFile = go []
- where
-  go seen path = do
-    canonicalPath <- canonicalizePath path
-    when (canonicalPath `elem` seen)
-      $ fail "locale catalog configuration is invalid: cyclic runtime settings include"
-    events <- runConduitRes $ Libyaml.decodeFile canonicalPath .| Conduit.consume
-    either (fail . toString) pure $ validateNoDuplicateLocaleCatalogKeys events
-    includes <- either (fail . toString) pure $ includePaths events
-    traverse_ (go (canonicalPath : seen) . (takeDirectory canonicalPath </>)) includes
+resolveIncludePath :: FilePath -> ByteString -> IO (ByteString, FilePath)
+resolveIncludePath canonicalPath includePath = do
+  let relative = TextEncoding.decodeUtf8With lenientDecode includePath
+  (includePath,) <$> canonicalSettingsPath (takeDirectory canonicalPath </> toString relative)
 
-validateValue :: Value -> Either Text ()
-validateValue = \case
-  Object object ->
-    traverse_
-      (\(key, value) -> do
-        for_ (settingForKey $ Key.toText key) (`validateEnvironmentMapping` value)
-        validateValue value
-      )
-      (KeyMap.toList object)
-  Array values -> traverse_ validateValue values
-  _ -> Right ()
+canonicalSettingsPath :: FilePath -> IO FilePath
+canonicalSettingsPath path =
+  Exception.catch
+    (canonicalizePath path)
+    (\(_ :: Exception.IOException) -> failSettings unreadableSource)
 
-settingForKey :: Text -> Maybe LocaleCatalogSetting
-settingForKey key =
-  find (\setting -> localeCatalogSettingKey setting == key) [minBound .. maxBound]
+readSnapshotBytes :: FilePath -> IO ByteString
+readSnapshotBytes path =
+  Exception.catch
+    (ByteString.readFile path)
+    (\(_ :: Exception.IOException) -> failSettings unreadableSource)
 
-settingForEnvironmentVariable :: Text -> Maybe LocaleCatalogSetting
-settingForEnvironmentVariable name =
-  find (\setting -> localeCatalogSettingEnvVar setting == name) [minBound .. maxBound]
+parseEvents :: ByteString -> IO [Libyaml.Event]
+parseEvents bytes = onMalformedYaml $ runConduitRes $ Libyaml.decode bytes .| Conduit.consume
 
-validateEnvironmentMapping :: LocaleCatalogSetting -> Value -> Either Text ()
-validateEnvironmentMapping setting = \case
-  String marker
-    | Just suffix <- Text.stripPrefix "_env:" marker ->
-        case Text.break (== ':') suffix of
-          (name, rest)
-            | Text.null rest ->
-                reject setting "is an incomplete _env: mapping"
-            | name == localeCatalogSettingEnvVar setting -> Right ()
-            | otherwise ->
-                reject setting "must use only its canonical ARKHAM_LOCALE_CATALOG_* environment variable"
-  _ -> Right ()
+{- | Turn the YAML parser's own failures into a startup diagnostic, and only
+those: an unrelated or asynchronous exception is left alone rather than being
+reported as invalid configuration.
+-}
+onMalformedYaml :: IO a -> IO a
+onMalformedYaml action =
+  action
+    `Exception.catches` [ Exception.Handler \(_ :: Yaml.ParseException) -> failSettings invalidYaml
+                        , Exception.Handler \(_ :: Libyaml.YamlException) -> failSettings invalidYaml
+                        ]
 
-validateNoDuplicateLocaleCatalogKeys :: [Libyaml.Event] -> Either Text ()
-validateNoDuplicateLocaleCatalogKeys = parseDocuments . filter significantEvent
- where
-  significantEvent = \case
-    Libyaml.EventStreamStart -> False
-    Libyaml.EventStreamEnd -> False
-    Libyaml.EventDocumentStart -> False
-    Libyaml.EventDocumentEnd -> False
-    _ -> True
-
-parseDocuments :: [Libyaml.Event] -> Either Text ()
-parseDocuments = go
- where
-  go [] = Right ()
-  go events = parseNode events >>= go
-
-parseNode :: [Libyaml.Event] -> Either Text [Libyaml.Event]
-parseNode = \case
-  Libyaml.EventAlias _ : rest -> Right rest
-  Libyaml.EventScalar _ _ _ _ : rest -> Right rest
-  Libyaml.EventSequenceStart _ _ _ : rest -> parseSequence rest
-  Libyaml.EventMappingStart _ _ _ : rest -> parseMapping Set.empty rest
-  _ -> Left "locale catalog configuration is invalid: malformed runtime settings YAML"
-
-parseSequence :: [Libyaml.Event] -> Either Text [Libyaml.Event]
-parseSequence = \case
-  Libyaml.EventSequenceEnd : rest -> Right rest
-  events -> parseNode events >>= parseSequence
-
-parseMapping :: Set LocaleCatalogSetting -> [Libyaml.Event] -> Either Text [Libyaml.Event]
-parseMapping seen = \case
-  Libyaml.EventMappingEnd : rest -> Right rest
-  events -> do
-    (key, afterKey) <- parseMappingKey events
-    setting <- case settingForKey key of
-      Just localeSetting
-        | localeSetting `Set.member` seen ->
-            reject localeSetting "is represented more than once in one YAML mapping"
-        | otherwise -> Right $ Set.insert localeSetting seen
-      Nothing -> Right seen
-    afterValue <- parseNode afterKey
-    parseMapping setting afterValue
-
-parseMappingKey :: [Libyaml.Event] -> Either Text (Text, [Libyaml.Event])
-parseMappingKey = \case
-  Libyaml.EventScalar bytes _ _ _ : rest ->
-    first
-      (const "locale catalog configuration is invalid: runtime settings YAML has a non-text mapping key")
-      ((,rest) <$> decodeUtf8' bytes)
-  Libyaml.EventAlias _ : _ ->
-    Left "locale catalog configuration is invalid: runtime settings YAML uses an ambiguous alias as a mapping key"
-  _ -> Left "locale catalog configuration is invalid: malformed runtime settings YAML"
-
-includePaths :: [Libyaml.Event] -> Either Text [FilePath]
-includePaths = traverse includePath . filter isInclude
+rawIncludePaths :: [Libyaml.Event] -> Either Text [ByteString]
+rawIncludePaths = traverse includePath . filter isInclude
  where
   isInclude = \case
     Libyaml.EventScalar _ (Libyaml.UriTag "!include") _ _ -> True
     _ -> False
 
   includePath = \case
-    Libyaml.EventScalar bytes (Libyaml.UriTag "!include") _ _ ->
-      first
-        (const "locale catalog configuration is invalid: runtime settings YAML has a non-text !include path")
-        (toString <$> decodeUtf8' bytes)
-    _ -> Left "locale catalog configuration is invalid: malformed runtime settings YAML"
+    Libyaml.EventScalar bytes (Libyaml.UriTag "!include") _ _
+      | ByteString.null bytes -> Left "an !include path cannot be empty"
+      | otherwise -> Right bytes
+    _ -> Left "malformed !include source"
+
+{- | Splice the captured include bytes into the captured root event stream,
+dropping the same stream and document events @Data.Yaml.Include@ drops.
+-}
+expandSourceEvents :: Map FilePath CapturedSource -> FilePath -> Either Text [Libyaml.Event]
+expandSourceEvents sources root = State.evalStateT (go root) maxExpandedEvents
+ where
+  go :: FilePath -> State.StateT Int (Either Text) [Libyaml.Event]
+  go path = do
+    source <-
+      lift $ maybe (Left "a captured !include source is missing") Right $ Map.lookup path sources
+    concat <$> traverse (expandEvent source) source.sourceEvents
+
+  expandEvent source event = do
+    chargeExpandedEvent
+    case event of
+      Libyaml.EventScalar bytes (Libyaml.UriTag "!include") _ _ -> do
+        target <-
+          lift
+            $ maybe (Left "a captured !include target is missing") Right
+            $ snd <$> find ((== bytes) . fst) source.sourceIncludes
+        included <- go target
+        pure $ filter (`notElem` irrelevantEvents) included
+      _ -> pure [event]
+
+  chargeExpandedEvent = do
+    remaining <- State.get
+    when (remaining <= 0) $ lift $ Left "settings includes expand past the configured event limit"
+    State.put (remaining - 1)
+
+  irrelevantEvents =
+    [ Libyaml.EventStreamStart
+    , Libyaml.EventDocumentStart
+    , Libyaml.EventDocumentEnd
+    , Libyaml.EventStreamEnd
+    ]
+
+decodeExpandedValue :: [Libyaml.Event] -> IO Value
+decodeExpandedValue events =
+  onMalformedYaml
+    $ YamlInternal.decodeHelper_ (Conduit.sourceList events) >>= \case
+      Left _ -> failSettings invalidYaml
+      Right (_warnings, value) -> pure value
+
+decodeEmbeddedValue :: ByteString -> IO Value
+decodeEmbeddedValue bytes = do
+  events <- parseEvents bytes
+  orFailInvalid $ analyzeRawEvents events
+  case Yaml.decodeEither' bytes of
+    Left _ -> failSettings invalidYaml
+    Right value -> pure value
+
+{- | Check decoded settings values, after YAML has resolved anchors, aliases
+and merge keys but before any environment substitution. Runtime sources are
+additionally analyzed as raw events, so duplicate and aliased locale keys stay
+visible there; this pass covers values a caller supplies directly.
+-}
+validateLocaleCatalogSettingsValues :: [Value] -> Either Text ()
+validateLocaleCatalogSettingsValues = traverse_ validateValue
+
+validateValue :: Value -> Either Text ()
+validateValue = \case
+  Object object ->
+    traverse_
+      ( \(key, value) -> do
+          for_ (settingForKey $ Key.toText key) (`validateEnvironmentMarker` value)
+          validateValue value
+      )
+      (KeyMap.toList object)
+  Array values -> traverse_ validateValue values
+  _ -> Right ()
+
+{- | Check the raw environment string behind every canonical marker that
+survives the effective merge. A marker a higher-precedence source replaced
+cannot reach its variable, so its variable is not this deployment's to
+validate — exactly as the standard loader would ignore it.
+-}
+validateCanonicalEnvironmentValues :: KeyMap Text -> Value -> Either Text ()
+validateCanonicalEnvironmentValues environment = go
+ where
+  go = \case
+    Object object ->
+      traverse_
+        ( \(key, value) -> do
+            for_ (settingForKey $ Key.toText key) \setting ->
+              for_ (canonicalEnvironmentMarkers setting value) \name ->
+                for_ (KeyMap.lookup (Key.fromText name) environment) \raw ->
+                  validateLocaleCatalogRawEnvironmentValue setting raw
+            go value
+        )
+        (KeyMap.toList object)
+    Array values -> traverse_ go values
+    _ -> Right ()
+
+{- | The variables an @_env:@ marker under a locale setting would actually
+read, when that is the setting's own canonical variable. @applyEnvValue@
+substitutes inside nested objects and arrays too, so those are collected as
+well; a noncanonical name is refused by the raw analysis instead.
+-}
+canonicalEnvironmentMarkers :: LocaleCatalogSetting -> Value -> [Text]
+canonicalEnvironmentMarkers setting = \case
+  String marker -> maybeToList $ canonicalEnvironmentMarker setting marker
+  Array values -> concatMap (canonicalEnvironmentMarkers setting) (toList values)
+  Object fields -> concatMap (canonicalEnvironmentMarkers setting) (KeyMap.elems fields)
+  _ -> []
+
+{- | @applyEnvValue@ reads the variable whether or not a default follows, so
+both spellings count here.
+-}
+canonicalEnvironmentMarker :: LocaleCatalogSetting -> Text -> Maybe Text
+canonicalEnvironmentMarker setting marker = do
+  suffix <- Text.stripPrefix "_env:" marker
+  let name = Text.takeWhile (/= ':') suffix
+  guard (name == localeCatalogSettingEnvVar setting)
+  pure name
+
+{- | Analyze one captured, include-expanded event stream: resolve anchors and
+aliases the way @yaml@ does, then check every mapping — including the ones a
+@\<\<@ merge key pulls in — before that merge is resolved.
+-}
+analyzeRawEvents :: [Libyaml.Event] -> Either Text ()
+analyzeRawEvents events = do
+  documents <- parseRawDocuments events
+  State.evalStateT (traverse_ analyzeRawNode documents) maxAnalysisSteps
+
+parseRawDocuments :: [Libyaml.Event] -> Either Text [RawNode]
+parseRawDocuments events = State.evalStateT (go $ filter structural events) mempty
+ where
+  structural = \case
+    Libyaml.EventStreamStart -> False
+    Libyaml.EventStreamEnd -> False
+    Libyaml.EventDocumentStart -> False
+    Libyaml.EventDocumentEnd -> False
+    _ -> True
+
+  go [] = pure []
+  go remaining = do
+    (node, rest) <- parseRawNode remaining
+    (node :) <$> go rest
+
+parseRawNode :: [Libyaml.Event] -> RawParse (RawNode, [Libyaml.Event])
+parseRawNode = \case
+  Libyaml.EventAlias anchor : rest -> do
+    anchors <- State.get
+    case Map.lookup anchor anchors of
+      Nothing -> lift $ Left "settings YAML references an anchor that is not defined yet"
+      Just node -> pure (node, rest)
+  Libyaml.EventScalar bytes _ _ anchor : rest ->
+    (,rest) <$> defineRawAnchor anchor (RawScalar bytes)
+  Libyaml.EventSequenceStart _ _ anchor : rest -> do
+    (values, remaining) <- parseRawSequence rest
+    (,remaining) <$> defineRawAnchor anchor (RawSequence values)
+  Libyaml.EventMappingStart _ _ anchor : rest -> do
+    (pairs, remaining) <- parseRawMapping rest
+    (,remaining) <$> defineRawAnchor anchor (RawMapping pairs)
+  _ -> lift $ Left "malformed settings YAML"
+
+-- | An anchor names a node only once that node is complete, and a repeated
+-- anchor name replaces the earlier one, which is what @yaml@ does.
+defineRawAnchor :: Libyaml.Anchor -> RawNode -> RawParse RawNode
+defineRawAnchor anchor node = do
+  for_ anchor \name -> State.modify' $ Map.insert name node
+  pure node
+
+parseRawSequence :: [Libyaml.Event] -> RawParse ([RawNode], [Libyaml.Event])
+parseRawSequence = go []
+ where
+  go values = \case
+    Libyaml.EventSequenceEnd : rest -> pure (reverse values, rest)
+    events -> do
+      (value, remaining) <- parseRawNode events
+      go (value : values) remaining
+
+parseRawMapping :: [Libyaml.Event] -> RawParse ([(RawNode, RawNode)], [Libyaml.Event])
+parseRawMapping = go []
+ where
+  go pairs = \case
+    Libyaml.EventMappingEnd : rest -> pure (reverse pairs, rest)
+    events -> do
+      (key, afterKey) <- parseRawNode events
+      (value, remaining) <- parseRawNode afterKey
+      go ((key, value) : pairs) remaining
+
+analyzeRawNode :: RawNode -> Analysis ()
+analyzeRawNode node = do
+  chargeAnalysisStep
+  case node of
+    RawScalar {} -> pure ()
+    RawSequence values -> traverse_ analyzeRawNode values
+    RawMapping pairs -> do
+      void $ effectiveLocaleKeys node
+      traverse_ (\(key, value) -> analyzeRawNode key *> analyzeRawNode value) pairs
+
+chargeAnalysisStep :: Analysis ()
+chargeAnalysisStep = do
+  remaining <- State.get
+  when (remaining <= 0) $ lift $ Left "settings YAML is too deeply aliased to analyze"
+  State.put (remaining - 1)
+
+{- | The locale settings one mapping represents, counting the keys a @\<\<@
+merge contributes. Two representations of the same setting are ambiguous and
+are refused, whether they are spelled directly, reached through a scalar
+alias, or contributed by different merge sources.
+-}
+effectiveLocaleKeys :: RawNode -> Analysis (Set LocaleCatalogSetting)
+effectiveLocaleKeys = \case
+  RawMapping pairs -> foldM addPair mempty pairs
+  _ -> pure mempty
+ where
+  addPair keys (key, value) = do
+    chargeAnalysisStep
+    let textKey = rawTextKey key
+        direct = textKey >>= settingForKey
+    traverse_ (`analyzeLocaleValue` value) direct
+    merged <- if textKey == Just mergeKey then mergedLocaleKeys value else pure mempty
+    lift $ addLocaleKeys keys (Set.fromList (toList direct) <> merged)
+
+mergedLocaleKeys :: RawNode -> Analysis (Set LocaleCatalogSetting)
+mergedLocaleKeys node = do
+  chargeAnalysisStep
+  case node of
+    RawMapping {} -> effectiveLocaleKeys node
+    RawSequence values -> foldM addMerged mempty values
+    RawScalar {} -> pure mempty
+ where
+  addMerged keys value = mergedLocaleKeys value >>= lift . addLocaleKeys keys
+
+addLocaleKeys
+  :: Set LocaleCatalogSetting -> Set LocaleCatalogSetting -> Either Text (Set LocaleCatalogSetting)
+addLocaleKeys existing incoming =
+  case Set.lookupMin $ Set.intersection existing incoming of
+    Nothing -> Right $ existing <> incoming
+    Just setting -> reject setting "is represented more than once in one YAML mapping or merge"
+
+mergeKey :: Text
+mergeKey = "<<"
+
+{- | @yaml@ builds mapping keys from the scalar's raw text, and decodes YAML
+bytes leniently, so this reads a key exactly the way the loader will.
+-}
+rawTextKey :: RawNode -> Maybe Text
+rawTextKey = \case
+  RawScalar bytes -> Just $ TextEncoding.decodeUtf8With lenientDecode bytes
+  _ -> Nothing
+
+settingForKey :: Text -> Maybe LocaleCatalogSetting
+settingForKey key =
+  find (\setting -> localeCatalogSettingKey setting == key) [minBound .. maxBound]
+
+{- | Every raw value a locale setting's key carries, before YAML resolves the
+merge that key participates in. @applyEnvValue@ substitutes nested values too,
+so a marker inside a sequence or a nested mapping is checked with the same
+grammar as the plain scalar spelling.
+-}
+analyzeLocaleValue :: LocaleCatalogSetting -> RawNode -> Analysis ()
+analyzeLocaleValue setting node = do
+  chargeAnalysisStep
+  case node of
+    RawScalar bytes ->
+      lift $ validateMarkerText setting $ TextEncoding.decodeUtf8With lenientDecode bytes
+    RawSequence values -> traverse_ (analyzeLocaleValue setting) values
+    RawMapping pairs -> traverse_ (analyzeLocaleValue setting . snd) pairs
+
+validateEnvironmentMarker :: LocaleCatalogSetting -> Value -> Either Text ()
+validateEnvironmentMarker setting = \case
+  String marker -> validateMarkerText setting marker
+  Array values -> traverse_ (validateEnvironmentMarker setting) values
+  Object fields -> traverse_ (validateEnvironmentMarker setting) (KeyMap.elems fields)
+  _ -> Right ()
+
+validateMarkerText :: LocaleCatalogSetting -> Text -> Either Text ()
+validateMarkerText setting marker
+  | Just suffix <- Text.stripPrefix "_env:" marker =
+      case Text.break (== ':') suffix of
+        (name, remainder)
+          | Text.null remainder -> reject setting "is an incomplete _env: mapping"
+          | name == localeCatalogSettingEnvVar setting -> Right ()
+          | otherwise ->
+              reject setting "must use only its canonical ARKHAM_LOCALE_CATALOG_* environment variable"
+  | otherwise = Right ()
 
 reject :: LocaleCatalogSetting -> Text -> Either Text a
 reject setting reason =
   Left
-    $ "locale catalog configuration is invalid: "
-    <> localeCatalogSettingKey setting
+    $ localeCatalogSettingKey setting
     <> " ("
     <> localeCatalogSettingEnvVar setting
     <> ") "

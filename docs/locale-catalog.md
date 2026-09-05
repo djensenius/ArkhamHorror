@@ -556,6 +556,26 @@ its numeric components rather than the string. Supplying some but not all of the
 error rather than a silent fallback to that legacy shape, so a half-removed
 pointer cannot quietly disappear from a running deployment.
 
+At startup the backend takes one bounded, immutable snapshot of every
+command-line settings file, every transitive `!include`, the embedded default
+settings bytes, and the complete process environment. It validates each raw
+YAML mapping before merge resolution, including mappings reached through
+anchors, aliases and `<<` merges. A locale setting's `_env:` mapping may name
+only its matching canonical variable in the table — in a nested value under
+that key as well as in the plain scalar spelling; malformed or noncanonical
+mappings are rejected even if another source overrides them. Unrelated
+anchors, aliases and merge keys keep working exactly as the `yaml` package
+resolves them, and the normal precedence is unchanged: earlier command-line
+files win over later files and embedded defaults, recursively for objects,
+right-associated and left-biased exactly as `Data.Yaml.Config.loadYamlSettings`
+merges. Raw environment grammar is checked only for the canonical variables a
+marker still reads in that effective merged value, so a literal
+higher-precedence setting deliberately makes an inherited value irrelevant and
+a variable no locale setting names is never this deployment's to validate.
+Files and symlinks may change after that snapshot; startup continues from the
+captured bytes rather than rereading a path, and the same captured environment
+is what reaches every `_env:` marker.
+
 **The manifest URL is bound deliberately, not parsed permissively.** The
 preferred value is the same-origin absolute path this catalog already
 publishes; it needs no hostname, so the same configuration works for every

@@ -244,6 +244,7 @@ tests:
       - directory
       - exceptions
       - foreign-store
+      - filepath
       - hspec
       - hspec-expectations-lifted
       - http-client

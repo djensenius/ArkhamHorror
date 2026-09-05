@@ -624,6 +624,117 @@ def _check_with_probe(
         "a duplicate locale settings key was accepted",
     )
 
+    # Alias keys are valid YAML and remain valid for unrelated settings, but a
+    # scalar alias that resolves to a locale key participates in the same
+    # duplicate/provenance checks as its direct spelling. Sequence merges are
+    # likewise rejected when two merge sources represent the same locale key.
+    harmless_alias = write_raw_settings_file(
+        scratch,
+        "settings-harmless-alias-key.yml",
+        "\n".join(
+            [
+                "alias-source: &ordinary ordinary-key",
+                "*ordinary: harmless",
+                "",
+            ]
+        ),
+    )
+    harmless_alias_run = run_probe(command, {}, [harmless_alias])
+    require(
+        harmless_alias_run.returncode == 0,
+        "an unrelated scalar alias key accepted by the standard YAML loader was refused",
+    )
+    alias_key_duplicate = write_raw_settings_file(
+        scratch,
+        "settings-alias-key-duplicate.yml",
+        "\n".join(
+            [
+                "locale-key: &locale_key locale-catalog-default-locale",
+                "*locale_key: en",
+                "locale-catalog-default-locale: fr",
+                "",
+            ]
+        ),
+    )
+    alias_key_duplicate_run = run_probe(command, settings, [alias_key_duplicate])
+    require(
+        alias_key_duplicate_run.returncode != 0 and b"localeCatalog" not in alias_key_duplicate_run.stdout,
+        "a locale key duplicated through a scalar alias was accepted",
+    )
+    sequence_merge_duplicate = write_raw_settings_file(
+        scratch,
+        "settings-sequence-merge-duplicate.yml",
+        "\n".join(
+            [
+                "first: &first",
+                "  locale-catalog-default-locale: en",
+                "second: &second",
+                "  locale-catalog-default-locale: fr",
+                "<<: [*first, *second]",
+                "",
+            ]
+        ),
+    )
+    sequence_merge_duplicate_run = run_probe(command, settings, [sequence_merge_duplicate])
+    require(
+        sequence_merge_duplicate_run.returncode != 0 and b"localeCatalog" not in sequence_merge_duplicate_run.stdout,
+        "a locale key duplicated across sequence merge sources was accepted",
+    )
+
+    # Environment substitution descends into nested values, so a noncanonical
+    # marker under a locale settings key is refused with the same grammar as
+    # the plain scalar spelling rather than being left to the typed parser.
+    nested_alias = write_raw_settings_file(
+        scratch,
+        "settings-nested-alias.yml",
+        'locale-catalog-locales:\n  - "_env:LOCALE_ALIAS:"\n',
+    )
+    nested_alias_run = run_probe(
+        command,
+        {**settings, "LOCALE_ALIAS": settings["ARKHAM_LOCALE_CATALOG_LOCALES"]},
+        [nested_alias],
+    )
+    require(
+        nested_alias_run.returncode != 0 and b"localeCatalog" not in nested_alias_run.stdout,
+        "a noncanonical marker nested under a locale settings key was accepted",
+    )
+
+    # Raw values are checked only for a canonical marker that survives the
+    # package's exact merge. A higher-precedence literal wins over a malformed
+    # process value and over a lower-precedence canonical marker, while a
+    # noncanonical marker remains forbidden wherever it appeared.
+    invalid_default_locale = dict(settings)
+    invalid_default_locale["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"] += "\r"
+    literal_ignores_invalid_environment = run_probe(command, invalid_default_locale, [file_settings])
+    require(
+        literal_ignores_invalid_environment.returncode == 0
+        and literal_ignores_invalid_environment.stdout == printed.stdout,
+        "an invalid environment value reached a locale setting hidden by a literal override",
+    )
+    hidden_canonical_marker = write_raw_settings_file(
+        scratch,
+        "settings-hidden-canonical-marker.yml",
+        'locale-catalog-default-locale: "_env:ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE:"\n',
+    )
+    hidden_canonical_run = run_probe(
+        command, invalid_default_locale, [file_settings, hidden_canonical_marker]
+    )
+    require(
+        hidden_canonical_run.returncode == 0 and hidden_canonical_run.stdout == printed.stdout,
+        "a lower-precedence canonical marker checked an environment value it could not reach",
+    )
+
+    # A variable no locale setting names is not this deployment's to validate,
+    # however malformed it is: only the canonical ARKHAM_LOCALE_CATALOG_*
+    # variables an effective marker actually reads are checked.
+    unrelated_invalid = dict(settings)
+    unrelated_invalid["LOCALE_ALIAS"] = settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"] + "\r"
+    unrelated_invalid_run = run_probe(command, unrelated_invalid)
+    require(
+        unrelated_invalid_run.returncode == 0 and unrelated_invalid_run.stdout == printed.stdout,
+        "an invalid value for a variable no locale setting names changed startup",
+    )
+
     # A settings file that is only partially filled in, with nothing else to
     # complete it, must fail startup rather than advertise half a pointer.
     partial_file = write_settings_file(
