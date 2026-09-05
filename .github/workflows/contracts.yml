@@ -41,7 +41,14 @@ jobs:
       - name: Enforce revision drift against the event's explicit base
         env:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || github.event.inputs.base_sha }}
-        run: mise run contracts:revision-drift -- "$BASE_SHA"
+        shell: /bin/sh -e {0}
+        run: |
+          /usr/bin/env -i \
+            HOME=/home/runner \
+            LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise \
+            PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin \
+            /bin/bash --noprofile --norc -eo pipefail -c \
+              'mise run contracts:revision-drift -- "$1"' -- "$BASE_SHA"
 
   openapi:
     name: OpenAPI

@@ -29,7 +29,7 @@ RUN npm run build
 # to be correct when the build finished.
 RUN node scripts/locale-catalog/verify-dist.mjs --publish
 
-FROM ubuntu:22.04 AS base
+FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV LC_ALL=C.UTF-8
@@ -136,7 +136,7 @@ RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-discover-hie-${CACHE_ID},target=/opt/arkham/src/backend/cards-discover/.hie \
   sh /opt/arkham/src/backend/scripts/docker-build-api.sh
 
-FROM ubuntu:22.04 AS app
+FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS app
 
 # App
 

@@ -57,6 +57,7 @@ GOVERNED_TREE_PATHS = (
     "uv.lock",
     "Dockerfile",
     ".github/workflows",
+    "offline/scripts/03-build-frontend.sh",
 )
 
 OWNER_SENTINEL = ".locale-catalog-boundary-owner"
@@ -676,12 +677,14 @@ def test_source_and_schema_tampering(scratch: Path, token: str) -> int:
     for relative_path in (
         "scripts/locale_catalog_python_boundary/__init__.py",
         "scripts/json/__init__.py",
+        "scripts/locale_catalog_python_boundary.cpython-314-darwin.so",
+        "scripts/strict_json.cpython-314-darwin.dylib",
     ):
         tree = create_probe_tree(scratch, "nested-import-shadow", token, with_history=False)
         try:
             path = tree / relative_path
-            path.parent.mkdir()
-            path.write_bytes(b"raise SystemExit('nested import shadow ran')\n")
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(b"non-executable shadow probe\n")
             require_authoritative_failure(
                 f"nested importable shadow {relative_path}", tree, [FIXTURE_ENTRY, "--check"]
             )
@@ -695,12 +698,29 @@ def test_workflow_base_authority_wiring() -> int:
     text = (ROOT / ".github" / "workflows" / "contracts.yml").read_text(encoding="utf-8")
     require(
         "BASE_SHA: ${{ github.event_name" in text
-        and 'mise run contracts:revision-drift -- "$BASE_SHA"' in text
+        and "'mise run contracts:revision-drift -- \"$1\"' -- \"$BASE_SHA\"" in text
         and 'revision-drift -- "${{' not in text,
         "contracts workflow interpolates an Actions expression into shell source instead of "
         "passing the event base through the quoted BASE_SHA environment value",
     )
-    return 1
+    offline = (ROOT / ".github" / "workflows" / "build-offline.yml").read_text(encoding="utf-8")
+    require(
+        "contents: write" in offline
+        and "softprops/action-gh-release" not in offline
+        and "gh release create" in offline
+        and all(
+            f"@{sha}" in offline
+            for sha in (
+                "11d5960a326750d5838078e36cf38b85af677262",
+                "0057852bfaa89a56745cba8c7296529d2fc39830",
+                "ea165f8d65b6e75b540449e92b4886f43607fa02",
+                "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            )
+        )
+        and "@v" not in offline,
+        "build-offline.yml retains a mutable action in a contents:write release workflow",
+    )
+    return 2
 
 
 def test_fixture_writer_ownership(scratch: Path, token: str) -> int:

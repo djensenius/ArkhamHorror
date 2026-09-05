@@ -47,9 +47,9 @@ from pathlib import Path
 
 import strict_json
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT", Path(__file__).resolve().parents[1]))
 FRONTEND = ROOT / "frontend"
-WORK_PARENT = FRONTEND / "node_modules"
+WORK_PARENT = FRONTEND.resolve() / "node_modules"
 WORK: Path | None = None
 WORK_OWNER = "owner"
 NGINX_IMAGE = "nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"

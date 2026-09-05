@@ -30,6 +30,7 @@ install, or `git` is a failure, not a skip.
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -40,7 +41,7 @@ from pathlib import Path
 import json_schema_subset
 import strict_json
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT", Path(__file__).resolve().parents[1]))
 FRONTEND = ROOT / "frontend"
 GENERATOR = FRONTEND / "scripts" / "locale-catalog" / "generate.mjs"
 SCHEMA_DIR = FRONTEND / "schemas" / "locale-catalog" / "v1"
@@ -96,7 +97,7 @@ def create_owned_workspace() -> tuple[Path, str]:
     sharing those mutations and avoids deleting any fixed path a developer
     might have left behind.
     """
-    parent = FRONTEND / "node_modules"
+    parent = FRONTEND.resolve() / "node_modules"
     require(
         parent.is_dir() and not parent.is_symlink(),
         "frontend dependencies are not installed as a regular node_modules directory",
@@ -164,6 +165,13 @@ def run_generator(
             result.returncode == 0,
             f"generator failed ({' '.join(args)}):\n{result.stdout}\n{result.stderr}",
         )
+        if "--out" in args:
+            output = Path(args[args.index("--out") + 1])
+            require(
+                (output / "manifest.json").is_file(),
+                f"generator returned success without manifest.json at {output}; "
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            )
     return result
 
 

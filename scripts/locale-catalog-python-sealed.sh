@@ -33,6 +33,7 @@ readonly RM="/bin/rm"
 readonly DATE="/bin/date"
 readonly MKDIR="/bin/mkdir"
 readonly CP="/bin/cp"
+readonly LN="/bin/ln"
 readonly UNAME="/usr/bin/uname"
 readonly FIND="/usr/bin/find"
 readonly SORT="/usr/bin/sort"
@@ -171,6 +172,9 @@ case "$("${UNAME}" -s):$("${UNAME}" -m)" in
       "a9bd0630891c2dcdee70de88270fee2cc0c4a9e76495039dd3b4f91c5e6b71df"
     require_digest "${UV}" "sealed uv 0.12.6" \
       "e8929237934c8679686428f5a7736c7ae7a5fe7a33b0504d1b03446cdbc43c94"
+    readonly SYSCONFIG_SOURCE="_sysconfigdata__darwin_darwin.py"
+    require_digest "${STDLIB}/${SYSCONFIG_SOURCE}" "active CPython sysconfig source" \
+      "3f4f3d7287fe28096c5b80f9b92fe561b69b5f50a16e4bf075165c96d7892981"
     ;;
   Linux:x86_64)
     readonly PYTHON_DIGESTS=(
@@ -182,6 +186,9 @@ case "$("${UNAME}" -s):$("${UNAME}" -m)" in
       "ad19784f7e90ba789a099eccba77ede8dc90a778c424f1c10a70fed3ff903fdc"
     require_digest "${UV}" "sealed uv 0.12.6" \
       "d381f11517c66523211b0876552ff7dea5c1b4b0f13800571b35225761302fba"
+    readonly SYSCONFIG_SOURCE="_sysconfigdata__linux_x86_64-linux-gnu.py"
+    require_digest "${STDLIB}/${SYSCONFIG_SOURCE}" "active CPython sysconfig source" \
+      "90ce56ecd6e00b572c035dafaab3a66a756e2c488cbd86b919dfee41fd364bf4"
     ;;
   *)
     die "unsupported toolchain platform $(${UNAME} -s):$(${UNAME} -m); no portable exact binary identity is declared"
@@ -262,6 +269,8 @@ readonly PYCACHE_PREFIX="${WORKSPACE}/pycache"
 "${MKDIR}" -p "${SCRATCH_HOME}" "${PYCACHE_PREFIX}"
 readonly SITE_PACKAGES="${VENV}/lib/python3.14/site-packages"
 readonly RUNTIME_HOME="${WORKSPACE}/runtime"
+readonly SOURCE_MANIFEST="${WORKSPACE}/source-manifest"
+readonly SOURCE_REPOSITORY="${WORKSPACE}/repository"
 
 # Python still accepts valid unchecked .pyc files even with -B and
 # pycache_prefix.  Build an invocation-owned reflink/copy of the already
@@ -273,6 +282,12 @@ case "$("${UNAME}" -s)" in
   Linux) "${CP}" --reflink=auto -a "${SEALED_ROOT}/installs/python/3.14.7" "${RUNTIME_HOME}" ;;
   *) die "unsupported runtime-copy platform $(${UNAME} -s)" ;;
 esac
+# uv starts the copied interpreter with site enabled while it discovers the
+# requested base. No copied base site-packages, .pth file, or sitecustomize may
+# exist at that point; dependencies are installed only into VENV afterward.
+"${RM}" -rf -- "${RUNTIME_HOME}/lib/python3.14/site-packages"
+[[ ! -e "${RUNTIME_HOME}/lib/python3.14/site-packages" ]] ||
+  die "copied CPython base still contains site-packages before uv starts it"
 purge_runtime_bytecode() {
   "${FIND}" "${RUNTIME_HOME}" -type d -name __pycache__ -prune -exec "${RM}" -rf -- {} +
   local unexpected_cache
@@ -308,20 +323,48 @@ status=0
   LOCALE_CATALOG_NODE="${NODE}" \
   LOCALE_CATALOG_UV="${UV}" \
   LOCALE_CATALOG_STACK="${STACK}" \
+  ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT="${ROOT}" \
   ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" \
   ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX="${PYCACHE_PREFIX}" \
   ARKHAM_LOCALE_CATALOG_RUNTIME_HOME="${RUNTIME_HOME}" \
+  ARKHAM_LOCALE_CATALOG_SOURCE_MANIFEST="${SOURCE_MANIFEST}" \
+  ARKHAM_LOCALE_CATALOG_SOURCE_MANIFEST_WRITE=1 \
   "${RUNTIME_PYTHON}" -I -S -E -B -X "pycache_prefix=${PYCACHE_PREFIX}" "${ROOT}/scripts/locale_catalog_runtime.py" "$@" || status=$?
 if (( status != 0 )); then
   exit "${status}"
 fi
 
-# Run only the just-validated fixed allowlisted target in a *second* clean
-# interpreter.  The short runner is sealed in this script (which fixture
-# provenance hashes), receives paths as argv rather than source text, and
-# imports no ambient package.  Its one dynamic action is deliberately outside
-# governed Python sources: those sources are fully capability-checked by the
-# bootstrap above before this interpreter can read one.
+# Snapshot every checked Python source into the private workspace. The first
+# bootstrap wrote source-manifest after scanning it; compare the snapshot bytes
+# before the second interpreter can execute even its bootstrap. Repository data
+# stays read-only through named links, while no Python module is reopened from
+# the mutable checkout.
+"${MKDIR}" "${SOURCE_REPOSITORY}"
+"${CP}" -R "${ROOT}/scripts" "${SOURCE_REPOSITORY}/scripts"
+for input in .git .github Dockerfile backend contracts frontend mise.toml offline pyproject.toml uv.lock; do
+  [[ -e "${ROOT}/${input}" || -L "${ROOT}/${input}" ]] || continue
+  "${LN}" -s "${ROOT}/${input}" "${SOURCE_REPOSITORY}/${input}"
+done
+if [[ -f "${ROOT}/.locale-catalog-boundary-owner" && ! -L "${ROOT}/.locale-catalog-boundary-owner" ]]; then
+  "${CP}" "${ROOT}/.locale-catalog-boundary-owner" "${SOURCE_REPOSITORY}/.locale-catalog-boundary-owner"
+fi
+snapshot_runtime_seen=0
+while IFS=' ' read -r digest relative extra; do
+  [[ -n "${digest}" && -n "${relative}" && -z "${extra}" && "${relative}" == scripts/*.py ]] ||
+    die "source manifest is malformed"
+  snapshot_path="${SOURCE_REPOSITORY}/${relative}"
+  [[ -f "${snapshot_path}" && ! -L "${snapshot_path}" ]] ||
+    die "source snapshot is missing ${relative}"
+  [[ "$(sha256_file "${snapshot_path}")" == "${digest}" ]] ||
+    die "source snapshot differs from the checked ${relative}"
+  [[ "${relative}" == "scripts/locale_catalog_runtime.py" ]] && snapshot_runtime_seen=1
+done <"${SOURCE_MANIFEST}"
+[[ "${snapshot_runtime_seen}" == 1 ]] || die "source manifest omits the runtime bootstrap"
+
+# Run only the checked private snapshot in a second clean interpreter. The
+# short runner receives paths as argv rather than source text, and imports no
+# ambient package.
+cd "${SOURCE_REPOSITORY}"
 /usr/bin/env -i \
   HOME="${SCRATCH_HOME}" \
   PATH="${TRUSTED_PATH}" \
@@ -330,9 +373,11 @@ fi
   LOCALE_CATALOG_NODE="${NODE}" \
   LOCALE_CATALOG_UV="${UV}" \
   LOCALE_CATALOG_STACK="${STACK}" \
+  ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT="${ROOT}" \
   ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" \
   ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX="${PYCACHE_PREFIX}" \
   ARKHAM_LOCALE_CATALOG_RUNTIME_HOME="${RUNTIME_HOME}" \
+  ARKHAM_LOCALE_CATALOG_SOURCE_MANIFEST="${SOURCE_MANIFEST}" \
   "${RUNTIME_PYTHON}" -I -S -E -B -X "pycache_prefix=${PYCACHE_PREFIX}" -c '
 import runpy
 import sys
@@ -341,5 +386,5 @@ scripts, site_packages, target, *arguments = sys.argv[1:]
 sys.path[:0] = [scripts, site_packages]
 sys.argv = [target, *arguments]
 runpy.run_path(target, run_name="__main__")
-' "${ROOT}/scripts" "${SITE_PACKAGES}" "${ROOT}/$1" "${@:2}" || status=$?
+' "${SOURCE_REPOSITORY}/scripts" "${SITE_PACKAGES}" "${SOURCE_REPOSITORY}/$1" "${@:2}" || status=$?
 exit "${status}"

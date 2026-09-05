@@ -64,6 +64,13 @@ EXTENSION_SUFFIXES = (".so", ".dylib", ".pyd")
 SEALED_RUNNER_STDLIB_IMPORTS = frozenset({"runpy"})
 
 
+def workspace_root() -> Path:
+    raw = os.environ.get("ARKHAM_LOCALE_CATALOG_RUNTIME_HOME")
+    if raw:
+        return Path(raw).parent
+    return ROOT
+
+
 def refuse(message: str) -> None:
     raise SystemExit(f"locale-catalog python: {message}")
 
@@ -177,7 +184,7 @@ def verify_pycache_prefix() -> None:
     prefix = Path(raw)
     if (
         prefix.name != "pycache"
-        or prefix.parent.parent != ROOT
+        or prefix.parent != workspace_root()
         or not prefix.parent.name.startswith(WORKSPACE_PREFIX)
         or prefix.is_symlink()
         or not prefix.is_dir()
@@ -195,7 +202,7 @@ def read_runtime_home() -> Path:
     runtime = Path(raw)
     if (
         runtime.name != "runtime"
-        or runtime.parent.parent != ROOT
+        or runtime.parent != workspace_root()
         or not runtime.parent.name.startswith(WORKSPACE_PREFIX)
         or runtime.is_symlink()
         or not runtime.is_dir()
@@ -292,6 +299,23 @@ def verify_stdlib(
     if not present:
         refuse(f"sealed stdlib root {stdlib_root} contains no attested module")
     return stdlib_root, present, variants, extensions
+
+
+def verify_active_sysconfig_source(profile: dict, stdlib_root: Path) -> None:
+    entries = profile.get("activeSysconfigSources")
+    entry = entries.get(runtime_platform()) if isinstance(entries, dict) else None
+    if (
+        not isinstance(entry, dict)
+        or set(entry) != {"path", "sha256"}
+        or not isinstance(entry["path"], str)
+        or not isinstance(entry["sha256"], str)
+    ):
+        refuse("toolchain lock does not pin this platform's active sysconfig source")
+    path = stdlib_root / entry["path"]
+    if path.is_symlink() or not path.is_file():
+        refuse(f"active sysconfig source {entry['path']!r} is not a regular file")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
+        refuse(f"active sysconfig source {entry['path']!r} does not match the toolchain lock")
 
 
 def _imported_module_names(tree: ast.AST, package: str) -> set[str]:
@@ -498,6 +522,22 @@ def verify_explicit_stack() -> None:
     require_sealed_executable(stack, "explicitly bound stack")
 
 
+def verify_scripts_directory_shape() -> None:
+    """Reject every import-shadowing artifact before scripts enters sys.path."""
+    for path in SCRIPTS.iterdir():
+        relative = path.relative_to(ROOT)
+        if path.is_symlink():
+            refuse(f"trusted scripts tree contains a symlink: {relative}")
+        if path.is_dir():
+            refuse(f"trusted scripts tree contains an undeclared nested directory: {relative}")
+        if not path.is_file():
+            refuse(f"trusted scripts tree contains an undeclared file type: {relative}")
+        if path.name.endswith(EXTENSION_SUFFIXES):
+            refuse(f"trusted scripts tree contains an importable extension: {relative}")
+        if path.suffix == ".pyc":
+            refuse(f"trusted scripts tree contains bytecode: {relative}")
+
+
 def verify_source_tree() -> None:
     from locale_catalog_python_boundary import SourceBoundaryError, all_executable_sources
 
@@ -579,7 +619,7 @@ def verify_dependencies() -> Path:
     venv = Path(raw_venv)
     if (
         venv.name != VENV_NAME
-        or venv.parent.parent != ROOT
+        or venv.parent != workspace_root()
         or not venv.parent.name.startswith(WORKSPACE_PREFIX)
         or venv.is_symlink()
         or not venv.is_dir()
@@ -640,6 +680,26 @@ def verify_dependencies() -> Path:
     return site_packages
 
 
+def write_source_manifest() -> None:
+    raw = os.environ.get("ARKHAM_LOCALE_CATALOG_SOURCE_MANIFEST")
+    if not raw or os.environ.get("ARKHAM_LOCALE_CATALOG_SOURCE_MANIFEST_WRITE") != "1":
+        return
+    path = Path(raw)
+    if (
+        path.name != "source-manifest"
+        or path.parent != workspace_root()
+        or path.is_symlink()
+    ):
+        refuse("source manifest is not this invocation's owned workspace path")
+    from locale_catalog_python_boundary import all_executable_sources
+
+    lines = []
+    for relative in all_executable_sources():
+        source = SCRIPTS / Path(relative).name
+        lines.append(f"{hashlib.sha256(source.read_bytes()).hexdigest()} {relative}\n")
+    path.write_text("".join(lines), encoding="ascii")
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         refuse("expected a declared Python entry point")
@@ -651,6 +711,7 @@ def main() -> None:
     verify_interpreter(profile, runtime_home)
     verify_pycache_prefix()
     stdlib_root, attested, variants, extensions = verify_stdlib(profile, runtime_home)
+    verify_active_sysconfig_source(profile, stdlib_root)
     verify_trusted_git()
     verify_trusted_node(profile, sealed_root)
     verify_trusted_uv(profile, sealed_root)
@@ -659,6 +720,7 @@ def main() -> None:
     # The only sanctioned path mutation: both roots are verified above.  The
     # sealed shell then executes this exact checked target in a second clean
     # interpreter, rather than giving any governed source a dynamic loader.
+    verify_scripts_directory_shape()
     sys.path.insert(0, str(SCRIPTS))
     verify_source_tree()
     verify_stdlib_import_closure(profile, stdlib_root, attested, variants, extensions)
@@ -673,6 +735,7 @@ def main() -> None:
         scan_python_closure(target)
     except SourceBoundaryError as error:
         refuse(str(error))
+    write_source_manifest()
     # The sealed shell executes the already-validated target in a second,
     # separately-clean environment. This bootstrap deliberately does not
     # import a target by path or execute dynamic code: `runpy`, importlib

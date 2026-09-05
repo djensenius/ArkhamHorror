@@ -125,7 +125,7 @@ SOURCE_SENSITIVE_IMPORTS = {
     "scripts/test_extract_backend_i18n_keys.py": frozenset({"sys"}),
     "scripts/test_locale_catalog_python_boundary.py": frozenset({"os", "subprocess"}),
     "scripts/validate-catalog-serving.py": frozenset({"os", "shutil", "subprocess", "sys", "urllib.request"}),
-    "scripts/validate-locale-catalog.py": frozenset({"shutil", "subprocess", "sys"}),
+    "scripts/validate-locale-catalog.py": frozenset({"os", "shutil", "subprocess", "sys"}),
 }
 
 # Use shapes a grant can authorise. A grant lists exactly the shapes its
@@ -224,6 +224,7 @@ SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
     },
     "scripts/validate-catalog-serving.py": {
         "os.environ.get": CALL,
+        "os.environ.get": CALL,
         "shutil.copyfile": CALL,
         "shutil.rmtree": CALL,
         "subprocess.CompletedProcess": VALUE,
@@ -236,6 +237,7 @@ SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
         "urllib.request.urlopen": CALL,
     },
     "scripts/validate-locale-catalog.py": {
+        "os.environ.get": CALL,
         "shutil.copyfile": CALL,
         "shutil.rmtree": CALL,
         "subprocess.CompletedProcess": VALUE,

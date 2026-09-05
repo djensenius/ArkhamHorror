@@ -4,6 +4,16 @@
   "cacheTag": "cpython-314",
   "stdlibIdentity": "cpython-3.14.7",
   "stdlibSourceTreeSha256": "c618cf3f74e4625201ed9d508f280b256235370e949172500c02d2da662d53e5",
+  "activeSysconfigSources": {
+    "darwin-arm64": {
+      "path": "_sysconfigdata__darwin_darwin.py",
+      "sha256": "3f4f3d7287fe28096c5b80f9b92fe561b69b5f50a16e4bf075165c96d7892981"
+    },
+    "linux-x86_64": {
+      "path": "_sysconfigdata__linux_x86_64-linux-gnu.py",
+      "sha256": "90ce56ecd6e00b572c035dafaab3a66a756e2c488cbd86b919dfee41fd364bf4"
+    }
+  },
   "interpreter": {
     "installRelativePath": "installs/python/3.14.7",
     "binaryRelativePath": "installs/python/3.14.7/bin/python3.14",

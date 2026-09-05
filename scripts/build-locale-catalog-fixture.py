@@ -77,6 +77,8 @@ GENERATOR_EXECUTION_SOURCES = (
     ".github/workflows/contracts.yml",
     ".github/workflows/locale-catalog.yml",
     ".github/workflows/haskell.yml",
+    ".github/workflows/build-offline.yml",
+    "offline/scripts/03-build-frontend.sh",
     "scripts/run-locale-catalog-python.sh",
     "scripts/locale-catalog-python-sealed.sh",
     RUNTIME_PROFILE,
@@ -163,6 +165,7 @@ def runtime_identity() -> dict[str, object]:
         == {
             *RUNTIME_IDENTITY_KEYS,
             "stdlibSourceTreeSha256",
+            "activeSysconfigSources",
             "interpreter",
             "uv",
             "externalTools",
@@ -183,6 +186,19 @@ def runtime_identity() -> dict[str, object]:
         and len(profile["stdlibSourceTreeSha256"]) == 64
         and all(character in "0123456789abcdef" for character in profile["stdlibSourceTreeSha256"]),
         f"{RUNTIME_PROFILE} does not pin the complete stdlib source tree digest",
+    )
+    require(
+        isinstance(profile["activeSysconfigSources"], dict)
+        and set(profile["activeSysconfigSources"]) == RUNTIME_PLATFORMS
+        and all(
+            isinstance(entry, dict)
+            and set(entry) == {"path", "sha256"}
+            and isinstance(entry["path"], str)
+            and isinstance(entry["sha256"], str)
+            and len(entry["sha256"]) == 64
+            for entry in profile["activeSysconfigSources"].values()
+        ),
+        f"{RUNTIME_PROFILE} does not pin active platform sysconfig sources",
     )
     require(
         has_binary_identity(
