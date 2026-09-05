@@ -1,9 +1,9 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.0572b74b6138dc519cbc4998ab1c277a",
+  "catalogRevision": "1.2db922d8ca60fb9952a0965ccc1be258",
   "basePath": "/locale-catalog",
   "manifestPath": "/locale-catalog/manifest.json",
-  "revisionManifestPath": "/locale-catalog/r/1.0572b74b6138dc519cbc4998ab1c277a/manifest.json",
+  "revisionManifestPath": "/locale-catalog/r/1.2db922d8ca60fb9952a0965ccc1be258/manifest.json",
   "chunkPathPrefix": "/locale-catalog/c/",
   "digestAlgorithm": "sha256",
   "defaultLocale": "en",
@@ -104,13 +104,13 @@
     "unknownVariableTypes": []
   },
   "provenance": {
-    "sha256": "0572b74b6138dc519cbc4998ab1c277a134e1468c256d0f06067a14f550bfb1c",
+    "sha256": "2db922d8ca60fb9952a0965ccc1be2586331ed7d8c03fa92fbf57595e0e5e13b",
     "outputSha256": "076f02c0ede2866017f843c8a7cf0903258a580f8cb3ab0fab7a498134c1244b",
     "generator": {
       "name": "arkham-locale-catalog",
       "version": "1.0.0"
     },
-    "contractRevision": "0.1.25",
+    "contractRevision": "0.1.26",
     "fixtureKeys": [
       "continue",
       "nightOfTheZealot.theGathering.setup.gatherSets",
