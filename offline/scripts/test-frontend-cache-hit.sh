@@ -19,7 +19,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PROD_SCRIPTS="$SCRIPT_DIR"
 FRONTEND_DIR="${REPO_ROOT}/frontend"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/offline-cache-hit.XXXXXX")"
+WORK="${REPO_ROOT}/offline/_tmp/test-frontend-cache-hit-$$-${RANDOM}"
+umask 077
+mkdir -p "$WORK"
 PUBLIC_CATALOG="${FRONTEND_DIR}/public/locale-catalog"
 STASHED="${WORK}/public-locale-catalog"
 restore() {
@@ -60,6 +62,7 @@ fi
 # Load the production verification helpers without running the build.
 sed -n '1,/^# ── Build frontend/p' "${PROD_SCRIPTS}/03-build-frontend.sh" \
   | grep -v -e '^source ' -e '^init_paths' -e '^activate_deps_path' \
+  | grep -v -e '^PLATFORM=' -e '^verify_node_installation$' -e '^export PATH=' \
   | sed -e 's/^FRONTEND_DIR=.*/:/' -e 's/^FRONTEND_OUTPUT=.*/:/' -e 's/^FRONTEND_BUILT_MARKER=.*/:/' \
   > "${WORK}/verify.sh"
 FRONTEND_DIR="${FRONTEND_DIR}"

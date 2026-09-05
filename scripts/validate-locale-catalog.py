@@ -990,6 +990,7 @@ def validate_deployment_wiring(manifest: dict) -> None:
         )
 
     offline_deps = (ROOT / "offline" / "scripts" / "01-check-project-deps.sh").read_text(encoding="utf-8")
+    offline_toolchain = (ROOT / "offline" / "scripts" / "toolchain-authority.sh").read_text(encoding="utf-8")
     mise = (ROOT / "mise.toml").read_text(encoding="utf-8")
     node_version = strict_json.strict_json_load_path(FRONTEND / "package.json")["engines"]["node"]
     require(
@@ -998,8 +999,9 @@ def validate_deployment_wiring(manifest: dict) -> None:
     )
     require(f'node = "{node_version}"' in mise, f"mise.toml does not pin Node {node_version}")
     require(
-        f'node_ver="{node_version}"' in offline_deps,
-        f"the offline build does not install Node {node_version}",
+        f'NODE_VERSION="{node_version}"' in offline_toolchain
+        and 'local node_ver="${NODE_VERSION}"' in offline_deps,
+        f"the offline build does not install its shared authoritative Node {node_version}",
     )
     require(
         re.search(

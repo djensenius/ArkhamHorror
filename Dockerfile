@@ -64,16 +64,25 @@ RUN \
 
 ARG TARGETARCH
 
-# install ghcup
+# Fetch the Docker builder's executable bootstrap through the same committed
+# toolchain authority table used by the offline release. It is verified before
+# it can execute; ghcup then uses its default signature verification for the
+# GHC/Cabal/Stack metadata instead of disabling GPG checks.
+COPY ./offline/toolchain.lock /opt/arkham/toolchain.lock
 RUN \
     if [ "$TARGETARCH" = "arm64" ]; then \
-    curl https://downloads.haskell.org/~ghcup/aarch64-linux-ghcup > /usr/bin/ghcup; \
+      platform="linux-arm64"; archive="aarch64-linux-ghcup"; \
     else \
-    curl https://downloads.haskell.org/~ghcup/x86_64-linux-ghcup > /usr/bin/ghcup; \
-    fi;
-# Don't combine
-RUN chmod +x /usr/bin/ghcup && \
-    ghcup config set gpg-setting GPGNone
+      platform="linux-x86_64"; archive="x86_64-linux-ghcup"; \
+    fi && \
+    expected="$(awk -F '\t' -v platform="$platform" -v archive="$archive" \
+      '$1 == "archive" && $2 == "ghcup" && $3 == platform && $4 == archive && $5 == "exact" { matches += 1; digest = $6 } END { if (matches != 1) exit 1; print digest }' \
+      /opt/arkham/toolchain.lock)" && \
+    test "${#expected}" = 64 && \
+    curl -fsSL --connect-timeout 30 --max-time 600 \
+      "https://downloads.haskell.org/~ghcup/${archive}" -o /usr/bin/ghcup && \
+    echo "${expected}  /usr/bin/ghcup" | sha256sum -c - && \
+    chmod +x /usr/bin/ghcup
 
 ARG GHC=9.14.1
 ARG CABAL=3.16.0.0
@@ -92,15 +101,19 @@ FROM base AS dependencies
 
 RUN mkdir -p \
   /opt/arkham/bin \
-  /opt/arkham/src/backend/arkham-api \
-  /opt/arkham/src/backend/validate \
-  /opt/arkham/src/backend/cards-discover
+  /opt/arkham/src/backend/arkham-api/app \
+  /opt/arkham/src/backend/arkham-api/library \
+  /opt/arkham/src/backend/validate/app \
+  /opt/arkham/src/backend/cards-discover/app \
+  /opt/arkham/src/backend/cards-discover/library \
+  /opt/arkham/src/backend/devel-store-lock/library
 
 WORKDIR /opt/arkham/src/backend
 COPY ./backend/stack.yaml ./backend/stack.yaml.lock /opt/arkham/src/backend/
 COPY ./backend/arkham-api/package.yaml /opt/arkham/src/backend/arkham-api/package.yaml
 COPY ./backend/validate/package.yaml /opt/arkham/src/backend/validate/package.yaml
 COPY ./backend/cards-discover/package.yaml /opt/arkham/src/backend/cards-discover/package.yaml
+COPY ./backend/devel-store-lock/package.yaml /opt/arkham/src/backend/devel-store-lock/package.yaml
 RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-work-shared-${CACHE_ID},target=/opt/arkham/src/backend/.stack-work \
     stack build --system-ghc --dependencies-only --no-terminal --ghc-options '-fno-write-ide-info -j4 +RTS -A128m -n2m -RTS'
@@ -136,14 +149,26 @@ RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-discover-hie-${CACHE_ID},target=/opt/arkham/src/backend/cards-discover/.hie \
   sh /opt/arkham/src/backend/scripts/docker-build-api.sh
 
-FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS app
+# The final production image supplies the nginx bytes. Pin the official
+# multi-platform manifest digest so the exact nginx runtime tested below is
+# the one shipped, rather than a mutable Ubuntu apt package.
+FROM nginx:1.27.5@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d AS app
 
 # App
 
 ENV LC_ALL=C.UTF-8
+LABEL org.opencontainers.image.nginx-runtime-reference="nginx:1.27.5@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d"
 
 RUN apt-get update && \
-  apt-get install -y --assume-yes --no-install-recommends libpq-dev ca-certificates nginx curl cron && \
+  apt-get install -y --assume-yes --no-install-recommends \
+    libpcre3 \
+    libpq5 \
+    libgmp10 \
+    libnuma1 \
+    libtinfo6 \
+    ca-certificates \
+    curl \
+    cron && \
   rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p \
@@ -152,6 +177,7 @@ RUN mkdir -p \
   /opt/arkham/src/frontend \
   /var/log/nginx \
   /var/lib/nginx \
+  /var/cache/nginx \
   /run
 
 COPY --from=frontend /opt/arkham/src/frontend/dist /opt/arkham/src/frontend/dist
@@ -163,7 +189,7 @@ COPY ./web-entrypoint.sh /web-entrypoint.sh
 COPY ./backend/arkham-api/digital-ocean.crt /opt/arkham/src/backend/arkham-api/digital-ocean.crt
 
 RUN useradd -ms /bin/bash yesod && \
-  chown -R yesod:yesod /opt/arkham /var/log/nginx /var/lib/nginx /run && \
+  chown -R yesod:yesod /opt/arkham /var/log/nginx /var/lib/nginx /var/cache/nginx /run && \
   chmod a+x /opt/arkham/src/backend/arkham-api/start.sh /web-entrypoint.sh
 USER yesod
 ENV PATH="$PATH:/opt/stack/bin:/opt/arkham/bin"

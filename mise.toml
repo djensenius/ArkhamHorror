@@ -74,9 +74,13 @@ run = "bash offline/scripts/test-frontend-cache-hash.sh"
 description = "Check the offline build's cache-hit branches verify a restored dist without frontend/public"
 run = "bash offline/scripts/test-frontend-cache-hit.sh"
 
+[tasks."locale-catalog:offline-toolchain-authority-test"]
+description = "Reject corrupted offline download caches, wrong archives, missing platform authorities, substituted binaries, and stale cache keys"
+run = "bash offline/scripts/test-toolchain-authority.sh"
+
 [tasks."locale-catalog:serving"]
-description = "Boot prod.nginxconf and the offline package's nginx config and verify catalog status, cache, MIME and rolling-deploy behavior"
-run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-catalog-serving.py"
+description = "Verify live catalog serving against an explicitly built final production image; no surrogate config/image is accepted"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-catalog-serving.py --production-image \"${ARKHAM_PRODUCTION_IMAGE:?locale-catalog serving requires an explicit final Docker image}\""
 
 [tasks."locale-catalog:test"]
 description = "Run the locale-catalog render-AST and generator tests"

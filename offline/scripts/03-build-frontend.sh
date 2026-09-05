@@ -11,7 +11,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/utils.sh"
 
 init_paths
-activate_deps_path
+PLATFORM="$(detect_platform)"
+source "${SCRIPT_DIR}/toolchain-authority.sh"
+
+# The catalog generator and Vite must use the verified downloaded Node binary,
+# never a cache-restored or PATH-selected substitute.
+verify_node_installation
+export PATH="${DEPS_DIR}/node/bin:${PATH}"
 
 FRONTEND_DIR="${PROJECT_ROOT}/frontend"
 FRONTEND_OUTPUT="${DEPS_DIR}/frontend"        # Unified output location: offline/_deps/frontend/
@@ -123,6 +129,34 @@ verify_cached_locale_catalog() {
 build_frontend() {
     step "Building frontend (→ ${FRONTEND_OUTPUT})"
 
+    [ -d "$FRONTEND_DIR" ] || die "Frontend directory does not exist: $FRONTEND_DIR"
+
+    # The offline Vite build applies this deterministic source transform. It
+    # must happen before the cache key and catalog provenance are calculated:
+    # otherwise the cache key describes the restored source while the catalog
+    # records the patched semantic source that Vite actually bundles.
+    OFFLINE_HELPERS_TS="${FRONTEND_DIR}/src/arkham/helpers.ts"
+    OFFLINE_HELPERS_BAK="${OFFLINE_HELPERS_TS}.bak_$$"
+    OFFLINE_PUBLIC_CATALOG="${FRONTEND_DIR}/public/locale-catalog"
+    OFFLINE_PUBLIC_CATALOG_STASH=""
+    OFFLINE_CATALOG_GENERATED=false
+    [ -f "$OFFLINE_HELPERS_TS" ] || die "Frontend helper source does not exist: $OFFLINE_HELPERS_TS"
+    cleanup_helpers_patch() {
+        [ -f "$OFFLINE_HELPERS_BAK" ] && mv -f "$OFFLINE_HELPERS_BAK" "$OFFLINE_HELPERS_TS" 2>/dev/null || true
+        if [ "$OFFLINE_CATALOG_GENERATED" = true ]; then
+            rm -rf "$OFFLINE_PUBLIC_CATALOG"
+        fi
+        if [ -n "$OFFLINE_PUBLIC_CATALOG_STASH" ] && [ -e "$OFFLINE_PUBLIC_CATALOG_STASH" ]; then
+            mv "$OFFLINE_PUBLIC_CATALOG_STASH" "$OFFLINE_PUBLIC_CATALOG" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_helpers_patch EXIT
+    cp "$OFFLINE_HELPERS_TS" "$OFFLINE_HELPERS_BAK"
+    substep "Patching helpers.ts: use VITE_ASSET_HOST in production (fall back to the CDN if unset)"
+    sed -i.bak "s|export const baseUrl = import.meta.env.PROD ? \"https://assets.arkhamhorror.app\" : ''|export const baseUrl = import.meta.env.PROD ? (import.meta.env.VITE_ASSET_HOST ?? \"https://assets.arkhamhorror.app\") : ''|" "$OFFLINE_HELPERS_TS" \
+        && rm -f "${OFFLINE_HELPERS_TS}.bak" \
+        || die "Could not apply the deterministic offline helpers.ts transform"
+
     # ── Decide whether a rebuild is needed based on the content hash ─────────
     local current_hash
     if ! current_hash="$(compute_frontend_hash)"; then
@@ -162,10 +196,6 @@ build_frontend() {
         rm -rf "$FRONTEND_OUTPUT"
     fi
 
-    if [ ! -d "$FRONTEND_DIR" ]; then
-        die "Frontend directory does not exist: $FRONTEND_DIR"
-    fi
-
     # ── Decision 6: place node_modules under _deps/ and expose it to frontend/ through a symlink ─
     NM_LINK="${FRONTEND_DIR}/node_modules"
     NM_REAL="${DEPS_DIR}/node_modules"
@@ -188,9 +218,7 @@ build_frontend() {
         info "node_modules → ${NM_REAL} (symlink created)"
     fi
 
-    # Register cleanup on exit: remove the symlink and restore helpers.ts
-    _HELPERS_TS="${FRONTEND_DIR}/src/arkham/helpers.ts"
-    _HELPERS_BAK="${FRONTEND_DIR}/src/arkham/helpers.ts.bak_$$"
+    # Register cleanup on exit: remove the symlink and restore helpers.ts.
     cleanup_nm_symlink() {
         if [ -L "$NM_LINK" ]; then
             rm -f "$NM_LINK"
@@ -198,7 +226,7 @@ build_frontend() {
             warn "The original node_modules/ was moved to ${NM_REAL} and will not be restored automatically"
             fi
         fi
-        [ -f "$_HELPERS_BAK" ] && mv -f "$_HELPERS_BAK" "$_HELPERS_TS" 2>/dev/null || true
+        cleanup_helpers_patch
     }
     trap cleanup_nm_symlink EXIT
 
@@ -227,24 +255,25 @@ build_frontend() {
         done
     fi
 
-    # ── Temporary patch: helpers.ts hard-codes a CDN URL in production ───────
-    # The offline package needs relative paths; prefer VITE_ASSET_HOST first and fall back to the CDN when unset
-    cp "$_HELPERS_TS" "$_HELPERS_BAK"
-    substep "Patching helpers.ts: use VITE_ASSET_HOST in production (fall back to the CDN if unset)"
-    sed -i.bak "s|export const baseUrl = import.meta.env.PROD ? \"https://assets.arkhamhorror.app\" : ''|export const baseUrl = import.meta.env.PROD ? (import.meta.env.VITE_ASSET_HOST ?? \"https://assets.arkhamhorror.app\") : ''|" "$_HELPERS_TS" && rm -f "${_HELPERS_TS}.bak"
-
     # 2. Generate the ignored public catalog with the exact Node installation
     # provisioned and version-checked by the offline dependency stage. npm's
     # prebuild only verifies this output, so a clean cache-miss cannot silently
     # omit it or regenerate through a different PATH-selected runtime.
     OFFLINE_NODE="${DEPS_DIR}/node/bin/node"
     [ -x "${OFFLINE_NODE}" ] || die "  ✗ Missing pinned offline Node executable: ${OFFLINE_NODE}"
+    if [ -e "$OFFLINE_PUBLIC_CATALOG" ]; then
+        ensure_dir "$TMP_DIR"
+        OFFLINE_PUBLIC_CATALOG_STASH="${TMP_DIR}/frontend-public-catalog-$$-${RANDOM}"
+        [ ! -e "$OFFLINE_PUBLIC_CATALOG_STASH" ] || die "Refusing to overwrite catalog stash: $OFFLINE_PUBLIC_CATALOG_STASH"
+        mv "$OFFLINE_PUBLIC_CATALOG" "$OFFLINE_PUBLIC_CATALOG_STASH"
+    fi
     substep "Generate the locale catalog with the pinned offline Node..."
     mkdir -p "${DEPS_DIR}/locale-catalog-home"
     env -i \
         HOME="${DEPS_DIR}/locale-catalog-home" \
         PATH="${DEPS_DIR}/node/bin:/usr/bin:/bin" \
         "${OFFLINE_NODE}" scripts/locale-catalog/generate.mjs
+    OFFLINE_CATALOG_GENERATED=true
 
     # 3. Build and output to offline/_dist/frontend/
     substep "npm run build (output to ${FRONTEND_OUTPUT}) ..."

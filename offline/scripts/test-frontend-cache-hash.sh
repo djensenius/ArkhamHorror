@@ -16,7 +16,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/offline-cache-hash.XXXXXX")"
+WORK="${REPO_ROOT}/offline/_tmp/test-frontend-cache-hash-$$-${RANDOM}"
+umask 077
+mkdir -p "$WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 failures=0
@@ -52,6 +54,7 @@ echo '{"keys":[]}' > "${PROJECT_ROOT}/backend/arkham-api/i18n-emitted-keys.json"
 sed -n '1,/^# Fails the build unless the locale catalog really is/p' \
   "${REPO_ROOT}/offline/scripts/03-build-frontend.sh" \
   | grep -v -e '^source ' -e '^init_paths' -e '^activate_deps_path' \
+  | grep -v -e '^PLATFORM=' -e '^verify_node_installation$' -e '^export PATH=' \
   | sed -e 's/^FRONTEND_DIR=.*/:/' -e 's/^FRONTEND_OUTPUT=.*/:/' -e 's/^FRONTEND_BUILT_MARKER=.*/:/' \
   > "${WORK}/hash.sh"
 
@@ -111,6 +114,18 @@ mv "${FRONTEND_DIR}/schemas.away" "${FRONTEND_DIR}/schemas"
 if [ "$(compute_frontend_hash)" != "$baseline" ]; then
   fail "the hash is not stable for unchanged inputs"
 fi
+
+# The offline build applies a deterministic helpers.ts transform before Vite
+# and the catalog generator run. Its transformed bytes must be part of the
+# source hash; otherwise a valid-looking cached catalog can describe a
+# different semantic source than the cached frontend bundle.
+transform_line="$(grep -n 'Patching helpers.ts:' "${REPO_ROOT}/offline/scripts/03-build-frontend.sh" | head -1 | cut -d: -f1)"
+hash_line="$(grep -n 'current_hash="$(compute_frontend_hash)"' "${REPO_ROOT}/offline/scripts/03-build-frontend.sh" | head -1 | cut -d: -f1)"
+if [ -z "$transform_line" ] || [ -z "$hash_line" ] || [ "$transform_line" -ge "$hash_line" ]; then
+  fail "the deterministic helpers.ts transform is not applied before the frontend cache hash"
+fi
+grep -Fq 'OFFLINE_PUBLIC_CATALOG_STASH' "${REPO_ROOT}/offline/scripts/03-build-frontend.sh" \
+  || fail "the offline build does not restore its temporary public catalog state"
 
 if [ "$failures" -ne 0 ]; then
   echo "offline-cache-hash: ${failures} failure(s)" >&2

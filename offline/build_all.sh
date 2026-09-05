@@ -151,7 +151,7 @@ main() {
         bash "${SCRIPT_DIR}/scripts/01-check-project-deps.sh"
     else
         step "Skipping dependency installation (--skip-deps)"
-        activate_deps_path
+        info "Cached dependencies will be identity-verified by 02-verify-deps.sh before use"
     fi
     echo ""
 

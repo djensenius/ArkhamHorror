@@ -16,6 +16,7 @@ init_paths
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 PLATFORM="$(detect_platform)"
+source "${SCRIPT_DIR}/toolchain-authority.sh"
 
 BACKEND_BIN="${DEPS_DIR}/arkham-api"
 FRONTEND_SRC="${DEPS_DIR}/frontend"
@@ -23,9 +24,65 @@ SETUP_SQL="${PROJECT_ROOT}/setup.sql"
 PG_BIN_DIR="${DEPS_DIR}/postgres/bin"
 PG_LIB_DIR="${DEPS_DIR}/postgres/lib"
 NGINX_BIN="${DEPS_DIR}/nginx/bin/nginx"
+NGINX_VERSION="1.26.2"
+NGINX_ARCHIVE="nginx-${NGINX_VERSION}.tar.gz"
 
 PKG_NAME="ArkhamHorror-${PLATFORM}"
 PKG_DIR="${_DIST_DIR}/${PKG_NAME}"
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Nginx authority and package provenance
+# ═════════════════════════════════════════════════════════════════════════════
+
+nginx_build_identity_for_package() {
+    local source_sha256
+    source_sha256="$(toolchain_archive_sha256 nginx "$PLATFORM" "$NGINX_ARCHIVE")"
+    toolchain_build_identity nginx "$PLATFORM" "$NGINX_VERSION" "$source_sha256" \
+        "$(nginx_build_recipe)"
+}
+
+verify_nginx_dependency_for_packaging() {
+    local identity nginx_version
+    identity="$(nginx_build_identity_for_package)"
+    verify_install_manifest nginx "${DEPS_DIR}/nginx" "$identity" "bin/nginx" "bin/nginx"
+    nginx_version="$("$NGINX_BIN" -V 2>&1)" || die "Nginx failed its post-identity configuration check"
+    case "$nginx_version" in
+        *"nginx/${NGINX_VERSION}"*) ;;
+        *) die "Nginx configuration check reported the wrong version: ${nginx_version}" ;;
+    esac
+    case "$nginx_version" in
+        *"--with-http_gzip_static_module"*) ;;
+        *) die "Nginx lacks --with-http_gzip_static_module required by the packaged config" ;;
+    esac
+}
+
+write_nginx_provenance() {
+    local provenance="${PKG_DIR}/game/config/toolchain-provenance.env"
+    local partial="${provenance}.partial.$$"
+    local packaged_lock="${PKG_DIR}/game/config/toolchain.lock"
+    local source_sha256 build_identity binary_sha256
+
+    source_sha256="$(toolchain_archive_sha256 nginx "$PLATFORM" "$NGINX_ARCHIVE")"
+    build_identity="$(nginx_build_identity_for_package)"
+    binary_sha256="$(sha256_file "${PKG_DIR}/game/bin/nginx")" \
+        || die "Could not hash the packaged nginx executable"
+    cp "${OFFLINE_DIR}/toolchain.lock" "$packaged_lock"
+    verify_file_sha256 "$packaged_lock" "$(toolchain_lock_digest)" "packaged toolchain authority"
+
+    {
+        printf 'schema=1\n'
+        printf 'platform=%s\n' "$PLATFORM"
+        printf 'toolchain_lock_sha256=%s\n' "$(toolchain_lock_digest)"
+        printf 'nginx_source_archive=%s\n' "$NGINX_ARCHIVE"
+        printf 'nginx_source_sha256=%s\n' "$source_sha256"
+        printf 'nginx_build_identity=%s\n' "$build_identity"
+        printf 'nginx_binary_sha256=%s\n' "$binary_sha256"
+        printf 'nginx_version=%s\n' "$NGINX_VERSION"
+        printf 'nginx_required_configure_option=--with-http_gzip_static_module\n'
+    } > "$partial"
+    mv -f "$partial" "$provenance"
+    verify_file_sha256 "${PKG_DIR}/game/bin/nginx" "$binary_sha256" "packaged nginx executable"
+}
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Generate start.sh (launcher script) — supports macOS / Linux / WSL
@@ -276,6 +333,111 @@ configure_runtime_env() {
     # turning them into copies or broken files. Recreate the expected versioned symlinks.
     _fix_lib_symlinks "$SCRIPT_DIR/pgsql/lib"
     _fix_lib_symlinks "$SCRIPT_DIR/lib"
+}
+
+nginx_provenance_value() {
+    local key="$1" provenance="$SCRIPT_DIR/config/toolchain-provenance.env"
+    local count value
+    case "$key" in
+        schema|platform|toolchain_lock_sha256|nginx_source_archive|nginx_source_sha256|nginx_build_identity|nginx_binary_sha256|nginx_version|nginx_required_configure_option) ;;
+        *) die 1015 "Invalid nginx provenance key: $key" ;;
+    esac
+    [ -f "$provenance" ] && [ ! -L "$provenance" ] \
+        || die 1016 "Nginx provenance is missing or unsafe: $provenance"
+    count="$(awk -F= -v key="$key" '$1 == key { matches += 1 } END { print matches + 0 }' "$provenance")"
+    [ "$count" = "1" ] || die 1017 "Nginx provenance has no unique ${key} value"
+    value="$(awk -F= -v key="$key" '$1 == key { print $2 }' "$provenance")"
+    [ -n "$value" ] || die 1018 "Nginx provenance has an empty ${key} value"
+    printf '%s\n' "$value"
+}
+
+nginx_lock_record() {
+    local record_type="$1" platform="$2" artifact="$3"
+    local lock="$SCRIPT_DIR/config/toolchain.lock"
+    local record
+    record="$(
+        awk -F '\t' \
+            -v record_type="$record_type" \
+            -v platform="$platform" \
+            -v artifact="$artifact" '
+                $1 == record_type && $2 == "nginx" && $3 == platform && $4 == artifact {
+                    matches += 1
+                    value = $0
+                }
+                END {
+                    if (matches != 1) exit 1
+                    print value
+                }
+            ' "$lock"
+    )" || die 1019 "Packaged toolchain authority has no unique nginx ${record_type} record"
+    printf '%s\n' "$record"
+}
+
+runtime_sha256_file() {
+    local file="$1" result digest
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        result="$(sha256sum "$file")" || return 1
+    elif command -v shasum >/dev/null 2>&1; then
+        result="$(shasum -a 256 "$file")" || return 1
+    else
+        return 1
+    fi
+    digest="${result%%[[:space:]]*}"
+    printf '%s\n' "$digest"
+}
+
+# Verify immutable package metadata and raw binary bytes before executing
+# nginx. The launcher deliberately performs this check even after a successful
+# package build, because archives can be damaged or modified after extraction.
+verify_nginx_identity() {
+    local expected_lock_sha256 actual_lock_sha256 expected_sha256 actual_sha256 expected_version expected_option nginx_version
+    local platform source_archive source_sha256 build_identity archive_record binary_record
+    local archive_type archive_component archive_platform archive_name archive_kind archive_sha archive_version
+    local binary_type binary_component binary_platform binary_name binary_kind binary_sha binary_recipe
+    [ "$(nginx_provenance_value schema)" = "1" ] || die 1020 "Unsupported nginx provenance schema"
+    expected_lock_sha256="$(nginx_provenance_value toolchain_lock_sha256)"
+    actual_lock_sha256="$(runtime_sha256_file "$SCRIPT_DIR/config/toolchain.lock")" \
+        || die 1021 "Could not hash packaged toolchain authority"
+    [ "$actual_lock_sha256" = "$expected_lock_sha256" ] \
+        || die 1022 "Packaged toolchain authority digest does not match nginx provenance"
+
+    platform="$(nginx_provenance_value platform)"
+    source_archive="$(nginx_provenance_value nginx_source_archive)"
+    source_sha256="$(nginx_provenance_value nginx_source_sha256)"
+    build_identity="$(nginx_provenance_value nginx_build_identity)"
+    archive_record="$(nginx_lock_record archive "$platform" "$source_archive")"
+    binary_record="$(nginx_lock_record binary "$platform" "bin/nginx")"
+    IFS=$'\t' read -r archive_type archive_component archive_platform archive_name archive_kind archive_sha archive_version <<< "$archive_record"
+    IFS=$'\t' read -r binary_type binary_component binary_platform binary_name binary_kind binary_sha binary_recipe <<< "$binary_record"
+    [ "$archive_kind" = "exact" ] && [ "$archive_sha" = "$source_sha256" ] \
+        || die 1023 "Packaged nginx source authority does not match its lock"
+    [ "$binary_kind" = "derived" ] && [ "$binary_sha" = "$build_identity" ] \
+        || die 1024 "Packaged nginx build identity does not match its lock"
+
+    expected_sha256="$(nginx_provenance_value nginx_binary_sha256)"
+    case "$expected_sha256" in
+        *[!0-9a-f]*|"") die 1025 "Nginx provenance has an invalid binary SHA-256" ;;
+    esac
+    [ "${#expected_sha256}" = 64 ] || die 1025 "Nginx provenance has an invalid binary SHA-256"
+    actual_sha256="$(runtime_sha256_file "$SCRIPT_DIR/bin/nginx")" \
+        || die 1026 "Could not hash packaged nginx executable"
+    [ "$actual_sha256" = "$expected_sha256" ] \
+        || die 1027 "Packaged nginx executable digest does not match its provenance"
+
+    expected_version="$(nginx_provenance_value nginx_version)"
+    expected_option="$(nginx_provenance_value nginx_required_configure_option)"
+    nginx_version="$("$SCRIPT_DIR/bin/nginx" -V 2>&1)" \
+        || die 1028 "Packaged nginx failed its post-identity configuration check"
+    case "$nginx_version" in
+        *"nginx/${expected_version}"*) ;;
+        *) die 1029 "Packaged nginx reported the wrong version: ${nginx_version}" ;;
+    esac
+    case "$nginx_version" in
+        *"$expected_option"*) ;;
+        *) die 1030 "Packaged nginx lacks ${expected_option}" ;;
+    esac
+    info "nginx executable identity and gzip_static capability verified"
 }
 
 close_terminal_window_if_needed() {
@@ -563,7 +725,7 @@ ensure_macos_signing() {
     local marker="$DATA_DIR/signed.marker"
     local ref_bin="$SCRIPT_DIR/bin/arkham-api"
     if [ -f "$marker" ] && [ -f "$ref_bin" ] && [ "$marker" -nt "$ref_bin" ]; then
-        if codesign --verify -q "$ref_bin" 2>/dev/null; then
+        if codesign --verify --strict "$ref_bin" >/dev/null 2>&1; then
             return 0
         fi
         # Signature broken; remove stale marker and re-sign
@@ -885,7 +1047,7 @@ http {
     # The published locale catalog, with the same guarantees as the hosted
     # deployment: JSON MIME, nosniff, immutable caching for content-addressed
     # and revision paths, revalidation for the mutable manifest, and — because
-    # `^~` beats the SPA catch-all — a real 404 for anything missing instead of
+    # \`^~\` beats the SPA catch-all — a real 404 for anything missing instead of
     # index.html. Error statuses are never storable (see the \$status map),
     # so a client that races a package upgrade cannot cache a 404.
     location ^~ /locale-catalog/ {
@@ -893,7 +1055,7 @@ http {
       default_type application/json;
       gzip_static on;
 
-      # Brotli delivery, mirroring prod.nginxconf: an `if` block is a nested
+      # Brotli delivery, mirroring prod.nginxconf: an \`if\` block is a nested
       # configuration level and add_header does not inherit into one that
       # declares its own, so the shared headers are repeated inside it. The
       # response still carries exactly one of each, which
@@ -1005,6 +1167,24 @@ http {
 NGINX_EOF
 }
 
+validate_nginx_config() {
+    ensure_dir "$DATA_DIR/nginx_temp"
+    generate_nginx_conf
+    touch "$NGINX_LOG_DIR/error.log" "$NGINX_LOG_DIR/access.log" 2>/dev/null || true
+    verify_nginx_identity
+    "$SCRIPT_DIR/bin/nginx" -t -p "$SCRIPT_DIR" -c "$SCRIPT_DIR/config/nginx.conf" \
+        || die 1026 "Packaged nginx rejected its generated configuration" "$NGINX_LOG_DIR/error.log"
+}
+
+# This test-only action still invokes the actual shipped launcher, generated
+# config, binary, and bundled-library environment. It intentionally starts no
+# database or API because catalog files are static.
+serve_nginx_for_validation() {
+    validate_nginx_config
+    exec "$SCRIPT_DIR/bin/nginx" -p "$SCRIPT_DIR" -e "$NGINX_LOG_DIR/error.log" \
+        -c "$SCRIPT_DIR/config/nginx.conf" -g 'daemon off;'
+}
+
 # ── Stop ─────────────────────────────────────────────────────────────────────
 do_stop() {
     info "Stopping services ..."
@@ -1013,6 +1193,7 @@ do_stop() {
     if is_nginx_running; then
         local nginx_pid
         nginx_pid="$(cat "$NGINX_PID" 2>/dev/null || echo "")"
+        verify_nginx_identity
         "$SCRIPT_DIR/bin/nginx" -e "$NGINX_LOG_DIR/error.log" \
             -c "$SCRIPT_DIR/config/nginx.conf" -s stop 2>/dev/null || true
         [ -n "$nginx_pid" ] && wait_pid_exit "$nginx_pid" "nginx" 5
@@ -1341,9 +1522,7 @@ do_start() {
     ensure_dir "$SCRIPT_DIR/../cards"
     ensure_dir "$SCRIPT_DIR/../cards_en"
 
-    ensure_dir "$DATA_DIR/nginx_temp"
-    generate_nginx_conf
-    touch "$NGINX_LOG_DIR/error.log" "$NGINX_LOG_DIR/access.log" 2>/dev/null || true
+    validate_nginx_config
     sync 2>/dev/null || true
     if ! "$SCRIPT_DIR/bin/nginx" -e "$NGINX_LOG_DIR/error.log" -c "$SCRIPT_DIR/config/nginx.conf" 2>&1; then
         die 3002 "nginx failed to start" "$NGINX_LOG_DIR/error.log"
@@ -1458,8 +1637,10 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --stop)   ACTION="stop"; shift ;;
         --status) ACTION="status"; shift ;;
+        --validate-nginx-config) ACTION="validate-nginx-config"; shift ;;
+        --serve-nginx-for-validation) ACTION="serve-nginx-for-validation"; shift ;;
         --help|-h)
-            echo "Usage: bash start.sh [--stop|--status|--help]"; exit 0 ;;
+            echo "Usage: bash start.sh [--stop|--status|--validate-nginx-config|--help]"; exit 0 ;;
         *) die 1099 "Unknown argument: $1" ;;
     esac
 done
@@ -1504,6 +1685,8 @@ case "$ACTION" in
         ;;
     stop)   do_stop ;;
     status) do_status ;;
+    validate-nginx-config) validate_nginx_config ;;
+    serve-nginx-for-validation) serve_nginx_for_validation ;;
 esac
 LAUNCHSCRIPT
 
@@ -2070,6 +2253,10 @@ main() {
     [ -d "$FRONTEND_SRC" ]  || die "Frontend artifacts do not exist: $FRONTEND_SRC"
     [ -d "$PG_BIN_DIR" ]    || die "PostgreSQL does not exist: $PG_BIN_DIR"
     [ -f "$NGINX_BIN" ]     || die "Nginx does not exist: $NGINX_BIN"
+    verify_node_installation
+    export PATH="${DEPS_DIR}/node/bin:${PATH}"
+    verify_postgres_installation
+    verify_nginx_dependency_for_packaging
 
     # If an old distribution exists and has start.sh, stop any possibly running services first (to avoid NTFS file locks)
     if [ -d "$PKG_DIR" ] && [ -f "${PKG_DIR}/game/start.sh" ]; then
@@ -2287,9 +2474,9 @@ main() {
     fi
 
     # ── macOS Gatekeeper: ad-hoc signing after library collection ─────────────
-    # Key point: Homebrew dylibs carry original signatures that must be fully stripped before re-signing with a clean file.
-    # Order: strip lib/ dylibs first (twice to ensure completeness) → sign other binaries → strip lib/ dylibs again
-    # → finally clear quarantine. The target Mac's start.sh will re-sign lib/ dylibs.
+    # Homebrew dylibs carry original signatures that must be stripped before
+    # relocation. They must then be signed again: an unsigned relocated dylib
+    # is rejected by dyld when the packaged nginx executes.
     if [ "$OS" = "macos" ]; then
         # Step 1: ensure dylibs under lib/ are writable first (Homebrew sources may be read-only)
         if [ -d "${PKG_DIR}/game/lib" ]; then
@@ -2310,12 +2497,25 @@ main() {
         done < <(find "${PKG_DIR}" -type f \( -perm -a=x -o -name '*.so' -o -name '*.dylib' \) -print0 2>/dev/null)
         info "  ✓ Signed ${signed} files"
 
-        # Step 3: strip signatures from lib/ dylibs again (they will always be invalid after cross-machine transfer)
-        find "${PKG_DIR}/game/lib" -name '*.dylib' -exec codesign --remove-signature {} \; >/dev/null 2>&1 || true
+        # Step 3: leave every relocated dylib with a valid ad-hoc signature.
+        # Re-signing is required after install_name_tool changed nginx to load
+        # the bundled @rpath dependency.
+        find "${PKG_DIR}/game/lib" -name '*.dylib' -exec codesign --force --sign - {} \; >/dev/null 2>&1 \
+            || die "Could not sign a bundled macOS dynamic library"
+        while IFS= read -r -d '' dylib; do
+            codesign --verify --strict "$dylib" >/dev/null 2>&1 \
+                || die "A bundled macOS dynamic library has an invalid signature: ${dylib}"
+        done < <(find "${PKG_DIR}/game/lib" -name '*.dylib' -print0)
+        touch "${PKG_DIR}/game/data/signed.marker"
 
         # Step 4: clear all quarantine attributes
         xattr -rd com.apple.quarantine "${PKG_DIR}" || true
     fi
+
+    # Dynamic-library relocation and macOS signing can modify the nginx
+    # executable, so its package SHA-256 provenance is written only after
+    # every post-copy transformation has finished.
+    write_nginx_provenance
 
     # Verification
     echo ""

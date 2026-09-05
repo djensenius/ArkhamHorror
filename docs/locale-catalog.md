@@ -532,7 +532,8 @@ LOCALE_CATALOG_MISE_ROOT=/absolute/path/to/mise-data`; additionally export
     mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
     mise run locale-catalog:capability-settings  # a real manifest configures the advertised capability
     mise run locale-catalog:capability-probe     # ... and the real backend serves it, or refuses to start
-    mise run locale-catalog:serving              # real nginx: status, cache, MIME, rollout
+    mise run locale-catalog:offline-toolchain-authority-test  # offline archive/cache authority
+    ARKHAM_PRODUCTION_IMAGE=arkham:test mise run locale-catalog:serving  # exact final image nginx
 
 `scripts/validate-locale-catalog.py` regenerates the catalog twice, rebuilds it
 in a scratch tree whose sources are only git-tracked files (reusing the
@@ -546,16 +547,16 @@ key, unsupported markup on a backend-emitted key, a link cycle, a removed
 required key and malformed JSON must each fail generation, and changing the
 lockfile or the published content must change the revision.
 
-`scripts/validate-catalog-serving.py` boots real nginx over `prod.nginxconf`
-and over the config the offline packager generates, and asserts the status
-matrix these paths can actually produce — 200, 304, 404 and 405, plus a `Range`
-request returning the whole file as a 200 (ranges are disabled, so 206 and 416
-never occur) — along with JSON MIME, `nosniff`, `Vary`, gzip and brotli
-negotiation (each response carrying exactly one of each header, and the brotli
-body inflating to the identity payload), byte-exact payloads against the
-manifest digests, that a missing catalog path is never answered with the SPA
-shell, and that a rolling deploy works in both directions (new manifest against
-old static root and vice versa).
+`scripts/validate-catalog-serving.py` accepts only explicit shipped artifacts;
+it never renders or textually rewrites a surrogate config. For production, CI
+builds the final `app` image and the gate runs its own nginx/config/static tree
+without mounts, first requiring `nginx -t` and the gzip-static module. For the
+offline path, the release workflow invokes the actual generated package
+launcher, which validates the packaged Nginx provenance and runs `nginx -t`
+before serving through that package binary and bundled-library environment.
+Both paths receive live requests for 200, 304, 404 and 405, whole-file Range
+handling, JSON MIME, `nosniff`, `Vary`, gzip/brotli negotiation, and
+byte-exact identity and precompressed payloads from their own catalog tree.
 
 `frontend/scripts/locale-catalog/verify-dist.mjs` proves the built `dist/`
 really contains the catalog with matching digests and precompressed siblings.

@@ -77,11 +77,43 @@ Versions are aligned with `docker-compose.yml` and `Dockerfile`. PostgreSQL uses
 | --- | --- | --- | --- |
 | Backend | Haskell (GHC) | 9.14.1 | `downloads.haskell.org` bindist |
 | Build Tool | Stack | 3.7.1 | GitHub Releases prebuilt binary |
-| Frontend | Node.js + Vite | 22.12.0 LTS | `nodejs.org` prebuilt binary |
+| Frontend | Node.js + Vite | 26.7.0 | `nodejs.org` prebuilt binary |
 | Database | PostgreSQL | 14.15 | `ftp.postgresql.org` source build |
 | Proxy | Nginx | 1.26.2 | `nginx.org` source build (minimal) |
 
-GHC / Stack / Node.js use official prebuilt binaries. PostgreSQL and Nginx are built from source to avoid hard-coded paths inside prebuilt packages.
+GHC / Stack / Node.js use official prebuilt binaries. PostgreSQL and Nginx are built from source to avoid hard-coded paths inside prebuilt packages. The shipped Nginx build explicitly includes `--with-http_gzip_static_module`, because the generated package configuration uses `gzip_static on`.
+
+### Toolchain authority and cache safety
+
+`toolchain.lock` is the committed authority table for every direct offline
+toolchain archive on every supported platform: GHC, Stack, Node, PostgreSQL,
+and Nginx. It also records the Docker builder's ghcup bootstrap. Cache hits
+are never accepted merely because they are non-empty:
+
+- archive bytes are SHA-256 checked on every hit, after download, and before
+  extraction/build;
+- Node's installed executable is checked against its committed executable
+  SHA-256 before it can run;
+- native PostgreSQL/Nginx and extracted GHC/Stack installs have a
+  lock-bound, atomic local manifest of executable bytes. That manifest is
+  checked before a cached executable or sourced PATH fragment is used;
+- native build identities bind the platform, source digest, version, and
+  complete build recipe. They intentionally do not claim cross-compiler
+  byte-for-byte reproducibility; the recorded executable digest makes a
+  divergent local result visible and unusable as a cache hit;
+- CI toolchain cache keys include the lock and all authority scripts.
+
+The registry dependencies are separately covered by their committed lockfiles:
+`frontend/package-lock.json` supplies npm's per-package SRI checks and is the
+frontend cache key, while Stack resolves from `backend/stack.yaml.lock`.
+They are not `download_cached` toolchain archives and are never accepted by
+the archive cache authority path.
+
+The package copies this lock alongside
+`game/config/toolchain-provenance.env` after any binary relocation/signing.
+`start.sh` checks the shipped lock digest, packaged Nginx SHA-256, version, and
+gzip-static capability before running it. The release workflow also boots the
+actual package's Nginx through that launcher and performs live HTTP checks.
 
 ## Directory Layout
 
@@ -89,13 +121,16 @@ GHC / Stack / Node.js use official prebuilt binaries. PostgreSQL and Nginx are b
 offline/
 ├── build_all.sh
 ├── README.md
+├── toolchain.lock              # Per-platform archive/binary authority
 ├── scripts/
 │   ├── utils.sh
+│   ├── toolchain-authority.sh
 │   ├── 01-check-project-deps.sh
 │   ├── 02-verify-deps.sh
 │   ├── 03-build-frontend.sh
 │   ├── 04-build-backend.sh
-│   └── 05-package.sh
+│   ├── 05-package.sh
+│   └── test-toolchain-authority.sh
 ├── _tmp/                        # Download cache (gitignored)
 ├── _deps/                       # Toolchains and intermediate artifacts (gitignored)
 │   ├── ghcup/
