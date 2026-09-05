@@ -24,15 +24,15 @@ jobs:
         ghc: ["9.14.1"]
 
     steps:
-    - uses: actions/checkout@v4
-    - uses: haskell-actions/setup@v2
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+    - uses: haskell-actions/setup@bda9c527d4136f7759733016190c34a24c84f4f4
       name: Setup Haskell Stack
       with:
         ghc-version: ${{ matrix.ghc }}
         stack-version: ${{ matrix.stack }}
 
     - name: Cache
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
       env:
         cache-name: cache-stack
       with:

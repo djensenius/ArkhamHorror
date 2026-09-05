@@ -32,7 +32,13 @@ readonly MKTEMP="/usr/bin/mktemp"
 readonly RM="/bin/rm"
 readonly DATE="/bin/date"
 readonly MKDIR="/bin/mkdir"
+readonly CP="/bin/cp"
 readonly UNAME="/usr/bin/uname"
+readonly FIND="/usr/bin/find"
+readonly SORT="/usr/bin/sort"
+readonly XARGS="/usr/bin/xargs"
+readonly STAT="/usr/bin/stat"
+export LC_ALL=C
 if [[ -x /usr/bin/sha256sum && ! -L /usr/bin/sha256sum ]]; then
   readonly SHA256="/usr/bin/sha256sum"
 elif [[ -x /usr/bin/shasum && ! -L /usr/bin/shasum ]]; then
@@ -99,6 +105,22 @@ require_digest() {
   die "${what} '${path}' does not match a declared SHA-256 identity for this platform"
 }
 
+hash_stream() {
+  if [[ "${SHA256}" == */shasum ]]; then
+    "${SHA256}" -a 256
+  else
+    "${SHA256}"
+  fi
+}
+
+hash_files() {
+  if [[ "${SHA256}" == */shasum ]]; then
+    "${XARGS}" -0 "${SHA256}" -a 256
+  else
+    "${XARGS}" -0 "${SHA256}"
+  fi
+}
+
 # The exact interpreter binary -- not the `bin/python` / `bin/python3` symlinks
 # a local `pip install` can retarget, and never a PATH lookup.
 readonly PYTHON="${SEALED_ROOT}/installs/python/3.14.7/bin/python3.14"
@@ -114,6 +136,12 @@ shopt -u nullglob
   die "expected exactly one sealed uv 0.12.6 binary under '${SEALED_ROOT}/installs/uv/0.12.6', found ${#uv_candidates[@]}"
 readonly UV="${uv_candidates[0]}"
 require_sealed_file "${UV}" "sealed uv 0.12.6"
+readonly STDLIB="${SEALED_ROOT}/installs/python/3.14.7/lib/python3.14"
+[[ ! -L "${STDLIB}" && -d "${STDLIB}" ]] ||
+  die "sealed CPython stdlib '${STDLIB}' is not a regular directory"
+stdlib_canonical="$(cd -- "${STDLIB}" && pwd -P)"
+[[ "${stdlib_canonical}" == "${STDLIB}" ]] ||
+  die "sealed CPython stdlib '${STDLIB}' traverses a symlinked toolchain directory"
 
 # Revision drift is the only governed step that may consult git, and it
 # consults exactly this absolute, non-symlink system binary -- never a
@@ -137,17 +165,19 @@ fi
 # every other platform is rejected rather than approximated.
 case "$("${UNAME}" -s):$("${UNAME}" -m)" in
   Darwin:arm64)
-    require_digest "${PYTHON}" "sealed CPython 3.14.7" \
-      "1ba16b38d45f006e449bb51a923dae83f3c384611bcd4ee428afd044b7ed4c95"
+    readonly PYTHON_DIGESTS=("1ba16b38d45f006e449bb51a923dae83f3c384611bcd4ee428afd044b7ed4c95")
+    require_digest "${PYTHON}" "sealed CPython 3.14.7" "${PYTHON_DIGESTS[@]}"
     require_digest "${NODE}" "sealed Node 26.7.0" \
       "a9bd0630891c2dcdee70de88270fee2cc0c4a9e76495039dd3b4f91c5e6b71df"
     require_digest "${UV}" "sealed uv 0.12.6" \
       "e8929237934c8679686428f5a7736c7ae7a5fe7a33b0504d1b03446cdbc43c94"
     ;;
   Linux:x86_64)
-    require_digest "${PYTHON}" "sealed CPython 3.14.7" \
+    readonly PYTHON_DIGESTS=(
       "23cfacd2e3ce3d8745b9405641ca3d91e9803e49003faa7882f80a4da9414be7" \
       "ce7402fee6629ce791aeb871cd4d1a1e21ad2e90ca4b3236611484053a7e06ac"
+    )
+    require_digest "${PYTHON}" "sealed CPython 3.14.7" "${PYTHON_DIGESTS[@]}"
     require_digest "${NODE}" "sealed Node 26.7.0" \
       "ad19784f7e90ba789a099eccba77ede8dc90a778c424f1c10a70fed3ff903fdc"
     require_digest "${UV}" "sealed uv 0.12.6" \
@@ -157,6 +187,33 @@ case "$("${UNAME}" -s):$("${UNAME}" -m)" in
     die "unsupported toolchain platform $(${UNAME} -s):$(${UNAME} -m); no portable exact binary identity is declared"
     ;;
 esac
+
+verify_stdlib_before_python() {
+  # `-B` stops writes but CPython can otherwise still *read* an attacker-made
+  # cache.  Every Python process below instead uses a fresh owned
+  # `pycache_prefix`, so the install's pre-existing cache is unreachable.  The
+  # source tree itself is attested here, before this interpreter can import
+  # even the bootstrap's first stdlib module.
+  local unexpected source_digest
+  unexpected="$("${FIND}" "${STDLIB}" -type l -print -quit)"
+  [[ -z "${unexpected}" ]] ||
+    die "sealed CPython stdlib contains a symlink: ${unexpected}"
+  source_digest="$(
+    cd -- "${STDLIB}"
+    "${FIND}" . -type f -name '*.py' \
+      ! -path './site-packages/*' \
+      ! -path './_sysconfigdata__darwin_darwin.py' \
+      ! -path './_sysconfigdata__linux_x86_64-linux-gnu.py' \
+      ! -path './config-3.14-darwin/python-config.py' \
+      ! -path './config-3.14-x86_64-linux-gnu/python-config.py' \
+      -print0 | "${SORT}" -z | hash_files | hash_stream
+  )"
+  source_digest="${source_digest%% *}"
+  [[ "${source_digest}" == "c618cf3f74e4625201ed9d508f280b256235370e949172500c02d2da662d53e5" ]] ||
+    die "sealed CPython stdlib source set does not match the declared complete closure"
+}
+
+verify_stdlib_before_python
 
 # `PATH` for the child exists only for the non-Python helpers the governed
 # scripts shell out to (node/npm, nginx, stack). It deliberately excludes the
@@ -168,49 +225,67 @@ cd "${ROOT}"
 
 readonly WORKSPACE_PREFIX=".locale-catalog-python."
 readonly OWNER_FILE="owner"
-# Bounded staleness window for an abandoned workspace: long enough that a live
-# invocation is never reclaimed, short enough that a killed one is not left
-# behind forever.
-readonly STALE_SECONDS=3600
-
-# Ownership-safe reclamation: a workspace is removed only when its owner file
-# is a readable regular file, records a bounded age older than the window, and
-# names a process that is no longer alive. Anything unreadable, recent, still
-# running, or not shaped like an owner record is left untouched.
-reclaim_stale_workspaces() {
-  local candidate owner_path owner_pid owner_epoch now
-  now="$("${DATE}" +%s)"
-  shopt -s nullglob
-  for candidate in "${ROOT}/${WORKSPACE_PREFIX}"*; do
-    [[ -d "${candidate}" && ! -L "${candidate}" ]] || continue
-    owner_path="${candidate}/${OWNER_FILE}"
-    [[ -f "${owner_path}" && ! -L "${owner_path}" ]] || continue
-    owner_pid=""
-    owner_epoch=""
-    read -r owner_pid owner_epoch <"${owner_path}" || continue
-    [[ "${owner_pid}" =~ ^[0-9]+$ && "${owner_epoch}" =~ ^[0-9]+$ ]] || continue
-    (( now - owner_epoch > STALE_SECONDS )) || continue
-    kill -0 "${owner_pid}" 2>/dev/null && continue
-    # A workspace that cannot be removed (for example one another user owns)
-    # is left where it is; reclamation is best-effort and must never abort the
-    # governed command it is running on behalf of.
-    "${RM}" -rf -- "${candidate}" || true
-  done
-  shopt -u nullglob
-}
-
-reclaim_stale_workspaces
-
 # `mktemp -d` creates the workspace exclusively (O_EXCL, mode 0700), so the
 # ownership record below can never be planted by another invocation.
 WORKSPACE="$("${MKTEMP}" -d "${ROOT}/${WORKSPACE_PREFIX}XXXXXX")"
 readonly WORKSPACE
-trap '"${RM}" -rf -- "${WORKSPACE}"' EXIT
-printf '%s %s\n' "$$" "$("${DATE}" +%s)" >"${WORKSPACE}/${OWNER_FILE}"
+workspace_identity() {
+  if [[ "$("${UNAME}" -s)" == "Darwin" ]]; then
+    "${STAT}" -f '%d:%i' -- "${WORKSPACE}"
+  else
+    "${STAT}" -c '%d:%i' -- "${WORKSPACE}"
+  fi
+}
+readonly WORKSPACE_ID="$(workspace_identity)"
+readonly WORKSPACE_TOKEN="$$.${RANDOM}.${RANDOM}.$("${DATE}" +%s)"
+printf '%s %s %s %s\n' "$$" "$("${DATE}" +%s)" "${WORKSPACE_TOKEN}" "${WORKSPACE_ID}" >"${WORKSPACE}/${OWNER_FILE}"
+
+cleanup_workspace() {
+  local owner_pid owner_epoch owner_token owner_identity extra
+  [[ -d "${WORKSPACE}" && ! -L "${WORKSPACE}" ]] || return
+  [[ -f "${WORKSPACE}/${OWNER_FILE}" && ! -L "${WORKSPACE}/${OWNER_FILE}" ]] || return
+  owner_pid=""
+  owner_epoch=""
+  owner_token=""
+  owner_identity=""
+  extra=""
+  read -r owner_pid owner_epoch owner_token owner_identity extra <"${WORKSPACE}/${OWNER_FILE}" || return
+  [[ -z "${extra}" && "${owner_pid}" == "$$" && "${owner_token}" == "${WORKSPACE_TOKEN}" \
+    && "${owner_identity}" == "${WORKSPACE_ID}" ]] || return
+  [[ "$(workspace_identity)" == "${WORKSPACE_ID}" ]] || return
+  "${RM}" -rf -- "${WORKSPACE}" || true
+}
+trap cleanup_workspace EXIT
 readonly VENV="${WORKSPACE}/venv"
 readonly SCRATCH_HOME="${WORKSPACE}/home"
-"${MKDIR}" -p "${SCRATCH_HOME}"
+readonly PYCACHE_PREFIX="${WORKSPACE}/pycache"
+"${MKDIR}" -p "${SCRATCH_HOME}" "${PYCACHE_PREFIX}"
 readonly SITE_PACKAGES="${VENV}/lib/python3.14/site-packages"
+readonly RUNTIME_HOME="${WORKSPACE}/runtime"
+
+# Python still accepts valid unchecked .pyc files even with -B and
+# pycache_prefix.  Build an invocation-owned reflink/copy of the already
+# shell-attested installation, then remove every cache before its first
+# interpreter start. The original managed install is read only; the runtime
+# itself attests the copied sources again before importing a governed target.
+case "$("${UNAME}" -s)" in
+  Darwin) "${CP}" -cR "${SEALED_ROOT}/installs/python/3.14.7" "${RUNTIME_HOME}" ;;
+  Linux) "${CP}" --reflink=auto -a "${SEALED_ROOT}/installs/python/3.14.7" "${RUNTIME_HOME}" ;;
+  *) die "unsupported runtime-copy platform $(${UNAME} -s)" ;;
+esac
+purge_runtime_bytecode() {
+  "${FIND}" "${RUNTIME_HOME}" -type d -name __pycache__ -prune -exec "${RM}" -rf -- {} +
+  local unexpected_cache
+  unexpected_cache="$("${FIND}" "${RUNTIME_HOME}" \( -name __pycache__ -o -name '*.pyc' \) -print -quit)"
+  [[ -z "${unexpected_cache}" ]] ||
+    die "copied CPython runtime contains bytecode after cache removal: ${unexpected_cache}"
+}
+purge_runtime_bytecode
+readonly RUNTIME_PYTHON="${RUNTIME_HOME}/bin/python3.14"
+[[ ! -L "${RUNTIME_PYTHON}" && -f "${RUNTIME_PYTHON}" && -x "${RUNTIME_PYTHON}" ]] ||
+  die "copied CPython runtime has no regular python3.14 executable"
+require_digest "${RUNTIME_PYTHON}" "copied CPython 3.14.7" \
+  "${PYTHON_DIGESTS[@]}"
 
 # `HOME` is this invocation's own empty directory: uv, git, and any helper that
 # consults it can never read or write the caller's real home.
@@ -219,7 +294,8 @@ readonly SITE_PACKAGES="${VENV}/lib/python3.14/site-packages"
   PATH="${TRUSTED_PATH}" \
   UV_PROJECT_ENVIRONMENT="${VENV}" \
   UV_NO_CONFIG=1 \
-  "${UV}" sync --locked --no-cache --link-mode copy --reinstall --no-dev --no-install-project --python "${PYTHON}" --quiet
+  "${UV}" sync --locked --no-cache --link-mode copy --reinstall --no-dev --no-install-project --python "${RUNTIME_PYTHON}" --quiet
+purge_runtime_bytecode
 
 # Not `exec`: the EXIT trap above must still reclaim this invocation's
 # workspace once the governed command finishes.
@@ -233,7 +309,9 @@ status=0
   LOCALE_CATALOG_UV="${UV}" \
   LOCALE_CATALOG_STACK="${STACK}" \
   ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" \
-  "${PYTHON}" -I -S -E -B "${ROOT}/scripts/locale_catalog_runtime.py" "$@" || status=$?
+  ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX="${PYCACHE_PREFIX}" \
+  ARKHAM_LOCALE_CATALOG_RUNTIME_HOME="${RUNTIME_HOME}" \
+  "${RUNTIME_PYTHON}" -I -S -E -B -X "pycache_prefix=${PYCACHE_PREFIX}" "${ROOT}/scripts/locale_catalog_runtime.py" "$@" || status=$?
 if (( status != 0 )); then
   exit "${status}"
 fi
@@ -253,7 +331,9 @@ fi
   LOCALE_CATALOG_UV="${UV}" \
   LOCALE_CATALOG_STACK="${STACK}" \
   ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" \
-  "${PYTHON}" -I -S -E -B -c '
+  ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX="${PYCACHE_PREFIX}" \
+  ARKHAM_LOCALE_CATALOG_RUNTIME_HOME="${RUNTIME_HOME}" \
+  "${RUNTIME_PYTHON}" -I -S -E -B -X "pycache_prefix=${PYCACHE_PREFIX}" -c '
 import runpy
 import sys
 

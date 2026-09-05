@@ -1,4 +1,4 @@
-FROM node:26.7.0-alpine AS frontend
+FROM node:26.7.0-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS frontend
 
 # Frontend
 
@@ -18,6 +18,10 @@ COPY ./frontend /opt/arkham/src/frontend
 COPY ./contracts /opt/arkham/src/contracts
 COPY ./backend/arkham-api/i18n-emitted-keys.json /opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json
 ENV VITE_ASSET_HOST=${ASSET_HOST}
+# This image is pinned by manifest digest, so its explicit Node binary is the
+# Docker build's equivalent immutable execution boundary. npm's prebuild below
+# only checks these bytes; it cannot regenerate a separate catalog.
+RUN env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generate.mjs
 RUN npm run build
 # The image copies `dist` out of this stage, so the catalog is verified here and
 # republished from the verified buffers: what the next stage copies — and what

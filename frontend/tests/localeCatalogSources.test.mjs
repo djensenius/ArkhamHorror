@@ -215,3 +215,19 @@ test('the repository pins the same exact node version everywhere', () => {
   contains('mise.toml', pinned)
   contains('Dockerfile', pinned)
 })
+
+test('production builds consume a previously attested catalog', () => {
+  const packageJson = JSON.parse(readFileSync(join(REPO_ROOT, 'frontend/package.json'), 'utf8'))
+  assert.match(packageJson.scripts.prebuild, /generate\.mjs --check/)
+  assert.doesNotMatch(packageJson.scripts.prebuild, /npm run locale-catalog(?:\s|$)/)
+  assert.match(packageJson.scripts['locale-catalog'], /run-locale-catalog-python\.sh scripts\/generate-locale-catalog\.py/)
+
+  const workflow = readFileSync(join(REPO_ROOT, '.github/workflows/locale-catalog.yml'), 'utf8')
+  assert.match(workflow, /Generate the attested public catalog for frontend builds/)
+  assert.match(workflow, /mise run locale-catalog:generate/)
+
+  const dockerfile = readFileSync(join(REPO_ROOT, 'Dockerfile'), 'utf8')
+  assert.match(dockerfile, /^FROM node:26\.7\.0-alpine@sha256:[0-9a-f]{64} AS frontend/m)
+  assert.match(dockerfile, /env -i HOME=\/nonexistent .*\/usr\/local\/bin\/node scripts\/locale-catalog\/generate\.mjs/)
+  assert.match(dockerfile, /RUN npm run build/)
+})

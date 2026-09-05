@@ -51,9 +51,12 @@ GOVERNED_TREE_PATHS = (
     "scripts",
     "contracts",
     "frontend/schemas",
+    "frontend/package.json",
     "mise.toml",
     "pyproject.toml",
     "uv.lock",
+    "Dockerfile",
+    ".github/workflows",
 )
 
 OWNER_SENTINEL = ".locale-catalog-boundary-owner"
@@ -61,7 +64,6 @@ PROBE_PREFIX = "locale-catalog-boundary-"
 SCRATCH_OWNER_FILE = ".locale-catalog-boundary-scratch-owner"
 WORKSPACE_PREFIX = ".locale-catalog-python."
 WORKSPACE_OWNER_FILE = "owner"
-LAUNCHER_STALE_SECONDS = 3600
 
 # Canonical paths earlier revisions of this test created, overwrote, truncated,
 # restored or removed by fixed name. They are witnessed here, never written.
@@ -240,6 +242,30 @@ GRANT_OVERREACH_SNIPPETS: dict[str, bytes] = {
     "granted source widening os.environ": b"import os\nos.environ.clear()\n",
     "granted source widening to sys.path": b'import sys\nsys.path.append("x")\n',
     "granted source widening to sys.modules": b"import sys\nsys.modules.clear()\n",
+}
+
+SCOPE_BYPASS_SNIPPETS: dict[str, bytes] = {
+    "function parameter shadow": (
+        b"import subprocess\n\ndef shadow(subprocess):\n    pass\n\nsubprocess.Popen(['id'])\n"
+    ),
+    "function assignment shadow": (
+        b"import subprocess\n\ndef shadow():\n    subprocess = None\n\nsubprocess.Popen(['id'])\n"
+    ),
+    "conditional assignment shadow": (
+        b"import subprocess\nif False:\n    subprocess = None\nsubprocess.Popen(['id'])\n"
+    ),
+    "class shadow": b"import subprocess\nclass subprocess:\n    pass\nsubprocess.Popen(['id'])\n",
+    "exception alias shadow": (
+        b"import subprocess\ntry:\n    pass\nexcept Exception as subprocess:\n    pass\nsubprocess.Popen(['id'])\n"
+    ),
+    "for target shadow": b"import subprocess\nfor subprocess in ():\n    pass\nsubprocess.Popen(['id'])\n",
+    "with target shadow": (
+        b"import subprocess\nwith object() as subprocess:\n    pass\nsubprocess.Popen(['id'])\n"
+    ),
+    "comprehension target shadow": (
+        b"import subprocess\n[value for subprocess in ()]\nsubprocess.Popen(['id'])\n"
+    ),
+    "import alias shadow": b"import subprocess\nimport json as subprocess\nsubprocess.Popen(['id'])\n",
 }
 
 TAMPER_TARGETS = (
@@ -549,7 +575,7 @@ def test_capability_bypass_matrix(scratch: Path, token: str) -> int:
         checked = 0
         matrices = (
             ((FIXTURE_ENTRY, HELPER_SOURCE), BYPASS_SNIPPETS),
-            ((GRANTED_SOURCE,), GRANT_OVERREACH_SNIPPETS),
+            ((GRANTED_SOURCE,), {**GRANT_OVERREACH_SNIPPETS, **SCOPE_BYPASS_SNIPPETS}),
         )
         for targets, snippets in matrices:
             for target in targets:
@@ -646,7 +672,35 @@ def test_source_and_schema_tampering(scratch: Path, token: str) -> int:
         checked += 1
     finally:
         release_probe_tree(tree, token)
+
+    for relative_path in (
+        "scripts/locale_catalog_python_boundary/__init__.py",
+        "scripts/json/__init__.py",
+    ):
+        tree = create_probe_tree(scratch, "nested-import-shadow", token, with_history=False)
+        try:
+            path = tree / relative_path
+            path.parent.mkdir()
+            path.write_bytes(b"raise SystemExit('nested import shadow ran')\n")
+            require_authoritative_failure(
+                f"nested importable shadow {relative_path}", tree, [FIXTURE_ENTRY, "--check"]
+            )
+            checked += 1
+        finally:
+            release_probe_tree(tree, token)
     return checked
+
+
+def test_workflow_base_authority_wiring() -> int:
+    text = (ROOT / ".github" / "workflows" / "contracts.yml").read_text(encoding="utf-8")
+    require(
+        "BASE_SHA: ${{ github.event_name" in text
+        and 'mise run contracts:revision-drift -- "$BASE_SHA"' in text
+        and 'revision-drift -- "${{' not in text,
+        "contracts workflow interpolates an Actions expression into shell source instead of "
+        "passing the event base through the quoted BASE_SHA environment value",
+    )
+    return 1
 
 
 def test_fixture_writer_ownership(scratch: Path, token: str) -> int:
@@ -778,6 +832,75 @@ def test_toolchain_roots(scratch: Path, token: str) -> int:
             environment=probe_environment({"LOCALE_CATALOG_MISE_ROOT": str(mirror)}),
         )
         checked += 1
+
+        # CPython normally accepts a hash-based unchecked pyc ahead of its
+        # source. The sealed launcher must redirect every interpreter to its
+        # fresh empty pycache prefix before the bootstrap imports `ast`; this
+        # deliberately valid malicious cache therefore cannot execute.
+        pycache_root = scratch / f"pycache-root-{uuid.uuid4().hex}"
+        pycache_root.mkdir()
+        mirror_toolchain(sealed_root, pycache_root, {})
+        marker = scratch / f"stdlib-pyc-marker-{uuid.uuid4().hex}"
+        pyc = (
+            pycache_root
+            / stdlib_relative
+            / "__pycache__"
+            / "ast.cpython-314.pyc"
+        )
+        pyc.parent.mkdir(exist_ok=True)
+        # The mirror uses hard links for speed. Break this one link before
+        # writing the adversarial cache so the test can never mutate the
+        # actual mise installation's pre-existing bytecode.
+        pyc.unlink(missing_ok=True)
+        writer = (
+            "import importlib.util,marshal,struct,sys;"
+            "from pathlib import Path;"
+            "code=compile(f\"from pathlib import Path; Path({sys.argv[2]!r}).write_text('ran')\","
+            "'<poisoned-ast>','exec');"
+            "Path(sys.argv[1]).write_bytes(importlib.util.MAGIC_NUMBER+struct.pack('<I',1)"
+            "+b'01234567'+marshal.dumps(code))"
+        )
+        compiled = subprocess.run(
+            [
+                str(sealed_root / binary_relative),
+                "-I",
+                "-S",
+                "-E",
+                "-B",
+                "-c",
+                writer,
+                str(pyc),
+                str(marker),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+        require(compiled.returncode == 0, f"could not construct poisoned stdlib pyc: {compiled.stderr}")
+        require(not marker.exists(), "constructing a poisoned pyc unexpectedly executed its payload")
+        require_authoritative_success(
+            "unchecked stdlib bytecode under the normal cache path",
+            tree,
+            [FIXTURE_ENTRY, "--check"],
+            environment=probe_environment({"LOCALE_CATALOG_MISE_ROOT": str(pycache_root)}),
+        )
+        require(not marker.exists(), "unchecked stdlib bytecode executed before source attestation")
+        checked += 1
+        shutil.rmtree(pycache_root)
+
+        missing_root = scratch / f"missing-stdlib-root-{uuid.uuid4().hex}"
+        missing_root.mkdir()
+        mirror_toolchain(sealed_root, missing_root, {})
+        (missing_root / stdlib_relative / "json" / "__init__.py").unlink()
+        require_authoritative_failure(
+            "missing attested stdlib source",
+            tree,
+            [FIXTURE_ENTRY, "--check"],
+            environment=probe_environment({"LOCALE_CATALOG_MISE_ROOT": str(missing_root)}),
+        )
+        checked += 1
+        shutil.rmtree(missing_root)
 
         original_module = (sealed_root / stdlib_relative / "json" / "__init__.py").read_bytes()
         tampered_roots = {
@@ -1094,7 +1217,7 @@ def test_dependency_tampering(scratch: Path, token: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Probe: workspace ownership, staleness and kill recovery
+# Probe: workspace ownership and kill recovery
 # ---------------------------------------------------------------------------
 
 
@@ -1107,20 +1230,15 @@ def dead_process_identifier() -> int:
 def test_workspace_ownership(scratch: Path, token: str) -> int:
     tree = create_probe_tree(scratch, "workspace", token)
     try:
-        now = int(time.time())
         stale = tree / f"{WORKSPACE_PREFIX}stale"
         stale.mkdir()
-        (stale / WORKSPACE_OWNER_FILE).write_text(
-            f"{dead_process_identifier()} {now - LAUNCHER_STALE_SECONDS - 600}\n", encoding="utf-8"
-        )
+        (stale / WORKSPACE_OWNER_FILE).write_text(f"{dead_process_identifier()} 0 foreign stale\n", encoding="utf-8")
         live = tree / f"{WORKSPACE_PREFIX}live"
         live.mkdir()
-        (live / WORKSPACE_OWNER_FILE).write_text(f"{os.getpid()} {now - 60}\n", encoding="utf-8")
+        (live / WORKSPACE_OWNER_FILE).write_text(f"{os.getpid()} 0 foreign live\n", encoding="utf-8")
         long_lived = tree / f"{WORKSPACE_PREFIX}long-lived"
         long_lived.mkdir()
-        (long_lived / WORKSPACE_OWNER_FILE).write_text(
-            f"{os.getpid()} {now - LAUNCHER_STALE_SECONDS - 600}\n", encoding="utf-8"
-        )
+        (long_lived / WORKSPACE_OWNER_FILE).write_text(f"{os.getpid()} 0 foreign old\n", encoding="utf-8")
         unowned = tree / f"{WORKSPACE_PREFIX}unowned"
         unowned.mkdir()
         garbled = tree / f"{WORKSPACE_PREFIX}garbled"
@@ -1128,11 +1246,11 @@ def test_workspace_ownership(scratch: Path, token: str) -> int:
         (garbled / WORKSPACE_OWNER_FILE).write_text("not-an-owner-record\n", encoding="utf-8")
 
         require_authoritative_success(
-            "authoritative command alongside abandoned workspaces", tree, [FIXTURE_ENTRY, "--check"]
+            "authoritative command alongside pre-existing workspaces", tree, [FIXTURE_ENTRY, "--check"]
         )
-        require(not stale.exists(), "a stale, dead-owner workspace was not reclaimed")
-        require(live.exists(), "a live workspace was reclaimed")
-        require(long_lived.exists(), "a long-running invocation's workspace was reclaimed")
+        require(stale.exists(), "a stale-looking pre-existing workspace was removed")
+        require(live.exists(), "a live workspace was removed")
+        require(long_lived.exists(), "a long-running invocation's workspace was removed")
         require(unowned.exists(), "a workspace without an ownership record was removed")
         require(garbled.exists(), "a workspace with an unparsable ownership record was removed")
         remaining = sorted(
@@ -1144,11 +1262,12 @@ def test_workspace_ownership(scratch: Path, token: str) -> int:
                 f"{WORKSPACE_PREFIX}garbled",
                 f"{WORKSPACE_PREFIX}live",
                 f"{WORKSPACE_PREFIX}long-lived",
+                f"{WORKSPACE_PREFIX}stale",
                 f"{WORKSPACE_PREFIX}unowned",
             ],
             f"a successful invocation did not release its own workspace; found {remaining}",
         )
-        return 6
+        return 5
     finally:
         release_probe_tree(tree, token)
 
@@ -1180,31 +1299,22 @@ def test_kill_recovery(scratch: Path, token: str) -> int:
             require(False, "a killed authoritative invocation did not terminate")
         require(leaked, "the authoritative command never created an owned workspace to reclaim")
 
-        # A hard kill skips the launcher's cleanup trap, so the workspace is
-        # still there -- and must survive until it is genuinely stale.
+        # A hard kill skips the launcher's cleanup trap. Future invocations
+        # must never decide that this path is theirs merely from a
+        # caller-creatable owner record, regardless of its age.
         survivor = leaked[0]
         owner = survivor / WORKSPACE_OWNER_FILE
         require(owner.is_file(), "an abandoned workspace carries no ownership record")
         recorded = owner.read_text(encoding="utf-8").split()
         require(
-            len(recorded) == 2 and recorded[0].isdigit() and recorded[1].isdigit(),
+            len(recorded) == 4 and recorded[0].isdigit() and recorded[1].isdigit(),
             f"an abandoned workspace has an unparsable ownership record: {recorded!r}",
         )
         require_authoritative_success(
             "authoritative command after a killed invocation", tree, [FIXTURE_ENTRY, "--check"]
         )
-        require(survivor.exists(), "a freshly abandoned workspace was reclaimed before its timeout")
-
-        owner.write_text(
-            f"{recorded[0]} {int(time.time()) - LAUNCHER_STALE_SECONDS - 600}\n", encoding="utf-8"
-        )
-        require_authoritative_success(
-            "authoritative command after the abandoned workspace aged out",
-            tree,
-            [FIXTURE_ENTRY, "--check"],
-        )
-        require(not survivor.exists(), "an aged-out abandoned workspace was never reclaimed")
-        return 2
+        require(survivor.exists(), "a killed invocation's workspace was reclaimed by another run")
+        return 1
     finally:
         release_probe_tree(tree, token)
 
@@ -1342,6 +1452,7 @@ def main() -> None:
         totals["target execution"] = test_validated_target_really_executes(scratch, token)
         totals["source and schema tampering"] = test_source_and_schema_tampering(scratch, token)
         totals["fixture writer ownership"] = test_fixture_writer_ownership(scratch, token)
+        totals["workflow base authority"] = test_workflow_base_authority_wiring()
         totals["toolchain attestation"] = test_toolchain_roots(scratch, token)
         totals["hostile caller environment"] = test_hostile_caller_environment(scratch, token)
         totals["dependency tampering"] = test_dependency_tampering(scratch, token)

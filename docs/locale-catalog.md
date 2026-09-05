@@ -255,12 +255,16 @@ unavailable rather than blank.
 
 ## Generation and provenance
 
-`frontend/scripts/locale-catalog/generate.mjs` runs during `npm run build`
-(npm `prebuild`, alongside `slim-cards`) and writes
+The sealed `mise run locale-catalog:generate` command writes
 `frontend/public/locale-catalog/`, which Vite copies into `dist/` and
 `scripts/precompress.cjs` gives `.gz`/`.br` siblings. The output is generated,
 so it is git-ignored — the committed artifacts are the generator, the schemas,
 and the tests.
+`npm`'s `prebuild` only verifies those existing bytes; it never regenerates
+them. CI runs the sealed command before each frontend build. The Docker
+frontend stage uses a digest-pinned Node image and an explicit absolute Node
+binary as its equivalent immutable generator boundary, then its `prebuild`
+performs the same verification before shipping `dist/`.
 
 Composition is not re-implemented: the generator runs Vite in SSR mode over
 `src/locales/messages.ts`'s own `loadLocaleMessages`, so locale `.ts`
@@ -330,10 +334,14 @@ The real backend-probe task also receives one explicit host authority:
 command or any PATH lookup. CI captures the absolute path from the reviewed
 Haskell setup step and includes it in the otherwise empty shell environment.
 
-**Environment attestation.** The sealed shell hashes each exact CPython,
-Node and uv binary against the platform-specific digest table *before* it
-starts the first managed executable. The bootstrap repeats that check after
-startup, then proves its interpreter path inside the toolchain root (the real
+**Environment attestation.** Before the first Python byte runs, the sealed
+shell hashes the complete non-variant stdlib source inventory (path names and
+contents), then hashes each exact CPython, Node and uv binary against the
+platform-specific digest table. Each Python process uses a fresh, empty,
+invocation-owned `-X pycache_prefix`, so it cannot consult the installation's
+normal `__pycache__` at all; `-B` additionally prevents new bytecode writes.
+The bootstrap repeats executable/source checks after startup, then proves its
+interpreter path inside the toolchain root (the real
 `python3.14`, not the `bin/python` symlink a `pip install` can retarget), base
 prefix, version, cache tag and the `-I -S -E -B` isolation flags. It then
 proves the stdlib as a closure — every `.py` file under the
@@ -380,8 +388,10 @@ non-ancestor value fails in CI, and no environment variable is ever consulted
 as a base reference; the separately named `contracts:revision-drift-local` task
 carries the local fallback chain and is not authoritative.
 
-**Capability boundary.** Every declared `scripts/*.py` source is parsed before
-it is imported. Imports resolve only to declared stdlib, locked dependency or
+**Capability boundary.** The `scripts/` directory is flat and closed: any
+nested directory, nested Python file, symlink or bytecode is refused before it
+can shadow a standard-library or governed top-level import. Every declared
+`scripts/*.py` source is then parsed before it is imported. Imports resolve only to declared stdlib, locked dependency or
 in-tree modules, and every dotted reference reaching a sensitive root is
 checked against a per-source grant naming the exact capability *and the exact
 shape* it may appear in — called, read as a value, assigned to, or consumed as
@@ -391,8 +401,11 @@ that, conservative taint propagation refuses to let a value derived from a
 propagating capability escape through assignment, unpacking, list/tuple/set/dict
 literals, comprehensions, subscripts or slices, attributes, returns, yields,
 parameters or defaults, lambdas, closures, globals/nonlocals, class or instance
-fields, generators, context managers, exception aliases, decorators or aliases;
-anything the analyzer cannot resolve but can see is sensitive fails closed.
+fields, generators, context managers, exception aliases, decorators or aliases.
+Lexical scope snapshots prevent an inner parameter, class, branch or exception
+binding from erasing an outer sensitive alias; rebinding any such alias is
+itself a refusal. Anything the analyzer cannot resolve but can see is sensitive
+fails closed.
 `runpy`, `subprocess`, `os.system`/`spawn`/`exec`, importlib loaders,
 `zipimport`, `ctypes`, `pickle`/`marshal`/`shelve`, dynamic code objects,
 import-path mutation and dunder traversal are all rejected, including through
@@ -419,10 +432,10 @@ keyword or a Python-only pattern construct is a CI failure rather than a latent
 one.
 
 **Workspace ownership.** Each invocation gets an exclusively created workspace
-under the repository, recording its own pid and start time. Abandoned
-workspaces are reclaimed only when the record is readable, older than a bounded
-one-hour window, and names a process that is no longer alive; a live, recent,
-unowned or unparsable workspace is never touched.
+under the repository, recording a per-invocation token and its device/inode
+identity. Cleanup re-checks both immediately before removal. There is no stale
+workspace scavenger: a later invocation never removes an old, concurrent or
+caller-created directory based on a forgeable filename or owner record.
 
 `mise run locale-catalog:python-boundary-test` proves all of this
 adversarially, and every one of its probes — source, schema, dependency,

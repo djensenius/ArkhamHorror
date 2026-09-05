@@ -72,6 +72,11 @@ GENERATOR_EXECUTION_SOURCES = (
     "mise.toml",
     "pyproject.toml",
     "uv.lock",
+    "frontend/package.json",
+    "Dockerfile",
+    ".github/workflows/contracts.yml",
+    ".github/workflows/locale-catalog.yml",
+    ".github/workflows/haskell.yml",
     "scripts/run-locale-catalog-python.sh",
     "scripts/locale-catalog-python-sealed.sh",
     RUNTIME_PROFILE,
@@ -157,6 +162,7 @@ def runtime_identity() -> dict[str, object]:
         and set(profile)
         == {
             *RUNTIME_IDENTITY_KEYS,
+            "stdlibSourceTreeSha256",
             "interpreter",
             "uv",
             "externalTools",
@@ -171,6 +177,12 @@ def runtime_identity() -> dict[str, object]:
     require(
         all(isinstance(profile[key], str) and profile[key] for key in RUNTIME_IDENTITY_KEYS),
         f"{RUNTIME_PROFILE} interpreter identity values must be non-empty strings",
+    )
+    require(
+        isinstance(profile["stdlibSourceTreeSha256"], str)
+        and len(profile["stdlibSourceTreeSha256"]) == 64
+        and all(character in "0123456789abcdef" for character in profile["stdlibSourceTreeSha256"]),
+        f"{RUNTIME_PROFILE} does not pin the complete stdlib source tree digest",
     )
     require(
         has_binary_identity(

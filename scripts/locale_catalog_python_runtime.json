@@ -3,6 +3,7 @@
   "version": "3.14.7",
   "cacheTag": "cpython-314",
   "stdlibIdentity": "cpython-3.14.7",
+  "stdlibSourceTreeSha256": "c618cf3f74e4625201ed9d508f280b256235370e949172500c02d2da662d53e5",
   "interpreter": {
     "installRelativePath": "installs/python/3.14.7",
     "binaryRelativePath": "installs/python/3.14.7/bin/python3.14",

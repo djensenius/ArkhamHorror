@@ -38,7 +38,10 @@ jobs:
       - run: mise run contracts:catalog-fixture
       - run: mise run locale-catalog:python-boundary-test
       - run: mise run contracts:fixtures
-      - run: mise run contracts:revision-drift -- "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || github.event.inputs.base_sha }}"
+      - name: Enforce revision drift against the event's explicit base
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || github.event.inputs.base_sha }}
+        run: mise run contracts:revision-drift -- "$BASE_SHA"
 
   openapi:
     name: OpenAPI

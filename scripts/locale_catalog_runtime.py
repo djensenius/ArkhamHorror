@@ -137,7 +137,7 @@ def read_profile() -> dict:
     return profile
 
 
-def verify_interpreter(profile: dict, sealed_root: Path) -> None:
+def verify_interpreter(profile: dict, runtime_home: Path) -> None:
     if not (
         sys.implementation.name == profile["implementation"]
         and ".".join(map(str, sys.version_info[:3])) == profile["version"]
@@ -155,8 +155,8 @@ def verify_interpreter(profile: dict, sealed_root: Path) -> None:
     if sys.prefix != sys.base_prefix:
         refuse("must start from the exact base interpreter, not an inherited virtual environment")
     interpreter = profile["interpreter"]
-    install = sealed_root / interpreter["installRelativePath"]
-    binary = sealed_root / interpreter["binaryRelativePath"]
+    install = runtime_home
+    binary = runtime_home / "bin" / "python3.14"
     if Path(sys.base_prefix) != install or Path(sys.base_exec_prefix) != install:
         refuse(
             f"interpreter base prefix {sys.base_prefix} is not the sealed toolchain "
@@ -166,12 +166,47 @@ def verify_interpreter(profile: dict, sealed_root: Path) -> None:
         refuse(f"running interpreter {sys.executable} is not the sealed binary {binary}")
     if Path(sys._base_executable) != binary:
         refuse(f"base interpreter {sys._base_executable} is not the sealed binary {binary}")
-    require_sealed_executable(binary, "sealed interpreter", sealed_root=sealed_root)
+    require_sealed_executable(binary, "sealed interpreter", sealed_root=runtime_home)
     verify_binary_digest(interpreter, binary, "sealed CPython 3.14.7")
 
 
+def verify_pycache_prefix() -> None:
+    raw = os.environ.get("ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX")
+    if not raw or sys.pycache_prefix != raw:
+        refuse("Python must use this invocation's empty explicit pycache prefix")
+    prefix = Path(raw)
+    if (
+        prefix.name != "pycache"
+        or prefix.parent.parent != ROOT
+        or not prefix.parent.name.startswith(WORKSPACE_PREFIX)
+        or prefix.is_symlink()
+        or not prefix.is_dir()
+        or prefix.resolve() != prefix
+    ):
+        refuse("Python bytecode cache is not this invocation's own repository-owned workspace")
+    if any(prefix.iterdir()):
+        refuse("this invocation's Python bytecode cache is not empty")
+
+
+def read_runtime_home() -> Path:
+    raw = os.environ.get("ARKHAM_LOCALE_CATALOG_RUNTIME_HOME")
+    if not raw:
+        refuse("missing invocation-owned copied CPython runtime")
+    runtime = Path(raw)
+    if (
+        runtime.name != "runtime"
+        or runtime.parent.parent != ROOT
+        or not runtime.parent.name.startswith(WORKSPACE_PREFIX)
+        or runtime.is_symlink()
+        or not runtime.is_dir()
+        or runtime.resolve() != runtime
+    ):
+        refuse("copied CPython runtime is not this invocation's own repository-owned workspace")
+    return runtime
+
+
 def verify_stdlib(
-    profile: dict, sealed_root: Path
+    profile: dict, runtime_home: Path
 ) -> tuple[Path, set[str], set[str], dict[str, str]]:
     """Prove the interpreter's stdlib is exactly the pinned distribution's.
 
@@ -195,19 +230,27 @@ def verify_stdlib(
     `"<directory>/<module name>"`, for `verify_stdlib_import_closure`.
     """
     interpreter = profile["interpreter"]
-    stdlib_root = sealed_root / interpreter["stdlibRelativePath"]
+    stdlib_root = runtime_home / "lib" / "python3.14"
     if stdlib_root.is_symlink() or not stdlib_root.is_dir():
         refuse(f"sealed stdlib root {stdlib_root} is not a regular directory")
     modules = profile["stdlibModules"]
     variants = set(profile["platformVariantModules"])
+    source_tree_digest = profile.get("stdlibSourceTreeSha256")
     if not isinstance(modules, dict) or len(modules) != profile["stdlibModuleCount"]:
         refuse("toolchain lock stdlibModules does not match its declared stdlibModuleCount")
+    if source_tree_digest != "c618cf3f74e4625201ed9d508f280b256235370e949172500c02d2da662d53e5":
+        refuse("toolchain lock does not carry the declared complete stdlib source-tree identity")
 
     extensions: dict[str, str] = {}
     for entry in stdlib_root.rglob("*"):
         if entry.is_symlink():
             refuse(
                 f"sealed stdlib contains a symlink: {entry.relative_to(stdlib_root).as_posix()}"
+            )
+        if entry.name == "__pycache__" or entry.suffix == ".pyc":
+            refuse(
+                f"copied sealed stdlib contains bytecode: "
+                f"{entry.relative_to(stdlib_root).as_posix()}"
             )
         if entry.is_file() and entry.name.endswith(EXTENSION_SUFFIXES):
             relative_path = entry.relative_to(stdlib_root).as_posix()
@@ -238,6 +281,14 @@ def verify_stdlib(
                 f"lock {PROFILE.relative_to(ROOT)}"
             )
         present.add(relative_path)
+    expected_paths = set(modules)
+    actual_paths = present - variants
+    if actual_paths != expected_paths:
+        refuse(
+            "sealed stdlib source inventory differs from the committed toolchain lock; "
+            f"missing {sorted(expected_paths - actual_paths)}, "
+            f"unexpected {sorted(actual_paths - expected_paths)}"
+        )
     if not present:
         refuse(f"sealed stdlib root {stdlib_root} contains no attested module")
     return stdlib_root, present, variants, extensions
@@ -453,6 +504,11 @@ def verify_source_tree() -> None:
     for path in SCRIPTS.rglob("*"):
         if path.is_symlink():
             refuse(f"trusted scripts tree contains a symlink: {path.relative_to(ROOT)}")
+        if path.is_dir():
+            refuse(
+                f"trusted scripts tree contains an undeclared nested directory: "
+                f"{path.relative_to(ROOT)}"
+            )
         if path.suffix == ".pyc" or "__pycache__" in path.parts:
             refuse(f"trusted scripts tree contains bytecode: {path.relative_to(ROOT)}")
     try:
@@ -590,9 +646,11 @@ def main() -> None:
     target = sys.argv[1]
     arguments = sys.argv[2:]
     sealed_root = read_sealed_root()
+    runtime_home = read_runtime_home()
     profile = read_profile()
-    verify_interpreter(profile, sealed_root)
-    stdlib_root, attested, variants, extensions = verify_stdlib(profile, sealed_root)
+    verify_interpreter(profile, runtime_home)
+    verify_pycache_prefix()
+    stdlib_root, attested, variants, extensions = verify_stdlib(profile, runtime_home)
     verify_trusted_git()
     verify_trusted_node(profile, sealed_root)
     verify_trusted_uv(profile, sealed_root)

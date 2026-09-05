@@ -55,9 +55,11 @@ jobs:
         run: npm ci
         working-directory: frontend
       - run: mise run locale-catalog:test
-      # The catalog is deployment-owned output: it must fall out of the real
-      # production build (npm prebuild) and land in the static root nginx
-      # serves, not just out of the generator invoked directly.
+      - name: Generate the attested public catalog for frontend builds
+        run: mise run locale-catalog:generate
+      # prebuild verifies (rather than regenerates) the output produced by the
+      # sealed command above, so the deployment build cannot silently use a
+      # second PATH-selected Node generator.
       - name: Build the frontend
         run: npm run build
         working-directory: frontend

@@ -185,6 +185,7 @@ SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
         "sys.flags.safe_path": VALUE,
         "sys.implementation.cache_tag": VALUE,
         "sys.implementation.name": VALUE,
+        "sys.pycache_prefix": VALUE,
         "sys.path.insert": CALL,
         "sys.prefix": VALUE,
         "sys.platform": VALUE,
@@ -481,6 +482,18 @@ class CapabilityVisitor(ast.NodeVisitor):
         if self.is_tainted(node):
             self.fail(f"{context} a value derived from a propagating capability")
 
+    def reject_rebind(self, name: str, context: str, replacement: str | None = None) -> None:
+        capability = self.aliases.get(name)
+        if capability == replacement:
+            return
+        if capability is not None and capability.split(".", 1)[0] in SENSITIVE_ROOTS:
+            self.fail(
+                f"{context} sensitive capability alias {name!r} ({capability}); lexical "
+                "shadowing and control-flow rebinding fail closed"
+            )
+        if name in self.tainted:
+            self.fail(f"{context} tainted capability alias {name!r}")
+
     # -- capability checking --------------------------------------------
 
     def check_capability(self, capability: str, use: str) -> None:
@@ -578,6 +591,7 @@ class CapabilityVisitor(ast.NodeVisitor):
         if isinstance(target, ast.Name):
             if "__" in target.id and target.id not in ALLOWED_DUNDER_NAMES:
                 self.fail(f"binds undeclared dunder name {target.id!r}")
+            self.reject_rebind(target.id, "binds")
             self.aliases.pop(target.id, None)
             self.tainted.discard(target.id)
             if capability is not None:
@@ -626,7 +640,9 @@ class CapabilityVisitor(ast.NodeVisitor):
                 self.fail(f"imports undeclared module {alias.name!r}")
             self.imports.add(alias.name)
             bound = alias.asname or alias.name.split(".", 1)[0]
-            self.aliases[bound] = alias.name.split(".", 1)[0]
+            replacement = alias.name.split(".", 1)[0]
+            self.reject_rebind(bound, "imports over", replacement)
+            self.aliases[bound] = replacement
             self.tainted.discard(bound)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -644,6 +660,7 @@ class CapabilityVisitor(ast.NodeVisitor):
             capability = f"{node.module}.{alias.name}"
             self.check_capability(capability, USE_VALUE)
             bound = alias.asname or alias.name
+            self.reject_rebind(bound, "imports over", capability)
             self.aliases[bound] = capability
             self.tainted.discard(bound)
         self.imports.add(node.module)
@@ -692,10 +709,18 @@ class CapabilityVisitor(ast.NodeVisitor):
         if node.type is not None:
             self.visit(node.type)
         if node.name is not None:
+            self.reject_rebind(node.name, "binds exception over")
+            aliases = dict(self.aliases)
+            tainted = set(self.tainted)
             self.aliases.pop(node.name, None)
             self.tainted.discard(node.name)
-        for statement in node.body:
-            self.visit(statement)
+        try:
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            if node.name is not None:
+                self.aliases = aliases
+                self.tainted = tainted
 
     def visit_Return(self, node: ast.Return) -> None:
         if node.value is not None:
@@ -718,6 +743,8 @@ class CapabilityVisitor(ast.NodeVisitor):
         for default in [*arguments.defaults, *(default for default in arguments.kw_defaults if default is not None)]:
             self.visit(default)
             self.reject_taint(default, "uses as a default")
+        aliases = dict(self.aliases)
+        tainted = set(self.tainted)
         for argument in [
             *arguments.posonlyargs,
             *arguments.args,
@@ -726,10 +753,15 @@ class CapabilityVisitor(ast.NodeVisitor):
         ]:
             if argument.annotation is not None:
                 self.visit(argument.annotation)
+            self.reject_rebind(argument.arg, "binds parameter over")
             self.aliases.pop(argument.arg, None)
             self.tainted.discard(argument.arg)
-        for statement in body:
-            self.visit(statement)
+        try:
+            for statement in body:
+                self.visit(statement)
+        finally:
+            self.aliases = aliases
+            self.tainted = tainted
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         for decorator in node.decorator_list:
@@ -737,6 +769,7 @@ class CapabilityVisitor(ast.NodeVisitor):
             self.reject_taint(decorator, "decorates with")
         if node.returns is not None:
             self.visit(node.returns)
+        self.reject_rebind(node.name, "binds function over")
         self.aliases.pop(node.name, None)
         self.tainted.discard(node.name)
         self._visit_scope(node, node.args, list(node.body))
@@ -755,22 +788,43 @@ class CapabilityVisitor(ast.NodeVisitor):
         for base in [*node.bases, *(keyword.value for keyword in node.keywords)]:
             self.visit(base)
             self.reject_taint(base, "derives a class from")
+        self.reject_rebind(node.name, "binds class over")
         self.aliases.pop(node.name, None)
         self.tainted.discard(node.name)
-        for statement in node.body:
-            self.visit(statement)
+        aliases = dict(self.aliases)
+        tainted = set(self.tainted)
+        try:
+            for statement in node.body:
+                self.visit(statement)
+        finally:
+            self.aliases = aliases
+            self.tainted = tainted
 
     def _visit_comprehension(self, node: ast.AST, generators: list[ast.comprehension], elements: list[ast.AST]) -> None:
-        for generator in generators:
-            self.visit(generator.iter)
-            self.reject_taint(generator.iter, "iterates")
-            self.bind(generator.target, None, False)
-            for condition in generator.ifs:
-                self.visit(condition)
-                self.reject_taint(condition, "filters on")
-        for element in elements:
-            self.visit(element)
-            self.reject_taint(element, "collects")
+        aliases = dict(self.aliases)
+        tainted = set(self.tainted)
+        try:
+            for generator in generators:
+                self.visit(generator.iter)
+                self.reject_taint(generator.iter, "iterates")
+                self.bind(generator.target, None, False)
+                for condition in generator.ifs:
+                    self.visit(condition)
+                    self.reject_taint(condition, "filters on")
+            for element in elements:
+                self.visit(element)
+                self.reject_taint(element, "collects")
+        finally:
+            self.aliases = aliases
+            self.tainted = tainted
+
+    def visit_Global(self, node: ast.Global) -> None:
+        for name in node.names:
+            self.reject_rebind(name, "declares global")
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        for name in node.names:
+            self.reject_rebind(name, "declares nonlocal")
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
         self._visit_comprehension(node, node.generators, [node.elt])
