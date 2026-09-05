@@ -583,15 +583,19 @@ a hostile or accidental settings source is refused rather than merely
 survived. A source that is not a regular file — a FIFO, a device, a socket —
 is refused before a byte is read; a source is read only up to the snapshot's
 remaining byte budget through the same handle its size was taken from; YAML
-events and collection nesting are charged as libyaml emits them; resolving an
-`!include` spelling is filesystem work and is charged as it happens; and
-building the raw nodes draws on the same budget as analyzing them. The
-expanded-event and analysis budgets belong to the snapshot rather than to each
-file named on the command line, and naming one file repeatedly is naming it
-once — the merge is left-biased and idempotent, so precedence is unchanged and
-the work is not repeated. A deployment that legitimately needs more than the
-defaults should split its configuration rather than expect startup to grow to
-fit it.
+events and collection nesting are charged as libyaml emits them, against the
+snapshot's own event budget as well as the source's, before an event is
+retained; resolving an `!include` spelling is filesystem work and is charged
+as it happens; and building the raw nodes draws on the same budget as
+analyzing them. Bytes alone would not bound this — compact YAML is roughly two
+bytes an event — so the event budget is what keeps a startup's retained events
+proportional to one snapshot rather than to the number of files named. A
+separate budget bounds what `!include` multiplication may expand those events
+into. Naming one file repeatedly is naming it once: duplicate roots are
+resolved and collapsed before any of these budgets are charged, so a repeated
+path costs nothing and, because the merge is left-biased and idempotent,
+changes nothing. A deployment that legitimately needs more than the defaults
+should split its configuration rather than expect startup to grow to fit it.
 
 Merge keys are read exactly as `Data.Yaml.Internal` resolves them: a `<<`
 whose value is a mapping contributes that mapping's keys, a `<<` whose value

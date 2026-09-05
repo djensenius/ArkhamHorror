@@ -99,6 +99,7 @@ data CaptureState = CaptureState
   { capturedSources :: !(Map FilePath CapturedSource)
   , capturedBytes :: !Int
   , capturedSteps :: !Int
+  , capturedEvents :: !Int
   }
 
 {- | A YAML node with anchors already resolved the way @yaml@ resolves them:
@@ -143,6 +144,18 @@ maxIncludeSteps = 4096
 maxSourceEvents :: Int
 maxSourceEvents = 128 * 1024
 
+{- | Events every captured source may emit between them, charged as the parser
+emits them and before any of them is retained.
+
+The byte budget alone does not bound this: compact YAML is roughly two bytes
+an event, so four mebibytes of sources that each stay inside
+'maxSourceEvents' would still be two million retained events. This is the
+budget that keeps captured raw events proportional to one snapshot rather than
+to the number of files named.
+-}
+maxSnapshotEvents :: Int
+maxSnapshotEvents = 256 * 1024
+
 -- | Collection nesting, charged as the parser emits it and again when the
 -- include-expanded stream is turned into nodes.
 maxNodeDepth :: Int
@@ -180,6 +193,10 @@ byteLimitExceeded = withInvalidPrefix "settings sources exceed the configured by
 
 eventLimitExceeded :: Text
 eventLimitExceeded = withInvalidPrefix "a settings source exceeds the configured YAML event limit"
+
+snapshotEventLimitExceeded :: Text
+snapshotEventLimitExceeded =
+  withInvalidPrefix "settings sources exceed the configured total YAML event limit"
 
 depthLimitExceeded :: Text
 depthLimitExceeded = withInvalidPrefix "settings YAML nests deeper than the configured limit"
@@ -221,18 +238,18 @@ captureSettingsSnapshotWithEnvironment
 captureSettingsSnapshotWithEnvironment runtimeFiles embeddedBytes environment = do
   let embeddedSize = sum $ map ByteString.length embeddedBytes
   when (embeddedSize > maxSnapshotBytes) $ failSettings byteLimitExceeded
-  (runtimeRoots, captured) <-
+  ((runtimeRoots, ()), captured) <-
     State.runStateT
-      (traverse (captureSourceGraph 0 []) runtimeFiles)
-      CaptureState {capturedSources = mempty, capturedBytes = embeddedSize, capturedSteps = maxIncludeSteps}
-  -- Naming one file twice is one file. @mergeValues@ is idempotent -- a value
-  -- merged over itself is that value, at every object boundary -- so dropping
-  -- the later occurrences of a canonical root leaves the merge, and therefore
-  -- precedence, exactly as the package would have computed it, while the work
-  -- and the budget it would have consumed are spent once.
-  runtimeEvents <-
-    orFailInvalid $ expandCapturedSources captured.capturedSources (ordNub runtimeRoots)
-  embeddedEvents <- traverse parseEvents embeddedBytes
+      (captureRuntimeGraph runtimeFiles)
+      CaptureState
+        { capturedSources = mempty
+        , capturedBytes = embeddedSize
+        , capturedSteps = maxIncludeSteps
+        , capturedEvents = maxSnapshotEvents
+        }
+  runtimeEvents <- orFailInvalid $ expandCapturedSources captured.capturedSources runtimeRoots
+  embeddedEvents <-
+    State.evalStateT (traverse parseEmbeddedEvents embeddedBytes) captured.capturedEvents
   orFailInvalid $ analyzeCapturedEvents (runtimeEvents <> embeddedEvents)
   runtimeValues <- traverse decodeExpandedValue runtimeEvents
   embeddedValues <- traverse decodeEmbeddedBytes embeddedBytes
@@ -286,18 +303,45 @@ mergeNonEmptySettingsValues (value :| rest) =
 environmentMap :: [(String, String)] -> KeyMap Text
 environmentMap = KeyMap.fromList . map (bimap (Key.fromText . toText) toText)
 
-{- | Read one settings file and every file it transitively includes, applying
-the same ancestor-cycle rule @Data.Yaml.Include@ uses. Returns the canonical
-path the captured bytes were read from.
+{- | Capture every distinct runtime root and its transitive includes.
+
+Naming one file twice is naming one file. @mergeValues@ is idempotent -- a
+value merged over itself is that value, at every object boundary -- so keeping
+only the first occurrence of a canonical root leaves the merge, and therefore
+precedence, exactly as the package computes it. Because the duplicates are
+dropped before anything is charged, repeating a path cannot spend the
+include-graph budget, canonicalize the same spelling twice, or capture,
+expand, analyze and decode the same bytes again.
 -}
-captureSourceGraph
-  :: Int
-  -> [FilePath]
-  -> FilePath
-  -> State.StateT CaptureState IO FilePath
-captureSourceGraph depth ancestors requestedPath = do
+captureRuntimeGraph :: [FilePath] -> State.StateT CaptureState IO ([FilePath], ())
+captureRuntimeGraph requestedPaths = do
+  roots <- resolveRuntimeRoots requestedPaths
+  (roots,) <$> traverse_ (captureSourceGraph 0 []) roots
+
+{- | Canonicalize each distinct spelling once, then keep the first occurrence
+of each canonical path, in the order the command line named them.
+-}
+resolveRuntimeRoots :: [FilePath] -> State.StateT CaptureState IO [FilePath]
+resolveRuntimeRoots requestedPaths = do
+  (resolved, _) <- foldM resolve ([], mempty :: Map FilePath FilePath) requestedPaths
+  pure $ ordNub (reverse resolved)
+ where
+  resolve (resolved, seen) spelling =
+    case Map.lookup spelling seen of
+      Just canonical -> pure (canonical : resolved, seen)
+      Nothing -> do
+        chargeCaptureStep
+        canonical <- liftIO $ canonicalSettingsPath spelling
+        pure (canonical : resolved, Map.insert spelling canonical seen)
+
+{- | Read one canonical settings file and every file it transitively includes,
+applying the same ancestor-cycle rule @Data.Yaml.Include@ uses. Both the roots
+and the include targets reach this already canonicalized, so no path is
+resolved twice.
+-}
+captureSourceGraph :: Int -> [FilePath] -> FilePath -> State.StateT CaptureState IO ()
+captureSourceGraph depth ancestors canonicalPath = do
   chargeCaptureStep
-  canonicalPath <- liftIO $ canonicalSettingsPath requestedPath
   when (depth > maxIncludeDepth)
     $ liftIO
     $ failSettings
@@ -310,7 +354,6 @@ captureSourceGraph depth ancestors requestedPath = do
   traverse_
     (captureSourceGraph (depth + 1) (canonicalPath : ancestors))
     (Map.elems source.sourceIncludes)
-  pure canonicalPath
 
 chargeCaptureStep :: State.StateT CaptureState IO ()
 chargeCaptureStep = do
@@ -332,15 +375,17 @@ captureSource canonicalPath = do
         $ failSettings
         $ withInvalidPrefix "settings include count exceeds the configured limit"
       bytes <- liftIO $ readSnapshotBytes (maxSnapshotBytes - current.capturedBytes) canonicalPath
-      events <- liftIO $ parseEvents bytes
+      (events, remainingEvents) <- liftIO $ parseEvents current.capturedEvents bytes
+      State.modify' \captured ->
+        captured
+          { capturedBytes = captured.capturedBytes + ByteString.length bytes
+          , capturedEvents = remainingEvents
+          }
       includePaths <- liftIO $ orFailInvalid $ rawIncludePaths events
       includes <- resolveIncludePaths canonicalPath includePaths
       let source = CapturedSource {sourceEvents = events, sourceIncludes = includes}
       State.modify' \captured ->
-        captured
-          { capturedSources = Map.insert canonicalPath source captured.capturedSources
-          , capturedBytes = captured.capturedBytes + ByteString.length bytes
-          }
+        captured {capturedSources = Map.insert canonicalPath source captured.capturedSources}
       pure source
 
 {- | Resolve each distinct @!include@ spelling in one source exactly once,
@@ -413,33 +458,51 @@ readSnapshotBytes remainingBudget path = do
       (ByteString.hGet handle (remainingBudget + 1))
       (\(_ :: Exception.IOException) -> failSettings unreadableSource)
 
-parseEvents :: ByteString -> IO [Libyaml.Event]
-parseEvents bytes = do
-  events <- onMalformedYaml $ runConduitRes $ Libyaml.decode bytes .| boundedSourceEvents
-  orFail events
-
-{- | Collect one source's events with the event count and the collection depth
-charged as the parser emits them, so an event-dense or deeply nested source is
-refused while it is being parsed rather than after it has been materialized.
-Refusal stops the parser by returning, so the failure is one diagnostic rather
-than an exception thrown through the parser's own cleanup.
+{- | Parse one source's events, spending the snapshot's remaining raw-event
+budget, and report what is left of it.
 -}
-boundedSourceEvents :: Monad m => ConduitT Libyaml.Event o m (Either Text [Libyaml.Event])
-boundedSourceEvents = go 0 0 id
+parseEvents :: Int -> ByteString -> IO ([Libyaml.Event], Int)
+parseEvents remainingEvents bytes = do
+  parsed <-
+    onMalformedYaml $ runConduitRes $ Libyaml.decode bytes .| boundedSourceEvents remainingEvents
+  orFail parsed
+
+-- | The embedded compile-time sources spend the same budget the files did.
+parseEmbeddedEvents :: ByteString -> State.StateT Int IO [Libyaml.Event]
+parseEmbeddedEvents bytes = do
+  remainingEvents <- State.get
+  (events, remaining) <- liftIO $ parseEvents remainingEvents bytes
+  State.put remaining
+  pure events
+
+{- | Collect one source's events with the source's event count, the snapshot's
+remaining event budget and the collection depth all charged as the parser
+emits them — before the event is retained — so an event-dense, deeply nested
+or merely numerous set of sources is refused while it is being parsed rather
+than after it has been materialized. Refusal stops the parser by returning, so
+the failure is one diagnostic rather than an exception thrown through the
+parser's own cleanup.
+-}
+boundedSourceEvents
+  :: Monad m => Int -> ConduitT Libyaml.Event o m (Either Text ([Libyaml.Event], Int))
+boundedSourceEvents remainingEvents = go 0 remainingEvents 0 id
  where
   go
     :: Monad m
     => Int
     -> Int
+    -> Int
     -> ([Libyaml.Event] -> [Libyaml.Event])
-    -> ConduitT Libyaml.Event o m (Either Text [Libyaml.Event])
-  go !count !depth acc =
+    -> ConduitT Libyaml.Event o m (Either Text ([Libyaml.Event], Int))
+  go !count !remaining !depth acc =
     await >>= \case
-      Nothing -> pure $ Right (acc [])
+      Nothing -> pure $ Right (acc [], remaining)
       Just event
         | count >= maxSourceEvents -> pure $ Left eventLimitExceeded
+        | remaining <= 0 -> pure $ Left snapshotEventLimitExceeded
         | depth + eventDepthChange event > maxNodeDepth -> pure $ Left depthLimitExceeded
-        | otherwise -> go (count + 1) (depth + eventDepthChange event) (acc . (event :))
+        | otherwise ->
+            go (count + 1) (remaining - 1) (depth + eventDepthChange event) (acc . (event :))
 
 eventDepthChange :: Libyaml.Event -> Int
 eventDepthChange = \case

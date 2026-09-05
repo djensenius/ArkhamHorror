@@ -490,15 +490,27 @@ spec = sequential $ describe "locale catalog settings snapshot" do
           $ Text.concat ["- !include missing-" <> (show index :: Text) <> ".yml\n" | index <- [1 .. (60000 :: Int)]]
         captureAndLoad [settings] [] mempty `shouldFailPromptlyWith` "traversal limit"
 
-    it "spends one expanded-event budget across every runtime root" do
-      withSettingsWorkspace "shared-expansion-budget" \workspace -> do
-        let roots = [workspace </> ("root-" <> show index <> ".yml") | index <- [(0 :: Int) .. 2]]
+    it "spends one raw-event budget across every captured source" do
+      withSettingsWorkspace "shared-raw-events" \workspace -> do
+        let roots = [workspace </> ("compact-" <> show index <> ".yml") | index <- [(0 :: Int) .. 7]]
+            -- Compact YAML is about two bytes an event, so these eight sources
+            -- stay well inside the byte budget and inside the per-source event
+            -- budget while together holding millions of events.
             source = "[" <> Text.replicate 130000 "a," <> "a]\n"
         for_ roots \root -> writeSettings root source
-        -- One of these roots is inside the budget; three are not, because the
-        -- budget belongs to the snapshot rather than to each root.
-        for_ (take 1 roots) \root -> void (captureAndLoadPromptly [root] [] mempty)
-        captureAndLoad roots [] mempty `shouldFailPromptlyWith` "expand past the configured event limit"
+        single <-
+          timeout promptMicroseconds (captureSettingsSnapshotWithEnvironment (take 1 roots) [] mempty)
+        isJust single `shouldBe` True
+        captureAndLoad roots [] mempty `shouldFailPromptlyWith` "total YAML event limit"
+
+    it "keeps a separate expanded-event budget for include multiplication" do
+      withSettingsWorkspace "shared-expansion-budget" \workspace -> do
+        let root = workspace </> "root.yml"
+            shared = workspace </> "shared.yml"
+        -- Barely any raw events: the multiplication is all in the includes.
+        writeSettings shared ("[" <> Text.replicate 2000 "a," <> "a]\n")
+        writeSettings root $ Text.concat (replicate 200 "- !include shared.yml\n")
+        captureAndLoad [root] [] mempty `shouldFailPromptlyWith` "expand past the configured event limit"
 
     it "spends one analysis budget across every captured source" do
       withSettingsWorkspace "shared-analysis-budget" \workspace -> do
@@ -520,6 +532,20 @@ spec = sequential $ describe "locale catalog settings snapshot" do
         fromSnapshot <- captureAndLoadPromptly (replicate 40 settings) [] mempty
         fromPackage <- YamlConfig.loadYamlSettings [settings] [] YamlConfig.ignoreEnv :: IO Value
         fromSnapshot `shouldBe` fromPackage
+
+    it "matches the package for a root repeated past the include-graph budget" do
+      withSettingsWorkspace "duplicate-root-traversal" \workspace -> do
+        let settings = workspace </> "root.yml"
+            aliasedSpelling = workspace </> "." </> "root.yml"
+        writeSettings settings "shared:\n  a: first\n  b: first\n"
+        fromPackage <- YamlConfig.loadYamlSettings [settings] [] YamlConfig.ignoreEnv :: IO Value
+        -- More repeats than the include-graph budget has steps: naming a file
+        -- again is not traversal work, so it cannot spend that budget.
+        repeated <- captureAndLoadPromptly (replicate 5000 settings) [] mempty
+        repeated `shouldBe` fromPackage
+        -- Two spellings of one file are one file too.
+        aliased <- captureAndLoadPromptly [settings, aliasedSpelling, settings] [] mempty
+        aliased `shouldBe` fromPackage
 
     it "matches the package when runtime roots repeat" do
       withSettingsWorkspace "duplicate-root-precedence" \workspace -> do
@@ -581,7 +607,7 @@ spec = sequential $ describe "locale catalog settings snapshot" do
       withSettingsWorkspace "repeated-include" \workspace -> do
         let root = workspace </> "root.yml"
             shared = workspace </> "shared.yml"
-            occurrences = 5000
+            occurrences = 5000 :: Int
         writeSettings shared "value: shared\n"
         writeSettings root
           $ unlines

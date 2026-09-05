@@ -801,6 +801,22 @@ def _check_with_probe(
         "a source naming tens of thousands of distinct includes was resolved before it was refused",
     )
 
+    # Compact YAML is about two bytes an event, so sources that each stay
+    # inside the per-source event budget and together inside the byte budget
+    # can still hold millions of events. The snapshot's own event budget is
+    # what keeps captured events proportional to one startup.
+    compact_sources = [
+        write_raw_settings_file(
+            scratch, f"settings-compact-{index}.yml", "[" + "a," * 130000 + "a]\n"
+        )
+        for index in range(16)
+    ]
+    compact_run = run_probe(command, settings, compact_sources, timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        compact_run.returncode != 0 and b"total YAML event limit" in compact_run.stderr,
+        "sixteen compact sources were retained before the snapshot's event budget refused them",
+    )
+
     # Naming one runtime file repeatedly is naming one runtime file: the merge
     # is left-biased and idempotent, so the response cannot change and the work
     # must not be repeated.
@@ -810,6 +826,15 @@ def _check_with_probe(
     require(
         duplicate_roots.returncode == 0 and duplicate_roots.stdout == from_file.stdout,
         "naming one runtime settings file repeatedly changed the advertised response",
+    )
+    # Past the include-graph budget, too: repeating a path is not traversal.
+    many_duplicate_roots = run_probe(
+        command, {}, [file_settings] * 5000, timeout=PROBE_BOUND_TIMEOUT
+    )
+    require(
+        many_duplicate_roots.returncode == 0 and many_duplicate_roots.stdout == from_file.stdout,
+        "a runtime settings file repeated past the include-graph budget was refused: "
+        f"{many_duplicate_roots.stderr.decode('utf-8', 'replace').strip()}",
     )
 
     # `Data.Yaml.Internal` merges only the immediate mapping elements of a
