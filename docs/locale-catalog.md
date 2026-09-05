@@ -583,11 +583,22 @@ a hostile or accidental settings source is refused rather than merely
 survived. A source that is not a regular file — a FIFO, a device, a socket —
 is refused before a byte is read; a source is read only up to the snapshot's
 remaining byte budget through the same handle its size was taken from; YAML
-events and collection nesting are charged as libyaml emits them; and building
-the raw nodes draws on the same budget as analyzing them. Include depth,
-include count and include-graph traversal are bounded the same way. A
-deployment that legitimately needs more than the defaults should split its
-configuration rather than expect startup to grow to fit it.
+events and collection nesting are charged as libyaml emits them; resolving an
+`!include` spelling is filesystem work and is charged as it happens; and
+building the raw nodes draws on the same budget as analyzing them. The
+expanded-event and analysis budgets belong to the snapshot rather than to each
+file named on the command line, and naming one file repeatedly is naming it
+once — the merge is left-biased and idempotent, so precedence is unchanged and
+the work is not repeated. A deployment that legitimately needs more than the
+defaults should split its configuration rather than expect startup to grow to
+fit it.
+
+Merge keys are read exactly as `Data.Yaml.Internal` resolves them: a `<<`
+whose value is a mapping contributes that mapping's keys, a `<<` whose value
+is a sequence contributes only the sequence's immediate mapping elements, and
+anything else — a nested sequence, a scalar — contributes nothing. A locale
+setting that a merge could never have contributed is therefore never treated
+as a second representation of that setting.
 
 **The manifest URL is bound deliberately, not parsed permissively.** The
 preferred value is the same-origin absolute path this catalog already

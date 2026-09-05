@@ -148,9 +148,18 @@ maxSourceEvents = 128 * 1024
 maxNodeDepth :: Int
 maxNodeDepth = 256
 
-maxExpandedEvents :: Int
-maxExpandedEvents = 1024 * 1024
+{- | Events the whole snapshot may expand to, across every runtime root.
 
+@!include@ multiplies a target's events per occurrence, so this bounds the
+multiplication rather than the sources: two hundred and fifty-six thousand
+events is a settings tree far larger than any deployment's, and well past the
+largest this repository's own checks build.
+-}
+maxExpandedEvents :: Int
+maxExpandedEvents = 256 * 1024
+
+-- | Steps the whole snapshot may spend building and walking raw nodes.
+-- Aliases are shared, so this has more headroom than the event bound.
 maxAnalysisSteps :: Int
 maxAnalysisSteps = 1024 * 1024
 
@@ -216,11 +225,17 @@ captureSettingsSnapshotWithEnvironment runtimeFiles embeddedBytes environment = 
     State.runStateT
       (traverse (captureSourceGraph 0 []) runtimeFiles)
       CaptureState {capturedSources = mempty, capturedBytes = embeddedSize, capturedSteps = maxIncludeSteps}
+  -- Naming one file twice is one file. @mergeValues@ is idempotent -- a value
+  -- merged over itself is that value, at every object boundary -- so dropping
+  -- the later occurrences of a canonical root leaves the merge, and therefore
+  -- precedence, exactly as the package would have computed it, while the work
+  -- and the budget it would have consumed are spent once.
   runtimeEvents <-
-    traverse (orFailInvalid . expandSourceEvents captured.capturedSources) runtimeRoots
-  traverse_ (orFailInvalid . analyzeRawEvents) runtimeEvents
+    orFailInvalid $ expandCapturedSources captured.capturedSources (ordNub runtimeRoots)
+  embeddedEvents <- traverse parseEvents embeddedBytes
+  orFailInvalid $ analyzeCapturedEvents (runtimeEvents <> embeddedEvents)
   runtimeValues <- traverse decodeExpandedValue runtimeEvents
-  embeddedValues <- traverse decodeEmbeddedValue embeddedBytes
+  embeddedValues <- traverse decodeEmbeddedBytes embeddedBytes
   let values = runtimeValues <> embeddedValues
   orFailInvalid $ validateLocaleCatalogSettingsValues values
   for_ (nonEmpty values) \nonEmptyValues ->
@@ -319,7 +334,7 @@ captureSource canonicalPath = do
       bytes <- liftIO $ readSnapshotBytes (maxSnapshotBytes - current.capturedBytes) canonicalPath
       events <- liftIO $ parseEvents bytes
       includePaths <- liftIO $ orFailInvalid $ rawIncludePaths events
-      includes <- liftIO $ resolveIncludePaths canonicalPath includePaths
+      includes <- resolveIncludePaths canonicalPath includePaths
       let source = CapturedSource {sourceEvents = events, sourceIncludes = includes}
       State.modify' \captured ->
         captured
@@ -328,22 +343,30 @@ captureSource canonicalPath = do
           }
       pure source
 
-{- | Resolve each distinct @!include@ spelling in one source exactly once.
+{- | Resolve each distinct @!include@ spelling in one source exactly once,
+against the same include-graph budget the traversal itself spends.
 
 Two occurrences of the same spelling must name the same file: resolving them
 separately would let a symlink retargeted between the two lookups produce a
 target that is captured but never expanded, so the bytes this process read and
 the bytes it analyzed and loaded would no longer be the same set. The
 resolution recorded here is what capture, raw analysis and the load all use.
+
+Resolving is filesystem work, so it is charged as it happens: a source naming
+a hundred thousand distinct includes is refused after the budget's worth of
+them rather than after all of them have been canonicalized.
 -}
-resolveIncludePaths :: FilePath -> [ByteString] -> IO (Map ByteString FilePath)
+resolveIncludePaths
+  :: FilePath -> [ByteString] -> State.StateT CaptureState IO (Map ByteString FilePath)
 resolveIncludePaths canonicalPath = foldM resolveOnce mempty
  where
   resolveOnce resolved spelling
     | Map.member spelling resolved = pure resolved
     | otherwise = do
+        chargeCaptureStep
         let relative = TextEncoding.decodeUtf8With lenientDecode spelling
-        target <- canonicalSettingsPath (takeDirectory canonicalPath </> toString relative)
+        target <-
+          liftIO $ canonicalSettingsPath (takeDirectory canonicalPath </> toString relative)
         pure $ Map.insert spelling target resolved
 
 canonicalSettingsPath :: FilePath -> IO FilePath
@@ -450,11 +473,15 @@ rawIncludePaths = traverse includePath . filter isInclude
       | otherwise -> Right bytes
     _ -> Left "malformed !include source"
 
-{- | Splice the captured include bytes into the captured root event stream,
+{- | Splice the captured include bytes into each captured root event stream,
 dropping the same stream and document events @Data.Yaml.Include@ drops.
+
+The event budget spans the whole snapshot rather than restarting per root, so
+naming more roots cannot buy more expansion than one snapshot is allowed.
 -}
-expandSourceEvents :: Map FilePath CapturedSource -> FilePath -> Either Text [Libyaml.Event]
-expandSourceEvents sources root = State.evalStateT (go root) maxExpandedEvents
+expandCapturedSources
+  :: Map FilePath CapturedSource -> [FilePath] -> Either Text [[Libyaml.Event]]
+expandCapturedSources sources roots = State.evalStateT (traverse go roots) maxExpandedEvents
  where
   go :: FilePath -> State.StateT Int (Either Text) [Libyaml.Event]
   go path = do
@@ -493,10 +520,10 @@ decodeExpandedValue events =
       Left _ -> failSettings invalidYaml
       Right (_warnings, value) -> pure value
 
-decodeEmbeddedValue :: ByteString -> IO Value
-decodeEmbeddedValue bytes = do
-  events <- parseEvents bytes
-  orFailInvalid $ analyzeRawEvents events
+-- | The embedded bytes are analyzed with every other captured source, against
+-- the one snapshot-wide budget, so this only decodes.
+decodeEmbeddedBytes :: ByteString -> IO Value
+decodeEmbeddedBytes bytes =
   case Yaml.decodeEither' bytes of
     Left _ -> failSettings invalidYaml
     Right value -> pure value
@@ -569,10 +596,12 @@ canonicalEnvironmentMarker setting marker = do
 aliases the way @yaml@ does, then check every mapping — including the ones a
 @\<\<@ merge key pulls in — before that merge is resolved.
 -}
-analyzeRawEvents :: [Libyaml.Event] -> Either Text ()
-analyzeRawEvents events = do
-  (documents, remaining) <- parseRawDocuments maxAnalysisSteps events
-  State.evalStateT (traverse_ analyzeRawNode documents) remaining
+analyzeCapturedEvents :: [[Libyaml.Event]] -> Either Text ()
+analyzeCapturedEvents = void . foldM analyzeStream maxAnalysisSteps
+ where
+  analyzeStream budget events = do
+    (documents, remaining) <- parseRawDocuments budget events
+    State.execStateT (traverse_ analyzeRawNode documents) remaining
 
 {- | Turn one include-expanded event stream into nodes, charging the shared
 analysis budget per node and refusing nesting past the configured depth. The
@@ -697,15 +726,26 @@ effectiveLocaleKeys = \case
     merged <- if textKey == Just mergeKey then mergedLocaleKeys value else pure mempty
     lift $ addLocaleKeys keys (Set.fromList (toList direct) <> merged)
 
+{- | What a @\<\<@ merge value contributes, exactly as
+@Data.Yaml.Internal@'s @mergeObjects@ decides it: a mapping merges its own
+keys, a sequence merges only its immediate mapping elements, and everything
+else — a nested sequence, a scalar — contributes nothing at all. Recursing
+into a nested sequence here would refuse configuration the loader accepts.
+-}
 mergedLocaleKeys :: RawNode -> Analysis (Set LocaleCatalogSetting)
 mergedLocaleKeys node = do
   chargeAnalysisStep
   case node of
     RawMapping {} -> effectiveLocaleKeys node
-    RawSequence values -> foldM addMerged mempty values
+    RawSequence values -> foldM addMergedElement mempty values
     RawScalar {} -> pure mempty
  where
-  addMerged keys value = mergedLocaleKeys value >>= lift . addLocaleKeys keys
+  addMergedElement keys = \case
+    element@RawMapping {} -> do
+      chargeAnalysisStep
+      contributed <- effectiveLocaleKeys element
+      lift $ addLocaleKeys keys contributed
+    _ -> pure keys
 
 addLocaleKeys
   :: Set LocaleCatalogSetting -> Set LocaleCatalogSetting -> Either Text (Set LocaleCatalogSetting)

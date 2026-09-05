@@ -463,12 +463,7 @@ spec = sequential $ describe "locale catalog settings snapshot" do
     it "refuses an alias expansion bomb promptly" do
       withSettingsWorkspace "alias-bomb" \workspace -> do
         let settings = workspace </> "bomb.yml"
-            anchorName index = "l" <> (show index :: Text)
-            expansion index = Text.intercalate "," (replicate 10 ("*" <> anchorName index))
-            leaf = "leaf: &l0 [" <> Text.intercalate "," (replicate 10 "\"x\"") <> "]"
-            level index =
-              "level" <> (show index :: Text) <> ": &" <> anchorName index <> " [" <> expansion (index - 1) <> "]"
-        writeSettings settings $ unlines (leaf : map level [1 .. (7 :: Int)])
+        writeSettings settings (aliasFanOut 10 7)
         captureAndLoad [settings] [] mempty `shouldFailPromptlyWith` "analysis limit"
 
     it "still accepts nesting and event counts inside the configured bounds" do
@@ -484,6 +479,77 @@ spec = sequential $ describe "locale catalog settings snapshot" do
         fromSnapshot <- captureAndLoad [settings] [] mempty
         fromPackage <- YamlConfig.loadYamlSettings [settings] [] YamlConfig.ignoreEnv :: IO Value
         fromSnapshot `shouldBe` fromPackage
+
+  describe "snapshot-wide budgets" do
+    it "refuses a source naming more distinct includes than the traversal budget promptly" do
+      withSettingsWorkspace "many-distinct-includes" \workspace -> do
+        let settings = workspace </> "many-includes.yml"
+        -- Resolving a spelling is filesystem work, so the budget has to stop
+        -- this before 60000 canonicalizations, not after them.
+        writeSettings settings
+          $ Text.concat ["- !include missing-" <> (show index :: Text) <> ".yml\n" | index <- [1 .. (60000 :: Int)]]
+        captureAndLoad [settings] [] mempty `shouldFailPromptlyWith` "traversal limit"
+
+    it "spends one expanded-event budget across every runtime root" do
+      withSettingsWorkspace "shared-expansion-budget" \workspace -> do
+        let roots = [workspace </> ("root-" <> show index <> ".yml") | index <- [(0 :: Int) .. 2]]
+            source = "[" <> Text.replicate 130000 "a," <> "a]\n"
+        for_ roots \root -> writeSettings root source
+        -- One of these roots is inside the budget; three are not, because the
+        -- budget belongs to the snapshot rather than to each root.
+        for_ (take 1 roots) \root -> void (captureAndLoadPromptly [root] [] mempty)
+        captureAndLoad roots [] mempty `shouldFailPromptlyWith` "expand past the configured event limit"
+
+    it "spends one analysis budget across every captured source" do
+      withSettingsWorkspace "shared-analysis-budget" \workspace -> do
+        let bombs = [workspace </> ("bomb-" <> show index <> ".yml") | index <- [(0 :: Int) .. 1]]
+        for_ bombs \bomb -> writeSettings bomb (aliasFanOut 60 4)
+        -- Aliases are shared nodes, so this costs steps rather than bytes: one
+        -- source fits the budget and two do not.
+        single <-
+          timeout promptMicroseconds (captureSettingsSnapshotWithEnvironment (take 1 bombs) [] mempty)
+        isJust single `shouldBe` True
+        captureAndLoad bombs [] mempty `shouldFailPromptlyWith` "analysis limit"
+
+    it "loads a repeated runtime root without multiplying its budget" do
+      withSettingsWorkspace "duplicate-root-budget" \workspace -> do
+        let settings = workspace </> "root.yml"
+        -- Forty roots' worth of this source would be an order of magnitude
+        -- past the snapshot's expansion budget; one root's worth is not.
+        writeSettings settings ("[" <> Text.replicate 130000 "a," <> "a]\n")
+        fromSnapshot <- captureAndLoadPromptly (replicate 40 settings) [] mempty
+        fromPackage <- YamlConfig.loadYamlSettings [settings] [] YamlConfig.ignoreEnv :: IO Value
+        fromSnapshot `shouldBe` fromPackage
+
+    it "matches the package when runtime roots repeat" do
+      withSettingsWorkspace "duplicate-root-precedence" \workspace -> do
+        let firstFile = workspace </> "first.yml"
+            secondFile = workspace </> "second.yml"
+            roots = [firstFile, firstFile, secondFile, firstFile, secondFile]
+            embedded = encodeUtf8 @Text "shared:\n  a: embedded\n  d: embedded\n"
+        writeSettings firstFile "shared:\n  a: first\n  b: first\n"
+        writeSettings secondFile "shared:\n  a: second\n  c: second\n"
+        fromSnapshot <- captureAndLoad roots [embedded] mempty
+        fromPackage <-
+          YamlConfig.loadYamlSettings roots [decodeSettingsBytes embedded] YamlConfig.ignoreEnv :: IO Value
+        fromSnapshot `shouldBe` fromPackage
+
+  describe "merge key semantics" do
+    it "matches the package for merge values the loader ignores" do
+      withSettingsWorkspace "ignored-merge-values" \workspace ->
+        for_ (zip [(1 :: Int) ..] ignoredMergeSources) \(index, source) -> do
+          let settings = workspace </> ("merge-" <> show index <> ".yml")
+          writeSettings settings source
+          fromSnapshot <- captureAndLoad [settings] [] mempty
+          fromPackage <- YamlConfig.loadYamlSettings [settings] [] YamlConfig.ignoreEnv :: IO Value
+          fromSnapshot `shouldBe` fromPackage
+
+    it "still rejects two immediate mapping elements representing one setting" do
+      withSettingsWorkspace "immediate-merge-duplicate" \workspace -> do
+        let settings = workspace </> "immediate.yml"
+        writeSettings settings
+          "<<: [{locale-catalog-default-locale: en}, {locale-catalog-default-locale: de}]\n"
+        captureAndLoad [settings] [] mempty `shouldFailWith` "is represented more than once"
 
   describe "include resolution" do
     it "gives every occurrence of one include spelling the same captured target" do
@@ -631,6 +697,45 @@ environmentMap = KeyMap.fromList . map (first Key.fromText)
 captureAndLoad :: [FilePath] -> [ByteString] -> KeyMap Text -> IO Value
 captureAndLoad runtimeFiles embeddedBytes environment =
   captureSettingsSnapshotWithEnvironment runtimeFiles embeddedBytes environment >>= loadSettingsSnapshot
+
+-- | Work a bound is supposed to make unnecessary has to stay unnecessary: a
+-- snapshot that only finishes eventually is a failure here.
+captureAndLoadPromptly :: [FilePath] -> [ByteString] -> KeyMap Text -> IO Value
+captureAndLoadPromptly runtimeFiles embeddedBytes environment =
+  timeout promptMicroseconds (captureAndLoad runtimeFiles embeddedBytes environment)
+    >>= maybe (fail "the settings snapshot did not finish inside its bound") pure
+
+{- | A YAML document whose aliases fan out: @leafWidth@ scalars behind one
+anchor, then @levels@ sequences that each reference the level below ten times.
+The bytes stay tiny while the work of walking it grows as a power, which is
+what makes it a bound test rather than a size test.
+-}
+aliasFanOut :: Int -> Int -> Text
+aliasFanOut leafWidth levels = unlines (leaf : map level [1 .. levels])
+ where
+  leaf = "leaf: &l0 [" <> Text.intercalate "," (replicate leafWidth "\"x\"") <> "]"
+  level index =
+    "level"
+      <> (show index :: Text)
+      <> ": &l"
+      <> (show index :: Text)
+      <> " ["
+      <> Text.intercalate "," (replicate 10 ("*l" <> (show (index - 1) :: Text)))
+      <> "]"
+
+{- | Merge values @Data.Yaml.Internal@'s @mergeObjects@ discards: it keeps the
+immediate mapping elements of a merge sequence and ignores everything else, so
+none of these may be read as a second representation of a locale setting.
+-}
+ignoredMergeSources :: [Text]
+ignoredMergeSources =
+  [ "<<: [[{locale-catalog-default-locale: en}]]\nlocale-catalog-default-locale: fr\n"
+  , "<<: [[[{locale-catalog-default-locale: en}]], [{locale-catalog-revision: 1.abc}]]\n"
+  , "<<: [\"scalar\", {locale-catalog-default-locale: en}]\n"
+  , "<<: [[{locale-catalog-default-locale: en}], [{locale-catalog-default-locale: de}]]\nlocale-catalog-default-locale: fr\n"
+  , "<<: not-a-mapping\nlocale-catalog-default-locale: fr\n"
+  , "<<: [{locale-catalog-default-locale: en}, [{locale-catalog-default-locale: de}]]\n"
+  ]
 
 decodeSettingsBytes :: ByteString -> Value
 decodeSettingsBytes bytes =

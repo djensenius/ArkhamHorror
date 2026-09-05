@@ -790,6 +790,46 @@ def _check_with_probe(
         "a deeply nested settings source was accepted",
     )
 
+    many_includes = write_raw_settings_file(
+        scratch,
+        "settings-many-distinct-includes.yml",
+        "".join(f"- !include missing-{index}.yml\n" for index in range(60000)),
+    )
+    many_includes_run = run_probe(command, settings, [many_includes], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        many_includes_run.returncode != 0 and b"traversal limit" in many_includes_run.stderr,
+        "a source naming tens of thousands of distinct includes was resolved before it was refused",
+    )
+
+    # Naming one runtime file repeatedly is naming one runtime file: the merge
+    # is left-biased and idempotent, so the response cannot change and the work
+    # must not be repeated.
+    duplicate_roots = run_probe(
+        command, {}, [file_settings, file_settings, file_settings], timeout=PROBE_BOUND_TIMEOUT
+    )
+    require(
+        duplicate_roots.returncode == 0 and duplicate_roots.stdout == from_file.stdout,
+        "naming one runtime settings file repeatedly changed the advertised response",
+    )
+
+    # `Data.Yaml.Internal` merges only the immediate mapping elements of a
+    # merge sequence and ignores everything else, so a nested sequence is not a
+    # locale settings mapping and must not be read as one.
+    nested_merge = write_raw_settings_file(
+        scratch,
+        "settings-nested-merge.yml",
+        "<<: [[{locale-catalog-default-locale: xx-not-a-locale-tag}]]\n"
+        + "".join(
+            f"{SETTINGS_FILE_KEYS[name]}: {json.dumps(settings[name])}\n" for name in SETTINGS
+        ),
+    )
+    nested_merge_run = run_probe(command, {}, [nested_merge], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        nested_merge_run.returncode == 0 and nested_merge_run.stdout == printed.stdout,
+        "a merge value the standard loader ignores was read as a locale settings mapping: "
+        f"{nested_merge_run.stderr.decode('utf-8', 'replace').strip()}",
+    )
+
     # One !include spelling is one file, however many times it appears: the
     # occurrences must share a single resolution rather than each consuming the
     # include-graph budget (and each racing a symlink) on its own.
