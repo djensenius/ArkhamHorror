@@ -43,6 +43,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import strict_json
+
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 WORK = FRONTEND / "node_modules" / ".locale-catalog-serving"
@@ -65,9 +67,33 @@ def run(command: list[str], *, capture_output: bool = True, **kwargs) -> subproc
 
 
 def tool(name: str) -> str:
-    path = shutil.which(name)
-    require(path is not None, f"{name} is required to verify catalog serving")
-    return path
+    """Return a declared absolute tool identity; never search PATH."""
+    if name == "node":
+        return strict_json.trusted_node()
+    candidates = {
+        "bash": ("/bin/bash",),
+        "docker": (
+            "/usr/bin/docker",
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+            "/usr/local/bin/docker",
+        ),
+    }.get(name)
+    require(candidates is not None, f"{name} is not a declared serving-gate executable")
+    for raw in candidates:
+        path = Path(raw)
+        if (
+            raw == "/usr/local/bin/docker"
+            and path.is_symlink()
+            and path.resolve()
+            == Path("/Applications/OrbStack.app/Contents/MacOS/xbin/docker-tools")
+            and path.resolve().is_file()
+            and path.resolve().stat().st_mode & 0o111
+        ):
+            return raw
+        if not path.is_symlink() and path.is_file() and path.stat().st_mode & 0o111:
+            return raw
+    require(False, f"{name} is not installed at one of its declared absolute paths: {candidates}")
+    raise AssertionError("unreachable")
 
 
 def request(path: str, *, method: str = "GET", headers: dict[str, str] | None = None):
@@ -166,7 +192,7 @@ def build_catalog(frontend: Path, out: Path) -> dict:
 
 def clean_clone(destination: Path) -> Path:
     """A scratch frontend built only from git-tracked sources."""
-    git = tool("git")
+    git = strict_json.trusted_git()
     tracked = run([git, "-C", str(ROOT), "ls-files", "-z"]).stdout.split("\0")
     for relative in tracked:
         if not relative:

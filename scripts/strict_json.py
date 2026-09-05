@@ -61,6 +61,7 @@ import decimal
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -93,6 +94,9 @@ THROWAWAY_GIT_COMMIT_ENV_OVERRIDES = {
     "GIT_COMMITTER_NAME": "contract-tooling self-test",
     "GIT_COMMITTER_EMAIL": "contract-tooling-self-test@example.invalid",
 }
+
+SELFTEST_PREFIX = ".locale-catalog-selftest-"
+SELFTEST_OWNER_FILE = "owner"
 
 
 class StrictJSONError(SystemExit):
@@ -524,6 +528,97 @@ def validate_governed_path(relative_path: object) -> str:
     )
 
 
+def trusted_git() -> str:
+    """The absolute git executable the sealed launcher bound for this
+    invocation, via `LOCALE_CATALOG_GIT`.
+
+    Governed tooling never resolves `git` through `PATH`: the sealed launcher
+    verifies an absolute, non-symlink, executable system binary and passes it
+    in explicitly, so a `git` planted earlier on a caller's `PATH`, or inside
+    the toolchain root, can never answer a governed mode/content lookup.
+    """
+    raw = os.environ.get("LOCALE_CATALOG_GIT")
+    if not raw:
+        raise GovernedPathError(
+            "LOCALE_CATALOG_GIT is not set: governed git lookups run only through the sealed "
+            "locale-catalog launcher, which binds an absolute git executable."
+        )
+    if not raw.startswith("/"):
+        raise GovernedPathError(
+            f"LOCALE_CATALOG_GIT {raw!r} is not an absolute path; governed git lookups never "
+            "resolve an executable name through PATH."
+        )
+    git = Path(raw)
+    if git.is_symlink() or not git.is_file() or not git.stat().st_mode & 0o111:
+        raise GovernedPathError(
+            f"LOCALE_CATALOG_GIT {raw!r} is not a regular, non-symlink, executable file."
+        )
+    return raw
+
+
+def trusted_external_executable(environment_name: str, label: str) -> str:
+    """Return an explicitly bound executable, never a PATH resolution."""
+    raw = os.environ.get(environment_name)
+    if not raw:
+        raise GovernedPathError(
+            f"{environment_name} is not set: {label} must be bound by the sealed "
+            "locale-catalog launcher, never resolved through PATH."
+        )
+    if not raw.startswith("/"):
+        raise GovernedPathError(
+            f"{environment_name} {raw!r} is not an absolute path; {label} is never "
+            "resolved through PATH."
+        )
+    executable = Path(raw)
+    if executable.is_symlink() or not executable.is_file() or not executable.stat().st_mode & 0o111:
+        raise GovernedPathError(
+            f"{environment_name} {raw!r} is not a regular, non-symlink, executable {label}."
+        )
+    return raw
+
+
+def trusted_node() -> str:
+    return trusted_external_executable("LOCALE_CATALOG_NODE", "Node")
+
+
+def trusted_stack() -> str:
+    return trusted_external_executable("LOCALE_CATALOG_STACK", "stack")
+
+
+def git_argv(args: list[str]) -> list[str]:
+    """Rewrite a `["git", ...]` plumbing command onto the bound executable."""
+    if not args or args[0] != "git":
+        raise GovernedPathError(f"expected a git plumbing command, got {args!r}")
+    return [trusted_git(), *args[1:]]
+
+
+def create_owned_selftest_scratch(root: Path, label: str) -> tuple[Path, str]:
+    """Create an exclusive, token-owned test repository below ``root``.
+
+    Callers must use ``release_owned_selftest_scratch`` rather than a broad
+    fixed-path cleanup.  This keeps every self-test mutation inside a fresh
+    invocation-owned tree and makes a token mismatch a refusal, not a chance
+    to delete another invocation's files.
+    """
+    token = uuid.uuid4().hex
+    scratch = root / f"{SELFTEST_PREFIX}{label}-{token}"
+    scratch.mkdir(mode=0o700)
+    owner = scratch / SELFTEST_OWNER_FILE
+    owner.write_text(token, encoding="ascii")
+    return scratch, token
+
+
+def release_owned_selftest_scratch(scratch: Path, token: str) -> None:
+    owner = scratch / SELFTEST_OWNER_FILE
+    if scratch.is_symlink() or not scratch.is_dir():
+        raise GovernedPathError(f"self-test scratch {scratch} is not an owned regular directory")
+    if owner.is_symlink() or not owner.is_file():
+        raise GovernedPathError(f"self-test scratch {scratch} has no regular ownership record")
+    if owner.read_text(encoding="ascii") != token:
+        raise GovernedPathError(f"self-test scratch {scratch} ownership token changed")
+    shutil.rmtree(scratch)
+
+
 def _git_tracked_mode(root: Path, args: list[str], relative_path: str, *, label: str) -> str | None:
     """Run a `git ls-files --stage`/`git ls-tree`-style plumbing command
     (`args`, with the ref/flags already filled in by the caller) restricted
@@ -535,7 +630,7 @@ def _git_tracked_mode(root: Path, args: list[str], relative_path: str, *, label:
     which git context the mode check failed in.
     """
     result = subprocess.run(
-        [*args, "--", relative_path],
+        [*git_argv(args), "--", relative_path],
         cwd=root,
         capture_output=True,
     )
@@ -782,7 +877,7 @@ def read_governed_git_ref_bytes(root: Path, ref: str, relative_path: str) -> byt
     """
     validated = validate_governed_path(relative_path)
     ls_tree_result = subprocess.run(
-        ["git", "ls-tree", "-z", ref, "--", validated],
+        git_argv(["git", "ls-tree", "-z", ref, "--", validated]),
         cwd=root,
         capture_output=True,
     )
@@ -811,7 +906,7 @@ def read_governed_git_ref_bytes(root: Path, ref: str, relative_path: str) -> byt
             "permitted as a governed artifact."
         )
     show_result = subprocess.run(
-        ["git", "show", f"{ref}:{validated}"],
+        git_argv(["git", "show", f"{ref}:{validated}"]),
         cwd=root,
         capture_output=True,
     )
@@ -1108,7 +1203,7 @@ def run_governed_bytes_self_tests() -> None:
     )
 
 
-def run_governed_path_self_tests(root: Path) -> None:
+def _run_governed_path_self_tests_in_owned_scratch(root: Path) -> None:
     """Prove `validate_governed_path`, `read_governed_worktree_bytes`, and
     `read_governed_git_ref_bytes`'s rejections and acceptances end-to-end
     against `root` (a real repository root, since these three functions do
@@ -1211,7 +1306,7 @@ def run_governed_path_self_tests(root: Path) -> None:
     # -- Historical/base side: real (throwaway, unreferenced) git objects ----
     def _git(args: list[str], input_bytes: bytes | None = None) -> str:
         result = subprocess.run(
-            args,
+            git_argv(args),
             cwd=root,
             capture_output=True,
             input=input_bytes,
@@ -1281,7 +1376,7 @@ def run_governed_path_self_tests(root: Path) -> None:
         """
         git_dir = Path(
             subprocess.run(
-                ["git", "-C", str(root), "rev-parse", "--absolute-git-dir"],
+                git_argv(["git", "-C", str(root), "rev-parse", "--absolute-git-dir"]),
                 capture_output=True,
                 check=True,
             ).stdout.decode("utf-8").strip()
@@ -1294,7 +1389,7 @@ def run_governed_path_self_tests(root: Path) -> None:
         }
 
         def _git_in_throwaway_index(args: list[str]) -> str:
-            result = subprocess.run(args, cwd=root, capture_output=True, env=throwaway_env)
+            result = subprocess.run(git_argv(args), cwd=root, capture_output=True, env=throwaway_env)
             if result.returncode != 0:
                 raise SystemExit(
                     f"Self-test setup failure: {args!r} exited {result.returncode}: "
@@ -1622,3 +1717,36 @@ def run_governed_path_self_tests(root: Path) -> None:
             "Self-test failure: read_governed_worktree_bytes must reject a path outside the "
             "governed subtree."
         )
+
+
+def run_governed_path_self_tests(root: Path) -> None:
+    """Exercise governed-path I/O only in a fresh token-owned git repository.
+
+    The detailed test body below intentionally creates malformed files,
+    symlinks, throwaway indexes, and dangling git objects.  Passing the
+    caller's checkout to it would make an otherwise read-only validation
+    command mutate canonical worktree or object-database state.  Seed a
+    minimal repository instead, so all of those probes remain disposable.
+    """
+    scratch, token = create_owned_selftest_scratch(root, "governed-path")
+    try:
+        fixture = scratch / "contracts" / "fixtures" / "seed.json"
+        fixture.parent.mkdir(parents=True)
+        fixture.write_bytes(b'{"seed": true}\n')
+        environment = {**os.environ, **THROWAWAY_GIT_COMMIT_ENV_OVERRIDES}
+        for arguments in (
+            ["git", "init", "-q"],
+            ["git", "add", "-A"],
+            ["git", "commit", "-q", "-m", "governed-path self-test seed"],
+        ):
+            result = subprocess.run(
+                git_argv(arguments), cwd=scratch, capture_output=True, env=environment
+            )
+            if result.returncode != 0:
+                raise SystemExit(
+                    f"Self-test setup failure: {arguments!r} exited {result.returncode}: "
+                    f"{result.stderr.decode('utf-8', errors='replace')}"
+                )
+        _run_governed_path_self_tests_in_owned_scratch(scratch)
+    finally:
+        release_owned_selftest_scratch(scratch, token)

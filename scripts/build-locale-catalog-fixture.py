@@ -51,7 +51,12 @@ FIXTURE_DIR = ROOT / "contracts" / "fixtures"
 # contracts/fixtures/, so the synthetic catalog's authority files are flat and
 # share one prefix instead of living in a folder.
 FIXTURE_PREFIX = "locale-catalog-"
+FIXTURE_OWNERSHIP_FILE = f"{FIXTURE_PREFIX}owned-files.json"
 CONTRACT_MANIFEST = "contracts/manifest.json"
+CAPABILITIES_FIXTURES = (
+    "capabilities.json",
+    "capabilities-locale-catalog.json",
+)
 CATALOG_SCHEMA_DIR = ROOT / "frontend" / "schemas" / "locale-catalog" / "v1"
 
 # The generator's own sources and the schema set it renders against, hashed as
@@ -68,6 +73,7 @@ GENERATOR_EXECUTION_SOURCES = (
     "pyproject.toml",
     "uv.lock",
     "scripts/run-locale-catalog-python.sh",
+    "scripts/locale-catalog-python-sealed.sh",
     RUNTIME_PROFILE,
 )
 SCHEMA_SOURCES = (
@@ -111,19 +117,89 @@ def fileset_digest(entries: list[tuple[str, bytes]]) -> str:
     return accumulator.hexdigest()
 
 
+RUNTIME_IDENTITY_KEYS = ("implementation", "version", "cacheTag", "stdlibIdentity")
+RUNTIME_PLATFORMS = frozenset({"darwin-arm64", "linux-x86_64"})
+
+
+def has_binary_identity(value: object, fields: set[str]) -> bool:
+    if not isinstance(value, dict) or set(value) != fields | {"binarySha256"}:
+        return False
+    digests = value.get("binarySha256")
+    return (
+        isinstance(digests, dict)
+        and set(digests) == RUNTIME_PLATFORMS
+        and all(
+            isinstance(candidates, list)
+            and candidates
+            and all(
+                isinstance(digest, str)
+                and len(digest) == 64
+                and all(character in "0123456789abcdef" for character in digest)
+                for digest in candidates
+            )
+            for candidates in digests.values()
+        )
+    )
+
+
 def runtime_identity() -> dict[str, object]:
+    """The *committed* toolchain pin, never a measurement of this host.
+
+    Only the values recorded in `RUNTIME_PROFILE` reach fixture provenance;
+    nothing the sealed runtime attests at execution time (the resolved
+    interpreter path, the toolchain root, the hashes it recomputes) is mixed
+    in, so the derived revision is identical on every machine that carries the
+    same committed lock.
+    """
     profile = strict_json.strict_json_load_path(ROOT / RUNTIME_PROFILE)
     require(
         isinstance(profile, dict)
-        and set(profile) == {"implementation", "version", "cacheTag", "stdlibIdentity"}
-        and all(isinstance(value, str) for value in profile.values()),
+        and set(profile)
+        == {
+            *RUNTIME_IDENTITY_KEYS,
+            "interpreter",
+            "uv",
+            "externalTools",
+            "distribution",
+            "platformVariantModules",
+            "stdlibImportClosureMinimumSources",
+            "stdlibModuleCount",
+            "stdlibModules",
+        },
         f"{RUNTIME_PROFILE} is not the complete pinned runtime identity",
     )
+    require(
+        all(isinstance(profile[key], str) and profile[key] for key in RUNTIME_IDENTITY_KEYS),
+        f"{RUNTIME_PROFILE} interpreter identity values must be non-empty strings",
+    )
+    require(
+        has_binary_identity(
+            profile["interpreter"],
+            {"installRelativePath", "binaryRelativePath", "stdlibRelativePath"},
+        )
+        and has_binary_identity(profile["uv"], {"version", "installRelativePath"})
+        and profile["uv"]["version"] == "0.12.6"
+        and isinstance(profile["externalTools"], dict)
+        and set(profile["externalTools"]) == {"node"}
+        and has_binary_identity(
+            profile["externalTools"]["node"], {"version", "binaryRelativePath"}
+        )
+        and profile["externalTools"]["node"]["version"] == "26.7.0",
+        f"{RUNTIME_PROFILE} does not pin complete Python, uv, and Node binary identities",
+    )
+    require(
+        isinstance(profile["stdlibModules"], dict)
+        and isinstance(profile["stdlibModuleCount"], int)
+        and profile["stdlibModuleCount"] > 0
+        and len(profile["stdlibModules"]) == profile["stdlibModuleCount"],
+        f"{RUNTIME_PROFILE} does not pin a complete stdlib digest table",
+    )
     return {
-        "python": profile,
+        "python": {key: profile[key] for key in RUNTIME_IDENTITY_KEYS},
         "tools": {
             "miseAction": "2026.8.14",
-            "uv": "0.12.6",
+            "uv": profile["uv"]["version"],
+            "node": profile["externalTools"]["node"]["version"],
         },
     }
 
@@ -468,6 +544,43 @@ def build_all() -> dict[str, bytes]:
         },
     }
     files[f"{FIXTURE_PREFIX}manifest.json"] = canonical_bytes(manifest)
+    legacy = contract_manifest["legacyCompatibilityChecks"]
+    baseline = legacy["baselineResponse"]
+    require(
+        isinstance(legacy, dict)
+        and isinstance(baseline, dict)
+        and isinstance(legacy.get("addedCapability"), str),
+        "contracts/manifest.json has no complete capabilities-fixture authority",
+    )
+    common_capabilities = {
+        "schemaRevision": contract_revision,
+        "status": contract_manifest["status"],
+        "apiBasePath": contract_manifest["apiBasePath"],
+        "nativeClientMinimumRevision": contract_manifest["compatibility"][
+            "nativeClientMinimumRevision"
+        ],
+        "capabilities": list(baseline["capabilities"]),
+    }
+    files["capabilities.json"] = canonical_bytes(common_capabilities)
+    files["capabilities-locale-catalog.json"] = canonical_bytes(
+        {
+            **common_capabilities,
+            "capabilities": sorted(
+                [*common_capabilities["capabilities"], legacy["addedCapability"]]
+            ),
+            "localeCatalog": {
+                "manifestUrl": manifest["manifestPath"],
+                "catalogRevision": manifest["catalogRevision"],
+                "schemaVersion": manifest["schemaVersion"],
+                "defaultLocale": manifest["defaultLocale"],
+                "supportedLocales": sorted(record["locale"] for record in manifest["locales"]),
+                "manifestSha256": sha256_hex(files[f"{FIXTURE_PREFIX}manifest.json"]),
+            },
+        }
+    )
+    files[FIXTURE_OWNERSHIP_FILE] = canonical_bytes(
+        {"files": sorted(name for name in files if name != FIXTURE_OWNERSHIP_FILE)}
+    )
     return files
 
 
@@ -499,7 +612,11 @@ def validate_against_published_schemas(files: dict[str, bytes]) -> None:
 def committed_files() -> dict[str, bytes]:
     require(FIXTURE_DIR.is_dir(), f"missing fixture directory {FIXTURE_DIR}")
     found: dict[str, bytes] = {}
-    for path in sorted(FIXTURE_DIR.glob(f"{FIXTURE_PREFIX}*.json")):
+    paths = [
+        *sorted(FIXTURE_DIR.glob(f"{FIXTURE_PREFIX}*.json")),
+        *(FIXTURE_DIR / name for name in CAPABILITIES_FIXTURES),
+    ]
+    for path in paths:
         name = path.name
         found[name] = strict_json.read_governed_worktree_bytes(ROOT, f"contracts/fixtures/{name}")
     return found
@@ -533,10 +650,61 @@ def check(files: dict[str, bytes]) -> None:
 
 
 def write(files: dict[str, bytes]) -> None:
-    for path in sorted(FIXTURE_DIR.glob(f"{FIXTURE_PREFIX}*.json")):
+    existing = {path.name for path in FIXTURE_DIR.glob(f"{FIXTURE_PREFIX}*.json")}
+    ownership_path = FIXTURE_DIR / FIXTURE_OWNERSHIP_FILE
+    if ownership_path.exists():
+        ownership = strict_json.strict_json_loads(
+            strict_json.read_governed_worktree_bytes(
+                ROOT, f"contracts/fixtures/{FIXTURE_OWNERSHIP_FILE}"
+            ),
+            source=f"contracts/fixtures/{FIXTURE_OWNERSHIP_FILE}",
+        )
+        owned = ownership.get("files") if isinstance(ownership, dict) else None
+        require(
+            isinstance(owned, list)
+            and all(
+                isinstance(name, str)
+                and (name.startswith(FIXTURE_PREFIX) or name in CAPABILITIES_FIXTURES)
+                for name in owned
+            )
+            and len(owned) == len(set(owned)),
+            f"contracts/fixtures/{FIXTURE_OWNERSHIP_FILE} is not a valid generated ownership record",
+        )
+        owned_names = set(owned) | {FIXTURE_OWNERSHIP_FILE}
+    else:
+        # The first governed rewrite introduces the ownership record.  The
+        # checked-in pre-record set is still recognized narrowly from its
+        # manifest and known source names; any unrelated matching sentinel is
+        # a refusal, never a candidate for deletion.
+        previous_manifest = strict_json.strict_json_loads(
+            strict_json.read_governed_worktree_bytes(
+                ROOT, f"contracts/fixtures/{FIXTURE_PREFIX}manifest.json"
+            ),
+            source=f"contracts/fixtures/{FIXTURE_PREFIX}manifest.json",
+        )
+        previous_chunks = {
+            f"{FIXTURE_PREFIX}chunk-{chunk['sha256']}.json"
+            for locale in previous_manifest["locales"]
+            for chunk in locale["chunks"]
+        }
+        owned_names = {
+            f"{FIXTURE_PREFIX}manifest.json",
+            f"{FIXTURE_PREFIX}backend-registry.json",
+            *build_sources(),
+            *previous_chunks,
+        }
+    unowned = sorted(existing - owned_names)
+    require(
+        not unowned,
+        "refusing to delete pre-existing locale-catalog fixture paths without this invocation's "
+        f"ownership record: {unowned}",
+    )
+    for name in sorted(existing & owned_names - set(files)):
+        path = FIXTURE_DIR / name
+        strict_json.read_governed_worktree_bytes(ROOT, f"contracts/fixtures/{name}")
         path.unlink()
     for name, data in sorted(files.items()):
-        (FIXTURE_DIR / name).write_bytes(data)
+        strict_json.write_governed_worktree_bytes(ROOT, f"contracts/fixtures/{name}", data)
 
 
 def run_self_tests(files: dict[str, bytes]) -> None:
@@ -827,6 +995,12 @@ def main() -> None:
     strict_json.run_self_tests()
     strict_json.run_governed_bytes_self_tests()
     strict_json.run_governed_path_self_tests(ROOT)
+    # The published v1 schemas are validated by the in-repository subset
+    # validator rather than an installed one, so its fail-closed proofs -- an
+    # unimplemented keyword is a refusal, and a Python-only regular-expression
+    # construct is never silently given Python's meaning -- run on the same
+    # governed route that depends on them.
+    json_schema_subset.run_self_tests()
 
     files = build_all()
     validate_against_published_schemas(files)
@@ -844,7 +1018,7 @@ def main() -> None:
     print(
         f"locale-catalog fixture: wrote {len(files)} artifacts "
         f"(revision {json.loads(files[f'{FIXTURE_PREFIX}manifest.json'])['catalogRevision']}) to "
-        f"{FIXTURE_DIR.relative_to(ROOT)}/{FIXTURE_PREFIX}*."
+        f"{FIXTURE_DIR.relative_to(ROOT)}."
     )
 
 

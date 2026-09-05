@@ -24,7 +24,7 @@ jobs:
         ghc: ["9.14.1"]
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - uses: haskell-actions/setup@v2
       name: Setup Haskell Stack
       with:
@@ -32,7 +32,7 @@ jobs:
         stack-version: ${{ matrix.stack }}
 
     - name: Cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       env:
         cache-name: cache-stack
       with:
@@ -65,9 +65,34 @@ jobs:
     - name: Install frontend dependencies
       run: npm ci
       working-directory: ${{ github.workspace }}/frontend
+    - name: Bind the Stack probe authority
+      id: stack-probe
+      run: |
+        stack_path="$(command -v stack)"
+        test -n "${stack_path}"
+        case "${stack_path}" in
+          /*) ;;
+          *) echo "stack setup did not provide an absolute executable path" >&2; exit 1 ;;
+        esac
+        printf 'path=%s\n' "${stack_path}" >> "${GITHUB_OUTPUT}"
+    # Both of these are governed locale-catalog routes, so they run in the
+    # same sealed shell the contract and locale-catalog workflows use: this
+    # job's default `bash` inherits the runner environment, and the
+    # authoritative launcher requires the toolchain root to be named
+    # explicitly rather than inferred from it.
     - name: Generate the public locale catalog
       run: mise run locale-catalog:generate
+      shell: /usr/bin/env -i HOME=/home/runner LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin /bin/bash --noprofile --norc -eo pipefail {0}
       working-directory: ${{ github.workspace }}
     - name: Verify the generated catalog configures the real capabilities handler
-      run: mise run locale-catalog:capability-probe
+      run: |
+        /usr/bin/env -i \
+          HOME=/home/runner \
+          LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise \
+          LOCALE_CATALOG_STACK="${LOCALE_CATALOG_STACK:?missing Stack probe authority}" \
+          PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin \
+          /bin/bash --noprofile --norc -eo pipefail -c 'mise run locale-catalog:capability-probe'
+      shell: /bin/sh -e {0}
+      env:
+        LOCALE_CATALOG_STACK: ${{ steps.stack-probe.outputs.path }}
       working-directory: ${{ github.workspace }}

@@ -156,10 +156,10 @@ def governed_paths(manifest: dict) -> list[str]:
     return paths
 
 
-def compute_hashes_from_worktree(manifest: dict) -> dict[str, str]:
+def compute_hashes_from_worktree(manifest: dict, *, root: Path = ROOT) -> dict[str, str]:
     hashes = {}
     for relative_path in governed_paths(manifest):
-        content = strict_json.read_governed_worktree_bytes(ROOT, relative_path)
+        content = strict_json.read_governed_worktree_bytes(root, relative_path)
         hashes[relative_path] = hashlib.sha256(content).hexdigest()
     hashes["contracts/manifest.json"] = hashlib.sha256(
         strict_json.canonicalize_manifest_bytes(manifest)
@@ -167,10 +167,10 @@ def compute_hashes_from_worktree(manifest: dict) -> dict[str, str]:
     return hashes
 
 
-def resolve_ref(ref: str) -> bool:
+def resolve_ref(ref: str, *, root: Path = ROOT) -> bool:
     result = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
-        cwd=ROOT,
+        strict_json.git_argv(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"]),
+        cwd=root,
         capture_output=True,
     )
     return result.returncode == 0
@@ -180,7 +180,9 @@ _HEX_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _ALL_ZERO_SHA_RE = re.compile(r"^0{7,40}$")
 
 
-def resolve_base_ref(base_sha: str | None, *, allow_local_fallback: bool) -> str:
+def resolve_base_ref(
+    base_sha: str | None, *, allow_local_fallback: bool, root: Path = ROOT
+) -> str:
     """Resolve the immutable base commit to diff governed contract artifacts
     against.
 
@@ -203,16 +205,20 @@ def resolve_base_ref(base_sha: str | None, *, allow_local_fallback: bool) -> str
             f"base SHA must be exactly 40 lowercase non-zero hexadecimal characters, got {base_sha!r}.",
         )
         require(
-            resolve_ref(base_sha),
+            resolve_ref(base_sha, root=root),
             f"base SHA {base_sha!r} does not resolve to a commit in this checkout's local history.",
         )
         head_sha = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
+            strict_json.git_argv(["git", "rev-parse", "HEAD"]),
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         require(base_sha != head_sha, "base SHA must not name HEAD itself.")
         ancestor = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", base_sha, "HEAD"],
-            cwd=ROOT,
+            strict_json.git_argv(["git", "merge-base", "--is-ancestor", base_sha, "HEAD"]),
+            cwd=root,
             capture_output=True,
         )
         require(ancestor.returncode == 0, f"base SHA {base_sha!r} is not an ancestor of HEAD.")
@@ -229,14 +235,14 @@ def resolve_base_ref(base_sha: str | None, *, allow_local_fallback: bool) -> str
         if ref in attempted:
             continue
         attempted.append(ref)
-        if resolve_ref(ref):
+        if resolve_ref(ref, root=root):
             return ref
 
     raise SystemExit(
         "Could not resolve any local fallback base ref with local git history (tried: "
         f"{attempted}). This gate never falls back to a network call; ensure the "
-        "checkout includes enough local history to resolve one of these refs, or set "
-        "CONTRACT_BASE_REF explicitly."
+        "checkout includes enough local history to resolve one of these refs, or pass "
+        "an explicit 40-character lowercase ancestor base SHA positionally."
     )
 
 
@@ -247,10 +253,10 @@ def load_manifest_from_git_ref(ref: str) -> dict | None:
     return strict_json.strict_json_loads(content, source=f"{ref}:contracts/manifest.json")
 
 
-def compute_hashes_from_git_ref(ref: str, manifest: dict) -> dict[str, str]:
+def compute_hashes_from_git_ref(ref: str, manifest: dict, *, root: Path = ROOT) -> dict[str, str]:
     hashes = {}
     for relative_path in governed_paths(manifest):
-        content = strict_json.read_governed_git_ref_bytes(ROOT, ref, relative_path)
+        content = strict_json.read_governed_git_ref_bytes(root, ref, relative_path)
         require(content is not None, f"Could not read {relative_path} at {ref} via local git history")
         hashes[relative_path] = hashlib.sha256(content).hexdigest()
     hashes["contracts/manifest.json"] = hashlib.sha256(
@@ -313,139 +319,81 @@ def evaluate_drift(
 
 
 def run_governed_json_strictness_self_tests() -> None:
-    """End-to-end proof (real filesystem I/O and real git plumbing, not
-    merely a direct unit call to `strict_json.strict_validate_governed_bytes_if_json`)
-    that both hash computers in this script -- `compute_hashes_from_worktree`
-    (the current/head side) and `compute_hashes_from_git_ref` (the
-    historical/base side, read via `strict_json.read_governed_git_ref_bytes`,
-    which itself verifies a `git ls-tree` mode/type before reading content
-    with `git show`) -- refuse to hash a malformed governed '.json' artifact
-    rather than silently blessing it as opaque bytes.
+    """Exercise both hash readers in a disposable, owner-authenticated repo."""
+    scratch, token = strict_json.create_owned_selftest_scratch(ROOT, "revision-json")
+    relative_path = f"contracts/fixtures/selftest-{uuid.uuid4().hex}.json"
+    environment = {**os.environ, **strict_json.THROWAWAY_GIT_COMMIT_ENV_OVERRIDES}
 
-    The sentinel path used throughout is nested under `contracts/fixtures/`
-    (rather than a bare top-level filename) because `validate_governed_path`
-    (added for this contract's path-safety hardening) only accepts this
-    contract's small fixed set of governed locations -- a bare top-level
-    filename would now be rejected before ever reaching either hash
-    computer, which would prove nothing about the malformed-content guard
-    this self-test exists to exercise.
-
-    The base-ref case constructs a throwaway git commit that is never
-    attached to any ref/branch (via `git hash-object`/`git mktree`/
-    `git commit-tree`), so this exercises the real historical-read code path
-    without touching this repository's actual history, working tree, or
-    index.
-    """
-    unique_name = f"__self-test-sentinel-{uuid.uuid4().hex}__.json"
-    governed_relative_path = f"contracts/fixtures/{unique_name}"
-
-    # Worktree (head) side: a real, malformed on-disk file must be rejected,
-    # not silently hashed as opaque bytes. Always cleaned up, even on
-    # assertion failure.
-    malformed_file = ROOT / governed_relative_path
-    malformed_file.write_bytes(b'{"a": 1, "a": 2}')
-    try:
-        try:
-            compute_hashes_from_worktree({"documents": [governed_relative_path], "fixtures": []})
-        except SystemExit:
-            pass
-        else:
-            raise SystemExit(
-                "Self-test failure: compute_hashes_from_worktree must reject a malformed "
-                "(duplicate-key) governed .json artifact on disk via a controlled SystemExit, "
-                "not silently hash it as opaque bytes."
-            )
-    finally:
-        malformed_file.unlink(missing_ok=True)
-
-    # A well-formed on-disk file at the same kind of path must still hash
-    # successfully (this guard must not become overly strict).
-    well_formed_file = ROOT / governed_relative_path
-    well_formed_file.write_bytes(b'{"a": 1}')
-    try:
-        worktree_hashes = compute_hashes_from_worktree(
-            {"documents": [governed_relative_path], "fixtures": []}
-        )
-        require(
-            governed_relative_path in worktree_hashes,
-            "Self-test failure: compute_hashes_from_worktree must hash a well-formed governed "
-            ".json artifact successfully.",
-        )
-    finally:
-        well_formed_file.unlink(missing_ok=True)
-
-    # Historical/base side: a throwaway, unreferenced git commit whose tree
-    # contains a malformed governed .json file at contracts/fixtures/<name>
-    # must be rejected by compute_hashes_from_git_ref, exactly the path
-    # resolve_base_ref's CI-resolved base ref is read through in the real
-    # drift gate.
-    def _git(args: list[str], input_bytes: bytes | None = None) -> str:
+    def run_git(arguments: list[str]) -> str:
         result = subprocess.run(
-            args,
-            cwd=ROOT,
+            strict_json.git_argv(arguments),
+            cwd=scratch,
             capture_output=True,
-            input=input_bytes,
-            env={**os.environ, **strict_json.THROWAWAY_GIT_COMMIT_ENV_OVERRIDES},
+            env=environment,
         )
         require(
             result.returncode == 0,
-            f"Self-test setup failure: {args!r} exited {result.returncode}: "
+            f"Self-test setup failure: {arguments!r} exited {result.returncode}: "
             f"{result.stderr.decode('utf-8', errors='replace')}",
         )
         return result.stdout.decode("utf-8").strip()
 
-    def _commit_with_entry_at_governed_path(mode: str, object_type: str, object_id: str) -> str:
-        # git mktree only ever builds one flat tree level per invocation, so
-        # a nested path like contracts/fixtures/<name> needs an innermost
-        # tree for the leaf blob wrapped, one directory level at a time, in
-        # a tree for "fixtures" then a tree for "contracts" -- exactly how
-        # git itself resolves a multi-component path through nested trees.
-        path_segments = governed_relative_path.split("/")
-        tree_sha = _git(
-            ["git", "mktree"], f"{mode} {object_type} {object_id}\t{path_segments[-1]}\n".encode()
-        )
-        for directory_segment in reversed(path_segments[:-1]):
-            tree_sha = _git(
-                ["git", "mktree"], f"040000 tree {tree_sha}\t{directory_segment}\n".encode()
-            )
-        return _git(
-            [
-                "git",
-                "commit-tree",
-                tree_sha,
-                "-m",
-                "contract-tooling self-test throwaway commit (never attached to any ref/branch)",
-            ]
-        )
-
-    malformed_blob_sha = _git(["git", "hash-object", "-w", "--stdin"], b'{"a": 1, "a": 2}')
-    malformed_commit_sha = _commit_with_entry_at_governed_path("100644", "blob", malformed_blob_sha)
     try:
-        compute_hashes_from_git_ref(
-            malformed_commit_sha, {"documents": [governed_relative_path], "fixtures": []}
+        path = scratch / relative_path
+        path.parent.mkdir(parents=True)
+        (scratch / "README").write_text("revision JSON self-test\n", encoding="utf-8")
+        run_git(["git", "init", "-q"])
+        run_git(["git", "add", "-A"])
+        run_git(["git", "commit", "-q", "-m", "revision JSON self-test seed"])
+
+        path.write_bytes(b'{"a": 1, "a": 2}')
+        try:
+            compute_hashes_from_worktree({"documents": [relative_path], "fixtures": []}, root=scratch)
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit(
+                "Self-test failure: compute_hashes_from_worktree accepted malformed governed JSON."
+            )
+
+        path.write_bytes(b'{"a": 1}')
+        hashes = compute_hashes_from_worktree(
+            {"documents": [relative_path], "fixtures": []}, root=scratch
         )
-    except SystemExit:
-        pass
-    else:
-        raise SystemExit(
-            "Self-test failure: compute_hashes_from_git_ref must reject a malformed "
-            "(duplicate-key) governed .json artifact read from a historical/base git ref via a "
-            "controlled SystemExit, not silently hash it as opaque bytes."
+        require(
+            relative_path in hashes,
+            "Self-test failure: compute_hashes_from_worktree rejected well-formed governed JSON.",
         )
 
-    # The equivalent well-formed historical commit must still hash successfully.
-    well_formed_blob_sha = _git(["git", "hash-object", "-w", "--stdin"], b'{"a": 1}')
-    well_formed_commit_sha = _commit_with_entry_at_governed_path(
-        "100644", "blob", well_formed_blob_sha
-    )
-    git_ref_hashes = compute_hashes_from_git_ref(
-        well_formed_commit_sha, {"documents": [governed_relative_path], "fixtures": []}
-    )
-    require(
-        governed_relative_path in git_ref_hashes,
-        "Self-test failure: compute_hashes_from_git_ref must hash a well-formed governed .json "
-        "artifact read from a historical/base git ref successfully.",
-    )
+        path.write_bytes(b'{"a": 1, "a": 2}')
+        run_git(["git", "add", "--", relative_path])
+        run_git(["git", "commit", "-q", "-m", "malformed historical fixture"])
+        malformed_ref = run_git(["git", "rev-parse", "HEAD"])
+        try:
+            compute_hashes_from_git_ref(
+                malformed_ref, {"documents": [relative_path], "fixtures": []}, root=scratch
+            )
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit(
+                "Self-test failure: compute_hashes_from_git_ref accepted malformed historical JSON."
+            )
+
+        path.write_bytes(b'{"a": 1}')
+        run_git(["git", "add", "--", relative_path])
+        run_git(["git", "commit", "-q", "-m", "well-formed historical fixture"])
+        hashes = compute_hashes_from_git_ref(
+            run_git(["git", "rev-parse", "HEAD"]),
+            {"documents": [relative_path], "fixtures": []},
+            root=scratch,
+        )
+        require(
+            relative_path in hashes,
+            "Self-test failure: compute_hashes_from_git_ref rejected well-formed historical JSON.",
+        )
+    finally:
+        strict_json.release_owned_selftest_scratch(scratch, token)
 
 
 def run_self_tests() -> None:
@@ -631,26 +579,101 @@ def run_self_tests() -> None:
 
 
 def run_resolve_base_ref_self_tests() -> None:
-    """Prove resolve_base_ref()'s CI-mode fail-closed behavior deterministically,
-    against direct positional values. This still depends on a working local
-    checkout because resolving a valid ancestor invokes local git plumbing."""
-    head_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    for invalid in (None, "not-a-valid-sha", "0" * 40, "F" * 40, "f" * 40, head_sha):
+    """Prove CI base-ref validation in an invocation-owned repository."""
+    scratch, token = strict_json.create_owned_selftest_scratch(ROOT, "revision-base")
+    environment = {**os.environ, **strict_json.THROWAWAY_GIT_COMMIT_ENV_OVERRIDES}
+
+    def run_git(arguments: list[str]) -> str:
+        result = subprocess.run(
+            strict_json.git_argv(arguments),
+            cwd=scratch,
+            capture_output=True,
+            env=environment,
+        )
+        require(
+            result.returncode == 0,
+            f"Self-test setup failure: {arguments!r} exited {result.returncode}: "
+            f"{result.stderr.decode('utf-8', errors='replace')}",
+        )
+        return result.stdout.decode("utf-8").strip()
+
+    try:
+        (scratch / "README").write_text("base-ref self-test\n", encoding="utf-8")
+        run_git(["git", "init", "-q", "-b", "main"])
+        run_git(["git", "add", "-A"])
+        run_git(["git", "commit", "-q", "-m", "base-ref self-test base"])
+        (scratch / "README").write_text("base-ref self-test head\n", encoding="utf-8")
+        run_git(["git", "add", "-A"])
+        run_git(["git", "commit", "-q", "-m", "base-ref self-test head"])
+
+        head_sha = run_git(["git", "rev-parse", "HEAD"])
+        for invalid in (None, "not-a-valid-sha", "0" * 40, "F" * 40, "f" * 40, head_sha):
+            try:
+                resolve_base_ref(invalid, allow_local_fallback=False, root=scratch)
+            except SystemExit:
+                pass
+            else:
+                raise SystemExit(f"Self-test failure: invalid explicit base {invalid!r} was accepted.")
+
+        non_ancestor = run_git(
+            [
+                "git",
+                "commit-tree",
+                run_git(["git", "rev-parse", "HEAD^{tree}"]),
+                "-m",
+                "revision-drift self-test non-ancestor",
+            ]
+        )
+        require(
+            resolve_ref(non_ancestor, root=scratch),
+            "Self-test setup failure: the throwaway non-ancestor commit is not resolvable.",
+        )
         try:
-            resolve_base_ref(invalid, allow_local_fallback=False)
+            resolve_base_ref(non_ancestor, allow_local_fallback=False, root=scratch)
         except SystemExit:
             pass
         else:
-            raise SystemExit(f"Self-test failure: invalid explicit base {invalid!r} was accepted.")
-    base = subprocess.run(
-        ["git", "rev-parse", "HEAD~1"], cwd=ROOT, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    require(
-        resolve_base_ref(base, allow_local_fallback=False) == base,
-        "Self-test failure: a valid explicit base SHA was not accepted.",
-    )
+            raise SystemExit(
+                "Self-test failure: a resolvable but non-ancestor base commit was accepted."
+            )
+
+        environment_names = (
+            "CONTRACT_BASE_REF",
+            "GITHUB_BASE_REF",
+            "GITHUB_EVENT_BEFORE",
+            "BASE_SHA",
+            "LOCALE_CATALOG_BASE_SHA",
+        )
+        base = run_git(["git", "rev-parse", "HEAD~1"])
+        previous = {name: os.environ.get(name) for name in environment_names}
+        try:
+            for name in environment_names:
+                os.environ[name] = base
+            try:
+                resolve_base_ref(None, allow_local_fallback=False, root=scratch)
+            except SystemExit:
+                pass
+            else:
+                raise SystemExit(
+                    "Self-test failure: CI mode resolved a base reference from the environment."
+                )
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+        require(
+            resolve_base_ref(base, allow_local_fallback=False, root=scratch) == base,
+            "Self-test failure: a valid explicit base SHA was not accepted.",
+        )
+        require(
+            bool(resolve_base_ref(None, allow_local_fallback=True, root=scratch)),
+            "Self-test failure: the local fallback chain resolved nothing.",
+        )
+    finally:
+        strict_json.release_owned_selftest_scratch(scratch, token)
 
 
 def run_manifest_worktree_authority_self_tests() -> None:
@@ -697,14 +720,19 @@ def run_manifest_worktree_authority_self_tests() -> None:
     if os.environ.get(_MANIFEST_AUTHORITY_SELFTEST_SKIP_ENV) == "1":
         return
 
-    scratch_root = ROOT / f"__self-test-manifest-authority-{uuid.uuid4().hex}__"
+    scratch_parent, scratch_token = strict_json.create_owned_selftest_scratch(
+        ROOT, "manifest-authority"
+    )
+    scratch_root = scratch_parent / "repo"
 
-    def _build_scratch_repo() -> str:
+    def _build_scratch_repo(*, contract_in_root_commit: bool = True) -> str:
         """Populate a fresh scratch_root with the minimal script/artifact
         set, `git init` it, commit an initial baseline (manifest with an
         empty `artifactHashes`, matching what a hand-authored manifest
-        looks like before the updater ever runs), and return that initial
-        commit's SHA."""
+        looks like before the updater ever runs), and return that root
+        commit's SHA. With `contract_in_root_commit=False` the root commit
+        deliberately predates the governed contract entirely, which is the
+        shape of the change that first introduces it."""
         (scratch_root / "scripts").mkdir(parents=True)
         (scratch_root / "contracts" / "schemas").mkdir(parents=True)
         (scratch_root / "contracts" / "fixtures").mkdir(parents=True)
@@ -724,7 +752,7 @@ def run_manifest_worktree_authority_self_tests() -> None:
 
         def _git(args: list[str]) -> str:
             result = subprocess.run(
-                args, cwd=scratch_root, capture_output=True, env=scratch_env
+                strict_json.git_argv(args), cwd=scratch_root, capture_output=True, env=scratch_env
             )
             if result.returncode != 0:
                 raise SystemExit(
@@ -734,8 +762,17 @@ def run_manifest_worktree_authority_self_tests() -> None:
             return result.stdout.decode("utf-8").strip()
 
         _git(["git", "init", "-q"])
-        _git(["git", "add", "-A"])
+        if contract_in_root_commit:
+            _git(["git", "add", "-A"])
+        else:
+            _git(["git", "add", "-A", "--", "scripts"])
         _git(["git", "commit", "-q", "-m", "scratch baseline (root commit)"])
+        # The *root* commit is what every scenario below passes as its
+        # immutable base: it stays a strict ancestor of the scratch HEAD (even
+        # after scenario 4 amends that HEAD), so the drift gate's "a base SHA
+        # may not name HEAD itself" rule never masks what a scenario is
+        # actually proving.
+        root_commit = _git(["git", "rev-parse", "HEAD"])
         # A second, trivial, content-irrelevant commit so this scratch repo
         # has real commit history (`git rev-list --count HEAD` > 1) --
         # check-schema-revision-drift.py's own run_resolve_base_ref_self_tests
@@ -749,7 +786,7 @@ def run_manifest_worktree_authority_self_tests() -> None:
         (scratch_root / "NOTES.txt").write_bytes(b"scratch repo second commit\n")
         _git(["git", "add", "-A"])
         _git(["git", "commit", "-q", "-m", "scratch baseline (second commit)"])
-        return _git(["git", "rev-parse", "HEAD"])
+        return root_commit
 
     def _run(script_name: str) -> subprocess.CompletedProcess:
         env = {
@@ -788,7 +825,7 @@ def run_manifest_worktree_authority_self_tests() -> None:
 
     def _git_scratch(args: list[str]) -> subprocess.CompletedProcess:
         return subprocess.run(
-            args,
+            strict_json.git_argv(args),
             cwd=scratch_root,
             capture_output=True,
             env={**os.environ, **strict_json.THROWAWAY_GIT_COMMIT_ENV_OVERRIDES},
@@ -888,10 +925,10 @@ def run_manifest_worktree_authority_self_tests() -> None:
             ["git", "update-index", "--chmod=+x", "--", "contracts/manifest.json"]
         )
         require(chmod_result.returncode == 0, "Self-test setup failure: chmod +x in index failed.")
-        amend_result = _git_scratch(
-            ["git", "commit", "-q", "--amend", "-m", "scratch baseline (manifest mode 100755)"]
+        commit_result = _git_scratch(
+            ["git", "commit", "-q", "-m", "scratch manifest mode 100755"]
         )
-        require(amend_result.returncode == 0, "Self-test setup failure: amend commit failed.")
+        require(commit_result.returncode == 0, "Self-test setup failure: mode-change commit failed.")
         # Reset the index/worktree copy back to an ordinary mode-100644 file
         # -- HEAD now (incorrectly) records mode 100755 for this path, but
         # the current worktree/index copy is an ordinary file, exactly
@@ -901,7 +938,6 @@ def run_manifest_worktree_authority_self_tests() -> None:
             ["git", "update-index", "--chmod=-x", "--", "contracts/manifest.json"]
         )
         require(reset_result.returncode == 0, "Self-test setup failure: chmod -x in index failed.")
-        head_commit = _git_scratch(["git", "rev-parse", "HEAD"]).stdout.decode("utf-8").strip()
 
         updater_result = _run("update-manifest-hashes.py")
         require(
@@ -910,11 +946,38 @@ def run_manifest_worktree_authority_self_tests() -> None:
             "git HEAD-committed mode (100755) disagrees with its current index/on-disk mode "
             "(100644).",
         )
-        drift_result = _run_drift_checker(head_commit)
+        drift_result = _run_drift_checker(initial_commit)
         require(
             drift_result.returncode != 0,
             "Self-test failure: check-schema-revision-drift.py must reject a current manifest "
             "whose git HEAD-committed mode disagrees with its current index/on-disk mode.",
+        )
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
+
+    # -- Scenario 6: a base commit that predates the governed contract has
+    # no released revision to protect, so the introducing change passes. --
+    scratch_root.mkdir()
+    try:
+        initial_commit = _build_scratch_repo(contract_in_root_commit=False)
+        updater_result = _run("update-manifest-hashes.py")
+        require(
+            updater_result.returncode == 0,
+            "Self-test failure: update-manifest-hashes.py must succeed against a scratch "
+            f"manifest introduced after the base commit. stderr: "
+            f"{updater_result.stderr.decode('utf-8', errors='replace')}",
+        )
+        drift_result = _run_drift_checker(initial_commit)
+        require(
+            drift_result.returncode == 0,
+            "Self-test failure: check-schema-revision-drift.py must accept a base commit that "
+            "predates contracts/manifest.json entirely. stderr: "
+            f"{drift_result.stderr.decode('utf-8', errors='replace')}",
+        )
+        require(
+            b"does not exist at that commit" in drift_result.stdout,
+            "Self-test failure: the introducing-change pass must say why it passed. stdout: "
+            f"{drift_result.stdout.decode('utf-8', errors='replace')}",
         )
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
@@ -958,6 +1021,7 @@ def run_manifest_worktree_authority_self_tests() -> None:
         )
     finally:
         shutil.rmtree(scratch_root, ignore_errors=True)
+        strict_json.release_owned_selftest_scratch(scratch_parent, scratch_token)
 
 
 def main() -> None:
@@ -999,12 +1063,25 @@ def main() -> None:
 
     base_ref = resolve_base_ref(arguments.base_sha, allow_local_fallback=arguments.allow_local_fallback)
     base_manifest = load_manifest_from_git_ref(base_ref)
-    require(
-        base_manifest is not None,
-        f"Resolved base ref {base_ref!r} does not have a readable contracts/manifest.json via "
-        "local git history. This gate never falls back to a network call; ensure the checkout "
-        "includes enough local history to read that path at this ref.",
-    )
+    if base_manifest is None:
+        # The governed contract did not exist at the base commit, so no
+        # revision of it has been released and nothing there is immutable yet
+        # -- the introducing change cannot possibly break release immutability.
+        # This is deliberately narrow: `read_governed_git_ref_bytes` returns
+        # None only when `git ls-tree <base> -- contracts/manifest.json`
+        # matches nothing at all. A path that exists at the base but is a
+        # symlink, an executable blob, a gitlink or a tree still raises, and
+        # the head-side `artifactHashes` verification above already ran
+        # unconditionally.
+        print(
+            f"Schema revision-drift gate passed (base ref {base_ref}): the governed contract "
+            "does not exist at that commit, so no released revision is being changed."
+        )
+        print(
+            f"artifactHashes verified for {len(head_hashes)} governed paths at revision "
+            f"{head_revision}."
+        )
+        return
 
     base_revision = require_manifest_schema_revision(base_manifest, f"base ({base_ref})")
     base_hashes = compute_hashes_from_git_ref(base_ref, base_manifest)

@@ -292,33 +292,158 @@ manifest pins every chunk's size and SHA-256, so a client can verify what it
 downloaded against what it was promised.
 
 The Python contract commands have an equally narrow, enforceable boundary.
-Every mise/CI entry point uses `scripts/run-locale-catalog-python.sh`, which
-starts only mise's CPython `3.14.7` with `-I -S -E -B`, checks its portable
-stdlib release identity, refuses repository bytecode/symlinks, and parses every
-declared `scripts/*.py` source with an alias-aware capability resolver before
-it imports a target. Dynamic import/evaluation, loaders, import-path state and
-undeclared dunder access are refused even when reached through aliases.
-`uv.lock` supplies hashes for every wheel and transitive dependency; the
-launcher reinstalls that complete locked closure before every command, then the
-bootstrap verifies the installed dependency set and each wheel `RECORD` before
-adding its site-packages directory. The catalog-only schema checks use the
-small fail-closed in-repository validator instead of `jsonschema`.
 
-This boundary assumes the checked-out repository, the exact mise CPython
-installation (including the stdlib required to start Python), the host
-shell/kernel, and the hash-verifying `uv` downloader are trusted. The exact
-CPython release identity is therefore a provenance attestation, not a claim
-that this Python bootstrap can validate a compromised interpreter before it
-imports Python's own standard library. It
-does not claim to defend against an actor that can replace both the checked-in
-bootstrap and its committed provenance; it does make changed source, a changed
-runtime/stdlib provenance, startup hooks, shadow bytecode, an added import
-capability, or an altered locked dependency closure fail or be replaced from
-its lock-hashed artifact before a generator/check command can use it.
-The synthetic fixture hashes all declared executable sources, its launcher,
-lockfile, and runtime profile through `generatorSha256`, so the catalog
-revision moves with every such governed input without adding a Python-only
-field to the Node-produced public manifest.
+**One authoritative entry point.** Every mise/CI command that can generate,
+verify, update, approve, hash or revision-check a governed artifact goes
+through `scripts/run-locale-catalog-python.sh`. That file is deliberately a
+POSIX `sh` stage: a `#!/bin/bash` entry point would source a caller-supplied
+`BASH_ENV` script *before* its own first line ran, so no in-script guard could
+ever be early enough. It does exactly one thing — rebuild the environment from
+nothing with `/usr/bin/env -i` and hand `scripts/locale-catalog-python-sealed.sh`
+(non-executable, and refusing to run without the sealing sentinel) the two
+inputs that carry authority:
+
+1. `LOCALE_CATALOG_MISE_ROOT`, an explicit, absolute, already-canonical,
+   non-symlink toolchain root named by the trusted host. It is never
+   defaulted, never derived from `$HOME`, and never guessed; the sealed stage
+   also refuses the filesystem root and any unnormalized path.
+2. `scripts/locale_catalog_python_runtime.json`, the committed toolchain lock.
+
+The caller's `HOME`, `PATH`, `PYTHON*`, `BASH_ENV`, `ENV`, `SHELLOPTS`,
+`CDPATH`, `IFS`, `GIT_*` and `UV_*` are gone before any authoritative byte is
+read, and the child runs with a `HOME` that is this invocation's own empty
+directory and a `PATH` that deliberately excludes the interpreter's `bin`
+directory (which a local `pip install` can fill with arbitrary executables) and
+the `uv` directory (invoked by absolute path). Local convenience tasks are
+named `*-local`, are documented as non-authoritative, and cannot regenerate a
+governed byte or satisfy a CI authority gate.
+
+CI names the root in the workflow's sealed `defaults.run.shell`, which is
+itself `/usr/bin/env -i ... /bin/bash --noprofile --norc`, so no step inherits a
+runner environment either. A maintainer running these tasks locally names it
+the same way and just as deliberately — for example
+`LOCALE_CATALOG_MISE_ROOT="$HOME/.local/share/mise" mise run contracts:validate` — and
+an unset or empty root is refused with that exact diagnostic rather than being
+guessed from `$HOME`.
+The real backend-probe task also receives one explicit host authority:
+`LOCALE_CATALOG_STACK=/absolute/path/to/stack`; it rejects a bare `stack`
+command or any PATH lookup. CI captures the absolute path from the reviewed
+Haskell setup step and includes it in the otherwise empty shell environment.
+
+**Environment attestation.** The sealed shell hashes each exact CPython,
+Node and uv binary against the platform-specific digest table *before* it
+starts the first managed executable. The bootstrap repeats that check after
+startup, then proves its interpreter path inside the toolchain root (the real
+`python3.14`, not the `bin/python` symlink a `pip install` can retarget), base
+prefix, version, cache tag and the `-I -S -E -B` isolation flags. It then
+proves the stdlib as a closure — every `.py` file under the
+sealed stdlib root must be a committed digest-table entry that hashes to the
+recorded value, or one of the four exactly-named build-configuration modules
+the lock records as platform variants (and which no importable module can
+reach). The table is platform-independent by construction: every source it
+pins was verified byte-identical in the pinned upstream CPython 3.14.7 tarball
+and in the `python-build-standalone` builds the lock records.
+
+That covers every stdlib `.py` byte. The rest of the standard library is
+covered by an *import-closure* proof rather than by hashing platform-specific
+binaries: starting from exactly the stdlib modules the capability boundary lets
+a governed source name, and following those modules' own imports through their
+attested sources, every reachable name must resolve to an attested `.py` — or
+to no file at all, in which case only the pinned interpreter binary itself (a
+builtin or frozen module, from the distribution the lock records by checksum)
+can satisfy it. A name that resolves to a file-backed extension module, or to
+one of the unhashed platform-variant modules, is refused. Resolution follows
+CPython's own precedence, where a planted `csv.so` shadows the attested
+`csv.py`, so that is exactly the shape the adversarial suite plants. The lock
+also carries a floor for how many attested sources that walk must reach, so a
+walk that silently stops resolving fails instead of passing vacuously.
+Attestation is kept strictly out of generated content — nothing measured at run time is mixed
+into a manifest, provenance digest or contract revision — so governed output is
+byte-identical on every host carrying the same lock.
+
+**Trusted git.** Governed tooling never resolves `git` through `PATH`. The
+sealed stage verifies an absolute, non-symlink, executable system binary and
+passes it in as `LOCALE_CATALOG_GIT`; `strict_json.git_argv()` rewrites every
+plumbing command onto it, and a missing or non-absolute value fails closed.
+That applies to every governed reader, including the catalog validator's
+tracked-file and `check-ignore` lookups and the serving gate's clean-clone
+assembly, which now take the bound executable instead of a `shutil.which("git")`
+result; `validate-catalog-serving.py`'s helper resolver refuses the name `git`
+outright. The caller cannot choose it either — `LOCALE_CATALOG_GIT` supplied by
+the caller is discarded with the rest of the environment and rebuilt by the
+sealed stage, which the adversarial suite proves with a marker-emitting fake
+`git` offered both on `PATH` and as that variable.
+Revision resolution is isolated in the drift gate, which takes a validated
+exact lowercase 40-hex ancestor base SHA **positionally** from the workflow
+event. A missing, all-zero, malformed, uppercase, unresolvable, self/HEAD or
+non-ancestor value fails in CI, and no environment variable is ever consulted
+as a base reference; the separately named `contracts:revision-drift-local` task
+carries the local fallback chain and is not authoritative.
+
+**Capability boundary.** Every declared `scripts/*.py` source is parsed before
+it is imported. Imports resolve only to declared stdlib, locked dependency or
+in-tree modules, and every dotted reference reaching a sensitive root is
+checked against a per-source grant naming the exact capability *and the exact
+shape* it may appear in — called, read as a value, assigned to, or consumed as
+a call result. Granting `subprocess.run` as a call therefore does not grant
+`subprocess`, `subprocess.Popen`, or storing `subprocess.run` itself. On top of
+that, conservative taint propagation refuses to let a value derived from a
+propagating capability escape through assignment, unpacking, list/tuple/set/dict
+literals, comprehensions, subscripts or slices, attributes, returns, yields,
+parameters or defaults, lambdas, closures, globals/nonlocals, class or instance
+fields, generators, context managers, exception aliases, decorators or aliases;
+anything the analyzer cannot resolve but can see is sensitive fails closed.
+`runpy`, `subprocess`, `os.system`/`spawn`/`exec`, importlib loaders,
+`zipimport`, `ctypes`, `pickle`/`marshal`/`shelve`, dynamic code objects,
+import-path mutation and dunder traversal are all rejected, including through
+aliases. The grant tables live in `scripts/locale_catalog_python_boundary.py`,
+which is itself a declared source: it is capability-scanned like any other and
+its bytes are folded into `generatorSha256`, so a grant cannot be widened
+without moving a governed contract hash.
+
+**Dependency boundary.** `uv.lock` supplies hashes for every wheel and
+transitive dependency; the launcher reinstalls that complete locked closure
+into this invocation's own workspace before every command, then the bootstrap
+verifies the installed dependency set and each wheel `RECORD` before adding its
+site-packages directory. The catalog-only schema checks use the small
+fail-closed in-repository validator instead of `jsonschema`: it implements
+exactly the keywords the published v1 schemas use, refuses every keyword,
+`$ref` spelling and dialect it does not implement rather than ignoring one, and
+compiles `pattern` with ECMA-262 semantics — `$` rewritten to `\Z`, `re.ASCII`
+so `\d`/`\w`/`\s`/`\b` are not silently widened to Unicode, and a refusal
+for every Python-only construct (named groups and backreferences, inline flags,
+comments, atomic groups, conditionals, possessive quantifiers, `\A`/`\Z`/
+`\z`/`\G`, `\N{...}`, `\p{...}` and numeric escapes). Its own fail-closed
+proofs run on the governed routes that depend on it, so an unimplemented
+keyword or a Python-only pattern construct is a CI failure rather than a latent
+one.
+
+**Workspace ownership.** Each invocation gets an exclusively created workspace
+under the repository, recording its own pid and start time. Abandoned
+workspaces are reclaimed only when the record is readable, older than a bounded
+one-hour window, and names a process that is no longer alive; a live, recent,
+unowned or unparsable workspace is never touched.
+
+`mise run locale-catalog:python-boundary-test` proves all of this
+adversarially, and every one of its probes — source, schema, dependency,
+interpreter, alias and tamper alike — runs inside an invocation-owned temporary
+copy of the exact governed tree. It never writes inside the canonical worktree,
+and it re-checks byte for byte the canonical paths earlier revisions of it used
+to mutate.
+
+This boundary assumes the checked-out repository, the host shell/kernel, and
+the hash-verifying `uv` downloader are trusted. It does not claim to defend
+against an actor that can replace both the checked-in bootstrap and its
+committed toolchain lock; it does make changed source, a changed or injected
+stdlib module, a replaced interpreter binary, a symlinked or non-canonical
+toolchain root, startup hooks, shadow bytecode, an added import capability, a
+widened grant, or an altered locked dependency closure fail before a
+generator/check command can use it.
+
+The synthetic fixture hashes all declared executable sources, both launcher
+stages, the lockfile, and the toolchain lock through `generatorSha256`, so the
+catalog revision moves with every such governed input without adding a
+Python-only field to the Node-produced public manifest.
 
 Before any of that, the sources themselves are checked for content that would
 be lost silently:
@@ -378,6 +503,13 @@ rules, and `scripts/validate-catalog-serving.py` drives the whole matrix — 27
 header forms — against both, checking the selected encoding *and* the bytes.
 
 ## Verification
+
+For every governed Python-backed route below, first name the trusted
+installation explicitly (for example, `export
+LOCALE_CATALOG_MISE_ROOT=/absolute/path/to/mise-data`; additionally export
+`LOCALE_CATALOG_STACK=/absolute/path/to/stack` before
+`locale-catalog:capability-probe`). This is intentionally not inferred from
+`HOME` or `PATH`.
 
     mise run locale-catalog:test                 # render-AST, source-integrity and generator tests
     mise run locale-catalog:backend-keys-test    # the key extractor's own rules, on synthetic modules

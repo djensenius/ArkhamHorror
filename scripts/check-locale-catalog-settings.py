@@ -37,7 +37,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
+import uuid
 from pathlib import Path
 
 from jsonschema import FormatChecker
@@ -53,6 +53,8 @@ SYNTHETIC_MANIFEST = "contracts/fixtures/locale-catalog-manifest.json"
 CONTRACT_MANIFEST = "contracts/manifest.json"
 ADVERTISED_FIXTURE = "contracts/fixtures/capabilities-locale-catalog.json"
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
+SCRATCH_PREFIX = ".locale-catalog-capability-probe-"
+SCRATCH_OWNER_FILE = "owner"
 
 SETTINGS = (
     "ARKHAM_LOCALE_CATALOG_MANIFEST_URL",
@@ -67,6 +69,27 @@ SETTINGS = (
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"locale-catalog capability settings: {message}")
+
+
+def create_owned_scratch() -> tuple[Path, str]:
+    token = uuid.uuid4().hex
+    scratch = ROOT / f"{SCRATCH_PREFIX}{token}"
+    scratch.mkdir(mode=0o700)
+    (scratch / SCRATCH_OWNER_FILE).write_text(token, encoding="ascii")
+    return scratch, token
+
+
+def release_owned_scratch(scratch: Path, token: str) -> None:
+    owner = scratch / SCRATCH_OWNER_FILE
+    require(
+        scratch.is_dir() and not scratch.is_symlink(),
+        f"probe scratch {scratch} is no longer a regular directory",
+    )
+    require(
+        owner.is_file() and not owner.is_symlink() and owner.read_text(encoding="ascii") == token,
+        f"probe scratch {scratch} ownership record changed; refusing cleanup",
+    )
+    shutil.rmtree(scratch)
 
 
 def load_governed(relative_path: str) -> object:
@@ -221,19 +244,22 @@ def check_with_probe(
     advertised: dict,
     legacy_baseline: dict,
     contract_revision: str,
-    scratch_factory=tempfile.mkdtemp,
+    scratch_factory=None,
 ) -> None:
-    # A directory this invocation created, so the cleanup below can only ever
-    # remove files this invocation wrote: a fixed name could collide with a
-    # leftover or unrelated directory and delete someone else's work.
-    scratch = Path(scratch_factory(prefix="scratch-capability-probe-", dir=ROOT))
+    if scratch_factory is None:
+        scratch, token = create_owned_scratch()
+    else:
+        scratch = Path(scratch_factory(prefix=SCRATCH_PREFIX, dir=ROOT))
+        token = uuid.uuid4().hex
+        scratch.mkdir(mode=0o700, exist_ok=False)
+        (scratch / SCRATCH_OWNER_FILE).write_text(token, encoding="ascii")
     try:
         _check_with_probe(
             command, capabilities_schema, settings, advertised, legacy_baseline,
             contract_revision, scratch,
         )
     finally:
-        shutil.rmtree(scratch)
+        release_owned_scratch(scratch, token)
 
 
 def write_settings_file(scratch: Path, name: str, values: dict[str, str]) -> Path:
@@ -541,13 +567,12 @@ def _check_with_probe(
 
 
 def run_scratch_cleanup_self_test() -> None:
-    """A legacy fixed-name directory must survive both setup and probe failure."""
-    legacy = ROOT / "scratch-capability-probe"
-    created_legacy = not legacy.exists()
-    if created_legacy:
-        legacy.mkdir()
-        sentinel = legacy / "do-not-delete"
-        sentinel.write_text("sentinel", encoding="utf-8")
+    """A pre-existing sentinel in an owned test tree survives every failure."""
+    parent, token = create_owned_scratch()
+    legacy = parent / "pre-existing-sentinel"
+    legacy.mkdir()
+    sentinel = legacy / "do-not-delete"
+    sentinel.write_text("sentinel", encoding="utf-8")
     before = sorted(
         (path.relative_to(legacy).as_posix(), path.is_dir(), path.stat().st_size, path.stat().st_mtime_ns)
         for path in legacy.rglob("*")
@@ -589,9 +614,7 @@ def run_scratch_cleanup_self_test() -> None:
             "a failed setup or probe changed a legacy fixed-path sentinel",
         )
     finally:
-        if created_legacy:
-            sentinel.unlink()
-            legacy.rmdir()
+        release_owned_scratch(parent, token)
 
 
 def main() -> None:
@@ -686,11 +709,18 @@ def main() -> None:
     )
 
     if arguments.probe:
+        probe_command = shlex.split(arguments.probe)
+        stack = strict_json.trusted_stack()
+        require(
+            probe_command and probe_command[0] == stack,
+            "the production probe command must begin with the exact stack binary bound by "
+            f"LOCALE_CATALOG_STACK ({stack!r}), never a PATH-resolved name",
+        )
         contract_manifest = load_governed(CONTRACT_MANIFEST)
         require(isinstance(contract_manifest, dict), f"{CONTRACT_MANIFEST} is not a JSON object")
         legacy = contract_manifest["legacyCompatibilityChecks"]
         check_with_probe(
-            shlex.split(arguments.probe),
+            probe_command,
             capabilities_schema,
             settings,
             advertised,

@@ -627,8 +627,11 @@ own `const` declarations rather than re-typed.
   derivation cannot disagree.
 
 Because the manifest binds `provenance.contractRevision`, a contract revision
-bump regenerates it: `mise run contracts:catalog-fixture-write`, then
-`scripts/update-manifest-hashes.py`.
+bump regenerates every dependent fixture through the governed route:
+`LOCALE_CATALOG_MISE_ROOT="$HOME/.local/share/mise" mise run
+contracts:catalog-fixture-write`, then
+`LOCALE_CATALOG_MISE_ROOT="$HOME/.local/share/mise" mise run
+contracts:manifest-hashes`.
 
 The opposite risk — a synthetic shape no real deployment can produce — is
 closed at the deployment seam. `locale-catalog:capability-settings` derives the
@@ -764,26 +767,63 @@ entry.
 enforces the actual bump rule: it recomputes the current governed-artifact
 hash set, recomputes the same hash set as of a resolved base ref, and
 requires `schemaRevision` to have strictly, numerically increased whenever
-that diff is non-empty. Base-ref resolution is deterministic and fails
-closed in CI: when both `GITHUB_ACTIONS` and `CI` are `"true"`, the gate
-*requires* an explicit `CONTRACT_BASE_REF` (wired by the workflow from the
+that diff is non-empty.
+
+Base-ref resolution is deterministic and fails closed. The authoritative
+route takes the base **positionally**, wired by the workflow from the
 triggering event's own immutable base — `pull_request.base.sha`,
 `push.before`, or a required `workflow_dispatch.inputs.base_sha` — never an
-inferred branch/HEAD alias), validates it is a well-formed hex SHA, and
-rejects an all-zero SHA except a narrowly-checked repository-initialization
-escape hatch that cannot weaken `main`. Outside CI, an unset
-`CONTRACT_BASE_REF` falls back, in order, to `fork/main`, `origin/main`,
-`main`, and finally the commit this contract effort was originally branched
-from, as a last-resort deterministic pin — all via local
-`git show <ref>:path`, never a network call. A human updating only the hash
-or only the version number is not sufficient; the gate cross-checks both.
-Its comparison logic (`evaluate_drift`) is pure and is proven separately by
-a set of small, fully in-memory self-tests with no git or filesystem
-dependency, demonstrating a same-revision artifact change fails the gate
-while a strictly higher revision passes it — deterministic in any
-environment; `resolve_base_ref`'s own self-tests separately cover CI-mode
-missing/invalid/all-zero/unresolvable-SHA rejection and successful
-resolution both in and outside CI.
+inferred branch/HEAD alias and never an environment variable: the sealed CI
+shell removes those, and the gate deliberately never reads one. The value
+must be exactly 40 lowercase hexadecimal characters, must resolve to a
+commit in local history, must not name HEAD itself, and must be an ancestor
+of HEAD; a missing, all-zero, malformed, uppercase, unresolvable, self or
+non-ancestor value fails. A base commit that predates
+`contracts/manifest.json` entirely passes with an explicit message, because
+no revision of the contract had been released there to be immutable.
+
+Local development uses the separately named, non-authoritative
+`contracts:revision-drift-local` task, which opts into a fallback chain of
+`fork/main`, `origin/main`, `main`, and finally the commit this contract
+effort was originally branched from — all via local `git show <ref>:path`,
+never a network call. CI never runs that task.
+
+Git itself is bound rather than resolved: the sealed launcher verifies an
+absolute, non-symlink, executable system `git` and passes it as
+`LOCALE_CATALOG_GIT`, and every plumbing command in this tooling is rewritten
+onto it by `strict_json.git_argv()`. A missing or non-absolute value fails
+closed, so a `git` planted on a caller's `PATH` can never answer a governed
+mode or content lookup, and neither can one the caller names in
+`LOCALE_CATALOG_GIT` itself: the sealed stage discards the caller's whole
+environment before rebuilding that variable.
+The managed CPython, Node and uv binaries are likewise hashed before use and
+again from the bootstrap against the platform-specific digest identities in
+`scripts/locale_catalog_python_runtime.json`; an unsupported platform fails
+instead of accepting a merely version-shaped executable.
+
+Every one of these commands is a `mise` task that runs through
+`scripts/run-locale-catalog-python.sh`; there is no documented or wired route
+that reaches a governed Python entry point any other way. The tasks that can
+write, hash or approve a governed artifact — `contracts:catalog-fixture-write`,
+`contracts:manifest-hashes`, `locale-catalog:backend-keys` — go through exactly
+the same sealed stage as the read-only checks, and the sealed stage requires an
+explicitly named toolchain root
+(`LOCALE_CATALOG_MISE_ROOT="$HOME/.local/share/mise" mise run ...` locally, the
+workflow's sealed `defaults.run.shell` in CI).
+`locale-catalog:capability-probe` has one additional host authority: the
+absolute Stack executable is supplied as `LOCALE_CATALOG_STACK`; the workflow
+captures the path installed by its reviewed setup action and passes that exact
+path through the sealed shell, while a maintainer names it explicitly.
+
+A human updating only the hash or only the version number is not sufficient;
+the gate cross-checks both. Its comparison logic (`evaluate_drift`) is pure
+and is proven separately by a set of small, fully in-memory self-tests with
+no git or filesystem dependency, demonstrating a same-revision artifact
+change fails the gate while a strictly higher revision passes it —
+deterministic in any environment. `resolve_base_ref`'s own self-tests
+separately cover missing, malformed, all-zero, uppercase, unresolvable,
+self/HEAD, non-ancestor and environment-only rejection, successful
+resolution of a valid ancestor, and the separateness of the local fallback.
 
 Every governed JSON read across this tooling — the manifest, schemas,
 fixtures, negative-fixture descriptors, and the base-ref manifest read via
