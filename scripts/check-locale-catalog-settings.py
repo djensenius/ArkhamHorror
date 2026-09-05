@@ -17,12 +17,12 @@ in, to satisfy the governed schema the backend's encoder is bound to.
 
 With `--probe`, it stops modelling the backend and *runs* it: the probe
 (`backend/arkham-api/app-capabilities-probe`) loads settings through the same
-`loadYamlSettings` call `Application.appMain` uses, builds the body through the
-handler's own `capabilitiesResponse`, and prints `Data.Aeson.encode`'s bytes --
-the production `toEncoding` path. Those bytes are validated against the
-governed schema and against the generated manifest's exact metadata, and then
-every setting is corrupted in turn to prove the server refuses to start rather
-than advertising a broken catalog.
+preflighted YAML settings path `Application.appMain` uses, builds the body
+through the handler's own `capabilitiesResponse`, and prints `Data.Aeson.encode`'s
+bytes -- the production `toEncoding` path. Those bytes are validated against
+the governed schema and against the generated manifest's exact metadata, and
+then every setting is corrupted in turn to prove the server refuses to start
+rather than advertising a broken catalog.
 
 Nothing generated is hashed, committed, or compared against contract bytes:
 this script asserts the *shape* is producible, and separately asserts the
@@ -53,6 +53,10 @@ SYNTHETIC_MANIFEST = "contracts/fixtures/locale-catalog-manifest.json"
 CONTRACT_MANIFEST = "contracts/manifest.json"
 ADVERTISED_FIXTURE = "contracts/fixtures/capabilities-locale-catalog.json"
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
+
+# Generous next to the sub-second refusals these cases expect, small enough
+# that a probe which blocks on a source is a failure rather than a hung job.
+PROBE_BOUND_TIMEOUT = 120.0
 
 SETTINGS = (
     "ARKHAM_LOCALE_CATALOG_MANIFEST_URL",
@@ -149,6 +153,7 @@ def run_probe(
     command: list[str],
     environment: dict[str, str],
     settings_files: list[Path] | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess:
     """Run the production probe with exactly `environment` added to the current
     one, so an inherited ARKHAM_LOCALE_CATALOG_* value cannot mask a failure.
@@ -166,13 +171,23 @@ def run_probe(
     }
     child_environment.update(environment)
     arguments = [str(path) for path in settings_files or []]
-    return subprocess.run(
-        command + arguments,
-        env=child_environment,
-        capture_output=True,
-        cwd=ROOT,
-        check=False,
-    )
+    try:
+        return subprocess.run(
+            command + arguments,
+            env=child_environment,
+            capture_output=True,
+            cwd=ROOT,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as expired:
+        # A bound the server advertises has to be reached while it is reading
+        # or parsing a source; a probe that has to be killed has already lost
+        # that argument, so this is a failure rather than a retry.
+        raise SystemExit(
+            "locale-catalog capability settings: the production probe did not finish within "
+            f"{timeout}s for {arguments}"
+        ) from expired
 
 
 def encoded_capabilities(response: dict) -> bytes:
@@ -244,6 +259,13 @@ def write_settings_file(scratch: Path, name: str, values: dict[str, str]) -> Pat
         "".join(f"{key}: {json.dumps(value)}\n" for key, value in sorted(values.items())),
         encoding="utf-8",
     )
+    return path
+
+
+def write_raw_settings_file(scratch: Path, name: str, content: str, *, bom: bool = False) -> Path:
+    """Write a deliberately shaped YAML settings file for the production probe."""
+    path = scratch / name
+    path.write_bytes((("\ufeff" if bom else "") + content).encode("utf-8"))
     return path
 
 
@@ -403,6 +425,453 @@ def _check_with_probe(
         ]
         == "https://static.example.org/l10n/manifest.json",
         "an environment variable must override the _env: marker's fallback",
+    )
+
+    # Every command-line settings-file spelling of the six canonical markers
+    # remains supported. Both the quoted and plain YAML scalars resolve to the
+    # same marker, and a file-level BOM remains YAML syntax rather than part of
+    # the marker. No other environment variable name is accepted below.
+    def canonical_markers(quoted: bool, defaults: bool = False) -> str:
+        lines = []
+        for environment_name in SETTINGS:
+            marker = f"_env:{environment_name}:"
+            if defaults:
+                marker += settings[environment_name]
+            value = json.dumps(marker) if quoted else marker
+            lines.append(f"{SETTINGS_FILE_KEYS[environment_name]}: {value}")
+        return "\n".join(lines) + "\n"
+
+    for quoted, label in ((True, "quoted"), (False, "plain")):
+        canonical_file = write_raw_settings_file(
+            scratch,
+            f"settings-canonical-{label}.yml",
+            canonical_markers(quoted, defaults=not quoted),
+            bom=quoted,
+        )
+        canonical_run = run_probe(command, settings, [canonical_file])
+        require(
+            canonical_run.returncode == 0 and canonical_run.stdout == printed.stdout,
+            f"the {label} canonical locale settings markers were refused",
+        )
+
+    canonical_defaults = write_raw_settings_file(
+        scratch,
+        "settings-canonical-defaults.yml",
+        canonical_markers(True, defaults=True),
+    )
+    canonical_default_run = run_probe(command, {}, [canonical_defaults])
+    require(
+        canonical_default_run.returncode == 0 and canonical_default_run.stdout == printed.stdout,
+        "an unset canonical locale settings marker did not use its YAML default",
+    )
+
+    # Anchors, aliases and YAML merge keys are first resolved by the same YAML
+    # loader as production, then inspected structurally. A canonical marker
+    # remains valid through that resolution.
+    anchored_markers = "\n".join(
+        [
+            "locale-catalog-base: &locale_catalog",
+            *[
+                f"  {SETTINGS_FILE_KEYS[environment_name]}: "
+                f"\"_env:{environment_name}:\""
+                for environment_name in SETTINGS
+            ],
+            "<<: *locale_catalog",
+            "",
+        ]
+    )
+    anchored_file = write_raw_settings_file(scratch, "settings-anchors-merge.yml", anchored_markers)
+    anchored_run = run_probe(command, settings, [anchored_file])
+    require(
+        anchored_run.returncode == 0 and anchored_run.stdout == printed.stdout,
+        "canonical locale settings markers did not survive anchors, aliases and merge keys",
+    )
+
+    included_file = write_raw_settings_file(
+        scratch,
+        "settings-included.yml",
+        canonical_markers(True),
+    )
+    include_parent = write_raw_settings_file(
+        scratch,
+        "settings-include-parent.yml",
+        f"!include {included_file.name}\n",
+    )
+    included_run = run_probe(command, settings, [include_parent])
+    require(
+        included_run.returncode == 0 and included_run.stdout == printed.stdout,
+        "canonical locale settings markers in an included runtime file were refused",
+    )
+    included_alias = write_raw_settings_file(
+        scratch,
+        "settings-included-alias.yml",
+        'locale-catalog-default-locale: "_env:LOCALE_ALIAS:"\n',
+    )
+    alias_include_parent = write_raw_settings_file(
+        scratch,
+        "settings-include-alias-parent.yml",
+        f"!include {included_alias.name}\n",
+    )
+    included_alias_run = run_probe(
+        command,
+        {**settings, "LOCALE_ALIAS": settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"]},
+        [alias_include_parent],
+    )
+    require(
+        included_alias_run.returncode != 0 and b"localeCatalog" not in included_alias_run.stdout,
+        "a noncanonical locale marker in an included runtime file was accepted",
+    )
+
+    # A noncanonical alias is refused before Data.Yaml.Config can substitute
+    # and normalize it. Exercise clean, CR, LF, CRLF and BOM aliases for every
+    # field, including the comma-separated supported-locales entry.
+    for environment_name in SETTINGS:
+        setting_key = SETTINGS_FILE_KEYS[environment_name]
+        alias_file = write_raw_settings_file(
+            scratch,
+            f"settings-alias-{setting_key}.yml",
+            f'{setting_key}: "_env:LOCALE_ALIAS:"\n',
+        )
+        for label, suffix in (
+            ("clean", ""),
+            ("CR", "\r"),
+            ("LF", "\n"),
+            ("CRLF", "\r\n"),
+            ("BOM", "\ufeff"),
+        ):
+            alias_value = settings[environment_name] + suffix
+            if environment_name == "ARKHAM_LOCALE_CATALOG_LOCALES":
+                alias_value += ",de"
+            alias_environment = dict(settings)
+            alias_environment["LOCALE_ALIAS"] = alias_value
+            aliased = run_probe(command, alias_environment, [alias_file])
+            require(
+                aliased.returncode != 0 and b"localeCatalog" not in aliased.stdout,
+                f"a {label} noncanonical alias was accepted for {setting_key}",
+            )
+
+        folded_alias = write_raw_settings_file(
+            scratch,
+            f"settings-folded-alias-{setting_key}.yml",
+            f"{setting_key}: >-\n  _env:LOCALE_ALIAS:\n",
+        )
+        folded = run_probe(
+            command,
+            {**settings, "LOCALE_ALIAS": settings[environment_name]},
+            [folded_alias],
+        )
+        require(
+            folded.returncode != 0 and b"localeCatalog" not in folded.stdout,
+            f"a folded noncanonical alias was accepted for {setting_key}",
+        )
+
+        for malformed in ("_env:", f"_env:{environment_name}", "_env::"):
+            malformed_file = write_raw_settings_file(
+                scratch,
+                f"settings-malformed-{setting_key}-{len(malformed)}.yml",
+                f"{setting_key}: {json.dumps(malformed)}\n",
+            )
+            malformed_run = run_probe(command, settings, [malformed_file])
+            require(
+                malformed_run.returncode != 0 and b"localeCatalog" not in malformed_run.stdout,
+                f"a malformed _env: mapping was accepted for {setting_key}",
+            )
+
+        canonical_marker_file = write_raw_settings_file(
+            scratch,
+            f"settings-raw-canonical-{setting_key}.yml",
+            f'{setting_key}: "_env:{environment_name}:"\n',
+        )
+        for label, suffix in (("CR", "\r"), ("LF", "\n"), ("CRLF", "\r\n"), ("BOM", "\ufeff")):
+            corrupted_environment = dict(settings)
+            raw_value = settings[environment_name] + suffix
+            if environment_name == "ARKHAM_LOCALE_CATALOG_LOCALES":
+                raw_value += ",de"
+            corrupted_environment[environment_name] = raw_value
+            canonical_corrupted = run_probe(command, corrupted_environment, [canonical_marker_file])
+            require(
+                canonical_corrupted.returncode != 0 and b"localeCatalog" not in canonical_corrupted.stdout,
+                f"a {label} canonical raw value was accepted for {setting_key}",
+            )
+
+    # Direct scalar values remain supported and continue through AppSettings'
+    # existing typed parser. A later file cannot hide an earlier bad marker.
+    plain_direct = write_raw_settings_file(
+        scratch,
+        "settings-direct-plain.yml",
+        "\n".join(
+            f"{SETTINGS_FILE_KEYS[environment_name]}: {settings[environment_name]}"
+            for environment_name in SETTINGS
+        )
+        + "\n",
+    )
+    direct_run = run_probe(command, {}, [plain_direct])
+    require(
+        direct_run.returncode == 0 and direct_run.stdout == printed.stdout,
+        "plain direct locale settings values were refused",
+    )
+
+    bad_alias_override = write_raw_settings_file(
+        scratch,
+        "settings-overridden-alias.yml",
+        'locale-catalog-default-locale: "_env:LOCALE_ALIAS:"\n',
+    )
+    overridden_alias = run_probe(command, {}, [file_settings, bad_alias_override])
+    require(
+        overridden_alias.returncode != 0 and b"localeCatalog" not in overridden_alias.stdout,
+        "a later settings file hid an earlier noncanonical locale alias",
+    )
+
+    duplicate_key = write_raw_settings_file(
+        scratch,
+        "settings-duplicate-locale.yml",
+        "\n".join(
+            [
+                'locale-catalog-default-locale: "_env:ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE:"',
+                'locale-catalog-default-locale: "en"',
+                "",
+            ]
+        ),
+    )
+    duplicate = run_probe(command, settings, [duplicate_key])
+    require(
+        duplicate.returncode != 0 and b"localeCatalog" not in duplicate.stdout,
+        "a duplicate locale settings key was accepted",
+    )
+
+    # Alias keys are valid YAML and remain valid for unrelated settings, but a
+    # scalar alias that resolves to a locale key participates in the same
+    # duplicate/provenance checks as its direct spelling. Sequence merges are
+    # likewise rejected when two merge sources represent the same locale key.
+    harmless_alias = write_raw_settings_file(
+        scratch,
+        "settings-harmless-alias-key.yml",
+        "\n".join(
+            [
+                "alias-source: &ordinary ordinary-key",
+                "*ordinary: harmless",
+                "",
+            ]
+        ),
+    )
+    harmless_alias_run = run_probe(command, {}, [harmless_alias])
+    require(
+        harmless_alias_run.returncode == 0,
+        "an unrelated scalar alias key accepted by the standard YAML loader was refused",
+    )
+    alias_key_duplicate = write_raw_settings_file(
+        scratch,
+        "settings-alias-key-duplicate.yml",
+        "\n".join(
+            [
+                "locale-key: &locale_key locale-catalog-default-locale",
+                "*locale_key: en",
+                "locale-catalog-default-locale: fr",
+                "",
+            ]
+        ),
+    )
+    alias_key_duplicate_run = run_probe(command, settings, [alias_key_duplicate])
+    require(
+        alias_key_duplicate_run.returncode != 0 and b"localeCatalog" not in alias_key_duplicate_run.stdout,
+        "a locale key duplicated through a scalar alias was accepted",
+    )
+    sequence_merge_duplicate = write_raw_settings_file(
+        scratch,
+        "settings-sequence-merge-duplicate.yml",
+        "\n".join(
+            [
+                "first: &first",
+                "  locale-catalog-default-locale: en",
+                "second: &second",
+                "  locale-catalog-default-locale: fr",
+                "<<: [*first, *second]",
+                "",
+            ]
+        ),
+    )
+    sequence_merge_duplicate_run = run_probe(command, settings, [sequence_merge_duplicate])
+    require(
+        sequence_merge_duplicate_run.returncode != 0 and b"localeCatalog" not in sequence_merge_duplicate_run.stdout,
+        "a locale key duplicated across sequence merge sources was accepted",
+    )
+
+    # Environment substitution descends into nested values, so a noncanonical
+    # marker under a locale settings key is refused with the same grammar as
+    # the plain scalar spelling rather than being left to the typed parser.
+    nested_alias = write_raw_settings_file(
+        scratch,
+        "settings-nested-alias.yml",
+        'locale-catalog-locales:\n  - "_env:LOCALE_ALIAS:"\n',
+    )
+    nested_alias_run = run_probe(
+        command,
+        {**settings, "LOCALE_ALIAS": settings["ARKHAM_LOCALE_CATALOG_LOCALES"]},
+        [nested_alias],
+    )
+    require(
+        nested_alias_run.returncode != 0 and b"localeCatalog" not in nested_alias_run.stdout,
+        "a noncanonical marker nested under a locale settings key was accepted",
+    )
+
+    # Raw values are checked only for a canonical marker that survives the
+    # package's exact merge. A higher-precedence literal wins over a malformed
+    # process value and over a lower-precedence canonical marker, while a
+    # noncanonical marker remains forbidden wherever it appeared.
+    invalid_default_locale = dict(settings)
+    invalid_default_locale["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"] += "\r"
+    literal_ignores_invalid_environment = run_probe(command, invalid_default_locale, [file_settings])
+    require(
+        literal_ignores_invalid_environment.returncode == 0
+        and literal_ignores_invalid_environment.stdout == printed.stdout,
+        "an invalid environment value reached a locale setting hidden by a literal override",
+    )
+    hidden_canonical_marker = write_raw_settings_file(
+        scratch,
+        "settings-hidden-canonical-marker.yml",
+        'locale-catalog-default-locale: "_env:ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE:"\n',
+    )
+    hidden_canonical_run = run_probe(
+        command, invalid_default_locale, [file_settings, hidden_canonical_marker]
+    )
+    require(
+        hidden_canonical_run.returncode == 0 and hidden_canonical_run.stdout == printed.stdout,
+        "a lower-precedence canonical marker checked an environment value it could not reach",
+    )
+
+    # A variable no locale setting names is not this deployment's to validate,
+    # however malformed it is: only the canonical ARKHAM_LOCALE_CATALOG_*
+    # variables an effective marker actually reads are checked.
+    unrelated_invalid = dict(settings)
+    unrelated_invalid["LOCALE_ALIAS"] = settings["ARKHAM_LOCALE_CATALOG_DEFAULT_LOCALE"] + "\r"
+    unrelated_invalid_run = run_probe(command, unrelated_invalid)
+    require(
+        unrelated_invalid_run.returncode == 0 and unrelated_invalid_run.stdout == printed.stdout,
+        "an invalid value for a variable no locale setting names changed startup",
+    )
+
+    # Every bound is charged while the work it bounds is being done. A source
+    # that is not a regular file can answer reads forever, an oversized,
+    # event-dense or deeply nested one can exhaust the process, and each of
+    # these must be refused rather than merely survived. The probe is given a
+    # deadline here for exactly that reason.
+    fifo_source = scratch / "settings-fifo.yml"
+    os.mkfifo(fifo_source)
+    fifo_run = run_probe(command, settings, [fifo_source], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        fifo_run.returncode != 0 and b"not a regular file" in fifo_run.stderr,
+        "a settings source that is not a regular file was read instead of refused",
+    )
+
+    oversized_source = write_raw_settings_file(
+        scratch, "settings-oversized.yml", "key: " + "a" * (5 * 1024 * 1024) + "\n"
+    )
+    oversized_run = run_probe(command, settings, [oversized_source], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        oversized_run.returncode != 0 and b"byte limit" in oversized_run.stderr,
+        "a settings source past the configured byte limit was accepted",
+    )
+
+    dense_source = write_raw_settings_file(
+        scratch, "settings-event-dense.yml", "[" + "a," * 200000 + "a]\n"
+    )
+    dense_run = run_probe(command, settings, [dense_source], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        dense_run.returncode != 0 and b"YAML event limit" in dense_run.stderr,
+        "an event-dense settings source was accepted",
+    )
+
+    deep_source = write_raw_settings_file(
+        scratch, "settings-deeply-nested.yml", "root: " + "[" * 100000 + "0" + "]" * 100000 + "\n"
+    )
+    deep_run = run_probe(command, settings, [deep_source], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        deep_run.returncode != 0 and b"nests deeper" in deep_run.stderr,
+        "a deeply nested settings source was accepted",
+    )
+
+    many_includes = write_raw_settings_file(
+        scratch,
+        "settings-many-distinct-includes.yml",
+        "".join(f"- !include missing-{index}.yml\n" for index in range(60000)),
+    )
+    many_includes_run = run_probe(command, settings, [many_includes], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        many_includes_run.returncode != 0 and b"traversal limit" in many_includes_run.stderr,
+        "a source naming tens of thousands of distinct includes was resolved before it was refused",
+    )
+
+    # Compact YAML is about two bytes an event, so sources that each stay
+    # inside the per-source event budget and together inside the byte budget
+    # can still hold millions of events. The snapshot's own event budget is
+    # what keeps captured events proportional to one startup.
+    compact_sources = [
+        write_raw_settings_file(
+            scratch, f"settings-compact-{index}.yml", "[" + "a," * 130000 + "a]\n"
+        )
+        for index in range(16)
+    ]
+    compact_run = run_probe(command, settings, compact_sources, timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        compact_run.returncode != 0 and b"total YAML event limit" in compact_run.stderr,
+        "sixteen compact sources were retained before the snapshot's event budget refused them",
+    )
+
+    # Naming one runtime file repeatedly is naming one runtime file: the merge
+    # is left-biased and idempotent, so the response cannot change and the work
+    # must not be repeated.
+    duplicate_roots = run_probe(
+        command, {}, [file_settings, file_settings, file_settings], timeout=PROBE_BOUND_TIMEOUT
+    )
+    require(
+        duplicate_roots.returncode == 0 and duplicate_roots.stdout == from_file.stdout,
+        "naming one runtime settings file repeatedly changed the advertised response",
+    )
+    # Past the include-graph budget, too: repeating a path is not traversal.
+    many_duplicate_roots = run_probe(
+        command, {}, [file_settings] * 5000, timeout=PROBE_BOUND_TIMEOUT
+    )
+    require(
+        many_duplicate_roots.returncode == 0 and many_duplicate_roots.stdout == from_file.stdout,
+        "a runtime settings file repeated past the include-graph budget was refused: "
+        f"{many_duplicate_roots.stderr.decode('utf-8', 'replace').strip()}",
+    )
+
+    # `Data.Yaml.Internal` merges only the immediate mapping elements of a
+    # merge sequence and ignores everything else, so a nested sequence is not a
+    # locale settings mapping and must not be read as one.
+    nested_merge = write_raw_settings_file(
+        scratch,
+        "settings-nested-merge.yml",
+        "<<: [[{locale-catalog-default-locale: xx-not-a-locale-tag}]]\n"
+        + "".join(
+            f"{SETTINGS_FILE_KEYS[name]}: {json.dumps(settings[name])}\n" for name in SETTINGS
+        ),
+    )
+    nested_merge_run = run_probe(command, {}, [nested_merge], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        nested_merge_run.returncode == 0 and nested_merge_run.stdout == printed.stdout,
+        "a merge value the standard loader ignores was read as a locale settings mapping: "
+        f"{nested_merge_run.stderr.decode('utf-8', 'replace').strip()}",
+    )
+
+    # One !include spelling is one file, however many times it appears: the
+    # occurrences must share a single resolution rather than each consuming the
+    # include-graph budget (and each racing a symlink) on its own.
+    shared_include = write_raw_settings_file(
+        scratch, "settings-shared-include.yml", canonical_markers(True)
+    )
+    repeated_include = write_raw_settings_file(
+        scratch,
+        "settings-repeated-include.yml",
+        "".join(f"copy{index}: !include {shared_include.name}\n" for index in range(5000))
+        + f"<<: !include {shared_include.name}\n",
+    )
+    repeated_run = run_probe(command, settings, [repeated_include], timeout=PROBE_BOUND_TIMEOUT)
+    require(
+        repeated_run.returncode == 0 and repeated_run.stdout == printed.stdout,
+        "a repeated !include spelling was resolved once per occurrence: "
+        f"{repeated_run.stderr.decode('utf-8', 'replace').strip()}",
     )
 
     # A settings file that is only partially filled in, with nothing else to

@@ -17,6 +17,7 @@ module Arkham.Api.LocaleCatalogCapabilitySpec (spec) where
 
 import Base.Api.Types.Capabilities (ServerCapabilities (..))
 import Base.Api.Types.LocaleCatalog
+import Base.Api.Types.LocaleCatalog.SettingsPreflight (validateLocaleCatalogSettingsValues)
 import Data.Aeson (FromJSON (..), withObject, (.:))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
@@ -423,6 +424,54 @@ spec = do
                 message = startupErrorFor (withEnv [(localeCatalogSettingEnvVar setting, value)])
             message `shouldSatisfy` T.isInfixOf "prohibited raw"
             message `shouldSatisfy` T.isInfixOf (localeCatalogSettingEnvVar setting)
+
+    describe "raw settings mappings before environment substitution" do
+      let canonicalMapping setting =
+            Aeson.object
+              [ AesonKey.fromText (localeCatalogSettingKey setting)
+                  Aeson..= ("_env:" <> localeCatalogSettingEnvVar setting <> ":" :: Text)
+              ]
+          aliasMapping setting =
+            Aeson.object
+              [ AesonKey.fromText (localeCatalogSettingKey setting)
+                  Aeson..= ("_env:LOCALE_ALIAS:" :: Text)
+              ]
+          malformedMapping setting =
+            Aeson.object
+              [ AesonKey.fromText (localeCatalogSettingKey setting)
+                  Aeson..= ("_env:" <> localeCatalogSettingEnvVar setting :: Text)
+              ]
+
+      it "accepts every canonical _env: mapping before typed settings parsing" do
+        validateLocaleCatalogSettingsValues (map canonicalMapping [minBound .. maxBound])
+          `shouldBe` Right ()
+
+      it "rejects a noncanonical alias for every locale setting" do
+        for_ [minBound .. maxBound] \setting ->
+          validateLocaleCatalogSettingsValues [aliasMapping setting]
+            `shouldSatisfy` isLeft
+
+      it "rejects an incomplete _env: mapping for every locale setting" do
+        for_ [minBound .. maxBound] \setting ->
+          validateLocaleCatalogSettingsValues [malformedMapping setting]
+            `shouldSatisfy` isLeft
+
+      it "traverses nested mappings and arrays after YAML has resolved anchors and merges" do
+        let nested =
+              Aeson.object
+                [ "anchor-target"
+                    Aeson..= Aeson.object ["settings" Aeson..= aliasMapping DefaultLocaleSetting]
+                , "merged-target" Aeson..= Aeson.Array (fromList [aliasMapping SupportedLocalesSetting])
+                ]
+        validateLocaleCatalogSettingsValues [nested] `shouldSatisfy` isLeft
+
+      it "leaves direct scalar values for the typed settings parser" do
+        let direct =
+              Aeson.object
+                [ AesonKey.fromText (localeCatalogSettingKey DefaultLocaleSetting) Aeson..= ("en" :: Text)
+                , AesonKey.fromText (localeCatalogSettingKey SupportedLocalesSetting) Aeson..= (True :: Bool)
+                ]
+        validateLocaleCatalogSettingsValues [direct] `shouldBe` Right ()
 
    describe "configuration parsing" do
     it "reports no catalog when nothing is supplied" do

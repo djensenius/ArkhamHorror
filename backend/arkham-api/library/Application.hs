@@ -93,7 +93,6 @@ import Network.Wai.Middleware.RequestLogger (
   outputFormat,
  )
 import System.Log.FastLogger (defaultBufSize, newStdoutLoggerSet, toLogStr)
-import System.Environment (getEnvironment)
 import Text.Regex.Posix ((=~))
 
 -- Import all relevant handler modules here.
@@ -121,7 +120,7 @@ import Base.Api.Handler.Notifications
 import Base.Api.Handler.PasswordReset
 import Base.Api.Handler.Registration
 import Base.Api.Handler.Settings
-import Base.Api.Types.LocaleCatalog (validateLocaleCatalogEnvironment)
+import Base.Api.Types.LocaleCatalog.SettingsPreflight (captureSettingsSnapshot, loadSettingsSnapshot)
 import Handler.Health
 
 -- This line actually creates our YesodDispatch instance. It is the second half
@@ -345,8 +344,8 @@ warpSettings foundation =
 
 getAppSettings :: IO AppSettings
 getAppSettings = do
-  validateRawLocaleCatalogEnvironment
-  loadYamlSettings ["config/settings.yml"] [] useEnv
+  snapshot <- captureSettingsSnapshot ["config/settings.yml"] []
+  loadSettingsSnapshot snapshot
 
 {- | The settings an executable running this site starts from: any config
 files named on the command line, falling back to the compile-time
@@ -357,19 +356,9 @@ exact precedence rather than a re-spelling of it.
 -}
 loadAppSettingsArgs :: IO AppSettings
 loadAppSettingsArgs = do
-  validateRawLocaleCatalogEnvironment
-  loadYamlSettingsArgs
-    -- fall back to compile-time values, set to [] to require values at runtime
-    [configSettingsYmlValue]
-    -- allow environment variables to override
-    useEnv
-
-validateRawLocaleCatalogEnvironment :: IO ()
-validateRawLocaleCatalogEnvironment = do
-  environment <- map (bimap toText toText) <$> getEnvironment
-  case validateLocaleCatalogEnvironment environment of
-    Left message -> fail (toString message)
-    Right () -> pure ()
+  args <- getArgs
+  snapshot <- captureSettingsSnapshot args [configSettingsYmlBS]
+  loadSettingsSnapshot snapshot
 
 -- | The @main@ function for an executable running this site.
 appMain :: IO ()

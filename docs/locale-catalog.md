@@ -556,6 +556,54 @@ its numeric components rather than the string. Supplying some but not all of the
 error rather than a silent fallback to that legacy shape, so a half-removed
 pointer cannot quietly disappear from a running deployment.
 
+At startup the backend takes one bounded, immutable snapshot of every
+command-line settings file, every transitive `!include`, the embedded default
+settings bytes, and the complete process environment. It validates each raw
+YAML mapping before merge resolution, including mappings reached through
+anchors, aliases and `<<` merges. A locale setting's `_env:` mapping may name
+only its matching canonical variable in the table — in a nested value under
+that key as well as in the plain scalar spelling; malformed or noncanonical
+mappings are rejected even if another source overrides them. Unrelated
+anchors, aliases and merge keys keep working exactly as the `yaml` package
+resolves them, and the normal precedence is unchanged: earlier command-line
+files win over later files and embedded defaults, recursively for objects,
+right-associated and left-biased exactly as `Data.Yaml.Config.loadYamlSettings`
+merges. Raw environment grammar is checked only for the canonical variables a
+marker still reads in that effective merged value, so a literal
+higher-precedence setting deliberately makes an inherited value irrelevant and
+a variable no locale setting names is never this deployment's to validate.
+Files and symlinks may change after that snapshot; startup continues from the
+captured bytes rather than rereading a path, and the same captured environment
+is what reaches every `_env:` marker. Each `!include` spelling in a file is
+resolved once, so repeating it names one file rather than racing a symlink per
+occurrence.
+
+Every one of those limits is charged while the work it bounds is happening, so
+a hostile or accidental settings source is refused rather than merely
+survived. A source that is not a regular file — a FIFO, a device, a socket —
+is refused before a byte is read; a source is read only up to the snapshot's
+remaining byte budget through the same handle its size was taken from; YAML
+events and collection nesting are charged as libyaml emits them, against the
+snapshot's own event budget as well as the source's, before an event is
+retained; resolving an `!include` spelling is filesystem work and is charged
+as it happens; and building the raw nodes draws on the same budget as
+analyzing them. Bytes alone would not bound this — compact YAML is roughly two
+bytes an event — so the event budget is what keeps a startup's retained events
+proportional to one snapshot rather than to the number of files named. A
+separate budget bounds what `!include` multiplication may expand those events
+into. Naming one file repeatedly is naming it once: duplicate roots are
+resolved and collapsed before any of these budgets are charged, so a repeated
+path costs nothing and, because the merge is left-biased and idempotent,
+changes nothing. A deployment that legitimately needs more than the defaults
+should split its configuration rather than expect startup to grow to fit it.
+
+Merge keys are read exactly as `Data.Yaml.Internal` resolves them: a `<<`
+whose value is a mapping contributes that mapping's keys, a `<<` whose value
+is a sequence contributes only the sequence's immediate mapping elements, and
+anything else — a nested sequence, a scalar — contributes nothing. A locale
+setting that a merge could never have contributed is therefore never treated
+as a second representation of that setting.
+
 **The manifest URL is bound deliberately, not parsed permissively.** The
 preferred value is the same-origin absolute path this catalog already
 publishes; it needs no hostname, so the same configuration works for every
@@ -642,16 +690,17 @@ shape can never drift into something no deployment can produce.
 
 `mise run locale-catalog:capability-probe` closes it against the real backend
 rather than a model of it. `backend/arkham-api/app-capabilities-probe` loads
-settings through the same `loadYamlSettings` call `Application.appMain` uses,
-builds the response with the handler's own `capabilitiesResponse`, and prints
-`Data.Aeson.encode`'s bytes — the production `toEncoding` path, with nothing
-appended, not even a newline. The driver asserts those **exact bytes** for both
-the advertised and the disabled response before decoding anything, validates
-them against the governed schema and the generated manifest's metadata,
-exercises runtime settings files on the command line (a literal wins over the
-environment; an `_env:` marker lets the environment through; a partial file is
-merged over the compile-time value; an insecure literal cannot be rescued), and
-then corrupts each setting in turn (insecure and ambiguous
+settings through the same preflighted YAML startup path `Application.appMain`
+uses, builds the response with the handler's own `capabilitiesResponse`, and
+prints `Data.Aeson.encode`'s bytes — the production `toEncoding` path, with
+nothing appended, not even a newline. The driver asserts those **exact bytes**
+for both the advertised and the disabled response before decoding anything,
+validates them against the governed schema and the generated manifest's
+metadata, exercises runtime settings files on the command line (a literal wins
+over the environment; an `_env:` marker for a locale-catalog setting may name
+only that setting's canonical `ARKHAM_LOCALE_CATALOG_*` variable; a partial
+file is merged over the compile-time value; an insecure literal cannot be
+rescued), and then corrupts each setting in turn (insecure and ambiguous
 URLs, a malformed revision, a mismatched schema version, an invalid, duplicate
 or unsupported locale, a malformed digest, a value YAML reads as a number)
 requiring the server to refuse to start every time.
