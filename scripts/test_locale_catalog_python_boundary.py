@@ -3640,7 +3640,9 @@ def drop_redirections(words: list[str]) -> list[str]:
     return kept
 
 
-def executed_program(words: list[str]) -> tuple[str, list[str], list[str]] | None:
+def executed_program(
+    words: list[str],
+) -> tuple[str | None, list[str], list[str]]:
     """Resolve the program a command runs and the arguments it is handed.
 
     Leading `NAME=value` assignments and `env`-style wrappers (with their own
@@ -3661,6 +3663,13 @@ def executed_program(words: list[str]) -> tuple[str, list[str], list[str]] | Non
     while index < len(words) and COMMAND_ASSIGNMENT.match(words[index]):
         record_assignment(words[index])
         index += 1
+    if (
+        index < len(words)
+        and normalise_reference(words[index]).rsplit("/", 1)[-1] == "export"
+    ):
+        for word in words[index + 1 :]:
+            if COMMAND_ASSIGNMENT.match(word):
+                record_assignment(word)
     while index < len(words):
         name = normalise_reference(words[index]).rsplit("/", 1)[-1]
         if name not in COMMAND_WRAPPERS:
@@ -3681,7 +3690,7 @@ def executed_program(words: list[str]) -> tuple[str, list[str], list[str]] | Non
                 continue
             break
     if index >= len(words):
-        return None
+        return None, [], node_options
     return words[index], words[index + 1 :], node_options
 
 
@@ -3810,21 +3819,18 @@ def command_launcher_reading(words: list[str]) -> tuple[bool, list[str]]:
     the script that program was handed; anything else is judged unmediated.
     """
     findings: list[str] = []
-    program = executed_program(drop_redirections(words))
-    if program is None:
+    executable, arguments, _node_options = executed_program(drop_redirections(words))
+    if executable is None:
         return False, findings
-    executable, arguments, node_options = program
     if not is_node_executable(executable) and not is_unresolved_word(executable):
         return False, findings
-    option_findings, options_are_inert = read_node_environment_options(node_options)
-    findings.extend(option_findings)
     script, forwarded, executed, resolved = read_node_invocation(arguments)
     for kind, value in executed:
         if names_generator_entry(value):
             findings.append(f"{kind} a generator module")
         elif entry_mentions(value):
             findings.append(f"{kind} an unresolved generator module reference")
-    if not options_are_inert or executed or not resolved or script is None:
+    if executed or not resolved or script is None:
         return False, findings
     if not names_generator_launcher(script):
         return False, findings
@@ -4141,6 +4147,12 @@ def analyse_command_segment(
         words = shlex.split(code, comments=False, posix=True)
     except ValueError:
         words = code.split()
+    _, _, declared_node_options = executed_program(drop_redirections(words))
+    option_findings, _options_are_inert = read_node_environment_options(
+        declared_node_options
+    )
+    for finding in option_findings:
+        violations.append(f"{label}: {finding}: {code}")
     # Mediation is a property of *this* command, never of the line it shares
     # with others, and never of a launcher path that merely appears in it: the
     # launcher has to be the program Node actually executes, with the entry
@@ -4993,6 +5005,31 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
     "benign NODE_OPTIONS before the launcher": (
         "offline/scripts/99-wrapper.sh",
         "NODE_OPTIONS=--enable-source-maps "
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        True,
+    ),
+    "persisted NODE_OPTIONS requiring the generator": (
+        "offline/scripts/99-wrapper.sh",
+        "NODE_OPTIONS=--require=./scripts/locale-catalog/generate.mjs\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "exported NODE_OPTIONS importing the generator": (
+        "offline/scripts/99-wrapper.sh",
+        "export NODE_OPTIONS=--import=./scripts/locale-catalog/generate.mjs\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "separately exported persisted NODE_OPTIONS requiring the generator": (
+        "offline/scripts/99-wrapper.sh",
+        "NODE_OPTIONS=--require=./scripts/locale-catalog/generate.mjs\n"
+        "export NODE_OPTIONS\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "benign persisted NODE_OPTIONS before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "NODE_OPTIONS=--enable-source-maps\n"
         "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
         True,
     ),
