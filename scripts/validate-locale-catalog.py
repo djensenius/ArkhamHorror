@@ -988,6 +988,35 @@ def validate_deployment_wiring(manifest: dict) -> None:
             needle in offline_build,
             f"the offline frontend build does not account for {needle!r} in its cache key or verification",
         )
+    require(
+        "toolchain_binary_authority node" in offline_build
+        and "Discarding untrusted persisted frontend output before rebuilding" in offline_build,
+        "the offline frontend build does not bind Node authority or rebuild persisted rendered assets",
+    )
+    offline_utils = (ROOT / "offline" / "scripts" / "utils.sh").read_text(encoding="utf-8")
+    require(
+        "init_toolchain_authority_receipt" in offline_utils
+        and "verify_authority_paths" in offline_utils
+        and "Cached manifests are observations only" in offline_utils,
+        "the offline toolchain does not use an invocation-external closure authority",
+    )
+    require(
+        "verify_authority_tree_from_receipt frontend" in offline_nginx
+        and "verify_external_nginx_authority" in offline_nginx,
+        "the offline package does not bind frontend/nginx closure bytes to external authority",
+    )
+    package_attester = (ROOT / "offline" / "scripts" / "attest-package-closure.sh").read_text(encoding="utf-8")
+    require(
+        "record_authority_receipt offline-nginx" in package_attester,
+        "the offline package lacks a post-package external nginx closure attester",
+    )
+    offline_workflow = (ROOT / ".github" / "workflows" / "build-offline.yml").read_text(encoding="utf-8")
+    require(
+        "offline/_deps/frontend/" not in offline_workflow
+        and "offline/_deps/.toolchain-authority/" in offline_workflow
+        and "offline-authority-token" in offline_workflow,
+        "the offline workflow restores rendered assets or omits external closure authority wiring",
+    )
 
     offline_deps = (ROOT / "offline" / "scripts" / "01-check-project-deps.sh").read_text(encoding="utf-8")
     offline_toolchain = (ROOT / "offline" / "scripts" / "toolchain-authority.sh").read_text(encoding="utf-8")
@@ -1026,6 +1055,12 @@ def validate_deployment_wiring(manifest: dict) -> None:
         )
         is not None,
         "the container build does not provide the contract fixtures the generator requires",
+    )
+    require(
+        "fetch_locked_archive" in dockerfile
+        and "docker-cabal" in dockerfile
+        and re.search(r"^\s*ghcup\b", dockerfile, re.MULTILINE) is None,
+        "the Docker build does not directly verify its GHC/Cabal/Stack toolchain archives",
     )
 
     ignore = (FRONTEND / ".gitignore").read_text(encoding="utf-8")

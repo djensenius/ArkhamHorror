@@ -528,7 +528,9 @@ LOCALE_CATALOG_MISE_ROOT=/absolute/path/to/mise-data`; additionally export
     mise run locale-catalog:backend-keys-test    # the key extractor's own rules, on synthetic modules
     mise run locale-catalog:backend-keys-check   # backend emitted-key registry drift
     mise run locale-catalog:offline-cache-test   # the offline build's cache key covers every input
-    mise run locale-catalog:offline-cache-hit-test  # a restored cache verifies without frontend/public
+    mise run locale-catalog:offline-cache-hit-test  # catalog-subtree verifier regressions
+    mise run locale-catalog:offline-output-authority-test  # full frontend/package authority regressions
+    mise run locale-catalog:serving-cleanup-test # failed nginx setup releases its resources
     mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
     mise run locale-catalog:capability-settings  # a real manifest configures the advertised capability
     mise run locale-catalog:capability-probe     # ... and the real backend serves it, or refuses to start
@@ -552,8 +554,11 @@ it never renders or textually rewrites a surrogate config. For production, CI
 builds the final `app` image and the gate runs its own nginx/config/static tree
 without mounts, first requiring `nginx -t` and the gzip-static module. For the
 offline path, the release workflow invokes the actual generated package
-launcher, which validates the packaged Nginx provenance and runs `nginx -t`
-before serving through that package binary and bundled-library environment.
+launcher with an invocation-external CI receipt. That receipt covers the
+Nginx executable, generated-config source, and full bundled-library closure
+before `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` is set; package-local provenance
+is only a consistency record. The launcher then runs `nginx -t` before serving
+through its package binary in an otherwise empty environment.
 Both paths receive live requests for 200, 304, 404 and 405, whole-file Range
 handling, JSON MIME, `nosniff`, `Vary`, gzip/brotli negotiation, and
 byte-exact identity and precompressed payloads from their own catalog tree.

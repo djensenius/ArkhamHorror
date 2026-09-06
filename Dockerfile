@@ -64,38 +64,56 @@ RUN \
 
 ARG TARGETARCH
 
-# Fetch the Docker builder's executable bootstrap through the same committed
-# toolchain authority table used by the offline release. It is verified before
-# it can execute; ghcup then uses its default signature verification for the
-# GHC/Cabal/Stack metadata instead of disabling GPG checks.
-COPY ./offline/toolchain.lock /opt/arkham/toolchain.lock
-RUN \
-    if [ "$TARGETARCH" = "arm64" ]; then \
-      platform="linux-arm64"; archive="aarch64-linux-ghcup"; \
-    else \
-      platform="linux-x86_64"; archive="x86_64-linux-ghcup"; \
-    fi && \
-    expected="$(awk -F '\t' -v platform="$platform" -v archive="$archive" \
-      '$1 == "archive" && $2 == "ghcup" && $3 == platform && $4 == archive && $5 == "exact" { matches += 1; digest = $6 } END { if (matches != 1) exit 1; print digest }' \
-      /opt/arkham/toolchain.lock)" && \
-    test "${#expected}" = 64 && \
-    curl -fsSL --connect-timeout 30 --max-time 600 \
-      "https://downloads.haskell.org/~ghcup/${archive}" -o /usr/bin/ghcup && \
-    echo "${expected}  /usr/bin/ghcup" | sha256sum -c - && \
-    chmod +x /usr/bin/ghcup
-
 ARG GHC=9.14.1
 ARG CABAL=3.16.0.0
 ARG STACK=3.7.1
 ARG CACHE_ID="${TARGETARCH}-${GHC}-${CABAL}-${STACK}"
 ENV CACHE_ID=${CACHE_ID}
-ENV BOOTSTRAP_HASKELL_NONINTERACTIVE=1
 
-# install GHC and cabal
-RUN \
-    ghcup -v install ghc --isolate /usr/local --force ${GHC} && \
-    ghcup -v install cabal --isolate /usr/local/bin --force ${CABAL} && \
-    ghcup -v install stack --isolate /usr/local/bin --force ${STACK}
+# The builder has no mutable ghcup metadata path. It fetches the exact GHC,
+# Cabal, and Stack archives named in the reviewed table, verifies each before
+# extraction, and verifies Cabal's installed executable bytes before use.
+COPY ./offline/toolchain.lock ./offline/scripts/docker-toolchain.sh /opt/arkham/toolchain/
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      arm64) \
+        platform="linux-arm64"; \
+        ghc_archive="ghc-${GHC}-aarch64-deb10-linux.tar.xz"; \
+        stack_archive="stack-${STACK}-linux-aarch64.tar.gz"; \
+        cabal_archive="cabal-install-${CABAL}-aarch64-linux-deb10.tar.xz" ;; \
+      amd64) \
+        platform="linux-x86_64"; \
+        ghc_archive="ghc-${GHC}-x86_64-ubuntu20_04-linux.tar.xz"; \
+        stack_archive="stack-${STACK}-linux-x86_64.tar.gz"; \
+        cabal_archive="cabal-install-${CABAL}-x86_64-linux-ubuntu22_04.tar.xz" ;; \
+      *) echo "Unsupported Docker target architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    toolchain="/opt/arkham/toolchain"; \
+    . "${toolchain}/docker-toolchain.sh"; \
+    mkdir -p "${toolchain}/downloads" "${toolchain}/extract"; \
+    fetch_locked_archive "${toolchain}/toolchain.lock" ghc "$platform" "$ghc_archive" \
+      "https://downloads.haskell.org/~ghc/${GHC}/${ghc_archive}" "${toolchain}/downloads/${ghc_archive}"; \
+    fetch_locked_archive "${toolchain}/toolchain.lock" stack "$platform" "$stack_archive" \
+      "https://github.com/commercialhaskell/stack/releases/download/v${STACK}/${stack_archive}" "${toolchain}/downloads/${stack_archive}"; \
+    fetch_locked_archive "${toolchain}/toolchain.lock" cabal "$platform" "$cabal_archive" \
+      "https://downloads.haskell.org/~cabal/cabal-install-${CABAL}/${cabal_archive}" "${toolchain}/downloads/${cabal_archive}"; \
+    tar -xJf "${toolchain}/downloads/${ghc_archive}" -C "${toolchain}/extract"; \
+    ghc_dir="$(find "${toolchain}/extract" -maxdepth 1 -type d -name 'ghc-*' -print -quit)"; \
+    test -n "$ghc_dir"; \
+    cp -a "${ghc_dir}/." /usr/local/; \
+    tar -xzf "${toolchain}/downloads/${stack_archive}" -C "${toolchain}/extract"; \
+    stack_bin="$(find "${toolchain}/extract" -type f -name stack -perm -u+x -print -quit)"; \
+    test -n "$stack_bin"; \
+    install -m 0755 "$stack_bin" /usr/local/bin/stack; \
+    mkdir -p "${toolchain}/extract/cabal"; \
+    tar -xJf "${toolchain}/downloads/${cabal_archive}" -C "${toolchain}/extract/cabal"; \
+    install -m 0755 "${toolchain}/extract/cabal/cabal" /usr/local/bin/cabal; \
+    verify_locked_binary "${toolchain}/toolchain.lock" docker-ghc "$platform" bin/ghc /usr/local/bin/ghc; \
+    verify_locked_binary "${toolchain}/toolchain.lock" docker-stack "$platform" bin/stack /usr/local/bin/stack; \
+    verify_locked_binary "${toolchain}/toolchain.lock" docker-cabal "$platform" bin/cabal /usr/local/bin/cabal; \
+    test "$(ghc --numeric-version)" = "$GHC"; \
+    test "$(cabal --numeric-version)" = "$CABAL"; \
+    test "$(stack --numeric-version)" = "$STACK"
 
 FROM base AS dependencies
 

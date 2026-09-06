@@ -104,9 +104,12 @@ install_ghc_and_stack() {
     cleanup_extract_dir "$stk_extract"
 
     generate_ghcup_env
-    write_install_manifest ghc "$GHCUP_DIR" "$ghc_identity" "ghc/${GHC_VERSION}/bin/ghc" \
-        "ghc/${GHC_VERSION}/bin/ghc" "bin/ghc" "env"
-    write_install_manifest stack "$GHCUP_DIR" "$stk_identity" "bin/stack" "bin/stack"
+    local ghc_closure stack_closure
+    ghc_closure="$(write_install_manifest ghc "$GHCUP_DIR" "$ghc_identity" "ghc/${GHC_VERSION}/bin/ghc" \
+        "bin" "ghc/${GHC_VERSION}/bin" "env")"
+    stack_closure="$(write_install_manifest stack "$GHCUP_DIR" "$stk_identity" "bin/stack" "bin/stack")"
+    record_authority_receipt ghc "$ghc_identity" "$ghc_closure"
+    record_authority_receipt stack "$stk_identity" "$stack_closure"
     verify_ghc_and_stack_installation "$ghc_archive" "$stk_archive"
     source_ghcup_env
     verify_cmd "GHC" "ghc" "--version"
@@ -167,9 +170,10 @@ install_nodejs() {
 
     # The exact executable digest is committed in the lock. Record every
     # Node/npm launcher byte before a cache hit is allowed to execute it.
-    write_install_manifest node "${DEPS_DIR}/node" "$node_identity" "bin/node" \
-        "bin/node" "bin/npm" "bin/npx" \
-        "lib/node_modules/npm/bin/npm-cli.js" "lib/node_modules/npm/bin/npx-cli.js"
+    local node_closure
+    node_closure="$(write_install_manifest node "${DEPS_DIR}/node" "$node_identity" "bin/node" \
+        "bin" "lib/node_modules/npm")"
+    record_authority_receipt node "$node_identity" "$node_closure"
     verify_node_installation
     export PATH="${DEPS_DIR}/node/bin:${PATH}"
     verify_cmd "Node.js" "node" "--version"
@@ -331,9 +335,10 @@ install_postgresql() {
     install_log "PostgreSQL ${PG_VERSION}" "${DEPS_DIR}/postgres/"
 
     # ── Verification ────────────────────────────────────────────────────────
-    write_install_manifest postgres "${DEPS_DIR}/postgres" "$pg_identity" "bin/postgres" \
-        "bin/postgres" "bin/initdb" "bin/pg_ctl" "bin/pg_isready" "bin/psql" "bin/pg_dump" "bin/pg_restore" \
-        "bin/pg_config" "bin/createdb"
+    local pg_closure
+    pg_closure="$(write_install_manifest postgres "${DEPS_DIR}/postgres" "$pg_identity" "bin/postgres" \
+        "bin" "lib" "share")"
+    record_authority_receipt postgres "$pg_identity" "$pg_closure"
     verify_postgres_installation
     export PATH="${DEPS_DIR}/postgres/bin:${PATH}"
     verify_cmd "PostgreSQL" "${DEPS_DIR}/postgres/bin/postgres" "--version"
@@ -432,7 +437,9 @@ install_nginx() {
     cleanup_extract_dir "$ngx_extract"
 
     install_log "Nginx ${NGINX_VERSION}" "$nginx_bin"
-    write_install_manifest nginx "${DEPS_DIR}/nginx" "$nginx_identity" "bin/nginx" "bin/nginx"
+    local nginx_closure
+    nginx_closure="$(write_install_manifest nginx "${DEPS_DIR}/nginx" "$nginx_identity" "bin/nginx" "bin")"
+    record_authority_receipt nginx "$nginx_identity" "$nginx_closure"
     verify_nginx_installation
     verify_cmd "Nginx" "$nginx_bin" "-v"
     touch "$STAMP_NGINX"
@@ -452,6 +459,7 @@ main() {
 
     ensure_dir "$DEPS_DIR"
     ensure_dir "$TMP_DIR"
+    init_toolchain_authority_receipt
     # Do not source a cached ghcup environment or prepend cached executable
     # directories before the install functions have verified their manifests.
     ensure_dir "$STACK_ROOT_DIR"

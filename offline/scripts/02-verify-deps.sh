@@ -16,6 +16,7 @@ source "${SCRIPT_DIR}/toolchain-authority.sh"
 
 # Do not source cached PATH fragments or execute an installed tool until its
 # lock-bound manifest and binary identity have been checked.
+require_toolchain_authority_receipt
 verify_all_offline_toolchain
 activate_deps_path
 

@@ -16,6 +16,7 @@ source "${SCRIPT_DIR}/toolchain-authority.sh"
 
 # The catalog generator and Vite must use the verified downloaded Node binary,
 # never a cache-restored or PATH-selected substitute.
+require_toolchain_authority_receipt
 verify_node_installation
 export PATH="${DEPS_DIR}/node/bin:${PATH}"
 
@@ -73,7 +74,7 @@ hash_tree() {
 #   - the locale catalog's remaining provenance inputs: homebrew locales and
 #     icon maps, the generator, its schemas, the governed contract fixtures and
 #     the backend emitted-key registry
-#   - the exact Node version the catalog revision is bound to
+#   - the exact committed Node binary authority, not only its version string
 # node_modules/ is deliberately excluded: package-lock.json pins it.
 # `set -e` is suppressed inside a condition or an assignment, and this function
 # is always called from one, so every step propagates its own failure
@@ -91,6 +92,8 @@ compute_frontend_hash() {
         cd "$PROJECT_ROOT" || exit 1
         hash_tree contracts/fixtures || exit 1
         hash_paths contracts/manifest.json backend/arkham-api/i18n-emitted-keys.json || exit 1
+        toolchain_lock_digest || exit 1
+        toolchain_binary_authority node "$PLATFORM" bin/node || exit 1
         node --version || exit 1
     )" || return 1
     [ -n "$inputs" ] || return 1
@@ -110,17 +113,12 @@ verify_locale_catalog() {
     fi
 }
 
-# Verifies a build output restored from a cache. It is checked against its own
-# manifest only: `frontend/public/locale-catalog` is generated during a build
-# and a cache restores just `offline/_deps`, so comparing against it would fail
-# on every fresh checkout. A failure here means the cache is unusable, not that
-# the tree is broken, so it is reported as a cache miss and the caller rebuilds.
-# `--publish` replaces the restored catalog with a private snapshot written from
-# the bytes this run hashed, so what the offline package serves is exactly what
-# was verified - not whatever the cache happens to hold afterwards.
+# This validates catalog structure only. It is intentionally not an artifact
+# cache admission check: the full rendered frontend tree is rebuilt and then
+# authenticated through the invocation receipt below.
 verify_cached_locale_catalog() {
     local output="$1"
-    substep "Verifying and republishing the cached locale catalog in ${output}"
+    substep "Verifying the catalog subtree in ${output}"
     (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --dist-only --publish)
 }
 
@@ -163,38 +161,14 @@ build_frontend() {
         die "  ✗ Could not hash the frontend build inputs"
     fi
 
-    if [ -f "$FRONTEND_BUILT_MARKER" ]; then
-        local stored_hash
-        stored_hash="$(cat "$FRONTEND_BUILT_MARKER" 2>/dev/null || echo '')"
-        if [ "$current_hash" = "$stored_hash" ] && [ -d "$FRONTEND_OUTPUT" ] && [ -f "${FRONTEND_OUTPUT}/index.html" ]; then
-            if verify_cached_locale_catalog "$FRONTEND_OUTPUT"; then
-                info "Frontend source unchanged (hash matches), skipping build"
-                return 0
-            fi
-            info "Cached frontend output has no usable locale catalog; rebuilding"
-            rm -rf "$FRONTEND_OUTPUT" "$FRONTEND_BUILT_MARKER"
-        else
-            info "Frontend source changed; rebuild required"
-        fi
-    fi
-
-    # CI cache hit: if artifacts exist but the stamp does not, we still need to validate the source hash
-    # If a hash record exists in the cache and matches, the artifacts are still valid
-    local hash_record="${FRONTEND_OUTPUT}/source_hash"
-    if [ -d "$FRONTEND_OUTPUT" ] && [ -f "${FRONTEND_OUTPUT}/index.html" ]; then
-        if [ -f "$hash_record" ] && [ "$(cat "$hash_record" 2>/dev/null)" = "$current_hash" ]; then
-            if verify_cached_locale_catalog "$FRONTEND_OUTPUT"; then
-                info "Frontend artifacts already exist and the source is unchanged (CI cache hit), skipping build"
-                echo "$current_hash" > "$FRONTEND_BUILT_MARKER"
-                return 0
-            fi
-            info "Cached frontend output has no usable locale catalog; rebuilding"
-        else
-            # Artifacts exist but source changed, so rebuild is required
-            info "Frontend artifacts are stale (source hash mismatch); rebuilding"
-        fi
+    # Generated frontend bytes are not an authority cache. The npm dependency
+    # cache is reusable because `npm ci` revalidates the lock, but every
+    # rendered asset is rebuilt from the current verified Node/source inputs.
+    if [ -e "$FRONTEND_OUTPUT" ] || [ -L "$FRONTEND_OUTPUT" ]; then
+        info "Discarding untrusted persisted frontend output before rebuilding"
         rm -rf "$FRONTEND_OUTPUT"
     fi
+    rm -f "$FRONTEND_BUILT_MARKER"
 
     # ── Decision 6: place node_modules under _deps/ and expose it to frontend/ through a symlink ─
     NM_LINK="${FRONTEND_DIR}/node_modules"
@@ -621,9 +595,10 @@ PYEOF
         info "  ✓ Card hover zoom feature injected"
     fi
 
-    echo "$current_hash" > "$FRONTEND_BUILT_MARKER"
-    # Write the hash into the artifact directory so CI cache restores can validate artifact/source consistency
-    echo "$current_hash" > "${FRONTEND_OUTPUT}/source_hash"
+    local frontend_closure
+    frontend_closure="$(authority_tree_digest "$FRONTEND_OUTPUT")" \
+        || die "Could not calculate the complete frontend output closure"
+    record_authority_receipt frontend "$current_hash" "$frontend_closure"
     info "Frontend build complete"
 }
 

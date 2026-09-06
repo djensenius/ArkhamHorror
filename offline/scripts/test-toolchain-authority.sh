@@ -17,6 +17,10 @@ trap 'rm -rf "$WORK"' EXIT
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/utils.sh"
 init_paths
+TMP_DIR="${WORK}/toolchain-receipts"
+TOOLCHAIN_RECEIPT_DIR="${WORK}/toolchain-receipts"
+export GITHUB_ENV=""
+init_toolchain_authority_receipt
 
 failures=0
 fail() {
@@ -134,25 +138,76 @@ PLATFORM="macos-arm64"
 nginx_root="${DEPS_DIR}/nginx"
 mkdir -p "${nginx_root}/bin"
 printf 'trusted derived nginx binary' > "${nginx_root}/bin/nginx"
+chmod +x "${nginx_root}/bin/nginx"
 nginx_identity="$(toolchain_build_identity nginx "$PLATFORM" 1.26.2 \
     "$(toolchain_archive_sha256 nginx "$PLATFORM" nginx-1.26.2.tar.gz)" \
     "$(nginx_build_recipe)")"
-write_install_manifest nginx "$nginx_root" "$nginx_identity" bin/nginx bin/nginx
-verify_install_manifest nginx "$nginx_root" "$nginx_identity" bin/nginx bin/nginx
+nginx_closure="$(write_install_manifest nginx "$nginx_root" "$nginx_identity" bin/nginx bin)"
+record_authority_receipt nginx "$nginx_identity" "$nginx_closure"
+verify_install_manifest nginx "$nginx_root" "$nginx_identity" bin/nginx bin
 printf 'substituted binary' > "${nginx_root}/bin/nginx"
+chmod +x "${nginx_root}/bin/nginx"
+# Rewriting the cached observation must not help: the expected closure comes
+# from this invocation's out-of-cache receipt, not the adjacent manifest.
+write_install_manifest nginx "$nginx_root" "$nginx_identity" bin/nginx bin >/dev/null
 expect_reject "substituted installed nginx binary" \
-    verify_install_manifest nginx "$nginx_root" "$nginx_identity" bin/nginx bin/nginx
+    verify_install_manifest nginx "$nginx_root" "$nginx_identity" bin/nginx bin
 
 node_root="${DEPS_DIR}/node"
-mkdir -p "${node_root}/bin"
+mkdir -p "${node_root}/bin" "${node_root}/lib/node_modules/npm/bin" "${node_root}/lib/node_modules/npm/lib"
+printf 'trusted node binary' > "${node_root}/bin/node"
+chmod +x "${node_root}/bin/node"
+ln -s "../lib/node_modules/npm/bin/npm-cli.js" "${node_root}/bin/npm"
+printf 'require("../lib/cli.js")\n' > "${node_root}/lib/node_modules/npm/bin/npm-cli.js"
+printf 'trusted npm imported CLI\n' > "${node_root}/lib/node_modules/npm/lib/cli.js"
+NODE_TEST_LOCK="${WORK}/node-test.lock"
+cp "${REPO_ROOT}/offline/toolchain.lock" "$NODE_TEST_LOCK"
+node_identity="$(sha256_file "${node_root}/bin/node")"
+sed -i.bak "s|^binary\\tnode\\tmacos-arm64\\tbin/node\\texact\\t[0-9a-f]*\\t|binary\\tnode\\tmacos-arm64\\tbin/node\\texact\\t${node_identity}\\t|" "$NODE_TEST_LOCK"
+rm -f "${NODE_TEST_LOCK}.bak"
+TOOLCHAIN_LOCK_FILE="$NODE_TEST_LOCK"
+node_closure="$(write_install_manifest node "$node_root" "$node_identity" bin/node bin lib/node_modules/npm)"
+record_authority_receipt node "$node_identity" "$node_closure"
+verify_install_manifest node "$node_root" "$node_identity" bin/node bin lib/node_modules/npm
 printf 'substituted node binary' > "${node_root}/bin/node"
-node_identity="$(toolchain_binary_authority node "$PLATFORM" bin/node | awk -F '\t' '{print $2}')"
-write_install_manifest node "$node_root" "$node_identity" bin/node bin/node
-expect_reject "wrong exact installed Node binary" \
-    verify_install_manifest node "$node_root" "$node_identity" bin/node bin/node
+chmod +x "${node_root}/bin/node"
+write_install_manifest node "$node_root" "$node_identity" bin/node bin lib/node_modules/npm >/dev/null
+expect_reject "substituted Node binary plus manifest" \
+    verify_install_manifest node "$node_root" "$node_identity" bin/node bin lib/node_modules/npm
+printf 'trusted node binary' > "${node_root}/bin/node"
+chmod +x "${node_root}/bin/node"
+write_install_manifest node "$node_root" "$node_identity" bin/node bin lib/node_modules/npm >/dev/null
+verify_install_manifest node "$node_root" "$node_identity" bin/node bin lib/node_modules/npm
+printf 'substituted npm imported CLI' > "${node_root}/lib/node_modules/npm/lib/cli.js"
+write_install_manifest node "$node_root" "$node_identity" bin/node bin lib/node_modules/npm >/dev/null
+expect_reject "substituted npm import dependency plus manifest" \
+    verify_install_manifest node "$node_root" "$node_identity" bin/node bin lib/node_modules/npm
+TOOLCHAIN_LOCK_FILE="${REPO_ROOT}/offline/toolchain.lock"
+
+ghc_root="${DEPS_DIR}/ghcup"
+mkdir -p "${ghc_root}/bin" "${ghc_root}/ghc/9.14.1/bin"
+printf 'trusted resolved GHC binary' > "${ghc_root}/ghc/9.14.1/bin/ghc"
+chmod +x "${ghc_root}/ghc/9.14.1/bin/ghc"
+ln -s "../ghc/9.14.1/bin/ghc" "${ghc_root}/bin/ghc"
+ghc_identity="$(toolchain_build_identity ghc "$PLATFORM" 9.14.1 \
+    "$(toolchain_archive_sha256 ghc "$PLATFORM" ghc-9.14.1-aarch64-apple-darwin.tar.xz)" \
+    "archive-extract-v1:ghc/9.14.1/bin/ghc")"
+ghc_closure="$(write_install_manifest ghc "$ghc_root" "$ghc_identity" ghc/9.14.1/bin/ghc bin ghc/9.14.1/bin)"
+record_authority_receipt ghc "$ghc_identity" "$ghc_closure"
+verify_install_manifest ghc "$ghc_root" "$ghc_identity" ghc/9.14.1/bin/ghc bin ghc/9.14.1/bin
+printf 'substituted resolved GHC binary' > "${ghc_root}/ghc/9.14.1/bin/ghc"
+chmod +x "${ghc_root}/ghc/9.14.1/bin/ghc"
+write_install_manifest ghc "$ghc_root" "$ghc_identity" ghc/9.14.1/bin/ghc bin ghc/9.14.1/bin >/dev/null
+expect_reject "substituted GHC symlink target plus manifest" \
+    verify_install_manifest ghc "$ghc_root" "$ghc_identity" ghc/9.14.1/bin/ghc bin ghc/9.14.1/bin
 
 grep -Fq "hashFiles('offline/toolchain.lock'" "${REPO_ROOT}/.github/workflows/build-offline.yml" \
     || fail "build-offline workflow cache key does not bind offline/toolchain.lock"
+grep -Fq 'offline/_deps/.toolchain-authority/' "${REPO_ROOT}/.github/workflows/build-offline.yml" \
+    || fail "build-offline workflow does not cache toolchain closure observations with installations"
+if grep -Fq 'offline/_session/' "${REPO_ROOT}/.github/workflows/build-offline.yml"; then
+    fail "build-offline workflow caches invocation-specific authority receipts"
+fi
 
 runtime_index="$(
     awk -F '\t' '$1 == "image" && $2 == "nginx-runtime" && $3 == "multiarch" && $4 == "nginx:1.27.5" { print $6 }' \

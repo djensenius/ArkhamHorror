@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# test-frontend-cache-hit.sh - the offline build's cache-hit branches behave on
-# a fresh checkout.
+# test-frontend-cache-hit.sh - the catalog-subtree verifier remains fail-closed
+# on a fresh checkout.
 #
-# A CI cache restores `offline/_deps` and nothing else: `frontend/public/` is
-# build output and is not in the cache. The cache-hit path must therefore be
-# able to verify the restored build against its own manifest, must not delete a
-# usable output, and must fall back to a rebuild — not `die` — when the restored
-# output is unusable. This drives the real script's `verify_cached_locale_catalog`
-# with `frontend/public/locale-catalog` absent.
+# The production offline build no longer accepts restored rendered frontend
+# output at all; test-frontend-output-authority.sh covers the full-tree receipt
+# boundary. This test retains deep adversarial coverage of the catalog verifier
+# itself with `frontend/public/locale-catalog` absent.
 # =============================================================================
 
 set -euo pipefail
@@ -62,7 +60,7 @@ fi
 # Load the production verification helpers without running the build.
 sed -n '1,/^# ── Build frontend/p' "${PROD_SCRIPTS}/03-build-frontend.sh" \
   | grep -v -e '^source ' -e '^init_paths' -e '^activate_deps_path' \
-  | grep -v -e '^PLATFORM=' -e '^verify_node_installation$' -e '^export PATH=' \
+  | grep -v -e '^PLATFORM=' -e '^require_toolchain_authority_receipt$' -e '^verify_node_installation$' -e '^export PATH=' \
   | sed -e 's/^FRONTEND_DIR=.*/:/' -e 's/^FRONTEND_OUTPUT=.*/:/' -e 's/^FRONTEND_BUILT_MARKER=.*/:/' \
   > "${WORK}/verify.sh"
 FRONTEND_DIR="${FRONTEND_DIR}"

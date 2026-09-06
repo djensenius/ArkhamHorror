@@ -8,10 +8,11 @@
 # bytes. Native source builds cannot promise identical executable bytes across
 # Xcode/GCC/linker patch levels, so `derived` rows hash the complete immutable
 # build identity (component, platform, version, source SHA-256, and recipe).
-# The installer records the resulting executable SHA-256 in an atomic
-# installation manifest and validates that byte identity before every cache-hit
-# execution. Changing either the build recipe or source archive requires an
-# intentional lock update.
+# Restored installation manifests are observations only. Each new invocation
+# reconstructs any unreceipted install from the verified archive/source, then
+# records and checks a full execution-tree SHA-256 against an invocation-
+# external receipt. Changing either the build recipe or source archive requires
+# an intentional lock update.
 #
 # This file is deliberately duplicated by platform, including source archives
 # whose bytes happen to be identical. A platform with no exact row is not
@@ -34,6 +35,20 @@ binary	stack	macos-arm64	bin/stack	derived	224274157af9e24aa6e16e375a477a2768452
 binary	stack	macos-x86_64	bin/stack	derived	db5a5e2d0a2ea3bb9a2886030ad897905fddaa04b3391684d8f058c018ff6a89	archive-extract-v1
 binary	stack	linux-x86_64	bin/stack	derived	50bac16b41a0e282dc30c7bf57cf51afd6eba4753b51866393a3e7630094f21d	archive-extract-v1
 binary	stack	linux-arm64	bin/stack	derived	b43a7f1f508064d68d9bfc98d772963b6559535c96f82e57bfe9b044d39289d4	archive-extract-v1
+
+archive	cabal	linux-x86_64	cabal-install-3.16.0.0-x86_64-linux-ubuntu22_04.tar.xz	exact	69b2ae1db803c3f98b09a4a2cac28e877f8281495b18358f2b41542304f76e7e	3.16.0.0
+archive	cabal	linux-arm64	cabal-install-3.16.0.0-aarch64-linux-deb10.tar.xz	exact	e3954219856990e6013b82dc23fe1be263161d511d687244ccf45cdc2cbac3f4	3.16.0.0
+binary	cabal	linux-x86_64	bin/cabal	exact	8c1317659877c6857638c551d2dba5bb51fc1c9d10eee57a952212aeaa55ed80	3.16.0.0
+binary	cabal	linux-arm64	bin/cabal	exact	b366502c6b8ef1951739b6462260c337779416919fcede9ad1c4c8d4d6affdbc	3.16.0.0
+
+# Docker extracts these exact executable bytes directly from the preceding
+# verified archives. They are separate from the relocatable offline layouts.
+binary	docker-ghc	linux-x86_64	bin/ghc	exact	2253d52ee63b586ae44f13b1556428083efd834e128dd74fcbd6ff6c5366ac92	9.14.1
+binary	docker-ghc	linux-arm64	bin/ghc	exact	4945f79fd792126918b2a35c522b9316400309a861a4508d1571037264c5b3cc	9.14.1
+binary	docker-stack	linux-x86_64	bin/stack	exact	c9ba670e7efd3f3807528e60ad09667dd37eba3d941c7edf6ab09d938abc70a8	3.7.1
+binary	docker-stack	linux-arm64	bin/stack	exact	14e7040353c7ae3471d6420cfc0005e1cd83973c25f4edab42b029c93ae4fdb3	3.7.1
+binary	docker-cabal	linux-x86_64	bin/cabal	exact	8c1317659877c6857638c551d2dba5bb51fc1c9d10eee57a952212aeaa55ed80	3.16.0.0
+binary	docker-cabal	linux-arm64	bin/cabal	exact	b366502c6b8ef1951739b6462260c337779416919fcede9ad1c4c8d4d6affdbc	3.16.0.0
 
 archive	node	macos-arm64	node-v26.7.0-darwin-arm64.tar.gz	exact	7ee659a7768e641bbfd5360940660b8e8fd0052f77488f365562bac522fc15d4	26.7.0
 archive	node	macos-x86_64	node-v26.7.0-darwin-x64.tar.gz	exact	f279d1ed28ce57f7788bf23435d2ad7fdd7438904ad5c4d8a1081a7cde3d4b96	26.7.0
@@ -61,13 +76,6 @@ binary	nginx	macos-arm64	bin/nginx	derived	3d1febdfff08f8d5653cfff7ae38b9ca40807
 binary	nginx	macos-x86_64	bin/nginx	derived	b7501ae8d28fa8e9b1e6268b3efa50bfdc9db9cdac9c0e946afbfd013498413c	native-build-v2-gzip-static
 binary	nginx	linux-x86_64	bin/nginx	derived	5ce70e868498c38917332d5b92122284d9f99554acbb1b081cf022cb92ecd5ec	native-build-v2-gzip-static
 binary	nginx	linux-arm64	bin/nginx	derived	ed312f689be2beb237c8e1a9cb907baf2f26be38fc0a35d3fc17eb8d82bd44d5	native-build-v2-gzip-static
-
-# The Docker builder downloads ghcup directly. Its platform authority lives in
-# this same table and Docker validates the downloaded executable before it can
-# run it. ghcup subsequently verifies its signed metadata when installing GHC,
-# Cabal, and Stack.
-archive	ghcup	linux-x86_64	x86_64-linux-ghcup	exact	9ed5da5449b48043a0d17e767c05d2ef585e25a639bb934329496c6d2fad9cf8	0.1
-archive	ghcup	linux-arm64	aarch64-linux-ghcup	exact	65a5f05120288ee4f1a81d28825374b6af317456a351a586adfce90c6dc29e3b	0.1
 
 # Docker resolves this immutable multi-platform index in the final production
 # stage. The per-platform image-manifest digests are recorded so image

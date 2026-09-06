@@ -77,7 +77,7 @@ verify_ghc_and_stack_installation() {
     ghc_identity="$(ghc_build_identity "$ghc_archive")"
     stack_identity="$(stack_build_identity "$stack_archive")"
     verify_install_manifest ghc "$GHCUP_DIR" "$ghc_identity" "ghc/${GHC_VERSION}/bin/ghc" \
-        "ghc/${GHC_VERSION}/bin/ghc" "bin/ghc" "env"
+        "bin" "ghc/${GHC_VERSION}/bin" "env"
     verify_install_manifest stack "$GHCUP_DIR" "$stack_identity" "bin/stack" "bin/stack"
     verify_binary_version_contains "GHC" "${GHCUP_DIR}/ghc/${GHC_VERSION}/bin/ghc" \
         "--numeric-version" "$GHC_VERSION"
@@ -91,8 +91,7 @@ verify_node_installation() {
     authority="$(toolchain_binary_authority node "$PLATFORM" "bin/node")"
     IFS=$'\t' read -r kind digest expected_version <<< "$authority"
     verify_install_manifest node "${DEPS_DIR}/node" "$identity" "bin/node" \
-        "bin/node" "bin/npm" "bin/npx" \
-        "lib/node_modules/npm/bin/npm-cli.js" "lib/node_modules/npm/bin/npx-cli.js"
+        "bin" "lib/node_modules/npm"
     verify_binary_version_contains "Node.js" "${DEPS_DIR}/node/bin/node" "--version" "$expected_version"
     verify_cmd "npm" "${DEPS_DIR}/node/bin/npm" "--version"
 }
@@ -101,15 +100,14 @@ verify_postgres_installation() {
     local identity
     identity="$(postgres_build_identity)"
     verify_install_manifest postgres "${DEPS_DIR}/postgres" "$identity" "bin/postgres" \
-        "bin/postgres" "bin/initdb" "bin/pg_ctl" "bin/pg_isready" "bin/psql" "bin/pg_dump" "bin/pg_restore" \
-        "bin/pg_config" "bin/createdb"
+        "bin" "lib" "share"
     verify_binary_version_contains "PostgreSQL" "${DEPS_DIR}/postgres/bin/postgres" "--version" "$PG_VERSION"
 }
 
 verify_nginx_installation() {
     local identity nginx_version
     identity="$(nginx_build_identity)"
-    verify_install_manifest nginx "${DEPS_DIR}/nginx" "$identity" "bin/nginx" "bin/nginx"
+    verify_install_manifest nginx "${DEPS_DIR}/nginx" "$identity" "bin/nginx" "bin"
     nginx_version="$("${DEPS_DIR}/nginx/bin/nginx" -V 2>&1)" \
         || die "Nginx failed its post-identity configuration check"
     case "$nginx_version" in

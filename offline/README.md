@@ -87,21 +87,26 @@ GHC / Stack / Node.js use official prebuilt binaries. PostgreSQL and Nginx are b
 
 `toolchain.lock` is the committed authority table for every direct offline
 toolchain archive on every supported platform: GHC, Stack, Node, PostgreSQL,
-and Nginx. It also records the Docker builder's ghcup bootstrap. Cache hits
-are never accepted merely because they are non-empty:
+and Nginx. It also locks the Docker builder's direct GHC, Cabal, and Stack
+archives and exact installed binaries. Cache hits are never accepted merely
+because they are non-empty:
 
 - archive bytes are SHA-256 checked on every hit, after download, and before
   extraction/build;
+- each invocation creates an unguessable receipt outside every restored cache.
+  A restored installation is rebuilt from verified source/archive unless its
+  complete file/link/mode closure matches that receipt; cache-side manifests
+  are diagnostic observations, never a root of trust;
 - Node's installed executable is checked against its committed executable
-  SHA-256 before it can run;
-- native PostgreSQL/Nginx and extracted GHC/Stack installs have a
-  lock-bound, atomic local manifest of executable bytes. That manifest is
-  checked before a cached executable or sourced PATH fragment is used;
+  SHA-256 before it can run, and the full Node/npm tree is covered so an
+  imported npm CLI file cannot be substituted behind an unchanged version;
 - native build identities bind the platform, source digest, version, and
   complete build recipe. They intentionally do not claim cross-compiler
-  byte-for-byte reproducibility; the recorded executable digest makes a
-  divergent local result visible and unusable as a cache hit;
-- CI toolchain cache keys include the lock and all authority scripts.
+  byte-for-byte reproducibility; native outputs are rebuilt before a new
+  invocation can receipt them;
+- CI caches the diagnostic closure data alongside installations, but does not
+  cache invocation receipts; all toolchain and npm cache keys include the
+  lock and relevant authority scripts.
 
 The registry dependencies are separately covered by their committed lockfiles:
 `frontend/package-lock.json` supplies npm's per-package SRI checks and is the
@@ -111,9 +116,11 @@ the archive cache authority path.
 
 The package copies this lock alongside
 `game/config/toolchain-provenance.env` after any binary relocation/signing.
-`start.sh` checks the shipped lock digest, packaged Nginx SHA-256, version, and
-gzip-static capability before running it. The release workflow also boots the
-actual package's Nginx through that launcher and performs live HTTP checks.
+Release CI records a separate invocation authority for the Nginx binary,
+generated-config source, and complete bundled-library closure, then starts
+the package with an empty host environment. The package-local provenance is
+only a consistency record; it is never accepted as authority by itself.
+Published releases include a detached `.tar.gz.sha256` checksum.
 
 ## Directory Layout
 
@@ -125,13 +132,19 @@ offline/
 ├── scripts/
 │   ├── utils.sh
 │   ├── toolchain-authority.sh
+│   ├── docker-toolchain.sh
 │   ├── 01-check-project-deps.sh
 │   ├── 02-verify-deps.sh
 │   ├── 03-build-frontend.sh
 │   ├── 04-build-backend.sh
 │   ├── 05-package.sh
-│   └── test-toolchain-authority.sh
+│   ├── attest-package-closure.sh
+│   ├── test-toolchain-authority.sh
+│   ├── test-docker-toolchain-authority.sh
+│   ├── test-frontend-output-authority.sh
+│   └── test-package-authority.sh
 ├── _tmp/                        # Download cache (gitignored)
+├── _session/                    # Invocation-only authority receipts (gitignored, never cached)
 ├── _deps/                       # Toolchains and intermediate artifacts (gitignored)
 │   ├── ghcup/
 │   ├── node/

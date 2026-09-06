@@ -71,12 +71,20 @@ description = "Check the offline build's cache key really covers every locale-ca
 run = "bash offline/scripts/test-frontend-cache-hash.sh"
 
 [tasks."locale-catalog:offline-cache-hit-test"]
-description = "Check the offline build's cache-hit branches verify a restored dist without frontend/public"
+description = "Exercise adversarial catalog-subtree verification without frontend/public; rendered frontend output itself is never restored"
 run = "bash offline/scripts/test-frontend-cache-hit.sh"
 
 [tasks."locale-catalog:offline-toolchain-authority-test"]
 description = "Reject corrupted offline download caches, wrong archives, missing platform authorities, substituted binaries, and stale cache keys"
 run = "bash offline/scripts/test-toolchain-authority.sh"
+
+[tasks."locale-catalog:offline-output-authority-test"]
+description = "Reject frontend asset and package library substitutions against invocation-external authority receipts"
+run = "bash offline/scripts/test-frontend-output-authority.sh && bash offline/scripts/test-package-authority.sh && bash offline/scripts/test-docker-toolchain-authority.sh"
+
+[tasks."locale-catalog:serving-cleanup-test"]
+description = "Force post-start nginx failures and prove serving contexts clean their container/process"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-catalog-serving.py --self-test"
 
 [tasks."locale-catalog:serving"]
 description = "Verify live catalog serving against an explicitly built final production image; no surrogate config/image is accepted"

@@ -94,7 +94,9 @@ jobs:
         run: npm ci
         working-directory: frontend
       - run: mise run locale-catalog:offline-toolchain-authority-test
+      - run: mise run locale-catalog:offline-output-authority-test
       - run: mise run locale-catalog:offline-cache-test
+      - run: mise run locale-catalog:serving-cleanup-test
       - name: Build the final production image
         run: docker build --target app --tag "arkham-locale-serving:${{ github.sha }}" .
       - name: Verify the exact production image nginx, config, and static tree

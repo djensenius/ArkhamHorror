@@ -27,6 +27,7 @@ fail() { echo "offline-cache-hash: $*" >&2; failures=$((failures + 1)); }
 # A minimal tree with exactly the paths the hash reads.
 PROJECT_ROOT="${WORK}/repo"
 FRONTEND_DIR="${PROJECT_ROOT}/frontend"
+PLATFORM="macos-arm64"
 mkdir -p \
   "${FRONTEND_DIR}/src/locales/en" \
   "${FRONTEND_DIR}/homebrew/pack/locales/en" \
@@ -54,11 +55,15 @@ echo '{"keys":[]}' > "${PROJECT_ROOT}/backend/arkham-api/i18n-emitted-keys.json"
 sed -n '1,/^# Fails the build unless the locale catalog really is/p' \
   "${REPO_ROOT}/offline/scripts/03-build-frontend.sh" \
   | grep -v -e '^source ' -e '^init_paths' -e '^activate_deps_path' \
-  | grep -v -e '^PLATFORM=' -e '^verify_node_installation$' -e '^export PATH=' \
+  | grep -v -e '^PLATFORM=' -e '^require_toolchain_authority_receipt$' -e '^verify_node_installation$' -e '^export PATH=' \
   | sed -e 's/^FRONTEND_DIR=.*/:/' -e 's/^FRONTEND_OUTPUT=.*/:/' -e 's/^FRONTEND_BUILT_MARKER=.*/:/' \
   > "${WORK}/hash.sh"
 
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
+TOOLCHAIN_LOCK_TEST_DIGEST="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+NODE_AUTHORITY_TEST="exact	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	v1.2.3"
+toolchain_lock_digest() { printf '%s\n' "$TOOLCHAIN_LOCK_TEST_DIGEST"; }
+toolchain_binary_authority() { printf '%s\n' "$NODE_AUTHORITY_TEST"; }
 export -f has_cmd
 # shellcheck disable=SC1090
 source "${WORK}/hash.sh"
@@ -89,6 +94,19 @@ expect_change "the contract manifest" "${PROJECT_ROOT}/contracts/manifest.json" 
 expect_change "the backend key registry" "${PROJECT_ROOT}/backend/arkham-api/i18n-emitted-keys.json" '{"keys":["k"]}'
 expect_change "the lockfile" "${FRONTEND_DIR}/package-lock.json" '{"lockfileVersion":4}'
 expect_change "package.json" "${FRONTEND_DIR}/package.json" '{"engines":{"node":"1.2.4"}}'
+
+# A replacement Node binary can retain the same --version output. The cache
+# key must bind the authority digest itself, not merely the version string.
+NODE_AUTHORITY_TEST="exact	cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc	v1.2.3"
+if [ "$(compute_frontend_hash)" = "$baseline" ]; then
+  fail "changing the same-version Node authority digest did not change the cache key"
+fi
+NODE_AUTHORITY_TEST="exact	bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb	v1.2.3"
+TOOLCHAIN_LOCK_TEST_DIGEST="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+if [ "$(compute_frontend_hash)" = "$baseline" ]; then
+  fail "changing the toolchain lock digest did not change the cache key"
+fi
+TOOLCHAIN_LOCK_TEST_DIGEST="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 # A new file in a hashed tree must count too.
 echo '{"gamma":"added"}' > "${FRONTEND_DIR}/src/locales/en/extra.json"

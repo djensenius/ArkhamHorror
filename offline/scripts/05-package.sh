@@ -17,6 +17,7 @@ OS="$(detect_os)"
 ARCH="$(detect_arch)"
 PLATFORM="$(detect_platform)"
 source "${SCRIPT_DIR}/toolchain-authority.sh"
+require_toolchain_authority_receipt
 
 BACKEND_BIN="${DEPS_DIR}/arkham-api"
 FRONTEND_SRC="${DEPS_DIR}/frontend"
@@ -387,9 +388,9 @@ runtime_sha256_file() {
     printf '%s\n' "$digest"
 }
 
-# Verify immutable package metadata and raw binary bytes before executing
-# nginx. The launcher deliberately performs this check even after a successful
-# package build, because archives can be damaged or modified after extraction.
+# This is a package-local consistency check. The invocation-external release
+# receipt above establishes authority before it; this metadata alone is never
+# accepted as a root of trust.
 verify_nginx_identity() {
     local expected_lock_sha256 actual_lock_sha256 expected_sha256 actual_sha256 expected_version expected_option nginx_version
     local platform source_archive source_sha256 build_identity archive_record binary_record
@@ -438,6 +439,109 @@ verify_nginx_identity() {
         *) die 1030 "Packaged nginx lacks ${expected_option}" ;;
     esac
     info "nginx executable identity and gzip_static capability verified"
+}
+
+runtime_file_mode() {
+    local file="$1" mode
+    mode="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null)" \
+        || die 1031 "Could not read packaged file mode: $file"
+    case "$mode" in
+        [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ;;
+        *) die 1031 "Packaged file has an invalid mode: $file" ;;
+    esac
+    printf '%s\n' "$mode"
+}
+
+# Hashes the exact executable, generated-config source, and every bundled
+# library that nginx can resolve. Runtime data/log files are deliberately
+# absent, so the authority remains valid after normal operation starts.
+runtime_nginx_closure_digest() {
+    local records selected entry relative path link_target digest mode
+    records="$(
+        {
+            for selected in \
+                bin/nginx \
+                lib \
+                pgsql/lib \
+                start.sh \
+                config/mime.types \
+                config/toolchain.lock \
+                config/toolchain-provenance.env; do
+                path="$SCRIPT_DIR/$selected"
+                if [ -d "$path" ] && [ ! -L "$path" ]; then
+                    (cd "$SCRIPT_DIR" && find "./$selected" \( -type f -o -type l \) -print)
+                elif [ -f "$path" ] || [ -L "$path" ]; then
+                    printf './%s\n' "$selected"
+                else
+                    die 1032 "Packaged nginx closure path is missing: $path"
+                fi
+            done
+        } | LC_ALL=C sort -u | while IFS= read -r entry; do
+            relative="${entry#./}"
+            path="$SCRIPT_DIR/$relative"
+            if [ -L "$path" ]; then
+                link_target="$(readlink "$path")" || die 1033 "Could not read packaged symlink: $path"
+                printf 'link\t%s\t%s\n' "$relative" "$link_target"
+            else
+                digest="$(runtime_sha256_file "$path")" || die 1034 "Could not hash packaged closure file: $path"
+                mode="$(runtime_file_mode "$path")"
+                printf 'file\t%s\t%s\t%s\n' "$relative" "$mode" "$digest"
+            fi
+        done
+    )" || die 1035 "Could not calculate packaged nginx closure"
+    [ -n "$records" ] || die 1035 "Packaged nginx closure is empty"
+    printf '%s\n' "$records" | if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    else
+        shasum -a 256 | awk '{print $1}'
+    fi
+}
+
+verify_external_nginx_authority() {
+    local authority="${ARKHAM_RELEASE_AUTHORITY_FILE:-}"
+    local token="${ARKHAM_RELEASE_AUTHORITY_TOKEN:-}"
+    local required="${ARKHAM_REQUIRE_EXTERNAL_AUTHORITY:-0}"
+    local token_count actual_token record record_type component lock_sha256 identity closure_sha256 extra
+    local actual_lock actual_identity actual_closure
+
+    case "$required" in 0|1) ;; *) die 1036 "ARKHAM_REQUIRE_EXTERNAL_AUTHORITY must be 0 or 1" ;; esac
+    if [ -z "$authority" ] && [ -z "$token" ]; then
+        [ "$required" = "0" ] && return 0
+        die 1037 "An external release authority is required before nginx can run"
+    fi
+    [ -n "$authority" ] && [ -n "$token" ] || die 1037 "Release authority path and token must be supplied together"
+    [ -f "$authority" ] && [ ! -L "$authority" ] || die 1038 "External release authority is missing or unsafe"
+    case "$authority" in "$SCRIPT_DIR"/*) die 1038 "External release authority must not reside inside the package" ;; esac
+    case "$token" in *[!0-9a-f]*|"") die 1039 "External release authority token is invalid" ;; esac
+    [ "${#token}" = 64 ] || die 1039 "External release authority token is invalid"
+
+    token_count="$(awk -F '\t' '$1 == "token" { matches += 1 } END { print matches + 0 }' "$authority")"
+    [ "$token_count" = "1" ] || die 1040 "External release authority has no unique token"
+    actual_token="$(awk -F '\t' '$1 == "token" { print $2 }' "$authority")"
+    [ "$actual_token" = "$token" ] || die 1040 "External release authority token does not match this invocation"
+    record="$(
+        awk -F '\t' '
+            $1 == "record" && $2 == "offline-nginx" {
+                matches += 1
+                value = $0
+            }
+            END {
+                if (matches != 1) exit 1
+                print value
+            }
+        ' "$authority"
+    )" || die 1041 "External release authority has no unique offline-nginx record"
+    IFS=$'\t' read -r record_type component lock_sha256 identity closure_sha256 extra <<< "$record"
+    [ -z "$extra" ] || die 1041 "External release authority has a malformed offline-nginx record"
+
+    actual_lock="$(runtime_sha256_file "$SCRIPT_DIR/config/toolchain.lock")" \
+        || die 1042 "Could not hash packaged toolchain authority"
+    actual_identity="$(nginx_provenance_value nginx_build_identity)"
+    actual_closure="$(runtime_nginx_closure_digest)"
+    [ "$lock_sha256" = "$actual_lock" ] \
+        && [ "$identity" = "$actual_identity" ] \
+        && [ "$closure_sha256" = "$actual_closure" ] \
+        || die 1043 "Packaged nginx closure does not match its external release authority"
 }
 
 close_terminal_window_if_needed() {
@@ -1341,8 +1445,13 @@ do_start() {
     # Enable cleanup protection: from here until startup fully succeeds, any abnormal exit triggers do_stop automatically
     _CLEANUP_ON_EXIT=1
 
-    # macOS: sign all binaries + clear quarantine (only performed at startup)
-    ensure_macos_signing
+    # Strict release-authority mode must execute exactly the closure that was
+    # checked before loader paths were enabled. Do not mutate/sign it again.
+    # Ordinary interactive starts retain the legacy macOS repair path and are
+    # protected by the detached release archive checksum.
+    if [ "${ARKHAM_REQUIRE_EXTERNAL_AUTHORITY:-0}" != "1" ]; then
+        ensure_macos_signing
+    fi
 
     ensure_dir "$DATA_DIR"
 
@@ -1629,9 +1738,6 @@ run_foreground() {
 }
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-# Ensure the runtime environment (library paths) is ready before any action; signing only happens for actual startup
-configure_runtime_env
-
 ACTION="start"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -1644,6 +1750,14 @@ while [ $# -gt 0 ]; do
         *) die 1099 "Unknown argument: $1" ;;
     esac
 done
+
+# In release CI the external receipt is mandatory and covers the executable,
+# generated-config source, and bundled library closure before any loader path
+# is changed. Normal end-user starts rely on the release archive checksum
+# published alongside the distribution unless they explicitly opt into this
+# stricter receipt check.
+verify_external_nginx_authority
+configure_runtime_env
 
 case "$ACTION" in
     start)
@@ -2253,6 +2367,8 @@ main() {
     [ -d "$FRONTEND_SRC" ]  || die "Frontend artifacts do not exist: $FRONTEND_SRC"
     [ -d "$PG_BIN_DIR" ]    || die "PostgreSQL does not exist: $PG_BIN_DIR"
     [ -f "$NGINX_BIN" ]     || die "Nginx does not exist: $NGINX_BIN"
+    verify_authority_tree_from_receipt frontend "$FRONTEND_SRC" \
+        || die "Frontend output does not match this invocation's complete authority receipt"
     verify_node_installation
     export PATH="${DEPS_DIR}/node/bin:${PATH}"
     verify_postgres_installation
@@ -2380,8 +2496,16 @@ main() {
                     chmod u+w "${PKG_DIR}/game/lib/${lib_name}"
                     # Strip the original Homebrew signature (it will be invalid on another machine and can block replacement with a fresh ad-hoc signature)
                     codesign --remove-signature "${PKG_DIR}/game/lib/${lib_name}" || warn "Failed to remove signature: ${lib_name}"
+                    # A copied dylib can carry its Homebrew install ID even
+                    # after nginx itself is rewritten to @rpath. Normalize
+                    # that ID too, otherwise a recursive closure check sees a
+                    # host-only dependency and dyld may resolve outside the
+                    # package.
+                    install_name_tool -id "@rpath/${lib_name}" "${PKG_DIR}/game/lib/${lib_name}" \
+                        || die "install_name_tool could not rewrite bundled library ID: ${lib_name}"
                     # Rewrite absolute library references to @rpath (paired with -add_rpath)
-                    install_name_tool -change "$lib_path" "@rpath/${lib_name}" "$bin" || warn "install_name_tool failed: ${lib_name}"
+                    install_name_tool -change "$lib_path" "@rpath/${lib_name}" "$bin" \
+                        || die "install_name_tool could not rewrite ${lib_name} in $(basename "$bin")"
                     bundled=$((bundled + 1))
                     substep "  + ${lib_name} ← ${lib_path}"
                 fi

@@ -79,6 +79,14 @@ fi
 
 source "${SCRIPT_DIR}/scripts/utils.sh"
 init_paths
+init_toolchain_authority_receipt
+if [ "$TOOLCHAIN_RECEIPT_OWNED" = true ]; then
+    TOOLCHAIN_RECEIPT_CLEANUP_DIR="$(dirname "$TOOLCHAIN_RECEIPT_FILE")"
+    cleanup_toolchain_receipt() {
+        rm -rf "$TOOLCHAIN_RECEIPT_CLEANUP_DIR"
+    }
+    trap cleanup_toolchain_receipt EXIT
+fi
 
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
@@ -178,6 +186,8 @@ main() {
     # [5] Packaging
     if [ "$SKIP_PACKAGE" = false ]; then
         bash "${SCRIPT_DIR}/scripts/05-package.sh"
+        bash "${SCRIPT_DIR}/scripts/attest-package-closure.sh" \
+            "${_DIST_DIR}/ArkhamHorror-${PLATFORM}"
     else
         step "Skipping packaging (--skip-package)"
     fi

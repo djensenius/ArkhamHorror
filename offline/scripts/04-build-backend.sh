@@ -18,6 +18,7 @@ source "${SCRIPT_DIR}/toolchain-authority.sh"
 
 # Stack/GHC are cached executable bytes. Verify them before sourcing ghcup's
 # PATH file or invoking either compiler.
+require_toolchain_authority_receipt
 ghc_info="$(get_ghc_bindist_info)"
 ghc_archive="${ghc_info##*|}"
 stack_info="$(get_stack_download_info)"
