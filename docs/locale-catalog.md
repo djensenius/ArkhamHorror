@@ -389,16 +389,18 @@ The real backend-probe task also receives one explicit host authority:
 command or any PATH lookup. CI captures the absolute path from the reviewed
 Haskell setup step and includes it in the otherwise empty shell environment.
 
-**The analyzer is authenticated before it is imported.** A scanner that has
-already executed cannot vouch for itself, so the sealed shell hashes
-`scripts/locale_catalog_python_boundary.py` and the Node launcher against the
-`trustedSources` block in `scripts/locale_catalog_python_runtime.json` *before*
-any interpreter is started and before either is imported. The bootstrap
-re-checks the same block from inside the process it governs. The two shell
-stages and the profile are drift-checked in the same pass, which is not the
-same claim — see the TCB paragraph above. The adversarial suite replaces the
-analyzer with a permissive scanner that writes a marker file at import time and
-proves both that the command fails and that the marker never appears.
+**Identity and drift checks over the reviewed tooling.** The pinned runner
+hashes the capability lint, the preflight, both launcher stages and the Node
+launcher against the `trustedSources` block in
+`scripts/locale_catalog_python_runtime.json`, and the preflight re-checks the
+same block from inside the process. None of that is authentication against an
+attacker — this is all trusted committed code — it is a coordinated-change
+requirement: editing one of these files has to move its recorded identity too,
+and a run where they disagree stops and says which file. The lint and the Node
+launcher happen to be checked before anything imports or starts them, which is
+worth having only because a half-edited lint should not be deciding anything.
+The suite exercises this by replacing the lint with a permissive stand-in and
+requiring the run to stop before that stand-in's top-level code executes.
 
 **The importable prefix, not just its sources.** Hashing `*.py` under the
 stdlib root leaves two ways into the process before any of it is checked:
@@ -414,7 +416,8 @@ then proves the reduced prefix still starts and can import exactly the module
 set the bootstrap imports at its top level, and the bootstrap re-checks that
 `sys.path` is the expected three entries and that every module already in
 `sys.modules` with a file hashes to the committed lock. That is what makes the
-bootstrap's own top-level imports authenticated rather than hopeful.
+preflight's own top-level imports resolve to bytes the committed lock
+describes.
 
 Dependency installs are part of the same ordering question: a committed
 `postinstall` in any npm dependency would run before every preflight here, so
@@ -638,6 +641,17 @@ That is drift detection over trusted, reviewed code — a coordinated-change
 requirement and a provenance record, not an authorization root and not a
 JavaScript sandbox. The generator and every module it is allowed to load run
 with full Node privileges.
+
+**Known blockers owned by the offline branch.** Two findings in
+`offline/scripts/03-build-frontend.sh` are being replaced wholesale by
+`fix/locale-offline-authority-final` and are deliberately *not* addressed here,
+so the two branches do not fight over the same file: the offline build accepts
+an already-present Node by version rather than by archive checksum, and its
+`npm ci` path can fall back to `npm install` without a lockfile. Until that
+branch merges, the offline installer lane does not have the tool-identity or
+locked-dependency properties described above; this branch only kept its
+generator-launcher references compiling. Nothing in this document should be
+read as a guarantee about that lane.
 
 **One route, everywhere.** `locale-catalog:generate`, the catalog validator,
 the serving gate, npm's own `prebuild`, the container build, the offline

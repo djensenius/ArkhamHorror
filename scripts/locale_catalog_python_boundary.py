@@ -110,13 +110,13 @@ ENTRY_POINTS = frozenset(
     }
 )
 
-# The trusted computing base on the repository side: sources whose bytes decide
-# whether other sources may run at all. Each is pinned by exact SHA-256 in
-# `scripts/locale_catalog_python_runtime.json` and verified by the sealed shell
-# before the interpreter is pointed at any of them. They stay governed sources
-# too -- capability-scanned and folded into provenance -- but authentication
-# comes first, because a scanner that has already executed cannot vouch for
-# itself.
+# The reviewed tooling whose exact bytes are recorded in
+# `scripts/locale_catalog_python_runtime.json` and checked by the pinned runner.
+# All of it is trusted committed code; the digests are an identity and drift
+# record, so that changing one of these files is a coordinated, reviewed edit
+# rather than a silent difference between what ran and what is recorded. They
+# stay ordinary governed sources too -- linted like any other and folded into
+# provenance.
 TRUSTED_SOURCES = frozenset(
     {
         "frontend/scripts/locale-catalog/generator-launcher.mjs",

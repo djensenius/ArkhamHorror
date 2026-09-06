@@ -171,7 +171,8 @@ def verify_startup_modules(profile: dict, runtime_home: Path) -> None:
     compiled extension outranks a source module. The sealed shell removes the
     zip root, empties `lib-dynload` and refuses any other non-source import
     candidate in the prefix before this interpreter starts, which is what makes
-    this module's own top-level imports authenticated rather than hopeful.
+    this module's own top-level imports resolve to bytes the committed lock
+    describes, rather than to whatever happened to be on the path.
 
     This check is the second half of that: every module already in
     `sys.modules` with a file must live under the copied stdlib root and hash
@@ -218,8 +219,8 @@ def verify_trusted_sources(profile: dict) -> None:
     """Re-check the declared trusted computing base.
 
     These are reviewed files, and this is a drift record over them, not an
-    authorization root: repository code cannot authenticate the shell that is
-    already executing it. What it buys is that changing one of them has to be a
+    identity record over reviewed code: repository code cannot make a
+    statement about the shell that is already executing it. What it buys is that changing one of them has to be a
     coordinated, reviewed edit that also moves the recorded digest. The one
     ordering that matters is the capability lint, checked before it is
     imported, because a half-edited lint should not be deciding anything.
@@ -755,14 +756,17 @@ def wheel_is_compatible(filename: str) -> bool:
 
 
 def attest_dependency_sources(destination: Path) -> None:
-    """Refuse a hostile project or lock *before* uv is allowed to start.
+    """Check the project and lock before uv is allowed to resolve anything.
 
-    This runs in a throwaway interpreter that imports only the standard
-    library, executes no project code, creates no environment and builds
-    nothing. Its whole job is to guarantee that by the time uv starts there is
-    no source it could build, no PEP 517 backend it could invoke and no
-    artifact it could fetch that is not an exactly hash-pinned registry wheel
-    wheel.
+    uv fetches and can build *externally produced* packages, which is the one
+    class of code this project does treat as untrusted. So the declaration it
+    will act on is checked first, in a throwaway interpreter.
+
+    It imports only the standard library, executes no project code, creates no
+    environment and builds nothing. Its whole job is to establish that by the
+    time uv starts there is no source it could build, no PEP 517 backend it
+    could invoke and no artifact it could fetch that is not an exactly
+    hash-pinned registry wheel.
 
     The exact bytes it validated are then written into this invocation's own
     project directory and uv is pointed at *that*, so what uv consumes is what

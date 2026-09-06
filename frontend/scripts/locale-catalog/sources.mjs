@@ -8,11 +8,11 @@
 // composition, `.json` imports and the `import.meta.glob` homebrew discovery
 // therefore behave identically to `npm run build`.
 
-import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, posix, relative as relative_, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { registerDerivedOutputRoot } from './generator-launcher.mjs'
+import { createOwnedBuildDirectory, releaseOwnedBuildDirectory } from './owned-build-dir.mjs'
 
 const VIRTUAL_ENTRY = '\0locale-catalog-entry'
 
@@ -263,7 +263,7 @@ export async function loadOwnershipTrees(frontendDir) {
   const { build } = await import('vite')
   const owned = createOwnedBuildDirectory(frontendDir)
   try {
-    const bundle = await bundleLocaleSources(build, frontendDir, owned.path, [
+    const bundle = await bundleLocaleSources(build, frontendDir, owned.out, [
       ownershipTagger(resolve(frontendDir)),
     ])
     const trees = {}
@@ -284,45 +284,10 @@ export async function loadLocaleSources(frontendDir) {
   // compare a bundle against itself.
   const owned = createOwnedBuildDirectory(frontendDir)
   try {
-    return await bundleLocaleSources(build, frontendDir, owned.path)
+    return await bundleLocaleSources(build, frontendDir, owned.out)
   } finally {
     releaseOwnedBuildDirectory(owned)
   }
-}
-
-const BUILD_OWNER_FILE = '.locale-catalog-build-owner'
-
-/**
- * A private, invocation-owned directory for the bundle Vite writes and the
- * generator then imports.
- *
- * This used to live under `frontend/node_modules/.locale-catalog`, which put
- * derived executable output inside the installed dependency tree — the one
- * place whose contents are supposed to come from `package-lock.json`. It now
- * sits beside `node_modules` instead of inside it: `mkdtemp` creates it
- * exclusively (mode 0700) and it carries an ownership token, so cleanup can
- * prove it is removing the directory this call created rather than something
- * that inherited the name. It stays under `frontend/` because Node resolves the
- * bundle's bare imports by walking up to `frontend/node_modules`.
- */
-export function createOwnedBuildDirectory(frontendDir) {
-  const path = realpathSync(mkdtempSync(join(resolve(frontendDir), '.locale-catalog-build-')))
-  const token = randomUUID()
-  writeFileSync(join(path, BUILD_OWNER_FILE), token, { encoding: 'utf8' })
-  registerDerivedOutputRoot(path)
-  return { path, token }
-}
-
-/** Remove an owned build directory only after re-proving this call owns it. */
-export function releaseOwnedBuildDirectory(owned) {
-  let recorded
-  try {
-    recorded = readFileSync(join(owned.path, BUILD_OWNER_FILE), 'utf8')
-  } catch {
-    return
-  }
-  if (recorded !== owned.token) return
-  rmSync(owned.path, { recursive: true, force: true })
 }
 
 async function bundleLocaleSources(build, frontendDir, outDir, extraPlugins = []) {

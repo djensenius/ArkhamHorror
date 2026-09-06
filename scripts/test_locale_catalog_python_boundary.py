@@ -20,8 +20,8 @@ file, a digest list or a generated artifact no longer matches what was
 recorded), *identity* checks (an external tool or dependency is exactly the
 pinned artifact), and *policy* checks (CI privilege, production
 centralisation, dependency lifecycle, ownership-safe cleanup). None of them
-claims to contain hostile committed code, and the capability lint they exercise
-is a review aid, not a proof.
+claims to constrain committed code, and the capability lint they exercise is a
+review aid, not a proof.
 
 Every probe runs inside an invocation-owned temporary copy of the governed
 tree. Nothing here creates, overwrites, truncates, restores or deletes a path
@@ -1926,9 +1926,9 @@ def test_reviewed_source_drift(scratch: Path, token: str) -> int:
     These files are trusted committed code; the digests in the runtime profile
     are a *drift record*, so that changing one has to be a coordinated,
     reviewed edit rather than a quiet difference between what ran and what the
-    profile says ran. Repository code cannot authenticate the shell that is
-    already executing it, and nothing here pretends otherwise -- what it does
-    do is notice when the recorded identity and the file disagree. For the
+    profile says ran. Repository code cannot make a statement about the shell
+    that is already executing it, and nothing here pretends otherwise -- what
+    it does do is notice when the recorded identity and the file disagree. For the
     capability lint the check happens before it is imported, which is worth
     having simply because a half-edited lint should not decide anything.
     """
@@ -1952,7 +1952,7 @@ def test_reviewed_source_drift(scratch: Path, token: str) -> int:
             require(
                 not marker.exists(),
                 "the replacement capability analyzer executed its own top-level code before it "
-                "was authenticated",
+                "its recorded identity was checked",
             )
             checked += 1
         finally:
@@ -2068,7 +2068,11 @@ def require_refused_before_uv(label: str, tree: Path, expected: str) -> None:
 
 
 def test_dependency_source_attestation(scratch: Path, token: str) -> int:
-    """A hostile project or lock is refused before any dependency code runs."""
+    """A project or lock that could build code is refused before uv resolves it.
+
+    These are checks over *externally produced* packages -- the class this
+    project does treat as untrusted -- so "refused" is accurate here.
+    """
     checked = 0
     for label, (relative_path, original, replacement, expected) in sorted(
         UV_ATTESTATION_CASES.items()
@@ -2277,63 +2281,130 @@ def test_generator_module_graph_drift(scratch: Path, token: str) -> int:
 # ---------------------------------------------------------------------------
 
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
-GOVERNED_COMMAND_MARKERS = ("mise run contracts:", "mise run locale-catalog:")
+# What counts as "this job does governed work". Anything that reaches a mise
+# governed task, the pinned runner, a generator entry, the npm build/prebuild
+# path, or a local action/reusable workflow that does one of those.
+GOVERNED_RUN_MARKERS = (
+    "mise run contracts:",
+    "mise run locale-catalog:",
+    "run-locale-catalog-python.sh",
+    "generator-launcher.mjs",
+    "npm run build",
+    "npm run prebuild",
+    "offline/scripts/03-build-frontend.sh",
+    "offline/scripts/05-package.sh",
+)
 FORBIDDEN_TRIGGERS = ("pull_request_target", "workflow_run")
-PUBLISHING_ACTIONS = ("actions/upload-artifact", "softprops/action-gh-release", "actions/upload-pages-artifact")
+PUBLISHING_ACTION_PREFIXES = (
+    "actions/upload-artifact",
+    "actions/upload-pages-artifact",
+    "actions/deploy-pages",
+    "softprops/action-gh-release",
+    "docker/build-push-action",
+    "docker/login-action",
+    "ncipollo/release-action",
+)
+PUBLISHING_RUN_MARKERS = ("gh release", "docker push", "npm publish", "gh api --method POST")
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+SECRET_CONTEXT = re.compile(r"secrets\s*(?:\.\s*[A-Za-z_]|\[)")
 
 
-def load_workflows() -> dict[str, dict]:
+def load_workflows(directory: Path) -> dict[str, object]:
     """Parse every workflow once, structurally.
 
-    Prose scanning would flag a comment and miss a real setting; every check
-    below reads the parsed document instead.
+    Both suffixes: GitHub accepts `.yml` and `.yaml`, and a policy that reads
+    only one of them is a policy with a hole in it.
     """
-    documents: dict[str, dict] = {}
-    for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+    documents: dict[str, object] = {}
+    for path in sorted(directory.iterdir()):
+        if path.suffix not in {".yml", ".yaml"} or not path.is_file():
+            continue
         documents[path.name] = yaml.safe_load(path.read_text(encoding="utf-8"))
-    require(documents, "no workflows were found to check")
+    require(documents, f"no workflows were found under {directory}")
     return documents
 
 
 def workflow_triggers(document: dict) -> set[str]:
-    # `on` is the YAML 1.1 boolean `True` once parsed, which is exactly the
-    # kind of thing a text scan gets wrong.
+    # `on` parses as the YAML 1.1 boolean `True`, which is exactly the kind of
+    # thing a text scan gets wrong.
     triggers = document.get("on", document.get(True))
     if isinstance(triggers, str):
         return {triggers}
     if isinstance(triggers, list):
-        return set(triggers)
+        return {str(item) for item in triggers}
     if isinstance(triggers, dict):
-        return set(triggers)
+        return {str(key) for key in triggers}
     return set()
 
 
-def job_runs_governed_commands(job: dict) -> bool:
+def node_text(value: object) -> str:
+    """Flatten any nested YAML node to text, so aliases and lists are covered."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(f"{node_text(key)} {node_text(item)}" for key, item in value.items())
+    if isinstance(value, list):
+        return " ".join(node_text(item) for item in value)
+    return "" if value is None else str(value)
+
+
+def local_action_text(uses: str) -> str:
+    """The body of a local composite action, so its steps are inspected too."""
+    if not uses.startswith("./"):
+        return ""
+    base = ROOT / uses[2:]
+    for candidate in (base, base / "action.yml", base / "action.yaml"):
+        if candidate.is_file():
+            return candidate.read_text(encoding="utf-8")
+    return ""
+
+
+def job_is_governed(job: object, documents: dict[str, object]) -> bool:
+    if not isinstance(job, dict):
+        return False
+    reusable = job.get("uses")
+    if isinstance(reusable, str):
+        if reusable.startswith("./"):
+            referenced = ROOT / reusable[2:]
+            if referenced.is_file():
+                text = referenced.read_text(encoding="utf-8")
+                if any(marker in text for marker in GOVERNED_RUN_MARKERS):
+                    return True
+        # A remote reusable workflow is out of this repository's control, so it
+        # is treated as governed and must satisfy the same posture.
+        return True
     for step in job.get("steps", []) or []:
-        run = step.get("run") if isinstance(step, dict) else None
-        if isinstance(run, str) and any(marker in run for marker in GOVERNED_COMMAND_MARKERS):
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run")
+        if isinstance(run, str) and any(marker in run for marker in GOVERNED_RUN_MARKERS):
             return True
+        uses = step.get("uses")
+        if isinstance(uses, str):
+            body = local_action_text(uses)
+            if body and any(marker in body for marker in GOVERNED_RUN_MARKERS):
+                return True
     return False
 
 
-def test_ci_privilege_policy() -> int:
-    """CI jobs that run governed commands hold as little authority as possible.
+def check_ci_privilege(directory: Path) -> int:
+    """Assert least privilege for every workflow job that does governed work.
 
-    PR CI may execute unreviewed pull-request code -- that is what CI is for --
-    and nothing here contains it. What this asserts is the *blast radius*: an
-    ephemeral job with read-only contents, no secrets, no credential-bearing
-    checkout, actions pinned to exact commits, and no publication of
-    authoritative output from a pull request.
+    Pull-request CI runs unreviewed code by design and nothing here contains
+    it; what is asserted is the blast radius. Everything is read from the
+    parsed document, and secret references are matched as *contexts*
+    (`secrets.NAME`, `secrets['NAME']`, `secrets: inherit`) rather than as the
+    literal text `secrets.`, so an alternate spelling does not slip past.
     """
     checked = 0
-    documents = load_workflows()
+    documents = load_workflows(directory)
     for name, document in sorted(documents.items()):
+        require(isinstance(document, dict), f"{name} is not a mapping")
         jobs = document.get("jobs") or {}
         governed = {
             job_name: job
             for job_name, job in jobs.items()
-            if isinstance(job, dict) and job_runs_governed_commands(job)
+            if job_is_governed(job, documents)
         }
         if not governed:
             continue
@@ -2345,89 +2416,381 @@ def test_ci_privilege_policy() -> int:
                 f"{name} triggers on {trigger}, which would run pull-request code with the "
                 "base repository's authority",
             )
-        text = (WORKFLOW_DIR / name).read_text(encoding="utf-8")
-        require(
-            "secrets." not in text,
-            f"{name} references secrets in a workflow that runs governed commands",
-        )
         permissions = document.get("permissions")
         require(
             permissions == {"contents": "read"},
             f"{name} must declare `permissions: contents: read`, got {permissions!r}",
         )
+        require(
+            SECRET_CONTEXT.search(node_text(document)) is None,
+            f"{name} references a secret context in a workflow that does governed work",
+        )
         for job_name, job in sorted(governed.items()):
-            job_permissions = job.get("permissions", permissions)
+            checked += 1
             require(
-                job_permissions == {"contents": "read"},
-                f"{name}:{job_name} widens permissions to {job_permissions!r}",
+                job.get("permissions", permissions) == {"contents": "read"},
+                f"{name}:{job_name} widens permissions to "
+                f"{job.get('permissions', permissions)!r}",
+            )
+            require(
+                job.get("secrets") is None,
+                f"{name}:{job_name} passes secrets ({job.get('secrets')!r}) to governed work",
+            )
+            require(
+                job.get("environment") is None,
+                f"{name}:{job_name} runs in a protected environment, which can carry secrets "
+                "and deployment authority",
             )
             for step in job.get("steps", []) or []:
                 if not isinstance(step, dict):
                     continue
-                uses = step.get("uses")
-                if uses is not None:
-                    require(
-                        PINNED_ACTION.match(str(uses)) is not None,
-                        f"{name}:{job_name} uses {uses!r}, which is not pinned to a 40-hex commit",
-                    )
-                    if str(uses).startswith("actions/checkout@"):
-                        with_block = step.get("with") or {}
-                        require(
-                            with_block.get("persist-credentials") is False,
-                            f"{name}:{job_name} checks out with credentials persisted",
-                        )
-                    if any(str(uses).startswith(action) for action in PUBLISHING_ACTIONS):
-                        require(
-                            "pull_request" not in triggers,
-                            f"{name}:{job_name} publishes an artifact from a pull request",
-                        )
                 checked += 1
+                uses = step.get("uses")
+                run = step.get("run")
+                if isinstance(run, str) and "pull_request" in triggers:
+                    for marker in PUBLISHING_RUN_MARKERS:
+                        require(
+                            marker not in run,
+                            f"{name}:{job_name} publishes with {marker!r} from a pull request",
+                        )
+                if uses is None:
+                    continue
+                uses = str(uses)
+                if not uses.startswith("./"):
+                    require(
+                        PINNED_ACTION.match(uses) is not None,
+                        f"{name}:{job_name} uses {uses!r}, which is not pinned to a 40-hex "
+                        "commit",
+                    )
+                if uses.startswith("actions/checkout@"):
+                    with_block = step.get("with") or {}
+                    require(
+                        with_block.get("persist-credentials") is False,
+                        f"{name}:{job_name} checks out with credentials persisted",
+                    )
+                if any(uses.startswith(prefix) for prefix in PUBLISHING_ACTION_PREFIXES):
+                    require(
+                        "pull_request" not in triggers,
+                        f"{name}:{job_name} publishes an artifact from a pull request",
+                    )
+    return checked
+
+
+def test_ci_privilege_policy() -> int:
+    """The real workflows, plus synthetic fixtures proving the checks bite."""
+    checked = check_ci_privilege(WORKFLOW_DIR)
     require(checked > 10, f"the CI privilege scan only examined {checked} elements")
     return checked
 
 
-# ---------------------------------------------------------------------------
-# Policy: production catalog generation is centralised on one entry point
-# ---------------------------------------------------------------------------
-
-# Exactly the files that *execute* catalog generation in production, and the
-# structured way each of them does it. Documentation, tests and the frontend's
-# own trusted test modules are not production execution paths and are not
-# scanned as executable text.
-PRODUCTION_GENERATION_PATHS: dict[str, str] = {
-    "scripts/generate-locale-catalog.py": "generator_launcher_argv",
-    "scripts/validate-locale-catalog.py": "generator_launcher_argv",
-    "scripts/validate-catalog-serving.py": "generator_launcher_argv",
-    "frontend/package.json": "generator-launcher.mjs",
-    "Dockerfile": "generator-launcher.mjs",
-    "offline/scripts/03-build-frontend.sh": "generator-launcher.mjs",
-    "offline/scripts/05-package.sh": "generator-launcher.mjs",
-    ".github/workflows/locale-catalog.yml": "generator-launcher.mjs",
+HOSTILE_WORKFLOW_FIXTURES: dict[str, tuple[str, str]] = {
+    "a .yaml workflow is discovered too": (
+        "governed.yaml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: mise run contracts:fixtures
+""",
+    ),
+    "a bracket secret reference": (
+        "governed.yml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: mise run contracts:fixtures
+        env:
+          TOKEN: ${{ secrets['DEPLOY_TOKEN'] }}
+""",
+    ),
+    "secrets: inherit on a governed job": (
+        "governed.yml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/reusable-governed.yml
+    secrets: inherit
+""",
+    ),
+    "a protected environment": (
+        "governed.yml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: mise run locale-catalog:validate
+""",
+    ),
+    "an unpinned action": (
+        "governed.yml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: mise run contracts:routes
+""",
+    ),
+    "a checkout that persists credentials": (
+        "governed.yml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+      - run: mise run contracts:routes
+""",
+    ),
+    "artifact upload from a pull request": (
+        "governed.yml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: mise run locale-catalog:generate
+      - uses: actions/upload-artifact@2222222222222222222222222222222222222222
+""",
+    ),
+    "a pull_request_target trigger": (
+        "governed.yml",
+        """
+on:
+  pull_request_target:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: mise run contracts:fixtures
+""",
+    ),
+    "governed work reached only through a wrapper script": (
+        "governed.yml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: bash offline/scripts/03-build-frontend.sh
+""",
+    ),
+    "publishing with gh release from a pull request": (
+        "governed.yml",
+        """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: mise run locale-catalog:generate && gh release upload v1 out.zip
+""",
+    ),
 }
+
+
+def test_ci_privilege_policy_fixtures(scratch: Path, token: str) -> int:
+    """Synthetic workflows the policy must reject, and one it must accept.
+
+    Without these, a policy that silently stopped discovering jobs would keep
+    passing. Each fixture is written into an owned directory and parsed by the
+    same code path the real workflows go through.
+    """
+    checked = 0
+    for label, (filename, body) in sorted(HOSTILE_WORKFLOW_FIXTURES.items()):
+        directory = scratch / f"workflow-fixture-{uuid.uuid4().hex}"
+        directory.mkdir()
+        try:
+            (directory / filename).write_text(body.lstrip("\n"), encoding="utf-8")
+            rejected = False
+            try:
+                check_ci_privilege(directory)
+            except ProbeFailure:
+                rejected = True
+            require(rejected, f"the CI privilege policy accepted {label!r}")
+            checked += 1
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    directory = scratch / f"workflow-fixture-{uuid.uuid4().hex}"
+    directory.mkdir()
+    try:
+        (directory / "governed.yaml").write_text(
+            "on:\n  pull_request:\npermissions:\n  contents: read\njobs:\n"
+            "  build:\n    runs-on: ubuntu-latest\n    steps:\n"
+            "      - uses: actions/checkout@1111111111111111111111111111111111111111\n"
+            "        with:\n          persist-credentials: false\n"
+            "      - run: mise run contracts:fixtures\n",
+            encoding="utf-8",
+        )
+        examined = check_ci_privilege(directory)
+        require(examined > 0, "the accepted control workflow was not discovered as governed")
+        checked += 1
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+    return checked
+
+
 GENERATOR_ENTRY_MODULES = ("generate.mjs", "verify-dist.mjs")
 GENERATOR_LAUNCHER_NAME = "generator-launcher.mjs"
 COMMENT_PREFIXES = ("#", "//", "*", chr(34) * 3, chr(39) * 3)
 EXECUTION_TOKENS = ("node", "NODE", "run", "RUN", "subprocess", "exec")
 
+# Where production callers live. The inventory is *discovered* under these
+# roots rather than listed by hand, so a new workflow, script or package
+# command that runs the generator is covered the moment it is added.
+PRODUCTION_ROOTS = (
+    ".github/workflows",
+    "Dockerfile",
+    "frontend/package.json",
+    "mise.toml",
+    "offline/scripts",
+    "scripts",
+)
+# Deliberately excluded: trusted tests and documentation. Frontend tests import
+# generator modules directly and are allowed to; docs describe commands rather
+# than running them.
+PRODUCTION_EXCLUDED_PATHS = frozenset(
+    {
+        "frontend/scripts/locale-catalog/generator-launcher.mjs",
+        "offline/scripts/test-frontend-cache-hash.sh",
+        "offline/scripts/test-frontend-cache-hit.sh",
+        "scripts/test_locale_catalog_python_boundary.py",
+    }
+)
+PRODUCTION_EXCLUDED_SUFFIXES = (".md", ".txt")
+# Callers that must be present *and* must reach generation through the
+# launcher. A production path that stops appearing here is a discovery gap, so
+# the inventory is checked against this floor rather than only scanned.
+REQUIRED_PRODUCTION_CALLERS: dict[str, str] = {
+    ".github/workflows/build-offline.yml": "offline/scripts",
+    ".github/workflows/contracts.yml": "mise run contracts:",
+    ".github/workflows/haskell.yml": "mise run locale-catalog:generate",
+    ".github/workflows/locale-catalog.yml": "mise run locale-catalog:",
+    "Dockerfile": GENERATOR_LAUNCHER_NAME,
+    "frontend/package.json": GENERATOR_LAUNCHER_NAME,
+    "mise.toml": "scripts/generate-locale-catalog.py",
+    "offline/scripts/03-build-frontend.sh": GENERATOR_LAUNCHER_NAME,
+    "offline/scripts/05-package.sh": GENERATOR_LAUNCHER_NAME,
+    "scripts/generate-locale-catalog.py": "generator_launcher_argv",
+    "scripts/validate-catalog-serving.py": "generator_launcher_argv",
+    "scripts/validate-locale-catalog.py": "generator_launcher_argv",
+}
+
+
+def production_caller_files() -> list[Path]:
+    """Every executable configuration or script that could start generation."""
+    found: list[Path] = []
+    for relative in PRODUCTION_ROOTS:
+        path = ROOT / relative
+        if path.is_file():
+            found.append(path)
+            continue
+        if not path.is_dir():
+            continue
+        for child in sorted(path.rglob("*")):
+            if not child.is_file() or child.is_symlink():
+                continue
+            if child.suffix in PRODUCTION_EXCLUDED_SUFFIXES:
+                continue
+            if child.relative_to(ROOT).as_posix() in PRODUCTION_EXCLUDED_PATHS:
+                continue
+            found.append(child)
+    require(found, "the production caller inventory found no files")
+    return found
+
 
 def test_generator_production_policy() -> int:
-    """Every production generation path goes through the one launcher.
+    """Every production path starts generation through the one launcher.
 
-    This is a centralisation check, not a containment one: the generator is
-    trusted committed code either way. Running it from six different places is
-    how behaviour drifts and how a provenance-bearing input silently stops
-    being hashed.
+    This is centralisation, not containment: the generator is trusted committed
+    code either way. Running it from six different places is how behaviour
+    drifts and how a provenance-bearing input quietly stops being hashed. The
+    inventory is discovered rather than hand-listed, and checked against a floor
+    of callers that must exist, so a *missing* production path is a failure too.
     """
     checked = 0
     violations: list[str] = []
-    for relative, expected in sorted(PRODUCTION_GENERATION_PATHS.items()):
+    for relative, expected in sorted(REQUIRED_PRODUCTION_CALLERS.items()):
         path = ROOT / relative
-        require(path.is_file(), f"production generation path {relative} is missing")
-        text = path.read_text(encoding="utf-8")
+        require(path.is_file(), f"production caller {relative} is missing from the repository")
         require(
-            expected in text,
-            f"{relative} no longer starts generation through {expected}",
+            expected in path.read_text(encoding="utf-8"),
+            f"{relative} no longer reaches generation through {expected!r}",
         )
+        checked += 1
+    for path in production_caller_files():
+        relative = path.relative_to(ROOT).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
         checked += 1
         for line_number, line in enumerate(text.splitlines(), start=1):
             if GENERATOR_LAUNCHER_NAME in line or "generator_launcher_argv" in line:
@@ -2584,6 +2947,121 @@ def test_interpreter_prefix_import_surface(scratch: Path, token: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Regression: the generator's owned build directory is always cleaned up
+# ---------------------------------------------------------------------------
+
+OWNED_BUILD_MODULE = "frontend/scripts/locale-catalog/owned-build-dir.mjs"
+BUILD_DIRECTORY_PREFIX = ".locale-catalog-build-"
+BUILD_OWNER_FILE = ".locale-catalog-build-owner"
+
+
+def owned_build_probe_source(frontend: Path) -> str:
+    """A Node probe over the real ownership helpers.
+
+    Three outcomes have to hold, and the second is the one that failed in
+    production: Vite is given the child directory and runs with
+    `emptyOutDir: true`, so anything stored *inside* the output directory is
+    erased before the generator can use it to prove ownership.
+    """
+    module = (ROOT / OWNED_BUILD_MODULE).resolve()
+    return (
+        "import { existsSync, mkdirSync, rmSync, writeFileSync, readdirSync } from 'node:fs'\n"
+        "import { join } from 'node:path'\n"
+        f"import {{ createOwnedBuildDirectory, releaseOwnedBuildDirectory }} from {str(module.as_uri())!r}\n"
+        f"const frontend = {str(frontend)!r}\n"
+        "const results = {}\n"
+        "\n"
+        "// 1. success path\n"
+        "const first = createOwnedBuildDirectory(frontend)\n"
+        "writeFileSync(join(first.out, 'entry.mjs'), 'export const value = 1\\n')\n"
+        "results.successRemoved = releaseOwnedBuildDirectory(first) && !existsSync(first.root)\n"
+        "\n"
+        "// 2. failure path, with Vite's emptyOutDir behaviour reproduced\n"
+        "const second = createOwnedBuildDirectory(frontend)\n"
+        "let releasedAfterFailure = false\n"
+        "try {\n"
+        "  rmSync(second.out, { recursive: true, force: true })\n"
+        "  mkdirSync(second.out)\n"
+        "  throw new Error('generation failed after the output directory was emptied')\n"
+        "} catch {\n"
+        "  releasedAfterFailure = releaseOwnedBuildDirectory(second)\n"
+        "}\n"
+        "results.failureRemoved = releasedAfterFailure && !existsSync(second.root)\n"
+        "\n"
+        "// 3. a directory this call does not own is left alone\n"
+        "const third = createOwnedBuildDirectory(frontend)\n"
+        "writeFileSync(join(third.root, '.locale-catalog-build-owner'), 'someone-else')\n"
+        "results.foreignKept = !releaseOwnedBuildDirectory(third) && existsSync(third.root)\n"
+        "rmSync(third.root, { recursive: true, force: true })\n"
+        "\n"
+        "// 4. the marker lives outside the tree Vite erases\n"
+        "const fourth = createOwnedBuildDirectory(frontend)\n"
+        "results.markerOutsideOutput = !readdirSync(fourth.out).includes(\n"
+        "  '.locale-catalog-build-owner',\n"
+        ")\n"
+        "releaseOwnedBuildDirectory(fourth)\n"
+        "\n"
+        "process.stdout.write(JSON.stringify(results))\n"
+    )
+
+
+def test_owned_build_directory_cleanup(scratch: Path, token: str) -> int:
+    """Generated scratch is removed on success and on failure, never otherwise.
+
+    This is a resource-correctness regression, not a security property: an
+    earlier revision kept the ownership marker inside the directory Vite
+    empties, so every failed generation leaked a full copy of `public/` --
+    92 directories and 27 GiB of them before it was noticed.
+    """
+    frontend = scratch / f"owned-build-{uuid.uuid4().hex}"
+    frontend.mkdir()
+    probe = frontend / "probe.mjs"
+    probe.write_text(owned_build_probe_source(frontend), encoding="utf-8")
+    try:
+        result = subprocess.run(
+            [pinned_node_binary(), str(probe)],
+            cwd=frontend,
+            env=probe_environment(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
+        require(
+            result.returncode == 0,
+            f"the owned build directory probe failed\nstdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}",
+        )
+        outcomes = json.loads(result.stdout)
+        for name in ("successRemoved", "failureRemoved", "foreignKept", "markerOutsideOutput"):
+            require(outcomes.get(name) is True, f"owned build directory probe: {name} did not hold")
+        leaked = sorted(frontend.glob(f"{BUILD_DIRECTORY_PREFIX}*"))
+        require(not leaked, f"the owned build directory probe leaked {leaked}")
+        return len(outcomes)
+    finally:
+        shutil.rmtree(frontend, ignore_errors=True)
+
+
+def test_generation_leaves_no_build_directory(scratch: Path, token: str) -> int:
+    """A real generation run leaves no scratch directory behind."""
+    tree = create_probe_tree(scratch, "build-cleanup", token, with_history=False)
+    try:
+        before = sorted((tree / "frontend").glob(f"{BUILD_DIRECTORY_PREFIX}*"))
+        require(not before, f"the probe tree already contains build scratch: {before}")
+        result = run_authoritative(tree, [FIXTURE_ENTRY, "--check"])
+        require(
+            result.returncode == 0,
+            f"the fixture check failed in the cleanup probe\nstdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}",
+        )
+        after = sorted((tree / "frontend").glob(f"{BUILD_DIRECTORY_PREFIX}*"))
+        require(not after, f"a governed command left build scratch behind: {after}")
+        return 1
+    finally:
+        release_probe_tree(tree, token)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -2650,7 +3128,10 @@ def main() -> None:
     try:
         totals["interpreter prefix surface"] = test_interpreter_prefix_import_surface(scratch, token)
         totals["generator module graph drift"] = test_generator_module_graph_drift(scratch, token)
+        totals["owned build directory cleanup"] = test_owned_build_directory_cleanup(scratch, token)
+        totals["generation leaves no scratch"] = test_generation_leaves_no_build_directory(scratch, token)
         totals["ci privilege policy"] = test_ci_privilege_policy()
+        totals["ci privilege fixtures"] = test_ci_privilege_policy_fixtures(scratch, token)
         totals["generator production policy"] = test_generator_production_policy()
         totals["npm lifecycle policy"] = test_npm_install_lifecycle_policy()
         totals["analyzer matrix"] = test_analyzer_matrix(scratch, token)

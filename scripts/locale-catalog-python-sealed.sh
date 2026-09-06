@@ -93,21 +93,20 @@ lock_digest() {
   printf '%s\n' "${matches}" | "${SED}" -E 's/.*"([0-9a-f]{64})"$/\1/'
 }
 
-# The repository-side trusted computing base is declared, not self-proved.
+# Identity and drift checks over reviewed repository code.
 #
-# Two different things happen below, and conflating them would be a lie:
+# Every file checked below is trusted committed code, reviewed through pull
+# request; none of it is being authenticated against an attacker. What the
+# digests buy is that changing one of these files has to be a coordinated,
+# reviewed edit that also moves the recorded identity, and that a governed run
+# on a machine where they differ stops and says so instead of proceeding.
 #
-#   * The capability analyzer and the bootstrap are *authenticated*: their
-#     bytes are checked here, before any interpreter is started, so a replaced
-#     analyzer cannot decide whether the sources it replaced may run.
-#   * Both shell stages and the toolchain lock itself are *drift-checked*.
-#     bash has already read and begun executing this file, and the POSIX stage
-#     that launched it has already run; no digest computed by that same code
-#     can authenticate it. The check reports a mismatch between the launcher
-#     that is running and the identity committed for it, which is a useful
-#     consistency signal and nothing more. Changes to these files are governed
-#     by ordinary human review and by exact provenance, not by self-checking.
-check_tcb_digest() {
+# The only ordering worth noting is the capability lint and the Node launcher:
+# they are checked before anything imports or starts them, simply because a
+# half-edited lint or launcher should not be deciding anything. The two shell
+# stages and the profile are checked after they are already running, so for
+# those it is drift reporting and nothing more.
+check_committed_digest() {
   local relative="$1" path="${ROOT}/$1" expected actual
   [[ ! -L "${path}" && -f "${path}" ]] ||
     die "trusted source '${relative}' is not a regular file"
@@ -119,14 +118,13 @@ check_tcb_digest() {
 
 [[ ! -L "${PROFILE}" && -f "${PROFILE}" ]] ||
   die "the committed toolchain lock '${PROFILE}' is not a regular file"
-# Drift checks on the launcher stages that are already running.
-check_tcb_digest "scripts/run-locale-catalog-python.sh"
-check_tcb_digest "scripts/locale-catalog-python-sealed.sh"
-# Real pre-execution authentication: nothing below has imported or run either
-# of these yet.
-check_tcb_digest "scripts/locale_catalog_python_boundary.py"
-check_tcb_digest "scripts/locale_catalog_runtime.py"
-check_tcb_digest "frontend/scripts/locale-catalog/generator-launcher.mjs"
+# Already running: this is drift reporting.
+check_committed_digest "scripts/run-locale-catalog-python.sh"
+check_committed_digest "scripts/locale-catalog-python-sealed.sh"
+# Not yet imported or started: checked before first use.
+check_committed_digest "scripts/locale_catalog_python_boundary.py"
+check_committed_digest "scripts/locale_catalog_runtime.py"
+check_committed_digest "frontend/scripts/locale-catalog/generator-launcher.mjs"
 readonly SEALED_ROOT="${LOCALE_CATALOG_MISE_ROOT:?locale-catalog python: LOCALE_CATALOG_MISE_ROOT is required for authoritative commands; the *-local convenience tasks are not authoritative}"
 
 # The sealed toolchain root must be named exactly, absolutely, and canonically.
