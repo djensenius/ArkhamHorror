@@ -681,12 +681,23 @@ including across line breaks and around an interleaved `/* … */`. Shell files
 are read after joining backslash continuations, then split — quote- and
 escape-aware — into the commands that actually run: `;`, `&&`, `||`, `|`,
 newlines, `(…)` subshells, `{ …; }` groups and `$(…)`/backtick substitutions
-each start a new segment, while a quoted `;` or `&&` stays an argument. The
-launcher mediates only the command it appears in, so
-`node …/generator-launcher.mjs generate.mjs && node …/generate.mjs` is
-rejected on its second segment; assignments carry across segments the way the
-shell carries them, so `GEN=…/generate.mjs; node "$GEN"` is rejected too, and
-an unbalanced quote or group around a generator mention fails closed. Python
+each start a new segment, while a quoted `;` or `&&` stays an argument. Within
+a segment the launcher mediates only when it is the program Node actually
+executes: leading `NAME=value` assignments and `env`-style wrappers (with their
+own options) are consumed, the executable is identified by name or path
+(`node`, `nodejs`, a pinned `/usr/local/bin/node`, or an unresolved
+`"${OFFLINE_NODE}"`), Node's own options are separated from its script, and the
+generator entry has to be the launcher's first argument — the launcher's real
+CLI. A launcher path that is merely present as data mediates nothing, so a
+trailing argument, an argument after `--`, an option value Node swallows
+(`--require …/generator-launcher.mjs`), an environment assignment, a
+redirection target or a nested command that never runs all leave a direct
+`node …/generate.mjs` rejected, as does
+`node …/generator-launcher.mjs generate.mjs && node …/generate.mjs` on its
+second segment; assignments carry across segments the way the shell carries
+them, so `GEN=…/generate.mjs; node "$GEN"` is rejected too, and an unbalanced
+quote or group around a generator mention, or a command position this reader
+cannot resolve, fails closed. Python
 callers are read from the AST: a constant or `Path` join bound only for hashing
 is fine, the same value reaching `subprocess` argv — directly or through a
 variable — is not. Path spellings are normalised (`./`, `..`, duplicate

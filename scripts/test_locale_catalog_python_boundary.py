@@ -3345,9 +3345,11 @@ def test_ci_privilege_policy_fixtures(scratch: Path, token: str) -> int:
 GENERATOR_ENTRY_MODULES = ("generate.mjs", "verify-dist.mjs")
 GENERATOR_LAUNCHER_NAME = "generator-launcher.mjs"
 GENERATOR_DIRECTORY_NAME = "locale-catalog"
-# A caller that names the launcher in the same command, statement or string is
-# starting generation the sanctioned way: there the entry module is an
-# *argument* to the launcher, not a program in its own right.
+# In a module statement or a Python argv, naming the launcher *is* the
+# sanctioned spelling: there the entry module is an argument the launcher
+# resolves, not a program in its own right. Shell commands are not judged by
+# these markers -- see `command_is_launcher_mediated`, which reads the command
+# position instead, because a launcher path can also sit in a command as data.
 LAUNCHER_MARKERS = (GENERATOR_LAUNCHER_NAME, "generator_launcher_argv")
 
 JS_SUFFIXES = (".mjs", ".js", ".cjs")
@@ -3433,12 +3435,175 @@ def names_generator_entry(token: str) -> bool:
     return len(parts) == 1 or parts[-2] == GENERATOR_DIRECTORY_NAME
 
 
+def names_generator_launcher(token: str) -> bool:
+    """Whether a token names the launcher module itself.
+
+    The launcher is spelled relative to `frontend/` by every production caller
+    and absolutely by the container build, so the same normalisation the entry
+    modules get is applied here: `./scripts/locale-catalog/generator-launcher.mjs`,
+    `/app/frontend/scripts/locale-catalog/generator-launcher.mjs` and a bare
+    `generator-launcher.mjs` run from beside it all name the one mediator.
+    """
+    reference = normalise_reference(token)
+    if not reference:
+        return False
+    parts = reference.split("/")
+    if parts[-1] != GENERATOR_LAUNCHER_NAME:
+        return False
+    return len(parts) == 1 or parts[-2] == GENERATOR_DIRECTORY_NAME
+
+
 def entry_mentions(text: str) -> int:
     return sum(text.count(module) for module in GENERATOR_ENTRY_MODULES)
 
 
 def mediated(text: str) -> bool:
     return any(marker in text for marker in LAUNCHER_MARKERS)
+
+
+# A word that still contains an expansion, a substitution placeholder or a
+# glob is not a name this reader can resolve to a program.
+UNRESOLVED_WORD = re.compile(r"[$`*?]|\[.*\]")
+# `node`, `nodejs`, a pinned `node20`, a Windows `node.exe` and any absolute or
+# relative path ending in one of those are the same interpreter.
+NODE_EXECUTABLE = re.compile(r"^node(?:js)?[0-9.]*(?:\.exe)?$", re.IGNORECASE)
+# A leading `NAME=value` is an environment assignment, not the program.
+COMMAND_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# `2>`, `>>`, `<`, `>&2`, ... optionally with the target attached.
+REDIRECTION = re.compile(r"^[0-9]*(?:>>|>&|<&|<<<|<<|>|<)")
+# Wrappers that hand execution straight to the command word after their own
+# options, mapped to the options that consume the following word.
+COMMAND_WRAPPERS: dict[str, frozenset[str]] = {
+    "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
+    "exec": frozenset({"-a"}),
+    "command": frozenset(),
+}
+# Node options that swallow the next word, so that word is not the script.
+# `--require`/`--import` are exactly how a generator module could be executed
+# while the launcher sits in the option's value.
+NODE_VALUE_OPTIONS = frozenset(
+    {
+        "-r",
+        "--require",
+        "--import",
+        "--loader",
+        "--experimental-loader",
+        "-e",
+        "--eval",
+        "-p",
+        "--print",
+        "-C",
+        "--conditions",
+        "--input-type",
+        "--env-file",
+        "--watch-path",
+    }
+)
+
+
+def is_node_executable(word: str) -> bool:
+    return bool(NODE_EXECUTABLE.fullmatch(normalise_reference(word).rsplit("/", 1)[-1]))
+
+
+def is_unresolved_word(word: str) -> bool:
+    return bool(UNRESOLVED_WORD.search(word))
+
+
+def drop_redirections(words: list[str]) -> list[str]:
+    """Remove redirection operators and their targets.
+
+    `node > generator-launcher.mjs.log scripts/.../generate.mjs` writes a file;
+    it does not run one, so neither the operator nor its target may be read as
+    a program or as the launcher.
+    """
+    kept: list[str] = []
+    index = 0
+    while index < len(words):
+        word = words[index]
+        match = REDIRECTION.match(word)
+        if match:
+            index += 2 if match.end() == len(word) else 1
+            continue
+        kept.append(word)
+        index += 1
+    return kept
+
+
+def executed_program(words: list[str]) -> tuple[str, list[str]] | None:
+    """Resolve the program a command runs and the arguments it is handed.
+
+    Leading `NAME=value` assignments and `env`-style wrappers (with their own
+    options and assignments) are consumed, because they change the environment
+    rather than being the thing that runs.
+    """
+    index = 0
+    while index < len(words) and COMMAND_ASSIGNMENT.match(words[index]):
+        index += 1
+    while index < len(words):
+        name = normalise_reference(words[index]).rsplit("/", 1)[-1]
+        if name not in COMMAND_WRAPPERS:
+            break
+        value_options = COMMAND_WRAPPERS[name]
+        index += 1
+        while index < len(words):
+            word = words[index]
+            if word == "--":
+                index += 1
+                break
+            if COMMAND_ASSIGNMENT.match(word):
+                index += 1
+                continue
+            if word.startswith("-") and word != "-":
+                index += 2 if word in value_options else 1
+                continue
+            break
+    if index >= len(words):
+        return None
+    return words[index], words[index + 1 :]
+
+
+def node_script_and_arguments(arguments: list[str]) -> tuple[str | None, list[str]]:
+    """Split Node's own options from the script it executes."""
+    index = 0
+    while index < len(arguments):
+        word = arguments[index]
+        if word == "--":
+            index += 1
+            break
+        if not word.startswith("-") or word == "-":
+            break
+        index += 2 if word in NODE_VALUE_OPTIONS else 1
+    if index >= len(arguments):
+        return None, []
+    return arguments[index], arguments[index + 1 :]
+
+
+def command_is_launcher_mediated(words: list[str]) -> bool:
+    """Whether this command really executes a generator entry via the launcher.
+
+    Naming the launcher somewhere in the command is not mediation: it has to be
+    the script Node is handed, with the entry module as the launcher's own
+    first argument, which is the launcher's actual CLI
+    (`node generator-launcher.mjs <entry> [...forwarded]`). A launcher path
+    sitting in an environment value, a swallowed option value, a trailing
+    argument after `--`, a redirection target or an unrelated assignment
+    mediates nothing.
+
+    When the program itself cannot be resolved -- a `"${OFFLINE_NODE}"`-style
+    pinned interpreter, say -- the only reading accepted is the one where the
+    launcher is still the script that program was handed; anything else leaves
+    the command position ambiguous and is judged unmediated.
+    """
+    program = executed_program(drop_redirections(words))
+    if program is None:
+        return False
+    executable, arguments = program
+    if not is_node_executable(executable) and not is_unresolved_word(executable):
+        return False
+    script, forwarded = node_script_and_arguments(arguments)
+    if script is None or not names_generator_launcher(script):
+        return False
+    return bool(forwarded) and names_generator_entry(forwarded[0])
 
 
 def strip_c_like_comments(text: str) -> str:
@@ -3747,18 +3912,19 @@ def analyse_command_segment(
     if not code:
         return 0
     accounted = 0
-    # Mediation is a property of *this* command, never of the line it shares
-    # with others: naming the launcher in one segment says nothing about what
-    # the next segment runs.
-    is_mediated = mediated(code)
-    for name, value in SHELL_ASSIGNMENT.findall(code):
-        if names_generator_entry(value):
-            accounted += 1
-            tainted.add(name)
     try:
         words = shlex.split(code, comments=False, posix=True)
     except ValueError:
         words = code.split()
+    # Mediation is a property of *this* command, never of the line it shares
+    # with others, and never of a launcher path that merely appears in it: the
+    # launcher has to be the program Node actually executes, with the entry
+    # module as its own argument.
+    is_mediated = command_is_launcher_mediated(words)
+    for name, value in SHELL_ASSIGNMENT.findall(code):
+        if names_generator_entry(value):
+            accounted += 1
+            tainted.add(name)
     for word in words:
         if SHELL_ASSIGNMENT.fullmatch(word):
             continue
@@ -4516,6 +4682,83 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
     "a launcher inside a subshell": (
         "offline/scripts/99-wrapper.sh",
         "(cd frontend && node scripts/locale-catalog/generator-launcher.mjs generate.mjs)\n",
+        True,
+    ),
+    "a launcher path as an unused trailing argument": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generate.mjs scripts/locale-catalog/generator-launcher.mjs\n",
+        False,
+    ),
+    "a launcher path in a leading environment assignment": (
+        "offline/scripts/99-wrapper.sh",
+        "LAUNCHER=generator-launcher.mjs node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher path in an env assignment": (
+        "offline/scripts/99-wrapper.sh",
+        "env LAUNCHER=generator-launcher.mjs node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher path after the argument terminator": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generate.mjs -- scripts/locale-catalog/generator-launcher.mjs\n",
+        False,
+    ),
+    "a launcher path swallowed by a Node option": (
+        "offline/scripts/99-wrapper.sh",
+        "node --require scripts/locale-catalog/generator-launcher.mjs "
+        "scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher-valued assignment before a direct call": (
+        "offline/scripts/99-wrapper.sh",
+        "LAUNCHER=scripts/locale-catalog/generator-launcher.mjs "
+        "node scripts/locale-catalog/generate.mjs --check\n",
+        False,
+    ),
+    "a launcher-valued argument after a direct call": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generate.mjs "
+        "--launcher=scripts/locale-catalog/generator-launcher.mjs\n",
+        False,
+    ),
+    "a launcher path in a redirection target": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generate.mjs > generator-launcher.mjs.log\n",
+        False,
+    ),
+    "a launcher path produced by a nested command": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generate.mjs $(echo generator-launcher.mjs)\n",
+        False,
+    ),
+    "an absolute pinned Node executing the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "/usr/local/bin/node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        True,
+    ),
+    "leading environment assignments before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "NODE_ENV=production HOME=/nonexistent "
+        "node ./scripts/locale-catalog/generator-launcher.mjs generate.mjs --check\n",
+        True,
+    ),
+    "a scrubbed environment before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin "
+        "/usr/local/bin/node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        True,
+    ),
+    "a pinned Node held in a variable running the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        'env -i HOME="${DEPS_DIR}/home" PATH="${DEPS_DIR}/node/bin:/usr/bin:/bin" \\\n'
+        '  "${OFFLINE_NODE}" scripts/locale-catalog/generator-launcher.mjs generate.mjs\n',
+        True,
+    ),
+    "the launcher verifying a distribution": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs "
+        '--dist "$output" --dist-only --publish\n',
         True,
     ),
 }
