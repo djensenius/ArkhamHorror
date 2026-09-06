@@ -813,8 +813,25 @@ with the declared platform), writes the exact validated bytes into the
 invocation's own project directory, and uv is pointed at that copy with
 `--no-build --no-sources --no-install-project --no-install-local`.
 
-These checks enforce T1 -- hostile or mistaken *committed* source and the
-supply chain it names -- on a stable host. They do not claim to win a race with
+The trusted computing base is named rather than self-proved: the workflow
+entry, both launcher shell stages, the bootstrap, the capability analyzer, the
+identity profile and the Node launcher. Changes to those are governed by
+ordinary human review and by exact provenance; the digests recorded for the
+shell stages are drift checks, because bash has already read them by the time
+any digest could be computed. The analyzer and the Node launcher *are*
+authenticated before they are imported, which is the check that matters, since
+the analyzer decides whether every other governed source may run.
+
+Governed Node entry points are enforced by a loader rather than by reading
+source text: the sealed Node launcher installs Node resolve/load hooks before
+importing the entry module and permits only `node:` builtins, locked
+`node_modules` paths, and hashed allowlisted generator modules. Every
+authoritative generation path -- the mise task, the catalog validator, the
+serving gate, npm's `prebuild`, the container build and the offline installer --
+goes through it, and a policy test fails on any direct invocation.
+
+These checks enforce T1 -- hostile or mistaken *committed* source outside that
+TCB, and the supply chain it names -- on a stable host. They do not claim to win a race with
 a concurrent same-UID process (T2), and debuggers, the Docker daemon and the
 Git object database are out of scope (T3). `docs/locale-catalog.md` states the
 division in full.

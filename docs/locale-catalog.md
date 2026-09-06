@@ -302,8 +302,34 @@ The Python contract commands have an equally narrow, enforceable boundary.
 The value of a boundary is in what it *refuses*, so it is worth being precise
 about which attacker it refuses and which it does not.
 
-**T1 — enforced.** Hostile or mistaken **committed repository source**, and the
-supply chain that source names. A widened import or capability, a dynamic
+**The trusted computing base, named explicitly.** Seven things decide whether
+anything else may run, and none of them can authenticate itself with code that
+is already running:
+
+* the GitHub workflow entry (`defaults.run.shell`) that starts a governed job,
+* `scripts/run-locale-catalog-python.sh`,
+* `scripts/locale-catalog-python-sealed.sh`,
+* `scripts/locale_catalog_runtime.py` (the bootstrap),
+* `scripts/locale_catalog_python_boundary.py` (the capability analyzer),
+* `scripts/locale_catalog_python_runtime.json` (the identity profile),
+* `frontend/scripts/locale-catalog/sealed-node-launcher.mjs` (the Node launcher).
+
+Changes to any of these are governed by **ordinary human and code review** plus
+exact provenance — their bytes are hashed into the catalog fixture's
+`generatorSha256` — and not by self-checking. The digests the profile records
+for the two shell stages and for itself are *drift checks*: bash has already
+read and begun executing the launcher by the time any digest could be computed,
+so a mismatch is a useful consistency signal about the running launcher and
+nothing more. Only the analyzer and the Node launcher are genuinely
+authenticated **before use**, because nothing has imported or started them at
+the point they are checked — which matters, since the analyzer is what decides
+whether every governed source may run.
+
+T1 below therefore means hostile or mistaken **governed source outside this
+TCB**.
+
+**T1 — enforced.** Hostile or mistaken **committed repository source outside
+the TCB**, and the supply chain that source names. A widened import or capability, a dynamic
 loader, unsafe deserialization, a redirected or buildable dependency, an added
 executable file, an unpinned tool, a generator whose module graph reaches
 outside the hashed closure: every one of those is rejected *before* any
@@ -372,18 +398,38 @@ The real backend-probe task also receives one explicit host authority:
 command or any PATH lookup. CI captures the absolute path from the reviewed
 Haskell setup step and includes it in the otherwise empty shell environment.
 
-**The trusted computing base is authenticated first.** Four files decide
-whether anything else may run: both launcher shell stages, the capability
-analyzer `scripts/locale_catalog_python_boundary.py`, and the bootstrap
-`scripts/locale_catalog_runtime.py`. A scanner that has already executed cannot
-vouch for itself, so the sealed shell hashes all four against the
-`trustedSources` block committed in `scripts/locale_catalog_python_runtime.json`
-*before it starts any interpreter*, and the bootstrap re-checks the same block
-from inside the process it governs. They remain governed sources as well —
-capability-scanned and folded into provenance — but authentication comes first.
-The adversarial suite replaces the analyzer with a permissive scanner that
-writes a marker file at import time and proves both that the command fails and
-that the marker never appears.
+**The analyzer is authenticated before it is imported.** A scanner that has
+already executed cannot vouch for itself, so the sealed shell hashes
+`scripts/locale_catalog_python_boundary.py` and the Node launcher against the
+`trustedSources` block in `scripts/locale_catalog_python_runtime.json` *before*
+any interpreter is started and before either is imported. The bootstrap
+re-checks the same block from inside the process it governs. The two shell
+stages and the profile are drift-checked in the same pass, which is not the
+same claim — see the TCB paragraph above. The adversarial suite replaces the
+analyzer with a permissive scanner that writes a marker file at import time and
+proves both that the command fails and that the marker never appears.
+
+**The importable prefix, not just its sources.** Hashing `*.py` under the
+stdlib root leaves two ways into the process before any of it is checked:
+`<prefix>/lib/python314.zip` is `sys.path[0]` — ahead of every source directory
+— and inside any path entry a compiled extension outranks a source module, so a
+`csv.so` beside `csv.py` wins. Before the interpreter starts, the sealed shell
+therefore refuses a zip import root, a `.pth`, or any `.so`/`.dylib`/`.pyd`/
+`.pyc` anywhere in the prefix outside `lib-dynload`; and in this invocation's
+own copy it *removes* the zip root and empties `lib-dynload` outright rather
+than pinning platform-specific binaries. (The directory itself stays: CPython
+falls back to a build-time absolute path if it is missing.) A startup probe
+then proves the reduced prefix still starts and can import exactly the module
+set the bootstrap imports at its top level, and the bootstrap re-checks that
+`sys.path` is the expected three entries and that every module already in
+`sys.modules` with a file hashes to the committed lock. That is what makes the
+bootstrap's own top-level imports authenticated rather than hopeful.
+
+Dependency installs are part of the same ordering question: a committed
+`postinstall` in any npm dependency would run before every preflight here, so
+`npm ci`/`npm install` run with `--ignore-scripts` everywhere lifecycle
+execution is not needed, and a policy test fails on any invocation that does
+not.
 
 **Environment attestation.** Before the first Python byte runs, the sealed
 shell hashes the complete non-variant stdlib source inventory (path names and
@@ -573,19 +619,41 @@ build backend, a redirected or unhashed dependency source, and a generator
 module graph that leaves the hashed closure all fail before a generator/check
 command can use them.
 
-**Node provenance order.** `locale-catalog:generate` binds the JavaScript side
-the same way. Before Node starts, the entry point resolves every static
-`import`/`export … from` specifier in the generator directory and requires each
-to be a `node:` builtin, a file inside that same directory, or a package
-`frontend/package-lock.json` pins; requires every dynamic `import(...)` to be
-one of the exact call texts the entry point declares, so a new module-graph
-edge cannot appear silently; and hashes the whole closure — every generator
-source, `package.json`, `package-lock.json` and the bound Node binary. After
-Node returns, the same closure is hashed again and drift fails the command. The
-Node generator hashes the same directory into the catalog's own `provenance`
-record, so the bytes validated here are the bytes provenance describes. This
-detects a stable-run change; it does not stop a concurrent same-UID rewrite
-(T2).
+**Node module graph, enforced at run time.** The JavaScript side is bound by a
+loader, not by reading source text. Every governed Node entry point starts
+through `frontend/scripts/locale-catalog/sealed-node-launcher.mjs`, which
+installs Node's synchronous `module.registerHooks` resolve/load hooks *before*
+importing the entry module. A resolution is permitted only if it is a `node:`
+builtin, a path under `frontend/node_modules` (bound by `package-lock.json`,
+which the preflight hashes, and where the generator's own invocation-owned Vite
+output lives), or a generator module listed in the committed allowlist beside
+the launcher — and an allowlisted module is served from bytes that still hash
+to its committed digest. Everything else is refused: a repository file outside
+the allowlist, an absolute path, a `data:` URL, an unsupported scheme.
+
+That replaces an earlier lexical scan, which a leading space, a comment inside
+`import(...)`, or a computed specifier all defeated. Hooks see what the loader
+resolves, so there is no syntax to hide behind; the adversarial suite proves it
+with live Node runs of exactly those payload shapes and a control that must
+still load.
+
+Around the loader, the Python entry point checks that the generator directory
+holds only declared files, that the allowlist describes it exactly, and hashes
+the whole closure — generator sources, launcher, allowlist, `package.json`,
+`package-lock.json` and the Node binary — before Node starts and again after it
+returns. The generator hashes the same directory into the catalog's own
+`provenance` record, so the bytes validated are the bytes provenance describes.
+This detects a stable-run change; it does not stop a concurrent same-UID
+rewrite (T2). It is also not a JavaScript capability sandbox: allowed generator
+code runs with full Node privileges, and the guarantee is that the graph which
+runs is the committed, hashed one.
+
+**One route, everywhere.** `locale-catalog:generate`, the catalog validator,
+the serving gate, npm's own `prebuild`, the container build, the offline
+installer build and the packaging step all start the generator through that
+launcher. There is no `node .../generate.mjs` left in the repository, and a
+policy test enumerates every mention of a generator module and fails on a
+bypass.
 
 The synthetic fixture hashes all declared executable sources, both launcher
 stages, the lockfile, and the toolchain lock through `generatorSha256`, so the

@@ -15,9 +15,10 @@
     }
   },
   "trustedSources": {
-    "scripts/locale_catalog_python_boundary.py": "a890e05aacc3171494db20afc1b315a43b16684a2f54a1934aca34718c04f936",
-    "scripts/locale_catalog_runtime.py": "a48db10442f390e3164961785ac2266ce76aa6c31745ba869f7c5f7025c4ec9c",
-    "scripts/locale-catalog-python-sealed.sh": "3d1ca4cf6a878f1a8da7962577507bdcce53b0d2755c127a545282e7a816da02",
+    "frontend/scripts/locale-catalog/sealed-node-launcher.mjs": "06d7e8f0592b0ae62ebade57819eb02a8dc5610661ab7903642a65809ecf9172",
+    "scripts/locale-catalog-python-sealed.sh": "95e6921e1189a7234a62c6ceef4de8edb46847b6554c721fc7cc635d62e1985e",
+    "scripts/locale_catalog_python_boundary.py": "f890377b1462e7b466fc4766859eb9b79da36c7f9b2b5cbd9b75c8adf4834d92",
+    "scripts/locale_catalog_runtime.py": "cd25df11806835baf95fe7f2901401800b9b0a44d73a544d8e4443c59343952c",
     "scripts/run-locale-catalog-python.sh": "cbf718a4b0cebaf35167af741fbd0956d643a2b236d05a40b50d1682ab2615ba"
   },
   "interpreter": {

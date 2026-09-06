@@ -189,9 +189,19 @@ def release_owned_work(work: Path, token: str, identity: tuple[int, int]) -> Non
     shutil.rmtree(work)
 
 
+def sealed_node_argv(frontend: Path, entry: str, arguments: list[str]) -> list[str]:
+    """Start a governed Node entry point through the sealed launcher only."""
+    launcher = frontend / "scripts" / "locale-catalog" / "sealed-node-launcher.mjs"
+    return [str(launcher.resolve()), entry, *arguments]
+
+
 def build_catalog(frontend: Path, out: Path) -> dict:
-    generator = (frontend / "scripts" / "locale-catalog" / "generate.mjs").resolve()
-    result = run([tool("node"), str(generator), "--out", str(out)], cwd=frontend.resolve())
+    # The serving gate builds a real catalog, so it uses the same enforced
+    # launcher every other governed generation path uses.
+    result = run(
+        [tool("node"), *sealed_node_argv(frontend, "generate.mjs", ["--out", str(out)])],
+        cwd=frontend.resolve(),
+    )
     require(result.returncode == 0, f"generation failed: {result.stdout}\n{result.stderr}")
 
     # The production build precompresses everything it publishes (gzip for

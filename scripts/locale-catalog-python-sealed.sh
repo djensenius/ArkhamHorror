@@ -94,13 +94,21 @@ lock_digest() {
   printf '%s\n' "${matches}" | "${SED}" -E 's/.*"([0-9a-f]{64})"$/\1/'
 }
 
-# The repository-side trusted computing base: the capability analyzer, the
-# bootstrap that runs it, and both launcher shell stages. The analyzer decides
-# whether every other governed source may run, so it cannot be allowed to vouch
-# for itself *after* executing -- its bytes are authenticated here, before this
-# stage starts any interpreter. (T1. A same-UID process that rewrites one of
-# these afterwards is T2 and is not claimed.)
-verify_trusted_source() {
+# The repository-side trusted computing base is declared, not self-proved.
+#
+# Two different things happen below, and conflating them would be a lie:
+#
+#   * The capability analyzer and the bootstrap are *authenticated*: their
+#     bytes are checked here, before any interpreter is started, so a replaced
+#     analyzer cannot decide whether the sources it replaced may run.
+#   * Both shell stages and the toolchain lock itself are *drift-checked*.
+#     bash has already read and begun executing this file, and the POSIX stage
+#     that launched it has already run; no digest computed by that same code
+#     can authenticate it. The check reports a mismatch between the launcher
+#     that is running and the identity committed for it, which is a useful
+#     consistency signal and nothing more. Changes to these files are governed
+#     by ordinary human review and by exact provenance, not by self-checking.
+check_tcb_digest() {
   local relative="$1" path="${ROOT}/$1" expected actual
   [[ ! -L "${path}" && -f "${path}" ]] ||
     die "trusted source '${relative}' is not a regular file"
@@ -112,10 +120,14 @@ verify_trusted_source() {
 
 [[ ! -L "${PROFILE}" && -f "${PROFILE}" ]] ||
   die "the committed toolchain lock '${PROFILE}' is not a regular file"
-verify_trusted_source "scripts/run-locale-catalog-python.sh"
-verify_trusted_source "scripts/locale-catalog-python-sealed.sh"
-verify_trusted_source "scripts/locale_catalog_python_boundary.py"
-verify_trusted_source "scripts/locale_catalog_runtime.py"
+# Drift checks on the launcher stages that are already running.
+check_tcb_digest "scripts/run-locale-catalog-python.sh"
+check_tcb_digest "scripts/locale-catalog-python-sealed.sh"
+# Real pre-execution authentication: nothing below has imported or run either
+# of these yet.
+check_tcb_digest "scripts/locale_catalog_python_boundary.py"
+check_tcb_digest "scripts/locale_catalog_runtime.py"
+check_tcb_digest "frontend/scripts/locale-catalog/sealed-node-launcher.mjs"
 readonly SEALED_ROOT="${LOCALE_CATALOG_MISE_ROOT:?locale-catalog python: LOCALE_CATALOG_MISE_ROOT is required for authoritative commands; the *-local convenience tasks are not authoritative}"
 
 # The sealed toolchain root must be named exactly, absolutely, and canonically.
@@ -247,18 +259,18 @@ case "$("${UNAME}" -s):$("${UNAME}" -m)" in
     ;;
 esac
 
-verify_stdlib_before_python() {
+verify_stdlib_tree() {
   # `-B` stops writes but CPython can otherwise still *read* an attacker-made
   # cache.  Every Python process below instead uses a fresh owned
   # `pycache_prefix`, so the install's pre-existing cache is unreachable.  The
   # source tree itself is attested here, before this interpreter can import
   # even the bootstrap's first stdlib module.
-  local unexpected source_digest
-  unexpected="$("${FIND}" "${STDLIB}" -type l -print -quit)"
+  local root="$1" what="$2" unexpected source_digest
+  unexpected="$("${FIND}" "${root}" -type l -print -quit)"
   [[ -z "${unexpected}" ]] ||
-    die "sealed CPython stdlib contains a symlink: ${unexpected}"
+    die "${what} contains a symlink: ${unexpected}"
   source_digest="$(
-    cd -- "${STDLIB}"
+    cd -- "${root}"
     "${FIND}" . -type f -name '*.py' \
       ! -path './site-packages/*' \
       ! -path './_sysconfigdata__darwin_darwin.py' \
@@ -269,10 +281,53 @@ verify_stdlib_before_python() {
   )"
   source_digest="${source_digest%% *}"
   [[ "${source_digest}" == "c618cf3f74e4625201ed9d508f280b256235370e949172500c02d2da662d53e5" ]] ||
-    die "sealed CPython stdlib source set does not match the declared complete closure"
+    die "${what} source set does not match the declared complete closure"
 }
 
-verify_stdlib_before_python
+verify_stdlib_tree "${STDLIB}" "sealed CPython stdlib"
+
+# `*.py` is not the whole importable surface. CPython puts `<prefix>/lib/
+# python314.zip` *first* on `sys.path` before it reads a single source file, and
+# inside any path entry a compiled extension outranks a source module -- so a
+# planted `python314.zip`, a `csv.so` next to `csv.py`, or a `.pth` file would
+# all execute before anything this boundary has checked. The whole import
+# surface of the prefix is therefore governed, not just its sources.
+readonly IMPORT_CANDIDATE_SUFFIXES=(-name '*.so' -o -name '*.dylib' -o -name '*.pyd' -o -name '*.pyc' -o -name '*.zip' -o -name '*.pth' -o -name '*.egg' -o -name '*.egg-link')
+
+govern_import_surface() {
+  # `$3` selects whether pre-existing bytecode counts. The managed install is
+  # shared and read-only to this boundary, and ordinary use leaves
+  # `__pycache__` behind there; that cache can never be read by this
+  # invocation, which runs the *copy* with `-B` and its own empty
+  # `pycache_prefix`. The copy itself is held to the stricter rule.
+  local prefix="$1" what="$2" strict_bytecode="$3" stdlib="$1/lib/python3.14" unexpected
+  # `site-packages` is deliberately out of scope here: `-S` keeps it off
+  # `sys.path`, and the invocation-owned copy deletes it outright before any
+  # interpreter starts (asserted separately below).
+  [[ ! -e "${prefix}/lib/python314.zip" ]] ||
+    die "${what} carries a zip import root at lib/python314.zip, which precedes every source on sys.path"
+  unexpected="$("${FIND}" "${prefix}/lib" -maxdepth 1 -name '*.zip' -print -quit)"
+  [[ -z "${unexpected}" ]] ||
+    die "${what} carries a zip import root: ${unexpected}"
+  if [[ "${strict_bytecode}" == "1" ]]; then
+    unexpected="$(
+      "${FIND}" "${stdlib}" -type f \( "${IMPORT_CANDIDATE_SUFFIXES[@]}" \) \
+        ! -path "${stdlib}/lib-dynload/*" ! -path "${stdlib}/site-packages/*" -print -quit
+    )"
+  else
+    unexpected="$(
+      "${FIND}" "${stdlib}" -type f \( "${IMPORT_CANDIDATE_SUFFIXES[@]}" \) \
+        ! -path "${stdlib}/lib-dynload/*" ! -path "${stdlib}/site-packages/*" \
+        ! -path '*/__pycache__/*' -print -quit
+    )"
+  fi
+  [[ -z "${unexpected}" ]] ||
+    die "${what} carries an unattested import candidate outside lib-dynload: ${unexpected}"
+}
+
+# The managed install is read-only to this boundary, so it is inspected rather
+# than repaired: a zip root or a planted extension there is tampering.
+govern_import_surface "${SEALED_ROOT}/installs/python/3.14.7" "the sealed CPython prefix" 0
 
 # `PATH` for the child exists only for the non-Python helpers the governed
 # scripts shell out to (node/npm, nginx, stack). It deliberately excludes the
@@ -349,6 +404,23 @@ purge_runtime_bytecode() {
     die "copied CPython runtime contains bytecode after cache removal: ${unexpected_cache}"
 }
 purge_runtime_bytecode
+
+# The copy is this invocation's own, so its import surface is *reduced* rather
+# than merely inspected: the zip root is removed, and `lib-dynload` is emptied
+# instead of being pinned per platform. The directory itself has to stay --
+# CPython falls back to a build-time absolute path if it is missing -- and no
+# module the capability boundary lets a governed source reach may resolve to a
+# file-backed extension anyway, which the bootstrap's import-closure proof
+# already enforces.
+"${RM}" -f -- "${RUNTIME_HOME}/lib/python314.zip"
+"${RM}" -rf -- "${RUNTIME_HOME}/lib/python3.14/lib-dynload"
+"${MKDIR}" -p "${RUNTIME_HOME}/lib/python3.14/lib-dynload"
+dynload_leftover="$("${FIND}" "${RUNTIME_HOME}/lib/python3.14/lib-dynload" -mindepth 1 -print -quit)"
+[[ -z "${dynload_leftover}" ]] ||
+  die "copied CPython lib-dynload is not empty: ${dynload_leftover}"
+govern_import_surface "${RUNTIME_HOME}" "the copied CPython prefix" 1
+verify_stdlib_tree "${RUNTIME_HOME}/lib/python3.14" "copied CPython stdlib"
+
 readonly RUNTIME_PYTHON="${RUNTIME_HOME}/bin/python3.14"
 [[ ! -L "${RUNTIME_PYTHON}" && -f "${RUNTIME_PYTHON}" && -x "${RUNTIME_PYTHON}" ]] ||
   die "copied CPython runtime has no regular python3.14 executable"

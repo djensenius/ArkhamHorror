@@ -103,9 +103,10 @@ ENTRY_POINTS = frozenset(
 # itself.
 TRUSTED_SOURCES = frozenset(
     {
+        "frontend/scripts/locale-catalog/sealed-node-launcher.mjs",
+        "scripts/locale-catalog-python-sealed.sh",
         "scripts/locale_catalog_python_boundary.py",
         "scripts/locale_catalog_runtime.py",
-        "scripts/locale-catalog-python-sealed.sh",
         "scripts/run-locale-catalog-python.sh",
     }
 )
@@ -160,7 +161,10 @@ SOURCE_SENSITIVE_IMPORTS = {
     "scripts/locale_catalog_runtime.py": frozenset({"os", "sys"}),
     "scripts/strict_json.py": frozenset({"os", "shutil", "subprocess", "sys"}),
     "scripts/test_extract_backend_i18n_keys.py": frozenset({"sys"}),
-    "scripts/test_locale_catalog_python_boundary.py": frozenset({"os", "subprocess"}),
+    # `io`/`zipfile` are scoped to the adversarial suite so it can *build* the
+    # zip import root it plants; no governed source may reach either, and the
+    # boundary still refuses a zip root wherever it appears.
+    "scripts/test_locale_catalog_python_boundary.py": frozenset({"io", "os", "subprocess", "zipfile"}),
     "scripts/validate-catalog-serving.py": frozenset({"os", "shutil", "subprocess", "sys", "urllib.request"}),
     "scripts/validate-route-inventory.py": frozenset({"yaml"}),
     "scripts/validate-locale-catalog.py": frozenset({"os", "shutil", "subprocess", "sys"}),
@@ -224,7 +228,9 @@ SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
         "sys.implementation.cache_tag": VALUE,
         "sys.implementation.name": VALUE,
         "sys.pycache_prefix": VALUE,
+        "sys.path": VALUE,
         "sys.path.insert": CALL,
+        "sys.modules.items": CALL,
         "sys.prefix": VALUE,
         "sys.stderr": VALUE,
         "sys.platform": VALUE,
@@ -648,6 +654,52 @@ def join_states(states: list[State]) -> State:
     return joined
 
 
+def local_binding_names(body: list[ast.stmt], arguments: ast.arguments | None) -> set[str]:
+    """Every name a function body binds locally, without descending into
+    nested function or class bodies (which have their own scopes).
+
+    Python decides a name is local for the *whole* body if it is assigned
+    anywhere in it, so these names must not be seeded from the module-level
+    summary -- doing so would report an identity the body never sees.
+    """
+    names: set[str] = set()
+    if arguments is not None:
+        for argument in [
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+            *(item for item in (arguments.vararg, arguments.kwarg) if item is not None),
+        ]:
+            names.add(argument.arg)
+    pending: list[ast.AST] = list(body)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+            continue
+        if isinstance(node, ast.Lambda):
+            continue
+        if isinstance(node, ast.Global) or isinstance(node, ast.Nonlocal):
+            names.difference_update(node.names)
+            continue
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names.add(node.id)
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split(".", 1)[0])
+            continue
+        if isinstance(node, ast.ExceptHandler) and node.name is not None:
+            names.add(node.name)
+        if isinstance(node, ast.MatchAs) and node.name is not None:
+            names.add(node.name)
+        if isinstance(node, ast.MatchStar) and node.name is not None:
+            names.add(node.name)
+        if isinstance(node, ast.MatchMapping) and node.rest is not None:
+            names.add(node.rest)
+        pending.extend(ast.iter_child_nodes(node))
+    return names
+
+
 class LoopFrame:
     """Where `break` and `continue` send the state they were reached with."""
 
@@ -661,14 +713,20 @@ class LoopFrame:
 class Scope:
     """One lexical scope's bookkeeping.
 
+    `kind` matters because Python's scoping is not the same as its nesting: a
+    function defined in a class body does *not* see the class body's names, so
+    a class frame must be skipped when a nested function resolves a free name.
+
     `escaping` holds names a `global`/`nonlocal` declaration has connected to an
     outer scope; binding an identity-bearing value to one of those fails closed
     rather than being tracked across an unknown call order.
     """
 
-    __slots__ = ("escaping", "walrus")
+    __slots__ = ("kind", "escaping", "walrus", "state")
 
-    def __init__(self) -> None:
+    def __init__(self, kind: str, state: State) -> None:
+        self.kind = kind
+        self.state = state
         self.escaping: set[str] = set()
         self.walrus: list[str] | None = None
 
@@ -691,12 +749,18 @@ class CapabilityVisitor:
     def __init__(self, relative_path: str) -> None:
         self.relative_path = relative_path
         self.grants = SOURCE_SENSITIVE_CAPABILITIES.get(relative_path, {})
-        self.state: State = {}
+        self.scopes: list[Scope] = [Scope("module", {})]
         self.imports: set[str] = set()
         self.terminated = False
         self.loops: list[LoopFrame] = []
-        self.scopes: list[Scope] = [Scope()]
         self.bindings: list[set[str]] = []
+        self.raise_points: list[State] | None = None
+        # Every value a module-level name may hold anywhere in the module. A
+        # function body resolves its free names against this, because a
+        # function runs when it is *called*, not where it is written -- the
+        # import that gives a global its module identity may come after the
+        # `def` that uses it.
+        self.globals: State = {}
         self.line = 0
 
     # -- diagnostics ----------------------------------------------------
@@ -713,6 +777,30 @@ class CapabilityVisitor:
     @property
     def scope(self) -> Scope:
         return self.scopes[-1]
+
+    @property
+    def state(self) -> State:
+        return self.scopes[-1].state
+
+    @state.setter
+    def state(self, value: State) -> None:
+        self.scopes[-1].state = value
+
+    def enclosing_value_state(self) -> State:
+        """The state a nested function's free names really resolve against.
+
+        Class bodies are skipped: `class C: x = None` does not give a method
+        inside `C` a local `x`, so a method must still see the module-level
+        binding.
+        """
+        for scope in reversed(self.scopes):
+            if scope.kind != "class":
+                return scope.state
+        return {}
+
+    def record_global(self, name: str, value: Value) -> None:
+        merged = join_values(self.globals.get(name), value) or EMPTY
+        self.globals[name] = merged
 
     # -- capability checking --------------------------------------------
 
@@ -963,16 +1051,34 @@ class CapabilityVisitor:
         self.reject_carrier(self.expr(node.value), "awaits")
         return EMPTY
 
+    def _evaluate_branchpoint(self, arms: list[ast.expr], use: str) -> Value:
+        """Evaluate arms that may or may not run, then join their effects.
+
+        A conditional expression evaluates exactly one arm and `and`/`or`
+        short-circuit, so a walrus in a later arm may never happen. Each arm is
+        therefore evaluated from a snapshot and the states are joined, which is
+        what stops `True or (holder := None)` from erasing an identity.
+        """
+        entry = dict(self.state)
+        result: Value | None = None
+        outcomes: list[State] = [entry]
+        for arm in arms:
+            self.state = dict(entry)
+            result = join_values(result, self.expr(arm, use))
+            outcomes.append(self.state)
+        self.state = join_states(outcomes)
+        return result or EMPTY
+
     def _evaluate_IfExp(self, node: ast.IfExp, use: str) -> Value:
         self.expr(node.test)
-        # Both arms are reachable, so the result is either of them.
-        return join_values(self.expr(node.body, use), self.expr(node.orelse, use)) or EMPTY
+        # Exactly one arm runs, and either may be the value.
+        return self._evaluate_branchpoint([node.body, node.orelse], use)
 
     def _evaluate_BoolOp(self, node: ast.BoolOp, use: str) -> Value:
-        result: Value | None = None
-        for value_node in node.values:
-            result = join_values(result, self.expr(value_node, use))
-        return result or EMPTY
+        # The first operand always runs; the rest are conditional.
+        first = self.expr(node.values[0], use)
+        rest = self._evaluate_branchpoint(list(node.values[1:]), use)
+        return join_values(first, rest) or EMPTY
 
     def _evaluate_NamedExpr(self, node: ast.NamedExpr, use: str) -> Value:
         value = self.expr(node.value)
@@ -1015,17 +1121,14 @@ class CapabilityVisitor:
             value = self.expr(default)
             self.reject_taint(value, "uses as a default")
             self.reject_escaping_module(value, "uses as a lambda default")
-        outer = self.state
-        self.state = dict(outer)
-        self.scopes.append(Scope())
+        loops = self.push_scope("function", self.function_entry_state([], node.args))
         try:
             self._bind_parameters(node.args)
             body = self.expr(node.body)
             self.reject_taint(body, "captures in a lambda")
             self.reject_escaping_module(body, "captures in a lambda")
         finally:
-            self.scopes.pop()
-            self.state = outer
+            self.pop_scope(loops)
         return EMPTY
 
     def _evaluate_Yield(self, node: ast.Yield, use: str) -> Value:
@@ -1044,11 +1147,9 @@ class CapabilityVisitor:
     def _evaluate_comprehension(
         self, generators: list[ast.comprehension], elements: list[ast.expr]
     ) -> Value:
-        outer = self.state
-        self.state = dict(outer)
-        scope = Scope()
-        scope.walrus = []
-        self.scopes.append(scope)
+        loops = self.push_scope("function", dict(self.state))
+        self.scope.walrus = []
+        scope = self.scope
         try:
             for generator in generators:
                 iterated = self.expr(generator.iter)
@@ -1064,8 +1165,7 @@ class CapabilityVisitor:
             result = contained(values)
             leaked = {name: self.state[name] for name in scope.walrus if name in self.state}
         finally:
-            self.scopes.pop()
-            self.state = outer
+            self.pop_scope(loops)
         for name, value in leaked.items():
             self.reject_rebind(name, "leaks a comprehension assignment over")
             self.state[name] = value
@@ -1097,6 +1197,10 @@ class CapabilityVisitor:
             self.reject_rebind(target.id, "binds")
             if self.bindings:
                 self.bindings[-1].add(target.id)
+            if self.scope.kind == "module" or target.id in self.scope.escaping:
+                # A module-level binding, or a `global` write from anywhere, is
+                # visible to every function body in this module.
+                self.record_global(target.id, value)
             if value.carries():
                 self.state[target.id] = value
             else:
@@ -1226,7 +1330,30 @@ class CapabilityVisitor:
     # -- statements -------------------------------------------------------
 
     def visit(self, tree: ast.Module) -> None:
-        self.block(list(tree.body))
+        """Analyze the module to a fixpoint over its module-level bindings.
+
+        A function body is written before it runs. `def exploit(): holder.x()`
+        followed later by `import strict_json as holder` means the body sees a
+        module identity that did not exist at the `def`, so one pass in source
+        order is unsound. Passes repeat until the summary of what every
+        module-level name may hold stops growing, and every function body is
+        re-analyzed against the final summary.
+        """
+        body = list(tree.body)
+        for _ in range(MAX_FIXPOINT_ROUNDS):
+            before = dict(self.globals)
+            self.scopes = [Scope("module", {})]
+            self.loops = []
+            self.bindings = []
+            self.raise_points = None
+            self.terminated = False
+            self.block(body)
+            if self.globals == before:
+                return
+        self.fail(
+            "the module-level binding summary did not reach a fixpoint within the analyzer's "
+            "bound; the boundary refuses a module it cannot summarise exactly"
+        )
 
     def block(self, statements: list[ast.stmt]) -> bool:
         """Visit a suite; return True when every path leaves this block.
@@ -1246,6 +1373,11 @@ class CapabilityVisitor:
             self.terminated = False
             self.statement(statement)
             terminated = self.terminated
+            if self.raise_points is not None and not terminated:
+                # Any statement may raise, so an enclosing `except` has to see
+                # the state after *every* prefix of the protected suite, not
+                # just after the last statement.
+                self.raise_points.append(dict(self.state))
         self.terminated = terminated
         return terminated
 
@@ -1287,6 +1419,8 @@ class CapabilityVisitor:
             self.reject_rebind(bound, "imports over", replacement)
             if self.bindings:
                 self.bindings[-1].add(bound)
+            if self.scope.kind == "module" or bound in self.scope.escaping:
+                self.record_global(bound, Value(frozenset({replacement})))
             self.state[bound] = Value(frozenset({replacement}))
 
     def _statement_ImportFrom(self, node: ast.ImportFrom) -> None:
@@ -1307,6 +1441,8 @@ class CapabilityVisitor:
             self.reject_rebind(bound, "imports over", capability)
             if self.bindings:
                 self.bindings[-1].add(bound)
+            if self.scope.kind == "module" or bound in self.scope.escaping:
+                self.record_global(bound, Value(frozenset({capability})))
             self.state[bound] = Value(frozenset({capability}))
         self.imports.add(node.module)
 
@@ -1430,34 +1566,72 @@ class CapabilityVisitor:
 
     _statement_AsyncWith = _statement_With
 
+    def _protected(self, statements: list[ast.stmt], state: State) -> tuple[State, bool, list[State]]:
+        """Run a suite while recording the state after every prefix of it."""
+        points: list[State] = [dict(state)]
+        outer_points = self.raise_points
+        self.raise_points = points
+        try:
+            result_state, terminated = self.branch(statements, state)
+        finally:
+            self.raise_points = outer_points
+        if outer_points is not None:
+            outer_points.extend(points)
+        return result_state, terminated, points
+
     def _statement_Try(self, node: ast.Try) -> None:
+        """Normal, exceptional and abrupt exits, tracked separately.
+
+        A handler starts after *any* raising prefix of the body, so it joins
+        every intermediate state rather than only the state after the last
+        statement. And every abrupt exit -- `break`, `continue`, `return`,
+        propagating exception -- runs `finally` on its way out, so the states
+        those exits carry are the states `finally` produced, not the ones it
+        was handed.
+        """
         entry = dict(self.state)
-        body_state, body_terminated = self.branch(list(node.body), entry)
-        # A handler may start after *any* prefix of the body, so it sees the
-        # join of the entry state and the fully executed body state -- an
-        # untaken `except` can therefore never drop what the body bound.
-        handler_entry = join_states([entry, body_state])
-        outcomes: list[State] = []
-        for handler in node.handlers:
-            state, terminated = self.branch([handler], handler_entry)
-            if not terminated:
-                outcomes.append(state)
-        if not body_terminated:
-            orelse_state, orelse_terminated = self.branch(list(node.orelse), body_state)
-            if not orelse_terminated:
-                outcomes.append(orelse_state)
-        joined = join_states(outcomes) if outcomes else dict(handler_entry)
-        if node.finalbody:
-            # `finally` runs on the way out of every path, including the failing
-            # ones, so it starts from everything any of them could have bound.
-            final_state, final_terminated = self.branch(
-                list(node.finalbody), join_states([handler_entry, joined])
+        # With a `finally`, break/continue must not reach the enclosing loop
+        # until they have passed through it, so they are captured here first.
+        captured = LoopFrame() if node.finalbody else None
+        if captured is not None:
+            self.loops.append(captured)
+        try:
+            body_state, body_terminated, raise_points = self._protected(list(node.body), entry)
+            handler_entry = join_states(
+                raise_points if body_terminated else [*raise_points, body_state]
             )
-            self.state = final_state
-            self.terminated = final_terminated or not outcomes
+            outcomes: list[State] = []
+            for handler in node.handlers:
+                state, terminated = self.branch([handler], handler_entry)
+                if not terminated:
+                    outcomes.append(state)
+            if not body_terminated:
+                orelse_state, orelse_terminated = self.branch(list(node.orelse), body_state)
+                if not orelse_terminated:
+                    outcomes.append(orelse_state)
+        finally:
+            if captured is not None:
+                self.loops.pop()
+        joined = join_states(outcomes) if outcomes else dict(handler_entry)
+        if not node.finalbody:
+            self.state = joined
+            self.terminated = not outcomes
             return
-        self.state = joined
-        self.terminated = not outcomes
+        # `finally` runs on the way out of every path, including the ones that
+        # raise or leave, so it starts from everything any of them could hold.
+        final_state, final_terminated = self.branch(
+            list(node.finalbody), join_states([handler_entry, joined])
+        )
+        for state in captured.breaks:
+            passed, _ = self.branch(list(node.finalbody), state)
+            if self.loops:
+                self.loops[-1].breaks.append(passed)
+        for state in captured.continues:
+            passed, _ = self.branch(list(node.finalbody), state)
+            if self.loops:
+                self.loops[-1].continues.append(passed)
+        self.state = final_state
+        self.terminated = final_terminated or not outcomes
 
     _statement_TryStar = _statement_Try
 
@@ -1470,24 +1644,32 @@ class CapabilityVisitor:
         self.block(list(node.body))
 
     def _statement_Match(self, node: ast.Match) -> None:
+        """Captures bind before a guard runs, and survive a guard that fails.
+
+        `case holder if False:` binds `holder` and then does not run the body,
+        so the state after the match includes the capture without the body's
+        effects. Joining only the entry state and the body states lost exactly
+        that, which is how a module identity survived a `None` assignment the
+        guard prevented.
+        """
         subject = self.expr(node.subject)
         entry = dict(self.state)
-        outcomes: list[State] = []
+        outcomes: list[State] = [entry]
         for case in node.cases:
-            outer = self.state
             self.state = dict(entry)
-            try:
-                self.bind_pattern(case.pattern, subject)
-                if case.guard is not None:
-                    self.expr(case.guard)
-                terminated = self.block(list(case.body))
-                case_state = self.state
-            finally:
-                self.state = outer
+            self.bind_pattern(case.pattern, subject)
+            captured = dict(self.state)
+            if case.guard is not None:
+                self.expr(case.guard)
+                # The guard may be false: the capture happened, the body did not.
+                outcomes.append(dict(self.state))
+            else:
+                outcomes.append(captured)
+            terminated = self.block(list(case.body))
             if not terminated:
-                outcomes.append(case_state)
+                outcomes.append(self.state)
         # No case is guaranteed to match, so the entry state survives too.
-        self.state = join_states([entry, *outcomes])
+        self.state = join_states(outcomes)
         self.terminated = False
 
     def _statement_Return(self, node: ast.Return) -> None:
@@ -1516,18 +1698,38 @@ class CapabilityVisitor:
     def _statement_Pass(self, node: ast.Pass) -> None:
         return
 
-    def _enter_scope(self) -> tuple[State, list[LoopFrame]]:
-        outer = self.state
+    def push_scope(self, kind: str, state: State) -> list[LoopFrame]:
+        """Open a lexical scope; `break`/`continue` never cross one."""
         loops = self.loops
-        self.state = dict(outer)
         self.loops = []
-        self.scopes.append(Scope())
-        return outer, loops
+        self.scopes.append(Scope(kind, state))
+        return loops
 
-    def _leave_scope(self, outer: State, loops: list[LoopFrame]) -> None:
-        self.scopes.pop()
-        self.state = outer
+    def pop_scope(self, loops: list[LoopFrame]) -> Scope:
+        scope = self.scopes.pop()
         self.loops = loops
+        return scope
+
+    def function_entry_state(self, body: list[ast.stmt], arguments: ast.arguments | None) -> State:
+        """What a function body's free names may hold when it is *called*.
+
+        A function is analyzed where it is written but runs when it is called,
+        so its free names resolve against every value a module-level name may
+        hold anywhere in the module -- including an import that appears after
+        the `def`. Names the body itself binds are local for the whole body and
+        are therefore not seeded from that summary.
+        """
+        local = local_binding_names(body, arguments)
+        entry = {
+            name: value
+            for name, value in self.enclosing_value_state().items()
+            if name not in local
+        }
+        for name, value in self.globals.items():
+            if name in local:
+                continue
+            entry[name] = join_values(entry.get(name), value) or EMPTY
+        return entry
 
     def _statement_FunctionDef(self, node: ast.FunctionDef) -> None:
         for decorator in node.decorator_list:
@@ -1545,12 +1747,12 @@ class CapabilityVisitor:
             self.reject_escaping_module(value, "uses as a parameter default")
         self.reject_rebind(node.name, "binds function over")
         self.state.pop(node.name, None)
-        outer, loops = self._enter_scope()
+        loops = self.push_scope("function", self.function_entry_state(list(node.body), node.args))
         try:
             self._bind_parameters(node.args)
             self.block(list(node.body))
         finally:
-            self._leave_scope(outer, loops)
+            self.pop_scope(loops)
         self.terminated = False
 
     _statement_AsyncFunctionDef = _statement_FunctionDef
@@ -1566,7 +1768,7 @@ class CapabilityVisitor:
             self.reject_escaping_module(value, "derives a class from")
         self.reject_rebind(node.name, "binds class over")
         self.state.pop(node.name, None)
-        outer, loops = self._enter_scope()
+        loops = self.push_scope("class", dict(self.enclosing_value_state()))
         self.bindings.append(set())
         try:
             self.block(list(node.body))
@@ -1574,7 +1776,7 @@ class CapabilityVisitor:
             attributes = self.bindings[-1]
         finally:
             self.bindings.pop()
-            self._leave_scope(outer, loops)
+            self.pop_scope(loops)
         # A class body is a namespace an outer scope can read back through the
         # class object, which this analyzer does not model attribute by
         # attribute -- so an identity *bound by the body* is refused there

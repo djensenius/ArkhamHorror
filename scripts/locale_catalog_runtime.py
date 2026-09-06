@@ -84,9 +84,10 @@ PYPROJECT = ROOT / "pyproject.toml"
 # declarations agree once importing it is safe.
 TRUSTED_SOURCES = frozenset(
     {
+        "frontend/scripts/locale-catalog/sealed-node-launcher.mjs",
+        "scripts/locale-catalog-python-sealed.sh",
         "scripts/locale_catalog_python_boundary.py",
         "scripts/locale_catalog_runtime.py",
-        "scripts/locale-catalog-python-sealed.sh",
         "scripts/run-locale-catalog-python.sh",
     }
 )
@@ -176,14 +177,68 @@ def read_sealed_root() -> Path:
     return root
 
 
-def verify_trusted_sources(profile: dict) -> None:
-    """Re-check the trusted computing base from inside the process it governs.
+def verify_startup_modules(profile: dict, runtime_home: Path) -> None:
+    """Prove the modules this interpreter already imported are the pinned ones.
 
-    The sealed shell already checked these bytes before starting Python; doing
-    it again here means the digests the lock commits are proved by the same
-    process that relies on them, and a lock whose `trustedSources` block does
-    not name exactly the analyzer, this bootstrap and both shell stages is
-    refused (T1).
+    `*.py` is not the whole import surface: `<prefix>/lib/python314.zip` sorts
+    *before* every source directory on `sys.path`, and inside a directory a
+    compiled extension outranks a source module. The sealed shell removes the
+    zip root, empties `lib-dynload` and refuses any other non-source import
+    candidate in the prefix before this interpreter starts, which is what makes
+    this module's own top-level imports authenticated rather than hopeful.
+
+    This check is the second half of that: every module already in
+    `sys.modules` with a file must live under the copied stdlib root and hash
+    to the digest the committed lock records. It cannot un-run an import that
+    already happened -- it reports one that should have been impossible.
+    """
+    stdlib_root = runtime_home / "lib" / "python3.14"
+    expected_path = [
+        str(runtime_home / "lib" / "python314.zip"),
+        str(stdlib_root),
+        str(stdlib_root / "lib-dynload"),
+    ]
+    if sys.path != expected_path:
+        refuse(f"the interpreter started with an unexpected sys.path: {sys.path}")
+    if (runtime_home / "lib" / "python314.zip").exists():
+        refuse("the interpreter prefix carries a zip import root, which precedes every source")
+    modules = profile["stdlibModules"]
+    for name, module in sorted(sys.modules.items()):
+        if name == "__main__":
+            # This bootstrap itself, whose bytes the sealed shell checked
+            # against the committed lock before the interpreter started.
+            continue
+        try:
+            origin = module.__file__
+        except AttributeError:
+            # A builtin or frozen module: it lives in the pinned interpreter
+            # binary, whose SHA-256 is bound above.
+            continue
+        if not origin:
+            continue
+        path = Path(origin)
+        try:
+            relative = path.relative_to(stdlib_root).as_posix()
+        except ValueError:
+            refuse(f"startup module {name} was loaded from outside the sealed stdlib: {origin}")
+        expected = modules.get(relative)
+        if expected is None:
+            refuse(f"startup module {name} ({relative}) is not described by the committed lock")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            refuse(f"startup module {name} ({relative}) does not match the committed lock")
+
+
+def verify_trusted_sources(profile: dict) -> None:
+    """Re-check the declared trusted computing base.
+
+    Two different things are happening, and it matters which is which. The
+    capability analyzer is *authenticated*: the sealed shell hashed it before
+    this interpreter started and nothing has imported it yet, so a replaced
+    analyzer cannot decide whether the sources it replaced may run. This
+    bootstrap, both shell stages and the Node launcher are *drift-checked*:
+    they are already running (or are about to be started by code that is), and
+    no digest they compute about themselves can authenticate them. Changes to
+    any of them are governed by ordinary human review and exact provenance.
     """
     entries = profile.get("trustedSources")
     if not isinstance(entries, dict) or set(entries) != set(TRUSTED_SOURCES):
@@ -1032,6 +1087,7 @@ def main() -> None:
     profile = read_profile()
     verify_trusted_sources(profile)
     verify_interpreter(profile, runtime_home)
+    verify_startup_modules(profile, runtime_home)
     verify_pycache_prefix()
     stdlib_root, attested, variants, extensions = verify_stdlib(profile, runtime_home)
     verify_active_sysconfig_source(profile, stdlib_root)

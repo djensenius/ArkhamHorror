@@ -63,7 +63,9 @@ GOVERNED_TREE_PATHS = (
     "scripts",
     "contracts",
     "frontend/schemas",
+    "frontend/scripts/locale-catalog",
     "frontend/package.json",
+    "frontend/package-lock.json",
     "mise.toml",
     "pyproject.toml",
     "uv.lock",
@@ -309,6 +311,50 @@ def splice_snippet(original: bytes, snippet: bytes) -> bytes:
 
 
 ANALYZER_PAYLOADS: dict[str, bytes] = {
+    # The exact payloads the cumulative review reproduced against the previous
+    # revision, in the shape they were reported.
+    "late global bound after the def": (
+        b'def exploit():\n    holder.subprocess.run(["id"])\n\n\n'
+        b"import strict_json as holder\n\nexploit()\n"
+    ),
+    "late global through a nested def": (
+        b"def outer():\n    def inner():\n        return holder.subprocess\n\n    return inner\n"
+        b"\n\nimport strict_json as holder\n"
+    ),
+    "class local shadowing a global in a method": (
+        b"import strict_json as holder\n\n\nclass C:\n    holder = None\n\n"
+        b'    def exploit(self):\n        holder.subprocess.run(["id"])\n\n\nC().exploit()\n'
+    ),
+    "class local shadowing a global in a lambda": (
+        b"import strict_json as holder\n\n\nclass C:\n    holder = None\n"
+        b"    exploit = lambda self: holder.subprocess\n"
+    ),
+    "except handler after a raising prefix": (
+        b"import strict_json\n\nholder = None\ntry:\n    holder = strict_json\n"
+        b'    int("x")\n    holder = None\nexcept ValueError:\n'
+        b'    holder.subprocess.run(["id"])\n'
+    ),
+    "finally on the break path": (
+        b"import strict_json\n\nholder = None\nfor _ in range(1):\n    try:\n        break\n"
+        b'    finally:\n        holder = strict_json\nholder.subprocess.run(["id"])\n'
+    ),
+    "finally on the continue path": (
+        b"import strict_json\n\nholder = None\nfor _ in range(1):\n    try:\n"
+        b"        continue\n    finally:\n        holder = strict_json\n"
+        b'holder.subprocess.run(["id"])\n'
+    ),
+    "short-circuit walrus that never runs": (
+        b"import strict_json\n\nholder = strict_json\nTrue or (holder := None)\n"
+        b'holder.subprocess.run(["id"])\n'
+    ),
+    "conditional expression walrus that never runs": (
+        b"import strict_json\n\nholder = strict_json\n1 if True else (holder := None)\n"
+        b'holder.subprocess.run(["id"])\n'
+    ),
+    "match capture kept by a false guard": (
+        b"import strict_json\n\nmatch strict_json:\n    case holder if False:\n"
+        b'        holder = None\nholder.subprocess.run(["id"])\n'
+    ),
     "match capture": (
         b"import strict_json\n\nmatch strict_json:\n    case holder:\n"
         b"        holder.subprocess.run(['id'])\n"
@@ -468,6 +514,27 @@ ANALYZER_PAYLOADS: dict[str, bytes] = {
 # Code that must still be *accepted*: a fail-closed analyzer that refuses
 # ordinary Python is not a boundary, it is an outage.
 ANALYZER_CONTROLS: dict[str, bytes] = {
+    "method reading a class attribute through self": (
+        b"class Holder:\n    value = 1\n\n    def get(self):\n        return self.value\n"
+    ),
+    "function with a local that shadows a global": (
+        b"COUNT = 1\n\n\ndef compute():\n    COUNT = 2\n    return COUNT\n"
+    ),
+    "try except finally over data": (
+        b"holder = 0\ntry:\n    holder = 1\n    int('1')\n    holder = 2\nexcept ValueError:\n"
+        b"    holder = 3\nfinally:\n    holder = 4\n"
+    ),
+    "loop with try finally over data": (
+        b"total = 0\nfor value in range(2):\n    try:\n        if value:\n            break\n"
+        b"        continue\n    finally:\n        total += 1\n"
+    ),
+    "short-circuit walrus over data": (
+        b"holder = 1\nTrue or (holder := 2)\nresult = holder\n"
+    ),
+    "match guard over data": (
+        b"value = 1\nmatch value:\n    case found if found > 0:\n        result = found\n"
+        b"    case _:\n        result = 0\n"
+    ),
     "plain conditional": b"holder = 1 if True else 2\n",
     "loop accumulation": b"total = 0\nfor value in range(3):\n    total += value\n",
     "loop with break and continue": (
@@ -1169,16 +1236,36 @@ def test_toolchain_roots(scratch: Path, token: str) -> int:
             "replaced uv binary": {uv_relative: b"#!/bin/sh\nexit 0\n"},
             # A compiled extension planted where a module the governed closure
             # really imports would be found. Nothing hashes it, and CPython's
-            # path finder prefers an extension to a source file, so the only
-            # thing standing between it and execution is the runtime's
-            # import-closure attestation.
-            "extension shadowing a reachable lib-dynload module": {
-                f"{stdlib_relative}/lib-dynload/_json.probe.so": b"\x7fELF probe\n"
-            },
+            # path finder prefers an extension to a source file, so an
+            # unattested `.so` beside an attested `.py` would win.
             "extension shadowing a reachable top-level module": {
                 f"{stdlib_relative}/csv.probe.so": b"\x7fELF probe\n"
             },
+            "extension shadowing a reachable package": {
+                f"{stdlib_relative}/json/__init__.probe.so": b"\x7fELF probe\n"
+            },
         }
+        # `lib-dynload` is the one directory whose contents are neither hashed
+        # nor refused: the invocation-owned copy *empties* it before the
+        # interpreter starts, so a planted extension there cannot be loaded at
+        # all. The property to prove is therefore neutralisation, not refusal --
+        # the command still succeeds and the payload never resolves.
+        neutralised = scratch / f"fake-root-{uuid.uuid4().hex}"
+        neutralised.mkdir()
+        mirror_toolchain(
+            sealed_root,
+            neutralised,
+            {f"{stdlib_relative}/lib-dynload/_json.probe.so": b"\x7fELF probe\n"},
+        )
+        require_authoritative_success(
+            "an extension planted in lib-dynload is emptied out of the invocation copy",
+            tree,
+            [FIXTURE_ENTRY, "--check"],
+            environment=probe_environment({"LOCALE_CATALOG_MISE_ROOT": str(neutralised)}),
+        )
+        shutil.rmtree(neutralised)
+        checked += 1
+
         for label, tampered in sorted(tampered_roots.items()):
             fake = scratch / f"fake-root-{uuid.uuid4().hex}"
             fake.mkdir()
@@ -1972,6 +2059,375 @@ def test_dependency_source_attestation(scratch: Path, token: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Probe: the Node module graph is enforced by the loader, not by reading text
+# ---------------------------------------------------------------------------
+
+NODE_LAUNCHER_RELATIVE_PATH = "frontend/scripts/locale-catalog/sealed-node-launcher.mjs"
+NODE_ALLOWLIST_NAME = "sealed-node-allowlist.json"
+NODE_PAYLOAD_MARKER = "locale-catalog-node-payload-ran"
+
+# The exact import syntaxes the review used to defeat the previous lexical
+# scanner, plus the plain forms. None of them changes what the loader is asked
+# to resolve, which is the whole point of enforcing at resolution time.
+NODE_IMPORT_PAYLOADS: dict[str, str] = {
+    "leading whitespace static import": " import '../../payload.mjs'\n",
+    "comment inside a dynamic import": "import /* unchecked */ ('../../payload.mjs')\n",
+    "plain dynamic import": "await import('../../payload.mjs')\n",
+    "computed dynamic import": (
+        "const parts = ['..', '..', 'payload.mjs']\nawait import(parts.join('/'))\n"
+    ),
+    "export from": "export { payload } from '../../payload.mjs'\n",
+    "tab indented static import": "\timport '../../payload.mjs'\n",
+    "absolute path import": "await import(new URL('../../payload.mjs', import.meta.url).href)\n",
+    "sibling module not in the allowlist": "await import('./unlisted.mjs')\n",
+}
+
+
+def sealed_node_binary() -> str:
+    return strict_json.trusted_node()
+
+
+def build_node_probe(scratch: Path, entry_source: str, extra: dict[str, str]) -> tuple[Path, Path]:
+    """A minimal frontend-shaped tree with the real launcher and a payload."""
+    root = scratch / f"node-loader-{uuid.uuid4().hex}"
+    generator = root / "scripts" / "locale-catalog"
+    generator.mkdir(parents=True)
+    shutil.copy2(ROOT / NODE_LAUNCHER_RELATIVE_PATH, generator / "sealed-node-launcher.mjs")
+    marker = root / NODE_PAYLOAD_MARKER
+    (root / "payload.mjs").write_text(
+        "import { writeFileSync } from 'node:fs'\n"
+        f"writeFileSync({str(marker)!r}, 'executed')\n",
+        encoding="utf-8",
+    )
+    (generator / "unlisted.mjs").write_text(
+        "import { writeFileSync } from 'node:fs'\n"
+        f"writeFileSync({str(marker)!r}, 'executed')\n",
+        encoding="utf-8",
+    )
+    (generator / "entry.mjs").write_text(entry_source, encoding="utf-8")
+    for name, source in extra.items():
+        (generator / name).write_text(source, encoding="utf-8")
+    allowlist = {
+        name: hashlib.sha256((generator / name).read_bytes()).hexdigest()
+        for name in sorted(["entry.mjs", *extra])
+    }
+    (generator / NODE_ALLOWLIST_NAME).write_text(
+        json.dumps(allowlist, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return root, marker
+
+
+def run_node_probe(root: Path, entry: str = "entry.mjs") -> subprocess.CompletedProcess:
+    launcher = root / "scripts" / "locale-catalog" / "sealed-node-launcher.mjs"
+    return subprocess.run(
+        [sealed_node_binary(), str(launcher), entry],
+        cwd=root,
+        env=probe_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+    )
+
+
+def test_node_module_graph_enforcement(scratch: Path, token: str) -> int:
+    """A live Node run must refuse every import outside the allowlist.
+
+    The payloads are the exact syntaxes that defeated lexical scanning. The
+    allowlist digest of the *entry* module is recomputed for each one, so the
+    refusal being proved is the import rule and not a stale hash -- which is
+    what a hostile-but-committed generator source would look like.
+    """
+    checked = 0
+    for label, payload in sorted(NODE_IMPORT_PAYLOADS.items()):
+        root, marker = build_node_probe(scratch, payload, {})
+        try:
+            result = run_node_probe(root)
+            require(
+                result.returncode != 0 and "refusing to" in result.stderr,
+                f"the sealed Node launcher accepted {label!r}\n"
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            )
+            require(
+                not marker.exists(),
+                f"{label!r} executed its payload before the loader refused it",
+            )
+            checked += 1
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    # Controls: builtins and allowlisted local modules must still load, and the
+    # entry module must actually run -- a launcher that refuses everything
+    # proves nothing.
+    root, marker = build_node_probe(
+        scratch,
+        "import { writeFileSync } from 'node:fs'\n"
+        "import { value } from './helper.mjs'\n"
+        f"writeFileSync({str(scratch / 'node-control-ok')!r}, String(value))\n",
+        {"helper.mjs": "export const value = 41 + 1\n"},
+    )
+    control = scratch / "node-control-ok"
+    try:
+        result = run_node_probe(root)
+        require(
+            result.returncode == 0 and control.exists() and control.read_text() == "42",
+            "the sealed Node launcher refused a builtin plus an allowlisted local import\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        require(not marker.exists(), "the control run executed the payload module")
+        checked += 1
+    finally:
+        control.unlink(missing_ok=True)
+        shutil.rmtree(root, ignore_errors=True)
+
+    # A tampered allowlisted module must be refused by digest, before it loads.
+    root, marker = build_node_probe(
+        scratch,
+        "import './helper.mjs'\n",
+        {"helper.mjs": "export const value = 1\n"},
+    )
+    try:
+        helper = root / "scripts" / "locale-catalog" / "helper.mjs"
+        helper.write_text(
+            "import { writeFileSync } from 'node:fs'\n"
+            f"writeFileSync({str(marker)!r}, 'executed')\n",
+            encoding="utf-8",
+        )
+        result = run_node_probe(root)
+        require(
+            result.returncode != 0 and "committed digest" in result.stderr,
+            "a rewritten allowlisted module was not refused against its digest\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        require(not marker.exists(), "the rewritten allowlisted module executed")
+        checked += 1
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    return checked
+
+
+# ---------------------------------------------------------------------------
+# Probe: every governed Node entry point goes through the sealed launcher
+# ---------------------------------------------------------------------------
+
+GENERATOR_MODULE_NAMES = ("generate.mjs", "verify-dist.mjs")
+LAUNCHER_INVOCATIONS = ("sealed-node-launcher.mjs", "sealed_node_argv")
+# Files that legitimately mention a generator module without invoking it.
+POLICY_EXEMPT_PATHS = frozenset(
+    {
+        "frontend/scripts/locale-catalog/known-gaps.json",
+        "frontend/scripts/locale-catalog/sealed-node-allowlist.json",
+        "scripts/validate-locale-catalog.py",
+        "scripts/test_locale_catalog_python_boundary.py",
+        "offline/scripts/test-frontend-cache-hash.sh",
+    }
+)
+POLICY_SEARCH_ROOTS = (
+    ".github/workflows",
+    "frontend/package.json",
+    "frontend/scripts",
+    "offline/scripts",
+    "scripts",
+    "Dockerfile",
+    "docs",
+)
+
+
+def policy_candidate_files() -> list[Path]:
+    candidates: list[Path] = []
+    for relative in POLICY_SEARCH_ROOTS:
+        path = ROOT / relative
+        if path.is_file():
+            candidates.append(path)
+            continue
+        if not path.is_dir():
+            continue
+        for child in sorted(path.rglob("*")):
+            if child.is_file() and not child.is_symlink():
+                candidates.append(child)
+    return candidates
+
+
+def test_generator_invocation_policy() -> int:
+    """No repository path may start or import a generator module directly.
+
+    Enforcement lives in the launcher, so a single `node .../generate.mjs`
+    anywhere -- a workflow step, a package script, the container build, the
+    offline installer -- would run the same generator with no module-graph
+    enforcement at all. This enumerates every mention and fails on a bypass.
+    """
+    checked = 0
+    violations: list[str] = []
+    for path in policy_candidate_files():
+        relative = path.relative_to(ROOT).as_posix()
+        if relative in POLICY_EXEMPT_PATHS or relative == NODE_LAUNCHER_RELATIVE_PATH:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        checked += 1
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if any(token in line for token in LAUNCHER_INVOCATIONS):
+                continue
+            names_module = any(module in line for module in GENERATOR_MODULE_NAMES)
+            if not names_module:
+                continue
+            # Two bypass shapes matter: naming a generator module by path, and
+            # handing any `.mjs` that is not the launcher to a Node invocation.
+            by_path = any(
+                f"locale-catalog/{module}" in line for module in GENERATOR_MODULE_NAMES
+            )
+            invokes_node = any(
+                token in line
+                for token in ("node ", "NODE}", "NODE\"", "trusted_node()", 'tool("node")')
+            )
+            if by_path or invokes_node:
+                violations.append(f"{relative}:{line_number}: {line.strip()}")
+    require(
+        not violations,
+        "these paths reach a locale-catalog generator module without the sealed launcher:\n"
+        + "\n".join(violations),
+    )
+    require(checked > 20, f"the generator policy scan only examined {checked} files")
+    return checked
+
+
+def test_npm_install_lifecycle_policy() -> int:
+    """Dependency install steps must not run package lifecycle scripts.
+
+    A committed `postinstall` in any dependency runs before every preflight in
+    this repository, and could plant an importable module for the Node or
+    Python side to pick up later. Where lifecycle execution is not needed, it is
+    turned off rather than trusted.
+    """
+    checked = 0
+    violations: list[str] = []
+    # Only files that can actually run npm are scanned, and only at command
+    # position -- prose that mentions `npm ci` is documentation, not execution.
+    executable_suffixes = {".yml", ".yaml", ".sh", ".json"}
+    # `str.endswith("")` is always true, so an empty prefix is handled below
+    # rather than being listed here.
+    command_prefixes = ("RUN", "run:", "if", "then", "else", "&&", "||", ";", "-")
+    for path in policy_candidate_files():
+        relative = path.relative_to(ROOT).as_posix()
+        if path.suffix not in executable_suffixes and path.name != "Dockerfile":
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("#") or stripped.startswith("//"):
+                continue
+            for token in ("npm ci", "npm install"):
+                index = stripped.find(token)
+                if index < 0:
+                    continue
+                if stripped[index:].startswith(("npm install-scripts", "npm install-test")):
+                    continue
+                prefix = stripped[:index].strip()
+                if prefix and not prefix.endswith(command_prefixes):
+                    continue
+                checked += 1
+                if "--ignore-scripts" not in stripped:
+                    violations.append(f"{relative}:{line_number}: {stripped}")
+    require(
+        not violations,
+        "these dependency installs still run package lifecycle scripts:\n"
+        + "\n".join(violations),
+    )
+    require(checked >= 5, f"the npm lifecycle scan only examined {checked} invocations")
+    return checked
+
+
+# ---------------------------------------------------------------------------
+# Probe: the pre-stdlib import surface of the interpreter prefix (T1)
+# ---------------------------------------------------------------------------
+
+PREFIX_PAYLOAD_MARKER = "locale-catalog-prefix-payload-ran"
+
+
+def zip_import_root(marker: Path) -> bytes:
+    """A `python314.zip` that shadows a stdlib module the bootstrap imports.
+
+    `<prefix>/lib/python314.zip` is `sys.path[0]` before CPython reads a single
+    source file, so a module inside it wins against every attested `.py`.
+    """
+    import zipfile
+    import io
+
+    buffer = io.BytesIO()
+    payload = (
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+    )
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name in ("csv.py", "base64.py", "encodings/__init__.py"):
+            archive.writestr(name, payload)
+    return buffer.getvalue()
+
+
+def test_interpreter_prefix_import_surface(scratch: Path, token: str) -> int:
+    """A planted zip root or shadowing extension must never execute.
+
+    Hashing `*.py` is not enough: the zip root precedes every source directory,
+    and inside a directory a compiled extension outranks a source module. Each
+    payload here is planted in a mirrored toolchain and must be refused before
+    the bootstrap's first import.
+    """
+    sealed_root = sealed_root_from_environment()
+    profile = runtime_profile()
+    stdlib_relative = profile["interpreter"]["stdlibRelativePath"]
+    prefix_relative = profile["interpreter"]["installRelativePath"]
+    checked = 0
+    tree = create_probe_tree(scratch, "prefix-surface", token, with_history=False)
+    try:
+        marker = tree / PREFIX_PAYLOAD_MARKER
+        payload = (
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+        ).encode("utf-8")
+        cases = {
+            "zip import root shadowing the stdlib": {
+                f"{prefix_relative}/lib/python314.zip": zip_import_root(marker)
+            },
+            "extension shadowing an attested source module": {
+                f"{stdlib_relative}/csv.cpython-314-darwin.so": b"\x7fELF probe\n"
+            },
+            "extension shadowing an attested package": {
+                f"{stdlib_relative}/json/__init__.cpython-314-darwin.so": b"\x7fELF probe\n"
+            },
+            "path configuration file in the prefix": {
+                f"{stdlib_relative}/probe.pth": b"import probe_payload\n"
+            },
+            "planted bytecode beside an attested source": {
+                f"{stdlib_relative}/csv.pyc": payload
+            },
+        }
+        for label, tampered in sorted(cases.items()):
+            fake = scratch / f"prefix-root-{uuid.uuid4().hex}"
+            fake.mkdir()
+            mirror_toolchain(sealed_root, fake, tampered)
+            require_authoritative_failure(
+                label,
+                tree,
+                [FIXTURE_ENTRY, "--check"],
+                environment=probe_environment({"LOCALE_CATALOG_MISE_ROOT": str(fake)}),
+            )
+            require(
+                not marker.exists(),
+                f"{label} executed its payload before the boundary refused it",
+            )
+            shutil.rmtree(fake)
+            checked += 1
+        return checked
+    finally:
+        release_probe_tree(tree, token)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -2018,6 +2474,10 @@ def main() -> None:
     scratch, scratch_token = owned_scratch()
     totals: dict[str, int] = {}
     try:
+        totals["interpreter prefix surface"] = test_interpreter_prefix_import_surface(scratch, token)
+        totals["node module graph"] = test_node_module_graph_enforcement(scratch, token)
+        totals["generator invocation policy"] = test_generator_invocation_policy()
+        totals["npm lifecycle policy"] = test_npm_install_lifecycle_policy()
         totals["analyzer matrix"] = test_analyzer_matrix(scratch, token)
         totals["analyzer grammar coverage"] = test_analyzer_grammar_coverage()
         totals["trusted source replacement"] = test_trusted_source_replacement(scratch, token)

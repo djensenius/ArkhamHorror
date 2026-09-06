@@ -63,7 +63,7 @@ jobs:
         version: 2026.8.14
         cache: true
     - name: Install frontend dependencies
-      run: npm ci
+      run: npm ci --ignore-scripts
       working-directory: ${{ github.workspace }}/frontend
     - name: Bind the Stack probe authority
       id: stack-probe

@@ -98,7 +98,7 @@ compute_frontend_hash() {
 verify_locale_catalog() {
     local output="$1"
     substep "Verifying and republishing the locale catalog in ${output}"
-    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --publish); then
+    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs --dist "$output" --publish); then
         rm -rf "$output" "$FRONTEND_BUILT_MARKER"
         die "  ✗ The build output in ${output} does not contain a valid locale catalog"
     fi
@@ -115,7 +115,7 @@ verify_locale_catalog() {
 verify_cached_locale_catalog() {
     local output="$1"
     substep "Verifying and republishing the cached locale catalog in ${output}"
-    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --dist-only --publish)
+    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs --dist "$output" --dist-only --publish)
 }
 
 # ── Build frontend ────────────────────────────────────────────────────────────
@@ -207,22 +207,22 @@ build_frontend() {
     # 1. Install dependencies
     if [ -f "package-lock.json" ]; then
         substep "npm ci (the first run may need 2-5 minutes to download dependencies) ..."
-        info "Running: npm ci --prefer-offline"
-        if npm ci --prefer-offline 2>&1 | while IFS= read -r line; do
+        info "Running: npm ci --ignore-scripts --prefer-offline"
+        if npm ci --ignore-scripts --prefer-offline 2>&1 | while IFS= read -r line; do
             echo "    $line"
         done; then
             info "  ✓ npm ci succeeded"
         else
             warn "  ! npm ci failed; falling back to npm install (keeping node_modules to avoid re-downloading) ..."
-            info "Running: npm install"
-            npm install 2>&1 | while IFS= read -r line; do
+            info "Running: npm install --ignore-scripts"
+            npm install --ignore-scripts 2>&1 | while IFS= read -r line; do
                 echo "    $line"
             done
         fi
     else
         substep "npm install (the first run may need 2-5 minutes to download dependencies) ..."
-        info "Running: npm install"
-        npm install 2>&1 | while IFS= read -r line; do
+        info "Running: npm install --ignore-scripts"
+        npm install --ignore-scripts 2>&1 | while IFS= read -r line; do
             echo "    $line"
         done
     fi
@@ -244,7 +244,7 @@ build_frontend() {
     env -i \
         HOME="${DEPS_DIR}/locale-catalog-home" \
         PATH="${DEPS_DIR}/node/bin:/usr/bin:/bin" \
-        "${OFFLINE_NODE}" scripts/locale-catalog/generate.mjs
+        "${OFFLINE_NODE}" scripts/locale-catalog/sealed-node-launcher.mjs generate.mjs
 
     # 3. Build and output to offline/_dist/frontend/
     substep "npm run build (output to ${FRONTEND_OUTPUT}) ..."

@@ -637,12 +637,12 @@ PACKAGED="${WORK}/packaged"
 rm -rf "$PACKAGED"
 mkdir -p "${PACKAGED}/game/frontend/dist"
 cp -R "${DIST}/." "${PACKAGED}/game/frontend/dist/"
-if ! (cd "${REPO_ROOT}/frontend" && node scripts/locale-catalog/verify-dist.mjs \
+if ! (cd "${REPO_ROOT}/frontend" && node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs \
         --dist "${PACKAGED}/game/frontend/dist" --dist-only --publish >/dev/null 2>&1); then
   fail "the packaged tree could not be verified and republished"
 fi
 if (cd "${REPO_ROOT}/frontend" && LOCALE_CATALOG_VERIFY_HOOK="printf tampered > \"\$DIST_CATALOG/${SAMPLE_JSON}\"" \
-      node scripts/locale-catalog/verify-dist.mjs \
+      node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs \
         --dist "${PACKAGED}/game/frontend/dist" --dist-only --publish >/dev/null 2>&1); then
   fail "a leaf replaced during packaging verification was accepted"
 fi

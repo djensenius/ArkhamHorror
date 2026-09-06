@@ -29,7 +29,7 @@ jobs:
           version: 2026.8.14
           cache: true
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
         working-directory: frontend
       - run: mise run locale-catalog:backend-keys-test
       - run: mise run locale-catalog:backend-keys-check
@@ -52,7 +52,7 @@ jobs:
           version: 2026.8.14
           cache: true
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
         working-directory: frontend
       - run: mise run locale-catalog:test
       - name: Generate the attested public catalog for frontend builds
@@ -64,7 +64,7 @@ jobs:
         run: npm run build
         working-directory: frontend
       - name: Verify the catalog ships in the build output
-        run: node scripts/locale-catalog/verify-dist.mjs
+        run: node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs
         working-directory: frontend
       # The offline cache restores a build output without `frontend/public`.
       - run: mise run locale-catalog:offline-cache-hit-test
@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           for attempt in first second; do
             PRECOMPRESS_DIST=dist-custom npm run build -- --outDir dist-custom --emptyOutDir
-            node scripts/locale-catalog/verify-dist.mjs --dist dist-custom
+            node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs --dist dist-custom
             test -f dist-custom/locale-catalog/manifest.json.br
           done
         working-directory: frontend
@@ -91,7 +91,7 @@ jobs:
           version: 2026.8.14
           cache: true
       - name: Install frontend dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
         working-directory: frontend
       # Boots real nginx over prod.nginxconf and over the config the offline
       # packager generates: status/cache/MIME matrix plus a rolling deploy in

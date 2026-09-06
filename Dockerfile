@@ -10,7 +10,7 @@ RUN mkdir -p /opt/arkham/src/frontend
 
 WORKDIR /opt/arkham/src/frontend
 COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js ./frontend/eslint.config.js ./frontend/package-lock.json /opt/arkham/src/frontend/
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
 COPY ./frontend /opt/arkham/src/frontend
 # The locale-catalog generator (run by npm's prebuild) derives its required-key
 # set from the governed contract fixtures and from the backend's emitted-key
@@ -21,13 +21,13 @@ ENV VITE_ASSET_HOST=${ASSET_HOST}
 # This image is pinned by manifest digest, so its explicit Node binary is the
 # Docker build's equivalent immutable execution boundary. npm's prebuild below
 # only checks these bytes; it cannot regenerate a separate catalog.
-RUN env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generate.mjs
+RUN env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/sealed-node-launcher.mjs generate.mjs
 RUN npm run build
 # The image copies `dist` out of this stage, so the catalog is verified here and
 # republished from the verified buffers: what the next stage copies — and what
 # nginx serves — is exactly what passed, not an intermediate tree that happened
 # to be correct when the build finished.
-RUN node scripts/locale-catalog/verify-dist.mjs --publish
+RUN node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs --publish
 
 FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS base
 
