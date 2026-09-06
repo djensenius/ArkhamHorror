@@ -709,17 +709,20 @@ module — before the launcher exists, and therefore outside the module graph it
 binds — so `node --import …/generate.mjs …/generator-launcher.mjs generate.mjs`
 is rejected on the preload, and a preload is refused even when its value is
 benign; production starts the generator with no Node options at all, so nothing
-real is lost by not guessing. Ordinary options are consumed by their real
-arity (`--conditions development`, `--enable-source-maps`, any `--name=value`
-or `--no-*` spelling), `--` still ends Node's options, and an option this
-reader does not know could swallow the next word or not, so a generator
-mention around one fails closed rather than being read as mediated. Python
-callers are read from the AST: a constant or `Path` join bound only for hashing
-is fine, the same value reaching `subprocess` argv — directly or through a
-variable — is not. Path spellings are normalised (`./`, `..`, duplicate
-separators, quoting) before comparison, and a mention the grammar cannot
-resolve fails closed. This is reproducibility and centralisation over trusted
-code, not containment.
+real is lost by not guessing. `NODE_OPTIONS` assignments before Node, including
+assignments passed through `env`, are parsed through those same rules: inert
+configuration such as `--enable-source-maps` remains valid, while a preload,
+eval mode, unknown arity or unresolved value cannot be hidden before a trailing
+launcher. Ordinary options are consumed by their real arity (`--conditions
+development`, `--enable-source-maps`, any `--name=value` or `--no-*` spelling),
+`--` still ends Node's options, and an option this reader does not know could
+swallow the next word or not, so a generator mention around one fails closed
+rather than being read as mediated. Python callers are read from the AST: a
+constant or `Path` join bound only for hashing is fine, the same value reaching
+`subprocess` argv — directly or through a variable — is not. Path spellings are
+normalised (`./`, `..`, duplicate separators, quoting) before comparison, and a
+mention the grammar cannot resolve fails closed. This is reproducibility and
+centralisation over trusted code, not containment.
 
 The synthetic fixture hashes all declared executable sources, both launcher
 stages, the lockfile, and the toolchain lock through `generatorSha256`, so the

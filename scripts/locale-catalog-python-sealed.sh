@@ -281,8 +281,6 @@ verify_stdlib_tree() {
     die "${what} source set does not match the declared complete closure"
 }
 
-verify_stdlib_tree "${STDLIB}" "sealed CPython stdlib"
-
 # `*.py` is not the whole importable surface. CPython puts `<prefix>/lib/
 # python314.zip` *first* on `sys.path` before it reads a single source file, and
 # inside any path entry a compiled extension outranks a source module -- so a
@@ -325,6 +323,7 @@ govern_import_surface() {
 # The managed install is read-only to this boundary, so it is inspected rather
 # than repaired: a zip root or a planted extension there is tampering.
 govern_import_surface "${SEALED_ROOT}/installs/python/3.14.7" "the sealed CPython prefix" 0
+verify_stdlib_tree "${STDLIB}" "sealed CPython stdlib"
 
 # `PATH` for the child exists only for the non-Python helpers the governed
 # scripts shell out to (node/npm, nginx, stack). It deliberately excludes the

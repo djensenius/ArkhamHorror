@@ -871,6 +871,32 @@ def run_authoritative(
     )
 
 
+def run_authoritative_in_new_session(
+    tree: Path,
+    arguments: list[str],
+    *,
+    environment: dict[str, str] | None = None,
+    timeout: int = 1800,
+) -> tuple[int, str, str, int]:
+    """Run the launcher in a distinct process group and return that group ID."""
+    process = subprocess.Popen(
+        [str(tree / LAUNCHER_RELATIVE_PATH), *arguments],
+        cwd=tree,
+        env=probe_environment() if environment is None else environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        raise
+    return process.returncode, stdout, stderr, process.pid
+
+
 def require_authoritative_failure(
     label: str,
     tree: Path,
@@ -3614,15 +3640,26 @@ def drop_redirections(words: list[str]) -> list[str]:
     return kept
 
 
-def executed_program(words: list[str]) -> tuple[str, list[str]] | None:
+def executed_program(words: list[str]) -> tuple[str, list[str], list[str]] | None:
     """Resolve the program a command runs and the arguments it is handed.
 
     Leading `NAME=value` assignments and `env`-style wrappers (with their own
     options and assignments) are consumed, because they change the environment
-    rather than being the thing that runs.
+    rather than being the thing that runs. `NODE_OPTIONS` values are retained:
+    Node executes their preload options before the script on its explicit
+    command line, so dropping them would let a trailing launcher falsely
+    mediate code that already ran.
     """
+    node_options: list[str] = []
+
+    def record_assignment(word: str) -> None:
+        name, value = word.split("=", 1)
+        if name == "NODE_OPTIONS":
+            node_options.append(value)
+
     index = 0
     while index < len(words) and COMMAND_ASSIGNMENT.match(words[index]):
+        record_assignment(words[index])
         index += 1
     while index < len(words):
         name = normalise_reference(words[index]).rsplit("/", 1)[-1]
@@ -3636,6 +3673,7 @@ def executed_program(words: list[str]) -> tuple[str, list[str]] | None:
                 index += 1
                 break
             if COMMAND_ASSIGNMENT.match(word):
+                record_assignment(word)
                 index += 1
                 continue
             if word.startswith("-") and word != "-":
@@ -3644,7 +3682,7 @@ def executed_program(words: list[str]) -> tuple[str, list[str]] | None:
             break
     if index >= len(words):
         return None
-    return words[index], words[index + 1 :]
+    return words[index], words[index + 1 :], node_options
 
 
 def read_node_invocation(
@@ -3707,6 +3745,45 @@ def read_node_invocation(
     return arguments[index], arguments[index + 1 :], executed, True
 
 
+def read_node_environment_options(values: list[str]) -> tuple[list[str], bool]:
+    """Report code run by `NODE_OPTIONS` and whether every value is inert.
+
+    A known flag such as `--enable-source-maps` is configuration. Preloads,
+    eval modes, malformed quoting, unresolved values and unknown option arity
+    are not safe to place before a launcher because they can execute code or
+    change where Node reads its entry module.
+    """
+    findings: list[str] = []
+    inert = True
+    sentinel = "__locale_catalog_node_options_entry__.mjs"
+    for value in values:
+        if not value:
+            continue
+        try:
+            options = shlex.split(value, comments=False, posix=True)
+        except ValueError:
+            findings.append("uses an unresolved NODE_OPTIONS value")
+            inert = False
+            continue
+        script, forwarded, executed, resolved = read_node_invocation(
+            [*options, sentinel]
+        )
+        for kind, executed_value in executed:
+            if names_generator_entry(executed_value):
+                findings.append(f"{kind} a generator module through NODE_OPTIONS")
+            elif entry_mentions(executed_value):
+                findings.append(
+                    f"{kind} an unresolved generator module reference through NODE_OPTIONS"
+                )
+            else:
+                findings.append(f"{kind} code through NODE_OPTIONS before the launcher")
+        if executed or not resolved or script != sentinel or forwarded:
+            inert = False
+            if not executed:
+                findings.append("uses NODE_OPTIONS whose execution order is unresolved")
+    return findings, inert
+
+
 def command_launcher_reading(words: list[str]) -> tuple[bool, list[str]]:
     """Judge one command: is it launcher-mediated, and what does it reach?
 
@@ -3736,16 +3813,18 @@ def command_launcher_reading(words: list[str]) -> tuple[bool, list[str]]:
     program = executed_program(drop_redirections(words))
     if program is None:
         return False, findings
-    executable, arguments = program
+    executable, arguments, node_options = program
     if not is_node_executable(executable) and not is_unresolved_word(executable):
         return False, findings
+    option_findings, options_are_inert = read_node_environment_options(node_options)
+    findings.extend(option_findings)
     script, forwarded, executed, resolved = read_node_invocation(arguments)
     for kind, value in executed:
         if names_generator_entry(value):
             findings.append(f"{kind} a generator module")
         elif entry_mentions(value):
             findings.append(f"{kind} an unresolved generator module reference")
-    if executed or not resolved or script is None:
+    if not options_are_inert or executed or not resolved or script is None:
         return False, findings
     if not names_generator_launcher(script):
         return False, findings
@@ -4893,6 +4972,30 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         "node ./scripts/locale-catalog/generator-launcher.mjs generate.mjs --check\n",
         True,
     ),
+    "NODE_OPTIONS requiring the generator before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "NODE_OPTIONS=--require=./scripts/locale-catalog/generate.mjs "
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "NODE_OPTIONS importing the generator before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        'NODE_OPTIONS="--import ./scripts/locale-catalog/generate.mjs" '
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "env NODE_OPTIONS requiring the generator before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "env NODE_OPTIONS=--require=./scripts/locale-catalog/generate.mjs "
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "benign NODE_OPTIONS before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "NODE_OPTIONS=--enable-source-maps "
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        True,
+    ),
     "a scrubbed environment before the launcher": (
         "offline/scripts/99-wrapper.sh",
         "env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin "
@@ -5175,8 +5278,9 @@ def zip_import_root(marker: Path) -> bytes:
 
     buffer = io.BytesIO()
     payload = (
-        "from pathlib import Path\n"
-        f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+        "import os\n"
+        f"with open({str(marker)!r}, 'a', encoding='ascii') as marker_file:\n"
+        "    marker_file.write(f'{os.getpgrp()}\\n')\n"
     )
     with zipfile.ZipFile(buffer, "w") as archive:
         for name in ("csv.py", "base64.py", "encodings/__init__.py"):
@@ -5185,12 +5289,18 @@ def zip_import_root(marker: Path) -> bytes:
 
 
 def test_interpreter_prefix_import_surface(scratch: Path, token: str) -> int:
-    """A planted zip root or shadowing extension must never execute.
+    """The launcher must reject a planted zip root before starting Python.
 
     Hashing `*.py` is not enough: the zip root precedes every source directory,
     and inside a directory a compiled extension outranks a source module. Each
-    payload here is planted in a mirrored toolchain and must be refused before
-    the bootstrap's first import.
+    candidate here is planted in a mirrored toolchain and must be refused
+    before the launcher's process group imports it.
+
+    Same-UID host tooling is outside the boundary and can independently inspect
+    a newly discovered interpreter tree. The zip payload therefore records its
+    process group: only the launcher's isolated group proves that this command
+    started the interpreter. Per-case markers prevent a delayed external probe
+    of one mirror from being attributed to another case.
     """
     sealed_root = sealed_root_from_environment()
     profile = runtime_profile()
@@ -5199,42 +5309,68 @@ def test_interpreter_prefix_import_surface(scratch: Path, token: str) -> int:
     checked = 0
     tree = create_probe_tree(scratch, "prefix-surface", token, with_history=False)
     try:
-        marker = tree / PREFIX_PAYLOAD_MARKER
-        payload = (
-            "from pathlib import Path\n"
-            f"Path({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
-        ).encode("utf-8")
-        cases = {
-            "zip import root shadowing the stdlib": {
-                f"{prefix_relative}/lib/python314.zip": zip_import_root(marker)
-            },
-            "extension shadowing an attested source module": {
-                f"{stdlib_relative}/csv.cpython-314-darwin.so": b"\x7fELF probe\n"
-            },
-            "extension shadowing an attested package": {
-                f"{stdlib_relative}/json/__init__.cpython-314-darwin.so": b"\x7fELF probe\n"
-            },
-            "path configuration file in the prefix": {
-                f"{stdlib_relative}/probe.pth": b"import probe_payload\n"
-            },
-            "planted bytecode beside an attested source": {
-                f"{stdlib_relative}/csv.pyc": payload
-            },
-        }
-        for label, tampered in sorted(cases.items()):
+        cases = (
+            (
+                "zip import root shadowing the stdlib",
+                f"{prefix_relative}/lib/python314.zip",
+                None,
+            ),
+            (
+                "extension shadowing an attested source module",
+                f"{stdlib_relative}/csv.cpython-314-darwin.so",
+                b"\x7fELF probe\n",
+            ),
+            (
+                "extension shadowing an attested package",
+                f"{stdlib_relative}/json/__init__.cpython-314-darwin.so",
+                b"\x7fELF probe\n",
+            ),
+            (
+                "path configuration file in the prefix",
+                f"{stdlib_relative}/probe.pth",
+                b"import probe_payload\n",
+            ),
+            (
+                "planted bytecode beside an attested source",
+                f"{stdlib_relative}/csv.pyc",
+                b"not valid bytecode\n",
+            ),
+        )
+        for label, relative_path, content in sorted(cases):
+            marker = tree / f"{PREFIX_PAYLOAD_MARKER}-{uuid.uuid4().hex}"
             fake = scratch / f"prefix-root-{uuid.uuid4().hex}"
             fake.mkdir()
-            mirror_toolchain(sealed_root, fake, tampered)
-            require_authoritative_failure(
-                label,
+            mirror_toolchain(
+                sealed_root,
+                fake,
+                {
+                    relative_path: (
+                        zip_import_root(marker) if content is None else content
+                    )
+                },
+            )
+            returncode, stdout, stderr, process_group = run_authoritative_in_new_session(
                 tree,
                 [FIXTURE_ENTRY, "--check"],
                 environment=probe_environment({"LOCALE_CATALOG_MISE_ROOT": str(fake)}),
             )
             require(
-                not marker.exists(),
-                f"{label} executed its payload before the boundary refused it",
+                returncode != 0,
+                f"{label} was accepted by the real authoritative command\n"
+                f"stdout:\n{stdout}\nstderr:\n{stderr}",
             )
+            if marker.exists():
+                executing_groups = {
+                    int(line)
+                    for line in marker.read_text(encoding="ascii").splitlines()
+                    if line.isdecimal()
+                }
+                require(
+                    process_group not in executing_groups,
+                    f"{label} executed in the authoritative launcher's process group "
+                    "before the boundary refused it",
+                )
+                marker.unlink()
             shutil.rmtree(fake)
             checked += 1
         return checked
