@@ -697,7 +697,23 @@ redirection target or a nested command that never runs all leave a direct
 second segment; assignments carry across segments the way the shell carries
 them, so `GEN=…/generate.mjs; node "$GEN"` is rejected too, and an unbalanced
 quote or group around a generator mention, or a command position this reader
-cannot resolve, fails closed. Python
+cannot resolve, fails closed.
+
+Node's own command line is read with Node's semantics rather than as a list of
+words to skip. `-e`/`--eval`/`-p`/`--print` (in both the spaced and
+`--eval=…` spellings) *are* the program: there is no later script, so a
+launcher path after one of them is argument data, and a generator named or
+mentioned in the evaluated source is reported. `-r`/`--require`, `--import`
+and `--loader`/`--experimental-loader` run their value before the entry
+module — before the launcher exists, and therefore outside the module graph it
+binds — so `node --import …/generate.mjs …/generator-launcher.mjs generate.mjs`
+is rejected on the preload, and a preload is refused even when its value is
+benign; production starts the generator with no Node options at all, so nothing
+real is lost by not guessing. Ordinary options are consumed by their real
+arity (`--conditions development`, `--enable-source-maps`, any `--name=value`
+or `--no-*` spelling), `--` still ends Node's options, and an option this
+reader does not know could swallow the next word or not, so a generator
+mention around one fails closed rather than being read as mediated. Python
 callers are read from the AST: a constant or `Path` join bound only for hashing
 is fine, the same value reaching `subprocess` argv — directly or through a
 variable — is not. Path spellings are normalised (`./`, `..`, duplicate

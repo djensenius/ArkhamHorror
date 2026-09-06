@@ -3478,25 +3478,110 @@ COMMAND_WRAPPERS: dict[str, frozenset[str]] = {
     "exec": frozenset({"-a"}),
     "command": frozenset(),
 }
-# Node options that swallow the next word, so that word is not the script.
-# `--require`/`--import` are exactly how a generator module could be executed
-# while the launcher sits in the option's value.
+# Node options that execute their own value *instead of* a script: after one
+# of these Node has already been told what to run, so no later word is a
+# script and a launcher path among them is data.
+NODE_EVAL_OPTIONS = frozenset({"-e", "--eval", "-p", "--print"})
+# Node options whose value is a module executed *before* the entry module, and
+# therefore before the launcher could bind anything. `--require .../generate.mjs`
+# runs the generator outright; a launcher later on the same line mediates none
+# of it.
+NODE_PRELOAD_OPTIONS = frozenset(
+    {"-r", "--require", "--import", "--loader", "--experimental-loader"}
+)
+# Ordinary options that consume the following word, by their real arity.
 NODE_VALUE_OPTIONS = frozenset(
     {
-        "-r",
-        "--require",
-        "--import",
-        "--loader",
-        "--experimental-loader",
-        "-e",
-        "--eval",
-        "-p",
-        "--print",
         "-C",
         "--conditions",
-        "--input-type",
+        "--cpu-prof-dir",
+        "--cpu-prof-name",
+        "--diagnostic-dir",
+        "--dns-result-order",
         "--env-file",
+        "--env-file-if-exists",
+        "--heap-prof-dir",
+        "--heap-prof-name",
+        "--icu-data-dir",
+        "--input-type",
+        "--max-old-space-size",
+        "--openssl-config",
+        "--redirect-warnings",
+        "--report-directory",
+        "--report-filename",
+        "--secure-heap",
+        "--secure-heap-min",
+        "--snapshot-blob",
+        "--stack-size",
+        "--test-name-pattern",
+        "--test-reporter",
+        "--test-reporter-destination",
+        "--test-shard",
+        "--title",
+        "--tls-cipher-list",
+        "--trace-event-categories",
+        "--trace-event-file-pattern",
+        "--unhandled-rejections",
         "--watch-path",
+    }
+)
+# Ordinary options that take no value. Anything spelled `--name=value` carries
+# its value inline and is self-contained too, as is any `--no-*` negation; an
+# option outside all of these could swallow the next word or not, so the
+# reading fails closed rather than guessing which.
+NODE_FLAG_OPTIONS = frozenset(
+    {
+        "-c",
+        "--check",
+        "-h",
+        "--help",
+        "-i",
+        "--interactive",
+        "-v",
+        "--version",
+        "--abort-on-uncaught-exception",
+        "--disallow-code-generation-from-strings",
+        "--enable-source-maps",
+        "--experimental-import-meta-resolve",
+        "--experimental-json-modules",
+        "--experimental-modules",
+        "--experimental-permission",
+        "--experimental-sqlite",
+        "--experimental-strip-types",
+        "--experimental-transform-types",
+        "--experimental-vm-modules",
+        "--experimental-wasm-modules",
+        "--expose-gc",
+        "--force-context-aware",
+        "--force-fips",
+        "--frozen-intrinsics",
+        "--jitless",
+        "--napi-modules",
+        "--pending-deprecation",
+        "--preserve-symlinks",
+        "--preserve-symlinks-main",
+        "--prof",
+        "--prof-process",
+        "--report-compact",
+        "--report-on-fatalerror",
+        "--report-on-signal",
+        "--report-uncaught-exception",
+        "--test",
+        "--test-only",
+        "--throw-deprecation",
+        "--trace-deprecation",
+        "--trace-exit",
+        "--trace-sigint",
+        "--trace-sync-io",
+        "--trace-uncaught",
+        "--trace-warnings",
+        "--track-heap-objects",
+        "--use-bundled-ca",
+        "--use-openssl-ca",
+        "--v8-options",
+        "--watch",
+        "--watch-preserve-output",
+        "--zero-fill-buffers",
     }
 )
 
@@ -3562,8 +3647,23 @@ def executed_program(words: list[str]) -> tuple[str, list[str]] | None:
     return words[index], words[index + 1 :]
 
 
-def node_script_and_arguments(arguments: list[str]) -> tuple[str | None, list[str]]:
-    """Split Node's own options from the script it executes."""
+def read_node_invocation(
+    arguments: list[str],
+) -> tuple[str | None, list[str], list[tuple[str, str]], bool]:
+    """Read Node's own command line the way Node does.
+
+    Returns the script Node executes (`None` when it was given none), the
+    arguments forwarded to it, the values Node runs by itself -- `("evaluates",
+    source)` for `-e`/`--eval`/`-p`/`--print` and `("preloads", specifier)` for
+    `-r`/`--require`/`--import`/`--loader` -- and whether the reading is
+    resolved.
+
+    The two execution modes are why this matters. An eval source *is* the
+    program, so nothing after it is a script; a preload runs before the entry
+    module, so it escapes anything the entry would have installed. In both
+    cases a launcher path further along the line is data, not mediation.
+    """
+    executed: list[tuple[str, str]] = []
     index = 0
     while index < len(arguments):
         word = arguments[index]
@@ -3572,38 +3672,84 @@ def node_script_and_arguments(arguments: list[str]) -> tuple[str | None, list[st
             break
         if not word.startswith("-") or word == "-":
             break
-        index += 2 if word in NODE_VALUE_OPTIONS else 1
+        name, separator, inline = word.partition("=")
+        if name in NODE_EVAL_OPTIONS:
+            if separator:
+                executed.append(("evaluates", inline))
+                return None, arguments[index + 1 :], executed, True
+            if index + 1 >= len(arguments):
+                return None, [], executed, False
+            executed.append(("evaluates", arguments[index + 1]))
+            return None, arguments[index + 2 :], executed, True
+        if name in NODE_PRELOAD_OPTIONS:
+            if separator:
+                executed.append(("preloads", inline))
+                index += 1
+                continue
+            if index + 1 >= len(arguments):
+                return None, [], executed, False
+            executed.append(("preloads", arguments[index + 1]))
+            index += 2
+            continue
+        if separator or name.startswith("--no-") or name in NODE_FLAG_OPTIONS:
+            index += 1
+            continue
+        if name in NODE_VALUE_OPTIONS:
+            if index + 1 >= len(arguments):
+                return None, [], executed, False
+            index += 2
+            continue
+        # An option this reader does not know may or may not swallow the next
+        # word, so which word is the script is a guess from here on.
+        return None, arguments[index + 1 :], executed, False
     if index >= len(arguments):
-        return None, []
-    return arguments[index], arguments[index + 1 :]
+        return None, [], executed, True
+    return arguments[index], arguments[index + 1 :], executed, True
 
 
-def command_is_launcher_mediated(words: list[str]) -> bool:
-    """Whether this command really executes a generator entry via the launcher.
+def command_launcher_reading(words: list[str]) -> tuple[bool, list[str]]:
+    """Judge one command: is it launcher-mediated, and what does it reach?
 
     Naming the launcher somewhere in the command is not mediation: it has to be
     the script Node is handed, with the entry module as the launcher's own
     first argument, which is the launcher's actual CLI
     (`node generator-launcher.mjs <entry> [...forwarded]`). A launcher path
-    sitting in an environment value, a swallowed option value, a trailing
-    argument after `--`, a redirection target or an unrelated assignment
-    mediates nothing.
+    sitting in an environment value, an eval source, a preloaded module, a
+    swallowed option value, a trailing argument after `--`, a redirection
+    target or an unrelated assignment mediates nothing.
+
+    An `-e`/`-p` source and an `--import`/`--require` module are code Node runs
+    on its own account -- the first instead of a script, the second before the
+    entry module and therefore before the launcher exists -- so a generator
+    named in either is reported, and such a command is never a mediated
+    generation even when a real launcher command follows on the same line.
+    Production starts the generator with no Node options at all; a benign
+    preload before the launcher is refused rather than guessed at, because a
+    preload runs outside the module graph the launcher binds.
 
     When the program itself cannot be resolved -- a `"${OFFLINE_NODE}"`-style
-    pinned interpreter, say -- the only reading accepted is the one where the
-    launcher is still the script that program was handed; anything else leaves
-    the command position ambiguous and is judged unmediated.
+    pinned interpreter, say -- or an unknown option leaves the script position
+    ambiguous, the only reading accepted is the one where the launcher is still
+    the script that program was handed; anything else is judged unmediated.
     """
+    findings: list[str] = []
     program = executed_program(drop_redirections(words))
     if program is None:
-        return False
+        return False, findings
     executable, arguments = program
     if not is_node_executable(executable) and not is_unresolved_word(executable):
-        return False
-    script, forwarded = node_script_and_arguments(arguments)
-    if script is None or not names_generator_launcher(script):
-        return False
-    return bool(forwarded) and names_generator_entry(forwarded[0])
+        return False, findings
+    script, forwarded, executed, resolved = read_node_invocation(arguments)
+    for kind, value in executed:
+        if names_generator_entry(value):
+            findings.append(f"{kind} a generator module")
+        elif entry_mentions(value):
+            findings.append(f"{kind} an unresolved generator module reference")
+    if executed or not resolved or script is None:
+        return False, findings
+    if not names_generator_launcher(script):
+        return False, findings
+    return bool(forwarded) and names_generator_entry(forwarded[0]), findings
 
 
 def strip_c_like_comments(text: str) -> str:
@@ -3919,8 +4065,12 @@ def analyse_command_segment(
     # Mediation is a property of *this* command, never of the line it shares
     # with others, and never of a launcher path that merely appears in it: the
     # launcher has to be the program Node actually executes, with the entry
-    # module as its own argument.
-    is_mediated = command_is_launcher_mediated(words)
+    # module as its own argument. The same reading reports what Node runs on
+    # its own account -- an eval source, a preloaded module -- which the
+    # launcher never sees.
+    is_mediated, findings = command_launcher_reading(words)
+    for finding in findings:
+        violations.append(f"{label}: {finding}: {code}")
     for name, value in SHELL_ASSIGNMENT.findall(code):
         if names_generator_entry(value):
             accounted += 1
@@ -4759,6 +4909,124 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         "offline/scripts/99-wrapper.sh",
         "node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs "
         '--dist "$output" --dist-only --publish\n',
+        True,
+    ),
+    "an eval source importing the generator with the launcher trailing": (
+        "offline/scripts/99-wrapper.sh",
+        "node -e \"import('./scripts/locale-catalog/generate.mjs')\" "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "an inline eval source importing the generator": (
+        "offline/scripts/99-wrapper.sh",
+        "node --eval=\"import('./scripts/locale-catalog/generate.mjs')\" "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "a print source requiring the generator": (
+        "offline/scripts/99-wrapper.sh",
+        "node -p \"require('./scripts/locale-catalog/generate.mjs')\" "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "an inline print source importing the generator": (
+        "offline/scripts/99-wrapper.sh",
+        "node --print=\"await import('./scripts/locale-catalog/generate.mjs')\" "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "an eval source naming an unresolvable generator path": (
+        "offline/scripts/99-wrapper.sh",
+        'node -e "await import(`${DIR}/generate.mjs`)" '
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "the launcher as trailing data after a benign eval": (
+        "offline/scripts/99-wrapper.sh",
+        "node -e \"process.exit(0)\" "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "the generator imported before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --import ./scripts/locale-catalog/generate.mjs "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "the generator imported inline before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --import=./scripts/locale-catalog/generate.mjs "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "the generator required before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --require ./scripts/locale-catalog/generate.mjs "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "the generator required through the short option": (
+        "offline/scripts/99-wrapper.sh",
+        "node -r ./scripts/locale-catalog/generate.mjs "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "the generator installed as a loader before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --experimental-loader ./scripts/locale-catalog/generate.mjs "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "the generator installed as an inline loader before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --loader=./scripts/locale-catalog/generate.mjs "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "a preload value carried by a variable": (
+        "offline/scripts/99-wrapper.sh",
+        "GEN=frontend/scripts/locale-catalog/generate.mjs\n"
+        'node --require "$GEN" scripts/locale-catalog/generator-launcher.mjs generate.mjs\n',
+        False,
+    ),
+    "a benign preload before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --require ./scripts/instrument.cjs "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "an unknown option before the launcher and the generator": (
+        "offline/scripts/99-wrapper.sh",
+        "node --unknown-option scripts/locale-catalog/generator-launcher.mjs "
+        "scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a benign eval beside a real launcher command": (
+        "offline/scripts/99-wrapper.sh",
+        "node -e \"console.log('prebuild')\" "
+        "&& node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        True,
+    ),
+    "a benign print beside a real launcher command": (
+        "offline/scripts/99-wrapper.sh",
+        "node --print=process.version "
+        "&& node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs\n",
+        True,
+    ),
+    "a known valueless option before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --enable-source-maps scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        True,
+    ),
+    "a known value option before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --conditions development "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        True,
+    ),
+    "the launcher after the option terminator": (
+        "offline/scripts/99-wrapper.sh",
+        "node -- scripts/locale-catalog/generator-launcher.mjs generate.mjs --check\n",
         True,
     ),
 }
