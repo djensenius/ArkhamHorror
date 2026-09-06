@@ -1,4 +1,5 @@
 FROM node:26.7.0-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS frontend
+ARG TARGETARCH
 
 # Frontend
 
@@ -10,7 +11,8 @@ RUN mkdir -p /opt/arkham/src/frontend
 
 WORKDIR /opt/arkham/src/frontend
 COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js ./frontend/eslint.config.js ./frontend/package-lock.json /opt/arkham/src/frontend/
-RUN --mount=type=cache,target=/root/.npm npm ci
+COPY ./offline/toolchain.lock ./offline/scripts/docker-runtime-authority.sh /opt/arkham/toolchain/
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts --prefer-offline
 COPY ./frontend /opt/arkham/src/frontend
 # The locale-catalog generator (run by npm's prebuild) derives its required-key
 # set from the governed contract fixtures and from the backend's emitted-key
@@ -18,11 +20,12 @@ COPY ./frontend /opt/arkham/src/frontend
 COPY ./contracts /opt/arkham/src/contracts
 COPY ./backend/arkham-api/i18n-emitted-keys.json /opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json
 ENV VITE_ASSET_HOST=${ASSET_HOST}
-# This image is pinned by manifest digest, so its explicit Node binary is the
-# Docker build's equivalent immutable execution boundary. npm's prebuild below
-# only checks these bytes; it cannot regenerate a separate catalog.
-RUN env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generate.mjs
-RUN npm run build
+# Reverify the exact Node executable and complete npm CLI import tree after ci
+# and immediately before each untrusted package-script boundary.
+RUN /opt/arkham/toolchain/docker-runtime-authority.sh node /opt/arkham/toolchain/toolchain.lock "$TARGETARCH" && \
+    env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generate.mjs
+RUN /opt/arkham/toolchain/docker-runtime-authority.sh node /opt/arkham/toolchain/toolchain.lock "$TARGETARCH" && \
+    /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js run build
 # The image copies `dist` out of this stage, so the catalog is verified here and
 # republished from the verified buffers: what the next stage copies — and what
 # nginx serves — is exactly what passed, not an intermediate tree that happened
@@ -171,23 +174,12 @@ RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
 # multi-platform manifest digest so the exact nginx runtime tested below is
 # the one shipped, rather than a mutable Ubuntu apt package.
 FROM nginx:1.27.5@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d AS app
+ARG TARGETARCH
 
 # App
 
 ENV LC_ALL=C.UTF-8
 LABEL org.opencontainers.image.nginx-runtime-reference="nginx:1.27.5@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d"
-
-RUN apt-get update && \
-  apt-get install -y --assume-yes --no-install-recommends \
-    libpcre3 \
-    libpq5 \
-    libgmp10 \
-    libnuma1 \
-    libtinfo6 \
-    ca-certificates \
-    curl \
-    cron && \
-  rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p \
   /opt/arkham/bin \
@@ -205,10 +197,12 @@ COPY ./prod.nginxconf /opt/arkham/src/backend/prod.nginxconf
 COPY ./start.sh /opt/arkham/src/backend/arkham-api/start.sh
 COPY ./web-entrypoint.sh /web-entrypoint.sh
 COPY ./backend/arkham-api/digital-ocean.crt /opt/arkham/src/backend/arkham-api/digital-ocean.crt
+COPY ./offline/toolchain.lock ./offline/scripts/docker-runtime-authority.sh /opt/arkham/toolchain/
 
 RUN useradd -ms /bin/bash yesod && \
   chown -R yesod:yesod /opt/arkham /var/log/nginx /var/lib/nginx /var/cache/nginx /run && \
-  chmod a+x /opt/arkham/src/backend/arkham-api/start.sh /web-entrypoint.sh
+  chmod a+x /opt/arkham/src/backend/arkham-api/start.sh /web-entrypoint.sh && \
+  /opt/arkham/toolchain/docker-runtime-authority.sh nginx /opt/arkham/toolchain/toolchain.lock "$TARGETARCH"
 USER yesod
 ENV PATH="$PATH:/opt/stack/bin:/opt/arkham/bin"
 

@@ -705,7 +705,9 @@ def test_workflow_base_authority_wiring() -> int:
     )
     offline = (ROOT / ".github" / "workflows" / "build-offline.yml").read_text(encoding="utf-8")
     require(
-        "contents: write" in offline
+        "permissions:\n  contents: read" in offline
+        and "    permissions:\n      contents: write" in offline
+        and "persist-credentials: false" in offline
         and "softprops/action-gh-release" not in offline
         and "gh release create" in offline
         and all(
@@ -718,7 +720,7 @@ def test_workflow_base_authority_wiring() -> int:
             )
         )
         and "@v" not in offline,
-        "build-offline.yml retains a mutable action in a contents:write release workflow",
+        "build-offline.yml does not isolate release write credentials from dependency/build code",
     )
     return 2
 

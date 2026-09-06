@@ -2251,6 +2251,8 @@ main() {
     [ -f "$NGINX_BIN" ]     || die "Nginx does not exist: $NGINX_BIN"
     verify_authority_tree_from_receipt frontend "$FRONTEND_SRC" \
         || die "Frontend output does not match this invocation's complete authority receipt"
+    verify_authority_paths backend "$(backend_output_identity)" "$DEPS_DIR" arkham-api \
+        || die "Backend output does not match this invocation's authenticated authority receipt"
     verify_node_installation
     export PATH="${DEPS_DIR}/node/bin:${PATH}"
     verify_postgres_installation
@@ -2288,6 +2290,8 @@ main() {
     # their capability path/token to a child process.
     verify_authority_tree_from_receipt frontend "$FRONTEND_SRC" \
         || die "Frontend output changed after initial authority verification"
+    verify_authority_paths backend "$(backend_output_identity)" "$DEPS_DIR" arkham-api \
+        || die "Backend output changed after initial authority verification"
     verify_node_installation
     verify_postgres_installation
     verify_nginx_dependency_for_packaging
@@ -2538,6 +2542,13 @@ main() {
         # Step 4: clear all quarantine attributes
         xattr -rd com.apple.quarantine "${PKG_DIR}" || true
     fi
+
+    # Archives and the updater have one canonical package representation:
+    # directories and non-hardlinked regular files only. PostgreSQL installs
+    # versioned .so aliases as safe internal links; materialize those aliases
+    # before every provenance digest and before tar can encode a link member.
+    /usr/bin/python3 "${SCRIPT_DIR}/materialize-package-tree.py" "$PKG_DIR" \
+        || die "Could not materialize package links into regular files"
 
     # Dynamic-library relocation and macOS signing can modify the nginx
     # executable, so its package SHA-256 provenance is written only after

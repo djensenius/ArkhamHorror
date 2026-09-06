@@ -94,6 +94,28 @@ for needle in 'fetch_locked_archive' ' ghc ' ' stack ' ' cabal ' 'verify_locked_
   grep -Fq "$needle" "${REPO_ROOT}/Dockerfile" \
     || fail "Dockerfile does not use locked Docker toolchain primitive: ${needle}"
 done
+for needle in \
+  'npm ci --ignore-scripts --prefer-offline' \
+  'docker-runtime-authority.sh node' \
+  'docker-runtime-authority.sh nginx' \
+  'nginx-runtime-closure' \
+  'node-runtime'; do
+  grep -Fq "$needle" "${REPO_ROOT}/Dockerfile" "${REPO_ROOT}/offline/toolchain.lock" \
+    || fail "Docker production authority is missing: ${needle}"
+done
+if awk '/^FROM nginx:/{in_final=1; next} in_final && /apt-get/{found=1} END {exit !found}' \
+    "${REPO_ROOT}/Dockerfile"; then
+  fail "final nginx stage still permits mutable apt package installation"
+fi
+if ! awk '
+  /npm ci --ignore-scripts --prefer-offline/ {ci=NR}
+  /docker-runtime-authority.sh node/ {if (!first) first=NR; last=NR}
+  /generate\.mjs/ {generator=NR}
+  /npm-cli\.js run build/ {build=NR}
+  END {exit !(ci && first > ci && first < generator && last > generator && last < build)}
+' "${REPO_ROOT}/Dockerfile"; then
+  fail "Dockerfile does not reverify Node/npm after ci and before both execution boundaries"
+fi
 
 if [ "$failures" -ne 0 ]; then
   printf 'docker-toolchain-authority: %s failure(s)\n' "$failures" >&2

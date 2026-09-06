@@ -325,6 +325,9 @@ build_backend() {
         die "  ✗ Failed to copy backend binary"
     fi
 
+    record_authority_receipt backend "$(backend_output_identity)" \
+        "$(authority_paths_digest "$DEPS_DIR" arkham-api)" \
+        || die "Could not authenticate the backend output for this invocation"
     info "Backend build complete"
 }
 

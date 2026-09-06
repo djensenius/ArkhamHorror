@@ -88,7 +88,8 @@ GHC / Stack / Node.js use official prebuilt binaries. PostgreSQL and Nginx are b
 `toolchain.lock` is the committed authority table for every direct offline
 toolchain archive on every supported platform: GHC, Stack, Node, PostgreSQL,
 and Nginx. It also locks the Docker builder's direct GHC, Cabal, and Stack
-archives and exact installed binaries. Cache hits are never accepted merely
+archives and exact installed binaries, plus the per-platform Docker Node/npm
+and production Nginx recursive loaded-library closures. Cache hits are never accepted merely
 because they are non-empty:
 
 - archive bytes are SHA-256 checked on every hit, after download, and before
@@ -127,11 +128,15 @@ the archive cache authority path.
 
 The package copies this lock alongside
 `game/config/toolchain-provenance.env` after any binary relocation/signing.
-Release CI records separate invocation authority for the Nginx binary,
-generated-config source, complete bundled-library closure, and final copied
-frontend document root, then starts the exact package with an empty host
-environment. The package-local provenance is only a consistency record; it is
-never accepted as authority by itself.
+Release CI records separate invocation authority for the authenticated backend
+output, Nginx binary/generated-config source/complete bundled-library closure,
+and final copied frontend document root, then starts the exact package with an
+empty host environment. Serving cleanup removes its generated config, logs,
+PID and temporary directory before CI records one complete regular-file package
+tree closure immediately before archiving. PostgreSQL's safe versioned-library
+aliases are materialized into independent regular files first, so the archive
+and updater use the same representation. The package-local provenance is only
+a consistency record; it is never accepted as authority by itself.
 Published releases include a detached `.tar.gz.sha256` checksum.
 
 ## Directory Layout
@@ -146,6 +151,8 @@ offline/
 │   ├── authority-tree.py
 │   ├── toolchain-authority.sh
 │   ├── docker-toolchain.sh
+│   ├── docker-runtime-authority.sh
+│   ├── materialize-package-tree.py
 │   ├── 01-check-project-deps.sh
 │   ├── 02-verify-deps.sh
 │   ├── 03-build-frontend.sh

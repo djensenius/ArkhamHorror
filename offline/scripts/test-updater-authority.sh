@@ -144,6 +144,39 @@ run_updater "$VALID_BASE" "$(published_digest_for "$VALID_BASE")" >/dev/null
 [ -d "${VALID_BASE}/game_v20260901.1" ] || fail "valid update did not preserve the old game"
 [ -f "${VALID_BASE}/game/current_v20260902.1" ] || fail "valid update did not write the new marker"
 
+# Model the PostgreSQL library layout produced on Linux: versioned objects with
+# SONAME/development aliases. The packager materializes those internal aliases,
+# so the archive remains the updater's regular-file-only representation.
+POSTGRES_LINK_BASE="${WORK}/postgres-versioned-links"
+make_base "$POSTGRES_LINK_BASE"
+POSTGRES_SOURCE="${WORK}/postgres-linux-like-package"
+mkdir -p "${POSTGRES_SOURCE}/game/config" "${POSTGRES_SOURCE}/game/pgsql/lib"
+printf '%s\n' "$PLATFORM" > "${POSTGRES_SOURCE}/game/config/release-platform"
+printf '#!/usr/bin/env bash\nexit 0\n' > "${POSTGRES_SOURCE}/game/start.sh"
+chmod +x "${POSTGRES_SOURCE}/game/start.sh"
+printf 'versioned PostgreSQL library\n' > "${POSTGRES_SOURCE}/game/pgsql/lib/libpq.so.5.14"
+ln -s libpq.so.5.14 "${POSTGRES_SOURCE}/game/pgsql/lib/libpq.so.5"
+ln -s libpq.so.5.14 "${POSTGRES_SOURCE}/game/pgsql/lib/libpq.so"
+/usr/bin/python3 "${SCRIPT_DIR}/materialize-package-tree.py" "$POSTGRES_SOURCE" \
+    || fail "could not materialize PostgreSQL-style internal library links"
+POSTGRES_ARCHIVE="${POSTGRES_LINK_BASE}/ArkhamHorror-${PLATFORM}-v20260902.1.tar.gz"
+python3 - "$POSTGRES_SOURCE" "$POSTGRES_ARCHIVE" <<'PY'
+import sys
+import tarfile
+from pathlib import Path
+
+source, archive = map(Path, sys.argv[1:])
+with tarfile.open(archive, "w:gz", dereference=False) as output:
+    output.add(source, arcname=".")
+with tarfile.open(archive, "r:gz") as output:
+    if any(member.issym() or member.islnk() for member in output):
+        raise SystemExit("materialized PostgreSQL package retained archive links")
+PY
+run_updater "$POSTGRES_LINK_BASE" "$(sha256_file "$POSTGRES_ARCHIVE")" >/dev/null \
+    || fail "updater rejected a materialized PostgreSQL-style Linux package"
+[ -f "${POSTGRES_LINK_BASE}/game/pgsql/lib/libpq.so" ] \
+    || fail "updater did not install PostgreSQL-style library aliases"
+
 DEV_BASE="${WORK}/dev"
 make_base "$DEV_BASE"
 rm -f "${DEV_BASE}"/game/current_v*

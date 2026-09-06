@@ -83,3 +83,7 @@ binary	nginx	linux-arm64	bin/nginx	derived	ed312f689be2beb237c8e1a9cb907baf2f26b
 image	nginx-runtime	multiarch	nginx:1.27.5	exact	6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d	1.27.5
 image	nginx-runtime	linux-x86_64	nginx:1.27.5	exact	fafd5f55296511cd0f1c991efa0cb85f323449bf643f3b6d760c6542f020d6e5	1.27.5
 image	nginx-runtime	linux-arm64	nginx:1.27.5	exact	e6017bb25206300fa159619f19498e0d682d0b48eed71fbdb08064b29888b103	1.27.5
+image	nginx-runtime-closure	linux-x86_64	nginx:1.27.5	exact	f25dfc8182c98d95d288f84a7be1451ee1aaab6fb00fe070b19f51c26acf4aff	recursive-ldd-v1
+image	nginx-runtime-closure	linux-arm64	nginx:1.27.5	exact	434ae84927dd0c7fef7037d52e13840c12517214dab52ce761d5eefa021bca15	recursive-ldd-v1
+image	node-runtime	linux-x86_64	node:26.7.0-alpine	exact	2248541813d8f9f33616aa04edaeb5fd85fd7861da6d126c4e2dd051975b7201	node-npm-closure-v1
+image	node-runtime	linux-arm64	node:26.7.0-alpine	exact	ad456da51058c4767e5708441d80d56eff9e2dfefe04e8bd0304cd92d73e3eed	node-npm-closure-v1

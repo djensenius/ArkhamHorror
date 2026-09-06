@@ -10,7 +10,8 @@ WORK="${REPO_ROOT}/offline/_tmp/test-package-attestation-$$-${RANDOM}"
 PACKAGE="${WORK}/ArkhamHorror-test"
 GAME="${PACKAGE}/game"
 umask 077
-mkdir -p "${GAME}/bin" "${GAME}/lib" "${GAME}/pgsql/lib" "${GAME}/config" "${GAME}/frontend/dist/assets"
+mkdir -p "${GAME}/bin" "${GAME}/lib" "${GAME}/pgsql/bin" "${GAME}/pgsql/lib" \
+    "${GAME}/pgsql/share" "${GAME}/config" "${GAME}/frontend/dist/assets"
 trap 'rm -rf "$WORK"' EXIT
 
 # shellcheck disable=SC1091,SC2034
@@ -23,8 +24,20 @@ init_toolchain_authority_receipt
 
 printf 'test nginx\n' > "${GAME}/bin/nginx"
 chmod +x "${GAME}/bin/nginx"
+printf 'test backend\n' > "${GAME}/bin/arkham-api"
+chmod +x "${GAME}/bin/arkham-api"
+printf 'test postgres\n' > "${GAME}/pgsql/bin/postgres"
+chmod +x "${GAME}/pgsql/bin/postgres"
+printf 'timezone data\n' > "${GAME}/pgsql/share/timezonesets"
+printf 'versioned postgres library\n' > "${GAME}/pgsql/lib/libpq.so.5.14"
+ln -s libpq.so.5.14 "${GAME}/pgsql/lib/libpq.so.5"
+ln -s libpq.so.5.14 "${GAME}/pgsql/lib/libpq.so"
 printf '#!/usr/bin/env bash\n' > "${GAME}/start.sh"
 chmod +x "${GAME}/start.sh"
+printf '#!/usr/bin/env bash\n' > "${GAME}/update.sh"
+chmod +x "${GAME}/update.sh"
+printf '#!/usr/bin/env bash\n' > "${PACKAGE}/Update-ArkhamHorror.sh"
+chmod +x "${PACKAGE}/Update-ArkhamHorror.sh"
 printf 'types { application/json json; }\n' > "${GAME}/config/mime.types"
 printf 'self-issued provenance\n' > "${GAME}/config/toolchain-provenance.env"
 cp "${REPO_ROOT}/offline/toolchain.lock" "${GAME}/config/toolchain.lock"
@@ -39,10 +52,49 @@ run_attester() {
     ARKHAM_TOOLCHAIN_RECEIPT_FILE="$TOOLCHAIN_RECEIPT_FILE" \
     ARKHAM_TOOLCHAIN_RECEIPT_TOKEN="$TOOLCHAIN_RECEIPT_TOKEN" \
         /bin/sh "${SCRIPT_DIR}/run-authorized-stage.sh" \
-            "${SCRIPT_DIR}/attest-package-closure.sh" "$PACKAGE"
+            "${SCRIPT_DIR}/attest-package-closure.sh" "$@" "$PACKAGE"
 }
 
+# PostgreSQL's conventional versioned aliases are materialized before release
+# attestation/tar, so updater preflight and archive representation agree.
+/usr/bin/python3 "${SCRIPT_DIR}/materialize-package-tree.py" "$PACKAGE"
+if find "$PACKAGE" -type l -print -quit | grep -q .; then
+    printf '%s\n' 'package-attestation: package materializer retained a symlink' >&2
+    exit 1
+fi
+python3 - "$PACKAGE" <<'PY'
+import io
+import sys
+import tarfile
+from pathlib import Path
+
+package = Path(sys.argv[1])
+archive = io.BytesIO()
+with tarfile.open(fileobj=archive, mode="w:gz") as output:
+    output.add(package, arcname=".")
+archive.seek(0)
+with tarfile.open(fileobj=archive, mode="r:gz") as output:
+    if any(member.issym() or member.islnk() for member in output):
+        raise SystemExit("package tar representation retained a link member")
+PY
+
 run_attester
+run_attester --final
+
+for omitted in \
+    "game/bin/arkham-api" \
+    "game/pgsql/bin/postgres" \
+    "game/pgsql/share/timezonesets" \
+    "game/update.sh" \
+    "Update-ArkhamHorror.sh" \
+    "game/config/nginx.conf"; do
+    printf 'post-attestation mutation\n' > "${PACKAGE}/${omitted}"
+    if run_attester --final >/dev/null 2>&1; then
+        printf '%s\n' "package-attestation: final closure accepted mutation of ${omitted}" >&2
+        exit 1
+    fi
+    rm -f "${PACKAGE:?}/${omitted}"
+done
 
 printf 'substituted final package bundle\n' > "${GAME}/frontend/dist/assets/app.js"
 if run_attester >/dev/null 2>&1; then

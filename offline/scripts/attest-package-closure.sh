@@ -12,8 +12,14 @@ PLATFORM="$(detect_platform)"
 source "${SCRIPT_DIR}/toolchain-authority.sh"
 require_toolchain_authority_receipt
 
+FINAL=false
+if [ "${1:-}" = "--final" ]; then
+    FINAL=true
+    shift
+fi
 PACKAGE_DIR="${1:-}"
-[ -n "$PACKAGE_DIR" ] || die "Usage: attest-package-closure.sh <ArkhamHorror-package-dir>"
+[ -n "$PACKAGE_DIR" ] && [ "$#" = 1 ] \
+    || die "Usage: attest-package-closure.sh [--final] <ArkhamHorror-package-dir>"
 [ -d "$PACKAGE_DIR" ] && [ ! -L "$PACKAGE_DIR" ] || die "Package directory is missing or unsafe: $PACKAGE_DIR"
 PACKAGE_DIR="$(cd "$PACKAGE_DIR" && pwd)"
 GAME_DIR="${PACKAGE_DIR}/game"
@@ -42,4 +48,16 @@ frontend_closure="$(authority_tree_digest "${GAME_DIR}/frontend/dist")" \
     || die "Could not calculate the final packaged frontend closure"
 record_authority_receipt offline-frontend "$frontend_identity" "$frontend_closure"
 
-info "Recorded external CI authority for complete packaged nginx and frontend closures"
+if [ "$FINAL" = true ]; then
+    # This is the archive input closure, not merely the executable subset.
+    # authority_tree_digest rejects symlinks and special files; the packager's
+    # materializer has already broken hardlink aliases into independent files.
+    package_identity="$(printf 'offline-package-v1\t%s\t%s\n' \
+        "$PLATFORM" "$(toolchain_lock_digest)" | sha256_text)"
+    package_closure="$(authority_tree_digest "$PACKAGE_DIR")" \
+        || die "Could not calculate the complete final package closure"
+    record_authority_receipt offline-package "$package_identity" "$package_closure"
+    info "Recorded external CI authority for the complete final package tree"
+else
+    info "Recorded external CI authority for packaged nginx and frontend closures"
+fi

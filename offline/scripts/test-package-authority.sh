@@ -50,7 +50,7 @@ printf 'nginx_binary_sha256=self-issued\n' > "${GAME}/config/toolchain-provenanc
 identity="$(printf '%s' 'locked-nginx-build-identity' | sha256_text)"
 closure="$(authority_paths_digest "$GAME" \
     bin/nginx lib pgsql/lib start.sh config/mime.types config/toolchain.lock config/toolchain-provenance.env)"
-python3 - "$GAME" "$closure" "$REPO_ROOT" <<'PY'
+PYTHONDONTWRITEBYTECODE=1 python3 - "$GAME" "$closure" "$REPO_ROOT" <<'PY'
 import importlib.util
 import sys
 from pathlib import Path
@@ -116,6 +116,10 @@ grep -Fq 'nginx_runtime_closure_sha256' "${REPO_ROOT}/offline/scripts/05-package
     || fail "generated package launcher does not bind its nginx/library closure before loading"
 grep -Fq 'verify_nginx_runtime_closure' "${REPO_ROOT}/offline/scripts/05-package.sh" \
     || fail "generated package launcher does not verify its nginx/library closure"
+grep -Fq 'record_authority_receipt backend' "${REPO_ROOT}/offline/scripts/04-build-backend.sh" \
+    || fail "backend build never authenticates its invocation output"
+grep -Fq 'verify_authority_paths backend "$(backend_output_identity)"' "${REPO_ROOT}/offline/scripts/05-package.sh" \
+    || fail "--skip-backend can package unauthenticated or stale backend output"
 if grep -Eq 'ARKHAM_(RELEASE_AUTHORITY|REQUIRE_EXTERNAL_AUTHORITY)' "${REPO_ROOT}/scripts/validate-catalog-serving.py"; then
     fail "serving validator exposes CI authority capabilities to package nginx"
 fi
@@ -123,6 +127,13 @@ grep -Fq 'attest-package-closure.sh' "${REPO_ROOT}/.github/workflows/build-offli
     || fail "workflow does not attest the completed package outside 05-package.sh"
 grep -Fq '.tar.gz.sha256' "${REPO_ROOT}/.github/workflows/build-offline.yml" \
     || fail "workflow does not publish a detached release archive checksum"
+grep -Fq 'attest-package-closure.sh --final' "${REPO_ROOT}/.github/workflows/build-offline.yml" \
+    || fail "workflow does not attest the complete package immediately before archiving"
+if ! grep -Fq 'persist-credentials: false' "${REPO_ROOT}/.github/workflows/build-offline.yml" \
+    || awk '/^permissions:$/ { getline; if ($0 == "  contents: write") found=1 } END { exit !found }' \
+        "${REPO_ROOT}/.github/workflows/build-offline.yml"; then
+    fail "build/dependency workflow code can retain a write-capable repository credential"
+fi
 
 if [ "$failures" -ne 0 ]; then
     printf 'package-authority: %s failure(s)\n' "$failures" >&2

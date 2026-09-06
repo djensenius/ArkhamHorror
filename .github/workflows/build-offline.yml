@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,6 +55,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
 
       - name: Get version from git tag
         shell: bash
@@ -148,7 +150,7 @@ jobs:
         shell: /bin/sh -e {0}
         run: /bin/sh scripts/run-authorized-stage.sh scripts/05-package.sh
 
-      - name: Attest the completed packaged nginx closure
+      - name: Attest the completed packaged nginx and frontend closures
         working-directory: offline
         shell: /bin/sh -e {0}
         run: /bin/sh scripts/run-authorized-stage.sh scripts/attest-package-closure.sh "$PWD/_dist/${{ matrix.artifact }}"
@@ -157,6 +159,11 @@ jobs:
         working-directory: offline
         shell: /bin/sh -e {0}
         run: /bin/sh scripts/run-authorized-stage.sh scripts/06-validate-package-serving.sh "$PWD/_dist/${{ matrix.artifact }}"
+
+      - name: Attest the complete final package tree
+        working-directory: offline
+        shell: /bin/sh -e {0}
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/attest-package-closure.sh --final "$PWD/_dist/${{ matrix.artifact }}"
 
       - name: Repack distribution
         shell: bash
@@ -184,6 +191,8 @@ jobs:
     needs: [build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
 
     steps:
       - name: Get version from git tag

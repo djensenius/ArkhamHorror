@@ -50,6 +50,13 @@ node_binary_identity() {
     printf '%s\n' "$digest"
 }
 
+backend_output_identity() {
+    # A receipt is created only by the current trusted backend-build stage.
+    # Binding it to the current lock prevents a skipped stage from accepting a
+    # stale executable after a toolchain change.
+    printf 'backend-output-v1\t%s\t%s\n' "$PLATFORM" "$(toolchain_lock_digest)" | sha256_text
+}
+
 get_ghc_bindist_info() {
     local ver="${GHC_VERSION}"
     local archive=""
