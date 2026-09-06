@@ -88,6 +88,12 @@ if [ "$TOOLCHAIN_RECEIPT_OWNED" = true ]; then
     trap cleanup_toolchain_receipt EXIT
 fi
 
+run_authorized_stage() {
+    ARKHAM_TOOLCHAIN_RECEIPT_FILE="$TOOLCHAIN_RECEIPT_FILE" \
+    ARKHAM_TOOLCHAIN_RECEIPT_TOKEN="$TOOLCHAIN_RECEIPT_TOKEN" \
+        /bin/sh "${SCRIPT_DIR}/scripts/run-authorized-stage.sh" "$@"
+}
+
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
 PLATFORM="$(detect_platform)"
@@ -156,7 +162,7 @@ main() {
 
     # [1] Project dependencies
     if [ "$SKIP_DEPS" = false ]; then
-        bash "${SCRIPT_DIR}/scripts/01-check-project-deps.sh"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/01-check-project-deps.sh"
     else
         step "Skipping dependency installation (--skip-deps)"
         info "Cached dependencies will be identity-verified by 02-verify-deps.sh before use"
@@ -164,12 +170,12 @@ main() {
     echo ""
 
     # [2] Verification
-    bash "${SCRIPT_DIR}/scripts/02-verify-deps.sh"
+    run_authorized_stage "${SCRIPT_DIR}/scripts/02-verify-deps.sh"
     echo ""
 
     # [3] Frontend
     if [ "$SKIP_FRONTEND" = false ]; then
-        bash "${SCRIPT_DIR}/scripts/03-build-frontend.sh"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/03-build-frontend.sh"
     else
         step "Skipping frontend build (--skip-frontend)"
     fi
@@ -177,7 +183,7 @@ main() {
 
     # [4] Backend
     if [ "$SKIP_BACKEND" = false ]; then
-        bash "${SCRIPT_DIR}/scripts/04-build-backend.sh"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/04-build-backend.sh"
     else
         step "Skipping backend build (--skip-backend)"
     fi
@@ -185,8 +191,10 @@ main() {
 
     # [5] Packaging
     if [ "$SKIP_PACKAGE" = false ]; then
-        bash "${SCRIPT_DIR}/scripts/05-package.sh"
-        bash "${SCRIPT_DIR}/scripts/attest-package-closure.sh" \
+        run_authorized_stage "${SCRIPT_DIR}/scripts/05-package.sh"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/attest-package-closure.sh" \
+            "${_DIST_DIR}/ArkhamHorror-${PLATFORM}"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/06-validate-package-serving.sh" \
             "${_DIST_DIR}/ArkhamHorror-${PLATFORM}"
     else
         step "Skipping packaging (--skip-package)"

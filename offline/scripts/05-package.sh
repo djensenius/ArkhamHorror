@@ -10,6 +10,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/utils.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/package-lifecycle.sh"
 
 init_paths
 
@@ -45,7 +47,7 @@ nginx_build_identity_for_package() {
 verify_nginx_dependency_for_packaging() {
     local identity nginx_version
     identity="$(nginx_build_identity_for_package)"
-    verify_install_manifest nginx "${DEPS_DIR}/nginx" "$identity" "bin/nginx" "bin/nginx"
+    verify_install_manifest nginx "${DEPS_DIR}/nginx" "$identity" "bin/nginx" "bin"
     nginx_version="$("$NGINX_BIN" -V 2>&1)" || die "Nginx failed its post-identity configuration check"
     case "$nginx_version" in
         *"nginx/${NGINX_VERSION}"*) ;;
@@ -57,11 +59,55 @@ verify_nginx_dependency_for_packaging() {
     esac
 }
 
+package_runtime_nginx_closure_digest() {
+    local root="${PKG_DIR}/game"
+    local records selected entry relative path link_target digest mode
+    records="$(
+        {
+            for selected in \
+                bin/nginx \
+                lib \
+                pgsql/lib \
+                start.sh \
+                config/mime.types \
+                config/toolchain.lock; do
+                path="${root}/${selected}"
+                if [ -d "$path" ] && [ ! -L "$path" ]; then
+                    (cd "$root" && find "./${selected}" -print)
+                elif [ -f "$path" ] || [ -L "$path" ]; then
+                    printf './%s\n' "$selected"
+                else
+                    die "Packaged nginx runtime closure path is missing: $path"
+                fi
+            done
+        } | LC_ALL=C sort -u | while IFS= read -r entry; do
+            relative="${entry#./}"
+            path="${root}/${relative}"
+            if [ -L "$path" ]; then
+                link_target="$(readlink "$path")" || die "Could not read packaged runtime symlink: $path"
+                validate_internal_link "$root" "$path"
+                printf 'link\t%s\t%s\n' "$relative" "$link_target"
+            elif [ -f "$path" ]; then
+                digest="$(sha256_file "$path")" || die "Could not hash packaged runtime closure file: $path"
+                mode="$(file_mode "$path")" || die "Could not read packaged runtime closure mode: $path"
+                printf 'file\t%s\t%s\t%s\n' "$relative" "$mode" "$digest"
+            elif [ -d "$path" ]; then
+                mode="$(file_mode "$path")" || die "Could not read packaged runtime closure mode: $path"
+                printf 'dir\t%s\t%s\n' "$relative" "$mode"
+            else
+                die "Packaged nginx runtime closure has an unsupported file type: $path"
+            fi
+        done
+    )" || die "Could not calculate packaged nginx runtime closure"
+    [ -n "$records" ] || die "Packaged nginx runtime closure is empty"
+    printf '%s\n' "$records" | sha256_text
+}
+
 write_nginx_provenance() {
     local provenance="${PKG_DIR}/game/config/toolchain-provenance.env"
     local partial="${provenance}.partial.$$"
     local packaged_lock="${PKG_DIR}/game/config/toolchain.lock"
-    local source_sha256 build_identity binary_sha256
+    local source_sha256 build_identity binary_sha256 runtime_closure_sha256
 
     source_sha256="$(toolchain_archive_sha256 nginx "$PLATFORM" "$NGINX_ARCHIVE")"
     build_identity="$(nginx_build_identity_for_package)"
@@ -69,6 +115,7 @@ write_nginx_provenance() {
         || die "Could not hash the packaged nginx executable"
     cp "${OFFLINE_DIR}/toolchain.lock" "$packaged_lock"
     verify_file_sha256 "$packaged_lock" "$(toolchain_lock_digest)" "packaged toolchain authority"
+    runtime_closure_sha256="$(package_runtime_nginx_closure_digest)"
 
     {
         printf 'schema=1\n'
@@ -78,6 +125,7 @@ write_nginx_provenance() {
         printf 'nginx_source_sha256=%s\n' "$source_sha256"
         printf 'nginx_build_identity=%s\n' "$build_identity"
         printf 'nginx_binary_sha256=%s\n' "$binary_sha256"
+        printf 'nginx_runtime_closure_sha256=%s\n' "$runtime_closure_sha256"
         printf 'nginx_version=%s\n' "$NGINX_VERSION"
         printf 'nginx_required_configure_option=--with-http_gzip_static_module\n'
     } > "$partial"
@@ -340,7 +388,7 @@ nginx_provenance_value() {
     local key="$1" provenance="$SCRIPT_DIR/config/toolchain-provenance.env"
     local count value
     case "$key" in
-        schema|platform|toolchain_lock_sha256|nginx_source_archive|nginx_source_sha256|nginx_build_identity|nginx_binary_sha256|nginx_version|nginx_required_configure_option) ;;
+        schema|platform|toolchain_lock_sha256|nginx_source_archive|nginx_source_sha256|nginx_build_identity|nginx_binary_sha256|nginx_runtime_closure_sha256|nginx_version|nginx_required_configure_option) ;;
         *) die 1015 "Invalid nginx provenance key: $key" ;;
     esac
     [ -f "$provenance" ] && [ ! -L "$provenance" ] \
@@ -386,6 +434,105 @@ runtime_sha256_file() {
     fi
     digest="${result%%[[:space:]]*}"
     printf '%s\n' "$digest"
+}
+
+runtime_sha256_text() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 | awk '{print $1}'
+    else
+        die 1031 "No SHA-256 tool is available for packaged runtime verification"
+    fi
+}
+
+runtime_file_mode() {
+    local file="$1" mode
+    mode="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null)" \
+        || die 1031 "Could not read packaged runtime mode: $file"
+    case "$mode" in
+        [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ;;
+        *) die 1031 "Packaged runtime has an invalid mode: $file" ;;
+    esac
+    printf '%s\n' "$mode"
+}
+
+validate_runtime_internal_link() {
+    local path="$1" root target next_dir hops=0
+    root="$(cd -P "$SCRIPT_DIR" && pwd)"
+    while [ -L "$path" ]; do
+        hops=$((hops + 1))
+        [ "$hops" -le 64 ] || die 1032 "Packaged runtime symlink chain is cyclic or too deep: $path"
+        target="$(readlink "$path")" || die 1032 "Could not read packaged runtime symlink: $path"
+        case "$target" in
+            ""|/*|*$'\t'*|*$'\n'*|*$'\r'*) die 1032 "Unsafe packaged runtime symlink target: $path" ;;
+        esac
+        next_dir="$(cd -P "$(dirname "$path")" && cd -P "$(dirname "$target")" && pwd)" \
+            || die 1032 "Broken packaged runtime symlink target: $path"
+        path="${next_dir}/$(basename "$target")"
+        path="$(cd -P "$(dirname "$path")" && printf '%s/%s\n' "$(pwd)" "$(basename "$path")")" \
+            || die 1032 "Broken packaged runtime symlink target: $path"
+        case "$path" in
+            "$root"/*) ;;
+            *) die 1032 "Packaged runtime symlink escapes the package: $path" ;;
+        esac
+    done
+    [ -f "$path" ] || [ -d "$path" ] || die 1032 "Packaged runtime symlink is dangling: $path"
+}
+
+runtime_nginx_closure_digest() {
+    local records selected entry relative path link_target digest mode
+    records="$(
+        {
+            for selected in \
+                bin/nginx \
+                lib \
+                pgsql/lib \
+                start.sh \
+                config/mime.types \
+                config/toolchain.lock; do
+                path="$SCRIPT_DIR/$selected"
+                if [ -d "$path" ] && [ ! -L "$path" ]; then
+                    (cd "$SCRIPT_DIR" && find "./${selected}" -print)
+                elif [ -f "$path" ] || [ -L "$path" ]; then
+                    printf './%s\n' "$selected"
+                else
+                    die 1033 "Packaged nginx runtime closure path is missing: $path"
+                fi
+            done
+        } | LC_ALL=C sort -u | while IFS= read -r entry; do
+            relative="${entry#./}"
+            path="$SCRIPT_DIR/$relative"
+            if [ -L "$path" ]; then
+                link_target="$(readlink "$path")" || die 1034 "Could not read packaged runtime symlink: $path"
+                validate_runtime_internal_link "$path"
+                printf 'link\t%s\t%s\n' "$relative" "$link_target"
+            elif [ -f "$path" ]; then
+                digest="$(runtime_sha256_file "$path")" || die 1034 "Could not hash packaged runtime file: $path"
+                mode="$(runtime_file_mode "$path")"
+                printf 'file\t%s\t%s\t%s\n' "$relative" "$mode" "$digest"
+            elif [ -d "$path" ]; then
+                mode="$(runtime_file_mode "$path")"
+                printf 'dir\t%s\t%s\n' "$relative" "$mode"
+            else
+                die 1034 "Packaged runtime closure has an unsupported file type: $path"
+            fi
+        done
+    )" || die 1034 "Could not calculate packaged nginx runtime closure"
+    [ -n "$records" ] || die 1034 "Packaged nginx runtime closure is empty"
+    printf '%s\n' "$records" | runtime_sha256_text
+}
+
+verify_nginx_runtime_closure() {
+    local expected actual
+    expected="$(nginx_provenance_value nginx_runtime_closure_sha256)"
+    case "$expected" in
+        *[!0-9a-f]*|"") die 1035 "Nginx provenance has an invalid runtime closure SHA-256" ;;
+    esac
+    [ "${#expected}" = 64 ] || die 1035 "Nginx provenance has an invalid runtime closure SHA-256"
+    actual="$(runtime_nginx_closure_digest)"
+    [ "$actual" = "$expected" ] \
+        || die 1035 "Packaged nginx executable/library closure changed before runtime loading"
 }
 
 # This is a package-local consistency check. The invocation-external release
@@ -439,109 +586,6 @@ verify_nginx_identity() {
         *) die 1030 "Packaged nginx lacks ${expected_option}" ;;
     esac
     info "nginx executable identity and gzip_static capability verified"
-}
-
-runtime_file_mode() {
-    local file="$1" mode
-    mode="$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null)" \
-        || die 1031 "Could not read packaged file mode: $file"
-    case "$mode" in
-        [0-7][0-7][0-7]|[0-7][0-7][0-7][0-7]) ;;
-        *) die 1031 "Packaged file has an invalid mode: $file" ;;
-    esac
-    printf '%s\n' "$mode"
-}
-
-# Hashes the exact executable, generated-config source, and every bundled
-# library that nginx can resolve. Runtime data/log files are deliberately
-# absent, so the authority remains valid after normal operation starts.
-runtime_nginx_closure_digest() {
-    local records selected entry relative path link_target digest mode
-    records="$(
-        {
-            for selected in \
-                bin/nginx \
-                lib \
-                pgsql/lib \
-                start.sh \
-                config/mime.types \
-                config/toolchain.lock \
-                config/toolchain-provenance.env; do
-                path="$SCRIPT_DIR/$selected"
-                if [ -d "$path" ] && [ ! -L "$path" ]; then
-                    (cd "$SCRIPT_DIR" && find "./$selected" \( -type f -o -type l \) -print)
-                elif [ -f "$path" ] || [ -L "$path" ]; then
-                    printf './%s\n' "$selected"
-                else
-                    die 1032 "Packaged nginx closure path is missing: $path"
-                fi
-            done
-        } | LC_ALL=C sort -u | while IFS= read -r entry; do
-            relative="${entry#./}"
-            path="$SCRIPT_DIR/$relative"
-            if [ -L "$path" ]; then
-                link_target="$(readlink "$path")" || die 1033 "Could not read packaged symlink: $path"
-                printf 'link\t%s\t%s\n' "$relative" "$link_target"
-            else
-                digest="$(runtime_sha256_file "$path")" || die 1034 "Could not hash packaged closure file: $path"
-                mode="$(runtime_file_mode "$path")"
-                printf 'file\t%s\t%s\t%s\n' "$relative" "$mode" "$digest"
-            fi
-        done
-    )" || die 1035 "Could not calculate packaged nginx closure"
-    [ -n "$records" ] || die 1035 "Packaged nginx closure is empty"
-    printf '%s\n' "$records" | if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum | awk '{print $1}'
-    else
-        shasum -a 256 | awk '{print $1}'
-    fi
-}
-
-verify_external_nginx_authority() {
-    local authority="${ARKHAM_RELEASE_AUTHORITY_FILE:-}"
-    local token="${ARKHAM_RELEASE_AUTHORITY_TOKEN:-}"
-    local required="${ARKHAM_REQUIRE_EXTERNAL_AUTHORITY:-0}"
-    local token_count actual_token record record_type component lock_sha256 identity closure_sha256 extra
-    local actual_lock actual_identity actual_closure
-
-    case "$required" in 0|1) ;; *) die 1036 "ARKHAM_REQUIRE_EXTERNAL_AUTHORITY must be 0 or 1" ;; esac
-    if [ -z "$authority" ] && [ -z "$token" ]; then
-        [ "$required" = "0" ] && return 0
-        die 1037 "An external release authority is required before nginx can run"
-    fi
-    [ -n "$authority" ] && [ -n "$token" ] || die 1037 "Release authority path and token must be supplied together"
-    [ -f "$authority" ] && [ ! -L "$authority" ] || die 1038 "External release authority is missing or unsafe"
-    case "$authority" in "$SCRIPT_DIR"/*) die 1038 "External release authority must not reside inside the package" ;; esac
-    case "$token" in *[!0-9a-f]*|"") die 1039 "External release authority token is invalid" ;; esac
-    [ "${#token}" = 64 ] || die 1039 "External release authority token is invalid"
-
-    token_count="$(awk -F '\t' '$1 == "token" { matches += 1 } END { print matches + 0 }' "$authority")"
-    [ "$token_count" = "1" ] || die 1040 "External release authority has no unique token"
-    actual_token="$(awk -F '\t' '$1 == "token" { print $2 }' "$authority")"
-    [ "$actual_token" = "$token" ] || die 1040 "External release authority token does not match this invocation"
-    record="$(
-        awk -F '\t' '
-            $1 == "record" && $2 == "offline-nginx" {
-                matches += 1
-                value = $0
-            }
-            END {
-                if (matches != 1) exit 1
-                print value
-            }
-        ' "$authority"
-    )" || die 1041 "External release authority has no unique offline-nginx record"
-    IFS=$'\t' read -r record_type component lock_sha256 identity closure_sha256 extra <<< "$record"
-    [ -z "$extra" ] || die 1041 "External release authority has a malformed offline-nginx record"
-
-    actual_lock="$(runtime_sha256_file "$SCRIPT_DIR/config/toolchain.lock")" \
-        || die 1042 "Could not hash packaged toolchain authority"
-    actual_identity="$(nginx_provenance_value nginx_build_identity)"
-    actual_closure="$(runtime_nginx_closure_digest)"
-    [ "$lock_sha256" = "$actual_lock" ] \
-        && [ "$identity" = "$actual_identity" ] \
-        && [ "$closure_sha256" = "$actual_closure" ] \
-        || die 1043 "Packaged nginx closure does not match its external release authority"
 }
 
 close_terminal_window_if_needed() {
@@ -1445,13 +1489,8 @@ do_start() {
     # Enable cleanup protection: from here until startup fully succeeds, any abnormal exit triggers do_stop automatically
     _CLEANUP_ON_EXIT=1
 
-    # Strict release-authority mode must execute exactly the closure that was
-    # checked before loader paths were enabled. Do not mutate/sign it again.
-    # Ordinary interactive starts retain the legacy macOS repair path and are
-    # protected by the detached release archive checksum.
-    if [ "${ARKHAM_REQUIRE_EXTERNAL_AUTHORITY:-0}" != "1" ]; then
-        ensure_macos_signing
-    fi
+    # macOS: sign all binaries + clear quarantine (only performed at startup)
+    ensure_macos_signing
 
     ensure_dir "$DATA_DIR"
 
@@ -1751,12 +1790,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# In release CI the external receipt is mandatory and covers the executable,
-# generated-config source, and bundled library closure before any loader path
-# is changed. Normal end-user starts rely on the release archive checksum
-# published alongside the distribution unless they explicitly opt into this
-# stricter receipt check.
-verify_external_nginx_authority
+verify_nginx_runtime_closure
 configure_runtime_env
 
 case "$ACTION" in
@@ -2025,220 +2059,70 @@ MACCOMMAND
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Generate update.sh — in-place upgrade script
+# Generate update.sh — authenticated platform-specific updater
 # ═════════════════════════════════════════════════════════════════════════════
 
 generate_update_script() {
-    substep "Generating update.sh ..."
-
-    cat > "${PKG_DIR}/game/update.sh" << 'UPDATESCRIPT'
-#!/usr/bin/env bash
-# =============================================================================
-# update.sh — In-place upgrade for Arkham Horror LCG offline distribution
-#
-# This script is designed to be copied to a temporary location and executed
-# from there (by the platform-specific update launcher), because it renames
-# the game/ directory during the upgrade process.
-#
-# Flow:
-#   1. Stop running services (via start.sh --stop)
-#   2. Read current version from game/current_v* marker file
-#   3. Find the latest release archive in BASE_DIR
-#   4. Rename game/ → game_v{old_version}
-#   5. Extract only game/ from the new archive
-#   6. Done — cards/, cards_en/, backup/ are untouched
-# =============================================================================
-set -euo pipefail
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
-RED='\033[31m'; GREEN='\033[32m'; YELLOW='\033[33m'; CYAN='\033[36m'; RESET='\033[0m'
-die()  { printf "${RED}[ERROR]${RESET} %s\n" "$*" >&2; exit 1; }
-info() { printf "${CYAN}[info]${RESET} %s\n" "$*"; }
-warn() { printf "${YELLOW}[warn]${RESET} %s\n" "$*"; }
-ok()   { printf "${GREEN}[ok]${RESET} %s\n" "$*"; }
-
-# ── Determine BASE_DIR ───────────────────────────────────────────────────────
-# BASE_DIR is the directory containing game/, cards/, backup/, etc.
-# This script receives BASE_DIR as the first argument (set by the launcher).
-if [ $# -ge 1 ] && [ -n "$1" ]; then
-    BASE_DIR="$1"
-else
-    # Fallback: assume script is inside game/
-    BASE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-fi
-
-GAME_DIR="${BASE_DIR}/game"
-
-if [ ! -d "$GAME_DIR" ]; then
-    die "game/ directory not found at: $GAME_DIR"
-fi
-
-echo ""
-echo "  ============================================"
-echo "    Arkham Horror LCG — Update"
-echo "  ============================================"
-echo ""
-
-# ── 1. Stop running services ────────────────────────────────────────────────
-if [ -f "${GAME_DIR}/start.sh" ]; then
-    info "Stopping running services ..."
-    bash "${GAME_DIR}/start.sh" --stop 2>/dev/null || true
-    # Give processes time to release file handles
-    sleep 1
-fi
-
-# ── 2. Read current version ─────────────────────────────────────────────────
-# Version is stored as a marker filename: game/current_v<VERSION>
-# Before first update, no marker exists → treat as "dev"
-CURRENT_VERSION="dev"
-for marker in "${GAME_DIR}"/current_v[0-9]*; do
-    [ -e "$marker" ] || continue
-    # Extract version from filename: current_v20260528.1 → v20260528.1
-    fname="$(basename "$marker")"
-    CURRENT_VERSION="${fname#current_}"
-    break
-done
-info "Current version: ${CURRENT_VERSION}"
-
-# ── 3. Find the latest release archive ──────────────────────────────────────
-# Pattern: ArkhamHorror-<platform>-v<YYYYMMDD>.<N>.tar.gz
-# We look for the archive with the highest version number in BASE_DIR.
-ARCHIVE=""
-ARCHIVE_VERSION=""
-
-# Detect platform from existing archive names
-for f in "${BASE_DIR}"/ArkhamHorror-*-v*.tar.gz; do
-    [ -f "$f" ] || continue
-    # Extract version: everything between the last "-v" and ".tar.gz"
-    fname="$(basename "$f")"
-    ver="$(printf '%s' "$fname" | sed -E 's/.*-v([0-9]+\.[0-9]+)\.tar\.gz$/\1/')"
-    if [ -z "$ver" ] || [ "$ver" = "$fname" ]; then
-        continue
-    fi
-    # Compare: pick the one with the largest version (YYYYMMDD.N → lexicographic sort works)
-    if [ -z "$ARCHIVE_VERSION" ] || [ "$ver" \> "$ARCHIVE_VERSION" ]; then
-        ARCHIVE="$f"
-        ARCHIVE_VERSION="$ver"
-    fi
-done
-
-if [ -z "$ARCHIVE" ]; then
-    printf "${RED}[ERROR]${RESET} No release archive found in: %s/\n" "$BASE_DIR" >&2
-    printf "    Expected pattern: ArkhamHorror-<platform>-v<YYYYMMDD.N>.tar.gz\n" >&2
-    echo "" >&2
-    printf "    Download the latest release from:\n" >&2
-    printf "      ${GREEN}https://github.com/halogenandtoast/ArkhamHorror/releases${RESET}\n" >&2
-    exit 1
-fi
-
-NEW_VERSION="v${ARCHIVE_VERSION}"
-info "Found archive: $(basename "$ARCHIVE")"
-info "New version:   ${NEW_VERSION}"
-
-# Compare versions: only upgrade, never downgrade
-# Strip leading "v" for comparison; format is YYYYMMDD.N so lexicographic works
-CURRENT_VER_CMP="$(printf '%s' "$CURRENT_VERSION" | sed 's/^v//')"
-NEW_VER_CMP="$ARCHIVE_VERSION"
-
-if [ "$NEW_VERSION" = "$CURRENT_VERSION" ]; then
-    warn "Current version is already ${CURRENT_VERSION}. Nothing to do."
-    echo ""
-    info "Download newer releases from:"
-    printf "  ${GREEN}https://github.com/halogenandtoast/ArkhamHorror/releases${RESET}\n"
-    exit 0
-fi
-
-if [ "$CURRENT_VER_CMP" != "dev" ] && [ "$CURRENT_VER_CMP" \> "$NEW_VER_CMP" ]; then
-    warn "Archive version ${NEW_VERSION} is older than current ${CURRENT_VERSION}. Skipping."
-    echo ""
-    info "Download newer releases from:"
-    printf "  ${GREEN}https://github.com/halogenandtoast/ArkhamHorror/releases${RESET}\n"
-    exit 0
-fi
-
-# ── 3.5. Extract to temp dir and validate before making any changes ──────────
-TMPDIR_UPDATE="$(mktemp -d)"
-
-info "Extracting archive to temporary directory for validation ..."
-if ! tar -xzf "$ARCHIVE" -C "$TMPDIR_UPDATE" 2>&1; then
-    rm -rf "$TMPDIR_UPDATE"
-    die "Failed to extract archive: $(basename "$ARCHIVE")
-    The file may be corrupted. Please re-download the release package."
-fi
-
-# Verify that game/ with start.sh exists in the extracted content
-if [ ! -d "${TMPDIR_UPDATE}/game" ] || [ ! -f "${TMPDIR_UPDATE}/game/start.sh" ]; then
-    rm -rf "$TMPDIR_UPDATE"
-    die "Archive does not contain a valid game/ directory: $(basename "$ARCHIVE")
-    This does not look like a valid release package."
-fi
-
-ok "Archive validated: game/ directory with start.sh confirmed"
-echo ""
-
-# ── 4. Rename game/ → game_v{old_version} ───────────────────────────────────
-# When no marker exists (first update, CURRENT_VERSION="dev"), name the backup
-# using the new version's date with suffix .0 (releases always start at .1)
-if [ "$CURRENT_VERSION" = "dev" ]; then
-    BACKUP_NAME="game_v$(printf '%s' "$ARCHIVE_VERSION" | sed 's/\.[0-9]*$/.0/')"
-else
-    BACKUP_NAME="game_${CURRENT_VERSION}"
-fi
-# Avoid collision if backup already exists
-if [ -d "${BASE_DIR}/${BACKUP_NAME}" ]; then
-    BACKUP_NAME="${BACKUP_NAME}_$(date +%Y%m%d%H%M%S)"
-fi
-
-info "Renaming game/ → ${BACKUP_NAME}/ ..."
-if ! mv "${GAME_DIR}" "${BASE_DIR}/${BACKUP_NAME}"; then
-    rm -rf "$TMPDIR_UPDATE"
-    die "Failed to rename game/ — are services still running?"
-fi
-
-ok "Old version preserved at: ${BACKUP_NAME}/"
-
-# ── Rollback helper: restore game/ from backup if anything fails below ──────
-rollback() {
-    warn "Rolling back: restoring ${BACKUP_NAME}/ → game/ ..."
-    if [ -d "${BASE_DIR}/game" ]; then
-        rm -rf "${BASE_DIR}/game"
-    fi
-    mv "${BASE_DIR}/${BACKUP_NAME}" "${GAME_DIR}"
-    warn "Rollback complete. game/ has been restored to the previous state."
-}
-
-# ── 5. Move validated game/ from temp to BASE_DIR ────────────────────────────
-info "Installing new game/ ..."
-if ! mv "${TMPDIR_UPDATE}/game" "${BASE_DIR}/game" 2>/dev/null; then
-    # mv across filesystems may fail; fall back to cp
-    if ! cp -r "${TMPDIR_UPDATE}/game" "${BASE_DIR}/game"; then
-        rollback
-        rm -rf "$TMPDIR_UPDATE"
-        die "Failed to install new game/ directory"
-    fi
-fi
-
-# ── 6. Write new version marker ─────────────────────────────────────────────
-# Remove old marker(s) and create new one
-rm -f "${BASE_DIR}/game"/current_v* 2>/dev/null || true
-if ! touch "${BASE_DIR}/game/current_${NEW_VERSION}" 2>/dev/null; then
-    rollback
-    rm -rf "$TMPDIR_UPDATE"
-    die "Failed to write version marker"
-fi
-
-rm -rf "$TMPDIR_UPDATE"
-
-echo ""
-ok "Update complete: ${CURRENT_VERSION} → ${NEW_VERSION}"
-echo ""
-info "The old version is preserved at: ${BACKUP_NAME}/"
-info "You can delete it manually once you confirm the update works."
-echo ""
-UPDATESCRIPT
-
+    substep "Generating authenticated update.sh ..."
+    [ -f "${SCRIPT_DIR}/update-runtime.sh" ] \
+        || die "Trusted update-runtime.sh is missing: ${SCRIPT_DIR}/update-runtime.sh"
+    cp "${SCRIPT_DIR}/update-runtime.sh" "${PKG_DIR}/game/update.sh"
     chmod +x "${PKG_DIR}/game/update.sh"
     info "  ✓ game/update.sh generated"
+}
+
+generate_update_launcher() {
+    cat > "${PKG_DIR}/Update-ArkhamHorror.sh" << 'UPDATELAUNCHER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+UPDATE_SOURCE="${BASE_DIR}/game/update.sh"
+[ -f "$UPDATE_SOURCE" ] && [ ! -L "$UPDATE_SOURCE" ] && [ -x "$UPDATE_SOURCE" ] \
+    || { echo "Update launcher: missing regular executable game/update.sh" >&2; exit 1; }
+if [ "$#" -gt 1 ]; then
+  echo "Usage: Update-ArkhamHorror.sh [published-archive-sha256]" >&2
+  exit 2
+fi
+if [ "$#" -eq 1 ]; then
+  EXPECTED_ARCHIVE_SHA256="$1"
+else
+  printf 'Paste the published SHA-256 for this release archive: ' >&2
+  IFS= read -r EXPECTED_ARCHIVE_SHA256 || exit 1
+fi
+case "$EXPECTED_ARCHIVE_SHA256" in
+  *[!0-9a-f]*|"") echo "Update launcher: SHA-256 must be 64 lowercase hexadecimal characters" >&2; exit 1 ;;
+esac
+[ "${#EXPECTED_ARCHIVE_SHA256}" = 64 ] \
+    || { echo "Update launcher: SHA-256 must be 64 lowercase hexadecimal characters" >&2; exit 1; }
+WORK_PARENT="${BASE_DIR}/.update-work"
+[ ! -L "$WORK_PARENT" ] || { echo "Update launcher: unsafe work parent" >&2; exit 1; }
+mkdir -p "$WORK_PARENT"
+[ -d "$WORK_PARENT" ] && [ ! -L "$WORK_PARENT" ] \
+    || { echo "Update launcher: unsafe work parent" >&2; exit 1; }
+TOKEN="$(LC_ALL=C od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+case "$TOKEN" in *[!0-9a-f]*|"") echo "Update launcher: invalid work token" >&2; exit 1 ;; esac
+[ "${#TOKEN}" = 64 ] || { echo "Update launcher: invalid work token" >&2; exit 1; }
+WORK_DIR="${WORK_PARENT}/update-${TOKEN}"
+[ ! -e "$WORK_DIR" ] && [ ! -L "$WORK_DIR" ] \
+    || { echo "Update launcher: refusing to reuse work directory" >&2; exit 1; }
+(umask 077 && mkdir "$WORK_DIR") || { echo "Update launcher: could not create work directory" >&2; exit 1; }
+printf '%s\n' "$TOKEN" > "${WORK_DIR}/owner"
+chmod 600 "${WORK_DIR}/owner"
+cleanup() {
+  if [ -d "$WORK_DIR" ] && [ ! -L "$WORK_DIR" ] && [ -f "${WORK_DIR}/owner" ] \
+      && [ ! -L "${WORK_DIR}/owner" ] && [ "$(cat "${WORK_DIR}/owner")" = "$TOKEN" ]; then
+    rm -rf -- "$WORK_DIR"
+  elif [ -e "$WORK_DIR" ] || [ -L "$WORK_DIR" ]; then
+    echo "Update launcher: refusing unsafe work-directory cleanup" >&2
+  fi
+}
+trap cleanup EXIT
+cp "$UPDATE_SOURCE" "${WORK_DIR}/update.sh"
+bash "${WORK_DIR}/update.sh" "$BASE_DIR" "$WORK_DIR" "$EXPECTED_ARCHIVE_SHA256"
+UPDATELAUNCHER
+    chmod +x "${PKG_DIR}/Update-ArkhamHorror.sh"
+    info "  ✓ Update-ArkhamHorror.sh generated"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2305,10 +2189,10 @@ echo [*] Package path: !WIN_DIR!
 echo [*] WSL path:    !WSL_DIR!
 echo.
 
-REM ---- 4. Copy update.sh to temp and execute ----
+REM ---- 4. Invoke the trusted top-level launcher (it creates an owned work dir) ----
 echo [*] Starting update ...
 echo.
-wsl -d !WSL_DISTRO! -u arkham -- bash -c "cp '!WSL_DIR!/game/update.sh' /tmp/arkham-update.sh && bash /tmp/arkham-update.sh '!WSL_DIR!'; ret=$?; rm -f /tmp/arkham-update.sh; exit $ret"
+wsl -d !WSL_DISTRO! -u arkham -- bash -c "cd '!WSL_DIR!' && bash Update-ArkhamHorror.sh"
 set UPDATE_EXIT=!ERRORLEVEL!
 
 if !UPDATE_EXIT! neq 0 (
@@ -2337,13 +2221,11 @@ BATSCRIPT
 generate_update_command() {
     cat > "${PKG_DIR}/Update-ArkhamHorror.command" << 'MACCOMMAND'
 #!/bin/bash
-# Copy update.sh to a temp location and execute from there
-# (because update.sh renames the game/ directory during the upgrade)
+# The top-level update launcher creates an invocation-owned location before
+# executing game/update.sh, which may rename game/.
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
-cp "${BASE_DIR}/game/update.sh" /tmp/arkham-update.sh
-bash /tmp/arkham-update.sh "$BASE_DIR"
+bash "${BASE_DIR}/Update-ArkhamHorror.sh"
 ret=$?
-rm -f /tmp/arkham-update.sh
 if [ $ret -ne 0 ]; then
     echo ""
     echo "Update failed. Please check the error messages above."
@@ -2374,10 +2256,12 @@ main() {
     verify_postgres_installation
     verify_nginx_dependency_for_packaging
 
-    # If an old distribution exists and has start.sh, stop any possibly running services first (to avoid NTFS file locks)
-    if [ -d "$PKG_DIR" ] && [ -f "${PKG_DIR}/game/start.sh" ]; then
-        substep "Old distribution detected; stopping any possibly running services first ..."
-        bash "${PKG_DIR}/game/start.sh" --stop 2>/dev/null || true
+    # Never execute a generated script from the previous output tree. A stale
+    # package is untrusted input; only PID files whose live executable resolves
+    # exactly to that prior package are eligible for termination.
+    if [ -d "$PKG_DIR" ] && [ ! -L "$PKG_DIR" ]; then
+        substep "Old distribution detected; stopping verified prior package processes ..."
+        stop_previous_package_services "$PKG_DIR"
     fi
 
     # Remove old distribution directory
@@ -2398,6 +2282,18 @@ main() {
     ensure_dir "${PKG_DIR}/game/config"
     ensure_dir "${PKG_DIR}/game/data"
     ensure_dir "${PKG_DIR}/backup"
+
+    # Re-check every untrusted build input immediately before copying it. No
+    # old package script has run above, and these receipt checks do not expose
+    # their capability path/token to a child process.
+    verify_authority_tree_from_receipt frontend "$FRONTEND_SRC" \
+        || die "Frontend output changed after initial authority verification"
+    verify_node_installation
+    verify_postgres_installation
+    verify_nginx_dependency_for_packaging
+    local frontend_source_closure
+    frontend_source_closure="$(authority_tree_digest "$FRONTEND_SRC")" \
+        || die "Could not calculate the authenticated frontend source closure"
 
     # Copy backend
     substep "Copy: ${BACKEND_BIN} → ${PKG_DIR}/game/bin/arkham-api"
@@ -2423,6 +2319,11 @@ main() {
                  --dist "${PKG_DIR}/game/frontend/dist" --dist-only --publish); then
         die "  ✗ The packaged frontend does not contain a valid locale catalog"
     fi
+    local frontend_package_closure
+    frontend_package_closure="$(authority_tree_digest "${PKG_DIR}/game/frontend/dist")" \
+        || die "Could not calculate the final packaged frontend closure"
+    [ "$frontend_package_closure" = "$frontend_source_closure" ] \
+        || die "The final packaged frontend tree differs from its authenticated source tree"
 
     # Copy PostgreSQL
     substep "Copy PostgreSQL binaries ..."
@@ -2447,6 +2348,7 @@ main() {
     for f in settings.yml client_session_key.aes favicon.ico robots.txt routes; do
         [ -f "${config_src}/$f" ] && cp "${config_src}/$f" "${PKG_DIR}/game/config/" 2>/dev/null || true
     done
+    printf '%s\n' "$PLATFORM" > "${PKG_DIR}/game/config/release-platform"
 
     # Generate nginx/mime runtime files
     generate_mime_types
@@ -2461,6 +2363,7 @@ main() {
 
     # Generate update scripts
     generate_update_script
+    generate_update_launcher
     if [ "$OS" = "linux" ]; then
         generate_update_bat
     elif [ "$OS" = "macos" ]; then
@@ -2644,7 +2547,7 @@ main() {
     # Verification
     echo ""
     substep "Verifying distribution integrity ..."
-    local required=("game/bin/arkham-api" "game/bin/nginx" "game/pgsql/bin/postgres" "game/pgsql/bin/initdb" "game/pgsql/bin/pg_ctl" "game/pgsql/bin/pg_dump" "game/pgsql/bin/pg_restore" "game/frontend/dist/index.html" "game/start.sh" "game/update.sh")
+    local required=("game/bin/arkham-api" "game/bin/nginx" "game/pgsql/bin/postgres" "game/pgsql/bin/initdb" "game/pgsql/bin/pg_ctl" "game/pgsql/bin/pg_dump" "game/pgsql/bin/pg_restore" "game/frontend/dist/index.html" "game/start.sh" "game/update.sh" "Update-ArkhamHorror.sh")
     if [ "$OS" = "linux" ]; then
         required+=("Start-ArkhamHorror.bat" "Update-ArkhamHorror.bat")
     elif [ "$OS" = "macos" ]; then

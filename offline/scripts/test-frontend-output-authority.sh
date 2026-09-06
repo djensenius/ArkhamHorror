@@ -64,6 +64,68 @@ printf 'substituted frontend bundle\n' > "${DIST}/assets/app.js"
 printf '{"rewritten":"catalog-only metadata"}\n' > "${DIST}/locale-catalog/c/trusted.json"
 expect_reject "substituted bundle plus catalog metadata" \
     verify_authority_tree_from_receipt frontend "$DIST"
+printf 'trusted frontend bundle\n' > "${DIST}/assets/app.js"
+printf '{"trusted":"catalog"}\n' > "${DIST}/locale-catalog/c/trusted.json"
+verify_authority_tree_from_receipt frontend "$DIST" \
+    || fail "restoring frontend bytes did not restore the external receipt check"
+
+# Shipped frontend output is an ordinary-file document root. Every link is
+# rejected, whether it would escape, point internally, or be dangling.
+ln -s /etc/passwd "${DIST}/assets/escaping-link"
+expect_reject "escaping frontend symlink" \
+    verify_authority_tree_from_receipt frontend "$DIST"
+rm -f "${DIST}/assets/escaping-link"
+
+ln -s app.js "${DIST}/assets/internal-link"
+expect_reject "internal frontend symlink" \
+    verify_authority_tree_from_receipt frontend "$DIST"
+rm -f "${DIST}/assets/internal-link"
+
+ln -s absent.js "${DIST}/assets/broken-link"
+expect_reject "broken frontend symlink" \
+    verify_authority_tree_from_receipt frontend "$DIST"
+rm -f "${DIST}/assets/broken-link"
+
+mkfifo "${DIST}/assets/evil.fifo"
+expect_reject "frontend FIFO" \
+    verify_authority_tree_from_receipt frontend "$DIST"
+rm -f "${DIST}/assets/evil.fifo"
+
+if python3 - "${DIST}/assets" <<'PY'
+import os
+import socket
+import sys
+
+os.chdir(sys.argv[1])
+sock = socket.socket(socket.AF_UNIX)
+try:
+    sock.bind("evil.socket")
+finally:
+    sock.close()
+PY
+then
+    if [ -S "${DIST}/assets/evil.socket" ]; then
+        expect_reject "frontend socket" \
+            verify_authority_tree_from_receipt frontend "$DIST"
+        rm -f "${DIST}/assets/evil.socket"
+    fi
+fi
+
+if command -v mknod >/dev/null 2>&1 \
+    && mknod "${DIST}/assets/evil.device" c 1 3 2>/dev/null; then
+    expect_reject "frontend device" \
+        verify_authority_tree_from_receipt frontend "$DIST"
+    rm -f "${DIST}/assets/evil.device"
+fi
+
+PACKAGE_DIST="${WORK}/package/game/frontend/dist"
+mkdir -p "$PACKAGE_DIST"
+cp -R "${DIST}/." "$PACKAGE_DIST/"
+verify_authority_tree_from_receipt frontend "$PACKAGE_DIST" \
+    || fail "fresh final package frontend tree was rejected"
+printf 'substituted final package bundle\n' > "${PACKAGE_DIST}/assets/app.js"
+expect_reject "substituted final package frontend asset" \
+    verify_authority_tree_from_receipt frontend "$PACKAGE_DIST"
 
 if grep -Fq 'offline/_deps/frontend/' "${REPO_ROOT}/.github/workflows/build-offline.yml"; then
     fail "workflow still restores generated frontend output from cache"
@@ -78,4 +140,4 @@ if [ "$failures" -ne 0 ]; then
     printf 'frontend-output-authority: %s failure(s)\n' "$failures" >&2
     exit 1
 fi
-printf '%s\n' 'frontend-output-authority: index and bundle substitutions are rejected by an external full-tree receipt'
+printf '%s\n' 'frontend-output-authority: full frontend trees reject substitutions, links, and special files'

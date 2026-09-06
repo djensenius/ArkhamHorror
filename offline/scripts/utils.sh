@@ -29,6 +29,7 @@ TOOLCHAIN_RECEIPT_FILE=""
 TOOLCHAIN_RECEIPT_TOKEN=""
 TOOLCHAIN_RECEIPT_DIR=""
 TOOLCHAIN_RECEIPT_OWNED=false
+TOOLCHAIN_RECEIPT_ENV_FILE=""
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -110,6 +111,14 @@ init_paths() {
     TOOLCHAIN_RECEIPT_TOKEN="${ARKHAM_TOOLCHAIN_RECEIPT_TOKEN:-}"
     TOOLCHAIN_RECEIPT_DIR="${ARKHAM_TOOLCHAIN_RECEIPT_DIR:-${OFFLINE_DIR}/_session}"
     TOOLCHAIN_RECEIPT_OWNED=false
+    TOOLCHAIN_RECEIPT_ENV_FILE="${GITHUB_ENV:-}"
+    # Receipt capabilities are deliberately consumed into non-exported shell
+    # variables before any tool/archive/package payload can run.
+    unset ARKHAM_TOOLCHAIN_RECEIPT_FILE ARKHAM_TOOLCHAIN_RECEIPT_TOKEN
+    # The command-file path is also a capability: retain it only in this
+    # non-exported shell variable until the reviewed dependency stage publishes
+    # a completed receipt, never while an untrusted tool can inherit it.
+    unset GITHUB_ENV
 }
 
 # ── Toolchain authority ──────────────────────────────────────────────────────
@@ -274,49 +283,81 @@ toolchain_receipt_header_equals() {
     [ "$actual" = "$expected" ] || die "Toolchain receipt has an unexpected ${key} field"
 }
 
+toolchain_receipt_token_digest() {
+    require_receipt_token "$TOOLCHAIN_RECEIPT_TOKEN"
+    printf '%s' "$TOOLCHAIN_RECEIPT_TOKEN" | sha256_text
+}
+
+# The token is never persisted with the receipt. Each mutable record carries a
+# secret-suffixed SHA-256 authenticator instead, so a cache payload that finds
+# the receipt path cannot rewrite an authority record it can later satisfy.
+toolchain_receipt_record_authenticator() {
+    local component="$1" lock_sha256="$2" identity="$3" closure_sha256="$4"
+    safe_authority_component "$component"
+    require_sha256 "$lock_sha256"
+    require_sha256 "$identity"
+    require_sha256 "$closure_sha256"
+    require_receipt_token "$TOOLCHAIN_RECEIPT_TOKEN"
+    printf 'record\t%s\t%s\t%s\t%s\t%s' \
+        "$component" "$lock_sha256" "$identity" "$closure_sha256" "$TOOLCHAIN_RECEIPT_TOKEN" | sha256_text
+}
+
 # A receipt is created after cache restoration, in an invocation-unique
 # directory, and its unguessable token is passed out-of-band through the
-# current build environment. Cached manifests are observations only: they are
-# never accepted as an authority root.
+# current build environment. The token itself is not stored in the receipt:
+# cached manifests and receipt bytes are observations only, never an authority
+# root.
 init_toolchain_authority_receipt() {
-    local receipt_dir
+    local receipt_dir receipt_directory_token
     if [ -n "${TOOLCHAIN_RECEIPT_FILE:-}" ] || [ -n "${TOOLCHAIN_RECEIPT_TOKEN:-}" ]; then
         [ -n "${TOOLCHAIN_RECEIPT_FILE:-}" ] && [ -n "${TOOLCHAIN_RECEIPT_TOKEN:-}" ] \
             || die "Toolchain receipt path and token must be supplied together"
         require_receipt_token "$TOOLCHAIN_RECEIPT_TOKEN"
-        toolchain_receipt_header_equals schema "1"
-        toolchain_receipt_header_equals token "$TOOLCHAIN_RECEIPT_TOKEN"
+        toolchain_receipt_header_equals schema "2"
+        toolchain_receipt_header_equals token_sha256 "$(toolchain_receipt_token_digest)"
         return 0
     fi
 
     [ ! -L "$TOOLCHAIN_RECEIPT_DIR" ] || die "Toolchain receipt directory must not be a symlink"
     ensure_dir "$TOOLCHAIN_RECEIPT_DIR"
     TOOLCHAIN_RECEIPT_TOKEN="$(random_hex)"
-    receipt_dir="${TOOLCHAIN_RECEIPT_DIR}/receipt-${TOOLCHAIN_RECEIPT_TOKEN}"
+    # The receipt location is not the capability. Keep its random directory
+    # token independent from the record-authentication secret so a payload
+    # that can enumerate the shared parent cannot recover the secret merely
+    # from the receipt path.
+    receipt_directory_token="$(random_hex)"
+    receipt_dir="${TOOLCHAIN_RECEIPT_DIR}/receipt-${receipt_directory_token}"
     [ ! -e "$receipt_dir" ] && [ ! -L "$receipt_dir" ] \
         || die "Refusing to reuse a pre-existing toolchain receipt directory: $receipt_dir"
     (umask 077 && mkdir "$receipt_dir") || die "Could not create toolchain receipt directory"
     TOOLCHAIN_RECEIPT_FILE="${receipt_dir}/receipt.tsv"
-    printf 'schema\t1\ntoken\t%s\n' "$TOOLCHAIN_RECEIPT_TOKEN" > "$TOOLCHAIN_RECEIPT_FILE"
+    printf 'schema\t2\ntoken_sha256\t%s\n' "$(toolchain_receipt_token_digest)" > "$TOOLCHAIN_RECEIPT_FILE"
     chmod 600 "$TOOLCHAIN_RECEIPT_FILE"
-    export ARKHAM_TOOLCHAIN_RECEIPT_FILE="$TOOLCHAIN_RECEIPT_FILE"
-    export ARKHAM_TOOLCHAIN_RECEIPT_TOKEN="$TOOLCHAIN_RECEIPT_TOKEN"
     TOOLCHAIN_RECEIPT_OWNED=true
-    if [ -n "${GITHUB_ENV:-}" ]; then
-        [ -f "$GITHUB_ENV" ] && [ ! -L "$GITHUB_ENV" ] && [ -w "$GITHUB_ENV" ] \
-            || die "GitHub environment file is missing or unsafe"
-        {
-            printf 'ARKHAM_TOOLCHAIN_RECEIPT_FILE=%s\n' "$TOOLCHAIN_RECEIPT_FILE"
-            printf 'ARKHAM_TOOLCHAIN_RECEIPT_TOKEN=%s\n' "$TOOLCHAIN_RECEIPT_TOKEN"
-        } >> "$GITHUB_ENV"
-    fi
+}
+
+# Publish a newly completed receipt only after the dependency stage has stopped
+# launching untrusted archives and installed binaries. The GitHub command-file
+# path was consumed by init_paths and is never inherited by those processes.
+publish_toolchain_authority_receipt() {
+    [ "$TOOLCHAIN_RECEIPT_OWNED" = true ] || return 0
+    [ -n "$TOOLCHAIN_RECEIPT_ENV_FILE" ] || return 0
+    [ -f "$TOOLCHAIN_RECEIPT_ENV_FILE" ] && [ ! -L "$TOOLCHAIN_RECEIPT_ENV_FILE" ] \
+        && [ -w "$TOOLCHAIN_RECEIPT_ENV_FILE" ] \
+        || die "GitHub environment file is missing or unsafe"
+    require_toolchain_authority_receipt
+    {
+        printf 'ARKHAM_TOOLCHAIN_RECEIPT_FILE=%s\n' "$TOOLCHAIN_RECEIPT_FILE"
+        printf 'ARKHAM_TOOLCHAIN_RECEIPT_TOKEN=%s\n' "$TOOLCHAIN_RECEIPT_TOKEN"
+    } >> "$TOOLCHAIN_RECEIPT_ENV_FILE"
+    TOOLCHAIN_RECEIPT_ENV_FILE=""
 }
 
 require_toolchain_authority_receipt() {
     [ -n "${TOOLCHAIN_RECEIPT_TOKEN:-}" ] || die "No invocation-specific toolchain authority receipt; run 01-check-project-deps.sh in this build"
     require_receipt_token "$TOOLCHAIN_RECEIPT_TOKEN"
-    toolchain_receipt_header_equals schema "1"
-    toolchain_receipt_header_equals token "$TOOLCHAIN_RECEIPT_TOKEN"
+    toolchain_receipt_header_equals schema "2"
+    toolchain_receipt_header_equals token_sha256 "$(toolchain_receipt_token_digest)"
 }
 
 safe_authority_component() {
@@ -331,30 +372,103 @@ file_mode() {
     printf '%s\n' "$mode"
 }
 
-# Emits a canonical record for every regular file and symlink below one root.
-# It includes every byte, link target, and executable mode in the installed
-# closure; a cached sidecar manifest is deliberately not an input.
-authority_tree_records() {
-    local root="$1" entry relative path link_target digest mode
+# Resolves a symlink without allowing its final target to leave `root`.
+# Callers record the literal link separately and add the resolved target to
+# the closure, so an in-root alias cannot omit the bytes it eventually loads.
+resolve_internal_link() {
+    local root="$1" path="$2" target next_dir hops=0
+    root="$(cd -P "$root" && pwd)" \
+        || die "Authority tree root is missing or unsafe: $root"
+    [ -d "$root" ] && [ ! -L "$root" ] || die "Authority tree root is missing or unsafe: $root"
+    while [ -L "$path" ]; do
+        hops=$((hops + 1))
+        [ "$hops" -le 64 ] || die "Authority symlink chain is cyclic or too deep: $path"
+        target="$(readlink "$path")" || die "Could not read authority symlink: $path"
+        case "$target" in
+            ""|/*|*$'\t'*|*$'\n'*) die "Unsafe authority symlink target: $path" ;;
+        esac
+        next_dir="$(cd -P "$(dirname "$path")" && cd -P "$(dirname "$target")" && pwd)" \
+            || die "Broken authority symlink target: $path"
+        path="${next_dir}/$(basename "$target")"
+        path="$(cd -P "$(dirname "$path")" && printf '%s/%s\n' "$(pwd)" "$(basename "$path")")" \
+            || die "Broken authority symlink target: $path"
+        case "$path" in
+            "$root"/*) ;;
+            *) die "Authority symlink escapes its root: $path" ;;
+        esac
+    done
+    [ -f "$path" ] || [ -d "$path" ] || die "Authority symlink is dangling: $path"
+    printf '%s\n' "$path"
+}
+
+validate_internal_link() {
+    resolve_internal_link "$@" >/dev/null
+}
+
+verify_internal_symlink() {
+    local root="$1" relative="$2" expected_target="$3" path actual
+    safe_manifest_relative_path "$relative" || die "Unsafe symlink path: $relative"
+    path="${root}/${relative}"
+    [ -L "$path" ] || die "Expected authority symlink is missing: $path"
+    actual="$(readlink "$path")" || die "Could not read authority symlink: $path"
+    [ "$actual" = "$expected_target" ] \
+        || die "Authority symlink target changed: $path"
+    validate_internal_link "$root" "$path"
+}
+
+authority_path_record() {
+    local root="$1" relative="$2" allow_links="$3"
+    local path="${root}/${relative}" link_target digest mode
+    safe_manifest_relative_path "$relative" || die "Unsafe authority tree path: $relative"
+    case "$relative" in *$'\t'*|*$'\n'*) die "Unsupported authority tree path: $relative" ;; esac
+    if [ -L "$path" ]; then
+        [ "$allow_links" = "true" ] || die "Authority tree contains a forbidden symlink: $relative"
+        link_target="$(readlink "$path")" || die "Could not read authority symlink: $path"
+        validate_internal_link "$root" "$path"
+        printf 'link\t%s\t%s\n' "$relative" "$link_target"
+    elif [ -f "$path" ]; then
+        digest="$(sha256_file "$path")" || die "Could not hash authority-tree file: $path"
+        mode="$(file_mode "$path")" || die "Could not read authority-tree mode: $path"
+        printf 'file\t%s\t%s\t%s\n' "$relative" "$mode" "$digest"
+    elif [ -d "$path" ]; then
+        mode="$(file_mode "$path")" || die "Could not read authority-tree directory mode: $path"
+        printf 'dir\t%s\t%s\n' "$relative" "$mode"
+    else
+        die "Authority tree contains an unsupported file type: $path"
+    fi
+}
+
+# Frontend output is shipped as ordinary files only. A link can change what a
+# web server exposes after attestation, so it is rejected rather than followed.
+authority_tree_records_shell() {
+    local root="$1" entry relative
     [ -d "$root" ] && [ ! -L "$root" ] || die "Authority tree root is missing or unsafe: $root"
     while IFS= read -r entry; do
         relative="${entry#./}"
-        safe_manifest_relative_path "$relative" || die "Unsafe authority tree path: $relative"
-        case "$relative" in *$'\t'*|*$'\n'*) die "Unsupported authority tree path: $relative" ;; esac
-        path="${root}/${relative}"
-        if [ -L "$path" ]; then
-            link_target="$(readlink "$path")" || die "Could not read authority-tree symlink: $path"
-            case "$link_target" in *$'\t'*|*$'\n'*) die "Unsupported authority symlink target: $path" ;; esac
-            printf 'link\t%s\t%s\n' "$relative" "$link_target"
-        else
-            digest="$(sha256_file "$path")" || die "Could not hash authority-tree file: $path"
-            mode="$(file_mode "$path")" || die "Could not read authority-tree mode: $path"
-            printf 'file\t%s\t%s\t%s\n' "$relative" "$mode" "$digest"
-        fi
+        authority_path_record "$root" "$relative" false
     done < <(
         cd "$root" \
-            && find . \( -type f -o -type l \) -print | LC_ALL=C sort
+            && find . -mindepth 1 -print | LC_ALL=C sort
     )
+}
+
+authority_records_python() {
+    local mode="$1"
+    shift
+    local authority_python="/usr/bin/python3"
+    local authority_script="${SCRIPTS_DIR}/authority-tree.py"
+    [ -x "$authority_python" ] || return 1
+    [ -f "$authority_script" ] && [ ! -L "$authority_script" ] \
+        || die "Authority-tree verifier is missing or unsafe: $authority_script"
+    "$authority_python" "$authority_script" "$mode" "$@"
+}
+
+authority_tree_records() {
+    if [ -x /usr/bin/python3 ]; then
+        authority_records_python tree "$@"
+    else
+        authority_tree_records_shell "$@"
+    fi
 }
 
 authority_tree_digest() {
@@ -365,41 +479,66 @@ authority_tree_digest() {
 }
 
 # Like authority_tree_digest, but only for explicitly named files/directories.
-# This is used for the package's Nginx executable and recursively bundled
-# dynamic-library closure, whose mutable runtime logs/data must not be hashed.
-authority_paths_records() {
+# Tool/package closures may contain archive-provided symlinks, but every link
+# is canonicalized and required to resolve inside the selected root.
+authority_paths_records_shell() {
     local root="$1"
     shift
-    local selected entry relative path link_target digest mode
+    local selected entry relative path resolved resolved_relative
+    local seen=$'\n'
+    local cursor=0
+    local -a pending=("$@")
+    local -a entries=()
     [ $# -gt 0 ] || die "No authority paths were supplied"
+    root="$(cd -P "$root" && pwd)" \
+        || die "Authority tree root is missing or unsafe: $root"
     [ -d "$root" ] && [ ! -L "$root" ] || die "Authority tree root is missing or unsafe: $root"
-    {
-        for selected in "$@"; do
-            safe_manifest_relative_path "$selected" || die "Unsafe authority path: $selected"
-            path="${root}/${selected}"
-            if [ -d "$path" ] && [ ! -L "$path" ]; then
-                (cd "$root" && find "./${selected}" \( -type f -o -type l \) -print)
-            elif [ -f "$path" ] || [ -L "$path" ]; then
-                printf './%s\n' "$selected"
-            else
-                die "Required authority path is missing: $path"
+    while [ "$cursor" -lt "${#pending[@]}" ]; do
+        selected="${pending[$cursor]}"
+        cursor=$((cursor + 1))
+        safe_manifest_relative_path "$selected" || die "Unsafe authority path: $selected"
+        case "$selected" in *$'\t'*|*$'\n'*) die "Unsafe authority path: $selected" ;; esac
+        case "$seen" in *$'\n'"$selected"$'\n'*) continue ;; esac
+        seen+="${selected}"$'\n'
+        path="${root}/${selected}"
+        if [ -d "$path" ] && [ ! -L "$path" ]; then
+            while IFS= read -r entry; do
+                relative="${entry#./}"
+                entries+=("$relative")
+                if [ -L "${root}/${relative}" ]; then
+                    resolved="$(resolve_internal_link "$root" "${root}/${relative}")"
+                    resolved_relative="${resolved#"$root"/}"
+                    safe_manifest_relative_path "$resolved_relative" \
+                        || die "Authority symlink has an unsafe resolved target: ${root}/${relative}"
+                    pending+=("$resolved_relative")
+                fi
+            done < <(cd "$root" && find "./${selected}" -print)
+        elif [ -f "$path" ] || [ -L "$path" ]; then
+            entries+=("$selected")
+            if [ -L "$path" ]; then
+                resolved="$(resolve_internal_link "$root" "$path")"
+                resolved_relative="${resolved#"$root"/}"
+                safe_manifest_relative_path "$resolved_relative" \
+                    || die "Authority symlink has an unsafe resolved target: $path"
+                pending+=("$resolved_relative")
             fi
-        done
-    } | LC_ALL=C sort -u | while IFS= read -r entry; do
-        relative="${entry#./}"
-        safe_manifest_relative_path "$relative" || die "Unsafe authority tree path: $relative"
-        case "$relative" in *$'\t'*|*$'\n'*) die "Unsupported authority tree path: $relative" ;; esac
-        path="${root}/${relative}"
-        if [ -L "$path" ]; then
-            link_target="$(readlink "$path")" || die "Could not read authority-path symlink: $path"
-            case "$link_target" in *$'\t'*|*$'\n'*) die "Unsupported authority symlink target: $path" ;; esac
-            printf 'link\t%s\t%s\n' "$relative" "$link_target"
         else
-            digest="$(sha256_file "$path")" || die "Could not hash authority-path file: $path"
-            mode="$(file_mode "$path")" || die "Could not read authority-path mode: $path"
-            printf 'file\t%s\t%s\t%s\n' "$relative" "$mode" "$digest"
+            die "Required authority path is missing: $path"
         fi
     done
+    printf '%s\n' "${entries[@]}" | LC_ALL=C sort -u | while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        relative="$entry"
+        authority_path_record "$root" "$relative" true
+    done
+}
+
+authority_paths_records() {
+    if [ -x /usr/bin/python3 ]; then
+        authority_records_python paths "$@"
+    else
+        authority_paths_records_shell "$@"
+    fi
 }
 
 authority_paths_digest() {
@@ -413,7 +552,7 @@ authority_paths_digest() {
 
 record_authority_receipt() {
     local component="$1" identity="$2" closure_sha256="$3"
-    local receipt existing existing_lock existing_identity existing_closure
+    local receipt existing existing_lock existing_identity existing_closure existing_authenticator authenticator extra
     safe_authority_component "$component"
     require_sha256 "$identity"
     require_sha256 "$closure_sha256"
@@ -422,19 +561,26 @@ record_authority_receipt() {
     existing="$(awk -F '\t' -v component="$component" '$1 == "record" && $2 == component { matches += 1; value = $0 } END { if (matches == 1) print value; else if (matches > 1) exit 1 }' "$receipt")" \
         || die "Toolchain receipt has duplicate records for ${component}"
     if [ -n "$existing" ]; then
-        IFS=$'\t' read -r _ _ existing_lock existing_identity existing_closure <<< "$existing"
+        IFS=$'\t' read -r _ _ existing_lock existing_identity existing_closure existing_authenticator extra <<< "$existing"
+        [ -z "$extra" ] || die "Toolchain receipt has a malformed record for ${component}"
+        authenticator="$(toolchain_receipt_record_authenticator \
+            "$component" "$existing_lock" "$existing_identity" "$existing_closure")"
+        [ "$existing_authenticator" = "$authenticator" ] \
+            || die "Toolchain receipt has an unauthenticated record for ${component}"
         [ "$existing_lock" = "$(toolchain_lock_digest)" ] \
             && [ "$existing_identity" = "$identity" ] \
             && [ "$existing_closure" = "$closure_sha256" ] \
             && return 0
         die "Toolchain receipt already has a different record for ${component}"
     fi
-    printf 'record\t%s\t%s\t%s\t%s\n' \
-        "$component" "$(toolchain_lock_digest)" "$identity" "$closure_sha256" >> "$receipt"
+    authenticator="$(toolchain_receipt_record_authenticator \
+        "$component" "$(toolchain_lock_digest)" "$identity" "$closure_sha256")"
+    printf 'record\t%s\t%s\t%s\t%s\t%s\n' \
+        "$component" "$(toolchain_lock_digest)" "$identity" "$closure_sha256" "$authenticator" >> "$receipt"
 }
 
 authority_receipt_closure() {
-    local component="$1" identity="$2" receipt record record_type recorded_component lock_sha256 recorded_identity closure_sha256 extra
+    local component="$1" identity="$2" receipt record record_type recorded_component lock_sha256 recorded_identity closure_sha256 authenticator extra
     safe_authority_component "$component"
     require_sha256 "$identity"
     require_toolchain_authority_receipt
@@ -451,14 +597,46 @@ authority_receipt_closure() {
             }
         ' "$receipt"
     )" || return 1
-    IFS=$'\t' read -r record_type recorded_component lock_sha256 recorded_identity closure_sha256 extra <<< "$record"
+    IFS=$'\t' read -r record_type recorded_component lock_sha256 recorded_identity closure_sha256 authenticator extra <<< "$record"
     [ -z "$extra" ] || return 1
     require_sha256 "$lock_sha256"
     require_sha256 "$recorded_identity"
     require_sha256 "$closure_sha256"
+    require_sha256 "$authenticator"
     [ "$lock_sha256" = "$(toolchain_lock_digest)" ] || return 1
     [ "$recorded_identity" = "$identity" ] || return 1
+    [ "$authenticator" = "$(toolchain_receipt_record_authenticator \
+        "$recorded_component" "$lock_sha256" "$recorded_identity" "$closure_sha256")" ] || return 1
     printf '%s\n' "$closure_sha256"
+}
+
+authority_receipt_identity() {
+    local component="$1" receipt record record_type recorded_component lock_sha256 identity closure_sha256 authenticator extra
+    safe_authority_component "$component"
+    require_toolchain_authority_receipt
+    receipt="$(toolchain_receipt_path)"
+    record="$(
+        awk -F '\t' -v component="$component" '
+            $1 == "record" && $2 == component {
+                matches += 1
+                value = $0
+            }
+            END {
+                if (matches != 1) exit 1
+                print value
+            }
+        ' "$receipt"
+    )" || return 1
+    IFS=$'\t' read -r record_type recorded_component lock_sha256 identity closure_sha256 authenticator extra <<< "$record"
+    [ -z "$extra" ] || return 1
+    require_sha256 "$lock_sha256"
+    require_sha256 "$identity"
+    require_sha256 "$closure_sha256"
+    require_sha256 "$authenticator"
+    [ "$lock_sha256" = "$(toolchain_lock_digest)" ] || return 1
+    [ "$authenticator" = "$(toolchain_receipt_record_authenticator \
+        "$recorded_component" "$lock_sha256" "$identity" "$closure_sha256")" ] || return 1
+    printf '%s\n' "$identity"
 }
 
 verify_authority_tree() {
@@ -469,7 +647,7 @@ verify_authority_tree() {
 }
 
 verify_authority_tree_from_receipt() {
-    local component="$1" root="$2" receipt record record_type recorded_component lock_sha256 identity closure_sha256 extra actual
+    local component="$1" root="$2" receipt record record_type recorded_component lock_sha256 identity closure_sha256 authenticator extra actual
     safe_authority_component "$component"
     require_toolchain_authority_receipt
     receipt="$(toolchain_receipt_path)"
@@ -485,12 +663,15 @@ verify_authority_tree_from_receipt() {
             }
         ' "$receipt"
     )" || return 1
-    IFS=$'\t' read -r record_type recorded_component lock_sha256 identity closure_sha256 extra <<< "$record"
+    IFS=$'\t' read -r record_type recorded_component lock_sha256 identity closure_sha256 authenticator extra <<< "$record"
     [ -z "$extra" ] || return 1
     require_sha256 "$lock_sha256"
     require_sha256 "$identity"
     require_sha256 "$closure_sha256"
+    require_sha256 "$authenticator"
     [ "$lock_sha256" = "$(toolchain_lock_digest)" ] || return 1
+    [ "$authenticator" = "$(toolchain_receipt_record_authenticator \
+        "$recorded_component" "$lock_sha256" "$identity" "$closure_sha256")" ] || return 1
     actual="$(authority_tree_digest "$root")" || return 1
     [ "$actual" = "$closure_sha256" ]
 }

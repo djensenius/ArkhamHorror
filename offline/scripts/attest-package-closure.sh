@@ -34,4 +34,12 @@ closure="$(authority_paths_digest "$GAME_DIR" \
     || die "Could not calculate the packaged nginx/library closure"
 record_authority_receipt offline-nginx "$identity" "$closure"
 
-info "Recorded external CI authority for the complete packaged nginx closure"
+frontend_identity="$(authority_receipt_identity frontend)" \
+    || die "Frontend source receipt is missing before final package attestation"
+verify_authority_tree_from_receipt frontend "${GAME_DIR}/frontend/dist" \
+    || die "Final packaged frontend tree does not match its source authority receipt"
+frontend_closure="$(authority_tree_digest "${GAME_DIR}/frontend/dist")" \
+    || die "Could not calculate the final packaged frontend closure"
+record_authority_receipt offline-frontend "$frontend_identity" "$frontend_closure"
+
+info "Recorded external CI authority for complete packaged nginx and frontend closures"

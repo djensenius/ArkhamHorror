@@ -39,6 +39,7 @@ mkdir -p "${GAME}/bin" "${GAME}/lib" "${GAME}/pgsql/lib" "${GAME}/config"
 printf 'trusted nginx executable\n' > "${GAME}/bin/nginx"
 chmod +x "${GAME}/bin/nginx"
 printf 'trusted bundled library\n' > "${GAME}/lib/libpcre.dylib"
+ln -s "libpcre.dylib" "${GAME}/lib/libpcre-alias.dylib"
 printf 'trusted postgres library\n' > "${GAME}/pgsql/lib/libpq.dylib"
 printf '#!/usr/bin/env bash\n' > "${GAME}/start.sh"
 chmod +x "${GAME}/start.sh"
@@ -49,6 +50,35 @@ printf 'nginx_binary_sha256=self-issued\n' > "${GAME}/config/toolchain-provenanc
 identity="$(printf '%s' 'locked-nginx-build-identity' | sha256_text)"
 closure="$(authority_paths_digest "$GAME" \
     bin/nginx lib pgsql/lib start.sh config/mime.types config/toolchain.lock config/toolchain-provenance.env)"
+python3 - "$GAME" "$closure" "$REPO_ROOT" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+game = Path(sys.argv[1])
+expected = sys.argv[2]
+repository = Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location(
+    "catalog_serving", repository / "scripts" / "validate-catalog-serving.py"
+)
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+actual = module.closure_digest(
+    game,
+    (
+        "bin/nginx",
+        "lib",
+        "pgsql/lib",
+        "start.sh",
+        "config/mime.types",
+        "config/toolchain.lock",
+        "config/toolchain-provenance.env",
+    ),
+)
+if actual != expected:
+    raise SystemExit(f"shell/Python package closure mismatch: {actual} != {expected}")
+PY
 record_authority_receipt offline-nginx "$identity" "$closure"
 verify_authority_paths offline-nginx "$identity" "$GAME" \
     bin/nginx lib pgsql/lib start.sh config/mime.types config/toolchain.lock config/toolchain-provenance.env \
@@ -72,11 +102,22 @@ printf 'substituted bundled library\n' > "${GAME}/lib/libpcre.dylib"
 expect_reject "substituted bundled library" \
     verify_authority_paths offline-nginx "$identity" "$GAME" \
       bin/nginx lib pgsql/lib start.sh config/mime.types config/toolchain.lock config/toolchain-provenance.env
+printf 'trusted bundled library\n' > "${GAME}/lib/libpcre.dylib"
+rm -f "${GAME}/lib/libpcre-alias.dylib"
+ln -s /etc/passwd "${GAME}/lib/libpcre-alias.dylib"
+expect_reject "escaping bundled-library symlink" \
+    verify_authority_paths offline-nginx "$identity" "$GAME" \
+      bin/nginx lib pgsql/lib start.sh config/mime.types config/toolchain.lock config/toolchain-provenance.env
 
-external_line="$(grep -n '^verify_external_nginx_authority$' "${REPO_ROOT}/offline/scripts/05-package.sh" | tail -1 | cut -d: -f1)"
-runtime_line="$(grep -n '^configure_runtime_env$' "${REPO_ROOT}/offline/scripts/05-package.sh" | tail -1 | cut -d: -f1)"
-if [ -z "$external_line" ] || [ -z "$runtime_line" ] || [ "$external_line" -ge "$runtime_line" ]; then
-    fail "package configures host library paths before checking external release authority"
+if grep -Eq 'ARKHAM_(RELEASE_AUTHORITY|REQUIRE_EXTERNAL_AUTHORITY)' "${REPO_ROOT}/offline/scripts/05-package.sh"; then
+    fail "generated package launcher accepts CI authority capabilities"
+fi
+grep -Fq 'nginx_runtime_closure_sha256' "${REPO_ROOT}/offline/scripts/05-package.sh" \
+    || fail "generated package launcher does not bind its nginx/library closure before loading"
+grep -Fq 'verify_nginx_runtime_closure' "${REPO_ROOT}/offline/scripts/05-package.sh" \
+    || fail "generated package launcher does not verify its nginx/library closure"
+if grep -Eq 'ARKHAM_(RELEASE_AUTHORITY|REQUIRE_EXTERNAL_AUTHORITY)' "${REPO_ROOT}/scripts/validate-catalog-serving.py"; then
+    fail "serving validator exposes CI authority capabilities to package nginx"
 fi
 grep -Fq 'attest-package-closure.sh' "${REPO_ROOT}/.github/workflows/build-offline.yml" \
     || fail "workflow does not attest the completed package outside 05-package.sh"

@@ -22,10 +22,10 @@ archive	ghc	macos-arm64	ghc-9.14.1-aarch64-apple-darwin.tar.xz	exact	841591f1520
 archive	ghc	macos-x86_64	ghc-9.14.1-x86_64-apple-darwin.tar.xz	exact	404b2ceacb2b2092a2f1d9e8f551a72d0bf34d897c0c7baf3e79ffec837a0b72	9.14.1
 archive	ghc	linux-x86_64	ghc-9.14.1-x86_64-ubuntu20_04-linux.tar.xz	exact	b75c349730142b345db459423456fe1e5380ae34211ec49ee86182b8908d6423	9.14.1
 archive	ghc	linux-arm64	ghc-9.14.1-aarch64-deb10-linux.tar.xz	exact	526c352cceddbf6c580e17ade7e782e3b21b4182d328b2d454c9f13ca7c08992	9.14.1
-binary	ghc	macos-arm64	ghc/9.14.1/bin/ghc	derived	046a4de79c73e0ecc10a08284859a9166d012c4b39d5ea656ed1c29d0e00275c	archive-extract-v1
-binary	ghc	macos-x86_64	ghc/9.14.1/bin/ghc	derived	97521ab6aac61fcbefd0604f70f17a76635b12943d55eb78b9e56b6377b99a03	archive-extract-v1
-binary	ghc	linux-x86_64	ghc/9.14.1/bin/ghc	derived	8089ca4aab606a1aaddc9c9c3a7543af8a7af0c02aaaa94958420acfdd388e92	archive-extract-v1
-binary	ghc	linux-arm64	ghc/9.14.1/bin/ghc	derived	04ec11d9d726ecc96e67a3554da822ae39d48d1e978fc8c00b7ef34f0420757b	archive-extract-v1
+binary	ghc	macos-arm64	ghc/9.14.1/bin/ghc-9.14.1	derived	80e9ee5570df94490a990f2cf53bb0f5f6931473eb26d69954c49a3463a6fa85	archive-extract-v3-preserve-links-full-tree
+binary	ghc	macos-x86_64	ghc/9.14.1/bin/ghc-9.14.1	derived	bcfca5238780981b012b13a36adeb712ac31fab0de9e517c9699b61af77c7b1f	archive-extract-v3-preserve-links-full-tree
+binary	ghc	linux-x86_64	ghc/9.14.1/bin/ghc-9.14.1	derived	fbf406736de8efcc5050d72dc5621351b579aebaa63463454766ccecedfa41d4	archive-extract-v3-preserve-links-full-tree
+binary	ghc	linux-arm64	ghc/9.14.1/bin/ghc-9.14.1	derived	af5fa029df866dcf8233ab95caeaad196bf4b4372c9b7211a7520c168c13fc91	archive-extract-v3-preserve-links-full-tree
 
 archive	stack	macos-arm64	stack-3.7.1-osx-aarch64.tar.gz	exact	9943acbcc791f474d8c68493082308509ec8a8f4603039cf0f7639293d13a233	3.7.1
 archive	stack	macos-x86_64	stack-3.7.1-osx-x86_64.tar.gz	exact	08cff579295b3cfd3f1c6bf4948d243c3a38eebff151554b3ada2d381e574486	3.7.1

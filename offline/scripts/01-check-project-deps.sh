@@ -77,7 +77,9 @@ install_ghc_and_stack() {
     [ -z "$extracted" ] && die "GHC directory not found after extracting the bindist"
 
     ensure_dir "${GHCUP_DIR}/ghc/${GHC_VERSION}"
-    cp -r "${extracted}/"* "${GHCUP_DIR}/ghc/${GHC_VERSION}/"
+    # `cp -R` preserves the bindist's public `ghc -> ghc-${GHC_VERSION}`
+    # symlink; macOS's legacy lowercase `-r` may dereference it.
+    cp -R "${extracted}/"* "${GHCUP_DIR}/ghc/${GHC_VERSION}/"
     install_log "GHC ${GHC_VERSION}" "${GHCUP_DIR}/ghc/${GHC_VERSION}/"
 
     # Create symlinks under bin/
@@ -105,8 +107,12 @@ install_ghc_and_stack() {
 
     generate_ghcup_env
     local ghc_closure stack_closure
-    ghc_closure="$(write_install_manifest ghc "$GHCUP_DIR" "$ghc_identity" "ghc/${GHC_VERSION}/bin/ghc" \
-        "bin" "ghc/${GHC_VERSION}/bin" "env")"
+    [ -f "${GHCUP_DIR}/${GHC_RESOLVED_BINARY}" ] \
+        && [ ! -L "${GHCUP_DIR}/${GHC_RESOLVED_BINARY}" ] \
+        && [ -x "${GHCUP_DIR}/${GHC_RESOLVED_BINARY}" ] \
+        || die "Resolved GHC executable is missing or unsafe: ${GHCUP_DIR}/${GHC_RESOLVED_BINARY}"
+    ghc_closure="$(write_install_manifest ghc "$GHCUP_DIR" "$ghc_identity" "$GHC_RESOLVED_BINARY" \
+        "ghc/${GHC_VERSION}" "bin" "env")"
     stack_closure="$(write_install_manifest stack "$GHCUP_DIR" "$stk_identity" "bin/stack" "bin/stack")"
     record_authority_receipt ghc "$ghc_identity" "$ghc_closure"
     record_authority_receipt stack "$stk_identity" "$stack_closure"
@@ -479,6 +485,7 @@ main() {
     echo "  npm:         $(npm --version 2>&1 || echo 'N/A')"
     echo "  PostgreSQL:  $(${DEPS_DIR}/postgres/bin/postgres --version 2>&1 || echo 'N/A')"
     echo ""
+    publish_toolchain_authority_receipt
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then

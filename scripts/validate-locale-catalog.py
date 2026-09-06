@@ -1011,10 +1011,12 @@ def validate_deployment_wiring(manifest: dict) -> None:
         "the offline package lacks a post-package external nginx closure attester",
     )
     offline_workflow = (ROOT / ".github" / "workflows" / "build-offline.yml").read_text(encoding="utf-8")
+    package_serving_gate = (ROOT / "offline" / "scripts" / "06-validate-package-serving.sh").read_text(encoding="utf-8")
     require(
         "offline/_deps/frontend/" not in offline_workflow
         and "offline/_deps/.toolchain-authority/" in offline_workflow
-        and "offline-authority-token" in offline_workflow,
+        and "run-authorized-stage.sh scripts/06-validate-package-serving.sh" in offline_workflow
+        and "offline-authority-token" in package_serving_gate,
         "the offline workflow restores rendered assets or omits external closure authority wiring",
     )
 

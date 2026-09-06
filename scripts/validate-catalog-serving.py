@@ -35,16 +35,28 @@ ROOT = Path(os.environ.get("ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT", Path(__file_
 PRODUCTION_CONFIG = "/opt/arkham/src/backend/prod.nginxconf"
 PRODUCTION_STATIC_ROOT = "/opt/arkham/src/frontend/dist"
 REQUEST_TIMEOUT = 20
-PORT: int | None = None
+PORT = None
 
 IMMUTABLE = "public, max-age=31536000, immutable"
 REVALIDATE = "public, max-age=0, must-revalidate"
 NO_STORE = "no-store"
+AUTHORITY_CAPABILITY_ENV = (
+    "ARKHAM_TOOLCHAIN_RECEIPT_FILE",
+    "ARKHAM_TOOLCHAIN_RECEIPT_TOKEN",
+    "GITHUB_ENV",
+)
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"locale-catalog serving: {message}")
+
+
+def discard_authority_capabilities() -> None:
+    """Never let a spawned package process inherit CI receipt capabilities."""
+
+    for variable in AUTHORITY_CAPABILITY_ENV:
+        os.environ.pop(variable, None)
 
 
 def run(command: list[str], *, capture_output: bool = True, **kwargs) -> subprocess.CompletedProcess:
@@ -79,11 +91,11 @@ def tool(name: str) -> str:
     raise AssertionError("unreachable")
 
 
-def parse_args() -> tuple[str | None, Path | None, Path | None, str | None, bool]:
-    production_image: str | None = None
-    offline_package: Path | None = None
-    offline_authority: Path | None = None
-    offline_authority_token: str | None = None
+def parse_args():
+    production_image = None
+    offline_package = None
+    offline_authority = None
+    offline_authority_token = None
     self_test = False
     arguments = iter(sys.argv[1:])
     for argument in arguments:
@@ -163,7 +175,7 @@ def release_owned_work(work: Path, token: str) -> None:
     shutil.rmtree(work)
 
 
-def request(path: str, *, method: str = "GET", headers: dict[str, str] | None = None):
+def request(path: str, *, method: str = "GET", headers=None):
     require(PORT is not None, "nginx request attempted outside an owned server session")
     url = f"http://127.0.0.1:{PORT}{path}"
     message = urllib.request.Request(url, method=method, headers=headers or {})
@@ -239,7 +251,7 @@ class ProductionImageNginx:
         self.image = image
         self.work = work
         self.container_name = f"arkham-production-catalog-{token}"
-        self.container: str | None = None
+        self.container = None
 
     def diagnostics(self) -> str:
         if self.container is None:
@@ -358,19 +370,30 @@ PACKAGE_NGINX_CLOSURE_PATHS = (
 
 def closure_records(root: Path, selected: tuple[str, ...]) -> list[str]:
     require(root.is_dir() and not root.is_symlink(), f"authority root is missing or unsafe: {root}")
-    records: list[tuple[str, str]] = []
+    root = root.resolve()
+    records: dict[str, str] = {}
 
     def collect(path: Path, relative: str) -> None:
+        if relative in records:
+            return
         mode = path.lstat().st_mode
         if stat.S_ISLNK(mode):
-            records.append((relative, f"link\t{relative}\t{path.readlink()}"))
+            try:
+                resolved = path.resolve(strict=True)
+            except (OSError, RuntimeError) as error:
+                require(False, f"authority closure has an unsafe symlink {path}: {error}")
+            require(path_inside(resolved, root), f"authority closure symlink escapes its root: {path}")
+            records[relative] = f"link\t{relative}\t{path.readlink()}"
+            collect(resolved, resolved.relative_to(root).as_posix())
             return
         if stat.S_ISREG(mode):
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
             permissions = format(stat.S_IMODE(mode), "o")
-            records.append((relative, f"file\t{relative}\t{permissions}\t{digest}"))
+            records[relative] = f"file\t{relative}\t{permissions}\t{digest}"
             return
         if stat.S_ISDIR(mode):
+            permissions = format(stat.S_IMODE(mode), "o")
+            records[relative] = f"dir\t{relative}\t{permissions}"
             for child in sorted(path.iterdir(), key=lambda item: item.name):
                 child_relative = f"{relative}/{child.name}" if relative else child.name
                 collect(child, child_relative)
@@ -388,7 +411,7 @@ def closure_records(root: Path, selected: tuple[str, ...]) -> list[str]:
         path = root / relative
         require(path.exists() or path.is_symlink(), f"required authority closure path is missing: {path}")
         collect(path, relative)
-    return [record for _, record in sorted(records)]
+    return [record for _, record in sorted(records.items())]
 
 
 def closure_digest(root: Path, selected: tuple[str, ...]) -> str:
@@ -397,29 +420,75 @@ def closure_digest(root: Path, selected: tuple[str, ...]) -> str:
     return hashlib.sha256(("\n".join(records) + "\n").encode("utf-8")).hexdigest()
 
 
+def frontend_closure_digest(root: Path) -> str:
+    """The shipped document root must contain only ordinary directories/files.
+    Symlinks could redirect a static server after the package is attested."""
+
+    require(root.is_dir() and not root.is_symlink(), f"frontend root is missing or unsafe: {root}")
+    records: list[tuple[str, str]] = []
+
+    def collect(path: Path, relative: str) -> None:
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            require(False, f"shipped frontend contains a forbidden symlink: {relative}")
+        if stat.S_ISREG(mode):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            permissions = format(stat.S_IMODE(mode), "o")
+            records.append((relative, f"file\t{relative}\t{permissions}\t{digest}"))
+            return
+        if stat.S_ISDIR(mode):
+            permissions = format(stat.S_IMODE(mode), "o")
+            records.append((relative, f"dir\t{relative}\t{permissions}"))
+            for child in sorted(path.iterdir(), key=lambda item: item.name):
+                child_relative = f"{relative}/{child.name}" if relative else child.name
+                collect(child, child_relative)
+            return
+        require(False, f"shipped frontend contains an unsupported file type: {relative}")
+
+    for child in sorted(root.iterdir(), key=lambda item: item.name):
+        collect(child, child.name)
+    require(records, f"frontend root is empty: {root}")
+    return hashlib.sha256(
+        ("\n".join(record for _, record in sorted(records)) + "\n").encode("utf-8")
+    ).hexdigest()
+
+
 def authority_record(authority: Path, token: str, component: str) -> tuple[str, str, str]:
     require(
         authority.is_file() and not authority.is_symlink(),
         f"external release authority is missing or unsafe: {authority}",
     )
-    token_matches: list[str] = []
+    token_digest_matches: list[str] = []
     schema_matches: list[str] = []
     record_matches: list[list[str]] = []
     for line in authority.read_text(encoding="utf-8").splitlines():
         fields = line.split("\t")
-        if fields[:1] == ["token"] and len(fields) == 2:
-            token_matches.append(fields[1])
+        if fields[:1] == ["token_sha256"] and len(fields) == 2:
+            token_digest_matches.append(fields[1])
         elif fields[:1] == ["schema"] and len(fields) == 2:
             schema_matches.append(fields[1])
-        elif fields[:2] == ["record", component] and len(fields) == 5:
+        elif fields[:2] == ["record", component] and len(fields) == 6:
             record_matches.append(fields)
-    require(schema_matches == ["1"], "external release authority has an unsupported schema")
-    require(token_matches == [token], "external release authority token does not match this invocation")
-    require(len(record_matches) == 1, f"external release authority has no unique {component} record")
-    _, _, lock_sha256, identity, closure_sha256 = record_matches[0]
+    require(schema_matches == ["2"], "external release authority has an unsupported schema")
     require(
-        valid_sha256(lock_sha256) and valid_sha256(identity) and valid_sha256(closure_sha256),
+        token_digest_matches == [hashlib.sha256(token.encode("ascii")).hexdigest()],
+        "external release authority token does not match this invocation",
+    )
+    require(len(record_matches) == 1, f"external release authority has no unique {component} record")
+    _, _, lock_sha256, identity, closure_sha256, authenticator = record_matches[0]
+    require(
+        valid_sha256(lock_sha256)
+        and valid_sha256(identity)
+        and valid_sha256(closure_sha256)
+        and valid_sha256(authenticator),
         f"external release authority has malformed {component} digests",
+    )
+    expected_authenticator = hashlib.sha256(
+        f"record\t{component}\t{lock_sha256}\t{identity}\t{closure_sha256}\t{token}".encode("ascii")
+    ).hexdigest()
+    require(
+        authenticator == expected_authenticator,
+        f"external release authority has an unauthenticated {component} record",
     )
     return lock_sha256, identity, closure_sha256
 
@@ -545,6 +614,7 @@ def verify_offline_provenance(package: Path, authority: Path, token: str) -> Pat
     source_sha256 = provenance_value(provenance, "nginx_source_sha256")
     build_identity = provenance_value(provenance, "nginx_build_identity")
     binary_sha256 = provenance_value(provenance, "nginx_binary_sha256")
+    runtime_closure_sha256 = provenance_value(provenance, "nginx_runtime_closure_sha256")
     version = provenance_value(provenance, "nginx_version")
     required_option = provenance_value(provenance, "nginx_required_configure_option")
 
@@ -552,6 +622,7 @@ def verify_offline_provenance(package: Path, authority: Path, token: str) -> Pat
         ("nginx source SHA-256", source_sha256),
         ("nginx build identity", build_identity),
         ("nginx binary SHA-256", binary_sha256),
+        ("nginx runtime closure SHA-256", runtime_closure_sha256),
         ("toolchain lock SHA-256", provenance_value(provenance, "toolchain_lock_sha256")),
     ):
         require(valid_sha256(value), f"offline provenance has an invalid {label}")
@@ -591,6 +662,14 @@ def verify_offline_provenance(package: Path, authority: Path, token: str) -> Pat
         and authority_closure == closure_digest(game, PACKAGE_NGINX_CLOSURE_PATHS),
         "offline nginx executable/provenance/library closure differs from the external release authority",
     )
+    frontend_lock, _frontend_identity, frontend_closure = authority_record(
+        authority, token, "offline-frontend"
+    )
+    require(
+        frontend_lock == hashlib.sha256(packaged_lock.read_bytes()).hexdigest()
+        and frontend_closure == frontend_closure_digest(game / "frontend" / "dist"),
+        "final packaged frontend tree differs from its external authority",
+    )
     verify_packaged_nginx_closure(game, platform)
     return game
 
@@ -605,7 +684,7 @@ class OfflinePackageNginx:
         self.work = work
         self.game = verify_offline_provenance(package, authority, token)
         self.start_script = self.game / "start.sh"
-        self.process: subprocess.Popen | None = None
+        self.process = None
 
     def command(self, action: str) -> list[str]:
         home = self.work / "offline-package-home"
@@ -618,9 +697,6 @@ class OfflinePackageNginx:
             f"ARKHAM_PORT={PORT}",
             "ARKHAM_API_PORT=39001",
             "ARKHAM_PG_PORT=39002",
-            "ARKHAM_REQUIRE_EXTERNAL_AUTHORITY=1",
-            f"ARKHAM_RELEASE_AUTHORITY_FILE={self.authority}",
-            f"ARKHAM_RELEASE_AUTHORITY_TOKEN={self.token}",
             tool("bash"),
             str(self.start_script),
             action,
@@ -702,7 +778,7 @@ def assert_headers(label: str, status: int, headers: Headers, *, expect_status: 
         )
 
 
-NEGOTIATION_CASES: tuple[tuple[str, str | None], ...] = (
+NEGOTIATION_CASES = (
     ("br", "br"),
     ("br;q=1", "br"),
     ("br;q=1.000", "br"),
@@ -903,6 +979,13 @@ def run_cleanup_self_tests() -> None:
 
     try:
         PORT = 39991
+        os.environ["ARKHAM_TOOLCHAIN_RECEIPT_FILE"] = str(work / "receipt.tsv")
+        os.environ["ARKHAM_TOOLCHAIN_RECEIPT_TOKEN"] = "a" * 64
+        discard_authority_capabilities()
+        require(
+            all(variable not in os.environ for variable in AUTHORITY_CAPABILITY_ENV),
+            "serving validator retained an authority capability in its child environment",
+        )
         run = fake_run
         tool = fake_tool
         verify_production_runtime_authority = lambda *_: None
@@ -952,8 +1035,13 @@ def run_cleanup_self_tests() -> None:
         verify_offline_provenance = lambda *_: game
         subprocess.Popen = FakePopen
         run = lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", "")
+        offline = OfflinePackageNginx(package, authority, "a" * 64, work)
+        require(
+            all("TOOLCHAIN_RECEIPT" not in value for value in offline.command("--validate-nginx-config")),
+            "offline package command exposes an authority capability",
+        )
         try:
-            with OfflinePackageNginx(package, authority, "a" * 64, work):
+            with offline:
                 pass
         except SystemExit:
             pass
@@ -977,6 +1065,7 @@ def run_cleanup_self_tests() -> None:
 def main() -> None:
     global PORT
     production_image, offline_package, offline_authority, offline_authority_token, self_test = parse_args()
+    discard_authority_capabilities()
     if self_test:
         run_cleanup_self_tests()
         print("locale-catalog serving: context-manager cleanup self-tests passed")

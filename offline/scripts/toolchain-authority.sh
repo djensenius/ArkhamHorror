@@ -2,6 +2,10 @@
 # Shared offline toolchain identities. Source only after utils.sh and init_paths.
 
 GHC_VERSION="9.14.1"
+GHC_RESOLVED_BINARY="ghc/${GHC_VERSION}/bin/ghc-${GHC_VERSION}"
+GHC_PUBLIC_BINARY="bin/ghc"
+GHC_PUBLIC_TARGET="../ghc/${GHC_VERSION}/bin/ghc"
+GHC_INTERNAL_TARGET="ghc-${GHC_VERSION}"
 STACK_VERSION="3.7.1"
 NODE_VERSION="26.7.0"
 PG_VERSION="14.15"
@@ -13,7 +17,7 @@ ghc_build_identity() {
     local archive="$1" source_sha256
     source_sha256="$(toolchain_archive_sha256 ghc "$PLATFORM" "$archive")"
     toolchain_build_identity ghc "$PLATFORM" "$GHC_VERSION" "$source_sha256" \
-        "archive-extract-v1:ghc/${GHC_VERSION}/bin/ghc"
+        "archive-extract-v3-preserve-links:${GHC_RESOLVED_BINARY};${GHC_PUBLIC_BINARY}->${GHC_PUBLIC_TARGET};ghc/${GHC_VERSION}/bin/ghc->${GHC_INTERNAL_TARGET}"
 }
 
 stack_build_identity() {
@@ -76,10 +80,12 @@ verify_ghc_and_stack_installation() {
     local ghc_identity stack_identity
     ghc_identity="$(ghc_build_identity "$ghc_archive")"
     stack_identity="$(stack_build_identity "$stack_archive")"
-    verify_install_manifest ghc "$GHCUP_DIR" "$ghc_identity" "ghc/${GHC_VERSION}/bin/ghc" \
-        "bin" "ghc/${GHC_VERSION}/bin" "env"
+    verify_install_manifest ghc "$GHCUP_DIR" "$ghc_identity" "$GHC_RESOLVED_BINARY" \
+        "ghc/${GHC_VERSION}" "bin" "env"
+    verify_internal_symlink "$GHCUP_DIR" "$GHC_PUBLIC_BINARY" "$GHC_PUBLIC_TARGET"
+    verify_internal_symlink "$GHCUP_DIR" "ghc/${GHC_VERSION}/bin/ghc" "$GHC_INTERNAL_TARGET"
     verify_install_manifest stack "$GHCUP_DIR" "$stack_identity" "bin/stack" "bin/stack"
-    verify_binary_version_contains "GHC" "${GHCUP_DIR}/ghc/${GHC_VERSION}/bin/ghc" \
+    verify_binary_version_contains "GHC" "${GHCUP_DIR}/${GHC_RESOLVED_BINARY}" \
         "--numeric-version" "$GHC_VERSION"
     verify_binary_version_contains "Stack" "${GHCUP_DIR}/bin/stack" \
         "--numeric-version" "$STACK_VERSION"

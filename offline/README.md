@@ -94,9 +94,15 @@ because they are non-empty:
 - archive bytes are SHA-256 checked on every hit, after download, and before
   extraction/build;
 - each invocation creates an unguessable receipt outside every restored cache.
+  Its path token is independent from its record-authentication secret; the
+  secret is neither persisted in the receipt nor handed to downloaded tools.
   A restored installation is rebuilt from verified source/archive unless its
-  complete file/link/mode closure matches that receipt; cache-side manifests
-  are diagnostic observations, never a root of trust;
+  complete file/link/mode closure matches that authenticated receipt;
+  cache-side manifests are diagnostic observations, never a root of trust;
+- GHC uses the bindist's real `bin/ghc -> ghc-9.14.1` layout. The resolved
+  regular executable, both public link chains, and the full
+  `ghc/9.14.1` compilation tree (settings, package DBs, libraries, helpers,
+  and data) are authenticated before compiler use;
 - Node's installed executable is checked against its committed executable
   SHA-256 before it can run, and the full Node/npm tree is covered so an
   imported npm CLI file cannot be substituted behind an unchanged version;
@@ -116,10 +122,11 @@ the archive cache authority path.
 
 The package copies this lock alongside
 `game/config/toolchain-provenance.env` after any binary relocation/signing.
-Release CI records a separate invocation authority for the Nginx binary,
-generated-config source, and complete bundled-library closure, then starts
-the package with an empty host environment. The package-local provenance is
-only a consistency record; it is never accepted as authority by itself.
+Release CI records separate invocation authority for the Nginx binary,
+generated-config source, complete bundled-library closure, and final copied
+frontend document root, then starts the exact package with an empty host
+environment. The package-local provenance is only a consistency record; it is
+never accepted as authority by itself.
 Published releases include a detached `.tar.gz.sha256` checksum.
 
 ## Directory Layout
@@ -131,6 +138,7 @@ offline/
 ├── toolchain.lock              # Per-platform archive/binary authority
 ├── scripts/
 │   ├── utils.sh
+│   ├── authority-tree.py
 │   ├── toolchain-authority.sh
 │   ├── docker-toolchain.sh
 │   ├── 01-check-project-deps.sh
@@ -139,10 +147,17 @@ offline/
 │   ├── 04-build-backend.sh
 │   ├── 05-package.sh
 │   ├── attest-package-closure.sh
+│   ├── 06-validate-package-serving.sh
+│   ├── package-lifecycle.sh
+│   ├── update-runtime.sh
 │   ├── test-toolchain-authority.sh
 │   ├── test-docker-toolchain-authority.sh
 │   ├── test-frontend-output-authority.sh
-│   └── test-package-authority.sh
+│   ├── test-package-authority.sh
+│   ├── test-package-attestation.sh
+│   ├── test-package-lifecycle.sh
+│   ├── test-receipt-capability-isolation.sh
+│   └── test-updater-authority.sh
 ├── _tmp/                        # Download cache (gitignored)
 ├── _session/                    # Invocation-only authority receipts (gitignored, never cached)
 ├── _deps/                       # Toolchains and intermediate artifacts (gitignored)
@@ -184,6 +199,18 @@ bash start.sh --stop
 ```
 
 On first run, `initdb` is executed automatically and `setup.sql` is imported. Later runs reuse existing data. The browser opens automatically after successful startup.
+
+### Updating a Package
+
+Place the matching `ArkhamHorror-{platform}-vYYYYMMDD.N.tar.gz` release beside
+the installed package. Run the top-level `Update-ArkhamHorror.sh` (or the
+platform shortcut) and paste the SHA-256 from the separately published
+`.tar.gz.sha256` release asset; the updater deliberately does not trust a
+co-located checksum file. It selects only the current OS/architecture archive,
+verifies that external checksum before extraction, rejects links, special
+files, traversal, duplicate members, and file/directory collisions, and
+extracts only a regular executable `game/start.sh` tree into an
+invocation-owned work directory.
 
 #### Windows
 

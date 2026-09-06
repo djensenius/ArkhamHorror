@@ -86,7 +86,7 @@ jobs:
             offline/_deps/node/
             offline/_deps/postgres/
             offline/_deps/nginx/
-          key: arkham-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('offline/toolchain.lock', 'offline/scripts/utils.sh', 'offline/scripts/toolchain-authority.sh', 'offline/scripts/01-check-project-deps.sh') }}
+          key: arkham-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('offline/toolchain.lock', 'offline/scripts/utils.sh', 'offline/scripts/authority-tree.py', 'offline/scripts/toolchain-authority.sh', 'offline/scripts/01-check-project-deps.sh') }}
 
       - name: Restore backend build cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -104,7 +104,7 @@ jobs:
         with:
           path: |
             offline/_deps/node_modules/
-          key: arkham-frontend-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json', 'offline/toolchain.lock', 'offline/scripts/utils.sh', 'offline/scripts/toolchain-authority.sh', 'offline/scripts/03-build-frontend.sh') }}
+          key: arkham-frontend-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json', 'offline/toolchain.lock', 'offline/scripts/utils.sh', 'offline/scripts/authority-tree.py', 'offline/scripts/toolchain-authority.sh', 'offline/scripts/03-build-frontend.sh') }}
 
       - name: Make build scripts executable
         run: chmod +x offline/build_all.sh offline/scripts/*.sh
@@ -116,39 +116,46 @@ jobs:
           bash scripts/test-docker-toolchain-authority.sh
           bash scripts/test-frontend-output-authority.sh
           bash scripts/test-package-authority.sh
+          bash scripts/test-package-attestation.sh
+          bash scripts/test-package-lifecycle.sh
+          bash scripts/test-receipt-capability-isolation.sh
+          bash scripts/test-updater-authority.sh
           python3 ../scripts/validate-catalog-serving.py --self-test
 
       - name: '[1/5] Install project dependencies (GHC / Stack / Node / PG / Nginx)'
         working-directory: offline
-        run: bash scripts/01-check-project-deps.sh
+        shell: /bin/sh -e {0}
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/01-check-project-deps.sh
 
       - name: '[2/5] Verify dependencies'
         working-directory: offline
-        run: bash scripts/02-verify-deps.sh
+        shell: /bin/sh -e {0}
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/02-verify-deps.sh
 
       - name: '[3/5] Build frontend (Vite)'
         working-directory: offline
-        run: bash scripts/03-build-frontend.sh
+        shell: /bin/sh -e {0}
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/03-build-frontend.sh
 
       - name: '[4/5] Build backend (Haskell / Stack)'
         working-directory: offline
-        run: bash scripts/04-build-backend.sh
+        shell: /bin/sh -e {0}
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/04-build-backend.sh
 
       - name: '[5/5] Package distribution'
         working-directory: offline
-        run: bash scripts/05-package.sh
+        shell: /bin/sh -e {0}
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/05-package.sh
 
       - name: Attest the completed packaged nginx closure
         working-directory: offline
-        run: bash scripts/attest-package-closure.sh "$PWD/_dist/${{ matrix.artifact }}"
+        shell: /bin/sh -e {0}
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/attest-package-closure.sh "$PWD/_dist/${{ matrix.artifact }}"
 
       - name: Verify the exact packaged nginx binary, config, libraries, and catalog
         working-directory: offline
-        run: |
-          python3 ../scripts/validate-catalog-serving.py \
-            --offline-package "$PWD/_dist/${{ matrix.artifact }}" \
-            --offline-authority "${ARKHAM_TOOLCHAIN_RECEIPT_FILE:?missing invocation authority receipt}" \
-            --offline-authority-token "${ARKHAM_TOOLCHAIN_RECEIPT_TOKEN:?missing invocation authority token}"
+        shell: /bin/sh -e {0}
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/06-validate-package-serving.sh "$PWD/_dist/${{ matrix.artifact }}"
 
       - name: Repack distribution
         shell: bash

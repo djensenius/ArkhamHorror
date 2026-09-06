@@ -223,8 +223,9 @@ SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
         "subprocess.run": CALL,
     },
     "scripts/validate-catalog-serving.py": {
+        "os.environ": frozenset({USE_VALUE, USE_ASSIGN}),
         "os.environ.get": CALL,
-        "os.environ.get": CALL,
+        "os.environ.pop": CALL,
         "shutil.copyfile": CALL,
         "shutil.rmtree": CALL,
         "subprocess.CompletedProcess": CALL_VALUE,
