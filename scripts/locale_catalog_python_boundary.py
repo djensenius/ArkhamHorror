@@ -287,6 +287,7 @@ SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
         # Structured workflow parsing for the CI privilege policy check: the
         # only YAML entry point that cannot construct arbitrary objects.
         "yaml.safe_load": CALL_RESULT,
+        "yaml.YAMLError": VALUE,
     },
     "scripts/validate-catalog-serving.py": {
         "os.environ.get": CALL,

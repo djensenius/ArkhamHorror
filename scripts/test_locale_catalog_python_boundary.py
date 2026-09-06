@@ -32,6 +32,7 @@ canonical paths byte for byte at the end.
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import csv
 import hashlib
@@ -39,9 +40,11 @@ import json
 import os
 import re
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import time
+import tomllib
 import uuid
 
 import yaml
@@ -2348,65 +2351,222 @@ def node_text(value: object) -> str:
     return "" if value is None else str(value)
 
 
-def local_action_text(uses: str) -> str:
-    """The body of a local composite action, so its steps are inspected too."""
-    if not uses.startswith("./"):
-        return ""
-    base = ROOT / uses[2:]
-    for candidate in (base, base / "action.yml", base / "action.yaml"):
+def containment_root(workflow_directory: Path) -> Path:
+    """The root a local `uses:` is resolved against, and may not escape.
+
+    Real workflows live in this repository; the synthetic fixtures live in an
+    owned scratch tree shaped the same way (`<root>/.github/workflows`).
+    Containment is checked against whichever root the document belongs to, so a
+    fixture cannot reach outside its own tree either.
+    """
+    resolved = workflow_directory.resolve()
+    if resolved == WORKFLOW_DIR.resolve():
+        return ROOT.resolve()
+    # A synthetic fixture tree is shaped `<root>/.github/workflows`, so its own
+    # root is two levels up -- including when it lives inside an owned scratch
+    # directory under the repository.
+    return resolved.parent.parent
+
+
+def resolve_local_reference(uses: str, root: Path) -> Path:
+    """The file a local `uses:` names, refusing anything outside the repository.
+
+    A local reference may be a reusable workflow file or an action directory
+    holding `action.yml`/`action.yaml`. Both are resolved canonically and
+    required to stay inside the repository, so `./../../elsewhere` cannot pull
+    an unreviewed file into the traversal.
+    """
+    root = root.resolve()
+    target = (root / uses[2:]).resolve() if uses.startswith("./") else (root / uses).resolve()
+    require(
+        target == root or root in target.parents,
+        f"local reference {uses!r} escapes the repository ({target})",
+    )
+    for candidate in (target, target / "action.yml", target / "action.yaml"):
         if candidate.is_file():
-            return candidate.read_text(encoding="utf-8")
-    return ""
+            return candidate
+    raise ProbeFailure(
+        f"locale-catalog python boundary: local reference {uses!r} names no file in the repository"
+    )
 
 
-def job_is_governed(job: object, documents: dict[str, object]) -> bool:
-    if not isinstance(job, dict):
+def local_uses_targets(document: object) -> list[str]:
+    """Every local `uses:` in a workflow, job or composite action document."""
+    targets: list[str] = []
+    if isinstance(document, dict):
+        for key, value in document.items():
+            if key == "uses" and isinstance(value, str) and value.startswith("./"):
+                targets.append(value)
+            else:
+                targets.extend(local_uses_targets(value))
+    elif isinstance(document, list):
+        for item in document:
+            targets.extend(local_uses_targets(item))
+    return targets
+
+
+def reaches_governed_work(path: Path, root: Path, visited: set[Path] | None = None) -> bool:
+    """Whether this workflow or action reaches governed work, at any depth.
+
+    Reachability has to follow local `uses:` recursively -- a job that calls a
+    reusable workflow that calls a composite action that runs the wrapper is
+    still a job that runs governed work -- and it has to terminate on a cycle.
+    """
+    visited = set() if visited is None else visited
+    resolved = path.resolve()
+    if resolved in visited:
         return False
-    reusable = job.get("uses")
-    if isinstance(reusable, str):
-        if reusable.startswith("./"):
-            referenced = ROOT / reusable[2:]
-            if referenced.is_file():
-                text = referenced.read_text(encoding="utf-8")
-                if any(marker in text for marker in GOVERNED_RUN_MARKERS):
-                    return True
-        # A remote reusable workflow is out of this repository's control, so it
-        # is treated as governed and must satisfy the same posture.
+    visited.add(resolved)
+    text = resolved.read_text(encoding="utf-8")
+    if any(marker in text for marker in GOVERNED_RUN_MARKERS):
         return True
-    for step in job.get("steps", []) or []:
-        if not isinstance(step, dict):
-            continue
-        run = step.get("run")
-        if isinstance(run, str) and any(marker in run for marker in GOVERNED_RUN_MARKERS):
+    document = yaml.safe_load(text)
+    for uses in local_uses_targets(document):
+        if reaches_governed_work(resolve_local_reference(uses, root), root, visited):
             return True
-        uses = step.get("uses")
-        if isinstance(uses, str):
-            body = local_action_text(uses)
-            if body and any(marker in body for marker in GOVERNED_RUN_MARKERS):
-                return True
     return False
 
 
+def check_step_authority(
+    label: str, step: dict, triggers: set[str], visited: set[Path], root: Path
+) -> int:
+    """Pinning, checkout and publication rules for one step, then recurse."""
+    checked = 1
+    run = step.get("run")
+    if isinstance(run, str) and "pull_request" in triggers:
+        for marker in PUBLISHING_RUN_MARKERS:
+            require(marker not in run, f"{label} publishes with {marker!r} from a pull request")
+    uses = step.get("uses")
+    if uses is None:
+        return checked
+    uses = str(uses)
+    if uses.startswith("./"):
+        target = resolve_local_reference(uses, root)
+        return checked + check_reachable_document(
+            f"{label} -> {uses}", target, triggers, visited, root
+        )
+    require(
+        PINNED_ACTION.match(uses) is not None,
+        f"{label} uses {uses!r}, which is not pinned to a 40-hex commit",
+    )
+    if uses.startswith("actions/checkout@"):
+        with_block = step.get("with") or {}
+        require(
+            with_block.get("persist-credentials") is False,
+            f"{label} checks out with credentials persisted",
+        )
+    if any(uses.startswith(prefix) for prefix in PUBLISHING_ACTION_PREFIXES):
+        require("pull_request" not in triggers, f"{label} publishes an artifact from a pull request")
+    return checked
+
+
+def check_job_authority(
+    label: str,
+    job: dict,
+    triggers: set[str],
+    permissions: object,
+    visited: set[Path],
+    root: Path,
+) -> int:
+    """Secrets, permissions, environment and every step of one governed job."""
+    checked = 1
+    require(
+        job.get("permissions", permissions) == {"contents": "read"},
+        f"{label} widens permissions to {job.get('permissions', permissions)!r}",
+    )
+    require(
+        job.get("secrets") is None,
+        f"{label} passes secrets ({job.get('secrets')!r}) to governed work",
+    )
+    require(
+        job.get("environment") is None,
+        f"{label} runs in a protected environment, which can carry secrets and deployment "
+        "authority",
+    )
+    reusable = job.get("uses")
+    if isinstance(reusable, str):
+        # A job-level `uses:` deserves exactly the scrutiny a step-level one
+        # gets: a local reusable workflow is inspected recursively, a remote one
+        # must name an exact commit.
+        if reusable.startswith("./"):
+            target = resolve_local_reference(reusable, root)
+            return checked + check_reachable_document(
+                f"{label} -> {reusable}", target, triggers, visited, root
+            )
+        require(
+            PINNED_ACTION.match(reusable) is not None,
+            f"{label} calls the reusable workflow {reusable!r}, which is not pinned to a 40-hex "
+            "commit",
+        )
+        return checked
+    for step in job.get("steps", []) or []:
+        if isinstance(step, dict):
+            checked += check_step_authority(label, step, triggers, visited, root)
+    return checked
+
+
+def check_reachable_document(
+    label: str, path: Path, triggers: set[str], visited: set[Path], root: Path
+) -> int:
+    """Apply the authority rules to a reachable local workflow or action."""
+    resolved = path.resolve()
+    if resolved in visited:
+        return 0
+    visited.add(resolved)
+    document = yaml.safe_load(resolved.read_text(encoding="utf-8"))
+    require(isinstance(document, dict), f"{label} is not a mapping")
+    require(
+        SECRET_CONTEXT.search(node_text(document)) is None,
+        f"{label} references a secret context on a governed path",
+    )
+    checked = 1
+    jobs = document.get("jobs")
+    if isinstance(jobs, dict):
+        permissions = document.get("permissions")
+        require(
+            permissions == {"contents": "read"},
+            f"{label} must declare `permissions: contents: read`, got {permissions!r}",
+        )
+        for job_name, job in sorted(jobs.items()):
+            if isinstance(job, dict):
+                checked += check_job_authority(
+                    f"{label}:{job_name}", job, triggers, permissions, visited, root
+                )
+        return checked
+    # A composite action: its steps carry the same rules.
+    runs = document.get("runs")
+    if isinstance(runs, dict):
+        for step in runs.get("steps", []) or []:
+            if isinstance(step, dict):
+                checked += check_step_authority(label, step, triggers, visited, root)
+    return checked
+
+
 def check_ci_privilege(directory: Path) -> int:
-    """Assert least privilege for every workflow job that does governed work.
+    """Assert least privilege for every job that reaches governed work.
 
     Pull-request CI runs unreviewed code by design and nothing here contains
     it; what is asserted is the blast radius. Everything is read from the
-    parsed document, and secret references are matched as *contexts*
+    parsed document, secret references are matched as *contexts*
     (`secrets.NAME`, `secrets['NAME']`, `secrets: inherit`) rather than as the
-    literal text `secrets.`, so an alternate spelling does not slip past.
+    literal text `secrets.`, and reachability follows local `uses:` through
+    reusable workflows and composite actions to any depth, with canonical
+    containment and cycle detection.
     """
     checked = 0
+    root = containment_root(directory)
     documents = load_workflows(directory)
     for name, document in sorted(documents.items()):
         require(isinstance(document, dict), f"{name} is not a mapping")
         jobs = document.get("jobs") or {}
-        governed = {
-            job_name: job
-            for job_name, job in jobs.items()
-            if job_is_governed(job, documents)
-        }
-        if not governed:
+        path = directory / name
+        governed_jobs = {}
+        for job_name, job in jobs.items():
+            if not isinstance(job, dict):
+                continue
+            if job_reaches_governed_work(job, root):
+                governed_jobs[job_name] = job
+        if not governed_jobs:
             continue
         checked += 1
         triggers = workflow_triggers(document)
@@ -2425,55 +2585,34 @@ def check_ci_privilege(directory: Path) -> int:
             SECRET_CONTEXT.search(node_text(document)) is None,
             f"{name} references a secret context in a workflow that does governed work",
         )
-        for job_name, job in sorted(governed.items()):
-            checked += 1
-            require(
-                job.get("permissions", permissions) == {"contents": "read"},
-                f"{name}:{job_name} widens permissions to "
-                f"{job.get('permissions', permissions)!r}",
+        for job_name, job in sorted(governed_jobs.items()):
+            visited: set[Path] = {path.resolve()}
+            checked += check_job_authority(
+                f"{name}:{job_name}", job, triggers, permissions, visited, root
             )
-            require(
-                job.get("secrets") is None,
-                f"{name}:{job_name} passes secrets ({job.get('secrets')!r}) to governed work",
-            )
-            require(
-                job.get("environment") is None,
-                f"{name}:{job_name} runs in a protected environment, which can carry secrets "
-                "and deployment authority",
-            )
-            for step in job.get("steps", []) or []:
-                if not isinstance(step, dict):
-                    continue
-                checked += 1
-                uses = step.get("uses")
-                run = step.get("run")
-                if isinstance(run, str) and "pull_request" in triggers:
-                    for marker in PUBLISHING_RUN_MARKERS:
-                        require(
-                            marker not in run,
-                            f"{name}:{job_name} publishes with {marker!r} from a pull request",
-                        )
-                if uses is None:
-                    continue
-                uses = str(uses)
-                if not uses.startswith("./"):
-                    require(
-                        PINNED_ACTION.match(uses) is not None,
-                        f"{name}:{job_name} uses {uses!r}, which is not pinned to a 40-hex "
-                        "commit",
-                    )
-                if uses.startswith("actions/checkout@"):
-                    with_block = step.get("with") or {}
-                    require(
-                        with_block.get("persist-credentials") is False,
-                        f"{name}:{job_name} checks out with credentials persisted",
-                    )
-                if any(uses.startswith(prefix) for prefix in PUBLISHING_ACTION_PREFIXES):
-                    require(
-                        "pull_request" not in triggers,
-                        f"{name}:{job_name} publishes an artifact from a pull request",
-                    )
     return checked
+
+
+def job_reaches_governed_work(job: dict, root: Path) -> bool:
+    """Governed reachability for one job, through arbitrary local nesting."""
+    reusable = job.get("uses")
+    if isinstance(reusable, str):
+        if reusable.startswith("./"):
+            return reaches_governed_work(resolve_local_reference(reusable, root), root)
+        # A remote reusable workflow is outside this repository's review, so it
+        # is treated as governed and held to the same posture.
+        return True
+    for step in job.get("steps", []) or []:
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run")
+        if isinstance(run, str) and any(marker in run for marker in GOVERNED_RUN_MARKERS):
+            return True
+        uses = step.get("uses")
+        if isinstance(uses, str) and uses.startswith("./"):
+            if reaches_governed_work(resolve_local_reference(uses, root), root):
+                return True
+    return False
 
 
 def test_ci_privilege_policy() -> int:
@@ -2655,6 +2794,299 @@ jobs:
 }
 
 
+# Fixtures whose governed work is only reachable by following local `uses:`
+# through further local `uses:`. Each is a mapping of relative path -> body; the
+# workflow directory is `.github/workflows` inside the fixture tree so `./`
+# references resolve the way they do in the repository.
+NESTED_WORKFLOW_FIXTURES: dict[str, tuple[dict[str, str], bool]] = {
+    "nested local action reaching governed work": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/outer
+""",
+            ".github/actions/outer/action.yml": """
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/inner
+""",
+            ".github/actions/inner/action.yml": """
+runs:
+  using: composite
+  steps:
+    - run: mise run contracts:fixtures
+      shell: bash
+""",
+        },
+        True,
+    ),
+    "nested local action with an unpinned remote step": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/outer
+""",
+            ".github/actions/outer/action.yml": """
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/inner
+""",
+            ".github/actions/inner/action.yml": """
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+    - run: mise run contracts:fixtures
+      shell: bash
+""",
+        },
+        False,
+    ),
+    "reusable workflow reaching a wrapper script": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  inner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: bash offline/scripts/03-build-frontend.sh
+""",
+        },
+        True,
+    ),
+    "reusable workflow that widens permissions": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """
+on:
+  workflow_call:
+permissions:
+  contents: write
+jobs:
+  inner:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mise run contracts:fixtures
+""",
+        },
+        False,
+    ),
+    "reusable workflow hiding a secret context": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: ./.github/workflows/reusable.yml
+""",
+            ".github/workflows/reusable.yml": """
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  inner:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mise run contracts:fixtures
+        env:
+          TOKEN: ${{ secrets.DEPLOY }}
+""",
+        },
+        False,
+    ),
+    "a cycle between two local actions": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1111111111111111111111111111111111111111
+        with:
+          persist-credentials: false
+      - run: mise run contracts:fixtures
+      - uses: ./.github/actions/left
+""",
+            ".github/actions/left/action.yml": """
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/right
+""",
+            ".github/actions/right/action.yml": """
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/left
+""",
+        },
+        True,
+    ),
+    "a local reference escaping the tree": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mise run contracts:fixtures
+      - uses: ./../../elsewhere/action.yml
+""",
+        },
+        False,
+    ),
+    "a local reference to a missing file": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: mise run contracts:fixtures
+      - uses: ./.github/actions/absent
+""",
+        },
+        False,
+    ),
+    "an unpinned remote reusable workflow at job level": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: other/repo/.github/workflows/build.yml@main
+""",
+        },
+        False,
+    ),
+    "a pinned remote reusable workflow at job level": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: other/repo/.github/workflows/build.yml@3333333333333333333333333333333333333333
+""",
+        },
+        True,
+    ),
+    "a short-SHA remote reusable workflow at job level": (
+        {
+            ".github/workflows/governed.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    uses: other/repo/.github/workflows/build.yml@3333333
+""",
+        },
+        False,
+    ),
+}
+
+
+def test_ci_privilege_nested_fixtures(scratch: Path, token: str) -> int:
+    """Reachability and authority must follow local `uses:` to any depth.
+
+    One textual hop is not enough: a job that calls a reusable workflow that
+    calls a composite action that runs the wrapper is still a governed job, and
+    the permissions, secrets, pinning and checkout rules have to reach it.
+    """
+    checked = 0
+    for label, (files, accepted) in sorted(NESTED_WORKFLOW_FIXTURES.items()):
+        tree = scratch / f"nested-workflow-{uuid.uuid4().hex}"
+        try:
+            for relative, body in files.items():
+                path = tree / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body.lstrip("\n"), encoding="utf-8")
+            failed = False
+            examined = 0
+            try:
+                examined = check_ci_privilege(tree / ".github" / "workflows")
+            except ProbeFailure:
+                failed = True
+            if accepted:
+                require(not failed, f"the CI privilege policy rejected the accepted case {label!r}")
+                require(
+                    examined > 0,
+                    f"{label!r} was accepted without being discovered as governed",
+                )
+            else:
+                require(failed, f"the CI privilege policy accepted {label!r}")
+            checked += 1
+        finally:
+            shutil.rmtree(tree, ignore_errors=True)
+    return checked
+
+
 def test_ci_privilege_policy_fixtures(scratch: Path, token: str) -> int:
     """Synthetic workflows the policy must reject, and one it must accept.
 
@@ -2699,32 +3131,43 @@ def test_ci_privilege_policy_fixtures(scratch: Path, token: str) -> int:
 
 GENERATOR_ENTRY_MODULES = ("generate.mjs", "verify-dist.mjs")
 GENERATOR_LAUNCHER_NAME = "generator-launcher.mjs"
-COMMENT_PREFIXES = ("#", "//", "*", chr(34) * 3, chr(39) * 3)
-EXECUTION_TOKENS = ("node", "NODE", "run", "RUN", "subprocess", "exec")
+GENERATOR_DIRECTORY_NAME = "locale-catalog"
+# A caller that names the launcher in the same command, statement or string is
+# starting generation the sanctioned way: there the entry module is an
+# *argument* to the launcher, not a program in its own right.
+LAUNCHER_MARKERS = (GENERATOR_LAUNCHER_NAME, "generator_launcher_argv")
+
+JS_SUFFIXES = (".mjs", ".js", ".cjs")
+SHELL_SUFFIXES = (".sh", ".bash")
+YAML_SUFFIXES = (".yml", ".yaml")
 
 # Where production callers live. The inventory is *discovered* under these
-# roots rather than listed by hand, so a new workflow, script or package
-# command that runs the generator is covered the moment it is added.
+# roots rather than listed by hand, so a new workflow, script, package command
+# or wrapper that starts generation is covered the moment it is added.
 PRODUCTION_ROOTS = (
     ".github/workflows",
     "Dockerfile",
     "frontend/package.json",
+    "frontend/scripts",
     "mise.toml",
     "offline/scripts",
     "scripts",
 )
-# Deliberately excluded: trusted tests and documentation. Frontend tests import
-# generator modules directly and are allowed to; docs describe commands rather
-# than running them.
+# The launcher is the mediator and the digest table is the drift record over
+# the generator modules, so both name the entry modules by design. Nothing else
+# is excluded by path.
 PRODUCTION_EXCLUDED_PATHS = frozenset(
     {
         "frontend/scripts/locale-catalog/generator-launcher.mjs",
-        "offline/scripts/test-frontend-cache-hash.sh",
-        "offline/scripts/test-frontend-cache-hit.sh",
-        "scripts/test_locale_catalog_python_boundary.py",
+        "frontend/scripts/locale-catalog/generator-module-digests.json",
     }
 )
 PRODUCTION_EXCLUDED_SUFFIXES = (".md", ".txt")
+# Trusted tests are deliberately outside the inventory: they may import and run
+# generator modules directly, which is the whole point of a unit test.
+PRODUCTION_TEST_PREFIXES = ("test-", "test_")
+PRODUCTION_TEST_DIRECTORIES = frozenset({"tests", "__tests__"})
+
 # Callers that must be present *and* must reach generation through the
 # launcher. A production path that stops appearing here is a discovery gap, so
 # the inventory is checked against this floor rather than only scanned.
@@ -2744,11 +3187,633 @@ REQUIRED_PRODUCTION_CALLERS: dict[str, str] = {
 }
 
 
-def production_caller_files() -> list[Path]:
+def normalise_reference(token: str) -> str:
+    """Collapse the spellings a caller may use into one comparable path.
+
+    `./frontend/x/generate.mjs`, `frontend//x/generate.mjs`,
+    `frontend/y/../x/generate.mjs` and a Windows-style separator all name the
+    same module, so they all have to compare equal here.
+    """
+    text = token.strip().strip("'\"`").replace("\\", "/")
+    collapsed: list[str] = []
+    for part in text.split("/"):
+        if part in ("", "."):
+            continue
+        if part == ".." and collapsed and collapsed[-1] != "..":
+            collapsed.pop()
+            continue
+        collapsed.append(part)
+    return "/".join(collapsed)
+
+
+def names_generator_entry(token: str) -> bool:
+    """Whether a token names a generator entry module."""
+    reference = normalise_reference(token)
+    if not reference:
+        return False
+    parts = reference.split("/")
+    if parts[-1] not in GENERATOR_ENTRY_MODULES:
+        return False
+    # A bare `generate.mjs` is how the launcher is *told* which entry to run,
+    # so it counts as a reference and is judged by whether the launcher is
+    # named alongside it.
+    return len(parts) == 1 or parts[-2] == GENERATOR_DIRECTORY_NAME
+
+
+def entry_mentions(text: str) -> int:
+    return sum(text.count(module) for module in GENERATOR_ENTRY_MODULES)
+
+
+def mediated(text: str) -> bool:
+    return any(marker in text for marker in LAUNCHER_MARKERS)
+
+
+def strip_c_like_comments(text: str) -> str:
+    """Blank `//` and `/* */` comments, preserving offsets and line numbers."""
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    quote = ""
+    while index < length:
+        char = text[index]
+        if quote:
+            if char == "\\" and index + 1 < length:
+                out.append(char)
+                out.append(text[index + 1])
+                index += 2
+                continue
+            out.append(char)
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in "'\"`":
+            quote = char
+            out.append(char)
+            index += 1
+            continue
+        if char == "/" and text.startswith("//", index):
+            while index < length and text[index] != "\n":
+                out.append(" ")
+                index += 1
+            continue
+        if char == "/" and text.startswith("/*", index):
+            out.append("  ")
+            index += 2
+            while index < length and not text.startswith("*/", index):
+                out.append("\n" if text[index] == "\n" else " ")
+                index += 1
+            out.append("  ")
+            index += 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def strip_python_comments(text: str) -> str:
+    """Blank `#` comments outside strings, preserving offsets and line numbers."""
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    quote = ""
+    while index < length:
+        char = text[index]
+        if quote:
+            if char == "\\" and index + 1 < length:
+                out.append(char)
+                out.append(text[index + 1])
+                index += 2
+                continue
+            if text.startswith(quote, index):
+                out.append(quote)
+                index += len(quote)
+                quote = ""
+                continue
+            out.append(char)
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char * 3 if text.startswith(char * 3, index) else char
+            out.append(quote)
+            index += len(quote)
+            continue
+        if char == "#":
+            while index < length and text[index] != "\n":
+                out.append(" ")
+                index += 1
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
+def strip_hash_comments(text: str) -> str:
+    """Blank `#` comments outside quotes for shell, YAML, TOML and Dockerfiles."""
+    out: list[str] = []
+    index = 0
+    length = len(text)
+    quote = ""
+    previous = "\n"
+    while index < length:
+        char = text[index]
+        if quote:
+            if char == "\\" and quote == '"' and index + 1 < length:
+                out.append(char)
+                out.append(text[index + 1])
+                index += 2
+                continue
+            out.append(char)
+            if char == quote:
+                quote = ""
+            previous = char
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            out.append(char)
+            previous = char
+            index += 1
+            continue
+        if char == "#" and previous in " \t\n":
+            while index < length and text[index] != "\n":
+                out.append(" ")
+                index += 1
+            previous = " "
+            continue
+        out.append(char)
+        previous = char
+        index += 1
+    return "".join(out)
+
+
+def logical_lines(text: str) -> list[tuple[int, str]]:
+    """Join backslash continuations so a multi-line command is one unit."""
+    joined: list[tuple[int, str]] = []
+    buffer = ""
+    start = 1
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not buffer:
+            start = number
+        if line.rstrip().endswith("\\"):
+            buffer += line.rstrip()[:-1] + " "
+            continue
+        joined.append((start, buffer + line))
+        buffer = ""
+    if buffer:
+        joined.append((start, buffer))
+    return joined
+
+
+SHELL_ASSIGNMENT = re.compile(
+    r"(?:^|[;&|]\s*|\bexport\s+)([A-Za-z_][A-Za-z0-9_]*)=(\S*)"
+)
+
+
+def analyse_command(
+    label: str, command: str, tainted: set[str], violations: list[str]
+) -> int:
+    """Judge one shell-grammar command; return the mentions it accounted for.
+
+    Both direct spellings are rejected: a literal path in command position, and
+    a variable that was assigned a generator entry earlier and is executed
+    later. Accounting the mentions is what lets the caller fail closed on a
+    reference this small grammar could not resolve.
+    """
+    code = command.strip()
+    if not code:
+        return 0
+    accounted = 0
+    is_mediated = mediated(code)
+    for name, value in SHELL_ASSIGNMENT.findall(code):
+        if names_generator_entry(value):
+            accounted += 1
+            tainted.add(name)
+    try:
+        words = shlex.split(code, comments=False, posix=True)
+    except ValueError:
+        words = code.split()
+    for word in words:
+        if SHELL_ASSIGNMENT.fullmatch(word):
+            continue
+        if names_generator_entry(word):
+            accounted += 1
+            if not is_mediated:
+                violations.append(f"{label}: runs a generator module directly: {code}")
+    if not SHELL_ASSIGNMENT.fullmatch(code):
+        for name in sorted(tainted):
+            if re.search(r"\$\{?" + re.escape(name) + r"\}?", code):
+                if not is_mediated:
+                    violations.append(
+                        f"{label}: runs a generator module through ${name}: {code}"
+                    )
+    mentions = entry_mentions(code)
+    if mentions > accounted and not is_mediated:
+        violations.append(
+            f"{label}: unresolved reference to a generator entry: {code}"
+        )
+    return max(accounted, mentions if is_mediated else 0)
+
+
+def shell_violations(relative: str, text: str) -> list[str]:
+    violations: list[str] = []
+    tainted: set[str] = set()
+    for number, line in logical_lines(strip_hash_comments(text)):
+        analyse_command(f"{relative}:{number}", line, tainted, violations)
+    return violations
+
+
+def mask_js_strings(text: str) -> tuple[str, list[tuple[int, str]]]:
+    """Blank string bodies for structural scanning and return their contents."""
+    masked: list[str] = []
+    literals: list[tuple[int, str]] = []
+    index = 0
+    line = 1
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in "'\"`":
+            quote = char
+            start_line = line
+            body: list[str] = []
+            masked.append(char)
+            index += 1
+            while index < length:
+                current = text[index]
+                if current == "\\" and index + 1 < length:
+                    body.append(text[index + 1])
+                    masked.append("  " if text[index + 1] != "\n" else " \n")
+                    line += text[index + 1] == "\n"
+                    index += 2
+                    continue
+                if current == quote:
+                    break
+                body.append(current)
+                masked.append("\n" if current == "\n" else " ")
+                line += current == "\n"
+                index += 1
+            masked.append(quote if index < length else "")
+            index += 1
+            literals.append((start_line, "".join(body)))
+            continue
+        masked.append(char)
+        line += char == "\n"
+        index += 1
+    return "".join(masked), literals
+
+
+def js_statements(masked: str, text: str) -> list[tuple[int, str]]:
+    """Split on top-level `;` and newlines using the string-masked skeleton."""
+    statements: list[tuple[int, str]] = []
+    depth = 0
+    start = 0
+    line = 1
+    start_line = 1
+    for index, char in enumerate(masked):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        if (char == ";" or char == "\n") and depth == 0:
+            segment = text[start : index + 1]
+            if segment.strip():
+                statements.append((start_line, segment))
+            start = index + 1
+            start_line = line + (1 if char == "\n" else 0)
+        if char == "\n":
+            line += 1
+    tail = text[start:]
+    if tail.strip():
+        statements.append((start_line, tail))
+    return statements
+
+
+JS_FROM_IMPORT = re.compile(
+    r"\b(?:import|export)\b[\s\S]{0,400}?\bfrom\s*(['\"])([^'\"]*)\1"
+)
+JS_SIDE_EFFECT_IMPORT = re.compile(r"\bimport\s*(['\"])([^'\"]*)\1")
+JS_DYNAMIC_IMPORT = re.compile(r"\bimport\s*\(\s*(['\"])([^'\"]*)\1\s*\)")
+JS_REQUIRE = re.compile(r"\brequire\s*\(\s*(['\"])([^'\"]*)\1\s*\)")
+JS_UNRESOLVED_IMPORT = re.compile(r"\bimport\s*\(\s*(?!['\"])")
+
+
+def js_violations(relative: str, text: str) -> list[str]:
+    """Structural scan of ESM/CJS module references.
+
+    Comments are removed before anything is matched, so leading whitespace and
+    an interleaved `/* ... */` cannot hide an import, and the module graph is
+    read from the statement structure rather than from a same-line token.
+    """
+    violations: list[str] = []
+    stripped = strip_c_like_comments(text)
+    for pattern, description in (
+        (JS_FROM_IMPORT, "imports"),
+        (JS_SIDE_EFFECT_IMPORT, "imports"),
+        (JS_DYNAMIC_IMPORT, "dynamically imports"),
+        (JS_REQUIRE, "requires"),
+    ):
+        for match in pattern.finditer(stripped):
+            if not names_generator_entry(match.group(2)):
+                continue
+            line = stripped.count("\n", 0, match.start()) + 1
+            violations.append(
+                f"{relative}:{line}: {description} a generator module directly: "
+                f"{match.group(2)}"
+            )
+    masked, literals = mask_js_strings(stripped)
+    literal_lines: dict[int, int] = {}
+    for line, value in literals:
+        if any(names_generator_entry(word) for word in value.split()):
+            literal_lines[line] = literal_lines.get(line, 0) + 1
+    for start_line, segment in js_statements(masked, stripped):
+        mentions = entry_mentions(segment)
+        if not mentions:
+            continue
+        end_line = start_line + segment.count("\n")
+        accounted = sum(
+            count
+            for line, count in literal_lines.items()
+            if start_line <= line <= end_line
+        )
+        if mediated(segment):
+            continue
+        if accounted:
+            violations.append(
+                f"{relative}:{start_line}: names a generator module outside the "
+                f"launcher: {segment.strip()}"
+            )
+        elif mentions:
+            violations.append(
+                f"{relative}:{start_line}: unresolved reference to a generator "
+                f"entry: {segment.strip()}"
+            )
+    for match in JS_UNRESOLVED_IMPORT.finditer(masked):
+        line = masked.count("\n", 0, match.start()) + 1
+        segment = stripped.splitlines()[line - 1] if line <= len(stripped.splitlines()) else ""
+        if entry_mentions(segment) and not mediated(segment):
+            violations.append(
+                f"{relative}:{line}: computed import of a generator module: {segment.strip()}"
+            )
+    return sorted(set(violations))
+
+
+PYTHON_EXECUTORS = frozenset(
+    {
+        "subprocess.run",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.Popen",
+        "os.system",
+        "os.execv",
+        "os.execvp",
+        "os.execve",
+        "os.spawnv",
+    }
+)
+
+
+def python_dotted_name(node: ast.AST) -> str:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        return ".".join(reversed(parts))
+    return ""
+
+
+def python_path_value(node: ast.AST) -> str | None:
+    """Resolve the simple path grammar a caller may use to name a module."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = python_path_value(node.left)
+        right = python_path_value(node.right)
+        if right is None:
+            return None
+        return f"{left}/{right}" if left else right
+    if isinstance(node, ast.Call):
+        target = node.func
+        if isinstance(target, ast.Attribute):
+            if target.attr in ("resolve", "absolute", "expanduser", "as_posix"):
+                return python_path_value(target.value)
+            if target.attr == "joinpath":
+                parts = [python_path_value(argument) for argument in node.args]
+                if any(part is None for part in parts):
+                    return None
+                base = python_path_value(target.value)
+                return "/".join(([base] if base else []) + [str(p) for p in parts])
+            if python_dotted_name(target) == "os.path.join":
+                parts = [python_path_value(argument) for argument in node.args]
+                if any(part is None for part in parts):
+                    return None
+                return "/".join(str(part) for part in parts)
+        if isinstance(target, ast.Name) and target.id in ("str", "Path") and node.args:
+            return python_path_value(node.args[0])
+    return None
+
+
+def python_violations(relative: str, text: str) -> list[str]:
+    """Structural scan of Python callers: bound paths and executed argv.
+
+    A constant that merely *names* the generator (so it can be hashed or
+    existence-checked) is fine; the same constant reaching `subprocess` argv,
+    directly or through a variable, is a bypass.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return [f"{relative}: could not be parsed for the production policy"]
+    violations: list[str] = []
+    accounted: dict[int, int] = {}
+    tainted: set[str] = set()
+
+    def record(line: int) -> None:
+        accounted[line] = accounted.get(line, 0) + 1
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if names_generator_entry(node.value) or any(
+                names_generator_entry(word) for word in node.value.split()
+            ):
+                record(node.lineno)
+        elif isinstance(node, (ast.BinOp, ast.Call)):
+            value = python_path_value(node)
+            if value is not None and names_generator_entry(value):
+                record(node.lineno)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = python_path_value(node.value) if node.value is not None else None
+        if value is None or not names_generator_entry(value):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                tainted.add(target.id)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if python_dotted_name(node.func) not in PYTHON_EXECUTORS:
+            continue
+        segment = ast.get_source_segment(text, node) or ""
+        if mediated(segment):
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and child.id in tainted:
+                violations.append(
+                    f"{relative}:{node.lineno}: executes a generator module through "
+                    f"{child.id}"
+                )
+            value = python_path_value(child) if isinstance(child, (ast.Constant, ast.BinOp, ast.Call)) else None
+            if value is not None and names_generator_entry(value):
+                violations.append(
+                    f"{relative}:{node.lineno}: executes a generator module directly: "
+                    f"{value}"
+                )
+    spans = [
+        (node.lineno, node.end_lineno or node.lineno, node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.stmt)
+    ]
+    for number, line in enumerate(strip_python_comments(text).splitlines(), start=1):
+        mentions = entry_mentions(line)
+        if not mentions or mentions <= accounted.get(number, 0):
+            continue
+        covering = [
+            ast.get_source_segment(text, node) or ""
+            for start, end, node in spans
+            if start <= number <= end
+        ]
+        if mediated(line) or any(mediated(segment) for segment in covering):
+            continue
+        violations.append(
+            f"{relative}:{number}: unresolved reference to a generator entry: {line.strip()}"
+        )
+    return sorted(set(violations))
+
+
+def structured_string_units(label: str, value: object, path: str) -> list[tuple[str, str, bool]]:
+    """Flatten a parsed JSON/TOML/YAML document into judged string units.
+
+    Each unit is `(label, text, is_command)`; command units are read with the
+    shell grammar because that is what a `run:`, a package script and a mise
+    task actually are.
+    """
+    units: list[tuple[str, str, bool]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            name = str(key)
+            child_path = f"{path}.{name}" if path else name
+            command = name in ("run", "command", "uses") or path.endswith("scripts")
+            if isinstance(child, str):
+                units.append((f"{label}[{child_path}]", child, command))
+            else:
+                units.extend(structured_string_units(label, child, child_path))
+        return units
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]"
+            if isinstance(child, str):
+                command = path.endswith(("run", "command", "scripts"))
+                units.append((f"{label}[{child_path}]", child, command))
+            else:
+                units.extend(structured_string_units(label, child, child_path))
+        return units
+    if isinstance(value, str):
+        units.append((f"{label}[{path}]", value, False))
+    return units
+
+
+def structured_violations(relative: str, document: object) -> list[str]:
+    violations: list[str] = []
+    for label, value, is_command in structured_string_units(relative, document, ""):
+        if not entry_mentions(value):
+            continue
+        tainted: set[str] = set()
+        if is_command:
+            for _, line in logical_lines(value):
+                analyse_command(label, line, tainted, violations)
+            continue
+        if mediated(value):
+            continue
+        if any(names_generator_entry(word) for word in value.split()):
+            violations.append(f"{label}: names a generator module outside the launcher: {value}")
+        else:
+            violations.append(f"{label}: unresolved reference to a generator entry: {value}")
+    return violations
+
+
+def dockerfile_violations(relative: str, text: str) -> list[str]:
+    violations: list[str] = []
+    tainted: set[str] = set()
+    for number, line in logical_lines(strip_hash_comments(text)):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        instruction, _, remainder = stripped.partition(" ")
+        label = f"{relative}:{number}"
+        if instruction.upper() in ("RUN", "CMD", "ENTRYPOINT", "ENV", "ARG"):
+            analyse_command(label, remainder, tainted, violations)
+            continue
+        if entry_mentions(stripped) and not mediated(stripped):
+            violations.append(
+                f"{label}: unresolved reference to a generator entry: {stripped}"
+            )
+    return violations
+
+
+def generator_reference_violations(relative: str, text: str) -> list[str]:
+    """Judge one production file in whichever grammar it is written in."""
+    if not entry_mentions(text):
+        return []
+    name = relative.rsplit("/", 1)[-1]
+    if name == "Dockerfile" or name.startswith("Dockerfile."):
+        return dockerfile_violations(relative, text)
+    if relative.endswith(JS_SUFFIXES):
+        return js_violations(relative, text)
+    if relative.endswith(".py"):
+        return python_violations(relative, text)
+    if relative.endswith(SHELL_SUFFIXES):
+        return shell_violations(relative, text)
+    if relative.endswith(".json"):
+        try:
+            document = json.loads(text)
+        except ValueError:
+            return [f"{relative}: could not be parsed for the production policy"]
+        return structured_violations(relative, document)
+    if relative.endswith(".toml"):
+        try:
+            document = tomllib.loads(text)
+        except ValueError:
+            return [f"{relative}: could not be parsed for the production policy"]
+        return structured_violations(relative, document)
+    if relative.endswith(YAML_SUFFIXES):
+        try:
+            document = yaml.safe_load(text)
+        except yaml.YAMLError:
+            return [f"{relative}: could not be parsed for the production policy"]
+        return structured_violations(relative, document)
+    # An unsupported grammar that names a generator entry fails closed rather
+    # than passing unexamined.
+    return shell_violations(relative, text)
+
+
+def is_trusted_test_path(relative: str) -> bool:
+    parts = relative.split("/")
+    if any(part in PRODUCTION_TEST_DIRECTORIES for part in parts[:-1]):
+        return True
+    return parts[-1].startswith(PRODUCTION_TEST_PREFIXES)
+
+
+def production_caller_files(root: Path = ROOT) -> list[Path]:
     """Every executable configuration or script that could start generation."""
     found: list[Path] = []
     for relative in PRODUCTION_ROOTS:
-        path = ROOT / relative
+        path = root / relative
         if path.is_file():
             found.append(path)
             continue
@@ -2757,26 +3822,41 @@ def production_caller_files() -> list[Path]:
         for child in sorted(path.rglob("*")):
             if not child.is_file() or child.is_symlink():
                 continue
+            name = child.relative_to(root).as_posix()
             if child.suffix in PRODUCTION_EXCLUDED_SUFFIXES:
                 continue
-            if child.relative_to(ROOT).as_posix() in PRODUCTION_EXCLUDED_PATHS:
+            if name in PRODUCTION_EXCLUDED_PATHS or is_trusted_test_path(name):
                 continue
             found.append(child)
-    require(found, "the production caller inventory found no files")
     return found
+
+
+def generator_production_violations(root: Path = ROOT) -> tuple[list[str], int]:
+    violations: list[str] = []
+    examined = 0
+    for path in production_caller_files(root):
+        relative = path.relative_to(root).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        examined += 1
+        violations.extend(generator_reference_violations(relative, text))
+    return violations, examined
 
 
 def test_generator_production_policy() -> int:
     """Every production path starts generation through the one launcher.
 
-    This is centralisation, not containment: the generator is trusted committed
-    code either way. Running it from six different places is how behaviour
-    drifts and how a provenance-bearing input quietly stops being hashed. The
-    inventory is discovered rather than hand-listed, and checked against a floor
-    of callers that must exist, so a *missing* production path is a failure too.
+    This is centralisation and reproducibility, not containment: the generator
+    is trusted committed code either way. Running it from six different places
+    is how behaviour drifts and how a provenance-bearing input quietly stops
+    being hashed. The inventory is discovered rather than hand-listed and each
+    file is read in its own grammar -- ESM imports, shell variables, package
+    scripts, mise tasks, workflow steps, Docker instructions and Python argv --
+    so an indirection cannot hide a direct invocation.
     """
     checked = 0
-    violations: list[str] = []
     for relative, expected in sorted(REQUIRED_PRODUCTION_CALLERS.items()):
         path = ROOT / relative
         require(path.is_file(), f"production caller {relative} is missing from the repository")
@@ -2785,32 +3865,244 @@ def test_generator_production_policy() -> int:
             f"{relative} no longer reaches generation through {expected!r}",
         )
         checked += 1
-    for path in production_caller_files():
-        relative = path.relative_to(ROOT).as_posix()
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-        checked += 1
-        for line_number, line in enumerate(text.splitlines(), start=1):
-            if GENERATOR_LAUNCHER_NAME in line or "generator_launcher_argv" in line:
-                continue
-            stripped = line.strip()
-            if stripped.startswith(COMMENT_PREFIXES):
-                continue
-            for module in GENERATOR_ENTRY_MODULES:
-                if f"locale-catalog/{module}" not in line:
-                    continue
-                # A production path names a generator module only to *run* it,
-                # so a mention with no command around it is documentation.
-                if not any(token in line for token in EXECUTION_TOKENS):
-                    continue
-                violations.append(f"{relative}:{line_number}: {stripped}")
+    violations, examined = generator_production_violations()
+    require(examined > 0, "the production caller inventory found no files")
     require(
         not violations,
         "these production paths reach a generator module without the launcher:\n"
-        + "\n".join(violations),
+        + "\n".join(sorted(violations)),
     )
+    inventory = {path.relative_to(ROOT).as_posix() for path in production_caller_files()}
+    for relative in REQUIRED_PRODUCTION_CALLERS:
+        require(
+            relative in inventory,
+            f"the discovered inventory missed the production caller {relative}",
+        )
+        checked += 1
+    for relative in (
+        "frontend/scripts/locale-catalog/sources.mjs",
+        "frontend/scripts/locale-catalog/owned-build-dir.mjs",
+    ):
+        require(
+            relative in inventory,
+            f"executable frontend script {relative} is outside the inventory",
+        )
+        checked += 1
+    return checked + examined
+
+
+# Callers written to prove the inventory reads each grammar structurally rather
+# than looking for a path and a command word on one line. Every rejected case
+# is a spelling a real bypass could use.
+PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
+    "an ESM static import of the generator": (
+        "frontend/scripts/wrapper.mjs",
+        "import { generate } from '../scripts/locale-catalog/generate.mjs';\n",
+        False,
+    ),
+    "an ESM static import split across lines": (
+        "frontend/scripts/wrapper.mjs",
+        "import {\n  generate,\n}\n  from\n  './locale-catalog/generate.mjs';\n",
+        False,
+    ),
+    "a literal dynamic import": (
+        "frontend/scripts/wrapper.mjs",
+        "await import('./frontend/scripts/locale-catalog/generate.mjs');\n",
+        False,
+    ),
+    "a dynamic import behind a comment": (
+        "frontend/scripts/wrapper.mjs",
+        "await import /* unchecked */ ('../locale-catalog/generate.mjs');\n",
+        False,
+    ),
+    "an export-from re-export": (
+        "frontend/scripts/wrapper.mjs",
+        "export { generate } from './locale-catalog/generate.mjs';\n",
+        False,
+    ),
+    "a side-effect import with leading whitespace": (
+        "frontend/scripts/wrapper.mjs",
+        "   import '../scripts/locale-catalog/verify-dist.mjs'\n",
+        False,
+    ),
+    "a CommonJS require": (
+        "frontend/scripts/wrapper.cjs",
+        "const generate = require('./locale-catalog/generate.mjs');\n",
+        False,
+    ),
+    "a child process argv": (
+        "frontend/scripts/wrapper.mjs",
+        "spawnSync('node', ['scripts/locale-catalog/generate.mjs', '--check']);\n",
+        False,
+    ),
+    "a computed dynamic import": (
+        "frontend/scripts/wrapper.mjs",
+        "const name = 'generate.mjs';\nawait import(base + name);\n",
+        False,
+    ),
+    "a shell variable indirection": (
+        "offline/scripts/99-wrapper.sh",
+        "GENERATOR=frontend/scripts/locale-catalog/generate.mjs\nnode \"$GENERATOR\"\n",
+        False,
+    ),
+    "a shell variable indirection with a normalised path": (
+        "offline/scripts/99-wrapper.sh",
+        "export GENERATOR=./frontend/scripts/../scripts/locale-catalog/generate.mjs\n"
+        "node ${GENERATOR} --check\n",
+        False,
+    ),
+    "a shell literal across a line continuation": (
+        "offline/scripts/99-wrapper.sh",
+        "node \\\n  scripts/locale-catalog/generate.mjs \\\n  --check\n",
+        False,
+    ),
+    "a package script": (
+        "frontend/package.json",
+        '{"scripts": {"gen": "node ./scripts/locale-catalog/generate.mjs"}}\n',
+        False,
+    ),
+    "a mise task": (
+        "mise.toml",
+        '[tasks."locale-catalog:rogue"]\nrun = "node frontend/scripts/locale-catalog/generate.mjs"\n',
+        False,
+    ),
+    "a workflow run step": (
+        ".github/workflows/rogue.yml",
+        "jobs:\n  build:\n    steps:\n"
+        "      - run: node frontend/scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a Dockerfile instruction": (
+        "Dockerfile",
+        "RUN node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a Python subprocess argv": (
+        "scripts/rogue-caller.py",
+        "import subprocess\n"
+        "subprocess.run(['node', 'frontend/scripts/locale-catalog/generate.mjs'])\n",
+        False,
+    ),
+    "a Python path binding that is later executed": (
+        "scripts/rogue-caller.py",
+        "import subprocess\n"
+        "from pathlib import Path\n"
+        "GENERATOR = Path('frontend') / 'scripts' / 'locale-catalog' / 'generate.mjs'\n"
+        "subprocess.run(['node', str(GENERATOR)])\n",
+        False,
+    ),
+    "an f-string the grammar cannot resolve": (
+        "offline/scripts/99-wrapper.sh",
+        'node "${DIR}/generate.mjs"\n',
+        False,
+    ),
+    "the launcher started from a shell": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs --check\n",
+        True,
+    ),
+    "the launcher started from a package script": (
+        "frontend/package.json",
+        '{"scripts": {"prebuild": "node ./scripts/locale-catalog/generator-launcher.mjs generate.mjs"}}\n',
+        True,
+    ),
+    "the launcher started through the Python helper": (
+        "scripts/rogue-caller.py",
+        "import subprocess\n"
+        "subprocess.run([node, *generator_launcher_argv(root, 'generate.mjs', [])])\n",
+        True,
+    ),
+    "a generator path bound only for hashing": (
+        "scripts/rogue-caller.py",
+        "from pathlib import Path\n"
+        "GENERATOR = Path('frontend') / 'scripts' / 'locale-catalog' / 'generate.mjs'\n"
+        "digest = GENERATOR.read_bytes()\n",
+        True,
+    ),
+    "a comment describing the unenforced spelling": (
+        "frontend/scripts/wrapper.mjs",
+        "// `node scripts/locale-catalog/generate.mjs` would skip the launcher.\n"
+        "run();\n",
+        True,
+    ),
+}
+
+
+def test_generator_production_fixtures(scratch: Path, token: str) -> int:
+    """The grammar readers reject every spelling of a direct invocation."""
+    checked = 0
+    for description, (relative, body, accepted) in sorted(
+        PRODUCTION_POLICY_FIXTURES.items()
+    ):
+        violations = generator_reference_violations(relative, body)
+        if accepted:
+            require(
+                not violations,
+                f"the production policy rejected the accepted case {description!r}: "
+                + "; ".join(violations),
+            )
+        else:
+            require(
+                violations,
+                f"the production policy accepted {description!r}",
+            )
+        checked += 1
+    return checked
+
+
+def test_generator_inventory_discovery(scratch: Path, token: str) -> int:
+    """A newly added production wrapper is inventoried without being listed."""
+    checked = 0
+    tree = scratch / f"production-inventory-{uuid.uuid4().hex}"
+    try:
+        for relative in ("frontend/scripts/locale-catalog", "offline/scripts", "frontend/tests"):
+            (tree / relative).mkdir(parents=True, exist_ok=True)
+        (tree / "frontend/scripts/new-wrapper.mjs").write_text(
+            "import { generate } from './locale-catalog/generate.mjs';\ngenerate();\n",
+            encoding="utf-8",
+        )
+        (tree / "frontend/tests/wrapper.test.mjs").write_text(
+            "import { generate } from '../scripts/locale-catalog/generate.mjs';\n",
+            encoding="utf-8",
+        )
+        (tree / "offline/scripts/test-helper.sh").write_text(
+            "node scripts/locale-catalog/generate.mjs\n", encoding="utf-8"
+        )
+        (tree / "frontend/scripts/locale-catalog/generator-launcher.mjs").write_text(
+            "// runs generate.mjs and verify-dist.mjs\n", encoding="utf-8"
+        )
+        inventory = {
+            path.relative_to(tree).as_posix() for path in production_caller_files(tree)
+        }
+        require(
+            "frontend/scripts/new-wrapper.mjs" in inventory,
+            "a new production wrapper under frontend/scripts was not inventoried",
+        )
+        checked += 1
+        require(
+            "frontend/tests/wrapper.test.mjs" not in inventory,
+            "a trusted frontend test was pulled into the production inventory",
+        )
+        checked += 1
+        require(
+            "offline/scripts/test-helper.sh" not in inventory,
+            "a trusted shell test was pulled into the production inventory",
+        )
+        checked += 1
+        require(
+            "frontend/scripts/locale-catalog/generator-launcher.mjs" not in inventory,
+            "the launcher itself was pulled into the production inventory",
+        )
+        checked += 1
+        violations, examined = generator_production_violations(tree)
+        require(examined > 0, "the synthetic inventory examined no files")
+        require(
+            any("new-wrapper.mjs" in violation for violation in violations),
+            "the new production wrapper's direct import was not rejected",
+        )
+        checked += 1
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
     return checked
 
 
@@ -3100,7 +4392,10 @@ def main() -> None:
     # standalone without an owned probe tree -- which is what makes them usable
     # as a quick local gate.
     if arguments.probe == "generator-production-policy":
+        # The grammar fixtures read no filesystem, so the standalone probe
+        # covers them too and stays usable as a quick local gate.
         checked = test_generator_production_policy()
+        checked += test_generator_production_fixtures(ROOT, "")
         print(
             "locale-catalog policy: "
             f"{checked} production generation paths centralised on the generator launcher"
@@ -3132,7 +4427,10 @@ def main() -> None:
         totals["generation leaves no scratch"] = test_generation_leaves_no_build_directory(scratch, token)
         totals["ci privilege policy"] = test_ci_privilege_policy()
         totals["ci privilege fixtures"] = test_ci_privilege_policy_fixtures(scratch, token)
+        totals["ci privilege nested fixtures"] = test_ci_privilege_nested_fixtures(scratch, token)
         totals["generator production policy"] = test_generator_production_policy()
+        totals["generator production fixtures"] = test_generator_production_fixtures(scratch, token)
+        totals["generator inventory discovery"] = test_generator_inventory_discovery(scratch, token)
         totals["npm lifecycle policy"] = test_npm_install_lifecycle_policy()
         totals["analyzer matrix"] = test_analyzer_matrix(scratch, token)
         totals["analyzer grammar coverage"] = test_analyzer_grammar_coverage()

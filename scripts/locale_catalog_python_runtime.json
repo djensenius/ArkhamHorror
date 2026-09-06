@@ -17,7 +17,7 @@
   "trustedSources": {
     "frontend/scripts/locale-catalog/generator-launcher.mjs": "d7dd6e8fa3fb55504213bc349b9a345c48bdc03079b37d5db8534176ee233d5a",
     "scripts/locale-catalog-python-sealed.sh": "56660dd557d81fa722a5dc881929eac8f2aee0eb9d3eda9a41c2d0ca94c8901c",
-    "scripts/locale_catalog_python_boundary.py": "2273372d8389a94becb444a2244327a26463aa7cb3c9abfa8d39d3961cbd7b8c",
+    "scripts/locale_catalog_python_boundary.py": "030b02b1d0e6d0406cdbfc47ef3b0418ad084f4cd7c6866039c232724d6f8eae",
     "scripts/locale_catalog_runtime.py": "882477037fb5d0e33a7d15bb86ee2fafd43c3401d0104b81c6773d93e7f56f15",
     "scripts/run-locale-catalog-python.sh": "cbf718a4b0cebaf35167af741fbd0956d643a2b236d05a40b50d1682ab2615ba"
   },

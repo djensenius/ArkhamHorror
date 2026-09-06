@@ -314,7 +314,12 @@ code; that is what CI is for. What is bounded is its *authority*, not its
 behaviour: the jobs are ephemeral, hold `permissions: contents: read`, receive
 no secrets, check out without persisted credentials, and publish nothing.
 Arbitrary PR code is not contained beyond that posture, and the CI privilege
-policy test asserts the posture rather than any containment.
+policy test asserts the posture rather than any containment. It follows job and
+step `uses:` through local reusable workflows and composite actions
+recursively — with canonical path containment and cycle detection — so a
+governed command reached through arbitrary local nesting is still judged, and a
+remote reusable workflow named at job level must be pinned to a 40-hex commit
+just like a step action.
 
 **Untrusted, and therefore checked.** Externally produced tool and dependency
 artifacts (the CPython distribution, Node, uv, wheels, npm packages),
@@ -656,9 +661,28 @@ read as a guarantee about that lane.
 **One route, everywhere.** `locale-catalog:generate`, the catalog validator,
 the serving gate, npm's own `prebuild`, the container build, the offline
 installer build and the packaging step all start the generator through that
-launcher. There is no `node .../generate.mjs` left in the repository, and a
-policy test enumerates every mention of a generator module and fails on a
-bypass.
+launcher. There is no `node .../generate.mjs` left in a production path, and a
+policy test proves it by *discovering* the callers rather than listing them:
+everything executable under `.github/workflows`, `frontend/package.json`,
+`frontend/scripts`, `mise.toml`, `offline/scripts`, `scripts` and the
+`Dockerfile`, minus the launcher, its digest table and trusted tests. A new
+wrapper dropped into `frontend/scripts` is therefore covered the moment it is
+committed.
+
+Each file is then read in its own grammar rather than scanned for a path and a
+command word on the same line. ESM/CJS files are comment-stripped and matched
+structurally, so a static import, an `export … from`, a literal `import()`, a
+`require()`, a computed `import()` and a child-process argv are all seen —
+including across line breaks and around an interleaved `/* … */`. Shell files
+(and Dockerfile `RUN`, package scripts, mise task `run`, and workflow `run`)
+are read after joining backslash continuations, with variable assignments
+tracked, so `GENERATOR=…/generate.mjs` followed later by `node "$GENERATOR"` is
+rejected. Python callers are read from the AST: a constant or `Path` join bound
+only for hashing is fine, the same value reaching `subprocess` argv — directly
+or through a variable — is not. Path spellings are normalised (`./`, `..`,
+duplicate separators, quoting) before comparison, and a mention the grammar
+cannot resolve fails closed. This is reproducibility and centralisation over
+trusted code, not containment.
 
 The synthetic fixture hashes all declared executable sources, both launcher
 stages, the lockfile, and the toolchain lock through `generatorSha256`, so the
