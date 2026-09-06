@@ -103,7 +103,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
-            offline/_deps/node_modules/
+            offline/_deps/npm-cache/
           key: arkham-frontend-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/package-lock.json', 'offline/toolchain.lock', 'offline/scripts/utils.sh', 'offline/scripts/authority-tree.py', 'offline/scripts/toolchain-authority.sh', 'offline/scripts/03-build-frontend.sh') }}
 
       - name: Make build scripts executable
@@ -114,6 +114,7 @@ jobs:
         run: |
           bash scripts/test-toolchain-authority.sh
           bash scripts/test-docker-toolchain-authority.sh
+          bash scripts/test-frontend-npm-authority.sh
           bash scripts/test-frontend-output-authority.sh
           bash scripts/test-package-authority.sh
           bash scripts/test-package-attestation.sh

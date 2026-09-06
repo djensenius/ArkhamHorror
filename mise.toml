@@ -80,7 +80,7 @@ run = "bash offline/scripts/test-toolchain-authority.sh"
 
 [tasks."locale-catalog:offline-output-authority-test"]
 description = "Reject frontend asset and package library substitutions against invocation-external authority receipts"
-run = "bash offline/scripts/test-frontend-output-authority.sh && bash offline/scripts/test-package-authority.sh && bash offline/scripts/test-package-attestation.sh && bash offline/scripts/test-package-lifecycle.sh && bash offline/scripts/test-receipt-capability-isolation.sh && bash offline/scripts/test-updater-authority.sh && bash offline/scripts/test-docker-toolchain-authority.sh"
+run = "bash offline/scripts/test-frontend-npm-authority.sh && bash offline/scripts/test-frontend-output-authority.sh && bash offline/scripts/test-package-authority.sh && bash offline/scripts/test-package-attestation.sh && bash offline/scripts/test-package-lifecycle.sh && bash offline/scripts/test-receipt-capability-isolation.sh && bash offline/scripts/test-updater-authority.sh && bash offline/scripts/test-docker-toolchain-authority.sh"
 
 [tasks."locale-catalog:serving-cleanup-test"]
 description = "Force post-start nginx failures and prove serving contexts clean their container/process"

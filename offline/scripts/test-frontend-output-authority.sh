@@ -91,7 +91,7 @@ expect_reject "frontend FIFO" \
     verify_authority_tree_from_receipt frontend "$DIST"
 rm -f "${DIST}/assets/evil.fifo"
 
-if python3 - "${DIST}/assets" <<'PY'
+if env -u PYTHONHOME -u PYTHONPATH /usr/bin/python3 - "${DIST}/assets" <<'PY'
 import os
 import socket
 import sys

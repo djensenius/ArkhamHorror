@@ -16,6 +16,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # Captured before anything sourced below can reassign SCRIPT_DIR.
 PROD_SCRIPTS="$SCRIPT_DIR"
 FRONTEND_DIR="${REPO_ROOT}/frontend"
+DEPS_DIR=""
 
 WORK="${REPO_ROOT}/offline/_tmp/test-frontend-cache-hit-$$-${RANDOM}"
 umask 077
@@ -64,6 +65,8 @@ sed -n '1,/^# ── Build frontend/p' "${PROD_SCRIPTS}/03-build-frontend.sh" \
   | sed -e 's/^FRONTEND_DIR=.*/:/' -e 's/^FRONTEND_OUTPUT=.*/:/' -e 's/^FRONTEND_BUILT_MARKER=.*/:/' \
   > "${WORK}/verify.sh"
 FRONTEND_DIR="${FRONTEND_DIR}"
+DEPS_DIR="${WORK}/deps"
+NODE_NPM_CLI="lib/node_modules/npm/bin/npm-cli.js"
 FRONTEND_BUILT_MARKER="${WORK}/stamp_frontend_built"
 : > "$FRONTEND_BUILT_MARKER"
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
@@ -73,6 +76,8 @@ step() { :; }
 die() { echo "die: $*" >&2; return 1; }
 # shellcheck disable=SC1090
 source "${WORK}/verify.sh"
+OFFLINE_NODE="$(command -v node)"
+verify_offline_node_runtime() { :; }
 
 jq_manifest() {
   local copy="$1"; shift

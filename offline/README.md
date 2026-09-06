@@ -105,7 +105,11 @@ because they are non-empty:
   and data) are authenticated before compiler use;
 - Node's installed executable is checked against its committed executable
   SHA-256 before it can run, and the full Node/npm tree is covered so an
-  imported npm CLI file cannot be substituted behind an unchanged version;
+  imported npm CLI file cannot be substituted behind an unchanged version.
+  The frontend requires a readable regular `package-lock.json`, then invokes
+  that verified Node binary and npm CLI only with
+  `ci --ignore-scripts --prefer-offline`; rendered modules are discarded and
+  never restored from cache;
 - native build identities bind the platform, source digest, version, and
   complete build recipe. They intentionally do not claim cross-compiler
   byte-for-byte reproducibility; native outputs are rebuilt before a new
@@ -116,7 +120,8 @@ because they are non-empty:
 
 The registry dependencies are separately covered by their committed lockfiles:
 `frontend/package-lock.json` supplies npm's per-package SRI checks and is the
-frontend cache key, while Stack resolves from `backend/stack.yaml.lock`.
+frontend cache key; only verified npm package tarballs, not a rendered
+`node_modules` tree, are cached. Stack resolves from `backend/stack.yaml.lock`.
 They are not `download_cached` toolchain archives and are never accepted by
 the archive cache authority path.
 

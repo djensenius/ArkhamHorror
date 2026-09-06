@@ -338,6 +338,12 @@ grep -Fq 'offline/_deps/.toolchain-authority/' "${REPO_ROOT}/.github/workflows/b
 grep -Fq 'verify_install_manifest nginx "${DEPS_DIR}/nginx" "$identity" "bin/nginx" "bin"' \
     "${REPO_ROOT}/offline/scripts/05-package.sh" \
     || fail "packager does not verify the complete nginx execution closure"
+grep -Fq 'NODE_NPM_CLI="lib/node_modules/npm/bin/npm-cli.js"' \
+    "${REPO_ROOT}/offline/scripts/toolchain-authority.sh" \
+    || fail "Node authority does not name the exact npm CLI"
+grep -Fq '"${DEPS_DIR}/node/bin/node" "$npm_cli" --version' \
+    "${REPO_ROOT}/offline/scripts/toolchain-authority.sh" \
+    || fail "Node authority does not execute npm through the verified Node binary"
 if grep -Fq 'offline/_session/' "${REPO_ROOT}/.github/workflows/build-offline.yml"; then
     fail "build-offline workflow caches invocation-specific authority receipts"
 fi

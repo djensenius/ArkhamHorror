@@ -8,6 +8,7 @@ GHC_PUBLIC_TARGET="../ghc/${GHC_VERSION}/bin/ghc"
 GHC_INTERNAL_TARGET="ghc-${GHC_VERSION}"
 STACK_VERSION="3.7.1"
 NODE_VERSION="26.7.0"
+NODE_NPM_CLI="lib/node_modules/npm/bin/npm-cli.js"
 PG_VERSION="14.15"
 NGINX_VERSION="1.26.2"
 PG_SRC_ARCHIVE="postgresql-${PG_VERSION}.tar.bz2"
@@ -92,14 +93,20 @@ verify_ghc_and_stack_installation() {
 }
 
 verify_node_installation() {
-    local identity authority kind digest expected_version
+    local identity authority kind digest expected_version npm_cli npm_version
     identity="$(node_binary_identity)"
     authority="$(toolchain_binary_authority node "$PLATFORM" "bin/node")"
     IFS=$'\t' read -r kind digest expected_version <<< "$authority"
     verify_install_manifest node "${DEPS_DIR}/node" "$identity" "bin/node" \
         "bin" "lib/node_modules/npm"
     verify_binary_version_contains "Node.js" "${DEPS_DIR}/node/bin/node" "--version" "$expected_version"
-    verify_cmd "npm" "${DEPS_DIR}/node/bin/npm" "--version"
+    npm_cli="${DEPS_DIR}/node/${NODE_NPM_CLI}"
+    [ -f "$npm_cli" ] && [ ! -L "$npm_cli" ] && [ -r "$npm_cli" ] \
+        || die "Verified npm CLI is missing or unsafe: $npm_cli"
+    npm_version="$("${DEPS_DIR}/node/bin/node" "$npm_cli" --version 2>&1)" \
+        || die "Verified npm CLI failed its post-identity version check"
+    [[ "$npm_version" =~ ^[0-9]+(\.[0-9]+)+$ ]] \
+        || die "Verified npm CLI reported an invalid version: ${npm_version}"
 }
 
 verify_postgres_installation() {
