@@ -2309,6 +2309,14 @@ PUBLISHING_ACTION_PREFIXES = (
 )
 PUBLISHING_RUN_MARKERS = ("gh release", "docker push", "npm publish", "gh api --method POST")
 PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+# A job-level `uses:` naming a workflow in another repository has to be the
+# full `owner/repo/path/to/workflow.yml@<40-hex>` form. A branch, a tag, a
+# short SHA, a missing ref or an action-shaped reference without a workflow
+# path all fail: the implementation is opaque, so only an exact commit says
+# what will run.
+PINNED_REUSABLE_WORKFLOW = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*/[^@\s]+\.ya?ml@[0-9a-f]{40}$"
+)
 SECRET_CONTEXT = re.compile(r"secrets\s*(?:\.\s*[A-Za-z_]|\[)")
 
 
@@ -2405,12 +2413,35 @@ def local_uses_targets(document: object) -> list[str]:
     return targets
 
 
+def remote_reusable_jobs(document: object) -> list[str]:
+    """Job-level `uses:` naming a reusable workflow outside this repository."""
+    found: list[str] = []
+    if not isinstance(document, dict):
+        return found
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return found
+    for name, job in sorted(jobs.items()):
+        if not isinstance(job, dict):
+            continue
+        uses = job.get("uses")
+        if isinstance(uses, str) and not uses.startswith("./"):
+            found.append(f"{name}: {uses}")
+    return found
+
+
 def reaches_governed_work(path: Path, root: Path, visited: set[Path] | None = None) -> bool:
     """Whether this workflow or action reaches governed work, at any depth.
 
     Reachability has to follow local `uses:` recursively -- a job that calls a
     reusable workflow that calls a composite action that runs the wrapper is
     still a job that runs governed work -- and it has to terminate on a cycle.
+
+    A job-level `uses:` naming a workflow in another repository counts as
+    governed wherever it is found, not only at the root: its implementation is
+    opaque, so a caller chain that reaches one has to be judged as though it
+    ran governed work, even when no document in the chain contains a literal
+    governed marker.
     """
     visited = set() if visited is None else visited
     resolved = path.resolve()
@@ -2421,6 +2452,8 @@ def reaches_governed_work(path: Path, root: Path, visited: set[Path] | None = No
     if any(marker in text for marker in GOVERNED_RUN_MARKERS):
         return True
     document = yaml.safe_load(text)
+    if remote_reusable_jobs(document):
+        return True
     for uses in local_uses_targets(document):
         if reaches_governed_work(resolve_local_reference(uses, root), root, visited):
             return True
@@ -2487,16 +2520,18 @@ def check_job_authority(
     if isinstance(reusable, str):
         # A job-level `uses:` deserves exactly the scrutiny a step-level one
         # gets: a local reusable workflow is inspected recursively, a remote one
-        # must name an exact commit.
+        # must name an exact commit. The label carries the nested document and
+        # job that the reference was found in, so a finding several hops down
+        # is attributable.
         if reusable.startswith("./"):
             target = resolve_local_reference(reusable, root)
             return checked + check_reachable_document(
                 f"{label} -> {reusable}", target, triggers, visited, root
             )
         require(
-            PINNED_ACTION.match(reusable) is not None,
-            f"{label} calls the reusable workflow {reusable!r}, which is not pinned to a 40-hex "
-            "commit",
+            PINNED_REUSABLE_WORKFLOW.match(reusable) is not None,
+            f"{label} calls the remote reusable workflow {reusable!r}, which is not an exact "
+            "owner/repo/path@<40-hex commit> reference",
         )
         return checked
     for step in job.get("steps", []) or []:
@@ -2794,6 +2829,27 @@ jobs:
 }
 
 
+# A caller whose own steps do nothing governed: everything it is judged for is
+# reached through the local wrapper it calls.
+CALLER_THROUGH_WRAPPER = """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  call:
+    uses: ./.github/workflows/wrapper.yml
+"""
+
+
+def remote_wrapper(reference: str) -> str:
+    """A local reusable workflow whose only job calls a remote reusable one."""
+    return (
+        "on:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n"
+        f"  out:\n    uses: {reference}\n"
+    )
+
+
 # Fixtures whose governed work is only reachable by following local `uses:`
 # through further local `uses:`. Each is a mapping of relative path -> body; the
 # workflow directory is `.github/workflows` inside the fixture tree so `./`
@@ -3046,6 +3102,163 @@ jobs:
   build:
     uses: other/repo/.github/workflows/build.yml@3333333
 """,
+        },
+        False,
+    ),
+    "a nested local wrapper calling a remote reusable on a branch": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": remote_wrapper("other/repo/.github/workflows/build.yml@main"),
+        },
+        False,
+    ),
+    "a nested local wrapper calling a remote reusable on a tag": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": remote_wrapper("other/repo/.github/workflows/build.yml@v1.2.3"),
+        },
+        False,
+    ),
+    "a nested local wrapper calling a remote reusable on a short SHA": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": remote_wrapper("other/repo/.github/workflows/build.yml@4444444"),
+        },
+        False,
+    ),
+    "a nested local wrapper calling a remote reusable with no ref": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": remote_wrapper("other/repo/.github/workflows/build.yml"),
+        },
+        False,
+    ),
+    "a nested local wrapper calling a malformed remote reusable": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": remote_wrapper(
+                "other/repo@4444444444444444444444444444444444444444"
+            ),
+        },
+        False,
+    ),
+    "a nested local wrapper calling a pinned remote reusable": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": remote_wrapper(
+                "other/repo/.github/workflows/build.yml@4444444444444444444444444444444444444444"
+            ),
+        },
+        True,
+    ),
+    "a deeper local chain before a pinned remote reusable": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": """
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  hop:
+    uses: ./.github/workflows/deeper.yml
+""",
+            ".github/workflows/deeper.yml": remote_wrapper(
+                "other/repo/.github/workflows/build.yml@5555555555555555555555555555555555555555"
+            ),
+        },
+        True,
+    ),
+    "a deeper local chain before an unpinned remote reusable": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": """
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  hop:
+    uses: ./.github/workflows/deeper.yml
+""",
+            ".github/workflows/deeper.yml": remote_wrapper("other/repo/.github/workflows/build.yml@main"),
+        },
+        False,
+    ),
+    "a local action hop before an unpinned remote reusable": (
+        {
+            ".github/workflows/caller.yml": """
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ./.github/actions/hop
+  call:
+    uses: ./.github/workflows/wrapper.yml
+""",
+            ".github/actions/hop/action.yml": """
+runs:
+  using: composite
+  steps:
+    - run: echo nothing governed here
+      shell: bash
+""",
+            ".github/workflows/wrapper.yml": remote_wrapper("other/repo/.github/workflows/build.yml@main"),
+        },
+        False,
+    ),
+    "a cycle that contains an unpinned remote reusable": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": """
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  back:
+    uses: ./.github/workflows/caller.yml
+  out:
+    uses: other/repo/.github/workflows/build.yml@main
+""",
+        },
+        False,
+    ),
+    "a cycle that contains a pinned remote reusable": (
+        {
+            ".github/workflows/caller.yml": CALLER_THROUGH_WRAPPER,
+            ".github/workflows/wrapper.yml": """
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  back:
+    uses: ./.github/workflows/caller.yml
+  out:
+    uses: other/repo/.github/workflows/build.yml@6666666666666666666666666666666666666666
+""",
+        },
+        True,
+    ),
+    "a root with no governed marker reaching a remote reusable": (
+        {
+            ".github/workflows/quiet.yml": """
+on:
+  pull_request:
+permissions:
+  contents: write
+jobs:
+  quiet:
+    uses: ./.github/workflows/wrapper.yml
+""",
+            ".github/workflows/wrapper.yml": remote_wrapper(
+                "other/repo/.github/workflows/build.yml@7777777777777777777777777777777777777777"
+            ),
         },
         False,
     ),
@@ -3370,20 +3583,173 @@ SHELL_ASSIGNMENT = re.compile(
 )
 
 
-def analyse_command(
-    label: str, command: str, tainted: set[str], violations: list[str]
-) -> int:
-    """Judge one shell-grammar command; return the mentions it accounted for.
+def split_command_segments(text: str) -> tuple[list[str], bool]:
+    """Split a shell command list into separately executed segments.
 
-    Both direct spellings are rejected: a literal path in command position, and
-    a variable that was assigned a generator entry earlier and is executed
-    later. Accounting the mentions is what lets the caller fail closed on a
-    reference this small grammar could not resolve.
+    A command list is not one command. `node launcher.mjs generate.mjs && node
+    .../generate.mjs` runs two programs, and judging the launcher's presence
+    once for the whole line would let the second one through. Splitting is
+    quote- and escape-aware, so a quoted `;` or `&&` is an argument rather than
+    a separator; `(...)` subshells, `{ ...; }` groups and `$(...)`/backtick
+    substitutions are split out as their own segments so a direct invocation
+    cannot hide inside one.
+
+    Returns the segments and whether the split was fully resolved; an
+    unbalanced quote, group or substitution makes it unresolved and the caller
+    fails closed.
     """
-    code = command.strip()
+    segments: list[str] = []
+    current: list[str] = []
+    nested: list[str] = []
+    resolved = True
+    depth = 0
+    index = 0
+    length = len(text)
+
+    def flush() -> None:
+        segment = "".join(current).strip()
+        if segment:
+            segments.append(segment)
+        current.clear()
+
+    def matching(open_at: int, opener: str, closer: str) -> int:
+        """Index just past the balanced closer, or -1 when there is none."""
+        inner_depth = 0
+        inner_quote = ""
+        cursor = open_at
+        while cursor < length:
+            char = text[cursor]
+            if inner_quote:
+                if char == "\\" and inner_quote == '"' and cursor + 1 < length:
+                    cursor += 2
+                    continue
+                if char == inner_quote:
+                    inner_quote = ""
+                cursor += 1
+                continue
+            if char == "\\" and cursor + 1 < length:
+                cursor += 2
+                continue
+            if char in "'\"":
+                inner_quote = char
+                cursor += 1
+                continue
+            if char == opener:
+                inner_depth += 1
+            elif char == closer:
+                inner_depth -= 1
+                if inner_depth == 0:
+                    return cursor + 1
+            cursor += 1
+        return -1
+
+    while index < length:
+        char = text[index]
+        if char == "\\" and index + 1 < length:
+            current.append(text[index : index + 2])
+            index += 2
+            continue
+        if char in "'\"":
+            close = text.find(char, index + 1)
+            while close != -1 and char == '"' and text[close - 1] == "\\":
+                close = text.find(char, close + 1)
+            if close == -1:
+                resolved = False
+                current.append(text[index:])
+                index = length
+                continue
+            current.append(text[index : close + 1])
+            index = close + 1
+            continue
+        if text.startswith("$((", index):
+            end = text.find("))", index)
+            if end == -1:
+                resolved = False
+                current.append(text[index:])
+                index = length
+                continue
+            current.append(text[index : end + 2])
+            index = end + 2
+            continue
+        if text.startswith("$(", index) or char == "`":
+            if char == "`":
+                end = text.find("`", index + 1)
+                inner = text[index + 1 : end] if end != -1 else ""
+                end = end + 1 if end != -1 else -1
+            else:
+                end = matching(index + 1, "(", ")")
+                inner = text[index + 2 : end - 1] if end != -1 else ""
+            if end == -1:
+                resolved = False
+                current.append(text[index:])
+                index = length
+                continue
+            # The substitution's output is not a path, but the command inside
+            # it really runs, so it is judged as its own segment.
+            current.append("$__substitution__")
+            nested.append(inner)
+            index = end
+            continue
+        if text.startswith("${", index):
+            end = text.find("}", index)
+            if end == -1:
+                resolved = False
+                current.append(text[index:])
+                index = length
+                continue
+            current.append(text[index : end + 1])
+            index = end + 1
+            continue
+        if char == "(":
+            depth += 1
+            flush()
+            index += 1
+            continue
+        if char == ")":
+            depth -= 1
+            if depth < 0:
+                resolved = False
+                depth = 0
+            flush()
+            index += 1
+            continue
+        if char in "{}" and (
+            not "".join(current).strip() or "".join(current)[-1:] in " \t"
+        ) and (index + 1 >= length or text[index + 1] in " \t\n;"):
+            flush()
+            index += 1
+            continue
+        if text.startswith(("&&", "||", ";;"), index):
+            flush()
+            index += 2
+            continue
+        if char in ";|&\n":
+            flush()
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    flush()
+    if depth != 0:
+        resolved = False
+    for inner in nested:
+        inner_segments, inner_resolved = split_command_segments(inner)
+        segments.extend(inner_segments)
+        resolved = resolved and inner_resolved
+    return segments, resolved
+
+
+def analyse_command_segment(
+    label: str, segment: str, tainted: set[str], violations: list[str]
+) -> int:
+    """Judge one separately executed command; return the mentions it accounts for."""
+    code = segment.strip()
     if not code:
         return 0
     accounted = 0
+    # Mediation is a property of *this* command, never of the line it shares
+    # with others: naming the launcher in one segment says nothing about what
+    # the next segment runs.
     is_mediated = mediated(code)
     for name, value in SHELL_ASSIGNMENT.findall(code):
         if names_generator_entry(value):
@@ -3409,10 +3775,36 @@ def analyse_command(
                     )
     mentions = entry_mentions(code)
     if mentions > accounted and not is_mediated:
+        violations.append(f"{label}: unresolved reference to a generator entry: {code}")
+    return max(accounted, mentions)
+
+
+def analyse_command(
+    label: str, command: str, tainted: set[str], violations: list[str]
+) -> int:
+    """Judge a shell command list, one executed segment at a time.
+
+    Assignments carry across segments because shell semantics carry them, so
+    `GEN=...; node "$GEN"` is still rejected, while each execution is judged
+    against the launcher only when the launcher is in that same command.
+    """
+    text = command.strip()
+    if not text:
+        return 0
+    segments, resolved = split_command_segments(text)
+    mentions = entry_mentions(text)
+    if not resolved and mentions:
         violations.append(
-            f"{label}: unresolved reference to a generator entry: {code}"
+            f"{label}: unresolved shell grouping around a generator entry: {text}"
         )
-    return max(accounted, mentions if is_mediated else 0)
+    accounted = 0
+    for segment in segments:
+        accounted += analyse_command_segment(label, segment, tainted, violations)
+    if mentions > sum(entry_mentions(segment) for segment in segments):
+        violations.append(
+            f"{label}: unresolved reference to a generator entry: {text}"
+        )
+    return accounted
 
 
 def shell_violations(relative: str, text: str) -> list[str]:
@@ -4023,6 +4415,107 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         "frontend/scripts/wrapper.mjs",
         "// `node scripts/locale-catalog/generate.mjs` would skip the launcher.\n"
         "run();\n",
+        True,
+    ),
+    "a launcher and a direct call separated by a semicolon": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs; node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher and a direct call separated by and": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs && node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher and a direct call separated by or": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs || node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher and a direct call separated by a pipe": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs | node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher and a direct call on separate lines": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\nnode scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a direct call before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generate.mjs && node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "a launcher segment followed by a variable indirection": (
+        "offline/scripts/99-wrapper.sh",
+        "GEN=frontend/scripts/locale-catalog/generate.mjs; node scripts/locale-catalog/generator-launcher.mjs generate.mjs && node \"$GEN\"\n",
+        False,
+    ),
+    "a direct call inside a subshell after the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs && (cd frontend && node scripts/locale-catalog/generate.mjs)\n",
+        False,
+    ),
+    "a direct call inside a brace group after the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs; { node scripts/locale-catalog/generate.mjs; }\n",
+        False,
+    ),
+    "a direct call inside a command substitution": (
+        "offline/scripts/99-wrapper.sh",
+        "OUT=$(node scripts/locale-catalog/generate.mjs)\n",
+        False,
+    ),
+    "a direct call inside a backtick substitution": (
+        "offline/scripts/99-wrapper.sh",
+        "OUT=`node scripts/locale-catalog/generate.mjs`\n",
+        False,
+    ),
+    "an unbalanced group around a direct call": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs && (node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher and a direct call in a package script": (
+        "frontend/package.json",
+        '{"scripts": {"prebuild": "node ./scripts/locale-catalog/generator-launcher.mjs '
+        'generate.mjs && node ./scripts/locale-catalog/generate.mjs"}}\n',
+        False,
+    ),
+    "a launcher and a direct call in a mise task": (
+        "mise.toml",
+        '[tasks."locale-catalog:rogue"]\n'
+        'run = "node scripts/locale-catalog/generator-launcher.mjs generate.mjs && node scripts/locale-catalog/generate.mjs"\n',
+        False,
+    ),
+    "a launcher and a direct call in a workflow run block": (
+        ".github/workflows/rogue.yml",
+        "jobs:\n  build:\n    steps:\n"
+        "      - run: |\n"
+        "          node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n"
+        "          node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a launcher and a direct call in a Docker instruction": (
+        "Dockerfile",
+        "RUN node scripts/locale-catalog/generator-launcher.mjs generate.mjs \\\n  && node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "quoted separators kept as launcher arguments": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs --sep ';' --join '&&' --pipe '|'\n",
+        True,
+    ),
+    "several launcher commands in one list": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs && node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs "
+        "; node scripts/locale-catalog/generator-launcher.mjs generate.mjs --check\n",
+        True,
+    ),
+    "a launcher inside a subshell": (
+        "offline/scripts/99-wrapper.sh",
+        "(cd frontend && node scripts/locale-catalog/generator-launcher.mjs generate.mjs)\n",
         True,
     ),
 }

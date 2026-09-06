@@ -318,8 +318,11 @@ policy test asserts the posture rather than any containment. It follows job and
 step `uses:` through local reusable workflows and composite actions
 recursively — with canonical path containment and cycle detection — so a
 governed command reached through arbitrary local nesting is still judged, and a
-remote reusable workflow named at job level must be pinned to a 40-hex commit
-just like a step action.
+remote reusable workflow named at job level must be an exact
+`owner/repo/path@<40-hex>` reference, whether it appears at the root or several
+local hops down. A remote reusable workflow is opaque, so reaching one from
+anywhere in the chain classifies the whole chain as governed even when no
+document in it contains a literal governed marker.
 
 **Untrusted, and therefore checked.** Externally produced tool and dependency
 artifacts (the CPython distribution, Node, uv, wheels, npm packages),
@@ -675,14 +678,21 @@ structurally, so a static import, an `export … from`, a literal `import()`, a
 `require()`, a computed `import()` and a child-process argv are all seen —
 including across line breaks and around an interleaved `/* … */`. Shell files
 (and Dockerfile `RUN`, package scripts, mise task `run`, and workflow `run`)
-are read after joining backslash continuations, with variable assignments
-tracked, so `GENERATOR=…/generate.mjs` followed later by `node "$GENERATOR"` is
-rejected. Python callers are read from the AST: a constant or `Path` join bound
-only for hashing is fine, the same value reaching `subprocess` argv — directly
-or through a variable — is not. Path spellings are normalised (`./`, `..`,
-duplicate separators, quoting) before comparison, and a mention the grammar
-cannot resolve fails closed. This is reproducibility and centralisation over
-trusted code, not containment.
+are read after joining backslash continuations, then split — quote- and
+escape-aware — into the commands that actually run: `;`, `&&`, `||`, `|`,
+newlines, `(…)` subshells, `{ …; }` groups and `$(…)`/backtick substitutions
+each start a new segment, while a quoted `;` or `&&` stays an argument. The
+launcher mediates only the command it appears in, so
+`node …/generator-launcher.mjs generate.mjs && node …/generate.mjs` is
+rejected on its second segment; assignments carry across segments the way the
+shell carries them, so `GEN=…/generate.mjs; node "$GEN"` is rejected too, and
+an unbalanced quote or group around a generator mention fails closed. Python
+callers are read from the AST: a constant or `Path` join bound only for hashing
+is fine, the same value reaching `subprocess` argv — directly or through a
+variable — is not. Path spellings are normalised (`./`, `..`, duplicate
+separators, quoting) before comparison, and a mention the grammar cannot
+resolve fails closed. This is reproducibility and centralisation over trusted
+code, not containment.
 
 The synthetic fixture hashes all declared executable sources, both launcher
 stages, the lockfile, and the toolchain lock through `generatorSha256`, so the
