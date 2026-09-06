@@ -1,34 +1,32 @@
 #!/usr/bin/env python3
-"""Adversarial, ownership-safe tests for the sealed locale-catalog Python boundary.
+"""Regression tests for the locale-catalog tooling's checks and policies.
 
-These probes test T1 -- hostile or mistaken *committed* repository source, and
-the supply chain it names. They plant a change, run the real authoritative
-command, and require a refusal. Where a probe tampers with a toolchain, source
-or dependency file, it does so on a quiet host and then runs the command: that
-demonstrates stable-host tamper detection, which is the guarantee this boundary
-makes. None of these probes claims resistance to a concurrent same-UID process
-rewriting bytes between a check and its use (T2); nothing here is a race, and
-nothing here should be read as one. CI runs each governed command in an
-isolated ephemeral job, which is where T2 is actually addressed. Debuggers, the
-Docker daemon, the Git object database and a compromised OS are T3 and out of
-scope. See docs/locale-catalog.md.
+What this project trusts and what it does not, so these tests can be read for
+what they are:
 
-Every probe in this file -- source, schema, dependency, interpreter, alias and
-tamper alike -- runs inside an *invocation-owned* temporary copy of the exact
-governed tree. Nothing here ever creates, overwrites, truncates, restores or
-deletes a path inside the canonical worktree, and `main()` proves that: it
-snapshots the canonical paths earlier revisions of this test used to mutate
-(including the `locale-catalog-python-dependency-marker` sentinel and the
-`scripts/__pycache__` probe directory) and re-checks them byte for byte at the
-end.
+* **Trusted.** Every committed executable file here -- workflows, shell,
+  Python, Node, the frontend locale modules and their tests -- is reviewed
+  through pull request. A malicious commit, reviewer or maintainer is out of
+  scope, and nothing in this repository sandboxes its own code.
+* **Executed but not contained.** Pull-request CI runs unreviewed PR code by
+  design. What is bounded is its authority, not its behaviour: ephemeral jobs,
+  `contents: read`, no secrets, no publication.
+* **Untrusted and checked.** Externally produced tool and dependency
+  artifacts, environment and input data, cache contents, and generated output.
+  Those are the things these tests actually gate.
 
-Ownership is explicit rather than implied. Each probe tree carries an
-`.locale-catalog-boundary-owner` sentinel holding a freshly generated token;
-cleanup removes a directory only after re-reading that sentinel and confirming
-it still holds this invocation's token. The self-test-only mutating mode is
-gated on presenting the same token on the command line, and there is no root
-override in the production launcher or bootstrap at all -- a probe tree *is*
-its own root -- so nothing here can weaken a production check.
+So the probes below fall into three honest groups: *drift* checks (a reviewed
+file, a digest list or a generated artifact no longer matches what was
+recorded), *identity* checks (an external tool or dependency is exactly the
+pinned artifact), and *policy* checks (CI privilege, production
+centralisation, dependency lifecycle, ownership-safe cleanup). None of them
+claims to contain hostile committed code, and the capability lint they exercise
+is a review aid, not a proof.
+
+Every probe runs inside an invocation-owned temporary copy of the governed
+tree. Nothing here creates, overwrites, truncates, restores or deletes a path
+inside the canonical worktree, and `main()` proves it by re-checking the
+canonical paths byte for byte at the end.
 """
 
 from __future__ import annotations
@@ -39,11 +37,14 @@ import csv
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
 import time
 import uuid
+
+import yaml
 
 import locale_catalog_python_boundary
 import strict_json
@@ -102,7 +103,7 @@ CANONICAL_WITNESS_PATHS = (
 
 # Every reported bypass and variant the production visitor must reject, in the
 # exact shape it was reported. Each is prepended to a real governed source.
-BYPASS_SNIPPETS: dict[str, bytes] = {
+LINT_REGRESSION_SNIPPETS: dict[str, bytes] = {
     "runpy.run_path": b'import runpy\nrunpy.run_path("payload.py")\n',
     "runpy.run_module": b'import runpy\nrunpy.run_module("payload")\n',
     "aliased runpy": b'import runpy as r\nr.run_path("payload.py")\n',
@@ -234,7 +235,7 @@ BYPASS_SNIPPETS: dict[str, bytes] = {
 # The subset re-proved end to end through the real authoritative command, so
 # the in-process matrix is never the only thing between a bypass and a
 # governed byte.
-END_TO_END_BYPASSES = (
+LINT_END_TO_END_CASES = (
     "runpy.run_path",
     "subprocess.run",
     "os.system",
@@ -248,7 +249,7 @@ END_TO_END_BYPASSES = (
 # A source that already holds a narrow grant must not be able to widen it:
 # these run against `strict_json.py`, which is granted `subprocess.run` as a
 # call, `os.environ` as a value, and nothing else.
-GRANT_OVERREACH_SNIPPETS: dict[str, bytes] = {
+GRANT_WIDENING_SNIPPETS: dict[str, bytes] = {
     "granted source widening to subprocess.Popen": b'import subprocess\nsubprocess.Popen(["id"])\n',
     "granted source widening to subprocess.check_output": (
         b'import subprocess\nsubprocess.check_output(["id"])\n'
@@ -263,7 +264,7 @@ GRANT_OVERREACH_SNIPPETS: dict[str, bytes] = {
     "granted source widening to sys.modules": b"import sys\nsys.modules.clear()\n",
 }
 
-SCOPE_BYPASS_SNIPPETS: dict[str, bytes] = {
+SCOPE_LINT_REGRESSION_SNIPPETS: dict[str, bytes] = {
     "function parameter shadow": (
         b"import subprocess\n\ndef shadow(subprocess):\n    pass\n\nsubprocess.Popen(['id'])\n"
     ),
@@ -354,6 +355,51 @@ ANALYZER_PAYLOADS: dict[str, bytes] = {
     "match capture kept by a false guard": (
         b"import strict_json\n\nmatch strict_json:\n    case holder if False:\n"
         b'        holder = None\nholder.subprocess.run(["id"])\n'
+    ),
+    # The five categories the design review reproduced against the previous
+    # revision. These are lint correctness bugs, not exploits: the code they
+    # describe is trusted either way, and the point is that the lint reports
+    # what it claims to report.
+    "nested late-bound closure": (
+        b"def outer():\n    def exploit():\n"
+        b'        holder.subprocess.run(["id"])\n\n'
+        b"    import strict_json as holder\n\n    exploit()\n\n\nouter()\n"
+    ),
+    "class-body comprehension resolving a free name": (
+        b"import strict_json as holder\n\n\nclass C:\n    holder = None\n"
+        b"    leaked = [holder.subprocess for _ in range(1)]\n"
+    ),
+    "exception after a tuple element changed state": (
+        b"import strict_json\n\nholder = None\ntry:\n"
+        b'    pair = ((holder := strict_json), int("x"), (holder := None))\n'
+        b'except ValueError:\n    holder.subprocess.run(["id"])\n'
+    ),
+    "exception after a call argument changed state": (
+        b"import strict_json\n\nholder = None\ntry:\n"
+        b'    print((holder := strict_json), int("x"), (holder := None))\n'
+        b'except ValueError:\n    holder.subprocess.run(["id"])\n'
+    ),
+    "exception after a comparison operand changed state": (
+        b"import strict_json\n\nholder = None\ntry:\n"
+        b'    flag = len([(holder := strict_json)]) < int("x")\n    holder = None\n'
+        b'except ValueError:\n    holder.subprocess.run(["id"])\n'
+    ),
+    "chained comparison short circuit": (
+        b"import strict_json\n\nholder = strict_json\n1 < 0 < (holder := None)\n"
+        b'holder.subprocess.run(["id"])\n'
+    ),
+    "assert message skip path": (
+        b"import strict_json\n\nholder = strict_json\nassert True, (holder := None)\n"
+        b'holder.subprocess.run(["id"])\n'
+    ),
+    "ordered boolop skip path": (
+        b"import strict_json\n\nholder = strict_json\nFalse and (holder := None)\n"
+        b'holder.subprocess.run(["id"])\n'
+    ),
+    "three-operand boolop skip path": (
+        b"import strict_json\n\nholder = strict_json\n"
+        b"True or (holder := None) or (holder := None)\n"
+        b'holder.subprocess.run(["id"])\n'
     ),
     "match capture": (
         b"import strict_json\n\nmatch strict_json:\n    case holder:\n"
@@ -534,6 +580,23 @@ ANALYZER_CONTROLS: dict[str, bytes] = {
     "match guard over data": (
         b"value = 1\nmatch value:\n    case found if found > 0:\n        result = found\n"
         b"    case _:\n        result = 0\n"
+    ),
+    "comprehension target stays local to the comprehension": (
+        b"def outer():\n    names = [name for name in ('a', 'b')]\n    return names\n\n\n"
+        b"def other():\n    name = 1\n    return name\n"
+    ),
+    "nested closure over data": (
+        b"def outer():\n    def inner():\n        return total\n\n    total = 1\n"
+        b"    return inner()\n"
+    ),
+    "class body comprehension over data": (
+        b"class Holder:\n    values = [index for index in range(3)]\n"
+    ),
+    "chained comparison over data": b"low = 1\nhigh = 3\nflag = low < 2 < high\n",
+    "assert with a message over data": b"count = 1\nassert count, f'count was {count}'\n",
+    "try with a walrus over data": (
+        b"holder = 0\ntry:\n    pair = ((holder := 1), int('1'), (holder := 2))\n"
+        b"except ValueError:\n    holder = 3\n"
     ),
     "plain conditional": b"holder = 1 if True else 2\n",
     "loop accumulation": b"total = 0\nfor value in range(3):\n    total += value\n",
@@ -856,7 +919,7 @@ def probe_tree_reader(tree: Path):
     return reader
 
 
-def scan_rejects(tree: Path, reader, target: str, label: str, snippet: bytes) -> None:
+def lint_rejects(tree: Path, reader, target: str, label: str, snippet: bytes) -> None:
     path = tree / target
     original = path.read_bytes()
     try:
@@ -864,37 +927,37 @@ def scan_rejects(tree: Path, reader, target: str, label: str, snippet: bytes) ->
         rejected = False
         try:
             locale_catalog_python_boundary.scan_python_closure(FIXTURE_ENTRY, source_reader=reader)
-        except locale_catalog_python_boundary.SourceBoundaryError:
+        except locale_catalog_python_boundary.CapabilityLintError:
             rejected = True
     finally:
         path.write_bytes(original)
     require(rejected, f"the production capability visitor accepted {label!r} in {target}")
 
 
-def test_capability_bypass_matrix(scratch: Path, token: str) -> int:
+def test_capability_lint_matrix(scratch: Path, token: str) -> int:
     tree = create_probe_tree(scratch, "capability-matrix", token, with_history=False)
     try:
         reader = probe_tree_reader(tree)
         locale_catalog_python_boundary.scan_python_closure(FIXTURE_ENTRY, source_reader=reader)
         checked = 0
         matrices = (
-            ((FIXTURE_ENTRY, HELPER_SOURCE), BYPASS_SNIPPETS),
-            ((GRANTED_SOURCE,), {**GRANT_OVERREACH_SNIPPETS, **SCOPE_BYPASS_SNIPPETS}),
+            ((FIXTURE_ENTRY, HELPER_SOURCE), LINT_REGRESSION_SNIPPETS),
+            ((GRANTED_SOURCE,), {**GRANT_WIDENING_SNIPPETS, **SCOPE_LINT_REGRESSION_SNIPPETS}),
         )
         for targets, snippets in matrices:
             for target in targets:
                 for label, snippet in sorted(snippets.items()):
-                    scan_rejects(tree, reader, target, label, snippet)
+                    lint_rejects(tree, reader, target, label, snippet)
                     checked += 1
         return checked
     finally:
         release_probe_tree(tree, token)
 
 
-def test_capability_matrix_end_to_end(scratch: Path, token: str) -> int:
+def test_capability_lint_end_to_end(scratch: Path, token: str) -> int:
     checked = 0
-    for label in END_TO_END_BYPASSES:
-        snippet = BYPASS_SNIPPETS[label]
+    for label in LINT_END_TO_END_CASES:
+        snippet = LINT_REGRESSION_SNIPPETS[label]
         for target in (FIXTURE_ENTRY, HELPER_SOURCE):
             tree = create_probe_tree(scratch, "bypass", token, with_history=False)
             try:
@@ -910,7 +973,7 @@ def test_capability_matrix_end_to_end(scratch: Path, token: str) -> int:
 
 
 def test_validated_target_really_executes(scratch: Path, token: str) -> int:
-    """A successful bootstrap is not sufficient: the selected checker must run."""
+    """A successful preflight is not sufficient: the selected checker must run."""
     tree = create_probe_tree(scratch, "target-execution", token, with_history=False)
     try:
         result = run_authoritative(tree, [FIXTURE_ENTRY, "--must-not-be-ignored"])
@@ -930,7 +993,7 @@ def test_validated_target_really_executes(scratch: Path, token: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_source_and_schema_tampering(scratch: Path, token: str) -> int:
+def test_source_and_schema_drift(scratch: Path, token: str) -> int:
     checked = 0
     for relative_path in TAMPER_TARGETS:
         tree = create_probe_tree(scratch, "tamper", token)
@@ -1354,7 +1417,7 @@ def test_toolchain_roots(scratch: Path, token: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_hostile_caller_environment(scratch: Path, token: str) -> int:
+def test_caller_environment_is_discarded(scratch: Path, token: str) -> int:
     tree = create_probe_tree(scratch, "hostile-env", token)
     try:
         hostile = scratch / f"hostile-{uuid.uuid4().hex}"
@@ -1450,7 +1513,7 @@ def test_hostile_caller_environment(scratch: Path, token: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_dependency_tampering(scratch: Path, token: str) -> int:
+def test_dependency_integrity(scratch: Path, token: str) -> int:
     tree = create_probe_tree(scratch, "dependency", token)
     try:
         marker = tree / "locale-catalog-python-dependency-marker"
@@ -1744,7 +1807,7 @@ def test_parallel_self_tests(scratch: Path, token: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Probe: the production analyzer's soundness matrix (T1)
+# Regression: the capability lint's own correctness matrix
 # ---------------------------------------------------------------------------
 
 
@@ -1756,7 +1819,7 @@ def analyzer_verdict(tree: Path, reader, target: str, snippet: bytes) -> str | N
         path.write_bytes(splice_snippet(original, snippet))
         try:
             locale_catalog_python_boundary.scan_python_closure(FIXTURE_ENTRY, source_reader=reader)
-        except locale_catalog_python_boundary.SourceBoundaryError as error:
+        except locale_catalog_python_boundary.CapabilityLintError as error:
             return str(error)
         return None
     finally:
@@ -1825,13 +1888,13 @@ def test_analyzer_grammar_coverage() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Probe: the trusted computing base is authenticated before it executes (T1)
+# Drift: reviewed tooling no longer matches its recorded digest
 # ---------------------------------------------------------------------------
 
-TCB_PAYLOAD_MARKER = "locale-catalog-boundary-tcb-payload"
+DRIFT_PAYLOAD_MARKER = "locale-catalog-boundary-tcb-payload"
 
 
-def replacement_analyzer(marker: Path) -> bytes:
+def drifted_lint_module(marker: Path) -> bytes:
     """A permissive scanner that announces itself the moment it is imported."""
     return (
         "from pathlib import Path\n"
@@ -1843,7 +1906,7 @@ def replacement_analyzer(marker: Path) -> bytes:
         "SOURCE_SENSITIVE_IMPORTS = {}\n"
         "TRUSTED_SOURCES = frozenset()\n"
         "\n"
-        "class SourceBoundaryError(ValueError):\n"
+        "class CapabilityLintError(ValueError):\n"
         "    pass\n"
         "\n"
         "def read_source(relative_path):\n"
@@ -1857,25 +1920,26 @@ def replacement_analyzer(marker: Path) -> bytes:
     ).encode("utf-8")
 
 
-def test_trusted_source_replacement(scratch: Path, token: str) -> int:
-    """A replaced analyzer or bootstrap is refused before it can run.
+def test_reviewed_source_drift(scratch: Path, token: str) -> int:
+    """A reviewed source that no longer matches its recorded digest stops the run.
 
-    The capability analyzer decides whether every other governed source may
-    execute, so it cannot be allowed to vouch for itself after executing. Each
-    trusted source is replaced in turn -- the analyzer with a payload-bearing
-    permissive scanner, the others with a byte change -- and the command must
-    fail against the digest committed in the toolchain lock. For the analyzer,
-    the payload marker proves the refusal happened before its top-level code
-    could run.
+    These files are trusted committed code; the digests in the runtime profile
+    are a *drift record*, so that changing one has to be a coordinated,
+    reviewed edit rather than a quiet difference between what ran and what the
+    profile says ran. Repository code cannot authenticate the shell that is
+    already executing it, and nothing here pretends otherwise -- what it does
+    do is notice when the recorded identity and the file disagree. For the
+    capability lint the check happens before it is imported, which is worth
+    having simply because a half-edited lint should not decide anything.
     """
     checked = 0
     for relative_path in sorted(locale_catalog_python_boundary.TRUSTED_SOURCES):
         tree = create_probe_tree(scratch, "trusted-source", token, with_history=False)
         try:
-            marker = tree / TCB_PAYLOAD_MARKER
+            marker = tree / DRIFT_PAYLOAD_MARKER
             path = tree / relative_path
             if relative_path == "scripts/locale_catalog_python_boundary.py":
-                path.write_bytes(replacement_analyzer(marker))
+                path.write_bytes(drifted_lint_module(marker))
             else:
                 path.write_bytes(path.read_bytes() + b"\n# trusted source tamper probe\n")
             result = run_authoritative(tree, [FIXTURE_ENTRY, "--check"])
@@ -1897,7 +1961,7 @@ def test_trusted_source_replacement(scratch: Path, token: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Probe: uv never starts against a project or lock that could execute code (T1)
+# Identity: uv never starts against a project or lock that could build code
 # ---------------------------------------------------------------------------
 
 UV_ATTESTOR_SUCCESS = "hash-pinned registry distributions"
@@ -2062,14 +2126,14 @@ def test_dependency_source_attestation(scratch: Path, token: str) -> int:
 # Probe: the Node module graph is enforced by the loader, not by reading text
 # ---------------------------------------------------------------------------
 
-NODE_LAUNCHER_RELATIVE_PATH = "frontend/scripts/locale-catalog/sealed-node-launcher.mjs"
-NODE_ALLOWLIST_NAME = "sealed-node-allowlist.json"
-NODE_PAYLOAD_MARKER = "locale-catalog-node-payload-ran"
+GENERATOR_LAUNCHER_RELATIVE_PATH = "frontend/scripts/locale-catalog/generator-launcher.mjs"
+GENERATOR_DIGESTS_NAME = "generator-module-digests.json"
+GENERATOR_PAYLOAD_MARKER = "locale-catalog-node-payload-ran"
 
 # The exact import syntaxes the review used to defeat the previous lexical
 # scanner, plus the plain forms. None of them changes what the loader is asked
 # to resolve, which is the whole point of enforcing at resolution time.
-NODE_IMPORT_PAYLOADS: dict[str, str] = {
+GENERATOR_IMPORT_DRIFT_CASES: dict[str, str] = {
     "leading whitespace static import": " import '../../payload.mjs'\n",
     "comment inside a dynamic import": "import /* unchecked */ ('../../payload.mjs')\n",
     "plain dynamic import": "await import('../../payload.mjs')\n",
@@ -2083,17 +2147,17 @@ NODE_IMPORT_PAYLOADS: dict[str, str] = {
 }
 
 
-def sealed_node_binary() -> str:
+def pinned_node_binary() -> str:
     return strict_json.trusted_node()
 
 
-def build_node_probe(scratch: Path, entry_source: str, extra: dict[str, str]) -> tuple[Path, Path]:
+def build_generator_probe(scratch: Path, entry_source: str, extra: dict[str, str]) -> tuple[Path, Path]:
     """A minimal frontend-shaped tree with the real launcher and a payload."""
     root = scratch / f"node-loader-{uuid.uuid4().hex}"
     generator = root / "scripts" / "locale-catalog"
     generator.mkdir(parents=True)
-    shutil.copy2(ROOT / NODE_LAUNCHER_RELATIVE_PATH, generator / "sealed-node-launcher.mjs")
-    marker = root / NODE_PAYLOAD_MARKER
+    shutil.copy2(ROOT / GENERATOR_LAUNCHER_RELATIVE_PATH, generator / "generator-launcher.mjs")
+    marker = root / GENERATOR_PAYLOAD_MARKER
     (root / "payload.mjs").write_text(
         "import { writeFileSync } from 'node:fs'\n"
         f"writeFileSync({str(marker)!r}, 'executed')\n",
@@ -2111,16 +2175,16 @@ def build_node_probe(scratch: Path, entry_source: str, extra: dict[str, str]) ->
         name: hashlib.sha256((generator / name).read_bytes()).hexdigest()
         for name in sorted(["entry.mjs", *extra])
     }
-    (generator / NODE_ALLOWLIST_NAME).write_text(
+    (generator / GENERATOR_DIGESTS_NAME).write_text(
         json.dumps(allowlist, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return root, marker
 
 
-def run_node_probe(root: Path, entry: str = "entry.mjs") -> subprocess.CompletedProcess:
-    launcher = root / "scripts" / "locale-catalog" / "sealed-node-launcher.mjs"
+def run_generator_probe(root: Path, entry: str = "entry.mjs") -> subprocess.CompletedProcess:
+    launcher = root / "scripts" / "locale-catalog" / "generator-launcher.mjs"
     return subprocess.run(
-        [sealed_node_binary(), str(launcher), entry],
+        [pinned_node_binary(), str(launcher), entry],
         cwd=root,
         env=probe_environment(),
         capture_output=True,
@@ -2130,19 +2194,21 @@ def run_node_probe(root: Path, entry: str = "entry.mjs") -> subprocess.Completed
     )
 
 
-def test_node_module_graph_enforcement(scratch: Path, token: str) -> int:
-    """A live Node run must refuse every import outside the allowlist.
+def test_generator_module_graph_drift(scratch: Path, token: str) -> int:
+    """A live Node run reports any module outside the committed digest list.
 
-    The payloads are the exact syntaxes that defeated lexical scanning. The
-    allowlist digest of the *entry* module is recomputed for each one, so the
-    refusal being proved is the import rule and not a stale hash -- which is
-    what a hostile-but-committed generator source would look like.
+    The cases are the exact import syntaxes a lexical scanner missed -- leading
+    whitespace, a comment inside `import(...)`, computed specifiers. The digest
+    of the *entry* module is recomputed for each one so what is being exercised
+    is the module-graph rule rather than a stale hash. This is drift detection
+    over trusted committed code, not a JavaScript sandbox: everything the
+    launcher does permit runs with full Node privileges.
     """
     checked = 0
-    for label, payload in sorted(NODE_IMPORT_PAYLOADS.items()):
-        root, marker = build_node_probe(scratch, payload, {})
+    for label, payload in sorted(GENERATOR_IMPORT_DRIFT_CASES.items()):
+        root, marker = build_generator_probe(scratch, payload, {})
         try:
-            result = run_node_probe(root)
+            result = run_generator_probe(root)
             require(
                 result.returncode != 0 and "refusing to" in result.stderr,
                 f"the sealed Node launcher accepted {label!r}\n"
@@ -2159,7 +2225,7 @@ def test_node_module_graph_enforcement(scratch: Path, token: str) -> int:
     # Controls: builtins and allowlisted local modules must still load, and the
     # entry module must actually run -- a launcher that refuses everything
     # proves nothing.
-    root, marker = build_node_probe(
+    root, marker = build_generator_probe(
         scratch,
         "import { writeFileSync } from 'node:fs'\n"
         "import { value } from './helper.mjs'\n"
@@ -2168,7 +2234,7 @@ def test_node_module_graph_enforcement(scratch: Path, token: str) -> int:
     )
     control = scratch / "node-control-ok"
     try:
-        result = run_node_probe(root)
+        result = run_generator_probe(root)
         require(
             result.returncode == 0 and control.exists() and control.read_text() == "42",
             "the sealed Node launcher refused a builtin plus an allowlisted local import\n"
@@ -2181,7 +2247,7 @@ def test_node_module_graph_enforcement(scratch: Path, token: str) -> int:
         shutil.rmtree(root, ignore_errors=True)
 
     # A tampered allowlisted module must be refused by digest, before it loads.
-    root, marker = build_node_probe(
+    root, marker = build_generator_probe(
         scratch,
         "import './helper.mjs'\n",
         {"helper.mjs": "export const value = 1\n"},
@@ -2193,7 +2259,7 @@ def test_node_module_graph_enforcement(scratch: Path, token: str) -> int:
             f"writeFileSync({str(marker)!r}, 'executed')\n",
             encoding="utf-8",
         )
-        result = run_node_probe(root)
+        result = run_generator_probe(root)
         require(
             result.returncode != 0 and "committed digest" in result.stderr,
             "a rewritten allowlisted module was not refused against its digest\n"
@@ -2207,117 +2273,207 @@ def test_node_module_graph_enforcement(scratch: Path, token: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Probe: every governed Node entry point goes through the sealed launcher
+# Policy: CI jobs that run governed commands keep least privilege
 # ---------------------------------------------------------------------------
 
-GENERATOR_MODULE_NAMES = ("generate.mjs", "verify-dist.mjs")
-LAUNCHER_INVOCATIONS = ("sealed-node-launcher.mjs", "sealed_node_argv")
-# Files that legitimately mention a generator module without invoking it.
-POLICY_EXEMPT_PATHS = frozenset(
-    {
-        "frontend/scripts/locale-catalog/known-gaps.json",
-        "frontend/scripts/locale-catalog/sealed-node-allowlist.json",
-        "scripts/validate-locale-catalog.py",
-        "scripts/test_locale_catalog_python_boundary.py",
-        "offline/scripts/test-frontend-cache-hash.sh",
-    }
-)
-POLICY_SEARCH_ROOTS = (
-    ".github/workflows",
-    "frontend/package.json",
-    "frontend/scripts",
-    "offline/scripts",
-    "scripts",
-    "Dockerfile",
-    "docs",
-)
+WORKFLOW_DIR = ROOT / ".github" / "workflows"
+GOVERNED_COMMAND_MARKERS = ("mise run contracts:", "mise run locale-catalog:")
+FORBIDDEN_TRIGGERS = ("pull_request_target", "workflow_run")
+PUBLISHING_ACTIONS = ("actions/upload-artifact", "softprops/action-gh-release", "actions/upload-pages-artifact")
+PINNED_ACTION = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 
 
-def policy_candidate_files() -> list[Path]:
-    candidates: list[Path] = []
-    for relative in POLICY_SEARCH_ROOTS:
-        path = ROOT / relative
-        if path.is_file():
-            candidates.append(path)
+def load_workflows() -> dict[str, dict]:
+    """Parse every workflow once, structurally.
+
+    Prose scanning would flag a comment and miss a real setting; every check
+    below reads the parsed document instead.
+    """
+    documents: dict[str, dict] = {}
+    for path in sorted(WORKFLOW_DIR.glob("*.yml")):
+        documents[path.name] = yaml.safe_load(path.read_text(encoding="utf-8"))
+    require(documents, "no workflows were found to check")
+    return documents
+
+
+def workflow_triggers(document: dict) -> set[str]:
+    # `on` is the YAML 1.1 boolean `True` once parsed, which is exactly the
+    # kind of thing a text scan gets wrong.
+    triggers = document.get("on", document.get(True))
+    if isinstance(triggers, str):
+        return {triggers}
+    if isinstance(triggers, list):
+        return set(triggers)
+    if isinstance(triggers, dict):
+        return set(triggers)
+    return set()
+
+
+def job_runs_governed_commands(job: dict) -> bool:
+    for step in job.get("steps", []) or []:
+        run = step.get("run") if isinstance(step, dict) else None
+        if isinstance(run, str) and any(marker in run for marker in GOVERNED_COMMAND_MARKERS):
+            return True
+    return False
+
+
+def test_ci_privilege_policy() -> int:
+    """CI jobs that run governed commands hold as little authority as possible.
+
+    PR CI may execute unreviewed pull-request code -- that is what CI is for --
+    and nothing here contains it. What this asserts is the *blast radius*: an
+    ephemeral job with read-only contents, no secrets, no credential-bearing
+    checkout, actions pinned to exact commits, and no publication of
+    authoritative output from a pull request.
+    """
+    checked = 0
+    documents = load_workflows()
+    for name, document in sorted(documents.items()):
+        jobs = document.get("jobs") or {}
+        governed = {
+            job_name: job
+            for job_name, job in jobs.items()
+            if isinstance(job, dict) and job_runs_governed_commands(job)
+        }
+        if not governed:
             continue
-        if not path.is_dir():
-            continue
-        for child in sorted(path.rglob("*")):
-            if child.is_file() and not child.is_symlink():
-                candidates.append(child)
-    return candidates
+        checked += 1
+        triggers = workflow_triggers(document)
+        for trigger in FORBIDDEN_TRIGGERS:
+            require(
+                trigger not in triggers,
+                f"{name} triggers on {trigger}, which would run pull-request code with the "
+                "base repository's authority",
+            )
+        text = (WORKFLOW_DIR / name).read_text(encoding="utf-8")
+        require(
+            "secrets." not in text,
+            f"{name} references secrets in a workflow that runs governed commands",
+        )
+        permissions = document.get("permissions")
+        require(
+            permissions == {"contents": "read"},
+            f"{name} must declare `permissions: contents: read`, got {permissions!r}",
+        )
+        for job_name, job in sorted(governed.items()):
+            job_permissions = job.get("permissions", permissions)
+            require(
+                job_permissions == {"contents": "read"},
+                f"{name}:{job_name} widens permissions to {job_permissions!r}",
+            )
+            for step in job.get("steps", []) or []:
+                if not isinstance(step, dict):
+                    continue
+                uses = step.get("uses")
+                if uses is not None:
+                    require(
+                        PINNED_ACTION.match(str(uses)) is not None,
+                        f"{name}:{job_name} uses {uses!r}, which is not pinned to a 40-hex commit",
+                    )
+                    if str(uses).startswith("actions/checkout@"):
+                        with_block = step.get("with") or {}
+                        require(
+                            with_block.get("persist-credentials") is False,
+                            f"{name}:{job_name} checks out with credentials persisted",
+                        )
+                    if any(str(uses).startswith(action) for action in PUBLISHING_ACTIONS):
+                        require(
+                            "pull_request" not in triggers,
+                            f"{name}:{job_name} publishes an artifact from a pull request",
+                        )
+                checked += 1
+    require(checked > 10, f"the CI privilege scan only examined {checked} elements")
+    return checked
 
 
-def test_generator_invocation_policy() -> int:
-    """No repository path may start or import a generator module directly.
+# ---------------------------------------------------------------------------
+# Policy: production catalog generation is centralised on one entry point
+# ---------------------------------------------------------------------------
 
-    Enforcement lives in the launcher, so a single `node .../generate.mjs`
-    anywhere -- a workflow step, a package script, the container build, the
-    offline installer -- would run the same generator with no module-graph
-    enforcement at all. This enumerates every mention and fails on a bypass.
+# Exactly the files that *execute* catalog generation in production, and the
+# structured way each of them does it. Documentation, tests and the frontend's
+# own trusted test modules are not production execution paths and are not
+# scanned as executable text.
+PRODUCTION_GENERATION_PATHS: dict[str, str] = {
+    "scripts/generate-locale-catalog.py": "generator_launcher_argv",
+    "scripts/validate-locale-catalog.py": "generator_launcher_argv",
+    "scripts/validate-catalog-serving.py": "generator_launcher_argv",
+    "frontend/package.json": "generator-launcher.mjs",
+    "Dockerfile": "generator-launcher.mjs",
+    "offline/scripts/03-build-frontend.sh": "generator-launcher.mjs",
+    "offline/scripts/05-package.sh": "generator-launcher.mjs",
+    ".github/workflows/locale-catalog.yml": "generator-launcher.mjs",
+}
+GENERATOR_ENTRY_MODULES = ("generate.mjs", "verify-dist.mjs")
+GENERATOR_LAUNCHER_NAME = "generator-launcher.mjs"
+COMMENT_PREFIXES = ("#", "//", "*", chr(34) * 3, chr(39) * 3)
+EXECUTION_TOKENS = ("node", "NODE", "run", "RUN", "subprocess", "exec")
+
+
+def test_generator_production_policy() -> int:
+    """Every production generation path goes through the one launcher.
+
+    This is a centralisation check, not a containment one: the generator is
+    trusted committed code either way. Running it from six different places is
+    how behaviour drifts and how a provenance-bearing input silently stops
+    being hashed.
     """
     checked = 0
     violations: list[str] = []
-    for path in policy_candidate_files():
-        relative = path.relative_to(ROOT).as_posix()
-        if relative in POLICY_EXEMPT_PATHS or relative == NODE_LAUNCHER_RELATIVE_PATH:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
+    for relative, expected in sorted(PRODUCTION_GENERATION_PATHS.items()):
+        path = ROOT / relative
+        require(path.is_file(), f"production generation path {relative} is missing")
+        text = path.read_text(encoding="utf-8")
+        require(
+            expected in text,
+            f"{relative} no longer starts generation through {expected}",
+        )
         checked += 1
         for line_number, line in enumerate(text.splitlines(), start=1):
-            if any(token in line for token in LAUNCHER_INVOCATIONS):
+            if GENERATOR_LAUNCHER_NAME in line or "generator_launcher_argv" in line:
                 continue
-            names_module = any(module in line for module in GENERATOR_MODULE_NAMES)
-            if not names_module:
+            stripped = line.strip()
+            if stripped.startswith(COMMENT_PREFIXES):
                 continue
-            # Two bypass shapes matter: naming a generator module by path, and
-            # handing any `.mjs` that is not the launcher to a Node invocation.
-            by_path = any(
-                f"locale-catalog/{module}" in line for module in GENERATOR_MODULE_NAMES
-            )
-            invokes_node = any(
-                token in line
-                for token in ("node ", "NODE}", "NODE\"", "trusted_node()", 'tool("node")')
-            )
-            if by_path or invokes_node:
-                violations.append(f"{relative}:{line_number}: {line.strip()}")
+            for module in GENERATOR_ENTRY_MODULES:
+                if f"locale-catalog/{module}" not in line:
+                    continue
+                # A production path names a generator module only to *run* it,
+                # so a mention with no command around it is documentation.
+                if not any(token in line for token in EXECUTION_TOKENS):
+                    continue
+                violations.append(f"{relative}:{line_number}: {stripped}")
     require(
         not violations,
-        "these paths reach a locale-catalog generator module without the sealed launcher:\n"
+        "these production paths reach a generator module without the launcher:\n"
         + "\n".join(violations),
     )
-    require(checked > 20, f"the generator policy scan only examined {checked} files")
     return checked
 
 
 def test_npm_install_lifecycle_policy() -> int:
-    """Dependency install steps must not run package lifecycle scripts.
+    """Dependency installs must not run package lifecycle scripts.
 
-    A committed `postinstall` in any dependency runs before every preflight in
-    this repository, and could plant an importable module for the Node or
-    Python side to pick up later. Where lifecycle execution is not needed, it is
-    turned off rather than trusted.
+    A dependency's `postinstall` is externally produced code -- the one class
+    this project does treat as untrusted -- and it would otherwise run before
+    every check here. Turning lifecycle execution off where it is not needed is
+    cheap; this asserts none of the production install steps forgot.
     """
+    install_paths = (
+        ".github/workflows/locale-catalog.yml",
+        ".github/workflows/haskell.yml",
+        "Dockerfile",
+        "offline/scripts/03-build-frontend.sh",
+    )
     checked = 0
     violations: list[str] = []
-    # Only files that can actually run npm are scanned, and only at command
-    # position -- prose that mentions `npm ci` is documentation, not execution.
-    executable_suffixes = {".yml", ".yaml", ".sh", ".json"}
-    # `str.endswith("")` is always true, so an empty prefix is handled below
-    # rather than being listed here.
     command_prefixes = ("RUN", "run:", "if", "then", "else", "&&", "||", ";", "-")
-    for path in policy_candidate_files():
-        relative = path.relative_to(ROOT).as_posix()
-        if path.suffix not in executable_suffixes and path.name != "Dockerfile":
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, OSError):
-            continue
-        for line_number, line in enumerate(text.splitlines(), start=1):
+    for relative in install_paths:
+        path = ROOT / relative
+        require(path.is_file(), f"dependency install path {relative} is missing")
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             stripped = line.strip()
             if stripped.startswith("#") or stripped.startswith("//"):
                 continue
@@ -2343,7 +2499,7 @@ def test_npm_install_lifecycle_policy() -> int:
 
 
 # ---------------------------------------------------------------------------
-# Probe: the pre-stdlib import surface of the interpreter prefix (T1)
+# Identity: the whole import surface of the pinned interpreter prefix
 # ---------------------------------------------------------------------------
 
 PREFIX_PAYLOAD_MARKER = "locale-catalog-prefix-payload-ran"
@@ -2455,15 +2611,33 @@ def require_owned_probe_mode(token: str | None) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--probe", choices=("capability-matrix",))
+    parser.add_argument(
+        "--probe",
+        choices=("capability-matrix", "generator-production-policy", "ci-privilege-policy"),
+    )
     parser.add_argument("--owner-token")
     arguments = parser.parse_args()
+
+    # The policy checks read committed files and mutate nothing, so they run
+    # standalone without an owned probe tree -- which is what makes them usable
+    # as a quick local gate.
+    if arguments.probe == "generator-production-policy":
+        checked = test_generator_production_policy()
+        print(
+            "locale-catalog policy: "
+            f"{checked} production generation paths centralised on the generator launcher"
+        )
+        return
+    if arguments.probe == "ci-privilege-policy":
+        checked = test_ci_privilege_policy()
+        print(f"locale-catalog policy: {checked} CI privilege assertions passed")
+        return
 
     if arguments.probe is not None:
         token = require_owned_probe_mode(arguments.owner_token)
         scratch, scratch_token = owned_scratch()
         try:
-            checked = test_capability_bypass_matrix(scratch, token)
+            checked = test_capability_lint_matrix(scratch, token)
         finally:
             release_owned_scratch(scratch, scratch_token)
         print(f"locale-catalog python boundary: {checked} capability-matrix rejections proved")
@@ -2475,22 +2649,23 @@ def main() -> None:
     totals: dict[str, int] = {}
     try:
         totals["interpreter prefix surface"] = test_interpreter_prefix_import_surface(scratch, token)
-        totals["node module graph"] = test_node_module_graph_enforcement(scratch, token)
-        totals["generator invocation policy"] = test_generator_invocation_policy()
+        totals["generator module graph drift"] = test_generator_module_graph_drift(scratch, token)
+        totals["ci privilege policy"] = test_ci_privilege_policy()
+        totals["generator production policy"] = test_generator_production_policy()
         totals["npm lifecycle policy"] = test_npm_install_lifecycle_policy()
         totals["analyzer matrix"] = test_analyzer_matrix(scratch, token)
         totals["analyzer grammar coverage"] = test_analyzer_grammar_coverage()
-        totals["trusted source replacement"] = test_trusted_source_replacement(scratch, token)
+        totals["reviewed source drift"] = test_reviewed_source_drift(scratch, token)
         totals["dependency source attestation"] = test_dependency_source_attestation(scratch, token)
-        totals["capability matrix"] = test_capability_bypass_matrix(scratch, token)
-        totals["capability matrix end to end"] = test_capability_matrix_end_to_end(scratch, token)
+        totals["capability lint matrix"] = test_capability_lint_matrix(scratch, token)
+        totals["capability lint end to end"] = test_capability_lint_end_to_end(scratch, token)
         totals["target execution"] = test_validated_target_really_executes(scratch, token)
-        totals["source and schema tampering"] = test_source_and_schema_tampering(scratch, token)
+        totals["source and schema drift"] = test_source_and_schema_drift(scratch, token)
         totals["fixture writer ownership"] = test_fixture_writer_ownership(scratch, token)
         totals["workflow base authority"] = test_workflow_base_authority_wiring()
-        totals["toolchain attestation"] = test_toolchain_roots(scratch, token)
-        totals["hostile caller environment"] = test_hostile_caller_environment(scratch, token)
-        totals["dependency tampering"] = test_dependency_tampering(scratch, token)
+        totals["toolchain identity"] = test_toolchain_roots(scratch, token)
+        totals["caller environment"] = test_caller_environment_is_discarded(scratch, token)
+        totals["dependency integrity"] = test_dependency_integrity(scratch, token)
         totals["workspace ownership"] = test_workspace_ownership(scratch, token)
         totals["kill recovery"] = test_kill_recovery(scratch, token)
         totals["injected setup failure"] = test_injected_setup_failure(scratch, token)
@@ -2501,7 +2676,7 @@ def main() -> None:
     summary = ", ".join(f"{name}: {count}" for name, count in sorted(totals.items()))
     print(
         "locale-catalog python boundary: "
-        f"{sum(totals.values())} adversarial checks passed ({summary}); "
+        f"{sum(totals.values())} regression, drift, identity and policy checks passed ({summary}); "
         "the canonical worktree was never written"
     )
 

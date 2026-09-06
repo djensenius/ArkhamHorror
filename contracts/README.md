@@ -794,16 +794,18 @@ absolute, non-symlink, executable system `git` and passes it as
 onto it by `strict_json.git_argv()`. A missing or non-absolute value fails
 closed, so a `git` planted on a caller's `PATH` can never answer a governed
 mode or content lookup, and neither can one the caller names in
-`LOCALE_CATALOG_GIT` itself: the sealed stage discards the caller's whole
-environment before rebuilding that variable.
+`LOCALE_CATALOG_GIT` itself: the pinned isolated runner (`locale-catalog-python-sealed.sh`, a legacy
+name) discards the caller's whole environment before rebuilding that variable.
 The managed CPython, Node and uv binaries are likewise hashed before use and
 again from the bootstrap against the platform-specific digest identities in
 `scripts/locale_catalog_python_runtime.json`; an unsupported platform fails
-instead of accepting a merely version-shaped executable. The same lock pins the
-repository-side trusted computing base -- both launcher shell stages, the
-capability analyzer and the bootstrap -- and the sealed shell authenticates all
-four *before* it starts any interpreter, because a scanner that has already
-executed cannot vouch for itself.
+instead of accepting a merely version-shaped executable. The same file records
+digests for the reviewed tooling that runs governed commands -- both launcher
+shell stages, the capability lint, the preflight and the Node generator
+launcher -- as a drift record: repository code cannot authenticate the shell
+that is already executing it, and none of these entries pretends to. The one
+place the ordering matters is the capability lint, which is checked before it
+is imported, simply because a half-edited lint should not be deciding anything.
 
 Before uv runs at all, a non-executing attestor validates `pyproject.toml` and
 `uv.lock` under `-I -S -E -B` (Python `==3.14.7`, no `[build-system]`, no
@@ -813,42 +815,31 @@ with the declared platform), writes the exact validated bytes into the
 invocation's own project directory, and uv is pointed at that copy with
 `--no-build --no-sources --no-install-project --no-install-local`.
 
-The trusted computing base is named rather than self-proved: the workflow
-entry, both launcher shell stages, the bootstrap, the capability analyzer, the
-identity profile and the Node launcher. Changes to those are governed by
-ordinary human review and by exact provenance; the digests recorded for the
-shell stages are drift checks, because bash has already read them by the time
-any digest could be computed. The analyzer and the Node launcher *are*
-authenticated before they are imported, which is the check that matters, since
-the analyzer decides whether every other governed source may run.
+What that machinery is, and is not: every committed executable file in this
+repository is trusted code reviewed through pull request, and none of it is
+sandboxed by any of these checks. The checks exist for the things this project
+does *not* control -- externally produced tool and dependency artifacts,
+environment and input data, cache contents and generated output -- and for
+catching accidental drift in reviewed code before it merges. The Python
+capability lint is a review aid and defence in depth, not a proof; the Node
+generator launcher and its digest list centralise production generation, detect
+module-graph drift and bind exact input identity for provenance, and are not a
+JavaScript sandbox.
 
-Governed Node entry points are enforced by a loader rather than by reading
-source text: the sealed Node launcher installs Node resolve/load hooks before
-importing the entry module and permits only `node:` builtins, locked
-`node_modules` paths, and hashed allowlisted generator modules. Every
-authoritative generation path -- the mise task, the catalog validator, the
-serving gate, npm's `prebuild`, the container build and the offline installer --
-goes through it, and a policy test fails on any direct invocation.
+Governed Node entry points are started only through
+`frontend/scripts/locale-catalog/generator-launcher.mjs`, which installs Node
+resolve/load hooks before importing the entry module and permits `node:`
+builtins, locked `node_modules` paths, this invocation's own derived build
+output, and the generator modules listed in `generator-module-digests.json`.
+Every production path -- the mise task, the catalog validator, the serving gate,
+npm's `prebuild`, the container build and the offline installer -- goes through
+it, and a policy test fails on any direct invocation.
 
-These checks enforce T1 -- hostile or mistaken *committed* source outside that
-TCB, and the supply chain it names -- on a stable host. They do not claim to win a race with
-a concurrent same-UID process (T2), and debuggers, the Docker daemon and the
-Git object database are out of scope (T3). `docs/locale-catalog.md` states the
-division in full.
-
-Every one of these commands is a `mise` task that runs through
-`scripts/run-locale-catalog-python.sh`; there is no documented or wired route
-that reaches a governed Python entry point any other way. The tasks that can
-write, hash or approve a governed artifact — `contracts:catalog-fixture-write`,
-`contracts:manifest-hashes`, `locale-catalog:backend-keys` — go through exactly
-the same sealed stage as the read-only checks, and the sealed stage requires an
-explicitly named toolchain root
-(`LOCALE_CATALOG_MISE_ROOT="$HOME/.local/share/mise" mise run ...` locally, the
-workflow's sealed `defaults.run.shell` in CI).
-`locale-catalog:capability-probe` has one additional host authority: the
-absolute Stack executable is supplied as `LOCALE_CATALOG_STACK`; the workflow
-captures the path installed by its reviewed setup action and passes that exact
-path through the sealed shell, while a maintainer names it explicitly.
+CI keeps least privilege rather than containment: workflows that run governed
+commands are ephemeral, declare `permissions: contents: read`, reference no
+secrets, check out without persisted credentials, pin every action to a 40-hex
+commit, and publish nothing from a pull request. A dedicated policy test parses
+the workflows structurally and asserts exactly that.
 
 A human updating only the hash or only the version number is not sufficient;
 the gate cross-checks both. Its comparison logic (`evaluate_drift`) is pure

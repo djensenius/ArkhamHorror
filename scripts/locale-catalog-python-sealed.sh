@@ -19,17 +19,16 @@
 #      lock this stage attests the interpreter, its stdlib bytes, the external
 #      tools *and the repository-side trusted computing base* against.
 #
-# Threat model (see docs/locale-catalog.md for the full statement):
-#
-#   T1 (enforced)   Hostile or mistaken *committed* repository source. Every
-#                   identity below is checked against the committed lock before
-#                   the governed code that depends on it runs.
-#   T2 (not claimed) A concurrent same-UID process rewriting these files between
-#                   the check and the use. Checking early narrows the window and
-#                   catches stable-host tampering; it does not prevent a racing
-#                   owner. CI runs each command in an isolated ephemeral job.
-#   T3 (out of scope) ptrace/debuggers, the Docker daemon, the Git object
-#                   database, and a compromised OS, kernel or runner.
+# What this stage checks (see docs/locale-catalog.md for the full statement):
+# every committed file in this repository is trusted code reviewed through pull
+# request, and none of it is sandboxed here. What is checked is the externally
+# produced material a governed command depends on -- the pinned CPython
+# distribution and its whole import surface, Node, uv, the locked dependency
+# tree -- plus drift in the reviewed tooling, so that changing it has to be a
+# coordinated, reviewed edit. "Sealed" in this file's name is legacy: read it as
+# *the pinned, isolated runner*, the stage that discards the caller's
+# environment and runs governed commands against pinned toolchain paths.
+
 set -euo pipefail
 
 if [[ "${LOCALE_CATALOG_SEALED_SHELL:-}" != "1" ]]; then
@@ -127,7 +126,7 @@ check_tcb_digest "scripts/locale-catalog-python-sealed.sh"
 # of these yet.
 check_tcb_digest "scripts/locale_catalog_python_boundary.py"
 check_tcb_digest "scripts/locale_catalog_runtime.py"
-check_tcb_digest "frontend/scripts/locale-catalog/sealed-node-launcher.mjs"
+check_tcb_digest "frontend/scripts/locale-catalog/generator-launcher.mjs"
 readonly SEALED_ROOT="${LOCALE_CATALOG_MISE_ROOT:?locale-catalog python: LOCALE_CATALOG_MISE_ROOT is required for authoritative commands; the *-local convenience tasks are not authoritative}"
 
 # The sealed toolchain root must be named exactly, absolutely, and canonically.
@@ -434,8 +433,7 @@ require_digest "${RUNTIME_PYTHON}" "copied CPython 3.14.7" \
 # environment and builds nothing. It writes the exact bytes it validated into
 # this invocation's own project directory, and uv is then pointed at *that*
 # directory -- so what uv consumes is what was checked, not a second read of a
-# file that could differ (T1). On a stable host those are the same bytes; a
-# racing same-UID owner is T2 and is not claimed.
+# file that could differ.
 "${MKDIR}" "${LOCK_PROJECT}"
 /usr/bin/env -i \
   HOME="${SCRATCH_HOME}" \

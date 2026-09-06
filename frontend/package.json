@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite dev",
     "serve": "vite serve",
-    "prebuild": "node ./scripts/slim-cards.cjs && node ./scripts/locale-catalog/sealed-node-launcher.mjs generate.mjs --check",
+    "prebuild": "node ./scripts/slim-cards.cjs && node ./scripts/locale-catalog/generator-launcher.mjs generate.mjs --check",
     "build": "vite build",
     "postbuild": "node ./scripts/precompress.cjs",
     "precompress": "node ./scripts/precompress.cjs",

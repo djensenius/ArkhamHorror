@@ -297,69 +297,60 @@ downloaded against what it was promised.
 
 The Python contract commands have an equally narrow, enforceable boundary.
 
-### What this boundary defends against, exactly
+### What is trusted, what is checked, and what these checks are worth
 
-The value of a boundary is in what it *refuses*, so it is worth being precise
-about which attacker it refuses and which it does not.
+Being precise about this matters more than the checks themselves, because a
+check described as more than it is becomes a liability in review.
 
-**The trusted computing base, named explicitly.** Seven things decide whether
-anything else may run, and none of them can authenticate itself with code that
-is already running:
+**Trusted.** Every committed executable file in this repository — workflows,
+shell scripts, Python scripts, Node scripts, the frontend locale modules and
+their tests — is trusted code. It is reviewed through pull request, and a
+malicious commit, reviewer or maintainer is out of scope. **This project does
+not sandbox its own code**, and nothing described below should be read as doing
+so.
 
-* the GitHub workflow entry (`defaults.run.shell`) that starts a governed job,
-* `scripts/run-locale-catalog-python.sh`,
-* `scripts/locale-catalog-python-sealed.sh`,
-* `scripts/locale_catalog_runtime.py` (the bootstrap),
-* `scripts/locale_catalog_python_boundary.py` (the capability analyzer),
-* `scripts/locale_catalog_python_runtime.json` (the identity profile),
-* `frontend/scripts/locale-catalog/sealed-node-launcher.mjs` (the Node launcher).
+**Executed but not contained.** Pull-request CI runs unreviewed pull-request
+code; that is what CI is for. What is bounded is its *authority*, not its
+behaviour: the jobs are ephemeral, hold `permissions: contents: read`, receive
+no secrets, check out without persisted credentials, and publish nothing.
+Arbitrary PR code is not contained beyond that posture, and the CI privilege
+policy test asserts the posture rather than any containment.
 
-Changes to any of these are governed by **ordinary human and code review** plus
-exact provenance — their bytes are hashed into the catalog fixture's
-`generatorSha256` — and not by self-checking. The digests the profile records
-for the two shell stages and for itself are *drift checks*: bash has already
-read and begun executing the launcher by the time any digest could be computed,
-so a mismatch is a useful consistency signal about the running launcher and
-nothing more. Only the analyzer and the Node launcher are genuinely
-authenticated **before use**, because nothing has imported or started them at
-the point they are checked — which matters, since the analyzer is what decides
-whether every governed source may run.
+**Untrusted, and therefore checked.** Externally produced tool and dependency
+artifacts (the CPython distribution, Node, uv, wheels, npm packages),
+environment and settings and input data, filesystem and CI cache contents, and
+generated or released output. Those are what the machinery in this section
+actually gates.
 
-T1 below therefore means hostile or mistaken **governed source outside this
-TCB**.
+**What that machinery guarantees.**
 
-**T1 — enforced.** Hostile or mistaken **committed repository source outside
-the TCB**, and the supply chain that source names. A widened import or capability, a dynamic
-loader, unsafe deserialization, a redirected or buildable dependency, an added
-executable file, an unpinned tool, a generator whose module graph reaches
-outside the hashed closure: every one of those is rejected *before* any
-governed code executes, against exactly pinned trusted-computing-base,
-toolchain and dependency identities, with deterministic provenance over the
-bytes that ran. This is the class a code review and a CI gate actually have to
-catch, and it is the class this boundary is built for.
+* Exact tool and dependency identity: pinned versions bound to committed
+  SHA-256 digests before use.
+* No install-time dependency code: `uv --no-build --no-sources` and npm
+  `--ignore-scripts`, so an externally produced package cannot run a build
+  backend or a lifecycle hook.
+* Deterministic byte comparison and exact provenance: a governed artifact is
+  re-derived and compared, and records the digests of the inputs that produced
+  it.
+* Explicit base SHA for the revision gate, schema validation of every governed
+  document, ownership-proved cleanup of anything this tooling creates,
+  least-privilege CI, and one centralised production generation path.
 
-**T2 — not claimed.** A **concurrent process running as the same UID** that
-rewrites interpreter, source, dependency or Node bytes in the window between
-the moment they are verified and the moment they are used. The launcher checks
-as late and as close to use as it practically can, and several of its checks
-(the exit-side generator-closure re-check, the RECORD proof, the stdlib
-inventory) will *detect* many such rewrites — but detection is not prevention,
-and nothing here promises to win that race. POSIX file permissions are not
-treated as a boundary anywhere in this design. Where T2 is actually addressed
-is the environment: CI runs each governed command in an isolated ephemeral job
-with no untrusted concurrent process, and a maintainer running these tasks
-locally is trusting their own machine in exactly the same way they trust their
-own editor.
+**What it does not guarantee.** The Python capability lint is a conservative
+review aid and defence in depth — it is not a security boundary or a proof, and
+its completeness is not a release invariant (see its `KNOWN_INCOMPLETE`
+section). The Node generator launcher and its digest list enforce
+production-entry centralisation, module-graph drift detection and exact input
+identity for provenance; they are not a JavaScript sandbox, and the generator
+and locale code they start run with full Node privileges. Neither is a defence
+against another process on the same machine racing a check, and neither tries
+to be.
 
-**T3 — out of scope.** Debugger or `ptrace` attachment to a running process,
-control of the Docker daemon or membership of its group, write access to the
-Git object database or to an artifact after publication, and a compromised OS,
-kernel or runner. None of these is defended against, and none is pretended to
-be.
-
-Everything below should be read against that division: "verified before use"
-means T1-verified against a committed identity on a stable host, not
-race-proof.
+Two names survive from an earlier design: `scripts/locale-catalog-python-sealed.sh`
+and the `LOCALE_CATALOG_SEALED_SHELL` sentinel it checks. Read "sealed" there as
+legacy naming for *the pinned, isolated runner* — the stage that discards the
+caller's environment and runs governed commands against pinned toolchain paths.
+It is not a seal against this repository's own code.
 
 **One authoritative entry point.** Every mise/CI command that can generate,
 verify, update, approve, hash or revision-check a governed artifact goes
@@ -578,9 +569,10 @@ against the same attested lock bytes: exact names and versions, every wheel
 `RECORD` hash reproduced, no unrecorded or missing file, no symlink, no
 bytecode, no `sitecustomize`/`usercustomize`, and each installed distribution
 bound back to a hash-pinned locked wheel candidate through its `WHEEL` tags.
-That `RECORD` proof is an *integrity* check under the stable-host model (T1):
-it proves the installed tree corresponds to the locked, hash-pinned artifacts,
-not that a concurrent same-UID process could not have edited it afterwards. The catalog-only schema checks use the small
+That `RECORD` proof is an integrity check over an *externally produced*
+artifact: it establishes that the installed tree corresponds to the locked,
+hash-pinned wheels. It says nothing about another process on the machine
+editing the tree afterwards, and is not meant to. The catalog-only schema checks use the small
 fail-closed in-repository validator instead of `jsonschema`: it implements
 exactly the keywords the published v1 schemas use, refuses every keyword,
 `$ref` spelling and dialect it does not implement rather than ignoring one, and
@@ -606,22 +598,21 @@ copy of the exact governed tree. It never writes inside the canonical worktree,
 and it re-checks byte for byte the canonical paths earlier revisions of it used
 to mutate.
 
-This boundary assumes a stable host: the host shell and kernel, the
-hash-verifying `uv` downloader, and the absence of an untrusted concurrent
-same-UID process are trusted at the moment a command runs (T2/T3 above). It
-does not claim to defend against an actor who can replace both the checked-in
-trusted computing base *and* its committed toolchain lock. Within T1 it does
-make a changed governed source, a replaced capability analyzer or bootstrap, a
-changed or injected stdlib module, a replaced interpreter, Node or uv binary, a
-symlinked or non-canonical toolchain root, startup hooks, shadow bytecode, an
-added import capability, a widened grant, an unsafe deserializer, a PEP 517
-build backend, a redirected or unhashed dependency source, and a generator
-module graph that leaves the hashed closure all fail before a generator/check
-command can use them.
+These checks assume the machine running them is not actively hostile: the OS,
+kernel, shell and the hash-verifying `uv` and `npm` downloaders are trusted at
+the moment a command runs, and no other process is racing them. They do not
+claim to defend against an actor who can rewrite the reviewed tooling *and* its
+committed identity records — that is what code review is for. What they do
+catch is a changed governed source, a replaced interpreter, Node or uv binary,
+an injected or edited stdlib module, a zip or extension import candidate in the
+interpreter prefix, a non-canonical toolchain root, startup hooks, shadow
+bytecode, an added import or widened capability grant, an unsafe deserializer,
+a PEP 517 build backend, a redirected or unhashed dependency source, and a
+generator module graph that no longer matches its committed digests.
 
 **Node module graph, enforced at run time.** The JavaScript side is bound by a
 loader, not by reading source text. Every governed Node entry point starts
-through `frontend/scripts/locale-catalog/sealed-node-launcher.mjs`, which
+through `frontend/scripts/locale-catalog/generator-launcher.mjs`, which
 installs Node's synchronous `module.registerHooks` resolve/load hooks *before*
 importing the entry module. A resolution is permitted only if it is a `node:`
 builtin, a path under `frontend/node_modules` (bound by `package-lock.json`,
@@ -643,10 +634,10 @@ the whole closure — generator sources, launcher, allowlist, `package.json`,
 `package-lock.json` and the Node binary — before Node starts and again after it
 returns. The generator hashes the same directory into the catalog's own
 `provenance` record, so the bytes validated are the bytes provenance describes.
-This detects a stable-run change; it does not stop a concurrent same-UID
-rewrite (T2). It is also not a JavaScript capability sandbox: allowed generator
-code runs with full Node privileges, and the guarantee is that the graph which
-runs is the committed, hashed one.
+That is drift detection over trusted, reviewed code — a coordinated-change
+requirement and a provenance record, not an authorization root and not a
+JavaScript sandbox. The generator and every module it is allowed to load run
+with full Node privileges.
 
 **One route, everywhere.** `locale-catalog:generate`, the catalog validator,
 the serving gate, npm's own `prebuild`, the container build, the offline

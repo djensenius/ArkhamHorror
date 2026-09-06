@@ -218,7 +218,7 @@ test('the repository pins the same exact node version everywhere', () => {
 
 test('production builds consume a previously attested catalog', () => {
   const packageJson = JSON.parse(readFileSync(join(REPO_ROOT, 'frontend/package.json'), 'utf8'))
-  assert.match(packageJson.scripts.prebuild, /sealed-node-launcher\.mjs generate\.mjs --check/)
+  assert.match(packageJson.scripts.prebuild, /generator-launcher\.mjs generate\.mjs --check/)
   assert.doesNotMatch(packageJson.scripts.prebuild, /npm run locale-catalog(?:\s|$)/)
   assert.match(packageJson.scripts['locale-catalog'], /run-locale-catalog-python\.sh scripts\/generate-locale-catalog\.py/)
 
@@ -234,7 +234,7 @@ test('production builds consume a previously attested catalog', () => {
   // `node .../generate.mjs` would run the same generator unenforced.
   assert.match(
     dockerfile,
-    /env -i HOME=\/nonexistent .*\/usr\/local\/bin\/node scripts\/locale-catalog\/sealed-node-launcher\.mjs generate\.mjs/,
+    /env -i HOME=\/nonexistent .*\/usr\/local\/bin\/node scripts\/locale-catalog\/generator-launcher\.mjs generate\.mjs/,
   )
   assert.match(dockerfile, /npm ci --ignore-scripts/)
   assert.match(dockerfile, /RUN npm run build/)

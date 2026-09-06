@@ -341,7 +341,7 @@ def generator_sources() -> tuple[str, ...]:
                 | set(GENERATOR_EXECUTION_SOURCES)
             )
         )
-    except locale_catalog_python_boundary.SourceBoundaryError as error:
+    except locale_catalog_python_boundary.CapabilityLintError as error:
         raise SystemExit(f"locale-catalog fixture: {error}") from None
 
 
@@ -867,7 +867,7 @@ def run_generator_boundary_self_tests() -> None:
     def require_refusal(label: str, overrides: dict[str, bytes]) -> None:
         try:
             scan_generator_sources(reader_with(overrides))
-        except locale_catalog_python_boundary.SourceBoundaryError:
+        except locale_catalog_python_boundary.CapabilityLintError:
             return
         raise SystemExit(
             f"locale-catalog fixture: Self-test failure: {label} was accepted by the generator "

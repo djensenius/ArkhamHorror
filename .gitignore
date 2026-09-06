@@ -104,3 +104,4 @@ docs/homebrew/
 
 # Invocation-owned workspaces created by scripts/run-locale-catalog-python.sh
 .locale-catalog-python.*
+frontend/.locale-catalog-build-*

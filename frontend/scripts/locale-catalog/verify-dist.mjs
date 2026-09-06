@@ -3,7 +3,7 @@
 // `/opt/arkham/src/frontend/dist` by prod.nginxconf), with the digests the
 // manifest promises and the precompressed siblings nginx serves.
 //
-//   npm run build && node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs
+//   npm run build && node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs
 
 import {
   chmodSync,

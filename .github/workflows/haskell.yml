@@ -25,6 +25,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        persist-credentials: false
     - uses: haskell-actions/setup@bda9c527d4136f7759733016190c34a24c84f4f4
       name: Setup Haskell Stack
       with:
@@ -62,6 +64,24 @@ jobs:
       with:
         version: 2026.8.14
         cache: true
+    # `mise` itself is resolved through PATH by the action that just
+    # installed it, and a restored cache can put executables on that PATH.
+    # Assert the exact pinned version and a plausible install location before
+    # any governed command runs. What *is* pinned after this point: mise
+    # resolves Python 3.14.7, Node 26.7.0 and uv 0.12.6 from mise.toml, and
+    # every governed command then uses their absolute paths, verified against
+    # the digests in scripts/locale_catalog_python_runtime.json. What is not
+    # pinned: this `mise` binary itself, and the runner image's own /usr/bin.
+    - name: Assert the pinned mise version before governed commands
+      run: |
+        set -eu
+        resolved="$(command -v mise)"
+        printf 'mise resolved to %s\n' "$resolved"
+        case "$resolved" in
+          "$HOME"/.local/*|/opt/hostedtoolcache/*|"${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/*) ;;
+          *) printf 'refusing an unexpected mise location: %s\n' "$resolved" >&2; exit 1 ;;
+        esac
+        mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
     - name: Install frontend dependencies
       run: npm ci --ignore-scripts
       working-directory: ${{ github.workspace }}/frontend

@@ -1,8 +1,8 @@
 // Generates the public locale catalog: a deterministic, content-addressed set
 // of chunk files plus a manifest that pins every chunk's size and SHA-256.
 //
-//   node scripts/locale-catalog/sealed-node-launcher.mjs generate.mjs          # write it
-//   node scripts/locale-catalog/sealed-node-launcher.mjs generate.mjs --check  # check it
+//   node scripts/locale-catalog/generator-launcher.mjs generate.mjs          # write it
+//   node scripts/locale-catalog/generator-launcher.mjs generate.mjs --check  # check it
 //
 // Everything published here is derived from the committed
 // `frontend/src/locales/**` snapshot the Vue build bundles — no prose is
@@ -1023,7 +1023,7 @@ function enforceKnownGaps(actual, update) {
     $comment:
       'Known, reviewed holes in the locale catalog. Every entry needs a justification from ' +
       'JUSTIFICATIONS. Regenerate deliberately with ' +
-      '`node scripts/locale-catalog/sealed-node-launcher.mjs generate.mjs --update-known-gaps`; every change must be reviewed.',
+      '`node scripts/locale-catalog/generator-launcher.mjs generate.mjs --update-known-gaps`; every change must be reviewed.',
     justifications: JUSTIFICATIONS,
     unknownVariableTypes: actual.unknownVariableTypes,
     unsupportedEntries: actual.unsupportedEntries.map((entry) => ({

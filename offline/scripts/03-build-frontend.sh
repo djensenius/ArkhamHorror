@@ -98,7 +98,7 @@ compute_frontend_hash() {
 verify_locale_catalog() {
     local output="$1"
     substep "Verifying and republishing the locale catalog in ${output}"
-    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs --dist "$output" --publish); then
+    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist "$output" --publish); then
         rm -rf "$output" "$FRONTEND_BUILT_MARKER"
         die "  ✗ The build output in ${output} does not contain a valid locale catalog"
     fi
@@ -115,7 +115,7 @@ verify_locale_catalog() {
 verify_cached_locale_catalog() {
     local output="$1"
     substep "Verifying and republishing the cached locale catalog in ${output}"
-    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs --dist "$output" --dist-only --publish)
+    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist "$output" --dist-only --publish)
 }
 
 # ── Build frontend ────────────────────────────────────────────────────────────
@@ -244,7 +244,7 @@ build_frontend() {
     env -i \
         HOME="${DEPS_DIR}/locale-catalog-home" \
         PATH="${DEPS_DIR}/node/bin:/usr/bin:/bin" \
-        "${OFFLINE_NODE}" scripts/locale-catalog/sealed-node-launcher.mjs generate.mjs
+        "${OFFLINE_NODE}" scripts/locale-catalog/generator-launcher.mjs generate.mjs
 
     # 3. Build and output to offline/_dist/frontend/
     substep "npm run build (output to ${FRONTEND_OUTPUT}) ..."

@@ -2116,7 +2116,7 @@ main() {
     # — so the bytes nginx serves out of the package are the bytes that passed.
     substep "Verifying the packaged locale catalog"
     if ! (cd "${PROJECT_ROOT}/frontend" \
-            && node scripts/locale-catalog/sealed-node-launcher.mjs verify-dist.mjs \
+            && node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs \
                  --dist "${PKG_DIR}/game/frontend/dist" --dist-only --publish); then
         die "  ✗ The packaged frontend does not contain a valid locale catalog"
     fi

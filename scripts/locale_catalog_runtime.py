@@ -36,30 +36,16 @@ so governed output stays byte-identical across hosts.
 Threat model
 ------------
 
-**T1 (enforced).** Hostile or mistaken *committed* repository source, and the
-supply chain it names: a widened capability, a dynamic loader, unsafe
-deserialization, an added executable file, a redirected or buildable
-dependency, an unpinned tool. Each of those is refused against exactly pinned
-identities before governed code runs.
-
-**T2 (not claimed).** A concurrent same-UID process rewriting the interpreter,
-a governed source, an installed dependency or the Node inputs between the
-moment this module checks them and the moment they are used. Checking as late
-and as close to use as practical narrows that window, and the re-checks here
-detect stable-host tampering, but nothing in this process *prevents* a racing
-owner. CI runs each governed command in an isolated ephemeral job with no
-untrusted concurrent process; that isolation, not this module, is what closes
-T2.
-
-**T3 (out of scope).** ptrace/debugger attachment, Docker daemon or group
-control, write access to the Git object database or to a published artifact,
-and a compromised OS, kernel or runner.
-
-This module and `locale_catalog_python_boundary.py` are the repository-side
-trusted computing base: both are pinned by exact SHA-256 in
-`locale_catalog_python_runtime.json` and verified by the sealed shell *before*
-this interpreter starts, because a scanner that has already executed cannot
-authenticate itself.
+What this checks, and what it does not. Everything committed to this
+repository is trusted code reviewed through pull request; none of it is
+sandboxed here. What gets checked is the externally produced material a
+governed command depends on -- the CPython distribution and its import surface,
+the pinned Node and uv binaries, the locked dependency tree, the caller's
+environment -- plus drift in the reviewed tooling itself, so a change to it has
+to be a coordinated, reviewed edit rather than a silent difference between what
+ran and what is recorded. None of this is a defence against another process on
+the same machine racing a check, and none of it is a security boundary around
+this repository's own code.
 """
 
 from __future__ import annotations
@@ -84,7 +70,7 @@ PYPROJECT = ROOT / "pyproject.toml"
 # declarations agree once importing it is safe.
 TRUSTED_SOURCES = frozenset(
     {
-        "frontend/scripts/locale-catalog/sealed-node-launcher.mjs",
+        "frontend/scripts/locale-catalog/generator-launcher.mjs",
         "scripts/locale-catalog-python-sealed.sh",
         "scripts/locale_catalog_python_boundary.py",
         "scripts/locale_catalog_runtime.py",
@@ -231,14 +217,12 @@ def verify_startup_modules(profile: dict, runtime_home: Path) -> None:
 def verify_trusted_sources(profile: dict) -> None:
     """Re-check the declared trusted computing base.
 
-    Two different things are happening, and it matters which is which. The
-    capability analyzer is *authenticated*: the sealed shell hashed it before
-    this interpreter started and nothing has imported it yet, so a replaced
-    analyzer cannot decide whether the sources it replaced may run. This
-    bootstrap, both shell stages and the Node launcher are *drift-checked*:
-    they are already running (or are about to be started by code that is), and
-    no digest they compute about themselves can authenticate them. Changes to
-    any of them are governed by ordinary human review and exact provenance.
+    These are reviewed files, and this is a drift record over them, not an
+    authorization root: repository code cannot authenticate the shell that is
+    already executing it. What it buys is that changing one of them has to be a
+    coordinated, reviewed edit that also moves the recorded digest. The one
+    ordering that matters is the capability lint, checked before it is
+    imported, because a half-edited lint should not be deciding anything.
     """
     entries = profile.get("trustedSources")
     if not isinstance(entries, dict) or set(entries) != set(TRUSTED_SOURCES):
@@ -665,7 +649,7 @@ def verify_scripts_directory_shape() -> None:
 def verify_source_tree() -> None:
     from locale_catalog_python_boundary import (
         TRUSTED_SOURCES as DECLARED_TRUSTED_SOURCES,
-        SourceBoundaryError,
+        CapabilityLintError,
         all_executable_sources,
     )
 
@@ -687,7 +671,7 @@ def verify_source_tree() -> None:
             refuse(f"trusted scripts tree contains bytecode: {path.relative_to(ROOT)}")
     try:
         all_executable_sources()
-    except SourceBoundaryError as error:
+    except CapabilityLintError as error:
         refuse(str(error))
 
 
@@ -778,13 +762,11 @@ def attest_dependency_sources(destination: Path) -> None:
     nothing. Its whole job is to guarantee that by the time uv starts there is
     no source it could build, no PEP 517 backend it could invoke and no
     artifact it could fetch that is not an exactly hash-pinned registry wheel
-    (T1).
+    wheel.
 
     The exact bytes it validated are then written into this invocation's own
     project directory and uv is pointed at *that*, so what uv consumes is what
-    was checked rather than a second read of the same path. On the stable host
-    this boundary assumes, those are the same bytes; a concurrent same-UID
-    rewrite in between is T2 and is not claimed.
+    was checked rather than a second read of the same path.
     """
     import tomllib
 
@@ -927,10 +909,10 @@ def verify_installed_wheel_identity(
 
     A wheel's `.dist-info/WHEEL` records the tags of the artifact it came from,
     so an installation can be tied to the exact locked filenames whose SHA-256
-    uv verified at download time. This is an integrity check under the stable
-    host model (T1): it proves the installed tree corresponds to a locked,
-    hash-pinned artifact, not that a concurrent owner could not have edited it
-    afterwards (T2).
+    uv verified at download time. This is an integrity check over externally
+    produced artifacts: it proves the installed tree corresponds to a locked,
+    hash-pinned artifact. It says nothing about later edits by something else
+    on the machine, and is not meant to.
     """
     wheel_metadata = metadata_dir / "WHEEL"
     if wheel_metadata.is_symlink() or not wheel_metadata.is_file():
@@ -1106,13 +1088,13 @@ def main() -> None:
     site_packages = verify_dependencies()
     sys.path.insert(1, str(site_packages))
 
-    from locale_catalog_python_boundary import ENTRY_POINTS, SourceBoundaryError, scan_python_closure
+    from locale_catalog_python_boundary import ENTRY_POINTS, CapabilityLintError, scan_python_closure
 
     if target not in ENTRY_POINTS:
         refuse(f"{target!r} is not a declared Python entry point")
     try:
         scan_python_closure(target)
-    except SourceBoundaryError as error:
+    except CapabilityLintError as error:
         refuse(str(error))
     write_source_manifest()
     # The sealed shell executes the already-validated target in a second,

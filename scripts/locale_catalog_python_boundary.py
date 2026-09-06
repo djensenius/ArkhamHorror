@@ -1,50 +1,66 @@
-"""Static capability boundary for the locale-catalog Python tooling.
+"""Capability lint for the locale-catalog Python tooling.
 
-Every declared repository Python source is parsed before any of it is
-imported. Imports resolve only to declared stdlib, locked dependency, or
-in-tree modules, and *every* dotted reference that reaches a sensitive root is
-checked against a per-source grant that names the exact capability **and the
-exact shape it may be used in** -- called, read as a value, assigned to, or
-consumed as a call result. Granting `subprocess.run` for a call therefore does
-not grant `subprocess`, `subprocess.Popen`, or storing `subprocess.run` itself.
+This is a **review aid and defence in depth, not a security boundary**. All
+committed repository code in this project is trusted: it is reviewed through
+pull request, and a malicious commit, reviewer or maintainer is out of scope.
+This lint exists so that an *accidental* widening -- a new import, a dynamic
+loader, an unsafe deserializer, a capability quietly reached through another
+module's namespace -- shows up as a failing check and a review conversation
+instead of merging silently. It does not sandbox anything, it cannot stop code
+that runs, and its completeness is explicitly not a release invariant.
 
-On top of that exact-capability rule the analyzer carries conservative taint:
-a value derived from a propagating capability (an importer, loader, `runpy`,
-`ctypes`, or a serialization loader) may not be called, subscripted,
-attribute-accessed, passed as an argument, stored, unpacked, returned,
-yielded, defaulted, captured by a lambda, or bound by a `for`/`with`/`except`
-target. Anything the analyzer cannot resolve but can see is sensitive fails
-closed rather than being assumed safe.
+What it does check. Every declared repository Python source is parsed before it
+is imported. Imports resolve only to declared stdlib, locked dependency, or
+in-tree modules, and every dotted reference that reaches a sensitive root is
+checked against a per-source grant naming the exact capability **and the exact
+shape it may be used in** -- called, read as a value, assigned to, or consumed
+as a call result. Granting `subprocess.run` for a call therefore does not grant
+`subprocess`, `subprocess.Popen`, or storing `subprocess.run` itself. On top of
+that, conservative taint refuses to let a value derived from a propagating
+capability (an importer, loader, `runpy`, `ctypes`, or a serialization loader)
+escape through assignment, containers, attributes, returns, yields, parameters
+or bindings, and a module identity is tracked through containers, `match`
+captures, branches and loops so that reaching a sensitive module indirectly is
+reported too.
 
-The grant tables live in this file, which is itself a declared executable
-source: it is capability-scanned like every other source, and its bytes are
-folded into the locale-catalog fixture provenance digest through
-`all_executable_sources()`, so a grant cannot be widened without moving a
-governed contract hash. Because this analyzer *decides* whether other governed
-sources may run, it is also part of the trusted computing base: its exact
-SHA-256 is committed in `scripts/locale_catalog_python_runtime.json` and
-checked by `scripts/locale-catalog-python-sealed.sh` before any Python import
-or execution, so a replaced analyzer is refused before its own top-level code
-can run.
+The grant tables live in this file, which is itself a declared source: it is
+linted like every other source, and its bytes are folded into the
+locale-catalog fixture provenance digest through `all_executable_sources()`, so
+a grant cannot be widened without moving a governed contract hash and showing
+up in review. Its digest is also recorded in
+`scripts/locale_catalog_python_runtime.json` and checked by the pinned runner
+before the lint is imported; that is drift detection over a reviewed file, not
+an authorization root.
 
-Threat model
-------------
+KNOWN_INCOMPLETE
+----------------
 
-**T1 (enforced).** Hostile or mistaken *committed repository source*: a widened
-import or capability, a dynamic loader, unsafe deserialization, a build-source
-redirection, or an added executable file. Everything in that class is rejected
-before any governed code executes, against exactly pinned trusted-computing-base,
-toolchain and dependency identities, with deterministic provenance.
+This lint is a conservative abstract interpretation, not a semantic proof, and
+the list below is not exhaustive:
 
-**T2 (not claimed).** A concurrent process running as the *same UID* that
-rewrites interpreter, source, dependency or Node bytes between the moment they
-are verified and the moment they are used. Some such mutations are detected;
-none are prevented. CI runs each governed command in an isolated ephemeral job
-with no untrusted concurrent process, which is where the guarantee lives.
+* Values are tracked as *may-be* identities over a bounded lattice. Container
+  nesting deeper than `MAX_VALUE_DEPTH`, dotted chains longer than
+  `MAX_CAPABILITY_DEPTH`, and loops or module/function summaries that do not
+  converge within `MAX_FIXPOINT_ROUNDS` are refused rather than approximated --
+  which is fail-closed, but it means legitimate code can be refused too.
+* Inter-procedural flow is not modelled. A function's *return* value is checked
+  where it is written, not threaded to its call sites, and a value that passes
+  through a call is not tracked out the other side.
+* Attribute-level state of objects and class instances is not modelled; storing
+  an identity on an attribute is refused instead of tracked.
+* Reflection over the interpreter (`getattr`, `globals`, `vars`, dunder
+  traversal) is refused outright rather than analyzed, so any construct that
+  depends on it is rejected even when it is harmless.
+* `eval`/`exec`/dynamic import are refused; nothing here can reason about code
+  that does not exist at lint time.
+* An AST node type this lint does not model is refused where it is seen
+  (`EVALUATORS`/`STATEMENTS`/`bind_pattern` all fail closed on an unknown
+  node), but "fails closed where detected" is a weaker statement than "detects
+  everything": a future language construct could be modelled incorrectly rather
+  than not at all.
 
-**T3 (out of scope).** Debugger/`ptrace` access to a running process, control of
-the Docker daemon or group, write access to the Git object database or to a
-published artifact, and a compromised OS, kernel or runner.
+Treat a refusal as "explain this in review", and treat a pass as "no known
+widening was detected", not as proof that none exists.
 """
 
 from __future__ import annotations
@@ -103,7 +119,7 @@ ENTRY_POINTS = frozenset(
 # itself.
 TRUSTED_SOURCES = frozenset(
     {
-        "frontend/scripts/locale-catalog/sealed-node-launcher.mjs",
+        "frontend/scripts/locale-catalog/generator-launcher.mjs",
         "scripts/locale-catalog-python-sealed.sh",
         "scripts/locale_catalog_python_boundary.py",
         "scripts/locale_catalog_runtime.py",
@@ -164,7 +180,9 @@ SOURCE_SENSITIVE_IMPORTS = {
     # `io`/`zipfile` are scoped to the adversarial suite so it can *build* the
     # zip import root it plants; no governed source may reach either, and the
     # boundary still refuses a zip root wherever it appears.
-    "scripts/test_locale_catalog_python_boundary.py": frozenset({"io", "os", "subprocess", "zipfile"}),
+    "scripts/test_locale_catalog_python_boundary.py": frozenset(
+        {"io", "os", "subprocess", "yaml", "zipfile"}
+    ),
     "scripts/validate-catalog-serving.py": frozenset({"os", "shutil", "subprocess", "sys", "urllib.request"}),
     "scripts/validate-route-inventory.py": frozenset({"yaml"}),
     "scripts/validate-locale-catalog.py": frozenset({"os", "shutil", "subprocess", "sys"}),
@@ -266,6 +284,9 @@ SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
         "subprocess.Popen": CALL,
         "subprocess.TimeoutExpired": VALUE,
         "subprocess.run": CALL,
+        # Structured workflow parsing for the CI privilege policy check: the
+        # only YAML entry point that cannot construct arbitrary objects.
+        "yaml.safe_load": CALL_RESULT,
     },
     "scripts/validate-catalog-serving.py": {
         "os.environ.get": CALL,
@@ -335,6 +356,7 @@ ALLOWED_FROM_IMPORTS = {
             "LOCAL_MODULE_SOURCES",
             "SOURCE_SENSITIVE_IMPORTS",
             "TRUSTED_SOURCES",
+            "CapabilityLintError",
             "SourceBoundaryError",
             "all_executable_sources",
             "scan_python_closure",
@@ -513,18 +535,22 @@ MODULE_NAMES = frozenset(
 MODULE_ROOTS = frozenset(name.split(".", 1)[0] for name in MODULE_NAMES)
 
 
-class SourceBoundaryError(ValueError):
-    pass
+class CapabilityLintError(ValueError):
+    """A construct this lint refuses. Not a security verdict -- a review flag."""
+
+
+# Retained so a governed caller reads naturally; the lint is the same object.
+SourceBoundaryError = CapabilityLintError
 
 
 def _source_path(relative_path: str) -> Path:
     path = ROOT / relative_path
     if relative_path not in EXECUTABLE_SOURCES:
-        raise SourceBoundaryError(f"{relative_path} is not a declared executable source")
+        raise CapabilityLintError(f"{relative_path} is not a declared executable source")
     if path.is_symlink() or not path.is_file():
-        raise SourceBoundaryError(f"{relative_path} must be a regular source file")
+        raise CapabilityLintError(f"{relative_path} must be a regular source file")
     if path.resolve(strict=True) != path:
-        raise SourceBoundaryError(f"{relative_path} resolves through a symlink")
+        raise CapabilityLintError(f"{relative_path} resolves through a symlink")
     return path
 
 
@@ -663,6 +689,11 @@ def local_binding_names(body: list[ast.stmt], arguments: ast.arguments | None) -
     summary -- doing so would report an identity the body never sees.
     """
     names: set[str] = set()
+    # A comprehension has its own scope: `[value for value in items]` inside a
+    # function does not make `value` a local of that function. A walrus inside
+    # one does, so those names are kept.
+    comprehension_targets: set[str] = set()
+    walrus_targets: set[str] = set()
     if arguments is not None:
         for argument in [
             *arguments.posonlyargs,
@@ -682,6 +713,13 @@ def local_binding_names(body: list[ast.stmt], arguments: ast.arguments | None) -
         if isinstance(node, ast.Global) or isinstance(node, ast.Nonlocal):
             names.difference_update(node.names)
             continue
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            for generator in node.generators:
+                for inner in ast.walk(generator.target):
+                    if isinstance(inner, ast.Name):
+                        comprehension_targets.add(inner.id)
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            walrus_targets.add(node.target.id)
         if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
             names.add(node.id)
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -697,7 +735,7 @@ def local_binding_names(body: list[ast.stmt], arguments: ast.arguments | None) -
         if isinstance(node, ast.MatchMapping) and node.rest is not None:
             names.add(node.rest)
         pending.extend(ast.iter_child_nodes(node))
-    return names
+    return names - (comprehension_targets - walrus_targets)
 
 
 class LoopFrame:
@@ -722,11 +760,15 @@ class Scope:
     rather than being tracked across an unknown call order.
     """
 
-    __slots__ = ("kind", "escaping", "walrus", "state")
+    __slots__ = ("kind", "escaping", "walrus", "state", "summary")
 
     def __init__(self, kind: str, state: State) -> None:
         self.kind = kind
         self.state = state
+        # Everything this scope ever binds, joined. A nested `def` runs when it
+        # is called, so its free names must see the whole enclosing scope, not
+        # just the part written above the `def`.
+        self.summary: State = {}
         self.escaping: set[str] = set()
         self.walrus: list[str] | None = None
 
@@ -743,7 +785,7 @@ class CapabilityVisitor:
     Every value-bearing and binding AST node must be named in the dispatch
     tables below; anything this analyzer does not model is refused rather than
     walked generically, so a new language construct cannot silently become a
-    hole (T1).
+    hole.
     """
 
     def __init__(self, relative_path: str) -> None:
@@ -766,7 +808,7 @@ class CapabilityVisitor:
     # -- diagnostics ----------------------------------------------------
 
     def fail(self, message: str) -> None:
-        raise SourceBoundaryError(f"{self.relative_path}: line {self.line}: {message}")
+        raise CapabilityLintError(f"{self.relative_path}: line {self.line}: {message}")
 
     def at(self, node: ast.AST) -> None:
         """Remember where a refusal happened; a fail-closed analyzer that
@@ -790,12 +832,12 @@ class CapabilityVisitor:
         """The state a nested function's free names really resolve against.
 
         Class bodies are skipped: `class C: x = None` does not give a method
-        inside `C` a local `x`, so a method must still see the module-level
-        binding.
+        inside `C` a local `x`, nor does it give a comprehension in the class
+        body one, so both must still see the enclosing binding.
         """
         for scope in reversed(self.scopes):
             if scope.kind != "class":
-                return scope.state
+                return join_states([scope.state, scope.summary])
         return {}
 
     def record_global(self, name: str, value: Value) -> None:
@@ -909,6 +951,11 @@ class CapabilityVisitor:
     def expr(self, node: ast.AST, use: str = USE_VALUE) -> Value:
         value = self.evaluate(node, use)
         self.check_value(value, use)
+        if self.raise_points is not None:
+            # Any sub-expression can raise, so a handler must see the state a
+            # *partly* evaluated statement left behind -- a walrus in the first
+            # tuple element is visible even if a later element raises.
+            self.raise_points.append(dict(self.state))
         return value
 
     def _evaluate_Constant(self, node: ast.Constant, use: str) -> Value:
@@ -1043,8 +1090,11 @@ class CapabilityVisitor:
         return EMPTY
 
     def _evaluate_Compare(self, node: ast.Compare, use: str) -> Value:
-        for part in (node.left, *node.comparators):
-            self.expr(part)
+        # `a < b < c` short-circuits: `c` is only evaluated when `a < b` holds.
+        self.expr(node.left)
+        if node.comparators:
+            self.expr(node.comparators[0])
+            self._evaluate_branchpoint(list(node.comparators[1:]), USE_VALUE)
         return EMPTY
 
     def _evaluate_Await(self, node: ast.Await, use: str) -> Value:
@@ -1062,10 +1112,14 @@ class CapabilityVisitor:
         entry = dict(self.state)
         result: Value | None = None
         outcomes: list[State] = [entry]
+        # Ordered: arm *i* can only run if every arm before it ran, so it is
+        # evaluated from the join of the entry state and those arms' effects.
+        reached = entry
         for arm in arms:
-            self.state = dict(entry)
+            self.state = dict(reached)
             result = join_values(result, self.expr(arm, use))
             outcomes.append(self.state)
+            reached = join_states([reached, self.state])
         self.state = join_states(outcomes)
         return result or EMPTY
 
@@ -1147,13 +1201,23 @@ class CapabilityVisitor:
     def _evaluate_comprehension(
         self, generators: list[ast.comprehension], elements: list[ast.expr]
     ) -> Value:
-        loops = self.push_scope("function", dict(self.state))
+        # A comprehension is its own function scope, so inside a class body its
+        # free names resolve to the *enclosing* scope, not to the class
+        # namespace. Its first iterable is the exception: that one is evaluated
+        # in the enclosing scope before the comprehension scope exists.
+        leading = self.expr(generators[0].iter) if generators else EMPTY
+        self.reject_taint(leading, "iterates")
+        entry = join_states([self.enclosing_value_state(), dict(self.globals)])
+        loops = self.push_scope("function", entry)
         self.scope.walrus = []
         scope = self.scope
         try:
-            for generator in generators:
-                iterated = self.expr(generator.iter)
-                self.reject_taint(iterated, "iterates")
+            for index, generator in enumerate(generators):
+                if index == 0:
+                    iterated = leading
+                else:
+                    iterated = self.expr(generator.iter)
+                    self.reject_taint(iterated, "iterates")
                 self.bind(generator.target, iterated.items if iterated.items is not None else EMPTY)
                 for condition in generator.ifs:
                     self.reject_taint(self.expr(condition), "filters on")
@@ -1197,6 +1261,9 @@ class CapabilityVisitor:
             self.reject_rebind(target.id, "binds")
             if self.bindings:
                 self.bindings[-1].add(target.id)
+            self.scope.summary[target.id] = (
+                join_values(self.scope.summary.get(target.id), value) or EMPTY
+            )
             if self.scope.kind == "module" or target.id in self.scope.escaping:
                 # A module-level binding, or a `global` write from anywhere, is
                 # visible to every function body in this module.
@@ -1406,7 +1473,8 @@ class CapabilityVisitor:
     def _statement_Assert(self, node: ast.Assert) -> None:
         self.expr(node.test)
         if node.msg is not None:
-            self.expr(node.msg)
+            # The message is only evaluated when the assertion fails.
+            self._evaluate_branchpoint([node.msg], USE_VALUE)
 
     def _statement_Import(self, node: ast.Import) -> None:
         allowed = ALLOWED_IMPORTS | SOURCE_SENSITIVE_IMPORTS.get(self.relative_path, frozenset())
@@ -1419,6 +1487,7 @@ class CapabilityVisitor:
             self.reject_rebind(bound, "imports over", replacement)
             if self.bindings:
                 self.bindings[-1].add(bound)
+            self.scope.summary[bound] = Value(frozenset({replacement}))
             if self.scope.kind == "module" or bound in self.scope.escaping:
                 self.record_global(bound, Value(frozenset({replacement})))
             self.state[bound] = Value(frozenset({replacement}))
@@ -1441,6 +1510,7 @@ class CapabilityVisitor:
             self.reject_rebind(bound, "imports over", capability)
             if self.bindings:
                 self.bindings[-1].add(bound)
+            self.scope.summary[bound] = Value(frozenset({capability}))
             if self.scope.kind == "module" or bound in self.scope.escaping:
                 self.record_global(bound, Value(frozenset({capability})))
             self.state[bound] = Value(frozenset({capability}))
@@ -1747,12 +1817,28 @@ class CapabilityVisitor:
             self.reject_escaping_module(value, "uses as a parameter default")
         self.reject_rebind(node.name, "binds function over")
         self.state.pop(node.name, None)
-        loops = self.push_scope("function", self.function_entry_state(list(node.body), node.args))
-        try:
-            self._bind_parameters(node.args)
-            self.block(list(node.body))
-        finally:
-            self.pop_scope(loops)
+        # The body is analyzed to a fixpoint over its own local bindings, for
+        # the same reason the module is: a nested `def` that reads a name the
+        # enclosing body binds *below* it still sees that binding at call time.
+        summary: State = {}
+        for _ in range(MAX_FIXPOINT_ROUNDS):
+            entry = self.function_entry_state(list(node.body), node.args)
+            loops = self.push_scope("function", entry)
+            self.scope.summary = dict(summary)
+            try:
+                self._bind_parameters(node.args)
+                self.block(list(node.body))
+                produced = dict(self.scope.summary)
+            finally:
+                self.pop_scope(loops)
+            if produced == summary:
+                break
+            summary = produced
+        else:
+            self.fail(
+                "the local binding summary of this function did not reach a fixpoint within "
+                "the lint's bound"
+            )
         self.terminated = False
 
     _statement_AsyncFunctionDef = _statement_FunctionDef
@@ -1933,7 +2019,7 @@ def scan_python_closure(
     source_reader=read_source,
 ) -> tuple[str, ...]:
     if entry not in ENTRY_POINTS:
-        raise SourceBoundaryError(f"{entry} is not a declared production entry point")
+        raise CapabilityLintError(f"{entry} is not a declared production entry point")
     pending = [entry]
     closure: set[str] = set()
     while pending:
@@ -1950,7 +2036,7 @@ def _scan_source(relative_path: str, source_reader, pending: list[str]) -> None:
     try:
         tree = ast.parse(source, filename=relative_path)
     except SyntaxError as error:
-        raise SourceBoundaryError(f"{relative_path}: invalid Python source: {error}") from error
+        raise CapabilityLintError(f"{relative_path}: invalid Python source: {error}") from error
     visitor = CapabilityVisitor(relative_path)
     visitor.visit(tree)
     for module in sorted(visitor.imports):
@@ -1963,20 +2049,20 @@ def all_executable_sources() -> tuple[str, ...]:
     actual = {f"scripts/{path.name}" for path in SCRIPTS.glob("*.py")}
     for relative_path in sorted(TRUSTED_SOURCES):
         if relative_path.endswith(".py") and relative_path not in EXECUTABLE_SOURCES:
-            raise SourceBoundaryError(
+            raise CapabilityLintError(
                 f"{relative_path} is trusted computing base but is not a declared source"
             )
     if actual != EXECUTABLE_SOURCES:
-        raise SourceBoundaryError(
+        raise CapabilityLintError(
             "the executable source declaration does not match scripts/*.py; "
             f"missing {sorted(EXECUTABLE_SOURCES - actual)}, unexpected {sorted(actual - EXECUTABLE_SOURCES)}"
         )
     for relative_path, grants in SOURCE_SENSITIVE_CAPABILITIES.items():
         if relative_path not in EXECUTABLE_SOURCES:
-            raise SourceBoundaryError(f"{relative_path} has grants but is not a declared source")
+            raise CapabilityLintError(f"{relative_path} has grants but is not a declared source")
         for capability, uses in grants.items():
             if not uses or not uses <= USE_SHAPES:
-                raise SourceBoundaryError(
+                raise CapabilityLintError(
                     f"{relative_path}: grant for {capability} declares unknown use shapes {sorted(uses)}"
                 )
     scanned: set[str] = set()
