@@ -320,18 +320,27 @@ snapshot's `scenarioSteps`.
 
 #### The Gathering's opening `Read`/`ChooseOne(LocationTarget)` prompts
 
-The same schema also covers the production-authentic opening prompt
-sequence for Night of the Zealot's "The Gathering": a `Read` setup-intro
-story beat, followed by the `startAt` starting-location `ChooseOne`.
+The same schema also covers the production-authentic opening prompt sequence
+for Night of the Zealot's "The Gathering": its `PreScenarioSetup` narrative
+`Read`, the setup-instructions `Read`, and the `startAt` starting-location
+`ChooseOne`.
 
-- `question-read.json` is the real `setupTheGathering` opening `Read`
+- `question-read-scenario-intro.json` is the real `PreScenarioSetup` narrative
+  `Read`, whose body begins with
+  `HeaderEntry { level: 1, key: "nightOfTheZealot.theGathering.intro.title" }`
+  and continues with the catalog-backed `I18nEntry` body. Header levels `1`
+  and `3` are the complete set currently emitted by the backend's `h`/`h1`
+  and `h3` helpers; other levels fail closed until their semantics are
+  governed. The fixture carries only keys, never rendered narrative text.
+- `question-read.json` is the real `setupTheGathering` setup-instructions `Read`
   (`Arkham.Helpers.FlavorText.setup` -> `flavor` -> `Arkham.Message.story`):
   `BasicReadChoices` with exactly one semantic continue choice
   (`{"tag":"Label","label":"$continue","messages":[]}`) and `readCards: null`.
   Only this exact governed continue shape is modeled; `BasicReadChoicesN`,
   `BasicReadChoicesUpToN`, and `LeadInvestigatorMustDecide` remain explicit
   unsupported values. `flavorText` (`Arkham.Text.FlavorText`) is itself a
-  closed slice covering only the `BasicEntry`, `I18nEntry`, and `ListEntry`
+  closed slice covering only the `BasicEntry`, `I18nEntry`, `HeaderEntry`, and
+  `ListEntry`
   constructors these fixtures exercise; every other `FlavorTextEntry`
   constructor is likewise unsupported here (still opaque in `PublicGame`).
   `title`/`I18nEntry.key` are literal i18n lookup keys, never rendered
@@ -472,7 +481,8 @@ The backend's own, governed side of this boundary is the optional
 the catalog and pins its digest without ever carrying catalog content.
 
 The two boundaries are still bound to each other mechanically: the catalog's
-required key set is extracted from `fixtures/question-read.json` and
+required key set is extracted from `fixtures/question-read.json`,
+`fixtures/question-read-scenario-intro.json`, and
 `fixtures/question-read-with-cards.json`, and its manifest records those
 fixtures' SHA-256 digests together with this manifest's `schemaRevision`, so a
 catalog can always be traced to the contract revision it was generated for.

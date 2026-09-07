@@ -78,6 +78,7 @@ const SCHEMA_FILES = [
 // Required keys are read out of the fixtures themselves, never transcribed.
 const REQUIRED_KEY_FIXTURES = [
   'contracts/fixtures/question-read.json',
+  'contracts/fixtures/question-read-scenario-intro.json',
   'contracts/fixtures/question-read-with-cards.json',
 ]
 const CONTRACT_MANIFEST = 'contracts/manifest.json'
@@ -135,9 +136,9 @@ function generatorSourceDigests() {
 
 /**
  * Pulls the I18n keys the production contract fixtures actually reference:
- * `I18nEntry.key` values plus `$key` shorthands in titles and labels. This is
- * the machine-derived definition of "required", so the required set follows
- * the fixtures instead of a hand-maintained list.
+ * `I18nEntry.key`/`HeaderEntry.key` values plus `$key` shorthands in titles
+ * and labels. This is the machine-derived definition of "required", so the
+ * required set follows the fixtures instead of a hand-maintained list.
  */
 export function requiredKeysFromFixture(value, into = new Set()) {
   if (Array.isArray(value)) {
@@ -146,7 +147,9 @@ export function requiredKeysFromFixture(value, into = new Set()) {
   }
   if (value === null || typeof value !== 'object') return into
 
-  if (value.tag === 'I18nEntry' && typeof value.key === 'string') into.add(value.key)
+  if (['I18nEntry', 'HeaderEntry'].includes(value.tag) && typeof value.key === 'string') {
+    into.add(value.key)
+  }
   for (const [field, child] of Object.entries(value)) {
     if (typeof child === 'string') {
       // `title`/`label`/`text` carry `$key` shorthands (see Arkham/I18n.hs and

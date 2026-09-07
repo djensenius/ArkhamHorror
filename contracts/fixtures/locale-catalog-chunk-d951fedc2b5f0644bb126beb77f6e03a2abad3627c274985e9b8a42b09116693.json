@@ -4,6 +4,26 @@
   "fallback": null,
   "pack": "nightOfTheZealot",
   "entries": {
+    "nightOfTheZealot.theGathering.intro.body": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "notz.intro.body.en"
+        }
+      ],
+      "variables": []
+    },
+    "nightOfTheZealot.theGathering.intro.title": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "notz.intro.title.en"
+        }
+      ],
+      "variables": []
+    },
     "nightOfTheZealot.theGathering.setup.gatherSets": {
       "form": "message",
       "nodes": [

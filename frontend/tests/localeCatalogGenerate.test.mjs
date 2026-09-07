@@ -118,13 +118,17 @@ test('every supported UI locale is published with an explicit fallback', () => {
 
 test('the contract fixtures\u2019 required keys all resolve', () => {
   const required = new Set()
-  for (const fixture of ['question-read.json', 'question-read-with-cards.json']) {
+  for (const fixture of [
+    'question-read.json',
+    'question-read-scenario-intro.json',
+    'question-read-with-cards.json',
+  ]) {
     requiredKeysFromFixture(
       JSON.parse(readFileSync(join(REPO_ROOT, 'contracts/fixtures', fixture), 'utf8')),
       required,
     )
   }
-  assert.ok(required.size >= 6)
+  assert.ok(required.size >= 8)
   assert.deepEqual([...required].sort(), [...built.manifest.provenance.fixtureKeys].sort())
 
   for (const key of required) {
@@ -139,6 +143,20 @@ test('the contract fixtures\u2019 required keys all resolve', () => {
       if (entry) assert.notEqual(entry.form, 'unsupported', `${locale}/${key}`)
     }
   }
+})
+
+test('HeaderEntry keys are required independently of story-title shorthands', () => {
+  const required = requiredKeysFromFixture({
+    tag: 'Read',
+    flavorText: {
+      title: '$story.title',
+      body: [
+        { tag: 'HeaderEntry', level: 3, key: 'story.uniqueHeading' },
+        { tag: 'I18nEntry', key: 'story.body', variables: {} },
+      ],
+    },
+  })
+  assert.deepEqual([...required].sort(), ['story.body', 'story.title', 'story.uniqueHeading'])
 })
 
 test('every backend-emitted key the default locale translates renders', () => {

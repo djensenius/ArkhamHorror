@@ -328,17 +328,17 @@ buildFixtureBoardGame = do
 fixtureGame :: Game
 fixtureGame = fixtureBoardGame
 
-{- | The exact production 'Read'\/'BasicReadChoices' setup-intro prompt and the
-'ChooseOne'\/'TargetLabel(LocationTarget)' 'startAt' prompt that follows it --
-the same two questions 'buildFixtureBoardGame' above already dismisses via
-'chooseOnlyOption' on its way to the fully-set-up board, captured here
-instead of dismissed. This rebuilds the identical deterministic sequence
+{- | The exact production 'Read'\/'BasicReadChoices' setup-instructions prompt
+and the 'ChooseOne'\/'TargetLabel(LocationTarget)' 'startAt' prompt that
+follows it -- the same two questions 'buildFixtureBoardGame' above already
+dismisses via 'chooseOnlyOption' on its way to the fully-set-up board, captured
+here instead of dismissed. This rebuilds the identical deterministic sequence
 (same 'fixtureBoardScenario'\/'fixtureBoardInvestigator'\/'fixtureBoardSeed',
-the same real 'StandaloneSetup'\/'Setup'\/'EndSetup' production handlers) so
-both questions are read directly off 'gameQuestion' at the exact points a
-real player would see them, rather than being reconstructed in parallel.
+and the same real 'StandaloneSetup'\/'Setup'\/'EndSetup' production handlers)
+so both questions are read directly off 'gameQuestion' at the exact points the
+setup flow presents them, rather than being reconstructed in parallel.
 
-- The first is queued by 'setupTheGathering's own opening 'setup $ ul do
+- The first is queued by 'setupTheGathering's opening 'setup $ ul do
   ...' block (Scenarios\/NightOfTheZealot\/TheGathering.hs), which routes
   through 'Arkham.Helpers.FlavorText.setup' -> 'flavor' -> 'Arkham.Message.story'
   -- the exact 'Read flavorText (BasicReadChoices [Label "$continue" []])
@@ -367,10 +367,11 @@ buildFixtureOpeningQuestions = do
   runReaderT (overGameM preloadModifiers) testApp
   runTestApp testApp do
     pushAndRunAll [StandaloneSetup, Setup, EndSetup]
-    introQuestion <- lookupFixturePlayerQuestion "buildFixtureOpeningQuestions (setup intro)"
-    chooseOnlyOption "advance past The Gathering's setup introduction"
+    setupQuestion <-
+      lookupFixturePlayerQuestion "buildFixtureOpeningQuestions (setup instructions)"
+    chooseOnlyOption "advance past The Gathering's setup instructions"
     startAtQuestion <- lookupFixturePlayerQuestion "buildFixtureOpeningQuestions (startAt)"
-    pure (introQuestion, startAtQuestion)
+    pure (setupQuestion, startAtQuestion)
  where
   lookupFixturePlayerQuestion label = do
     questionMap <- gameQuestion <$> getGame
@@ -387,7 +388,7 @@ fixtureOpeningQuestions :: (Question Message, Question Message)
 fixtureOpeningQuestions = unsafePerformIO buildFixtureOpeningQuestions
 {-# NOINLINE fixtureOpeningQuestions #-}
 
--- | The setup-intro 'Read'\/'BasicReadChoices' continue prompt; see
+-- | The setup-instructions 'Read'\/'BasicReadChoices' continue prompt; see
 -- 'buildFixtureOpeningQuestions'.
 fixtureIntroReadQuestion :: Question Message
 fixtureIntroReadQuestion = fst fixtureOpeningQuestions
@@ -396,6 +397,41 @@ fixtureIntroReadQuestion = fst fixtureOpeningQuestions
 -- single real "Study" starting location; see 'buildFixtureOpeningQuestions'.
 fixtureStartAtChooseOneQuestion :: Question Message
 fixtureStartAtChooseOneQuestion = snd fixtureOpeningQuestions
+
+{- | The real pre-scenario narrative prompt emitted by 'TheGathering's
+'PreScenarioSetup' handler through
+@flavor $ scope "intro" do h "title"; p "body"@. It is generated from the
+same deterministic game seed and production handler as the live prompt, but
+in a separate run so introducing this previously omitted lifecycle step does
+not renumber the established setup\/location fixture UUIDs above.
+-}
+fixtureScenarioIntroReadQuestion :: Question Message
+fixtureScenarioIntroReadQuestion = unsafePerformIO do
+  baseGame <- newGame fixtureBoardScenario fixtureBoardInvestigator
+  let
+    game =
+      baseGame
+        { gameSeed = fixtureBoardSeed
+        , gameInitialSeed = fixtureBoardSeed
+        , gameGitRevision = "contract-fixture"
+        }
+  gameRef <- newIORef game
+  queueRef <- newQueue []
+  genRef <- newIORef $ mkStdGen fixtureBoardSeed
+  debugLevelRef <- newIORef 0
+  let testApp = TestApp gameRef queueRef genRef Nothing (pure . const ()) debugLevelRef
+  runReaderT (overGameM preloadModifiers) testApp
+  runTestApp testApp do
+    pushAndRunAll [StandaloneSetup, PreScenarioSetup]
+    questionMap <- gameQuestion <$> getGame
+    case Map.lookup fixturePlayerId questionMap of
+      Just question -> pure question
+      Nothing ->
+        liftIO
+          $ IOError.ioError
+          $ IOError.userError
+            "fixtureScenarioIntroReadQuestion: fixture player has no active question"
+{-# NOINLINE fixtureScenarioIntroReadQuestion #-}
 
 {- | The non-null 'readCards' branch of the exact same production 'Read'
 constructor, built via the real (pure, no 'ReverseQueue' needed)
@@ -775,15 +811,16 @@ fixtureBasicChoiceQuestions =
   ]
 
 {- | The Gathering's opening 'Read'\/'ChooseOne(LocationTarget)' prompt slice
-(issue #50): the setup-intro continue prompt, the real single-location
-'startAt' prompt, the non-null 'readCards' 'Read' branch, and the
-multi-location 'ChooseOne' order-preservation proof. Every fixture here is
-bound the same way 'fixtureBasicChoiceQuestions' above is: to both
-'Aeson.toJSON' and the real 'Aeson.encode'\/'toEncoding' wire path.
+(issues #50 and #61): the scenario-intro and setup-instructions continue
+prompts, the real single-location 'startAt' prompt, the non-null 'readCards'
+'Read' branch, and the multi-location 'ChooseOne' order-preservation proof.
+Every fixture here is bound the same way 'fixtureBasicChoiceQuestions' above
+is: to both 'Aeson.toJSON' and the real 'Aeson.encode'\/'toEncoding' wire path.
 -}
 fixtureOpeningQuestionFixtures :: [(FilePath, Question Message)]
 fixtureOpeningQuestionFixtures =
-  [ ("question-read.json", fixtureIntroReadQuestion)
+  [ ("question-read-scenario-intro.json", fixtureScenarioIntroReadQuestion)
+  , ("question-read.json", fixtureIntroReadQuestion)
   , ("question-choose-one-location.json", fixtureStartAtChooseOneQuestion)
   , ("question-read-with-cards.json", fixtureReadWithCardsQuestion)
   , ("question-choose-one-location-multiple.json", fixtureMultiLocationChooseOne)
@@ -1086,7 +1123,22 @@ spec = describe "Native client contract fixtures" do
       Aeson.toJSON question `shouldBe` fixture
       viaWireEncoding question `shouldBe` fixture
 
-  it "keeps The Gathering's setup-intro Read continue choice singular and unconditionally opaque" do
+  it "keeps The Gathering's scenario intro HeaderEntry and body key stable" do
+    case fixtureScenarioIntroReadQuestion of
+      Read
+        (FlavorText (Just "$nightOfTheZealot.theGathering.intro.title")
+          [ HeaderEntry 1 "nightOfTheZealot.theGathering.intro.title"
+          , I18nEntry "nightOfTheZealot.theGathering.intro.body" variables
+          ])
+        (BasicReadChoices [Label "$continue" []])
+        Nothing ->
+          variables `shouldBe` Map.empty
+      other ->
+        expectationFailure
+          $ "Expected the governed scenario-intro HeaderEntry shape, got "
+          <> show other
+
+  it "keeps The Gathering's setup-instructions Read continue choice singular and unconditionally opaque" do
     case fixtureIntroReadQuestion of
       Read _ (BasicReadChoices [Label "$continue" []]) Nothing -> pure ()
       other -> expectationFailure $ "Expected the governed BasicReadChoices continue shape, got " <> show other

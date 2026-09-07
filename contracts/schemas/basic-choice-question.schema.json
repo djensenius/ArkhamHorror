@@ -442,10 +442,13 @@
           "$ref": "#/$defs/i18nEntry"
         },
         {
+          "$ref": "#/$defs/headerEntry"
+        },
+        {
           "$ref": "#/$defs/listEntry"
         }
       ],
-      "description": "Only the three FlavorTextEntry (Arkham/Text.hs) constructors these fixtures actually exercise are supported; every other constructor (HeaderEntry, ModifyEntry, CompositeEntry, ColumnEntry, CardEntry, TarotEntry, ChaosTokenEntry, ChaosTokenMorphEntry, EntrySplit) remains an explicit unsupported value here, still opaque wherever it appears inside PublicGame."
+      "description": "Only the four FlavorTextEntry (Arkham/Text.hs) constructors these fixtures actually exercise are supported; every other constructor (ModifyEntry, CompositeEntry, ColumnEntry, CardEntry, TarotEntry, ChaosTokenEntry, ChaosTokenMorphEntry, EntrySplit) remains an explicit unsupported value here, still opaque wherever it appears inside PublicGame."
     },
     "basicEntry": {
       "type": "object",
@@ -476,14 +479,39 @@
           "const": "I18nEntry"
         },
         "key": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/i18nKey",
           "description": "A dotted i18n lookup key, never rendered narrative text -- the client's own locale files supply the displayed text for this key."
         },
         "variables": {
           "type": "object"
         }
       }
+    },
+    "headerEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "level",
+        "key"
+      ],
+      "properties": {
+        "tag": {
+          "const": "HeaderEntry"
+        },
+        "level": {
+          "type": "integer",
+          "enum": [
+            1,
+            3
+          ],
+          "description": "The two heading levels currently emitted by Arkham.FlavorText.h/h1 and h3. Other integers remain unsupported until the production helpers and native presentation define their semantics."
+        },
+        "key": {
+          "$ref": "#/$defs/i18nKey"
+        }
+      },
+      "description": "A catalog-backed semantic heading. The current Vue reference renders level 1 as the primary story heading and level 3 as a subordinate heading."
     },
     "listEntry": {
       "type": "object",
@@ -525,6 +553,12 @@
     },
     "investigatorId": {
       "$ref": "#/$defs/cardCode"
+    },
+    "i18nKey": {
+      "description": "Dotted vue-i18n key using the locale-catalog message-key grammar.",
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f./\\\\\\ue000\\ue001]+(\\.[^\\u0000-\\u001f\\u007f./\\\\\\ue000\\ue001]+)*$"
     },
     "cardCode": {
       "type": "string",
