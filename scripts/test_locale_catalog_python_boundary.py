@@ -3503,7 +3503,11 @@ COMMAND_WRAPPERS: dict[str, frozenset[str]] = {
     "env": frozenset({"-u", "--unset", "-C", "--chdir", "-S", "--split-string"}),
     "exec": frozenset({"-a"}),
     "command": frozenset(),
+    "builtin": frozenset(),
 }
+SHELL_DECLARATION_BUILTINS = frozenset(
+    {"declare", "export", "local", "readonly", "typeset"}
+)
 # Node options that execute their own value *instead of* a script: after one
 # of these Node has already been told what to run, so no later word is a
 # script and a launcher path among them is data.
@@ -3663,13 +3667,6 @@ def executed_program(
     while index < len(words) and COMMAND_ASSIGNMENT.match(words[index]):
         record_assignment(words[index])
         index += 1
-    if (
-        index < len(words)
-        and normalise_reference(words[index]).rsplit("/", 1)[-1] == "export"
-    ):
-        for word in words[index + 1 :]:
-            if COMMAND_ASSIGNMENT.match(word):
-                record_assignment(word)
     while index < len(words):
         name = normalise_reference(words[index]).rsplit("/", 1)[-1]
         if name not in COMMAND_WRAPPERS:
@@ -3689,6 +3686,14 @@ def executed_program(
                 index += 2 if word in value_options else 1
                 continue
             break
+    if (
+        index < len(words)
+        and normalise_reference(words[index]).rsplit("/", 1)[-1]
+        in SHELL_DECLARATION_BUILTINS
+    ):
+        for word in words[index + 1 :]:
+            if COMMAND_ASSIGNMENT.match(word):
+                record_assignment(word)
     if index >= len(words):
         return None, [], node_options
     return words[index], words[index + 1 :], node_options
@@ -5030,6 +5035,37 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
     "benign persisted NODE_OPTIONS before the launcher": (
         "offline/scripts/99-wrapper.sh",
         "NODE_OPTIONS=--enable-source-maps\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        True,
+    ),
+    "declare exports unresolved NODE_OPTIONS": (
+        "offline/scripts/99-wrapper.sh",
+        'declare -x NODE_OPTIONS="$OPTS"\n'
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "typeset exports unresolved NODE_OPTIONS": (
+        "offline/scripts/99-wrapper.sh",
+        'typeset -x NODE_OPTIONS="$OPTS"\n'
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "combined declaration flags export a generator preload": (
+        "offline/scripts/99-wrapper.sh",
+        "declare -rx NODE_OPTIONS=--require=./scripts/locale-catalog/generate.mjs\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "builtin-wrapped declaration exports a generator preload": (
+        "offline/scripts/99-wrapper.sh",
+        "builtin declare -x "
+        "NODE_OPTIONS=--require=./scripts/locale-catalog/generate.mjs\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "benign declared NODE_OPTIONS before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "declare -x NODE_OPTIONS=--enable-source-maps\n"
         "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
         True,
     ),
