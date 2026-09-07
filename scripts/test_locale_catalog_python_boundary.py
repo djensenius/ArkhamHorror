@@ -1127,7 +1127,15 @@ def test_workflow_base_authority_wiring() -> int:
         "locale-catalog.yml relies on a step environment value that the sealed workflow shell "
         "discards before mise can expand the production-image argument",
     )
-    return 3
+    docker_build_api = (ROOT / "backend" / "scripts" / "docker-build-api.sh").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "stack build --no-terminal --system-ghc" in docker_build_api
+        and "stack install --no-terminal --system-ghc" in docker_build_api,
+        "docker-build-api.sh does not force both Stack phases to use the image's system GHC",
+    )
+    return 4
 
 
 def test_fixture_writer_ownership(scratch: Path, token: str) -> int:
