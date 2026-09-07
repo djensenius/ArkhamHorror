@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# test-frontend-cache-hit.sh - the offline build's cache-hit branches behave on
-# a fresh checkout.
+# test-frontend-cache-hit.sh - the catalog-subtree verifier remains fail-closed
+# on a fresh checkout.
 #
-# A CI cache restores `offline/_deps` and nothing else: `frontend/public/` is
-# build output and is not in the cache. The cache-hit path must therefore be
-# able to verify the restored build against its own manifest, must not delete a
-# usable output, and must fall back to a rebuild — not `die` — when the restored
-# output is unusable. This drives the real script's `verify_cached_locale_catalog`
-# with `frontend/public/locale-catalog` absent.
+# The production offline build no longer accepts restored rendered frontend
+# output at all; test-frontend-output-authority.sh covers the full-tree receipt
+# boundary. This test retains deep adversarial coverage of the catalog verifier
+# itself with `frontend/public/locale-catalog` absent.
 # =============================================================================
 
 set -euo pipefail
@@ -18,8 +16,11 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # Captured before anything sourced below can reassign SCRIPT_DIR.
 PROD_SCRIPTS="$SCRIPT_DIR"
 FRONTEND_DIR="${REPO_ROOT}/frontend"
+DEPS_DIR=""
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/offline-cache-hit.XXXXXX")"
+WORK="${REPO_ROOT}/offline/_tmp/test-frontend-cache-hit-$$-${RANDOM}"
+umask 077
+mkdir -p "$WORK"
 PUBLIC_CATALOG="${FRONTEND_DIR}/public/locale-catalog"
 STASHED="${WORK}/public-locale-catalog"
 restore() {
@@ -60,9 +61,12 @@ fi
 # Load the production verification helpers without running the build.
 sed -n '1,/^# ── Build frontend/p' "${PROD_SCRIPTS}/03-build-frontend.sh" \
   | grep -v -e '^source ' -e '^init_paths' -e '^activate_deps_path' \
+  | grep -v -e '^PLATFORM=' -e '^require_toolchain_authority_receipt$' -e '^verify_node_installation$' -e '^export PATH=' \
   | sed -e 's/^FRONTEND_DIR=.*/:/' -e 's/^FRONTEND_OUTPUT=.*/:/' -e 's/^FRONTEND_BUILT_MARKER=.*/:/' \
   > "${WORK}/verify.sh"
 FRONTEND_DIR="${FRONTEND_DIR}"
+DEPS_DIR="${WORK}/deps"
+NODE_NPM_CLI="lib/node_modules/npm/bin/npm-cli.js"
 FRONTEND_BUILT_MARKER="${WORK}/stamp_frontend_built"
 : > "$FRONTEND_BUILT_MARKER"
 has_cmd() { command -v "$1" >/dev/null 2>&1; }
@@ -72,6 +76,8 @@ step() { :; }
 die() { echo "die: $*" >&2; return 1; }
 # shellcheck disable=SC1090
 source "${WORK}/verify.sh"
+OFFLINE_NODE="$(command -v node)"
+verify_offline_node_runtime() { :; }
 
 jq_manifest() {
   local copy="$1"; shift

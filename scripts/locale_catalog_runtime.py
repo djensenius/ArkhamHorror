@@ -620,15 +620,15 @@ def verify_trusted_uv(profile: dict, sealed_root: Path) -> None:
     verify_binary_digest(uv, candidate, "sealed uv 0.12.6")
 
 
-def verify_explicit_stack() -> None:
-    """The backend probe's only non-mise authority is explicit, never PATH-found."""
-    raw = os.environ.get("LOCALE_CATALOG_STACK")
+def verify_explicit_probe() -> None:
+    """The backend probe authority is the already-built executable, never PATH-found."""
+    raw = os.environ.get("LOCALE_CATALOG_PROBE")
     if not raw:
         return
-    stack = Path(raw)
-    if not stack.is_absolute():
-        refuse(f"LOCALE_CATALOG_STACK {raw!r} must be an absolute path")
-    require_sealed_executable(stack, "explicitly bound stack")
+    probe = Path(raw)
+    if not probe.is_absolute():
+        refuse(f"LOCALE_CATALOG_PROBE {raw!r} must be an absolute path")
+    require_sealed_executable(probe, "explicitly bound capabilities probe")
 
 
 def verify_scripts_directory_shape() -> None:
@@ -1080,7 +1080,7 @@ def main() -> None:
     verify_trusted_git()
     verify_trusted_node(profile, sealed_root)
     verify_trusted_uv(profile, sealed_root)
-    verify_explicit_stack()
+    verify_explicit_probe()
 
     # The only sanctioned path mutation: both roots are verified above.  The
     # sealed shell then executes this exact checked target in a second clean

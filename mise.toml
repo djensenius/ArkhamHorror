@@ -71,12 +71,24 @@ description = "Check the offline build's cache key really covers every locale-ca
 run = "bash offline/scripts/test-frontend-cache-hash.sh"
 
 [tasks."locale-catalog:offline-cache-hit-test"]
-description = "Check the offline build's cache-hit branches verify a restored dist without frontend/public"
+description = "Exercise adversarial catalog-subtree verification without frontend/public; rendered frontend output itself is never restored"
 run = "bash offline/scripts/test-frontend-cache-hit.sh"
 
+[tasks."locale-catalog:offline-toolchain-authority-test"]
+description = "Reject corrupted offline download caches, wrong archives, missing platform authorities, substituted binaries, and stale cache keys"
+run = "bash offline/scripts/test-toolchain-authority.sh"
+
+[tasks."locale-catalog:offline-output-authority-test"]
+description = "Reject frontend asset and package library substitutions against invocation-external authority receipts"
+run = "bash offline/scripts/test-frontend-npm-authority.sh && bash offline/scripts/test-frontend-output-authority.sh && bash offline/scripts/test-package-authority.sh && bash offline/scripts/test-package-attestation.sh && bash offline/scripts/test-package-lifecycle.sh && bash offline/scripts/test-receipt-capability-isolation.sh && bash offline/scripts/test-updater-authority.sh && bash offline/scripts/test-docker-toolchain-authority.sh"
+
+[tasks."locale-catalog:serving-cleanup-test"]
+description = "Force post-start nginx failures and prove serving contexts clean their container/process"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-catalog-serving.py --self-test"
+
 [tasks."locale-catalog:serving"]
-description = "Boot prod.nginxconf and the offline package's nginx config and verify catalog status, cache, MIME and rolling-deploy behavior"
-run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-catalog-serving.py"
+description = "Verify live catalog serving against an explicitly built final production image; no surrogate config/image is accepted"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-catalog-serving.py --production-image \"${ARKHAM_PRODUCTION_IMAGE:?locale-catalog serving requires an explicit final Docker image}\""
 
 [tasks."locale-catalog:test"]
 description = "Run the locale-catalog render-AST and generator tests"
@@ -92,7 +104,7 @@ run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/check-locale-catalog
 
 [tasks."locale-catalog:capability-probe"]
 description = "Run the real backend capabilities probe over a generated catalog manifest: production settings parsing, handler and toEncoding, plus a corrupted-setting startup-failure matrix"
-run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/check-locale-catalog-settings.py --probe \"${LOCALE_CATALOG_STACK:?locale-catalog capability probe requires an explicit absolute LOCALE_CATALOG_STACK authority} --stack-yaml backend/stack.yaml exec --system-ghc arkham-capabilities-probe --\""
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/check-locale-catalog-settings.py --probe \"${LOCALE_CATALOG_PROBE:?locale-catalog capability probe requires an explicit absolute LOCALE_CATALOG_PROBE authority}\""
 
 [tasks."locale-catalog:validate"]
 description = "Generate the public locale catalog and verify its schemas, digests, provenance, clean-clone reproducibility, and deploy seam"

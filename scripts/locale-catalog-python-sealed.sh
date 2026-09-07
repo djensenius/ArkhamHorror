@@ -212,12 +212,12 @@ readonly GIT="/usr/bin/git"
 require_sealed_file "${GIT}" "trusted git"
 
 # The production backend probe is the only target that needs a non-mise
-# executable.  Its host supplies this one authority explicitly (the Haskell CI
-# step binds the setup action's stack path); it is never found through PATH.
-readonly STACK="${LOCALE_CATALOG_STACK:-}"
-if [[ -n "${STACK}" ]]; then
-  [[ "${STACK}" == /* ]] || die "LOCALE_CATALOG_STACK must be an absolute path"
-  require_sealed_file "${STACK}" "explicitly bound stack"
+# executable. Its host supplies the already-built binary explicitly; no
+# compiler, package manager, home directory, or PATH lookup is needed here.
+readonly PROBE="${LOCALE_CATALOG_PROBE:-}"
+if [[ -n "${PROBE}" ]]; then
+  [[ "${PROBE}" == /* ]] || die "LOCALE_CATALOG_PROBE must be an absolute path"
+  require_sealed_file "${PROBE}" "explicitly bound capabilities probe"
 fi
 
 # A path under the explicit toolchain root is not enough: an attacker who can
@@ -462,7 +462,7 @@ status=0
   LOCALE_CATALOG_GIT="${GIT}" \
   LOCALE_CATALOG_NODE="${NODE}" \
   LOCALE_CATALOG_UV="${UV}" \
-  LOCALE_CATALOG_STACK="${STACK}" \
+  LOCALE_CATALOG_PROBE="${PROBE}" \
   ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT="${ROOT}" \
   ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" \
   ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX="${PYCACHE_PREFIX}" \
@@ -513,7 +513,7 @@ cd "${SOURCE_REPOSITORY}"
   LOCALE_CATALOG_GIT="${GIT}" \
   LOCALE_CATALOG_NODE="${NODE}" \
   LOCALE_CATALOG_UV="${UV}" \
-  LOCALE_CATALOG_STACK="${STACK}" \
+  LOCALE_CATALOG_PROBE="${PROBE}" \
   ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT="${ROOT}" \
   ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" \
   ARKHAM_LOCALE_CATALOG_PYCACHE_PREFIX="${PYCACHE_PREFIX}" \

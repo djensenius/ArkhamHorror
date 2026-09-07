@@ -33,7 +33,6 @@ import argparse
 import hashlib
 import json
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -75,9 +74,11 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(f"locale-catalog capability settings: {message}")
 
 
-def create_owned_scratch() -> tuple[Path, str]:
+def create_owned_scratch(
+    prefix: str = SCRATCH_PREFIX, name_length: int = 32
+) -> tuple[Path, str]:
     token = uuid.uuid4().hex
-    scratch = ROOT / f"{SCRATCH_PREFIX}{token}"
+    scratch = ROOT / f"{prefix}{token[:name_length]}"
     scratch.mkdir(mode=0o700)
     (scratch / SCRATCH_OWNER_FILE).write_text(token, encoding="ascii")
     return scratch, token
@@ -854,9 +855,20 @@ def _check_with_probe(
         "naming one runtime settings file repeatedly changed the advertised response",
     )
     # Past the include-graph budget, too: repeating a path is not traversal.
-    many_duplicate_roots = run_probe(
-        command, {}, [file_settings] * 5000, timeout=PROBE_BOUND_TIMEOUT
-    )
+    # Use a short checkout-relative spelling so the OS argv limit cannot stop
+    # this stress case before the production Haskell loader receives it.
+    argv_scratch, argv_token = create_owned_scratch(prefix=".p-", name_length=16)
+    try:
+        short_settings = argv_scratch / "s"
+        short_settings.write_bytes(file_settings.read_bytes())
+        many_duplicate_roots = run_probe(
+            command,
+            {},
+            [short_settings.relative_to(ROOT)] * 5000,
+            timeout=PROBE_BOUND_TIMEOUT,
+        )
+    finally:
+        release_owned_scratch(argv_scratch, argv_token)
     require(
         many_duplicate_roots.returncode == 0 and many_duplicate_roots.stdout == from_file.stdout,
         "a runtime settings file repeated past the include-graph budget was refused: "
@@ -1096,8 +1108,7 @@ def main() -> None:
     parser.add_argument("manifest", nargs="?", default=str(DEFAULT_MANIFEST))
     parser.add_argument(
         "--probe",
-        help="command that runs the production capabilities probe, e.g. "
-        "'stack exec --system-ghc arkham-capabilities-probe --'",
+        help="absolute path to the already-built production capabilities probe",
     )
     arguments = parser.parse_args()
     manifest_path = Path(arguments.manifest).resolve()
@@ -1178,18 +1189,17 @@ def main() -> None:
     )
 
     if arguments.probe:
-        probe_command = shlex.split(arguments.probe)
-        stack = strict_json.trusted_stack()
+        probe = strict_json.trusted_probe()
         require(
-            probe_command and probe_command[0] == stack,
-            "the production probe command must begin with the exact stack binary bound by "
-            f"LOCALE_CATALOG_STACK ({stack!r}), never a PATH-resolved name",
+            arguments.probe == probe,
+            "the production probe must be the exact executable bound by "
+            f"LOCALE_CATALOG_PROBE ({probe!r}), never a PATH-resolved name or wrapper",
         )
         contract_manifest = load_governed(CONTRACT_MANIFEST)
         require(isinstance(contract_manifest, dict), f"{CONTRACT_MANIFEST} is not a JSON object")
         legacy = contract_manifest["legacyCompatibilityChecks"]
         check_with_probe(
-            probe_command,
+            [probe],
             capabilities_schema,
             settings,
             advertised,

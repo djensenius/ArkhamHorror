@@ -30,5 +30,5 @@ self_dir=$(CDPATH='' cd -- "$self_dir" && pwd -P)
 exec /usr/bin/env -i \
   LOCALE_CATALOG_SEALED_SHELL=1 \
   LOCALE_CATALOG_MISE_ROOT="${LOCALE_CATALOG_MISE_ROOT-}" \
-  LOCALE_CATALOG_STACK="${LOCALE_CATALOG_STACK-}" \
+  LOCALE_CATALOG_PROBE="${LOCALE_CATALOG_PROBE-}" \
   /bin/bash --noprofile --norc -- "${self_dir}/locale-catalog-python-sealed.sh" "$@"

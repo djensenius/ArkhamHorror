@@ -178,7 +178,8 @@ instance FromJSON RejectedCatalogRevision where
     RejectedCatalogRevision <$> o .: "configured" <*> o .: "reason"
 
 data ContractManifest = ContractManifest
-  { manifestUrlChecks :: ManifestUrlChecks
+  { contractSchemaRevision :: Text
+  , manifestUrlChecks :: ManifestUrlChecks
   , catalogRevisionChecks :: CatalogRevisionChecks
   , legacyCompatibilityChecks :: LegacyCompatibility
   }
@@ -186,7 +187,8 @@ data ContractManifest = ContractManifest
 instance FromJSON ContractManifest where
   parseJSON = withObject "contracts/manifest.json" \o ->
     ContractManifest
-      <$> o .: "manifestUrlChecks"
+      <$> o .: "schemaRevision"
+      <*> o .: "manifestUrlChecks"
       <*> o .: "catalogRevisionChecks"
       <*> o .: "legacyCompatibilityChecks"
 
@@ -246,6 +248,7 @@ spec = do
   let checks = contractManifest.manifestUrlChecks
       revisions = contractManifest.catalogRevisionChecks
       legacy = contractManifest.legacyCompatibilityChecks
+      contractRevision = contractManifest.contractSchemaRevision
       configWithUrl url =
         catalogConfig
           url
@@ -726,7 +729,7 @@ spec = do
       -- schemaRevision identifies the whole contract bundle, so under-reporting
       -- it to look byte-identical would lie to every client that negotiates on
       -- it. Older clients compare numeric components, so they are unaffected.
-      fmap (.schemaRevision) (responseFor []) `shouldBe` Right "0.1.23"
+      fmap (.schemaRevision) (responseFor []) `shouldBe` Right contractRevision
       fmap (.schemaRevision) (responseFor []) `shouldNotBe` Right legacy.baselineRevision
 
     it "still refuses to drop or rename a legacy capability" do

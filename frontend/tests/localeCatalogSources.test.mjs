@@ -237,5 +237,8 @@ test('production builds consume a previously attested catalog', () => {
     /env -i HOME=\/nonexistent .*\/usr\/local\/bin\/node scripts\/locale-catalog\/generator-launcher\.mjs generate\.mjs/,
   )
   assert.match(dockerfile, /npm ci --ignore-scripts/)
-  assert.match(dockerfile, /RUN npm run build/)
+  assert.match(
+    dockerfile,
+    /\/usr\/local\/bin\/node \/usr\/local\/lib\/node_modules\/npm\/bin\/npm-cli\.js run build/,
+  )
 })

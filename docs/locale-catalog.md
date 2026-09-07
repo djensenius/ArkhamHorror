@@ -393,9 +393,10 @@ the same way and just as deliberately — for example
 an unset or empty root is refused with that exact diagnostic rather than being
 guessed from `$HOME`.
 The real backend-probe task also receives one explicit host authority:
-`LOCALE_CATALOG_STACK=/absolute/path/to/stack`; it rejects a bare `stack`
-command or any PATH lookup. CI captures the absolute path from the reviewed
-Haskell setup step and includes it in the otherwise empty shell environment.
+`LOCALE_CATALOG_PROBE=/absolute/path/to/arkham-capabilities-probe`; it rejects
+a bare command, wrapper, or PATH lookup. CI binds the already-built executable
+from Stack's local install root, so the sealed probe needs no compiler, Stack
+state, or access to the runner's home directory.
 
 **Identity and drift checks over the reviewed tooling.** The pinned runner
 hashes the capability lint, the preflight, both launcher stages and the Node
@@ -803,7 +804,7 @@ header forms — against both, checking the selected encoding *and* the bytes.
 For every governed Python-backed route below, first name the trusted
 installation explicitly (for example, `export
 LOCALE_CATALOG_MISE_ROOT=/absolute/path/to/mise-data`; additionally export
-`LOCALE_CATALOG_STACK=/absolute/path/to/stack` before
+`LOCALE_CATALOG_PROBE=/absolute/path/to/arkham-capabilities-probe` before
 `locale-catalog:capability-probe`). This is intentionally not inferred from
 `HOME` or `PATH`.
 
@@ -811,11 +812,14 @@ LOCALE_CATALOG_MISE_ROOT=/absolute/path/to/mise-data`; additionally export
     mise run locale-catalog:backend-keys-test    # the key extractor's own rules, on synthetic modules
     mise run locale-catalog:backend-keys-check   # backend emitted-key registry drift
     mise run locale-catalog:offline-cache-test   # the offline build's cache key covers every input
-    mise run locale-catalog:offline-cache-hit-test  # a restored cache verifies without frontend/public
+    mise run locale-catalog:offline-cache-hit-test  # catalog-subtree verifier regressions
+    mise run locale-catalog:offline-output-authority-test  # full frontend/package authority regressions
+    mise run locale-catalog:serving-cleanup-test # failed nginx setup releases its resources
     mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
     mise run locale-catalog:capability-settings  # a real manifest configures the advertised capability
     mise run locale-catalog:capability-probe     # ... and the real backend serves it, or refuses to start
-    mise run locale-catalog:serving              # real nginx: status, cache, MIME, rollout
+    mise run locale-catalog:offline-toolchain-authority-test  # offline archive/cache authority
+    ARKHAM_PRODUCTION_IMAGE=arkham:test mise run locale-catalog:serving  # exact final image nginx
 
 `scripts/validate-locale-catalog.py` regenerates the catalog twice, rebuilds it
 in a scratch tree whose sources are only git-tracked files (reusing the
@@ -829,16 +833,19 @@ key, unsupported markup on a backend-emitted key, a link cycle, a removed
 required key and malformed JSON must each fail generation, and changing the
 lockfile or the published content must change the revision.
 
-`scripts/validate-catalog-serving.py` boots real nginx over `prod.nginxconf`
-and over the config the offline packager generates, and asserts the status
-matrix these paths can actually produce — 200, 304, 404 and 405, plus a `Range`
-request returning the whole file as a 200 (ranges are disabled, so 206 and 416
-never occur) — along with JSON MIME, `nosniff`, `Vary`, gzip and brotli
-negotiation (each response carrying exactly one of each header, and the brotli
-body inflating to the identity payload), byte-exact payloads against the
-manifest digests, that a missing catalog path is never answered with the SPA
-shell, and that a rolling deploy works in both directions (new manifest against
-old static root and vice versa).
+`scripts/validate-catalog-serving.py` accepts only explicit shipped artifacts;
+it never renders or textually rewrites a surrogate config. For production, CI
+builds the final `app` image and the gate runs its own nginx/config/static tree
+without mounts, first requiring `nginx -t` and the gzip-static module. For the
+offline path, the release workflow invokes the actual generated package
+launcher with an invocation-external CI receipt. That receipt covers the
+Nginx executable, generated-config source, and full bundled-library closure
+before `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` is set; package-local provenance
+is only a consistency record. The launcher then runs `nginx -t` before serving
+through its package binary in an otherwise empty environment.
+Both paths receive live requests for 200, 304, 404 and 405, whole-file Range
+handling, JSON MIME, `nosniff`, `Vary`, gzip/brotli negotiation, and
+byte-exact identity and precompressed payloads from their own catalog tree.
 
 `frontend/scripts/locale-catalog/verify-dist.mjs` proves the built `dist/`
 really contains the catalog with matching digests and precompressed siblings.
@@ -978,9 +985,10 @@ differ without recompiling anything
 Every one of them blank (the default) means the deployment publishes no
 pointer, and the capabilities response keeps its exact pre-`0.1.23` field and
 capability shape — no object, no identifier, every other field unchanged. It is
-not byte-identical: `schemaRevision` reports `0.1.23`, because it identifies the
-server's contract bundle rather than this optional feature, and clients compare
-its numeric components rather than the string. Supplying some but not all of them is a startup
+not byte-identical: `schemaRevision` reports the current contract bundle,
+because it identifies the server's whole contract rather than this optional
+feature, and clients compare its numeric components rather than the string.
+Supplying some but not all of them is a startup
 error rather than a silent fallback to that legacy shape, so a half-removed
 pointer cannot quietly disappear from a running deployment.
 

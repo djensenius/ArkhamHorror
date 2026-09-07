@@ -85,16 +85,19 @@ jobs:
     - name: Install frontend dependencies
       run: npm ci --ignore-scripts
       working-directory: ${{ github.workspace }}/frontend
-    - name: Bind the Stack probe authority
-      id: stack-probe
+    - name: Bind the built capabilities probe authority
+      id: capabilities-probe
       run: |
-        stack_path="$(command -v stack)"
-        test -n "${stack_path}"
-        case "${stack_path}" in
+        install_root="$(stack path --local-install-root --system-ghc)"
+        probe_path="${install_root}/bin/arkham-capabilities-probe"
+        case "${probe_path}" in
           /*) ;;
-          *) echo "stack setup did not provide an absolute executable path" >&2; exit 1 ;;
+          *) echo "stack did not provide an absolute probe path" >&2; exit 1 ;;
         esac
-        printf 'path=%s\n' "${stack_path}" >> "${GITHUB_OUTPUT}"
+        test -f "${probe_path}" && test ! -L "${probe_path}" && test -x "${probe_path}"
+        canonical_parent="$(cd "${probe_path%/*}" && pwd -P)"
+        test "${canonical_parent}/${probe_path##*/}" = "${probe_path}"
+        printf 'path=%s\n' "${probe_path}" >> "${GITHUB_OUTPUT}"
     # Both of these are governed locale-catalog routes, so they run in the
     # same sealed shell the contract and locale-catalog workflows use: this
     # job's default `bash` inherits the runner environment, and the
@@ -109,10 +112,10 @@ jobs:
         /usr/bin/env -i \
           HOME=/home/runner \
           LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise \
-          LOCALE_CATALOG_STACK="${LOCALE_CATALOG_STACK:?missing Stack probe authority}" \
+          LOCALE_CATALOG_PROBE="${LOCALE_CATALOG_PROBE:?missing capabilities probe authority}" \
           PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin \
           /bin/bash --noprofile --norc -eo pipefail -c 'mise run locale-catalog:capability-probe'
       shell: /bin/sh -e {0}
       env:
-        LOCALE_CATALOG_STACK: ${{ steps.stack-probe.outputs.path }}
+        LOCALE_CATALOG_PROBE: ${{ steps.capabilities-probe.outputs.path }}
       working-directory: ${{ github.workspace }}

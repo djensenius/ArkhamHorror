@@ -492,8 +492,8 @@ both directions.
 - **Disabled is the legacy *shape*, not the legacy bytes.** A deployment with no
   catalog serves no `localeCatalog` member, no `i18n.locale-catalog.v1`
   identifier, and every other field — including the full capability list —
-  unchanged from `0.1.22`. `schemaRevision` still advances to `0.1.23`, because
-  it identifies this server's whole contract bundle rather than one optional
+  unchanged from `0.1.22`. `schemaRevision` still reports the current bundle,
+  because it identifies this server's whole contract rather than one optional
   runtime feature; a server that under-reported it would lie to every client
   that negotiates on it, and the monotonic bump is required for the bundle in
   any case. Clients compare the three numeric revision components and ignore

@@ -581,8 +581,8 @@ def trusted_node() -> str:
     return trusted_external_executable("LOCALE_CATALOG_NODE", "Node")
 
 
-def trusted_stack() -> str:
-    return trusted_external_executable("LOCALE_CATALOG_STACK", "stack")
+def trusted_probe() -> str:
+    return trusted_external_executable("LOCALE_CATALOG_PROBE", "capabilities probe")
 
 
 def git_argv(args: list[str]) -> list[str]:

@@ -46,23 +46,29 @@ The generated distribution does not depend on Docker and can run directly after 
 ```text
  ArkhamHorror-{platform}.tar.gz
  └── ArkhamHorror-{platform}/
-     ├── bin/
-     │   ├── arkham-api          # Haskell backend (port 3002)
-     │   └── nginx               # Nginx (port 3000)
-     ├── lib/                    # Runtime dynamic libraries (libpq, libpcre, ...)
-     ├── frontend/dist/          # Frontend static files (Vite build)
-     ├── pgsql/                  # PostgreSQL 14.15 (built from source)
-     │   ├── bin/  (postgres, initdb, pg_ctl, pg_isready, psql, pg_dump, pg_restore)
-     │   ├── lib/
-     │   └── share/
-     ├── config/
-     │   ├── nginx.conf          # Generated at runtime
-     │   ├── mime.types          # Minimal built-in MIME types
-     │   └── settings.yml        # Yesod config
-     ├── setup.sql               # Full database schema/data import file
-     ├── start.sh                # Start script (--status / --stop)
-     ├── start.bat               # Windows launcher (double-click to use)
-     └── stop.sh                 # Stop shortcut
+     ├── game/
+     │   ├── bin/
+     │   │   ├── arkham-api      # Haskell backend (port 3002)
+     │   │   └── nginx           # Nginx (port 3000)
+     │   ├── lib/                # Bundled runtime dynamic libraries
+     │   ├── frontend/dist/      # Frontend static files
+     │   ├── pgsql/              # PostgreSQL 14.15 runtime
+     │   ├── tools/
+     │   │   ├── node            # Pinned updater runtime
+     │   │   └── update-archive.mjs
+     │   ├── config/
+     │   │   ├── release-platform
+     │   │   ├── release-version
+     │   │   ├── mime.types
+     │   │   └── settings.yml
+     │   ├── start.sh            # Start, status, stop, and validation
+     │   └── update.sh           # Authenticated in-place updater
+     ├── Start-ArkhamHorror.*    # Platform launcher
+     ├── Update-ArkhamHorror.*   # Platform updater launcher
+     ├── Update-ArkhamHorror.sh
+     ├── backup/                 # User-owned logical backups
+     ├── cards/                  # User-owned card overrides
+     └── cards_en/               # User-owned English card overrides
 ```
 
 Startup flow:
@@ -77,11 +83,70 @@ Versions are aligned with `docker-compose.yml` and `Dockerfile`. PostgreSQL uses
 | --- | --- | --- | --- |
 | Backend | Haskell (GHC) | 9.14.1 | `downloads.haskell.org` bindist |
 | Build Tool | Stack | 3.7.1 | GitHub Releases prebuilt binary |
-| Frontend | Node.js + Vite | 22.12.0 LTS | `nodejs.org` prebuilt binary |
+| Frontend | Node.js + Vite | 26.7.0 | `nodejs.org` prebuilt binary |
 | Database | PostgreSQL | 14.15 | `ftp.postgresql.org` source build |
 | Proxy | Nginx | 1.26.2 | `nginx.org` source build (minimal) |
 
-GHC / Stack / Node.js use official prebuilt binaries. PostgreSQL and Nginx are built from source to avoid hard-coded paths inside prebuilt packages.
+GHC / Stack / Node.js use official prebuilt binaries. PostgreSQL and Nginx are built from source to avoid hard-coded paths inside prebuilt packages. The shipped Nginx build explicitly includes `--with-http_gzip_static_module`, because the generated package configuration uses `gzip_static on`.
+
+### Toolchain authority and cache safety
+
+`toolchain.lock` is the committed authority table for every direct offline
+toolchain archive on every supported platform: GHC, Stack, Node, PostgreSQL,
+and Nginx. It also locks the Docker builder's direct GHC, Cabal, and Stack
+archives and exact installed binaries, plus the per-platform Docker Node/npm
+and production Nginx recursive loaded-library closures. Cache hits are never accepted merely
+because they are non-empty:
+
+- archive bytes are SHA-256 checked on every hit, after download, and before
+  extraction/build;
+- each invocation creates an unguessable receipt outside every restored cache.
+  Its path token is independent from its record-authentication secret; the
+  secret is neither persisted in the receipt nor handed to downloaded tools.
+  A restored installation is rebuilt from verified source/archive unless its
+  complete file/link/mode closure matches that authenticated receipt;
+  cache-side manifests are diagnostic observations, never a root of trust;
+- GHC uses the bindist's real `bin/ghc -> ghc-9.14.1` layout. The resolved
+  regular executable, both public link chains, and the full
+  `ghc/9.14.1` compilation tree (settings, package DBs, libraries, helpers,
+  and data) are authenticated before compiler use;
+- Node's installed executable is checked against its committed executable
+  SHA-256 before it can run, and the full Node/npm tree is covered so an
+  imported npm CLI file cannot be substituted behind an unchanged version.
+  The frontend requires a readable regular `package-lock.json`, then invokes
+  that verified Node binary and npm CLI only with
+  `ci --ignore-scripts --prefer-offline`; rendered modules are discarded and
+  never restored from cache;
+- native build identities bind the platform, source digest, version, and
+  complete build recipe. They intentionally do not claim cross-compiler
+  byte-for-byte reproducibility; native outputs are rebuilt before a new
+  invocation can receipt them;
+- CI caches the diagnostic closure data alongside installations, but does not
+  cache invocation receipts; all toolchain and npm cache keys include the
+  lock and relevant authority scripts.
+
+The registry dependencies are separately covered by their committed lockfiles:
+`frontend/package-lock.json` supplies npm's per-package SRI checks and is the
+frontend cache key; only verified npm package tarballs, not a rendered
+`node_modules` tree, are cached. Stack resolves from `backend/stack.yaml.lock`.
+They are not `download_cached` toolchain archives and are never accepted by
+the archive cache authority path.
+
+The package copies this lock alongside
+`game/config/toolchain-provenance.env` after any binary relocation/signing.
+It also copies the exact lock-attested Node executable and a dependency-free
+streaming archive helper under `game/tools/`; package updates therefore do not
+depend on a host Python or tar installation.
+Release CI records separate invocation authority for the authenticated backend
+output, Nginx binary/generated-config source/complete bundled-library closure,
+and final copied frontend document root, then starts the exact package with an
+empty host environment. Serving cleanup removes its generated config, logs,
+PID and temporary directory before CI records one complete regular-file package
+tree closure immediately before archiving. PostgreSQL's safe versioned-library
+aliases are materialized into independent regular files first, so the archive
+and updater use the same representation. The package-local provenance is only
+a consistency record; it is never accepted as authority by itself.
+Published releases include a detached `.tar.gz.sha256` checksum.
 
 ## Directory Layout
 
@@ -89,14 +154,33 @@ GHC / Stack / Node.js use official prebuilt binaries. PostgreSQL and Nginx are b
 offline/
 ├── build_all.sh
 ├── README.md
+├── toolchain.lock              # Per-platform archive/binary authority
 ├── scripts/
 │   ├── utils.sh
+│   ├── authority-tree.py
+│   ├── toolchain-authority.sh
+│   ├── docker-toolchain.sh
+│   ├── docker-runtime-authority.sh
+│   ├── materialize-package-tree.py
 │   ├── 01-check-project-deps.sh
 │   ├── 02-verify-deps.sh
 │   ├── 03-build-frontend.sh
 │   ├── 04-build-backend.sh
-│   └── 05-package.sh
+│   ├── 05-package.sh
+│   ├── attest-package-closure.sh
+│   ├── 06-validate-package-serving.sh
+│   ├── package-lifecycle.sh
+│   ├── update-runtime.sh
+│   ├── test-toolchain-authority.sh
+│   ├── test-docker-toolchain-authority.sh
+│   ├── test-frontend-output-authority.sh
+│   ├── test-package-authority.sh
+│   ├── test-package-attestation.sh
+│   ├── test-package-lifecycle.sh
+│   ├── test-receipt-capability-isolation.sh
+│   └── test-updater-authority.sh
 ├── _tmp/                        # Download cache (gitignored)
+├── _session/                    # Invocation-only authority receipts (gitignored, never cached)
 ├── _deps/                       # Toolchains and intermediate artifacts (gitignored)
 │   ├── ghcup/
 │   ├── node/
@@ -117,10 +201,15 @@ offline/
 cd offline
 chmod +x build_all.sh scripts/*.sh
 ./build_all.sh
-./build_all.sh --skip-deps
 ./build_all.sh --clean
 ./build_all.sh --verbose
+ARKHAM_RELEASE_VERSION=vYYYYMMDD.N ./build_all.sh
 ```
+
+Dependency authority is established during every invocation and cannot be
+skipped. `--skip-frontend` and `--skip-backend` are available only together
+with `--skip-package`; a package may contain only frontend and backend outputs
+built and attested during that same invocation.
 
 ### Using the Distribution Package
 
@@ -129,13 +218,28 @@ chmod +x build_all.sh scripts/*.sh
 ```bash
 tar -xzf ArkhamHorror-macos-arm64.tar.gz
 cd ArkhamHorror-macos-arm64
-bash start.sh
-bash start.sh --status
-bash start.sh --stop
+bash game/start.sh
+bash game/start.sh --status
+bash game/start.sh --stop
 # Open http://localhost:3000
 ```
 
 On first run, `initdb` is executed automatically and `setup.sql` is imported. Later runs reuse existing data. The browser opens automatically after successful startup.
+
+### Updating a Package
+
+Place the matching `ArkhamHorror-{platform}-vYYYYMMDD.N.tar.gz` release beside
+the installed package. Run the top-level `Update-ArkhamHorror.sh` (or the
+platform shortcut) and paste the SHA-256 from the separately published
+`.tar.gz.sha256` release asset; the updater deliberately does not trust a
+co-located checksum file. It selects only the current OS/architecture archive,
+copies it into an invocation-owned directory while verifying that checksum,
+then uses the package-bundled Node/helper pair to stream and preflight it. The
+helper rejects links, special files, traversal, duplicate members,
+file/directory collisions, unexpected top-level paths, and mismatched embedded
+platform/version metadata. The updater replaces `game/` and every
+release-owned root launcher together with rollback; `backup/`, `cards/`,
+`cards_en/`, and PostgreSQL data under the OS user-data directory are preserved.
 
 #### Windows
 

@@ -1100,7 +1100,9 @@ def test_workflow_base_authority_wiring() -> int:
     )
     offline = (ROOT / ".github" / "workflows" / "build-offline.yml").read_text(encoding="utf-8")
     require(
-        "contents: write" in offline
+        "permissions:\n  contents: read" in offline
+        and "    permissions:\n      contents: write" in offline
+        and "persist-credentials: false" in offline
         and "softprops/action-gh-release" not in offline
         and "gh release create" in offline
         and all(
@@ -1113,7 +1115,7 @@ def test_workflow_base_authority_wiring() -> int:
             )
         )
         and "@v" not in offline,
-        "build-offline.yml retains a mutable action in a contents:write release workflow",
+        "build-offline.yml does not isolate release write credentials from dependency/build code",
     )
     return 2
 
@@ -1203,9 +1205,9 @@ def test_toolchain_roots(scratch: Path, token: str) -> int:
             },
             "filesystem-root toolchain root": {"LOCALE_CATALOG_MISE_ROOT": "/"},
             "toolchain root pointed at the repository": {"LOCALE_CATALOG_MISE_ROOT": str(tree)},
-            "relative explicit Stack authority": {"LOCALE_CATALOG_STACK": "stack"},
-            "missing explicit Stack authority": {
-                "LOCALE_CATALOG_STACK": str(scratch / "definitely-absent-stack")
+            "relative explicit probe authority": {"LOCALE_CATALOG_PROBE": "probe"},
+            "missing explicit probe authority": {
+                "LOCALE_CATALOG_PROBE": str(scratch / "definitely-absent-probe")
             },
         }
         for label, overrides in sorted(cases.items()):
@@ -3423,7 +3425,6 @@ REQUIRED_PRODUCTION_CALLERS: dict[str, str] = {
     "offline/scripts/03-build-frontend.sh": GENERATOR_LAUNCHER_NAME,
     "offline/scripts/05-package.sh": GENERATOR_LAUNCHER_NAME,
     "scripts/generate-locale-catalog.py": "generator_launcher_argv",
-    "scripts/validate-catalog-serving.py": "generator_launcher_argv",
     "scripts/validate-locale-catalog.py": "generator_launcher_argv",
 }
 
@@ -5434,6 +5435,287 @@ def test_generator_inventory_discovery(scratch: Path, token: str) -> int:
     return checked
 
 
+def is_npm_executable(word: str) -> bool:
+    basename = Path(word).name
+    parameter = re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*).*}", basename)
+    if parameter is not None:
+        executable = parameter.group(1).lower()
+        if "npm" in basename.lower():
+            return True
+    elif re.fullmatch(r"\$[A-Za-z_][A-Za-z0-9_]*", basename):
+        executable = basename[1:].lower()
+        if executable.startswith("npm"):
+            return True
+    else:
+        executable = basename.strip("${}").lower()
+    return executable in {"npm", "npm-cli.js", "npm-cli.cjs"} or executable.endswith(
+        ("_npm", "_npm_bin", "_npm_cli")
+    )
+
+
+def shell_words(command: str) -> list[str]:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.commenters = "#"
+    lexer.whitespace_split = True
+    return list(lexer)
+
+
+SHELL_COMMAND_TERMINATORS = frozenset(
+    {"&", "&&", "(", ")", ";", ";;", ";&", ";;&", "|", "|&", "||"}
+)
+SHELL_COMMAND_EXECUTABLES = frozenset({"bash", "dash", "ksh", "sh", "zsh"})
+SHELL_LONG_OPTIONS_WITH_VALUES = frozenset({"--init-file", "--rcfile"})
+SHELL_ASSIGNMENT_BUILTINS = frozenset({"declare", "export", "readonly", "typeset"})
+NPM_INSTALL_COMMANDS = frozenset(
+    {
+        "add",
+        "ci",
+        "cit",
+        "clean-install",
+        "clean-install-test",
+        "i",
+        "ic",
+        "in",
+        "ins",
+        "inst",
+        "insta",
+        "instal",
+        "install",
+        "install-ci-test",
+        "install-clean",
+        "install-test",
+        "isnt",
+        "isnta",
+        "isntal",
+        "isntall",
+        "isntall-clean",
+        "it",
+        "sit",
+    }
+)
+
+
+def is_npm_install_command(word: str) -> bool:
+    command = word.lower()
+    return bool(command) and not command.startswith("-") and any(
+        candidate.startswith(command) for candidate in NPM_INSTALL_COMMANDS
+    )
+
+
+def shell_command_segments(words: list[str]) -> list[list[str]]:
+    segments: list[list[str]] = []
+    segment: list[str] = []
+    for word in words:
+        if word in SHELL_COMMAND_TERMINATORS:
+            if segment:
+                segments.append(segment)
+                segment = []
+        else:
+            segment.append(word)
+    if segment:
+        segments.append(segment)
+    return segments
+
+
+def shell_command_payload(words: list[str], shell_index: int) -> str | None:
+    candidate = shell_index + 1
+    while candidate < len(words):
+        option = words[candidate]
+        if option == "--":
+            return None
+        if option in SHELL_LONG_OPTIONS_WITH_VALUES:
+            candidate += 2
+            continue
+        if option.startswith("--"):
+            candidate += 1
+            continue
+        if len(option) > 1 and option[0] in {"-", "+"}:
+            flags = option[1:]
+            if option[0] == "-" and "c" in flags:
+                return words[candidate + 1] if candidate + 1 < len(words) else None
+            if "o" in flags or "O" in flags:
+                candidate += 2
+            else:
+                candidate += 1
+            continue
+        return None
+    return None
+
+
+def shell_variable_reference(word: str) -> str | None:
+    basename = Path(word).name
+    match = re.fullmatch(
+        r"\$([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)}",
+        basename,
+    )
+    if match is None:
+        return None
+    return match.group(1) or match.group(2)
+
+
+def is_resolved_npm_executable(word: str, npm_variables: set[str]) -> bool:
+    if is_npm_executable(word):
+        return True
+    variable = shell_variable_reference(word)
+    return variable in npm_variables if variable is not None else False
+
+
+def command_may_invoke_npm(command: str, npm_variables: set[str]) -> bool:
+    if "npm" in command.lower():
+        return True
+    return any(
+        re.search(
+            rf"\$(?:{re.escape(variable)}\b|\{{{re.escape(variable)}(?:}}|[:?+\-]))",
+            command,
+        )
+        is not None
+        for variable in npm_variables
+    )
+
+
+def update_npm_executable_assignments(
+    words: list[str], npm_variables: set[str]
+) -> None:
+    if not words:
+        return
+    if words[0] == "unset":
+        for variable in words[1:]:
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", variable):
+                npm_variables.discard(variable)
+        return
+
+    start = 0
+    if words[0] in SHELL_ASSIGNMENT_BUILTINS:
+        start = 1
+        while start < len(words) and words[start].startswith("-"):
+            start += 1
+    assignments = words[start:]
+    parsed = [
+        re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", assignment)
+        for assignment in assignments
+    ]
+    if not assignments or any(match is None for match in parsed):
+        return
+    for match in parsed:
+        assert match is not None
+        variable, value = match.groups()
+        if is_npm_executable(value):
+            npm_variables.add(variable)
+        else:
+            npm_variables.discard(variable)
+
+
+def logical_shell_commands(source: str) -> list[tuple[int, str]]:
+    commands: list[tuple[int, str]] = []
+    parts: list[str] = []
+    start_line = 0
+    for line_number, line in enumerate(source.splitlines(), start=1):
+        stripped = line.strip()
+        if not parts and (not stripped or stripped.startswith(("#", "//"))):
+            continue
+        if not parts:
+            start_line = line_number
+        trailing_backslashes = len(stripped) - len(stripped.rstrip("\\"))
+        continued = trailing_backslashes % 2 == 1
+        parts.append(stripped[:-1].rstrip() if continued else stripped)
+        if continued:
+            continue
+        commands.append((start_line, " ".join(part for part in parts if part)))
+        parts = []
+    if parts:
+        commands.append((start_line, " ".join(part for part in parts if part)))
+    return commands
+
+
+def npm_ignore_scripts_enabled(words: list[str], start: int, end: int) -> bool:
+    enabled: bool | None = None
+    index = start
+    while index < end:
+        token = words[index].lower()
+        if token == "--":
+            break
+        option = None
+        value = None
+        if token in {"--ignore-scripts", "--no-ignore-scripts"}:
+            option = token
+            if index + 1 < end and words[index + 1].lower() in {"false", "true"}:
+                value = words[index + 1].lower() == "true"
+                index += 1
+        elif token.startswith("--ignore-scripts="):
+            option = "--ignore-scripts"
+            raw_value = token.partition("=")[2]
+            value = raw_value == "true" if raw_value in {"false", "true"} else False
+        elif token.startswith("--no-ignore-scripts="):
+            option = "--no-ignore-scripts"
+            raw_value = token.partition("=")[2]
+            value = raw_value == "true" if raw_value in {"false", "true"} else True
+        if option == "--ignore-scripts":
+            enabled = True if value is None else value
+        elif option == "--no-ignore-scripts":
+            enabled = False if value is None else not value
+        index += 1
+    return enabled is True
+
+
+def scan_npm_install_commands(
+    source: str, label: str, *, shell_depth: int = 0
+) -> tuple[int, list[str]]:
+    checked = 0
+    violations: list[str] = []
+    npm_variables: set[str] = set()
+    for line_number, command in logical_shell_commands(source):
+        if not command_may_invoke_npm(command, npm_variables):
+            continue
+        try:
+            words = shell_words(command)
+        except ValueError as error:
+            violations.append(
+                f"{label}:{line_number}: cannot parse possible npm install: {error}"
+            )
+            continue
+        for segment in shell_command_segments(words):
+            for index, word in enumerate(segment[:-1]):
+                if Path(word).name.lower() not in SHELL_COMMAND_EXECUTABLES:
+                    continue
+                payload = shell_command_payload(segment, index)
+                if payload is None:
+                    continue
+                if shell_depth >= 8:
+                    violations.append(
+                        f"{label}:{line_number}: shell -c nesting exceeds the scanner limit"
+                    )
+                    continue
+                nested_checked, nested_violations = scan_npm_install_commands(
+                    payload,
+                    f"{label}:{line_number}:shell-c",
+                    shell_depth=shell_depth + 1,
+                )
+                checked += nested_checked
+                violations.extend(nested_violations)
+            for index, word in enumerate(segment[:-1]):
+                if not is_resolved_npm_executable(word, npm_variables):
+                    continue
+                install_command = next(
+                    (
+                        candidate
+                        for candidate in range(index + 1, len(segment))
+                        if is_npm_install_command(segment[candidate])
+                    ),
+                    None,
+                )
+                if install_command is None:
+                    continue
+                checked += 1
+                # npm accepts configuration options before its command,
+                # including options with separate values. Search the whole
+                # simple command and fail closed on unusual values that spell
+                # an install command or pinned abbreviation.
+                if not npm_ignore_scripts_enabled(segment, index + 1, len(segment)):
+                    violations.append(f"{label}:{line_number}: {command}")
+            update_npm_executable_assignments(segment, npm_variables)
+    return checked, violations
+
+
 def test_npm_install_lifecycle_policy() -> int:
     """Dependency installs must not run package lifecycle scripts.
 
@@ -5448,36 +5730,128 @@ def test_npm_install_lifecycle_policy() -> int:
         "Dockerfile",
         "offline/scripts/03-build-frontend.sh",
     )
+    required_counts = {
+        ".github/workflows/locale-catalog.yml": 3,
+        ".github/workflows/haskell.yml": 1,
+        "Dockerfile": 1,
+        "offline/scripts/03-build-frontend.sh": 1,
+    }
+    require(
+        all(
+            is_npm_executable(spelling)
+            for spelling in (
+                "npm",
+                "/opt/npm/bin/npm-cli.js",
+                "/opt/npm/bin/npm-cli.cjs",
+                "run_offline_npm",
+                "$NPM",
+                "$NPM_BIN",
+                "$NPM_CLI",
+                "${NPM:?missing}",
+                "${COMMAND:-npm}",
+                "$OFFLINE_NPM_CLI",
+                "${OFFLINE_NPM_CLI}",
+            )
+        ),
+        "the npm lifecycle scanner does not recognize every supported executable spelling",
+    )
+    safe_commands = (
+        "npm ci --ignore-scripts",
+        "npm --ignore-scripts --prefix frontend ci",
+        "npm ci --no-ignore-scripts --ignore-scripts",
+        "npm ci --ignore-scripts=false --ignore-scripts",
+        "npm ci --no-ignore-scripts=false",
+        "bash --norc -c 'npm ci --ignore-scripts'",
+        "bash --rcfile /dev/null -c 'npm ci --ignore-scripts'",
+        "COMMAND=npm; \"$COMMAND\" ci --ignore-scripts",
+    )
+    direct_unsafe_commands = (
+        "npm ci&& echo --ignore-scripts",
+        "npm ci|| echo --ignore-scripts",
+        "npm ci; echo --ignore-scripts",
+        "npm ci& echo --ignore-scripts",
+        "npm ci| echo --ignore-scripts",
+        "npm ci|& echo --ignore-scripts",
+        "(npm ci) && echo --ignore-scripts",
+        "npm --prefix frontend ci",
+        "npm --prefix frontend i",
+        "${NPM:?missing} ci",
+        "${COMMAND:-npm} install",
+        "npm it",
+        "npm cit",
+        "npm clean-install-test",
+        "npm sit",
+        "npm ci --ignore-scripts --no-ignore-scripts",
+        "npm --ignore-scripts ci --ignore-scripts=false",
+        "npm install -- --ignore-scripts",
+        "npm install-cl",
+        "npm isntall-c",
+        "npm install-ci",
+        "npm clean-install-t",
+        "COMMAND=npm; \"$COMMAND\" ci",
+    )
+    wrapped_unsafe_commands = (
+        "sh -c 'npm ci'",
+        "bash -lc 'npm install'",
+        "bash --norc -c 'npm ci'",
+        "bash --rcfile /dev/null -c 'npm ci'",
+        "/bin/bash --noprofile --norc -eo pipefail -c 'npm ci'",
+    )
+    for command in safe_commands:
+        regression_checked, regression_violations = scan_npm_install_commands(
+            command + "\n", "<npm lifecycle scanner safe regression>"
+        )
+        require(
+            regression_checked == 1 and not regression_violations,
+            f"the npm lifecycle scanner rejected or missed a safe install: {command}",
+        )
+    for command in direct_unsafe_commands:
+        regression_checked, regression_violations = scan_npm_install_commands(
+            command + "\n", "<npm lifecycle scanner unsafe regression>"
+        )
+        require(
+            regression_checked == 1
+            and len(regression_violations) == 1
+            and command in regression_violations[0],
+            f"the npm lifecycle scanner accepted or missed an unsafe install: {command}",
+        )
+    for command in wrapped_unsafe_commands:
+        regression_checked, regression_violations = scan_npm_install_commands(
+            command + "\n", "<npm lifecycle scanner wrapper regression>"
+        )
+        require(
+            regression_checked == 1
+            and len(regression_violations) == 1
+            and ":shell-c:" in regression_violations[0],
+            f"the npm lifecycle scanner accepted or missed an unsafe shell wrapper: {command}",
+        )
     checked = 0
+    checked_by_path: dict[str, int] = {}
     violations: list[str] = []
-    command_prefixes = ("RUN", "run:", "if", "then", "else", "&&", "||", ";", "-")
     for relative in install_paths:
         path = ROOT / relative
         require(path.is_file(), f"dependency install path {relative} is missing")
-        for line_number, line in enumerate(
-            path.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            stripped = line.strip()
-            if stripped.startswith("#") or stripped.startswith("//"):
-                continue
-            for token in ("npm ci", "npm install"):
-                index = stripped.find(token)
-                if index < 0:
-                    continue
-                if stripped[index:].startswith(("npm install-scripts", "npm install-test")):
-                    continue
-                prefix = stripped[:index].strip()
-                if prefix and not prefix.endswith(command_prefixes):
-                    continue
-                checked += 1
-                if "--ignore-scripts" not in stripped:
-                    violations.append(f"{relative}:{line_number}: {stripped}")
+        path_checked, path_violations = scan_npm_install_commands(
+            path.read_text(encoding="utf-8"), relative
+        )
+        violations.extend(path_violations)
+        checked_by_path[relative] = path_checked
+        checked += path_checked
     require(
         not violations,
         "these dependency installs still run package lifecycle scripts:\n"
         + "\n".join(violations),
     )
-    require(checked >= 5, f"the npm lifecycle scan only examined {checked} invocations")
+    missing = [
+        f"{relative}: expected at least {minimum}, examined {checked_by_path[relative]}"
+        for relative, minimum in required_counts.items()
+        if checked_by_path[relative] < minimum
+    ]
+    require(
+        not missing,
+        "the npm lifecycle scan missed required production installs:\n"
+        + "\n".join(missing),
+    )
     return checked
 
 
