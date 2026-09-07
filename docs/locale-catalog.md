@@ -681,10 +681,11 @@ including across line breaks and around an interleaved `/* … */`. Shell files
 are read after joining backslash continuations, then split — quote- and
 escape-aware — into the commands that actually run: `;`, `&&`, `||`, `|`,
 newlines, `(…)` subshells, `{ …; }` groups and `$(…)`/backtick substitutions
-each start a new segment, while a quoted `;` or `&&` stays an argument. Within
-a segment the launcher mediates only when it is the program Node actually
-executes: leading `NAME=value` assignments and `env`-style wrappers (with their
-own options) are consumed, the executable is identified by name or path
+each start a new segment — including substitutions inside double-quoted words
+and parameter expansions — while a quoted `;` or `&&` stays an argument.
+Within a segment the launcher mediates only when it is the program Node
+actually executes: leading `NAME=value` assignments and `env`-style wrappers
+(with their own options) are consumed, the executable is identified by name or path
 (`node`, `nodejs`, a pinned `/usr/local/bin/node`, or an unresolved
 `"${OFFLINE_NODE}"`), Node's own options are separated from its script, and the
 generator entry has to be the launcher's first argument — the launcher's real
@@ -718,16 +719,16 @@ standalone assignment or one made by `export`, `declare`, `typeset`, `local` or
 `readonly` (including `command`/`builtin` wrappers and combined option flags),
 so shell persistence cannot hide the option from a later Node command; the lint
 conservatively rejects a non-inert assignment even if later shell code might
-clear it. Ordinary options are consumed by their real arity (`--conditions
-development`, `--enable-source-maps`, any `--name=value` or `--no-*` spelling),
-`--` still ends Node's options, and an option this reader does not know could
-swallow the next word or not, so a generator mention around one fails closed
-rather than being read as mediated. Python callers are read from the AST: a
-constant or `Path` join bound only for hashing is fine, the same value reaching
-`subprocess` argv — directly or through a variable — is not. Path spellings are
-normalised (`./`, `..`, duplicate separators, quoting) before comparison, and a
-mention the grammar cannot resolve fails closed. This is reproducibility and
-centralisation over trusted code, not containment.
+clear it. The explicit command line is equally narrow: only the reviewed inert
+`--enable-source-maps` flag is accepted before a launcher. Package-script,
+test-runner, environment-file, snapshot and every unknown or inline option
+fail closed because they can execute code, load startup inputs or make the
+script position ambiguous; `--` still ends Node's options. Python callers are
+read from the AST: a constant or `Path` join bound only for hashing is fine, the
+same value reaching `subprocess` argv — directly or through a variable — is
+not. Path spellings are normalised (`./`, `..`, duplicate separators, quoting)
+before comparison, and a mention the grammar cannot resolve fails closed. This
+is reproducibility and centralisation over trusted code, not containment.
 
 The synthetic fixture hashes all declared executable sources, both launcher
 stages, the lockfile, and the toolchain lock through `generatorSha256`, so the

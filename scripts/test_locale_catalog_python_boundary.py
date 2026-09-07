@@ -3519,101 +3519,11 @@ NODE_EVAL_OPTIONS = frozenset({"-e", "--eval", "-p", "--print"})
 NODE_PRELOAD_OPTIONS = frozenset(
     {"-r", "--require", "--import", "--loader", "--experimental-loader"}
 )
-# Ordinary options that consume the following word, by their real arity.
-NODE_VALUE_OPTIONS = frozenset(
-    {
-        "-C",
-        "--conditions",
-        "--cpu-prof-dir",
-        "--cpu-prof-name",
-        "--diagnostic-dir",
-        "--dns-result-order",
-        "--env-file",
-        "--env-file-if-exists",
-        "--heap-prof-dir",
-        "--heap-prof-name",
-        "--icu-data-dir",
-        "--input-type",
-        "--max-old-space-size",
-        "--openssl-config",
-        "--redirect-warnings",
-        "--report-directory",
-        "--report-filename",
-        "--secure-heap",
-        "--secure-heap-min",
-        "--snapshot-blob",
-        "--stack-size",
-        "--test-name-pattern",
-        "--test-reporter",
-        "--test-reporter-destination",
-        "--test-shard",
-        "--title",
-        "--tls-cipher-list",
-        "--trace-event-categories",
-        "--trace-event-file-pattern",
-        "--unhandled-rejections",
-        "--watch-path",
-    }
-)
-# Ordinary options that take no value. Anything spelled `--name=value` carries
-# its value inline and is self-contained too, as is any `--no-*` negation; an
-# option outside all of these could swallow the next word or not, so the
-# reading fails closed rather than guessing which.
-NODE_FLAG_OPTIONS = frozenset(
-    {
-        "-c",
-        "--check",
-        "-h",
-        "--help",
-        "-i",
-        "--interactive",
-        "-v",
-        "--version",
-        "--abort-on-uncaught-exception",
-        "--disallow-code-generation-from-strings",
-        "--enable-source-maps",
-        "--experimental-import-meta-resolve",
-        "--experimental-json-modules",
-        "--experimental-modules",
-        "--experimental-permission",
-        "--experimental-sqlite",
-        "--experimental-strip-types",
-        "--experimental-transform-types",
-        "--experimental-vm-modules",
-        "--experimental-wasm-modules",
-        "--expose-gc",
-        "--force-context-aware",
-        "--force-fips",
-        "--frozen-intrinsics",
-        "--jitless",
-        "--napi-modules",
-        "--pending-deprecation",
-        "--preserve-symlinks",
-        "--preserve-symlinks-main",
-        "--prof",
-        "--prof-process",
-        "--report-compact",
-        "--report-on-fatalerror",
-        "--report-on-signal",
-        "--report-uncaught-exception",
-        "--test",
-        "--test-only",
-        "--throw-deprecation",
-        "--trace-deprecation",
-        "--trace-exit",
-        "--trace-sigint",
-        "--trace-sync-io",
-        "--trace-uncaught",
-        "--trace-warnings",
-        "--track-heap-objects",
-        "--use-bundled-ca",
-        "--use-openssl-ca",
-        "--v8-options",
-        "--watch",
-        "--watch-preserve-output",
-        "--zero-fill-buffers",
-    }
-)
+# Production starts the generator with no Node options. Only this narrowly
+# reviewed diagnostic flag is inert enough to preserve as an accepted control;
+# every other mode fails closed because Node options can select package scripts,
+# test files, environment files, snapshots, loaders or other startup inputs.
+NODE_INERT_FLAG_OPTIONS = frozenset({"--enable-source-maps"})
 
 
 def is_node_executable(word: str) -> bool:
@@ -3743,16 +3653,13 @@ def read_node_invocation(
             executed.append(("preloads", arguments[index + 1]))
             index += 2
             continue
-        if separator or name.startswith("--no-") or name in NODE_FLAG_OPTIONS:
+        if not separator and name in NODE_INERT_FLAG_OPTIONS:
             index += 1
             continue
-        if name in NODE_VALUE_OPTIONS:
-            if index + 1 >= len(arguments):
-                return None, [], executed, False
-            index += 2
-            continue
-        # An option this reader does not know may or may not swallow the next
-        # word, so which word is the script is a guess from here on.
+        # Every other option can alter startup execution or has arity this
+        # deliberately narrow reader does not prove. Inline `--name=value`
+        # forms fail closed too: `--run=`, `--env-file=` and `--snapshot-blob=`
+        # are not ordinary configuration.
         return None, arguments[index + 1 :], executed, False
     if index >= len(arguments):
         return None, [], executed, True
@@ -4044,16 +3951,56 @@ def split_command_segments(text: str) -> tuple[list[str], bool]:
             cursor += 1
         return -1
 
+    def matching_backtick(open_at: int) -> int:
+        cursor = open_at + 1
+        while cursor < length:
+            if text[cursor] == "\\" and cursor + 1 < length:
+                cursor += 2
+                continue
+            if text[cursor] == "`":
+                return cursor + 1
+            cursor += 1
+        return -1
+
+    def consume_double_quote(open_at: int) -> int:
+        """Collect commands executed inside one double-quoted shell word."""
+        nonlocal resolved
+        cursor = open_at + 1
+        while cursor < length:
+            char = text[cursor]
+            if char == "\\" and cursor + 1 < length:
+                cursor += 2
+                continue
+            if text.startswith("$(", cursor) and not text.startswith("$((", cursor):
+                end = matching(cursor + 1, "(", ")")
+                if end == -1:
+                    resolved = False
+                    return -1
+                nested.append(text[cursor + 2 : end - 1])
+                cursor = end
+                continue
+            if char == "`":
+                end = matching_backtick(cursor)
+                if end == -1:
+                    resolved = False
+                    return -1
+                nested.append(text[cursor + 1 : end - 1])
+                cursor = end
+                continue
+            if char == '"':
+                return cursor + 1
+            cursor += 1
+        resolved = False
+        return -1
+
     while index < length:
         char = text[index]
         if char == "\\" and index + 1 < length:
             current.append(text[index : index + 2])
             index += 2
             continue
-        if char in "'\"":
-            close = text.find(char, index + 1)
-            while close != -1 and char == '"' and text[close - 1] == "\\":
-                close = text.find(char, close + 1)
+        if char == "'":
+            close = text.find("'", index + 1)
             if close == -1:
                 resolved = False
                 current.append(text[index:])
@@ -4061,6 +4008,15 @@ def split_command_segments(text: str) -> tuple[list[str], bool]:
                 continue
             current.append(text[index : close + 1])
             index = close + 1
+            continue
+        if char == '"':
+            end = consume_double_quote(index)
+            if end == -1:
+                current.append(text[index:])
+                index = length
+                continue
+            current.append(text[index:end])
+            index = end
             continue
         if text.startswith("$((", index):
             end = text.find("))", index)
@@ -4074,9 +4030,8 @@ def split_command_segments(text: str) -> tuple[list[str], bool]:
             continue
         if text.startswith("$(", index) or char == "`":
             if char == "`":
-                end = text.find("`", index + 1)
-                inner = text[index + 1 : end] if end != -1 else ""
-                end = end + 1 if end != -1 else -1
+                end = matching_backtick(index)
+                inner = text[index + 1 : end - 1] if end != -1 else ""
             else:
                 end = matching(index + 1, "(", ")")
                 inner = text[index + 2 : end - 1] if end != -1 else ""
@@ -4092,14 +4047,53 @@ def split_command_segments(text: str) -> tuple[list[str], bool]:
             index = end
             continue
         if text.startswith("${", index):
-            end = text.find("}", index)
+            cursor = index + 2
+            parameter_depth = 1
+            end = -1
+            while cursor < length:
+                if text[cursor] == "\\" and cursor + 1 < length:
+                    cursor += 2
+                    continue
+                if text[cursor] == '"':
+                    cursor = consume_double_quote(cursor)
+                    if cursor == -1:
+                        break
+                    continue
+                if text.startswith("$(", cursor) and not text.startswith("$((", cursor):
+                    substitution_end = matching(cursor + 1, "(", ")")
+                    if substitution_end == -1:
+                        resolved = False
+                        break
+                    nested.append(text[cursor + 2 : substitution_end - 1])
+                    cursor = substitution_end
+                    continue
+                if text[cursor] == "`":
+                    substitution_end = matching_backtick(cursor)
+                    if substitution_end == -1:
+                        resolved = False
+                        break
+                    nested.append(text[cursor + 1 : substitution_end - 1])
+                    cursor = substitution_end
+                    continue
+                if text.startswith("${", cursor):
+                    parameter_depth += 1
+                    cursor += 2
+                    continue
+                if text[cursor] == "}":
+                    parameter_depth -= 1
+                    cursor += 1
+                    if parameter_depth == 0:
+                        end = cursor
+                        break
+                    continue
+                cursor += 1
             if end == -1:
                 resolved = False
                 current.append(text[index:])
                 index = length
                 continue
-            current.append(text[index : end + 1])
-            index = end + 1
+            current.append(text[index:end])
+            index = end
             continue
         if char == "(":
             depth += 1
@@ -5177,6 +5171,48 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         "scripts/locale-catalog/generate.mjs\n",
         False,
     ),
+    "a package script mode with launcher-shaped trailing data": (
+        "offline/scripts/99-wrapper.sh",
+        "node --run=definitely-missing "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "test mode executes positional generator files outside the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --test scripts/locale-catalog/generator-launcher.mjs "
+        "scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "an environment file is processed before the launcher": (
+        "offline/scripts/99-wrapper.sh",
+        "node --env-file settings.env "
+        "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "a snapshot blob is loaded through NODE_OPTIONS": (
+        "offline/scripts/99-wrapper.sh",
+        "declare -x NODE_OPTIONS=--snapshot-blob=/definitely/missing.blob\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "a direct generator inside a double-quoted substitution": (
+        "offline/scripts/99-wrapper.sh",
+        'node scripts/locale-catalog/generator-launcher.mjs generate.mjs '
+        '"$(node scripts/locale-catalog/generate.mjs)"\n',
+        False,
+    ),
+    "a direct generator inside a double-quoted backtick substitution": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs "
+        '"`node scripts/locale-catalog/generate.mjs`"\n',
+        False,
+    ),
+    "a direct generator inside a parameter default substitution": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs "
+        '"${RESULT:-$(node scripts/locale-catalog/generate.mjs)}"\n',
+        False,
+    ),
     "a benign eval beside a real launcher command": (
         "offline/scripts/99-wrapper.sh",
         "node -e \"console.log('prebuild')\" "
@@ -5194,11 +5230,11 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         "node --enable-source-maps scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
         True,
     ),
-    "a known value option before the launcher": (
+    "an execution-affecting value option before the launcher": (
         "offline/scripts/99-wrapper.sh",
         "node --conditions development "
         "scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
-        True,
+        False,
     ),
     "the launcher after the option terminator": (
         "offline/scripts/99-wrapper.sh",
