@@ -378,10 +378,17 @@ configure_runtime_env() {
         Darwin) export DYLD_LIBRARY_PATH="$SCRIPT_DIR/lib:$SCRIPT_DIR/pgsql/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" ;;
     esac
 
-    # Fix library symlinks: Windows extraction (zip/tar) often destroys symlinks,
-    # turning them into copies or broken files. Recreate the expected versioned symlinks.
-    _fix_lib_symlinks "$SCRIPT_DIR/pgsql/lib"
-    _fix_lib_symlinks "$SCRIPT_DIR/lib"
+    # Release validation runs against the final materialized package in place.
+    # Keep that canonical regular-file representation unchanged so the second
+    # validation action and final external attestation see identical bytes and
+    # file types. Normal installed-package actions retain extraction repair.
+    case "${ACTION:-start}" in
+        validate-nginx-config|serve-nginx-for-validation) ;;
+        *)
+            _fix_lib_symlinks "$SCRIPT_DIR/pgsql/lib"
+            _fix_lib_symlinks "$SCRIPT_DIR/lib"
+            ;;
+    esac
 }
 
 nginx_provenance_value() {

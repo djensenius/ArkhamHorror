@@ -62,6 +62,52 @@ if find "$PACKAGE" -type l -print -quit | grep -q .; then
     printf '%s\n' 'package-attestation: package materializer retained a symlink' >&2
     exit 1
 fi
+
+# Exercise the generated launcher's runtime-library policy directly. Release
+# validation must preserve materialized regular files, while ordinary startup
+# keeps the extraction-repair behavior expected by installed packages.
+RUNTIME_PROBE="${WORK}/runtime-probe"
+mkdir -p "${RUNTIME_PROBE}/lib" "${RUNTIME_PROBE}/pgsql/lib"
+for libdir in "${RUNTIME_PROBE}/lib" "${RUNTIME_PROBE}/pgsql/lib"; do
+    printf 'versioned runtime library\n' > "${libdir}/libprobe.so.5.14"
+    cp "${libdir}/libprobe.so.5.14" "${libdir}/libprobe.so.5"
+    cp "${libdir}/libprobe.so.5.14" "${libdir}/libprobe.so"
+done
+LAUNCHER_FUNCTIONS="${WORK}/launcher-functions.sh"
+sed -n '/^configure_runtime_env() {$/,/^}$/p' \
+    "${SCRIPT_DIR}/05-package.sh" > "$LAUNCHER_FUNCTIONS"
+sed -n '/^_fix_lib_symlinks() {$/,/^}$/p' \
+    "${SCRIPT_DIR}/05-package.sh" >> "$LAUNCHER_FUNCTIONS"
+(
+    # shellcheck disable=SC1090,SC2317
+    source "$LAUNCHER_FUNCTIONS"
+    SCRIPT_DIR="$RUNTIME_PROBE"
+    # Invoked by the sourced configure_runtime_env function.
+    # shellcheck disable=SC2329
+    pg_bin() { printf '%s\n' "${RUNTIME_PROBE}/pgsql/bin"; }
+    ACTION="validate-nginx-config"
+    configure_runtime_env
+    if find "$RUNTIME_PROBE" -type l -print -quit | grep -q .; then
+        printf '%s\n' 'package-attestation: validation mutated materialized libraries' >&2
+        exit 1
+    fi
+    ACTION="serve-nginx-for-validation"
+    configure_runtime_env
+    if find "$RUNTIME_PROBE" -type l -print -quit | grep -q .; then
+        printf '%s\n' 'package-attestation: serving validation mutated materialized libraries' >&2
+        exit 1
+    fi
+    # Read by the sourced configure_runtime_env function.
+    # shellcheck disable=SC2034
+    ACTION="start"
+    configure_runtime_env
+    if [ ! -L "${RUNTIME_PROBE}/pgsql/lib/libprobe.so.5" ] \
+        || [ ! -L "${RUNTIME_PROBE}/lib/libprobe.so" ]; then
+        printf '%s\n' 'package-attestation: normal startup no longer repairs runtime library aliases' >&2
+        exit 1
+    fi
+)
+
 python3 - "$PACKAGE" <<'PY'
 import io
 import sys
