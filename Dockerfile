@@ -1,4 +1,4 @@
-FROM node:26.7.0-alpine AS frontend
+FROM node:26.7.0-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS frontend
 
 # Frontend
 
@@ -10,7 +10,7 @@ RUN mkdir -p /opt/arkham/src/frontend
 
 WORKDIR /opt/arkham/src/frontend
 COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js ./frontend/eslint.config.js ./frontend/package-lock.json /opt/arkham/src/frontend/
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts
 COPY ./frontend /opt/arkham/src/frontend
 # The locale-catalog generator (run by npm's prebuild) derives its required-key
 # set from the governed contract fixtures and from the backend's emitted-key
@@ -18,14 +18,18 @@ COPY ./frontend /opt/arkham/src/frontend
 COPY ./contracts /opt/arkham/src/contracts
 COPY ./backend/arkham-api/i18n-emitted-keys.json /opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json
 ENV VITE_ASSET_HOST=${ASSET_HOST}
+# This image is pinned by manifest digest, so its explicit Node binary is the
+# Docker build's equivalent immutable execution boundary. npm's prebuild below
+# only checks these bytes; it cannot regenerate a separate catalog.
+RUN env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generator-launcher.mjs generate.mjs
 RUN npm run build
 # The image copies `dist` out of this stage, so the catalog is verified here and
 # republished from the verified buffers: what the next stage copies — and what
 # nginx serves — is exactly what passed, not an intermediate tree that happened
 # to be correct when the build finished.
-RUN node scripts/locale-catalog/verify-dist.mjs --publish
+RUN node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --publish
 
-FROM ubuntu:22.04 AS base
+FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 ENV LC_ALL=C.UTF-8
@@ -132,7 +136,7 @@ RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-discover-hie-${CACHE_ID},target=/opt/arkham/src/backend/cards-discover/.hie \
   sh /opt/arkham/src/backend/scripts/docker-build-api.sh
 
-FROM ubuntu:22.04 AS app
+FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS app
 
 # App
 

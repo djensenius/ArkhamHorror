@@ -24,15 +24,17 @@ jobs:
         ghc: ["9.14.1"]
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: haskell-actions/setup@v2
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        persist-credentials: false
+    - uses: haskell-actions/setup@bda9c527d4136f7759733016190c34a24c84f4f4
       name: Setup Haskell Stack
       with:
         ghc-version: ${{ matrix.ghc }}
         stack-version: ${{ matrix.stack }}
 
     - name: Cache
-      uses: actions/cache@v3
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
       env:
         cache-name: cache-stack
       with:
@@ -62,12 +64,55 @@ jobs:
       with:
         version: 2026.8.14
         cache: true
+    # `mise` itself is resolved through PATH by the action that just
+    # installed it, and a restored cache can put executables on that PATH.
+    # Assert the exact pinned version and a plausible install location before
+    # any governed command runs. What *is* pinned after this point: mise
+    # resolves Python 3.14.7, Node 26.7.0 and uv 0.12.6 from mise.toml, and
+    # every governed command then uses their absolute paths, verified against
+    # the digests in scripts/locale_catalog_python_runtime.json. What is not
+    # pinned: this `mise` binary itself, and the runner image's own /usr/bin.
+    - name: Assert the pinned mise version before governed commands
+      run: |
+        set -eu
+        resolved="$(command -v mise)"
+        printf 'mise resolved to %s\n' "$resolved"
+        case "$resolved" in
+          "$HOME"/.local/*|/opt/hostedtoolcache/*|"${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/*) ;;
+          *) printf 'refusing an unexpected mise location: %s\n' "$resolved" >&2; exit 1 ;;
+        esac
+        mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
     - name: Install frontend dependencies
-      run: npm ci
+      run: npm ci --ignore-scripts
       working-directory: ${{ github.workspace }}/frontend
+    - name: Bind the Stack probe authority
+      id: stack-probe
+      run: |
+        stack_path="$(command -v stack)"
+        test -n "${stack_path}"
+        case "${stack_path}" in
+          /*) ;;
+          *) echo "stack setup did not provide an absolute executable path" >&2; exit 1 ;;
+        esac
+        printf 'path=%s\n' "${stack_path}" >> "${GITHUB_OUTPUT}"
+    # Both of these are governed locale-catalog routes, so they run in the
+    # same sealed shell the contract and locale-catalog workflows use: this
+    # job's default `bash` inherits the runner environment, and the
+    # authoritative launcher requires the toolchain root to be named
+    # explicitly rather than inferred from it.
     - name: Generate the public locale catalog
       run: mise run locale-catalog:generate
+      shell: /usr/bin/env -i HOME=/home/runner LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin /bin/bash --noprofile --norc -eo pipefail {0}
       working-directory: ${{ github.workspace }}
     - name: Verify the generated catalog configures the real capabilities handler
-      run: mise run locale-catalog:capability-probe
+      run: |
+        /usr/bin/env -i \
+          HOME=/home/runner \
+          LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise \
+          LOCALE_CATALOG_STACK="${LOCALE_CATALOG_STACK:?missing Stack probe authority}" \
+          PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin \
+          /bin/bash --noprofile --norc -eo pipefail -c 'mise run locale-catalog:capability-probe'
+      shell: /bin/sh -e {0}
+      env:
+        LOCALE_CATALOG_STACK: ${{ steps.stack-probe.outputs.path }}
       working-directory: ${{ github.workspace }}

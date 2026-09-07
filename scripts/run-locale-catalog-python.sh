@@ -1,26 +1,34 @@
-#!/bin/bash
-set -euo pipefail
+#!/bin/sh
+# Authoritative entry point for every locale-catalog Python command.
+#
+# This stage is POSIX `sh` on purpose. A `#!/bin/bash` entry point would source
+# a caller-supplied `BASH_ENV` script *before* the first line of the file ran,
+# so no in-script guard could ever be early enough; a non-interactive POSIX
+# shell reads neither `BASH_ENV` nor `ENV`. It therefore does exactly one
+# thing: rebuild the environment from nothing with `/usr/bin/env -i` and hand
+# the sealed bash stage the two inputs that carry authority -- the explicit
+# toolchain root, and the arguments the caller asked for.
+#
+# `LOCALE_CATALOG_MISE_ROOT` is deliberately forwarded even when unset (as an
+# empty value): the sealed stage refuses an empty root with a specific
+# diagnostic rather than inventing one from `$HOME`.
+set -eu
 
-readonly ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-readonly MISE_DATA_ROOT="${HOME}/.local/share/mise"
-readonly PYTHON="${MISE_DATA_ROOT}/installs/python/3.14.7/bin/python"
-readonly TRUSTED_PATH="${MISE_DATA_ROOT}/installs/node/26.7.0/bin:${MISE_DATA_ROOT}/installs/python/3.14.7/bin:${MISE_DATA_ROOT}/installs/uv/0.12.6/bin:/usr/local/.ghcup/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+# Do not resolve even `dirname` through the caller's PATH before the
+# environment is cleared.  Production routes name this script with a path;
+# accepting a bare command name would itself delegate the first authority to
+# PATH, so reject it instead.
+case "$0" in
+  */*) self_dir=${0%/*} ;;
+  *)
+    echo "locale-catalog python: invoke scripts/run-locale-catalog-python.sh with an explicit path, never through PATH" >&2
+    exit 1
+    ;;
+esac
+self_dir=$(CDPATH='' cd -- "$self_dir" && pwd -P)
 
-shopt -s nullglob
-uv_candidates=("${MISE_DATA_ROOT}"/installs/uv/0.12.6/uv-*/uv)
-if [[ ! -x "${PYTHON}" || "${#uv_candidates[@]}" -ne 1 ]]; then
-  echo "locale-catalog python: exact mise Python 3.14.7 and uv 0.12.6 must be installed under ${MISE_DATA_ROOT}" >&2
-  exit 1
-fi
-readonly UV="${uv_candidates[0]}"
-
-if [[ "$("${PYTHON}" -c 'import sys; print(f"{sys.implementation.name} {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} {sys.implementation.cache_tag}")')" != "cpython 3.14.7 cpython-314" ]]; then
-  echo "locale-catalog python: ${PYTHON} is not the required CPython 3.14.7 / cpython-314 runtime" >&2
-  exit 1
-fi
-
-cd "${ROOT}"
-readonly VENV="$(/usr/bin/mktemp -d "${ROOT}/.locale-catalog-python.XXXXXX")"
-trap '/bin/rm -rf -- "${VENV}"' EXIT
-/usr/bin/env -i HOME="${HOME}" PATH="${TRUSTED_PATH}" UV_PROJECT_ENVIRONMENT="${VENV}" "${UV}" sync --locked --no-cache --link-mode copy --reinstall --no-dev --no-install-project --python "${PYTHON}" --quiet
-/usr/bin/env -i HOME="${HOME}" PATH="${TRUSTED_PATH}" ARKHAM_LOCALE_CATALOG_PYTHON_VENV="${VENV}" "${PYTHON}" -I -S -E -B "${ROOT}/scripts/locale_catalog_runtime.py" "$@"
+exec /usr/bin/env -i \
+  LOCALE_CATALOG_SEALED_SHELL=1 \
+  LOCALE_CATALOG_MISE_ROOT="${LOCALE_CATALOG_MISE_ROOT-}" \
+  LOCALE_CATALOG_STACK="${LOCALE_CATALOG_STACK-}" \
+  /bin/bash --noprofile --norc -- "${self_dir}/locale-catalog-python-sealed.sh" "$@"

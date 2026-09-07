@@ -101,3 +101,7 @@ skills-lock.json
 # Local homebrew working data (guide transcriptions, codegen maps); the
 # checked-in guide is docs/homebrew.md
 docs/homebrew/
+
+# Invocation-owned workspaces created by scripts/run-locale-catalog-python.sh
+.locale-catalog-python.*
+frontend/.locale-catalog-build-*

@@ -38,16 +38,22 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+import strict_json
+
+ROOT = Path(os.environ.get("ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT", Path(__file__).resolve().parents[1]))
 FRONTEND = ROOT / "frontend"
-WORK = FRONTEND / "node_modules" / ".locale-catalog-serving"
-NGINX_IMAGE = "nginx:1.27-alpine"
-PORT = int(os.environ.get("LOCALE_CATALOG_TEST_PORT", "38199"))
+WORK_PARENT = FRONTEND.resolve() / "node_modules"
+WORK: Path | None = None
+WORK_OWNER = "owner"
+NGINX_IMAGE = "nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10"
+PORT: int | None = None
 REQUEST_TIMEOUT = 20
 
 CLEAN_CLONE_PREFIXES = ("frontend/src/", "frontend/homebrew/", "frontend/scripts/", "frontend/schemas/", "contracts/", "backend/arkham-api/i18n-emitted-keys.json")
@@ -65,14 +71,39 @@ def run(command: list[str], *, capture_output: bool = True, **kwargs) -> subproc
 
 
 def tool(name: str) -> str:
-    path = shutil.which(name)
-    require(path is not None, f"{name} is required to verify catalog serving")
-    return path
+    """Return a declared absolute tool identity; never search PATH."""
+    if name == "node":
+        return strict_json.trusted_node()
+    candidates = {
+        "bash": ("/bin/bash",),
+        "docker": (
+            "/usr/bin/docker",
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+            "/usr/local/bin/docker",
+        ),
+    }.get(name)
+    require(candidates is not None, f"{name} is not a declared serving-gate executable")
+    for raw in candidates:
+        path = Path(raw)
+        if (
+            raw == "/usr/local/bin/docker"
+            and path.is_symlink()
+            and path.resolve()
+            == Path("/Applications/OrbStack.app/Contents/MacOS/xbin/docker-tools")
+            and path.resolve().is_file()
+            and path.resolve().stat().st_mode & 0o111
+        ):
+            return raw
+        if not path.is_symlink() and path.is_file() and path.stat().st_mode & 0o111:
+            return raw
+    require(False, f"{name} is not installed at one of its declared absolute paths: {candidates}")
+    raise AssertionError("unreachable")
 
 
 def request(path: str, *, method: str = "GET", headers: dict[str, str] | None = None):
     """Returns (status, headers, body). `headers` keeps every occurrence, so a
     duplicated header is visible rather than collapsed."""
+    require(PORT is not None, "nginx request attempted outside an owned container session")
     url = f"http://127.0.0.1:{PORT}{path}"
     message = urllib.request.Request(url, method=method, headers=headers or {})
     try:
@@ -106,11 +137,10 @@ class Nginx:
 
     def __enter__(self):
         docker = tool("docker")
-        run([docker, "rm", "-f", self.name])
         result = run(
             [
-                docker, "run", "-d", "--rm", "--name", self.name,
-                "-p", f"{PORT}:3000",
+                docker, "run", "-d", "--name", self.name,
+                "-p", f"127.0.0.1:{PORT}:3000",
                 "-v", f"{self.config}:/etc/nginx/nginx.conf:ro",
                 "-v", f"{self.static_root}:/opt/arkham/src/frontend/dist:ro",
                 NGINX_IMAGE,
@@ -125,20 +155,53 @@ class Nginx:
                 return self
             except (urllib.error.URLError, ConnectionError, TimeoutError):
                 time.sleep(0.25)
-        logs_result = run([docker, "logs", self.name])
+        logs_result = run([docker, "logs", self.container])
         logs = f"{logs_result.stdout}{logs_result.stderr}"
         self.__exit__(None, None, None)
         raise SystemExit(f"locale-catalog serving: nginx did not become ready\n{logs}")
 
     def __exit__(self, *_):
         if self.container is not None:
-            run([tool("docker"), "rm", "-f", self.name])
+            run([tool("docker"), "rm", "-f", self.container])
             self.container = None
         return False
 
 
+def create_owned_work() -> tuple[Path, str, tuple[int, int]]:
+    token = uuid.uuid4().hex
+    work = Path(tempfile.mkdtemp(prefix=".locale-catalog-serving-", dir=WORK_PARENT))
+    work.chmod(0o700)
+    (work / WORK_OWNER).write_text(token, encoding="ascii")
+    identity = (work.stat().st_dev, work.stat().st_ino)
+    return work, token, identity
+
+
+def release_owned_work(work: Path, token: str, identity: tuple[int, int]) -> None:
+    owner = work / WORK_OWNER
+    require(
+        work.is_dir() and not work.is_symlink() and (work.stat().st_dev, work.stat().st_ino) == identity,
+        f"serving workspace {work} no longer has this invocation's identity; refusing cleanup",
+    )
+    require(
+        owner.is_file() and not owner.is_symlink() and owner.read_text(encoding="ascii") == token,
+        f"serving workspace {work} ownership token changed; refusing cleanup",
+    )
+    shutil.rmtree(work)
+
+
+def generator_launcher_argv(frontend: Path, entry: str, arguments: list[str]) -> list[str]:
+    """Start a governed Node entry point through the sealed launcher only."""
+    launcher = frontend / "scripts" / "locale-catalog" / "generator-launcher.mjs"
+    return [str(launcher.resolve()), entry, *arguments]
+
+
 def build_catalog(frontend: Path, out: Path) -> dict:
-    result = run([tool("node"), str(frontend / "scripts" / "locale-catalog" / "generate.mjs"), "--out", str(out)], cwd=frontend)
+    # The serving gate builds a real catalog, so it uses the same enforced
+    # launcher every other governed generation path uses.
+    result = run(
+        [tool("node"), *generator_launcher_argv(frontend, "generate.mjs", ["--out", str(out)])],
+        cwd=frontend.resolve(),
+    )
     require(result.returncode == 0, f"generation failed: {result.stdout}\n{result.stderr}")
 
     # The production build precompresses everything it publishes (gzip for
@@ -166,7 +229,7 @@ def build_catalog(frontend: Path, out: Path) -> dict:
 
 def clean_clone(destination: Path) -> Path:
     """A scratch frontend built only from git-tracked sources."""
-    git = tool("git")
+    git = strict_json.trusted_git()
     tracked = run([git, "-C", str(ROOT), "ls-files", "-z"]).stdout.split("\0")
     for relative in tracked:
         if not relative:
@@ -212,9 +275,45 @@ REVALIDATE = "public, max-age=0, must-revalidate"
 NO_STORE = "no-store"
 
 
+def run_workspace_ownership_self_test() -> None:
+    """Prove unique serving workspaces never consume an old fixed-name sentinel."""
+    legacy = WORK_PARENT / ".locale-catalog-serving"
+    legacy_before = (
+        ("absent", b"")
+        if not legacy.exists()
+        else ("directory", "\n".join(sorted(path.name for path in legacy.iterdir())).encode("utf-8"))
+        if legacy.is_dir()
+        else ("file", legacy.read_bytes())
+    )
+    first, first_token, first_identity = create_owned_work()
+    second, second_token, second_identity = create_owned_work()
+    try:
+        require(first != second, "two serving invocations received the same workspace")
+        require(
+            first.name.startswith(".locale-catalog-serving-")
+            and second.name.startswith(".locale-catalog-serving-"),
+            "serving workspace did not use the invocation-unique prefix",
+        )
+    finally:
+        release_owned_work(second, second_token, second_identity)
+        release_owned_work(first, first_token, first_identity)
+    legacy_after = (
+        ("absent", b"")
+        if not legacy.exists()
+        else ("directory", "\n".join(sorted(path.name for path in legacy.iterdir())).encode("utf-8"))
+        if legacy.is_dir()
+        else ("file", legacy.read_bytes())
+    )
+    require(
+        legacy_after == legacy_before,
+        "serving workspace setup or cleanup altered the pre-existing fixed-name sentinel",
+    )
+
+
 def brotli_decompress(payload: bytes) -> bytes:
     """Inflates a brotli body with Node's zlib (the stdlib has no brotli)."""
-    scratch = WORK / "brotli-body"
+    require(WORK is not None, "brotli scratch requested outside an owned serving workspace")
+    scratch = WORK / f"brotli-body-{uuid.uuid4().hex}"
     scratch.write_bytes(payload)
     result = run(
         [
@@ -564,53 +663,57 @@ def check_offline_serving(manifest: dict, static_root: Path) -> None:
 
 
 def main() -> None:
+    global PORT, WORK
     tool("docker")
     tool("node")
     require((FRONTEND / "node_modules" / "parse5").is_dir(), "frontend dependencies are not installed (npm ci)")
+    run_workspace_ownership_self_test()
+    work, token, identity = create_owned_work()
+    WORK = work
+    PORT = 39000 + (int(token[:8], 16) % 1000)
+    try:
+        # Revision A: the current sources.
+        root_a = WORK / "static-a"
+        (root_a).mkdir()
+        (root_a / "index.html").write_text("<!DOCTYPE html><title>spa</title>", encoding="utf-8")
+        manifest_a = build_catalog(FRONTEND, root_a / "locale-catalog")
 
-    shutil.rmtree(WORK, ignore_errors=True)
-    WORK.mkdir(parents=True)
+        # Revision B: the same sources with one pack's content changed.
+        clone = clean_clone(WORK / "clone")
+        changed_pack = mutate_one_locale_string(clone)
+        root_b = WORK / "static-b"
+        root_b.mkdir()
+        (root_b / "index.html").write_text("<!DOCTYPE html><title>spa</title>", encoding="utf-8")
+        manifest_b = build_catalog(clone, root_b / "locale-catalog")
+        require(
+            manifest_a["catalogRevision"] != manifest_b["catalogRevision"],
+            "changing a locale string did not change the catalog revision",
+        )
 
-    # Revision A: the current sources.
-    root_a = WORK / "static-a"
-    (root_a).mkdir()
-    (root_a / "index.html").write_text("<!DOCTYPE html><title>spa</title>", encoding="utf-8")
-    manifest_a = build_catalog(FRONTEND, root_a / "locale-catalog")
+        changed = {("en", changed_pack)}
+        packs_a = {(l["locale"], c["pack"]): c["sha256"] for l in manifest_a["locales"] for c in l["chunks"]}
+        packs_b = {(l["locale"], c["pack"]): c["sha256"] for l in manifest_b["locales"] for c in l["chunks"]}
+        differing = {key for key in packs_a.keys() | packs_b.keys() if packs_a.get(key) != packs_b.get(key)}
+        require(
+            differing == changed,
+            f"expected exactly the mutated pack to change digest, got {sorted(differing)}",
+        )
 
-    # Revision B: the same sources with one pack's content changed.
-    clone = clean_clone(WORK / "clone")
-    changed_pack = mutate_one_locale_string(clone)
-    root_b = WORK / "static-b"
-    root_b.mkdir()
-    (root_b / "index.html").write_text("<!DOCTYPE html><title>spa</title>", encoding="utf-8")
-    manifest_b = build_catalog(clone, root_b / "locale-catalog")
-    require(
-        manifest_a["catalogRevision"] != manifest_b["catalogRevision"],
-        "changing a locale string did not change the catalog revision",
-    )
+        with Nginx(ROOT / "prod.nginxconf", root_a, f"arkham-catalog-a-{token}"):
+            check_status_matrix(manifest_a, "revision A", root_a)
+            check_rolling_deploy(manifest_b, "new manifest against old static root", differing)
 
-    changed = {("en", changed_pack)}
-    packs_a = {(l["locale"], c["pack"]): c["sha256"] for l in manifest_a["locales"] for c in l["chunks"]}
-    packs_b = {(l["locale"], c["pack"]): c["sha256"] for l in manifest_b["locales"] for c in l["chunks"]}
-    differing = {key for key in packs_a.keys() | packs_b.keys() if packs_a.get(key) != packs_b.get(key)}
-    require(
-        differing == changed,
-        f"expected exactly the mutated pack to change digest, got {sorted(differing)}",
-    )
+        with Nginx(ROOT / "prod.nginxconf", root_b, f"arkham-catalog-b-{token}"):
+            check_status_matrix(manifest_b, "revision B", root_b)
+            check_rolling_deploy(manifest_a, "old manifest against new static root", differing)
 
-    with Nginx(ROOT / "prod.nginxconf", root_a, "arkham-catalog-a"):
-        check_status_matrix(manifest_a, "revision A", root_a)
-        check_rolling_deploy(manifest_b, "new manifest against old static root", differing)
-
-    with Nginx(ROOT / "prod.nginxconf", root_b, "arkham-catalog-b"):
-        check_status_matrix(manifest_b, "revision B", root_b)
-        check_rolling_deploy(manifest_a, "old manifest against new static root", differing)
-
-    offline_conf = render_offline_conf(root_a, WORK / "offline")
-    with Nginx(offline_conf, root_a, "arkham-catalog-offline"):
-        check_offline_serving(manifest_a, root_a)
-
-    shutil.rmtree(WORK, ignore_errors=True)
+        offline_conf = render_offline_conf(root_a, WORK / "offline")
+        with Nginx(offline_conf, root_a, f"arkham-catalog-offline-{token}"):
+            check_offline_serving(manifest_a, root_a)
+    finally:
+        release_owned_work(work, token, identity)
+        WORK = None
+        PORT = None
     print(
         "locale-catalog serving: verified status/cache/MIME matrix, rolling-deploy skew in both "
         f"directions ({len(packs_a)} chunks), and the offline package's nginx route"

@@ -98,7 +98,7 @@ compute_frontend_hash() {
 verify_locale_catalog() {
     local output="$1"
     substep "Verifying and republishing the locale catalog in ${output}"
-    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --publish); then
+    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist "$output" --publish); then
         rm -rf "$output" "$FRONTEND_BUILT_MARKER"
         die "  ✗ The build output in ${output} does not contain a valid locale catalog"
     fi
@@ -115,7 +115,7 @@ verify_locale_catalog() {
 verify_cached_locale_catalog() {
     local output="$1"
     substep "Verifying and republishing the cached locale catalog in ${output}"
-    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --dist-only --publish)
+    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist "$output" --dist-only --publish)
 }
 
 # ── Build frontend ────────────────────────────────────────────────────────────
@@ -207,22 +207,22 @@ build_frontend() {
     # 1. Install dependencies
     if [ -f "package-lock.json" ]; then
         substep "npm ci (the first run may need 2-5 minutes to download dependencies) ..."
-        info "Running: npm ci --prefer-offline"
-        if npm ci --prefer-offline 2>&1 | while IFS= read -r line; do
+        info "Running: npm ci --ignore-scripts --prefer-offline"
+        if npm ci --ignore-scripts --prefer-offline 2>&1 | while IFS= read -r line; do
             echo "    $line"
         done; then
             info "  ✓ npm ci succeeded"
         else
             warn "  ! npm ci failed; falling back to npm install (keeping node_modules to avoid re-downloading) ..."
-            info "Running: npm install"
-            npm install 2>&1 | while IFS= read -r line; do
+            info "Running: npm install --ignore-scripts"
+            npm install --ignore-scripts 2>&1 | while IFS= read -r line; do
                 echo "    $line"
             done
         fi
     else
         substep "npm install (the first run may need 2-5 minutes to download dependencies) ..."
-        info "Running: npm install"
-        npm install 2>&1 | while IFS= read -r line; do
+        info "Running: npm install --ignore-scripts"
+        npm install --ignore-scripts 2>&1 | while IFS= read -r line; do
             echo "    $line"
         done
     fi
@@ -233,7 +233,20 @@ build_frontend() {
     substep "Patching helpers.ts: use VITE_ASSET_HOST in production (fall back to the CDN if unset)"
     sed -i.bak "s|export const baseUrl = import.meta.env.PROD ? \"https://assets.arkhamhorror.app\" : ''|export const baseUrl = import.meta.env.PROD ? (import.meta.env.VITE_ASSET_HOST ?? \"https://assets.arkhamhorror.app\") : ''|" "$_HELPERS_TS" && rm -f "${_HELPERS_TS}.bak"
 
-    # 2. Build and output to offline/_dist/frontend/
+    # 2. Generate the ignored public catalog with the exact Node installation
+    # provisioned and version-checked by the offline dependency stage. npm's
+    # prebuild only verifies this output, so a clean cache-miss cannot silently
+    # omit it or regenerate through a different PATH-selected runtime.
+    OFFLINE_NODE="${DEPS_DIR}/node/bin/node"
+    [ -x "${OFFLINE_NODE}" ] || die "  ✗ Missing pinned offline Node executable: ${OFFLINE_NODE}"
+    substep "Generate the locale catalog with the pinned offline Node..."
+    mkdir -p "${DEPS_DIR}/locale-catalog-home"
+    env -i \
+        HOME="${DEPS_DIR}/locale-catalog-home" \
+        PATH="${DEPS_DIR}/node/bin:/usr/bin:/bin" \
+        "${OFFLINE_NODE}" scripts/locale-catalog/generator-launcher.mjs generate.mjs
+
+    # 3. Build and output to offline/_dist/frontend/
     substep "npm run build (output to ${FRONTEND_OUTPUT}) ..."
 
     # Set VITE_ASSET_HOST="" so both images use relative paths during the frontend build
@@ -268,8 +281,8 @@ build_frontend() {
 
     popd > /dev/null
 
-    # 3. Verify the published locale catalog really is in this build output
-    #    (npm prebuild generates it; a stale cached dist would fail here).
+    # 4. Verify the explicitly generated catalog really is in this build
+    #    output; prebuild checked it before Vite copied the public tree.
     verify_locale_catalog "$FRONTEND_OUTPUT"
 
     # 4. Verify artifacts

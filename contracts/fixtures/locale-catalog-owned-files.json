@@ -1,0 +1,15 @@
+{
+  "files": [
+    "capabilities-locale-catalog.json",
+    "capabilities.json",
+    "locale-catalog-backend-registry.json",
+    "locale-catalog-chunk-2e99d063306d7ae986368dfdd065afc6c0e00416fc22a7f2a4c7f71365d3e72d.json",
+    "locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json",
+    "locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json",
+    "locale-catalog-chunk-53afdb521d26506a1661e54f71d31fc3828ad5d9badd6ebac62b68bc6a554c48.json",
+    "locale-catalog-manifest.json",
+    "locale-catalog-source-de.json",
+    "locale-catalog-source-en.json",
+    "locale-catalog-source-pt-BR.json"
+  ]
+}

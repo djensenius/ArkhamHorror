@@ -26,7 +26,13 @@ Implemented (draft 2020-12 semantics, for the keywords the v1 schemas use):
 outside a character class becomes `\\Z`, because JSON Schema's regular
 expressions are ECMA-262 ones where `$` is end-of-input, while Python's `$`
 also matches just before a trailing newline. Without that, `"1.0.0\\n"` would
-satisfy `^[0-9]+\\.[0-9]+\\.[0-9]+$`.
+satisfy `^[0-9]+\\.[0-9]+\\.[0-9]+$`. Patterns are also compiled with
+`re.ASCII`, so `\\d`, `\\w`, `\\s` and `\\b` mean what ECMA-262 says they mean
+rather than their Unicode-aware Python widenings, and every regular-expression
+construct Python implements but ECMA-262 does not -- named groups and
+backreferences, inline flags, comments, atomic groups, possessive quantifiers,
+conditionals, `\\A`/`\\Z`/`\\z`/`\\G`, `\\N{...}`, `\\p{...}` and numeric
+escapes -- is refused rather than silently given Python's meaning.
 """
 
 import json
@@ -70,6 +76,12 @@ JSON_TYPE_NAMES = frozenset({"object", "array", "string", "integer", "number", "
 
 REF_PREFIX = "#/$defs/"
 
+# Escapes ECMA-262 and Python agree on, spelled out so an escape either module
+# treats differently (or only one of them implements) is a refusal.
+SHARED_LETTER_ESCAPES = frozenset("bBdDfnrsStvwW")
+HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+QUANTIFIER_CHARACTERS = frozenset("*+?")
+
 
 class SchemaSubsetError(SystemExit):
     """A schema used a construct this closed subset does not implement."""
@@ -110,40 +122,121 @@ def _matches_type(value: object, name: str) -> bool:
 
 
 def ecma_pattern(pattern: str) -> str:
-    """Rewrite an ECMA-262 `$` into Python's `\\Z`.
+    """Rewrite an ECMA-262 pattern into an equivalent Python one, or refuse.
 
-    Only an unescaped `$` outside a character class is an anchor; inside `[...]`
-    and after a backslash it is a literal. Everything else in the patterns these
-    schemas use has the same meaning in both flavours.
+    Two things happen in one pass. An unescaped `$` outside a character class
+    becomes `\\Z`, because ECMA-262's `$` is end-of-input while Python's also
+    matches before a trailing newline. And every construct Python implements
+    but ECMA-262 does not is refused, so a pattern can never be given Python's
+    meaning by accident: named groups and backreferences, inline flags,
+    comments, atomic groups, conditionals, possessive quantifiers, `\\A`,
+    `\\Z`, `\\z`, `\\G`, `\\N{...}`, `\\p{...}`/`\\P{...}` and numeric (octal
+    or backreference) escapes. Escapes both flavours share are allowed, and
+    `\\uXXXX`/`\\xXX` must be exactly that many hex digits.
     """
     rewritten: list[str] = []
     escaped = False
     in_class = False
-    for character in pattern:
+    in_brace = False
+    previous_quantifier = False
+    index = 0
+    while index < len(pattern):
+        character = pattern[index]
         if escaped:
+            if character.isalnum():
+                if character.isdigit():
+                    _refuse(
+                        f"pattern {pattern!r} uses the numeric escape '\\{character}'; octal "
+                        "escapes and numeric backreferences are not in this subset"
+                    )
+                if character == "u" or character == "x":
+                    width = 4 if character == "u" else 2
+                    digits = pattern[index + 1 : index + 1 + width]
+                    if len(digits) != width or any(digit not in HEX_DIGITS for digit in digits):
+                        _refuse(
+                            f"pattern {pattern!r} has a '\\{character}' escape without exactly "
+                            f"{width} hexadecimal digits"
+                        )
+                    rewritten.append(character)
+                    rewritten.append(digits)
+                    index += 1 + width
+                    escaped = False
+                    previous_quantifier = False
+                    continue
+                if character not in SHARED_LETTER_ESCAPES:
+                    _refuse(
+                        f"pattern {pattern!r} uses '\\{character}', which ECMA-262 and Python do "
+                        "not agree on; this subset implements neither meaning"
+                    )
             rewritten.append(character)
             escaped = False
+            previous_quantifier = False
+            index += 1
             continue
         if character == "\\":
             rewritten.append(character)
             escaped = True
+            index += 1
             continue
         if in_class:
             rewritten.append(character)
             if character == "]":
                 in_class = False
+            index += 1
             continue
         if character == "[":
             in_class = True
             rewritten.append(character)
+            index += 1
+            previous_quantifier = False
             continue
+        if character == "(" and pattern[index + 1 : index + 2] == "?":
+            group = pattern[index + 1 :]
+            for prefix in ("?:", "?=", "?!", "?<=", "?<!"):
+                if group.startswith(prefix):
+                    rewritten.append("(")
+                    rewritten.append(prefix)
+                    index += 1 + len(prefix)
+                    break
+            else:
+                _refuse(
+                    f"pattern {pattern!r} uses the group extension "
+                    f"'({group[:3]}', which is not an ECMA-262 construct"
+                )
+            previous_quantifier = False
+            continue
+        if character == "+" and previous_quantifier:
+            _refuse(
+                f"pattern {pattern!r} uses a possessive quantifier, which is a Python-only "
+                "construct"
+            )
         if character == "$":
             rewritten.append("\\Z")
+            index += 1
+            previous_quantifier = False
             continue
+        if character == "{":
+            in_brace = True
+        elif character == "}":
+            in_brace = False
         rewritten.append(character)
+        previous_quantifier = character in QUANTIFIER_CHARACTERS or (
+            character == "}" and not in_brace
+        )
+        index += 1
     if escaped or in_class:
         _refuse(f"pattern {pattern!r} ends inside an escape or character class")
     return "".join(rewritten)
+
+
+def compile_pattern(pattern: str):
+    """Compile a governed `pattern` with ECMA-262 semantics.
+
+    `re.ASCII` is not cosmetic: without it Python widens `\\d`, `\\w`, `\\s`
+    and `\\b` to Unicode, so `^\\d+$` would accept characters ECMA-262 rejects
+    and `\\D`/`\\W`/`\\S` would reject characters it accepts.
+    """
+    return re.compile(ecma_pattern(pattern), re.ASCII)
 
 
 def _canonical(value: object) -> str:
@@ -203,6 +296,8 @@ def _check_node(node: object, *, source: str, pointer: str, root: bool, definiti
     declared = node.get("type")
     if declared is not None:
         names = declared if isinstance(declared, list) else [declared]
+        if isinstance(declared, list) and (not declared or len(set(map(repr, declared))) != len(declared)):
+            _refuse(f"{source}{pointer} has an empty or repeating type union")
         for name in names:
             if not isinstance(name, str) or name not in JSON_TYPE_NAMES:
                 _refuse(f"{source}{pointer} declares unsupported type {name!r}")
@@ -224,7 +319,7 @@ def _check_node(node: object, *, source: str, pointer: str, root: bool, definiti
     if "pattern" in node:
         if not isinstance(node["pattern"], str):
             _refuse(f"{source}{pointer} has a non-string pattern")
-        re.compile(ecma_pattern(node["pattern"]))
+        compile_pattern(node["pattern"])
     if "additionalProperties" in node and node["additionalProperties"] is not False:
         if not isinstance(node["additionalProperties"], dict):
             _refuse(
@@ -332,7 +427,7 @@ def _validate_string(node: dict, instance: str, where: str, errors: list[str]) -
         errors.append(f"{where} is shorter than the minimum {node['minLength']} characters")
     if "maxLength" in node and len(instance) > node["maxLength"]:
         errors.append(f"{where} is longer than the maximum {node['maxLength']} characters")
-    if "pattern" in node and re.search(ecma_pattern(node["pattern"]), instance) is None:
+    if "pattern" in node and compile_pattern(node["pattern"]).search(instance) is None:
         errors.append(f"{where} does not match {node['pattern']!r}")
 
 
@@ -480,3 +575,75 @@ def run_self_tests() -> None:
         raise SystemExit("json-schema subset: Self-test failure: the ECMA $ anchor was not rewritten")
     if ecma_pattern("^[a$]\\$$") != "^[a$]\\$\\Z":
         raise SystemExit("json-schema subset: Self-test failure: a literal $ was rewritten as an anchor")
+
+    # Every regular-expression construct Python implements and ECMA-262 does
+    # not. A silently accepted one would give a published `pattern` a meaning
+    # the schema never stated, which is the same failure mode as a silently
+    # ignored keyword.
+    python_only_patterns = {
+        "a named group": "(?P<name>a)",
+        "a named backreference": "(?P=name)",
+        "an inline comment": "(?#note)a",
+        "an inline flag": "(?i)a",
+        "a scoped inline flag": "(?i:a)",
+        "an atomic group": "(?>a)",
+        "a conditional group": "(a)(?(1)b)",
+        "a possessive star": "a*+",
+        "a possessive plus": "a++",
+        "a possessive question mark": "a?+",
+        "a possessive interval": "a{1,2}+",
+        "the start-of-string anchor": "\\Aa",
+        "the end-of-string anchor": "a\\Z",
+        "the lowercase end-of-string anchor": "a\\z",
+        "the search-start anchor": "\\Ga",
+        "a named character escape": "\\N{BULLET}",
+        "a Unicode property escape": "\\p{L}",
+        "a numeric backreference": "(a)\\1",
+        "an octal escape": "\\0",
+        "a truncated \\u escape": "\\u12",
+        "a malformed \\x escape": "\\xZZ",
+        "an undefined letter escape": "\\q",
+    }
+    for label, pattern in sorted(python_only_patterns.items()):
+        try:
+            compile_pattern(pattern)
+        except SchemaSubsetError:
+            continue
+        raise SystemExit(
+            f"json-schema subset: Self-test failure: {label} was accepted as an ECMA-262 pattern"
+        )
+
+    # ...and the shared constructs the published schemas rely on must still
+    # compile, so the gate above is a filter and not a wall.
+    for pattern in (
+        "^[a-z]+$",
+        "^(a|b)+$",
+        "(?:ab)+",
+        "a(?=b)",
+        "a(?!b)",
+        "(?<=a)b",
+        "(?<!a)b",
+        "^\\d{1,3}$",
+        "[\\u0000-\\u001f]",
+        "\\\\",
+        "a*?",
+        "[$]",
+        "^x{2,3}$",
+    ):
+        compile_pattern(pattern)
+
+    # `re.ASCII` is what makes `\d` mean ECMA-262's `[0-9]`; without it Python
+    # accepts every Unicode decimal digit.
+    if compile_pattern("^\\d+$").search("\u0663\u0664") is not None:
+        raise SystemExit(
+            "json-schema subset: Self-test failure: \\d matched a non-ASCII digit, so patterns "
+            "are not being compiled with ECMA-262 character-class semantics"
+        )
+    if compile_pattern("^\\w+$").search("caf\u00e9") is not None:
+        raise SystemExit(
+            "json-schema subset: Self-test failure: \\w matched a non-ASCII word character"
+        )
+
+    refused({**base, "type": []}, "an empty type union")
+    refused({**base, "type": ["string", "string"]}, "a repeating type union")
+    refused({**base, "pattern": "(?i)a"}, "a Python-only pattern construct in a schema")

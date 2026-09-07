@@ -9,9 +9,10 @@
 // therefore behave identically to `npm run build`.
 
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, posix, relative as relative_, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createOwnedBuildDirectory, releaseOwnedBuildDirectory } from './owned-build-dir.mjs'
 
 const VIRTUAL_ENTRY = '\0locale-catalog-entry'
 
@@ -260,10 +261,9 @@ function entryModule() {
  */
 export async function loadOwnershipTrees(frontendDir) {
   const { build } = await import('vite')
-  const outDir = join(frontendDir, 'node_modules', '.locale-catalog', `${process.pid}-${buildSerial++}`)
-  rmSync(outDir, { recursive: true, force: true })
+  const owned = createOwnedBuildDirectory(frontendDir)
   try {
-    const bundle = await bundleLocaleSources(build, frontendDir, outDir, [
+    const bundle = await bundleLocaleSources(build, frontendDir, owned.out, [
       ownershipTagger(resolve(frontendDir)),
     ])
     const trees = {}
@@ -272,7 +272,7 @@ export async function loadOwnershipTrees(frontendDir) {
     }
     return { trees, ownerKey: OWNER_TAG, moduleKey: MODULE_TAG }
   } finally {
-    rmSync(outDir, { recursive: true, force: true })
+    releaseOwnedBuildDirectory(owned)
   }
 }
 
@@ -282,17 +282,13 @@ export async function loadLocaleSources(frontendDir) {
   // path would silently re-evaluate the first bundle on every later build in
   // the same process — and a repeated-build determinism check would then
   // compare a bundle against itself.
-  const outDir = join(frontendDir, 'node_modules', '.locale-catalog', `${process.pid}-${buildSerial++}`)
-  rmSync(outDir, { recursive: true, force: true })
-
+  const owned = createOwnedBuildDirectory(frontendDir)
   try {
-    return await bundleLocaleSources(build, frontendDir, outDir)
+    return await bundleLocaleSources(build, frontendDir, owned.out)
   } finally {
-    rmSync(outDir, { recursive: true, force: true })
+    releaseOwnedBuildDirectory(owned)
   }
 }
-
-let buildSerial = 0
 
 async function bundleLocaleSources(build, frontendDir, outDir, extraPlugins = []) {
   await build({

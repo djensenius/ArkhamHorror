@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite dev",
     "serve": "vite serve",
-    "prebuild": "node ./scripts/slim-cards.cjs && npm run locale-catalog",
+    "prebuild": "node ./scripts/slim-cards.cjs && node ./scripts/locale-catalog/generator-launcher.mjs generate.mjs --check",
     "build": "vite build",
     "postbuild": "node ./scripts/precompress.cjs",
     "precompress": "node ./scripts/precompress.cjs",
@@ -24,8 +24,8 @@
     "fetch-card-data": "node ./scripts/fetch-card-data.cjs --slim",
     "import-zh-cn-cards": "node ./scripts/import-card-translations.cjs --source-locale zh-cn --output-lang zh-cn --slim",
     "slim-cards": "node ./scripts/slim-cards.cjs",
-    "locale-catalog": "node ./scripts/locale-catalog/generate.mjs",
-    "locale-catalog:check": "node ./scripts/locale-catalog/generate.mjs --check"
+    "locale-catalog": "cd .. && /bin/sh scripts/run-locale-catalog-python.sh scripts/generate-locale-catalog.py",
+    "locale-catalog:check": "cd .. && /bin/sh scripts/run-locale-catalog-python.sh scripts/generate-locale-catalog.py --check"
   },
   "dependencies": {
     "@fortawesome/fontawesome-svg-core": "^7.1.0",
