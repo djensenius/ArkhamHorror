@@ -3493,8 +3493,13 @@ UNRESOLVED_WORD = re.compile(r"[$`*?]|\[.*\]")
 # `node`, `nodejs`, a pinned `node20`, a Windows `node.exe` and any absolute or
 # relative path ending in one of those are the same interpreter.
 NODE_EXECUTABLE = re.compile(r"^node(?:js)?[0-9.]*(?:\.exe)?$", re.IGNORECASE)
-# A leading `NAME=value` is an environment assignment, not the program.
-COMMAND_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+# A leading `NAME=value` or Bash `NAME+=value` is an environment assignment,
+# not the program. Appending NODE_OPTIONS is always unresolved because its
+# result depends on prior state.
+COMMAND_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\+)?=")
+NODE_OPTIONS_REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9_])NODE_OPTIONS(?![A-Za-z0-9_])"
+)
 # `2>`, `>>`, `<`, `>&2`, ... optionally with the target attached.
 REDIRECTION = re.compile(r"^[0-9]*(?:>>|>&|<&|<<<|<<|>|<)")
 # Wrappers that hand execution straight to the command word after their own
@@ -3570,8 +3575,11 @@ def executed_program(
 
     def record_assignment(word: str) -> None:
         name, value = word.split("=", 1)
+        appended = name.endswith("+")
+        if appended:
+            name = name[:-1]
         if name == "NODE_OPTIONS":
-            node_options.append(value)
+            node_options.append(f"$NODE_OPTIONS{value}" if appended else value)
 
     index = 0
     while index < len(words) and COMMAND_ASSIGNMENT.match(words[index]):
@@ -3887,7 +3895,7 @@ def logical_lines(text: str) -> list[tuple[int, str]]:
 
 
 SHELL_ASSIGNMENT = re.compile(
-    r"(?:^|[;&|]\s*|\bexport\s+)([A-Za-z_][A-Za-z0-9_]*)=(\S*)"
+    r"(?:^|[;&|]\s*|\bexport\s+)([A-Za-z_][A-Za-z0-9_]*)(?:\+)?=(\S*)"
 )
 
 
@@ -4019,14 +4027,17 @@ def split_command_segments(text: str) -> tuple[list[str], bool]:
             index = end
             continue
         if text.startswith("$((", index):
-            end = text.find("))", index)
+            end = matching(index + 1, "(", ")")
             if end == -1:
                 resolved = False
                 current.append(text[index:])
                 index = length
                 continue
-            current.append(text[index : end + 2])
-            index = end + 2
+            inner = text[index + 3 : end - 2]
+            if "$(" in inner or "`" in inner:
+                nested.append(inner)
+            current.append(text[index:end])
+            index = end
             continue
         if text.startswith("$(", index) or char == "`":
             if char == "`":
@@ -4152,6 +4163,11 @@ def analyse_command_segment(
     )
     for finding in option_findings:
         violations.append(f"{label}: {finding}: {code}")
+    node_options_mentions = len(NODE_OPTIONS_REFERENCE.findall(code))
+    if node_options_mentions > len(declared_node_options):
+        violations.append(
+            f"{label}: uses NODE_OPTIONS outside a statically validated assignment: {code}"
+        )
     # Mediation is a property of *this* command, never of the line it shares
     # with others, and never of a launcher path that merely appears in it: the
     # launcher has to be the program Node actually executes, with the entry
@@ -5195,6 +5211,25 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
         False,
     ),
+    "an appended literal NODE_OPTIONS preload": (
+        "offline/scripts/99-wrapper.sh",
+        "export NODE_OPTIONS+=--require=/definitely/missing-locale-probe.js\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "an appended unresolved NODE_OPTIONS value": (
+        "offline/scripts/99-wrapper.sh",
+        'export NODE_OPTIONS+="$EXTRA"\n'
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "a dynamically assigned NODE_OPTIONS value": (
+        "offline/scripts/99-wrapper.sh",
+        "printf -v NODE_OPTIONS '%s' --require=/definitely/missing-locale-probe.js\n"
+        "export NODE_OPTIONS\n"
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
     "a direct generator inside a double-quoted substitution": (
         "offline/scripts/99-wrapper.sh",
         'node scripts/locale-catalog/generator-launcher.mjs generate.mjs '
@@ -5211,6 +5246,12 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         "offline/scripts/99-wrapper.sh",
         "node scripts/locale-catalog/generator-launcher.mjs generate.mjs "
         '"${RESULT:-$(node scripts/locale-catalog/generate.mjs)}"\n',
+        False,
+    ),
+    "a direct generator inside an arithmetic substitution": (
+        "offline/scripts/99-wrapper.sh",
+        "node scripts/locale-catalog/generator-launcher.mjs generate.mjs "
+        "$(( $(node scripts/locale-catalog/generate.mjs --check >/dev/null; printf 0) ))\n",
         False,
     ),
     "a benign eval beside a real launcher command": (

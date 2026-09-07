@@ -719,14 +719,17 @@ standalone assignment or one made by `export`, `declare`, `typeset`, `local` or
 `readonly` (including `command`/`builtin` wrappers and combined option flags),
 so shell persistence cannot hide the option from a later Node command; the lint
 conservatively rejects a non-inert assignment even if later shell code might
-clear it. The explicit command line is equally narrow: only the reviewed inert
+clear it. Bash `NODE_OPTIONS+=…` is always unresolved because its result depends
+on prior state, and any literal `NODE_OPTIONS` use outside a statically parsed
+assignment fails closed rather than guessing at dynamic assignment semantics.
+The explicit command line is equally narrow: only the reviewed inert
 `--enable-source-maps` flag is accepted before a launcher. Package-script,
-test-runner, environment-file, snapshot and every unknown or inline option
-fail closed because they can execute code, load startup inputs or make the
-script position ambiguous; `--` still ends Node's options. Python callers are
-read from the AST: a constant or `Path` join bound only for hashing is fine, the
-same value reaching `subprocess` argv — directly or through a variable — is
-not. Path spellings are normalised (`./`, `..`, duplicate separators, quoting)
+test-runner, environment-file, snapshot and every unknown or inline option fail
+closed because they can execute code, load startup inputs or make the script
+position ambiguous; `--` still ends Node's options. Python callers are read
+from the AST: a constant or `Path` join bound only for hashing is fine, the same
+value reaching `subprocess` argv — directly or through a variable — is not.
+Path spellings are normalised (`./`, `..`, duplicate separators, quoting)
 before comparison, and a mention the grammar cannot resolve fails closed. This
 is reproducibility and centralisation over trusted code, not containment.
 
