@@ -479,8 +479,7 @@
           "const": "I18nEntry"
         },
         "key": {
-          "type": "string",
-          "minLength": 1,
+          "$ref": "#/$defs/i18nKey",
           "description": "A dotted i18n lookup key, never rendered narrative text -- the client's own locale files supply the displayed text for this key."
         },
         "variables": {

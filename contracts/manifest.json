@@ -1155,6 +1155,28 @@
       ]
     },
     {
+      "description": "I18nEntry uses the same canonical locale-catalog message-key grammar as HeaderEntry.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "i18nEntry",
+      "rejectionSchemaBranch": "flavorTextEntry",
+      "basePositiveFixture": "contracts/fixtures/question-read.json",
+      "basePointer": "/flavorText/body/0/list/0/entry",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/key",
+        "value": "nightOfTheZealot..setup"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "key"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match"
+        }
+      ]
+    },
+    {
       "description": "The governed semantic continue Label's messages must stay exactly empty; a non-empty payload is an explicit unsupported value, not a variant to execute.",
       "schema": "contracts/schemas/basic-choice-question.schema.json",
       "schemaBranch": "basicReadContinueLabel",
@@ -1692,14 +1714,14 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "b04ef574ead640dde46b1179ccc58827456a595f51a0bf448d85f2b2fad50c74",
+    "contracts/manifest.json": "0701a9bcb96dff8decaf1807f965d6f217499c45ccf831fc60b962ac71791328",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "e69a87d34beb5c12cb89208f2234bdcee3398d39d3a938de2e7d1928596b7d77",
+    "contracts/schemas/basic-choice-question.schema.json": "ebb527041b46a1a8ef4132e05afb3886100dc99e6b92ac3d5e88dae593368349",
     "contracts/schemas/capabilities.schema.json": "7cc6d2805a47ee19549beab91f3c54085f2726b8d0671f0a3ae662bab820d42a",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
