@@ -88,7 +88,7 @@ jobs:
             offline/_deps/node/
             offline/_deps/postgres/
             offline/_deps/nginx/
-          key: arkham-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('offline/toolchain.lock', 'offline/scripts/utils.sh', 'offline/scripts/authority-tree.py', 'offline/scripts/toolchain-authority.sh', 'offline/scripts/01-check-project-deps.sh') }}
+          key: arkham-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('offline/toolchain.lock', 'offline/scripts/utils.sh', 'offline/scripts/authority-tree.py', 'offline/scripts/toolchain-authority.sh', 'offline/scripts/run-authorized-stage.sh', 'offline/scripts/run-initial-authorized-stage.sh', 'offline/scripts/01-check-project-deps.sh') }}
 
       - name: Restore backend build cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -128,7 +128,7 @@ jobs:
       - name: '[1/5] Install project dependencies (GHC / Stack / Node / PG / Nginx)'
         working-directory: offline
         shell: /bin/sh -e {0}
-        run: /bin/sh scripts/run-authorized-stage.sh scripts/01-check-project-deps.sh
+        run: /bin/sh scripts/run-authorized-stage.sh scripts/run-initial-authorized-stage.sh scripts/01-check-project-deps.sh
 
       - name: '[2/5] Verify dependencies'
         working-directory: offline

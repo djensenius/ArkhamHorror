@@ -72,6 +72,43 @@ chmod +x "$STAGE"
 BASH_ENV_FILE="${WORK}/bash-env"
 printf 'touch "%s/bash-env-ran"\n' "$WORK" > "$BASH_ENV_FILE"
 
+BOOTSTRAP_ENV_FILE="${WORK}/bootstrap-github-env"
+: > "$BOOTSTRAP_ENV_FILE"
+BOOTSTRAP_SCRIPT_DIR="${WORK}/offline/scripts"
+mkdir -p "$BOOTSTRAP_SCRIPT_DIR"
+cp \
+    "${SCRIPT_DIR}/utils.sh" \
+    "${SCRIPT_DIR}/run-authorized-stage.sh" \
+    "${SCRIPT_DIR}/run-initial-authorized-stage.sh" \
+    "$BOOTSTRAP_SCRIPT_DIR/"
+if ! GITHUB_ENV="$BOOTSTRAP_ENV_FILE" \
+    BASH_ENV="$BASH_ENV_FILE" \
+    /bin/sh "${BOOTSTRAP_SCRIPT_DIR}/run-authorized-stage.sh" \
+        "${BOOTSTRAP_SCRIPT_DIR}/run-initial-authorized-stage.sh" \
+        "$STAGE" "${BOOTSTRAP_SCRIPT_DIR}/utils.sh" "$PAYLOAD" "ordinary-argument"; then
+    printf '%s\n' 'receipt-capability-isolation: initial authorized stage failed' >&2
+    exit 1
+fi
+[ ! -e "${WORK}/bash-env-ran" ] || {
+    printf '%s\n' 'receipt-capability-isolation: bootstrap honored BASH_ENV' >&2
+    exit 1
+}
+bootstrap_receipt_file="$(
+    awk -F= '$1 == "ARKHAM_TOOLCHAIN_RECEIPT_FILE" { print substr($0, index($0, "=") + 1) }' \
+        "$BOOTSTRAP_ENV_FILE"
+)"
+bootstrap_receipt_token="$(
+    awk -F= '$1 == "ARKHAM_TOOLCHAIN_RECEIPT_TOKEN" { print substr($0, index($0, "=") + 1) }' \
+        "$BOOTSTRAP_ENV_FILE"
+)"
+case "$bootstrap_receipt_file" in
+    "${WORK}"/offline/_session/receipt-*/receipt.tsv) ;;
+    *) echo "receipt-capability-isolation: bootstrap receipt escaped its scratch root" >&2; exit 1 ;;
+esac
+[ -f "$bootstrap_receipt_file" ] \
+    || { echo "receipt-capability-isolation: bootstrap receipt was not published" >&2; exit 1; }
+require_receipt_token "$bootstrap_receipt_token"
+
 if ! ARKHAM_TOOLCHAIN_RECEIPT_FILE="$RECEIPT_FILE" \
     ARKHAM_TOOLCHAIN_RECEIPT_TOKEN="$RECEIPT_TOKEN" \
     BASH_ENV="$BASH_ENV_FILE" \

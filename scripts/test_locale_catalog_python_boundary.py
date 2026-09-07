@@ -1117,7 +1117,17 @@ def test_workflow_base_authority_wiring() -> int:
         and "@v" not in offline,
         "build-offline.yml does not isolate release write credentials from dependency/build code",
     )
-    return 2
+    locale_catalog = (ROOT / ".github" / "workflows" / "locale-catalog.yml").read_text(
+        encoding="utf-8"
+    )
+    require(
+        'run: ARKHAM_PRODUCTION_IMAGE="arkham-locale-serving:${{ github.sha }}" '
+        "mise run locale-catalog:serving" in locale_catalog
+        and "\n        env:\n          ARKHAM_PRODUCTION_IMAGE:" not in locale_catalog,
+        "locale-catalog.yml relies on a step environment value that the sealed workflow shell "
+        "discards before mise can expand the production-image argument",
+    )
+    return 3
 
 
 def test_fixture_writer_ownership(scratch: Path, token: str) -> int:

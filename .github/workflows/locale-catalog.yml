@@ -160,6 +160,4 @@ jobs:
       - name: Build the final production image
         run: docker build --target app --tag "arkham-locale-serving:${{ github.sha }}" .
       - name: Verify the exact production image nginx, config, and static tree
-        env:
-          ARKHAM_PRODUCTION_IMAGE: arkham-locale-serving:${{ github.sha }}
-        run: mise run locale-catalog:serving
+        run: ARKHAM_PRODUCTION_IMAGE="arkham-locale-serving:${{ github.sha }}" mise run locale-catalog:serving
