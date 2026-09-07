@@ -722,6 +722,9 @@ conservatively rejects a non-inert assignment even if later shell code might
 clear it. Bash `NODE_OPTIONS+=…` is always unresolved because its result depends
 on prior state, and any literal `NODE_OPTIONS` use outside a statically parsed
 assignment fails closed rather than guessing at dynamic assignment semantics.
+Structured YAML, TOML and JSON environment mappings are checked independently
+of their command values, so workflow- or mise-level `NODE_OPTIONS` cannot be
+filtered out merely because the option payload itself names no generator.
 The explicit command line is equally narrow: only the reviewed inert
 `--enable-source-maps` flag is accepted before a launcher. Package-script,
 test-runner, environment-file, snapshot and every unknown or inline option fail

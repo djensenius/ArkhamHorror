@@ -4542,8 +4542,45 @@ def structured_string_units(label: str, value: object, path: str) -> list[tuple[
     return units
 
 
-def structured_violations(relative: str, document: object) -> list[str]:
+def structured_node_options_violations(
+    label: str, value: object, path: str = ""
+) -> list[str]:
+    """Validate NODE_OPTIONS mapping keys independently of command text.
+
+    Workflow and mise environment mappings carry the variable name in the key,
+    not in the flattened string value. They must therefore be checked before
+    filtering values by whether they name a generator entry.
+    """
     violations: list[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            name = str(key)
+            child_path = f"{path}.{name}" if path else name
+            child_label = f"{label}[{child_path}]"
+            if name == "NODE_OPTIONS":
+                if not isinstance(child, str):
+                    violations.append(
+                        f"{child_label}: NODE_OPTIONS must be a statically validated string"
+                    )
+                else:
+                    findings, _inert = read_node_environment_options([child])
+                    for finding in findings:
+                        violations.append(f"{child_label}: {finding}: {child}")
+            violations.extend(
+                structured_node_options_violations(label, child, child_path)
+            )
+        return violations
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            child_path = f"{path}[{index}]"
+            violations.extend(
+                structured_node_options_violations(label, child, child_path)
+            )
+    return violations
+
+
+def structured_violations(relative: str, document: object) -> list[str]:
+    violations = structured_node_options_violations(relative, document)
     for label, value, is_command in structured_string_units(relative, document, ""):
         if not entry_mentions(value):
             continue
@@ -4582,9 +4619,10 @@ def dockerfile_violations(relative: str, text: str) -> list[str]:
 
 def generator_reference_violations(relative: str, text: str) -> list[str]:
     """Judge one production file in whichever grammar it is written in."""
-    if not entry_mentions(text):
-        return []
     name = relative.rsplit("/", 1)[-1]
+    structured = relative.endswith((".json", ".toml", *YAML_SUFFIXES))
+    if not entry_mentions(text) and not (structured and "NODE_OPTIONS" in text):
+        return []
     if name == "Dockerfile" or name.startswith("Dockerfile."):
         return dockerfile_violations(relative, text)
     if relative.endswith(JS_SUFFIXES):
@@ -4911,12 +4949,45 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         'run = "node scripts/locale-catalog/generator-launcher.mjs generate.mjs && node scripts/locale-catalog/generate.mjs"\n',
         False,
     ),
+    "a mise environment preloads before a launcher task": (
+        "mise.toml",
+        '[env]\nNODE_OPTIONS = "--require=/definitely/missing-locale-probe.js"\n\n'
+        '[tasks.rogue]\n'
+        'run = "node scripts/locale-catalog/generator-launcher.mjs generate.mjs"\n',
+        False,
+    ),
+    "a benign mise environment before a launcher task": (
+        "mise.toml",
+        '[env]\nNODE_OPTIONS = "--enable-source-maps"\n\n'
+        '[tasks.rogue]\n'
+        'run = "node scripts/locale-catalog/generator-launcher.mjs generate.mjs"\n',
+        True,
+    ),
     "a launcher and a direct call in a workflow run block": (
         ".github/workflows/rogue.yml",
         "jobs:\n  build:\n    steps:\n"
         "      - run: |\n"
         "          node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n"
         "          node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
+    "a workflow environment preloads before a launcher step": (
+        ".github/workflows/rogue.yml",
+        "jobs:\n  build:\n"
+        "    env:\n"
+        "      NODE_OPTIONS: --require=/definitely/missing-locale-probe.js\n"
+        "    steps:\n"
+        "      - run: node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
+        False,
+    ),
+    "a non-string workflow NODE_OPTIONS value": (
+        ".github/workflows/rogue.yml",
+        "jobs:\n  build:\n"
+        "    env:\n"
+        "      NODE_OPTIONS:\n"
+        "        - --enable-source-maps\n"
+        "    steps:\n"
+        "      - run: node scripts/locale-catalog/generator-launcher.mjs generate.mjs\n",
         False,
     ),
     "a launcher and a direct call in a Docker instruction": (
