@@ -263,6 +263,8 @@ SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
     "en": {
         "core": {"continue": "core.continue.en", "setup": "core.setup.en"},
         "nightOfTheZealot": {
+            "nightOfTheZealot.theGathering.intro.body": "notz.intro.body.en",
+            "nightOfTheZealot.theGathering.intro.title": "notz.intro.title.en",
             "nightOfTheZealot.theGathering.setup.gatherSets": "notz.gatherSets.en",
             "nightOfTheZealot.theGathering.setup.placeLocations": "notz.placeLocations.en",
         },

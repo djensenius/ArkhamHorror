@@ -56,6 +56,7 @@ WORKSPACE_OWNER_FILE = "owner"
 
 REQUIRED_KEY_FIXTURES = (
     "contracts/fixtures/question-read.json",
+    "contracts/fixtures/question-read-scenario-intro.json",
     "contracts/fixtures/question-read-with-cards.json",
 )
 
@@ -252,7 +253,9 @@ def required_keys_from_fixture(value: object, into: set[str]) -> set[str]:
     if not isinstance(value, dict):
         return into
 
-    if value.get("tag") == "I18nEntry" and isinstance(value.get("key"), str):
+    if value.get("tag") in {"I18nEntry", "HeaderEntry"} and isinstance(
+        value.get("key"), str
+    ):
         into.add(value["key"])
     for field, child in value.items():
         if isinstance(child, str):
@@ -263,6 +266,34 @@ def required_keys_from_fixture(value: object, into: set[str]) -> set[str]:
             continue
         required_keys_from_fixture(child, into)
     return into
+
+
+def validate_required_key_extraction() -> None:
+    extracted = required_keys_from_fixture(
+        {
+            "tag": "Read",
+            "flavorText": {
+                "title": "$story.title",
+                "body": [
+                    {
+                        "tag": "HeaderEntry",
+                        "level": 3,
+                        "key": "story.uniqueHeading",
+                    },
+                    {
+                        "tag": "I18nEntry",
+                        "key": "story.body",
+                        "variables": {},
+                    },
+                ],
+            },
+        },
+        set(),
+    )
+    require(
+        extracted == {"story.title", "story.uniqueHeading", "story.body"},
+        "required-key extraction dropped a catalog-backed HeaderEntry key",
+    )
 
 
 def validate_catalog(files: dict[str, bytes], schemas: dict[str, dict]) -> dict:
@@ -1100,6 +1131,7 @@ def validate_deployment_wiring(manifest: dict) -> None:
 def main() -> None:
     strict_json.run_self_tests()
     json_schema_subset.run_self_tests()
+    validate_required_key_extraction()
 
     require(GENERATOR.is_file(), "the locale-catalog generator is missing")
     require(

@@ -1,0 +1,29 @@
+{
+  "tag": "Read",
+  "flavorText": {
+    "title": "$nightOfTheZealot.theGathering.intro.title",
+    "body": [
+      {
+        "tag": "HeaderEntry",
+        "level": 1,
+        "key": "nightOfTheZealot.theGathering.intro.title"
+      },
+      {
+        "tag": "I18nEntry",
+        "key": "nightOfTheZealot.theGathering.intro.body",
+        "variables": {}
+      }
+    ]
+  },
+  "readChoices": {
+    "tag": "BasicReadChoices",
+    "contents": [
+      {
+        "tag": "Label",
+        "label": "$continue",
+        "messages": []
+      }
+    ]
+  },
+  "readCards": null
+}
