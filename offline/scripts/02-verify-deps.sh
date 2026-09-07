@@ -10,10 +10,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/utils.sh"
 
 init_paths
-activate_deps_path
-
 OS="$(detect_os)"
 PLATFORM="$(detect_platform)"
+source "${SCRIPT_DIR}/toolchain-authority.sh"
+
+# Do not source cached PATH fragments or execute an installed tool until its
+# lock-bound manifest and binary identity have been checked.
+require_toolchain_authority_receipt
+verify_all_offline_toolchain
+activate_deps_path
 
 # ── Verification helpers (with minimal functional tests) ─────────────────────
 
@@ -22,8 +27,7 @@ verify_ghc_functional() {
     substep "GHC functional test: compile Hello World ..."
 
     local tmpdir
-    tmpdir="$(mktemp -d 2>/dev/null || echo "${TMP_DIR}/ghc_test_$$")"
-    ensure_dir "$tmpdir"
+    tmpdir="$(prepare_extract_dir "ghc-test-$$")"
     local test_file="${tmpdir}/Test.hs"
 
     cat > "$test_file" << 'EOF'

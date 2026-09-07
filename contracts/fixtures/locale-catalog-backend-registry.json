@@ -1,0 +1,26 @@
+{
+  "artifactVersion": "1.0.0",
+  "source": {
+    "files": 3,
+    "sha256": "c4239e5ebe9db0b81178628992998144c5ade2e4171606285c2790a86834ce0f"
+  },
+  "dynamicSites": 0,
+  "emittedKeys": [
+    "continue",
+    "nightOfTheZealot.theGathering.setup.gatherSets",
+    "nightOfTheZealot.theGathering.setup.placeLocations",
+    "nightOfTheZealot.theGathering.setup.setOutOfPlay",
+    "setup",
+    "shuffleRemainder"
+  ],
+  "requiredKeys": [
+    "continue",
+    "nightOfTheZealot.theGathering.setup.gatherSets",
+    "nightOfTheZealot.theGathering.setup.placeLocations",
+    "nightOfTheZealot.theGathering.setup.setOutOfPlay",
+    "setup",
+    "shuffleRemainder"
+  ],
+  "variableGaps": [],
+  "unknownVariableTypes": []
+}

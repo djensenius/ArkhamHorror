@@ -24,15 +24,17 @@ jobs:
         ghc: ["9.14.1"]
 
     steps:
-    - uses: actions/checkout@v3
-    - uses: haskell-actions/setup@v2
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        persist-credentials: false
+    - uses: haskell-actions/setup@bda9c527d4136f7759733016190c34a24c84f4f4
       name: Setup Haskell Stack
       with:
         ghc-version: ${{ matrix.ghc }}
         stack-version: ${{ matrix.stack }}
 
     - name: Cache
-      uses: actions/cache@v3
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
       env:
         cache-name: cache-stack
       with:
@@ -53,3 +55,67 @@ jobs:
       run: stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks cards-discover && stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks
     - name: Run tests
       run: stack test --system-ghc
+
+    # The deployment seam: generate a *real* catalog and drive the production
+    # settings parser, capabilities handler and toEncoding over it, rather than
+    # modelling any of that in Python. Runs here because this is the job that
+    # already has the backend built.
+    - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      with:
+        version: 2026.8.14
+        cache: true
+    # `mise` itself is resolved through PATH by the action that just
+    # installed it, and a restored cache can put executables on that PATH.
+    # Assert the exact pinned version and a plausible install location before
+    # any governed command runs. What *is* pinned after this point: mise
+    # resolves Python 3.14.7, Node 26.7.0 and uv 0.12.6 from mise.toml, and
+    # every governed command then uses their absolute paths, verified against
+    # the digests in scripts/locale_catalog_python_runtime.json. What is not
+    # pinned: this `mise` binary itself, and the runner image's own /usr/bin.
+    - name: Assert the pinned mise version before governed commands
+      run: |
+        set -eu
+        resolved="$(command -v mise)"
+        printf 'mise resolved to %s\n' "$resolved"
+        case "$resolved" in
+          "$HOME"/.local/*|/opt/hostedtoolcache/*|"${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/*) ;;
+          *) printf 'refusing an unexpected mise location: %s\n' "$resolved" >&2; exit 1 ;;
+        esac
+        mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
+    - name: Install frontend dependencies
+      run: mise exec -- npm ci --ignore-scripts
+      working-directory: ${{ github.workspace }}/frontend
+    - name: Bind the built capabilities probe authority
+      id: capabilities-probe
+      run: |
+        install_root="$(stack path --local-install-root --system-ghc)"
+        probe_path="${install_root}/bin/arkham-capabilities-probe"
+        case "${probe_path}" in
+          /*) ;;
+          *) echo "stack did not provide an absolute probe path" >&2; exit 1 ;;
+        esac
+        test -f "${probe_path}" && test ! -L "${probe_path}" && test -x "${probe_path}"
+        canonical_parent="$(cd "${probe_path%/*}" && pwd -P)"
+        test "${canonical_parent}/${probe_path##*/}" = "${probe_path}"
+        printf 'path=%s\n' "${probe_path}" >> "${GITHUB_OUTPUT}"
+    # Both of these are governed locale-catalog routes, so they run in the
+    # same sealed shell the contract and locale-catalog workflows use: this
+    # job's default `bash` inherits the runner environment, and the
+    # authoritative launcher requires the toolchain root to be named
+    # explicitly rather than inferred from it.
+    - name: Generate the public locale catalog
+      run: mise run locale-catalog:generate
+      shell: /usr/bin/env -i HOME=/home/runner LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin /bin/bash --noprofile --norc -eo pipefail {0}
+      working-directory: ${{ github.workspace }}
+    - name: Verify the generated catalog configures the real capabilities handler
+      run: |
+        /usr/bin/env -i \
+          HOME=/home/runner \
+          LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise \
+          LOCALE_CATALOG_PROBE="${LOCALE_CATALOG_PROBE:?missing capabilities probe authority}" \
+          PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin \
+          /bin/bash --noprofile --norc -eo pipefail -c 'mise run locale-catalog:capability-probe'
+      shell: /bin/sh -e {0}
+      env:
+        LOCALE_CATALOG_PROBE: ${{ steps.capabilities-probe.outputs.path }}
+      working-directory: ${{ github.workspace }}

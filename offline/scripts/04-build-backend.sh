@@ -12,9 +12,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/utils.sh"
 
 init_paths
-activate_deps_path
-
 OS="$(detect_os)"
+PLATFORM="$(detect_platform)"
+source "${SCRIPT_DIR}/toolchain-authority.sh"
+
+# Stack/GHC are cached executable bytes. Verify them before sourcing ghcup's
+# PATH file or invoking either compiler.
+require_toolchain_authority_receipt
+ghc_info="$(get_ghc_bindist_info)"
+ghc_archive="${ghc_info##*|}"
+stack_info="$(get_stack_download_info)"
+stack_archive="${stack_info##*|}"
+verify_ghc_and_stack_installation "$ghc_archive" "$stack_archive"
+source_ghcup_env
+export STACK_ROOT="${STACK_ROOT_DIR}"
 
 BACKEND_DIR="${PROJECT_ROOT}/backend"
 BACKEND_BIN_OUTPUT="${DEPS_DIR}/arkham-api"
@@ -314,6 +325,9 @@ build_backend() {
         die "  ✗ Failed to copy backend binary"
     fi
 
+    record_authority_receipt backend "$(backend_output_identity)" \
+        "$(authority_paths_digest "$DEPS_DIR" arkham-api)" \
+        || die "Could not authenticate the backend output for this invocation"
     info "Backend build complete"
 }
 

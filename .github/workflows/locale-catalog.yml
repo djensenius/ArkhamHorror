@@ -14,44 +14,97 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: /usr/bin/env -i HOME=/home/runner LOCALE_CATALOG_MISE_ROOT=/home/runner/.local/share/mise PATH=/home/runner/.local/share/mise/bin:/usr/bin:/bin /bin/bash --noprofile --norc -eo pipefail {0}
+
 jobs:
   catalog:
     name: Generation, schema, and provenance
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
         with:
           version: 2026.8.14
           cache: true
+      # `mise` itself is resolved through PATH by the action that just
+      # installed it, and a restored cache can put executables on that PATH.
+      # Assert the exact pinned version and a plausible install location before
+      # any governed command runs. What *is* pinned after this point: mise
+      # resolves Python 3.14.7, Node 26.7.0 and uv 0.12.6 from mise.toml, and
+      # every governed command then uses their absolute paths, verified against
+      # the digests in scripts/locale_catalog_python_runtime.json. What is not
+      # pinned: this `mise` binary itself, and the runner image's own /usr/bin.
+      - name: Assert the pinned mise version before governed commands
+        run: |
+          set -eu
+          resolved="$(command -v mise)"
+          printf 'mise resolved to %s\n' "$resolved"
+          case "$resolved" in
+            "$HOME"/.local/*|/opt/hostedtoolcache/*|"${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/*) ;;
+            *) printf 'refusing an unexpected mise location: %s\n' "$resolved" >&2; exit 1 ;;
+          esac
+          mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
       - name: Install frontend dependencies
-        run: npm ci
+        run: mise exec -- npm ci --ignore-scripts
         working-directory: frontend
       - run: mise run locale-catalog:backend-keys-test
       - run: mise run locale-catalog:backend-keys-check
+      - run: mise run locale-catalog:python-boundary-test
       - run: mise run locale-catalog:validate
+      # The governed capabilities fixture is bound to a committed *synthetic*
+      # catalog manifest so publishing new catalog content never churns the
+      # contract. This proves the other direction: a real generated manifest
+      # can still populate the settings the backend advertises from.
+      - run: mise run locale-catalog:generate
+      - run: mise run locale-catalog:capability-settings
 
   frontend:
     name: Frontend build and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
         with:
           version: 2026.8.14
           cache: true
+      # `mise` itself is resolved through PATH by the action that just
+      # installed it, and a restored cache can put executables on that PATH.
+      # Assert the exact pinned version and a plausible install location before
+      # any governed command runs. What *is* pinned after this point: mise
+      # resolves Python 3.14.7, Node 26.7.0 and uv 0.12.6 from mise.toml, and
+      # every governed command then uses their absolute paths, verified against
+      # the digests in scripts/locale_catalog_python_runtime.json. What is not
+      # pinned: this `mise` binary itself, and the runner image's own /usr/bin.
+      - name: Assert the pinned mise version before governed commands
+        run: |
+          set -eu
+          resolved="$(command -v mise)"
+          printf 'mise resolved to %s\n' "$resolved"
+          case "$resolved" in
+            "$HOME"/.local/*|/opt/hostedtoolcache/*|"${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/*) ;;
+            *) printf 'refusing an unexpected mise location: %s\n' "$resolved" >&2; exit 1 ;;
+          esac
+          mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
       - name: Install frontend dependencies
-        run: npm ci
+        run: mise exec -- npm ci --ignore-scripts
         working-directory: frontend
       - run: mise run locale-catalog:test
-      # The catalog is deployment-owned output: it must fall out of the real
-      # production build (npm prebuild) and land in the static root nginx
-      # serves, not just out of the generator invoked directly.
+      - name: Generate the attested public catalog for frontend builds
+        run: mise run locale-catalog:generate
+      # prebuild verifies (rather than regenerates) the output produced by the
+      # sealed command above, so the deployment build cannot silently use a
+      # second PATH-selected Node generator.
       - name: Build the frontend
-        run: npm run build
+        run: mise exec -- npm run build
         working-directory: frontend
       - name: Verify the catalog ships in the build output
-        run: node scripts/locale-catalog/verify-dist.mjs
+        run: mise exec -- node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs
         working-directory: frontend
       # The offline cache restores a build output without `frontend/public`.
       - run: mise run locale-catalog:offline-cache-hit-test
@@ -62,8 +115,8 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in first second; do
-            PRECOMPRESS_DIST=dist-custom npm run build -- --outDir dist-custom --emptyOutDir
-            node scripts/locale-catalog/verify-dist.mjs --dist dist-custom
+            PRECOMPRESS_DIST=dist-custom mise exec -- npm run build -- --outDir dist-custom --emptyOutDir
+            mise exec -- node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist dist-custom
             test -f dist-custom/locale-catalog/manifest.json.br
           done
         working-directory: frontend
@@ -73,15 +126,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
         with:
           version: 2026.8.14
           cache: true
+      # `mise` itself is resolved through PATH by the action that just
+      # installed it, and a restored cache can put executables on that PATH.
+      # Assert the exact pinned version and a plausible install location before
+      # any governed command runs. What *is* pinned after this point: mise
+      # resolves Python 3.14.7, Node 26.7.0 and uv 0.12.6 from mise.toml, and
+      # every governed command then uses their absolute paths, verified against
+      # the digests in scripts/locale_catalog_python_runtime.json. What is not
+      # pinned: this `mise` binary itself, and the runner image's own /usr/bin.
+      - name: Assert the pinned mise version before governed commands
+        run: |
+          set -eu
+          resolved="$(command -v mise)"
+          printf 'mise resolved to %s\n' "$resolved"
+          case "$resolved" in
+            "$HOME"/.local/*|/opt/hostedtoolcache/*|"${RUNNER_TOOL_CACHE:-/opt/hostedtoolcache}"/*) ;;
+            *) printf 'refusing an unexpected mise location: %s\n' "$resolved" >&2; exit 1 ;;
+          esac
+          mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
       - name: Install frontend dependencies
-        run: npm ci
+        run: mise exec -- npm ci --ignore-scripts
         working-directory: frontend
-      # Boots real nginx over prod.nginxconf and over the config the offline
-      # packager generates: status/cache/MIME matrix plus a rolling deploy in
-      # both directions.
+      - run: mise run locale-catalog:offline-toolchain-authority-test
+      - run: mise run locale-catalog:offline-output-authority-test
       - run: mise run locale-catalog:offline-cache-test
-      - run: mise run locale-catalog:serving
+      - run: mise run locale-catalog:serving-cleanup-test
+      - name: Build the final production image
+        run: docker build --target app --tag "arkham-locale-serving:${{ github.sha }}" .
+      - name: Verify the exact production image nginx, config, and static tree
+        run: ARKHAM_PRODUCTION_IMAGE="arkham-locale-serving:${{ github.sha }}" mise run locale-catalog:serving

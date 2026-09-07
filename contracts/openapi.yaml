@@ -163,6 +163,19 @@ paths:
         A `404` from this path identifies a legacy server. Clients may offer a
         conservative compatibility mode using `/site-settings`, but must not
         infer capabilities merely because another route exists.
+
+        The optional `localeCatalog` object is additive in exactly the same
+        sense: it appears only when the deployment publishes a locale catalog
+        (`docs/locale-catalog.md`), and only together with the
+        `i18n.locale-catalog.v1` identifier. Its absence means this deployment
+        publishes no catalog — it says nothing about the server's age, and a
+        client must fall back to treating story keys as unresolvable rather
+        than probing a guessed catalog path. `manifestUrl` is the sole
+        authority for where the catalog lives: a relative value is resolved
+        against the origin this response came from, and an absolute value is
+        always `https`. A client must never rewrite it onto another host, and
+        must verify the manifest it downloads against `manifestSha256` before
+        using it.
       security: []
       responses:
         "200":

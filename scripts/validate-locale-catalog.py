@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# dependencies = [
-#   "jsonschema==4.26.0",
-# ]
-# ///
 
 """Generation, schema, and provenance gate for the public locale catalog.
 
 The catalog (see docs/locale-catalog.md) is deployment-owned output, not a
-committed artifact: `frontend/scripts/locale-catalog/generate.mjs` produces it
+committed artifact: the locale-catalog generator produces it
 during the frontend build from the same `frontend/src/locales/**` snapshot Vue
 bundles. This gate therefore checks the *generator and its deploy seam* rather
 than checked-in bytes:
@@ -36,21 +30,29 @@ install, or `git` is a failure, not a skip.
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
-from jsonschema.validators import validator_for
-
+import json_schema_subset
 import strict_json
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(os.environ.get("ARKHAM_LOCALE_CATALOG_REPOSITORY_ROOT", Path(__file__).resolve().parents[1]))
 FRONTEND = ROOT / "frontend"
 GENERATOR = FRONTEND / "scripts" / "locale-catalog" / "generate.mjs"
+GENERATOR_LAUNCHER = "scripts/locale-catalog/generator-launcher.mjs"
+
+
+def generator_launcher_argv(frontend: Path, entry: str, arguments: list[str]) -> list[str]:
+    """Start a governed Node entry point through the sealed launcher only."""
+    return [str((frontend / GENERATOR_LAUNCHER).resolve()), entry, *arguments]
 SCHEMA_DIR = FRONTEND / "schemas" / "locale-catalog" / "v1"
-WORK_ROOT = FRONTEND / "node_modules" / ".locale-catalog-validate"
+WORKSPACE_PREFIX = ".locale-catalog-validate-"
+WORKSPACE_OWNER_FILE = "owner"
 
 REQUIRED_KEY_FIXTURES = (
     "contracts/fixtures/question-read.json",
@@ -93,6 +95,39 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(f"locale-catalog: {message}")
 
 
+def create_owned_workspace() -> tuple[Path, str]:
+    """Create a unique workspace below installed frontend dependencies.
+
+    The validator mutates only generated catalog copies and copied locale
+    inputs.  A fresh token-owned directory keeps parallel invocations from
+    sharing those mutations and avoids deleting any fixed path a developer
+    might have left behind.
+    """
+    parent = FRONTEND.resolve() / "node_modules"
+    require(
+        parent.is_dir() and not parent.is_symlink(),
+        "frontend dependencies are not installed as a regular node_modules directory",
+    )
+    token = uuid.uuid4().hex
+    workspace = parent / f"{WORKSPACE_PREFIX}{token}"
+    workspace.mkdir(mode=0o700)
+    (workspace / WORKSPACE_OWNER_FILE).write_text(token, encoding="ascii")
+    return workspace, token
+
+
+def release_owned_workspace(workspace: Path, token: str) -> None:
+    owner = workspace / WORKSPACE_OWNER_FILE
+    require(
+        workspace.is_dir() and not workspace.is_symlink(),
+        f"validation workspace {workspace} is no longer a regular directory",
+    )
+    require(
+        owner.is_file() and not owner.is_symlink() and owner.read_text(encoding="ascii") == token,
+        f"validation workspace {workspace} ownership record changed; refusing cleanup",
+    )
+    shutil.rmtree(workspace)
+
+
 def sha256_hex(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
@@ -123,11 +158,14 @@ def run_generator(
     cwd: Path | None = None,
     expect_success: bool = True,
 ):
-    node = shutil.which("node")
-    require(node is not None, "node is required to validate the locale catalog")
+    node = strict_json.trusted_node()
+    # Every governed Node entry point starts through the sealed launcher, which
+    # enforces the module graph with Node resolve/load hooks. A direct
+    # `node .../generate.mjs` would run the same generator with no enforcement,
+    # so there is no such call anywhere in this repository.
     result = subprocess.run(
-        [node, str(frontend / "scripts" / "locale-catalog" / "generate.mjs"), *args],
-        cwd=cwd or frontend,
+        [node, *generator_launcher_argv(frontend.resolve(), "generate.mjs", list(args))],
+        cwd=(cwd or frontend).resolve(),
         capture_output=True,
         text=True,
         check=False,
@@ -137,29 +175,34 @@ def run_generator(
             result.returncode == 0,
             f"generator failed ({' '.join(args)}):\n{result.stdout}\n{result.stderr}",
         )
+        if "--out" in args:
+            output = Path(args[args.index("--out") + 1])
+            require(
+                (output / "manifest.json").is_file(),
+                f"generator returned success without manifest.json at {output}; "
+                f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            )
     return result
 
 
 def git_tracked_files() -> set[str]:
-    git = shutil.which("git")
-    require(git is not None, "git is required to validate catalog provenance")
+    git = strict_json.trusted_git()
     result = subprocess.run(
         [git, "-C", str(ROOT), "ls-files", "-z"], capture_output=True, check=True
     )
     return {entry for entry in result.stdout.decode("utf-8").split("\0") if entry}
 
 
-def load_schemas() -> dict[str, object]:
+def load_schemas() -> dict[str, dict]:
     schemas = {}
     for name in ("manifest", "chunk"):
         schema = strict_json.strict_json_load_path(SCHEMA_DIR / f"{name}.schema.json")
-        validator_cls = validator_for(schema)
-        validator_cls.check_schema(schema)
+        json_schema_subset.check_schema(schema, source=f"{name} schema")
         require(
             schema.get("$id", "").endswith(f"/locale-catalog/v1/{name}.schema.json"),
             f"{name} schema is missing its versioned $id",
         )
-        schemas[name] = validator_cls(schema)
+        schemas[name] = schema
 
     raw = {
         name: strict_json.strict_json_load_path(SCHEMA_DIR / f"{name}.schema.json")
@@ -222,14 +265,14 @@ def required_keys_from_fixture(value: object, into: set[str]) -> set[str]:
     return into
 
 
-def validate_catalog(files: dict[str, bytes], schemas) -> dict:
+def validate_catalog(files: dict[str, bytes], schemas: dict[str, dict]) -> dict:
     require("manifest.json" in files, "manifest.json was not generated")
     manifest = strict_json.strict_json_loads(files["manifest.json"], source="manifest.json")
-    errors = sorted(schemas["manifest"].iter_errors(manifest), key=lambda error: str(list(error.path)))
+    errors = json_schema_subset.iter_errors(schemas["manifest"], manifest, source="manifest.json")
     require(
         not errors,
         "manifest does not satisfy the v1 manifest schema: "
-        + "; ".join(f"{list(error.path)}: {error.message}" for error in errors[:5]),
+        + "; ".join(errors[:5]),
     )
 
     revision = manifest["catalogRevision"]
@@ -312,11 +355,13 @@ def validate_catalog(files: dict[str, bytes], schemas) -> dict:
             require(relative == f"c/{digest}.json", f"{descriptor['path']} is not content-addressed")
 
             chunk = strict_json.strict_json_loads(content, source=descriptor["path"])
-            chunk_errors = sorted(schemas["chunk"].iter_errors(chunk), key=lambda error: str(list(error.path)))
+            chunk_errors = json_schema_subset.iter_errors(
+                schemas["chunk"], chunk, source=descriptor["path"]
+            )
             require(
                 not chunk_errors,
                 f"{descriptor['path']} does not satisfy the v1 chunk schema: "
-                + "; ".join(f"{list(error.path)}: {error.message}" for error in chunk_errors[:5]),
+                + "; ".join(chunk_errors[:5]),
             )
             require(
                 "catalogRevision" not in chunk,
@@ -474,7 +519,7 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
     unnoticed.
     """
     result = subprocess.run(
-        [shutil.which("uv") or "uv", "run", str(ROOT / BACKEND_EXTRACTOR), "--check"],
+        [str(ROOT / "scripts" / "run-locale-catalog-python.sh"), BACKEND_EXTRACTOR, "--check"],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -649,13 +694,14 @@ def validate_provenance(provenance_path: Path, manifest: dict, tracked: set[str]
         require(relative in hashed_paths, f"{relative} is not covered by catalog provenance")
 
 
-def validate_clean_clone(tracked: set[str], manifest: dict, files: dict[str, bytes]) -> Path:
+def validate_clean_clone(
+    workspace: Path, tracked: set[str], manifest: dict, files: dict[str, bytes]
+) -> Path:
     """Builds the catalog in a scratch tree containing only git-tracked source
     files (dependencies are reused from the already-installed
     frontend/node_modules rather than reinstalled) and requires it to
     reproduce the worktree build byte for byte."""
-    clone = WORK_ROOT / "clean-clone"
-    shutil.rmtree(clone, ignore_errors=True)
+    clone = workspace / "clean-clone"
     for relative in sorted(tracked):
         if not (relative.startswith(CLEAN_CLONE_PREFIXES) or relative in CLEAN_CLONE_FILES):
             continue
@@ -917,12 +963,14 @@ def validate_deployment_wiring(manifest: dict) -> None:
 
     package = strict_json.strict_json_load_path(FRONTEND / "package.json")
     require(
-        "npm run locale-catalog" in package["scripts"]["prebuild"],
-        "the frontend build does not generate the catalog",
+        "generator-launcher.mjs generate.mjs --check" in package["scripts"]["prebuild"]
+        and "npm run locale-catalog" not in package["scripts"]["prebuild"],
+        "the frontend build does not verify the catalog generated by the sealed route",
     )
     require(
-        package["scripts"]["locale-catalog"].endswith("scripts/locale-catalog/generate.mjs"),
-        "the locale-catalog npm script does not run the generator",
+        "run-locale-catalog-python.sh scripts/generate-locale-catalog.py"
+        in package["scripts"]["locale-catalog"],
+        "the locale-catalog npm script does not run through the sealed generator",
     )
     declared = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
     for dependency in ("parse5", "@intlify/message-compiler"):
@@ -945,13 +993,49 @@ def validate_deployment_wiring(manifest: dict) -> None:
         require(needle in offline_nginx, f"the offline nginx config is missing {needle!r}")
 
     offline_build = (ROOT / "offline" / "scripts" / "03-build-frontend.sh").read_text(encoding="utf-8")
-    for needle in ("scripts/locale-catalog", "homebrew", "i18n-emitted-keys.json", "node --version", "verify-dist.mjs"):
+    for needle in ("scripts/locale-catalog", "homebrew", "i18n-emitted-keys.json", "verify-dist.mjs"):
         require(
             needle in offline_build,
             f"the offline frontend build does not account for {needle!r} in its cache key or verification",
         )
+    require(
+        "toolchain_binary_authority node" in offline_build
+        and "verify_offline_node_runtime" in offline_build
+        and '"$OFFLINE_NODE" "$OFFLINE_NPM_CLI" "$@"' in offline_build
+        and "Discarding untrusted persisted frontend output before rebuilding" in offline_build,
+        "the offline frontend build does not bind and use the verified Node/npm authority "
+        "or rebuild persisted rendered assets",
+    )
+    offline_utils = (ROOT / "offline" / "scripts" / "utils.sh").read_text(encoding="utf-8")
+    require(
+        "init_toolchain_authority_receipt" in offline_utils
+        and "verify_authority_paths" in offline_utils
+        and "cached manifests and receipt bytes are observations only" in offline_utils,
+        "the offline toolchain does not use an invocation-external closure authority",
+    )
+    require(
+        "verify_authority_tree_from_receipt frontend" in offline_nginx
+        and "verify_nginx_dependency_for_packaging" in offline_nginx,
+        "the offline package does not bind frontend/nginx closure bytes to external authority",
+    )
+    package_attester = (ROOT / "offline" / "scripts" / "attest-package-closure.sh").read_text(encoding="utf-8")
+    require(
+        "record_authority_receipt offline-nginx" in package_attester,
+        "the offline package lacks a post-package external nginx closure attester",
+    )
+    offline_workflow = (ROOT / ".github" / "workflows" / "build-offline.yml").read_text(encoding="utf-8")
+    package_serving_gate = (ROOT / "offline" / "scripts" / "06-validate-package-serving.sh").read_text(encoding="utf-8")
+    require(
+        "offline/_deps/frontend/" not in offline_workflow
+        and "offline/_deps/.toolchain-authority/" in offline_workflow
+        and "run-authorized-stage.sh scripts/06-validate-package-serving.sh" in offline_workflow
+        and "--offline-authority-fd 9" in package_serving_gate
+        and "offline-authority-token" not in package_serving_gate,
+        "the offline workflow restores rendered assets or omits external closure authority wiring",
+    )
 
     offline_deps = (ROOT / "offline" / "scripts" / "01-check-project-deps.sh").read_text(encoding="utf-8")
+    offline_toolchain = (ROOT / "offline" / "scripts" / "toolchain-authority.sh").read_text(encoding="utf-8")
     mise = (ROOT / "mise.toml").read_text(encoding="utf-8")
     node_version = strict_json.strict_json_load_path(FRONTEND / "package.json")["engines"]["node"]
     require(
@@ -960,12 +1044,17 @@ def validate_deployment_wiring(manifest: dict) -> None:
     )
     require(f'node = "{node_version}"' in mise, f"mise.toml does not pin Node {node_version}")
     require(
-        f'node_ver="{node_version}"' in offline_deps,
-        f"the offline build does not install Node {node_version}",
+        f'NODE_VERSION="{node_version}"' in offline_toolchain
+        and 'local node_ver="${NODE_VERSION}"' in offline_deps,
+        f"the offline build does not install its shared authoritative Node {node_version}",
     )
     require(
-        f"FROM node:{node_version}-" in (ROOT / "Dockerfile").read_text(encoding="utf-8"),
-        f"the container build does not use Node {node_version}",
+        re.search(
+            rf"FROM node:{re.escape(node_version)}-alpine@sha256:[0-9a-f]{{64}} AS frontend",
+            (ROOT / "Dockerfile").read_text(encoding="utf-8"),
+        )
+        is not None,
+        f"the container build does not use an immutable Node {node_version} image",
     )
     require(
         manifest["provenance"].get("node") == node_version
@@ -983,6 +1072,12 @@ def validate_deployment_wiring(manifest: dict) -> None:
         is not None,
         "the container build does not provide the contract fixtures the generator requires",
     )
+    require(
+        "fetch_locked_archive" in dockerfile
+        and "docker-cabal" in dockerfile
+        and re.search(r"^\s*ghcup\b", dockerfile, re.MULTILINE) is None,
+        "the Docker build does not directly verify its GHC/Cabal/Stack toolchain archives",
+    )
 
     ignore = (FRONTEND / ".gitignore").read_text(encoding="utf-8")
     require("public/locale-catalog/" in ignore, "generated catalog output is not git-ignored")
@@ -991,7 +1086,7 @@ def validate_deployment_wiring(manifest: dict) -> None:
     # gitignore pattern only matches a directory that exists, so asking about
     # the bare directory would pass locally (where a build left it behind) and
     # fail on a clean checkout.
-    git = shutil.which("git")
+    git = strict_json.trusted_git()
     for path in (
         "frontend/public/locale-catalog/manifest.json",
         "frontend/public/locale-catalog/r/1.0/en/core.0000000000000000.json",
@@ -1004,6 +1099,7 @@ def validate_deployment_wiring(manifest: dict) -> None:
 
 def main() -> None:
     strict_json.run_self_tests()
+    json_schema_subset.run_self_tests()
 
     require(GENERATOR.is_file(), "the locale-catalog generator is missing")
     require(
@@ -1014,42 +1110,41 @@ def main() -> None:
     schemas = load_schemas()
     tracked = git_tracked_files()
 
-    shutil.rmtree(WORK_ROOT, ignore_errors=True)
-    WORK_ROOT.mkdir(parents=True)
+    workspace, token = create_owned_workspace()
+    try:
+        first = workspace / "first"
+        second = workspace / "second"
+        provenance_path = workspace / "provenance.json"
+        run_generator(["--out", str(first), "--provenance", str(provenance_path)])
+        run_generator(["--out", str(second)])
 
-    first = WORK_ROOT / "first"
-    second = WORK_ROOT / "second"
-    provenance_path = WORK_ROOT / "provenance.json"
-    run_generator(["--out", str(first), "--provenance", str(provenance_path)])
-    run_generator(["--out", str(second)])
+        files = read_generated(first)
+        require(
+            files == read_generated(second),
+            "two generator runs produced different bytes",
+        )
 
-    files = read_generated(first)
-    require(
-        files == read_generated(second),
-        "two generator runs produced different bytes",
-    )
+        # The deployment runs the generator from frontend/ (npm prebuild); a
+        # developer or script may run it from the repository root. Both must
+        # produce the same bytes.
+        from_repo_root = workspace / "from-repo-root"
+        run_generator(["--out", str(from_repo_root)], cwd=ROOT)
+        require(
+            files == read_generated(from_repo_root),
+            "generation depends on the working directory it is invoked from",
+        )
 
-    # The deployment runs the generator from frontend/ (npm prebuild); a
-    # developer or script may run it from the repository root. Both must
-    # produce the same bytes.
-    from_repo_root = WORK_ROOT / "from-repo-root"
-    run_generator(["--out", str(from_repo_root)], cwd=ROOT)
-    require(
-        files == read_generated(from_repo_root),
-        "generation depends on the working directory it is invoked from",
-    )
-
-    manifest = validate_catalog(files, schemas)
-    validate_required_keys(files, manifest)
-    validate_backend_requirements(files, manifest)
-    validate_provenance(provenance_path, manifest, tracked)
-    validate_stale_detection(first, manifest)
-    clone = validate_clean_clone(tracked, manifest, files)
-    validate_revision_sensitivity(clone, manifest)
-    validate_fail_closed(clone, manifest)
-    validate_deployment_wiring(manifest)
-
-    shutil.rmtree(WORK_ROOT, ignore_errors=True)
+        manifest = validate_catalog(files, schemas)
+        validate_required_keys(files, manifest)
+        validate_backend_requirements(files, manifest)
+        validate_provenance(provenance_path, manifest, tracked)
+        validate_stale_detection(first, manifest)
+        clone = validate_clean_clone(workspace, tracked, manifest, files)
+        validate_revision_sensitivity(clone, manifest)
+        validate_fail_closed(clone, manifest)
+        validate_deployment_wiring(manifest)
+    finally:
+        release_owned_workspace(workspace, token)
 
     print(
         f"locale-catalog: revision {manifest['catalogRevision']} verified — "

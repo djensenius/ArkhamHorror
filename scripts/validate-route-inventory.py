@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# dependencies = [
-#   "pyyaml==6.0.3",
-# ]
-# ///
 
 import json
 import re

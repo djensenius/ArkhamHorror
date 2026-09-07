@@ -5,7 +5,6 @@
 # Usage:
 #   cd offline && chmod +x build_all.sh scripts/*.sh
 #   ./build_all.sh                  # Full build
-#   ./build_all.sh --skip-deps      # Skip dependency installation
 #   ./build_all.sh --clean          # Force a clean rebuild
 #   ./build_all.sh --help           # Show help
 #
@@ -21,22 +20,21 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
-SKIP_DEPS=false
 SKIP_FRONTEND=false
 SKIP_BACKEND=false
 SKIP_PACKAGE=false
 CLEAN_BUILD=false
 VERBOSE=false
 HELP=false
+RELEASE_VERSION="${ARKHAM_RELEASE_VERSION:-dev}"
 
 usage() {
     cat << EOF
 Usage: ./build_all.sh [options]
 
 Options:
-  --skip-deps       Skip dependency installation (assume dependencies are already installed)
-  --skip-frontend   Skip frontend build
-  --skip-backend    Skip backend build
+  --skip-frontend   Skip frontend build (requires --skip-package)
+  --skip-backend    Skip backend build (requires --skip-package)
   --skip-package    Skip packaging
   --clean           Remove build stamps and force a full rebuild
   --verbose         Print every executed shell command (set -x debug mode)
@@ -44,7 +42,7 @@ Options:
 
 Examples:
   ./build_all.sh                     # Full build
-  ./build_all.sh --skip-deps         # Build and package only
+  ./build_all.sh --skip-frontend --skip-package
   ./build_all.sh --clean             # Force a clean rebuild
   ./build_all.sh --verbose           # Print all shell commands
 EOF
@@ -52,7 +50,10 @@ EOF
 
 for arg in "$@"; do
     case "$arg" in
-        --skip-deps)     SKIP_DEPS=true ;;
+        --skip-deps)
+            echo "--skip-deps is unsupported: dependency authority must be established during the current invocation" >&2
+            exit 2
+            ;;
         --skip-frontend) SKIP_FRONTEND=true ;;
         --skip-backend)  SKIP_BACKEND=true ;;
         --skip-package)  SKIP_PACKAGE=true ;;
@@ -62,6 +63,18 @@ for arg in "$@"; do
         *)               echo "Unknown option: $arg"; usage; exit 1 ;;
     esac
 done
+
+if [ "$SKIP_PACKAGE" = false ] \
+    && { [ "$SKIP_FRONTEND" = true ] || [ "$SKIP_BACKEND" = true ]; }; then
+    echo "--skip-frontend and --skip-backend require --skip-package because packaging accepts only outputs built and attested during the current invocation" >&2
+    exit 2
+fi
+
+if [ "$RELEASE_VERSION" != "dev" ] \
+    && [[ ! "$RELEASE_VERSION" =~ ^v[0-9]{8}\.(0|[1-9][0-9]*)$ ]]; then
+    echo "ARKHAM_RELEASE_VERSION must be dev or canonical vYYYYMMDD.N: $RELEASE_VERSION" >&2
+    exit 2
+fi
 
 if [ "$HELP" = true ]; then
     usage; exit 0
@@ -79,6 +92,20 @@ fi
 
 source "${SCRIPT_DIR}/scripts/utils.sh"
 init_paths
+init_toolchain_authority_receipt
+if [ "$TOOLCHAIN_RECEIPT_OWNED" = true ]; then
+    TOOLCHAIN_RECEIPT_CLEANUP_DIR="$(dirname "$TOOLCHAIN_RECEIPT_FILE")"
+    cleanup_toolchain_receipt() {
+        rm -rf "$TOOLCHAIN_RECEIPT_CLEANUP_DIR"
+    }
+    trap cleanup_toolchain_receipt EXIT
+fi
+
+run_authorized_stage() {
+    ARKHAM_TOOLCHAIN_RECEIPT_FILE="$TOOLCHAIN_RECEIPT_FILE" \
+    ARKHAM_TOOLCHAIN_RECEIPT_TOKEN="$TOOLCHAIN_RECEIPT_TOKEN" \
+        /bin/sh "${SCRIPT_DIR}/scripts/run-authorized-stage.sh" "$@"
+}
 
 OS="$(detect_os)"
 ARCH="$(detect_arch)"
@@ -146,22 +173,17 @@ main() {
     check_system_tools
     echo ""
 
-    # [1] Project dependencies
-    if [ "$SKIP_DEPS" = false ]; then
-        bash "${SCRIPT_DIR}/scripts/01-check-project-deps.sh"
-    else
-        step "Skipping dependency installation (--skip-deps)"
-        activate_deps_path
-    fi
+    # [1] Project dependencies and current-invocation authority
+    run_authorized_stage "${SCRIPT_DIR}/scripts/01-check-project-deps.sh"
     echo ""
 
     # [2] Verification
-    bash "${SCRIPT_DIR}/scripts/02-verify-deps.sh"
+    run_authorized_stage "${SCRIPT_DIR}/scripts/02-verify-deps.sh"
     echo ""
 
     # [3] Frontend
     if [ "$SKIP_FRONTEND" = false ]; then
-        bash "${SCRIPT_DIR}/scripts/03-build-frontend.sh"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/03-build-frontend.sh"
     else
         step "Skipping frontend build (--skip-frontend)"
     fi
@@ -169,7 +191,7 @@ main() {
 
     # [4] Backend
     if [ "$SKIP_BACKEND" = false ]; then
-        bash "${SCRIPT_DIR}/scripts/04-build-backend.sh"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/04-build-backend.sh"
     else
         step "Skipping backend build (--skip-backend)"
     fi
@@ -177,7 +199,11 @@ main() {
 
     # [5] Packaging
     if [ "$SKIP_PACKAGE" = false ]; then
-        bash "${SCRIPT_DIR}/scripts/05-package.sh"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/05-package.sh" "$RELEASE_VERSION"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/attest-package-closure.sh" \
+            "${_DIST_DIR}/ArkhamHorror-${PLATFORM}"
+        run_authorized_stage "${SCRIPT_DIR}/scripts/06-validate-package-serving.sh" \
+            "${_DIST_DIR}/ArkhamHorror-${PLATFORM}"
     else
         step "Skipping packaging (--skip-package)"
     fi

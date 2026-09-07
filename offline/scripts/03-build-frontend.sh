@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 # 03-build-frontend.sh - Build frontend
-# Run npm install and the build in the frontend/ directory
-# Output build artifacts to offline/_dist/frontend/ without polluting the main project tree
+# Run exact locked npm ci with install scripts disabled, then build in frontend/
+# Output build artifacts to offline/_deps/frontend/ without polluting the main project tree
 # =============================================================================
 
 set -euo pipefail
@@ -11,11 +11,107 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/utils.sh"
 
 init_paths
-activate_deps_path
+PLATFORM="$(detect_platform)"
+source "${SCRIPT_DIR}/toolchain-authority.sh"
+
+# The catalog generator and Vite must use the verified downloaded Node binary,
+# never a cache-restored or PATH-selected substitute.
+require_toolchain_authority_receipt
+verify_node_installation
 
 FRONTEND_DIR="${PROJECT_ROOT}/frontend"
 FRONTEND_OUTPUT="${DEPS_DIR}/frontend"        # Unified output location: offline/_deps/frontend/
 FRONTEND_BUILT_MARKER="${DEPS_DIR}/stamp_frontend_built"
+OFFLINE_NODE="${DEPS_DIR}/node/bin/node"
+OFFLINE_NPM_CLI="${DEPS_DIR}/node/${NODE_NPM_CLI}"
+FRONTEND_NPM_CACHE="${DEPS_DIR}/npm-cache"
+FRONTEND_NPM_HOME=""
+FRONTEND_NPM_USERCONFIG=""
+FRONTEND_NPM_GLOBALCONFIG=""
+FRONTEND_LOCK_SHA256=""
+
+frontend_lock_sha256() {
+    local lockfile="${FRONTEND_DIR}/package-lock.json"
+    [ -f "$lockfile" ] && [ ! -L "$lockfile" ] && [ -r "$lockfile" ] \
+        || return 1
+    sha256_file "$lockfile"
+}
+
+require_frontend_lockfile() {
+    FRONTEND_LOCK_SHA256="$(frontend_lock_sha256)" \
+        || die "Frontend package-lock.json must be a readable regular non-symlink file"
+}
+
+verify_frontend_lockfile_identity() {
+    local actual
+    actual="$(frontend_lock_sha256)" \
+        || die "Frontend package-lock.json is missing, unreadable, or unsafe"
+    [ "$actual" = "$FRONTEND_LOCK_SHA256" ] \
+        || die "Frontend package-lock.json changed after its source/cache authority was calculated"
+}
+
+verify_offline_node_runtime() {
+    verify_node_installation \
+        || die "Verified offline Node/npm runtime no longer matches its authority receipt"
+    [ -f "$OFFLINE_NODE" ] && [ ! -L "$OFFLINE_NODE" ] && [ -x "$OFFLINE_NODE" ] \
+        || die "Verified offline Node executable is missing or unsafe: $OFFLINE_NODE"
+    [ -f "$OFFLINE_NPM_CLI" ] && [ ! -L "$OFFLINE_NPM_CLI" ] && [ -r "$OFFLINE_NPM_CLI" ] \
+        || die "Verified offline npm CLI is missing or unsafe: $OFFLINE_NPM_CLI"
+}
+
+prepare_frontend_npm_home() {
+    FRONTEND_NPM_HOME="${TMP_DIR}/npm-home-$$-${RANDOM}"
+    [ ! -e "$FRONTEND_NPM_HOME" ] && [ ! -L "$FRONTEND_NPM_HOME" ] \
+        || die "Refusing to reuse frontend npm home: $FRONTEND_NPM_HOME"
+    (umask 077 && mkdir -p "$FRONTEND_NPM_HOME") \
+        || die "Could not create frontend npm home"
+    FRONTEND_NPM_USERCONFIG="${FRONTEND_NPM_HOME}/user.npmrc"
+    FRONTEND_NPM_GLOBALCONFIG="${FRONTEND_NPM_HOME}/global.npmrc"
+    : > "$FRONTEND_NPM_USERCONFIG"
+    : > "$FRONTEND_NPM_GLOBALCONFIG"
+    chmod 600 "$FRONTEND_NPM_USERCONFIG" "$FRONTEND_NPM_GLOBALCONFIG"
+}
+
+run_offline_npm() {
+    env -i \
+        HOME="$FRONTEND_NPM_HOME" \
+        PATH="${DEPS_DIR}/node/bin:/usr/bin:/bin" \
+        npm_config_cache="$FRONTEND_NPM_CACHE" \
+        npm_config_userconfig="$FRONTEND_NPM_USERCONFIG" \
+        npm_config_globalconfig="$FRONTEND_NPM_GLOBALCONFIG" \
+        npm_config_update_notifier=false \
+        VITE_ASSET_HOST="${VITE_ASSET_HOST:-}" \
+        PRECOMPRESS_DIST="${PRECOMPRESS_DIST:-}" \
+        "$OFFLINE_NODE" "$OFFLINE_NPM_CLI" "$@"
+}
+
+install_frontend_dependencies() {
+    verify_offline_node_runtime
+    verify_frontend_lockfile_identity
+    rm -rf "$NM_REAL" "$NM_LINK"
+    if [ -e "$FRONTEND_NPM_CACHE" ] || [ -L "$FRONTEND_NPM_CACHE" ]; then
+        [ -d "$FRONTEND_NPM_CACHE" ] && [ ! -L "$FRONTEND_NPM_CACHE" ] \
+            || rm -rf "$FRONTEND_NPM_CACHE"
+    fi
+    ensure_dir "$FRONTEND_NPM_CACHE"
+
+    substep "npm ci --ignore-scripts --prefer-offline (exact locked dependency graph) ..."
+    info "Running the verified offline npm CLI with install scripts disabled"
+    if run_offline_npm ci --ignore-scripts --prefer-offline 2>&1 | while IFS= read -r line; do
+        echo "    $line"
+    done; then
+        if [ ! -d "$NM_LINK" ] || [ -L "$NM_LINK" ] || ! mv "$NM_LINK" "$NM_REAL" \
+            || ! ln -s "$NM_REAL" "$NM_LINK"; then
+            rm -rf "$NM_LINK" "$NM_REAL" "$FRONTEND_NPM_CACHE" "$FRONTEND_BUILT_MARKER"
+            die "  ✗ Exact npm ci did not produce a safe dependency tree"
+        fi
+        info "  ✓ npm ci completed from package-lock.json"
+        return 0
+    fi
+
+    rm -rf "$NM_LINK" "$NM_REAL" "$FRONTEND_NPM_CACHE" "$FRONTEND_BUILT_MARKER"
+    die "  ✗ Exact npm ci failed; refusing an unlocked dependency resolution"
+}
 
 # ── Compute a hash of frontend source contents (to decide whether a rebuild is needed) ─
 # Includes: everything the build output depends on — all files under src/,
@@ -67,14 +163,15 @@ hash_tree() {
 #   - the locale catalog's remaining provenance inputs: homebrew locales and
 #     icon maps, the generator, its schemas, the governed contract fixtures and
 #     the backend emitted-key registry
-#   - the exact Node version the catalog revision is bound to
-# node_modules/ is deliberately excluded: package-lock.json pins it.
+#   - the exact committed Node binary authority, not only its version string
+# node_modules/ is deliberately excluded: the regular package-lock.json pins it.
 # `set -e` is suppressed inside a condition or an assignment, and this function
 # is always called from one, so every step propagates its own failure
 # explicitly and the collected input is captured before it is hashed. Relying on
 # errexit here is how a hash of nothing gets accepted as a cache key.
 compute_frontend_hash() {
-    local inputs
+    local inputs lock_sha256
+    lock_sha256="$(frontend_lock_sha256)" || return 1
     inputs="$(
         cd "$FRONTEND_DIR" || exit 1
         hash_tree src || exit 1
@@ -85,7 +182,9 @@ compute_frontend_hash() {
         cd "$PROJECT_ROOT" || exit 1
         hash_tree contracts/fixtures || exit 1
         hash_paths contracts/manifest.json backend/arkham-api/i18n-emitted-keys.json || exit 1
-        node --version || exit 1
+        toolchain_lock_digest || exit 1
+        toolchain_binary_authority node "$PLATFORM" bin/node || exit 1
+        printf 'frontend_package_lock_sha256\t%s\n' "$lock_sha256"
     )" || return 1
     [ -n "$inputs" ] || return 1
     printf '%s\n' "$inputs" | _hash_cmd | cut -d' ' -f1
@@ -97,25 +196,22 @@ compute_frontend_hash() {
 # touches the tree afterwards can change what is packaged.
 verify_locale_catalog() {
     local output="$1"
+    verify_offline_node_runtime
     substep "Verifying and republishing the locale catalog in ${output}"
-    if ! (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --publish); then
+    if ! (cd "$FRONTEND_DIR" && "$OFFLINE_NODE" scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist "$output" --publish); then
         rm -rf "$output" "$FRONTEND_BUILT_MARKER"
         die "  ✗ The build output in ${output} does not contain a valid locale catalog"
     fi
 }
 
-# Verifies a build output restored from a cache. It is checked against its own
-# manifest only: `frontend/public/locale-catalog` is generated during a build
-# and a cache restores just `offline/_deps`, so comparing against it would fail
-# on every fresh checkout. A failure here means the cache is unusable, not that
-# the tree is broken, so it is reported as a cache miss and the caller rebuilds.
-# `--publish` replaces the restored catalog with a private snapshot written from
-# the bytes this run hashed, so what the offline package serves is exactly what
-# was verified - not whatever the cache happens to hold afterwards.
+# This validates catalog structure only. It is intentionally not an artifact
+# cache admission check: the full rendered frontend tree is rebuilt and then
+# authenticated through the invocation receipt below.
 verify_cached_locale_catalog() {
     local output="$1"
-    substep "Verifying and republishing the cached locale catalog in ${output}"
-    (cd "$FRONTEND_DIR" && node scripts/locale-catalog/verify-dist.mjs --dist "$output" --dist-only --publish)
+    verify_offline_node_runtime
+    substep "Verifying the catalog subtree in ${output}"
+    (cd "$FRONTEND_DIR" && "$OFFLINE_NODE" scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist "$output" --dist-only --publish)
 }
 
 # ── Build frontend ────────────────────────────────────────────────────────────
@@ -123,118 +219,105 @@ verify_cached_locale_catalog() {
 build_frontend() {
     step "Building frontend (→ ${FRONTEND_OUTPUT})"
 
+    [ -d "$FRONTEND_DIR" ] || die "Frontend directory does not exist: $FRONTEND_DIR"
+    require_frontend_lockfile
+
+    # The offline Vite build applies this deterministic source transform. It
+    # must happen before the cache key and catalog provenance are calculated:
+    # otherwise the cache key describes the restored source while the catalog
+    # records the patched semantic source that Vite actually bundles.
+    OFFLINE_HELPERS_TS="${FRONTEND_DIR}/src/arkham/helpers.ts"
+    OFFLINE_HELPERS_BAK="${OFFLINE_HELPERS_TS}.bak_$$"
+    OFFLINE_PUBLIC_CATALOG="${FRONTEND_DIR}/public/locale-catalog"
+    OFFLINE_PUBLIC_CATALOG_STASH=""
+    OFFLINE_CATALOG_GENERATED=false
+    [ -f "$OFFLINE_HELPERS_TS" ] || die "Frontend helper source does not exist: $OFFLINE_HELPERS_TS"
+    cleanup_helpers_patch() {
+        [ -f "$OFFLINE_HELPERS_BAK" ] && mv -f "$OFFLINE_HELPERS_BAK" "$OFFLINE_HELPERS_TS" 2>/dev/null || true
+        if [ "$OFFLINE_CATALOG_GENERATED" = true ]; then
+            rm -rf "$OFFLINE_PUBLIC_CATALOG"
+        fi
+        if [ -n "$OFFLINE_PUBLIC_CATALOG_STASH" ] && [ -e "$OFFLINE_PUBLIC_CATALOG_STASH" ]; then
+            mv "$OFFLINE_PUBLIC_CATALOG_STASH" "$OFFLINE_PUBLIC_CATALOG" 2>/dev/null || true
+        fi
+    }
+    trap cleanup_helpers_patch EXIT
+    cp "$OFFLINE_HELPERS_TS" "$OFFLINE_HELPERS_BAK"
+    substep "Patching helpers.ts: use VITE_ASSET_HOST in production (fall back to the CDN if unset)"
+    sed -i.bak "s|export const baseUrl = import.meta.env.PROD ? \"https://assets.arkhamhorror.app\" : ''|export const baseUrl = import.meta.env.PROD ? (import.meta.env.VITE_ASSET_HOST ?? \"https://assets.arkhamhorror.app\") : ''|" "$OFFLINE_HELPERS_TS" \
+        && rm -f "${OFFLINE_HELPERS_TS}.bak" \
+        || die "Could not apply the deterministic offline helpers.ts transform"
+
     # ── Decide whether a rebuild is needed based on the content hash ─────────
     local current_hash
     if ! current_hash="$(compute_frontend_hash)"; then
         die "  ✗ Could not hash the frontend build inputs"
     fi
+    # The input identity must still be current before removing even an
+    # untrusted dependency tree.
+    verify_offline_node_runtime
+    verify_frontend_lockfile_identity
 
-    if [ -f "$FRONTEND_BUILT_MARKER" ]; then
-        local stored_hash
-        stored_hash="$(cat "$FRONTEND_BUILT_MARKER" 2>/dev/null || echo '')"
-        if [ "$current_hash" = "$stored_hash" ] && [ -d "$FRONTEND_OUTPUT" ] && [ -f "${FRONTEND_OUTPUT}/index.html" ]; then
-            if verify_cached_locale_catalog "$FRONTEND_OUTPUT"; then
-                info "Frontend source unchanged (hash matches), skipping build"
-                return 0
-            fi
-            info "Cached frontend output has no usable locale catalog; rebuilding"
-            rm -rf "$FRONTEND_OUTPUT" "$FRONTEND_BUILT_MARKER"
-        else
-            info "Frontend source changed; rebuild required"
-        fi
-    fi
-
-    # CI cache hit: if artifacts exist but the stamp does not, we still need to validate the source hash
-    # If a hash record exists in the cache and matches, the artifacts are still valid
-    local hash_record="${FRONTEND_OUTPUT}/source_hash"
-    if [ -d "$FRONTEND_OUTPUT" ] && [ -f "${FRONTEND_OUTPUT}/index.html" ]; then
-        if [ -f "$hash_record" ] && [ "$(cat "$hash_record" 2>/dev/null)" = "$current_hash" ]; then
-            if verify_cached_locale_catalog "$FRONTEND_OUTPUT"; then
-                info "Frontend artifacts already exist and the source is unchanged (CI cache hit), skipping build"
-                echo "$current_hash" > "$FRONTEND_BUILT_MARKER"
-                return 0
-            fi
-            info "Cached frontend output has no usable locale catalog; rebuilding"
-        else
-            # Artifacts exist but source changed, so rebuild is required
-            info "Frontend artifacts are stale (source hash mismatch); rebuilding"
-        fi
+    # Generated frontend bytes are not an authority cache. The npm package
+    # cache is reusable because exact `npm ci` revalidates the lock, but every
+    # rendered asset is rebuilt from the current verified Node/source inputs.
+    if [ -e "$FRONTEND_OUTPUT" ] || [ -L "$FRONTEND_OUTPUT" ]; then
+        info "Discarding untrusted persisted frontend output before rebuilding"
         rm -rf "$FRONTEND_OUTPUT"
     fi
+    rm -f "$FRONTEND_BUILT_MARKER"
 
-    if [ ! -d "$FRONTEND_DIR" ]; then
-        die "Frontend directory does not exist: $FRONTEND_DIR"
-    fi
-
-    # ── Decision 6: place node_modules under _deps/ and expose it to frontend/ through a symlink ─
+    # ── Dependency tree: discard untrusted modules before exact npm ci ───────
     NM_LINK="${FRONTEND_DIR}/node_modules"
     NM_REAL="${DEPS_DIR}/node_modules"
-    NM_WAS_REAL_DIR=false
 
-    if [ -L "$NM_LINK" ]; then
-        info "node_modules → ${NM_REAL} (symlink already exists)"
-    elif [ -d "$NM_LINK" ]; then
-        substep "Migrating existing node_modules/ to ${NM_REAL} (Decision 6) ..."
-        ensure_dir "$NM_REAL"
-        cp -r "$NM_LINK"/* "$NM_REAL"/ 2>/dev/null || true
+    if [ -e "$NM_LINK" ] || [ -L "$NM_LINK" ]; then
+        substep "Discarding untrusted existing node_modules/ ..."
         rm -rf "$NM_LINK"
-        NM_WAS_REAL_DIR=true
-        ensure_dir "$NM_REAL"
-        ln -sfn "$NM_REAL" "$NM_LINK"
-        info "  ✓ node_modules → ${NM_REAL}"
-    else
-        ensure_dir "$NM_REAL"
-        ln -sfn "$NM_REAL" "$NM_LINK"
-        info "node_modules → ${NM_REAL} (symlink created)"
     fi
+    rm -rf "$NM_REAL"
+    info "node_modules will be recreated by exact npm ci"
 
-    # Register cleanup on exit: remove the symlink and restore helpers.ts
-    _HELPERS_TS="${FRONTEND_DIR}/src/arkham/helpers.ts"
-    _HELPERS_BAK="${FRONTEND_DIR}/src/arkham/helpers.ts.bak_$$"
+    # Register cleanup on exit: remove the symlink and restore helpers.ts.
     cleanup_nm_symlink() {
         if [ -L "$NM_LINK" ]; then
             rm -f "$NM_LINK"
-            if [ "$NM_WAS_REAL_DIR" = true ]; then
-            warn "The original node_modules/ was moved to ${NM_REAL} and will not be restored automatically"
-            fi
         fi
-        [ -f "$_HELPERS_BAK" ] && mv -f "$_HELPERS_BAK" "$_HELPERS_TS" 2>/dev/null || true
+        [ -n "$FRONTEND_NPM_HOME" ] && rm -rf "$FRONTEND_NPM_HOME"
+        cleanup_helpers_patch
     }
     trap cleanup_nm_symlink EXIT
 
     pushd "$FRONTEND_DIR" > /dev/null
 
-    # 1. Install dependencies
-    if [ -f "package-lock.json" ]; then
-        substep "npm ci (the first run may need 2-5 minutes to download dependencies) ..."
-        info "Running: npm ci --prefer-offline"
-        if npm ci --prefer-offline 2>&1 | while IFS= read -r line; do
-            echo "    $line"
-        done; then
-            info "  ✓ npm ci succeeded"
-        else
-            warn "  ! npm ci failed; falling back to npm install (keeping node_modules to avoid re-downloading) ..."
-            info "Running: npm install"
-            npm install 2>&1 | while IFS= read -r line; do
-                echo "    $line"
-            done
-        fi
-    else
-        substep "npm install (the first run may need 2-5 minutes to download dependencies) ..."
-        info "Running: npm install"
-        npm install 2>&1 | while IFS= read -r line; do
-            echo "    $line"
-        done
+    # 1. Install exactly the committed dependency graph without lifecycle code.
+    prepare_frontend_npm_home
+    install_frontend_dependencies
+
+    # 2. Generate the ignored public catalog with the exact Node installation
+    # provisioned and version-checked by the offline dependency stage. npm's
+    # prebuild only verifies this output, so a clean cache-miss cannot silently
+    # omit it or regenerate through a different PATH-selected runtime.
+    verify_offline_node_runtime
+    verify_frontend_lockfile_identity
+    if [ -e "$OFFLINE_PUBLIC_CATALOG" ]; then
+        ensure_dir "$TMP_DIR"
+        OFFLINE_PUBLIC_CATALOG_STASH="${TMP_DIR}/frontend-public-catalog-$$-${RANDOM}"
+        [ ! -e "$OFFLINE_PUBLIC_CATALOG_STASH" ] || die "Refusing to overwrite catalog stash: $OFFLINE_PUBLIC_CATALOG_STASH"
+        mv "$OFFLINE_PUBLIC_CATALOG" "$OFFLINE_PUBLIC_CATALOG_STASH"
     fi
+    substep "Generate the locale catalog with the pinned offline Node..."
+    mkdir -p "${DEPS_DIR}/locale-catalog-home"
+    env -i \
+        HOME="${DEPS_DIR}/locale-catalog-home" \
+        PATH="${DEPS_DIR}/node/bin:/usr/bin:/bin" \
+        "${OFFLINE_NODE}" scripts/locale-catalog/generator-launcher.mjs generate.mjs
+    OFFLINE_CATALOG_GENERATED=true
 
-    # ── Temporary patch: helpers.ts hard-codes a CDN URL in production ───────
-    # The offline package needs relative paths; prefer VITE_ASSET_HOST first and fall back to the CDN when unset
-    cp "$_HELPERS_TS" "$_HELPERS_BAK"
-    substep "Patching helpers.ts: use VITE_ASSET_HOST in production (fall back to the CDN if unset)"
-    sed -i.bak "s|export const baseUrl = import.meta.env.PROD ? \"https://assets.arkhamhorror.app\" : ''|export const baseUrl = import.meta.env.PROD ? (import.meta.env.VITE_ASSET_HOST ?? \"https://assets.arkhamhorror.app\") : ''|" "$_HELPERS_TS" && rm -f "${_HELPERS_TS}.bak"
-
-    # 2. Build and output to offline/_dist/frontend/
+    # 3. Build and output to offline/_dist/frontend/
     substep "npm run build (output to ${FRONTEND_OUTPUT}) ..."
+    verify_offline_node_runtime
+    verify_frontend_lockfile_identity
 
     # Set VITE_ASSET_HOST="" so both images use relative paths during the frontend build
     export VITE_ASSET_HOST=""
@@ -246,16 +329,18 @@ build_frontend() {
     # actually wrote; without it precompress would compress a stale
     # frontend/dist and leave the real output uncompressed.
     export PRECOMPRESS_DIST="${FRONTEND_OUTPUT}"
-    info "Running: npm run build -- --outDir ${FRONTEND_OUTPUT}"
-    if npm run build -- --outDir "${FRONTEND_OUTPUT}" 2>&1 | while IFS= read -r line; do
+    info "Running the verified offline npm CLI: run build -- --outDir ${FRONTEND_OUTPUT}"
+    if run_offline_npm run build -- --outDir "${FRONTEND_OUTPUT}" 2>&1 | while IFS= read -r line; do
         echo "    $line"
     done; then
         info "  ✓ Wrote output directly to ${FRONTEND_OUTPUT}"
     else
         # Fallback: build in place, then copy
         warn "  --outDir did not take effect; building in place and copying instead ..."
-        info "Running: npm run build"
-        npm run build 2>&1 | while IFS= read -r line; do
+        verify_offline_node_runtime
+        verify_frontend_lockfile_identity
+        info "Running the verified offline npm CLI: run build"
+        run_offline_npm run build 2>&1 | while IFS= read -r line; do
             echo "    $line"
         done
         if [ -d "dist" ]; then
@@ -268,8 +353,8 @@ build_frontend() {
 
     popd > /dev/null
 
-    # 3. Verify the published locale catalog really is in this build output
-    #    (npm prebuild generates it; a stale cached dist would fail here).
+    # 4. Verify the explicitly generated catalog really is in this build
+    #    output; prebuild checked it before Vite copied the public tree.
     verify_locale_catalog "$FRONTEND_OUTPUT"
 
     # 4. Verify artifacts
@@ -579,9 +664,10 @@ PYEOF
         info "  ✓ Card hover zoom feature injected"
     fi
 
-    echo "$current_hash" > "$FRONTEND_BUILT_MARKER"
-    # Write the hash into the artifact directory so CI cache restores can validate artifact/source consistency
-    echo "$current_hash" > "${FRONTEND_OUTPUT}/source_hash"
+    local frontend_closure
+    frontend_closure="$(authority_tree_digest "$FRONTEND_OUTPUT")" \
+        || die "Could not calculate the complete frontend output closure"
+    record_authority_receipt frontend "$current_hash" "$frontend_closure"
     info "Frontend build complete"
 }
 
@@ -591,4 +677,6 @@ main() {
     build_frontend
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi

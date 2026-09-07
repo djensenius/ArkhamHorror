@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "1.0.0",
+  "locale": "en",
+  "fallback": null,
+  "pack": "core",
+  "entries": {
+    "continue": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "core.continue.en"
+        }
+      ],
+      "variables": []
+    },
+    "setup": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "core.setup.en"
+        }
+      ],
+      "variables": []
+    },
+    "shuffleRemainder": {
+      "form": "unsupported",
+      "reason": "unusable-variable-type",
+      "detail": "synthetic fixture: published as unavailable on purpose"
+    }
+  }
+}

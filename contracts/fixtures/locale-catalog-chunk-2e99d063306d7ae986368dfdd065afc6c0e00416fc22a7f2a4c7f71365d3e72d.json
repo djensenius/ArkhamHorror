@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1.0.0",
+  "locale": "en",
+  "fallback": null,
+  "pack": "nightOfTheZealot",
+  "entries": {
+    "nightOfTheZealot.theGathering.setup.gatherSets": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "notz.gatherSets.en"
+        }
+      ],
+      "variables": []
+    },
+    "nightOfTheZealot.theGathering.setup.placeLocations": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "notz.placeLocations.en"
+        }
+      ],
+      "variables": []
+    }
+  }
+}

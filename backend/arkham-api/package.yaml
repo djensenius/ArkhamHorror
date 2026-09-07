@@ -95,6 +95,7 @@ library:
     - extra
     - fast-logger
     - file-embed
+    - filepath
     - foreign-store
     - hashable
     - hedis
@@ -107,6 +108,7 @@ library:
     - jose
     - lens
     - lens-aeson
+    - libyaml
     - mailtrap
     - monad-logger
     - monad-time
@@ -163,6 +165,22 @@ executables:
       - foreign-store
       - warp
       - arkham-api
+    when:
+      - condition: flag(library-only)
+        buildable: false
+
+  arkham-capabilities-probe:
+    main: Main.hs
+    source-dirs: app-capabilities-probe
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+      - aeson
+      - arkham-api
+      - bytestring
+      - relude
     when:
       - condition: flag(library-only)
         buildable: false
@@ -226,6 +244,7 @@ tests:
       - directory
       - exceptions
       - foreign-store
+      - filepath
       - hspec
       - hspec-expectations-lifted
       - http-client
@@ -237,7 +256,10 @@ tests:
       - mtl
       - persistent
       - random
+      - base16-bytestring
+      - cryptohash-sha256
       - relude
       - text
       - time
       - unordered-containers
+      - yaml

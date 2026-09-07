@@ -24,3 +24,6 @@ pnpm-debug.log*
 *.njsproj
 *.sln
 *.sw?
+
+# The offline packager and the custom-output-directory CI step build here
+dist-custom/

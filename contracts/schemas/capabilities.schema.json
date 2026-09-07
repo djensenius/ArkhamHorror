@@ -37,6 +37,131 @@
         "type": "string",
         "pattern": "^[a-z][a-z0-9.-]+$"
       }
+    },
+    "localeCatalog": {
+      "$ref": "#/$defs/localeCatalog"
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "The object and its capability string are produced from one Maybe in Base.Api.Types.Capabilities.serverCapabilities, so neither can appear without the other.",
+      "if": {
+        "properties": {
+          "localeCatalog": {}
+        },
+        "required": [
+          "localeCatalog"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "contains": {
+              "const": "i18n.locale-catalog.v1"
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "contains": {
+              "const": "i18n.locale-catalog.v1"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "localeCatalog": {}
+        },
+        "required": [
+          "localeCatalog"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "localeCatalog": {
+      "title": "Locale catalog pointer",
+      "description": "Optional, additive pointer to the deployment-owned locale catalog (docs/locale-catalog.md), present exactly when the server advertises `i18n.locale-catalog.v1`. It carries no narrative text: it binds catalog state to this server profile so a client can fetch, verify and cache the catalog without assuming any particular host. A client that does not understand this object ignores it, and a server that omits it is not a legacy server -- it is a deployment that publishes no catalog.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifestUrl",
+        "catalogRevision",
+        "schemaVersion",
+        "defaultLocale",
+        "supportedLocales",
+        "manifestSha256"
+      ],
+      "properties": {
+        "manifestUrl": {
+          "description": "The single authority for where the catalog manifest lives: either a same-origin absolute path, resolved against the origin this response came from (preferred, and what a hosted deployment publishes), or an explicitly configured absolute https URL for a split/static deployment. There is deliberately no separate origin or base-path field that could disagree with it. The server rejects anything else -- http, scheme-relative, credentials, query, fragment, percent-escapes, dot segments and platform paths all fail startup rather than reaching a client.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "oneOf": [
+            {
+              "title": "sameOriginPath",
+              "pattern": "^/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\.json(?![\\s\\S])"
+            },
+            {
+              "title": "absoluteHttpsUrl",
+              "$comment": "Exactly what Base.Api.Types.LocaleCatalog.parseManifestUrl emits: lowercase scheme and host, a port in 1-65535 with the redundant :443 already normalized away, and an absolute .json path. The leading lookahead bounds the whole host at 253 characters, matching validateHost (a host contains no ':' or '/', so it is anchored on the port colon or the path slash). The host is either canonical dotted-decimal IPv4 (four octets 0-255, no leading zeros) or a registered name whose final label is neither all-digits nor an 0x hex literal -- the two lookaheads. That is WHATWG's 'ends in a number' rule: without it, 127.1, 2130706433, 0x7f000001 and 01.02.03.04 would all be published as hosts that different clients resolve differently. contracts/manifest.json's manifestUrlChecks pins this pattern and the Haskell validator to the same accepted/rejected table.",
+              "pattern": "^https://(?=[^:/]{1,253}[:/])(?:(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}|(?:[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*(?![0-9]+(?::|/))(?!0x[0-9a-f]*(?::|/))[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(:(?!443/)(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]*\\.json(?![\\s\\S])"
+            }
+          ],
+          "not": {
+            "pattern": "(^|/)\\.\\.?(/|$)"
+          },
+          "$comment": "Both branches end in a negative lookahead rather than '$'. ECMA-262 '$' and Python's re '$' disagree: Python's also matches immediately before a trailing newline, so a '$'-anchored pattern would let '/locale-catalog/manifest.json\\n' through this repository's own jsonschema-based validation while the server refuses it as a control character."
+        },
+        "catalogRevision": {
+          "description": "The catalog manifest's own `catalogRevision`. Its major component is the catalog schema's major version -- fixed at 1 while `schemaVersion` is 1.0.0, so this pattern pins it rather than accepting any major the server would reject; the rest is the content digest the generator derived. Two servers reporting the same revision publish byte-identical catalogs, so a client may key its cache on this value alone.",
+          "type": "string",
+          "pattern": "^1\\.[0-9a-f]{32}(?![\\s\\S])",
+          "$comment": "Base.Api.Types.LocaleCatalog.parseCatalogRevision requires a canonical major (no leading zeros) equal to the configured schemaVersion's major, so 2.<hex>, 01.<hex> and 00.<hex> are all startup failures. contracts/manifest.json's catalogRevisionChecks holds both sides to one table. A future catalog schema major would add a conditional branch here rather than loosening this pattern back to [0-9]+."
+        },
+        "schemaVersion": {
+          "description": "The catalog manifest's `schemaVersion` (frontend/schemas/locale-catalog/v1/manifest.schema.json). A client that does not implement this exact version must treat the catalog as unavailable rather than guessing.",
+          "type": "string",
+          "enum": [
+            "1.0.0"
+          ]
+        },
+        "defaultLocale": {
+          "description": "The catalog's `defaultLocale`; always a member of `supportedLocales`.",
+          "$ref": "#/$defs/locale"
+        },
+        "supportedLocales": {
+          "description": "The catalog's published locales, in canonical BCP-47 spelling and ascending order, so the response does not depend on configuration order.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/locale"
+          },
+          "$comment": "maxItems matches the published v1 catalog manifest's own locales bound and is enforced at startup by Base.Api.Types.LocaleCatalog.localeCatalogMaxSupportedLocales, so a deployment can never serve a response this schema would reject."
+        },
+        "manifestSha256": {
+          "description": "SHA-256 of the manifest bytes served at `manifestUrl`. A client that downloads a manifest whose digest differs must discard it; the algorithm is fixed here rather than negotiated through a separate field.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+        }
+      }
+    },
+    "locale": {
+      "$comment": "The v1 catalog manifest's locale grammar, narrowed to the canonical BCP-47 casing Base.Api.Types.LocaleCatalog.canonicalLocaleTag actually emits: lowercase language, titlecase four-letter script, uppercase two-letter region, lowercase everything else. The two lookaheads are what reject a lowercase two- or four-letter subtag (en-us, zh-hant) that the server would have canonicalized before publishing it.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z]{2,3}(-(?:[A-Z]{2}|[A-Z][a-z]{3}|(?![a-z]{2}(?:-|$))(?![a-z]{4}(?:-|$))[a-z0-9]{2,8}))*(?![\\s\\S])"
     }
   }
 }

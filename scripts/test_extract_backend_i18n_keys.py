@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-# /// script
-# requires-python = ">=3.14"
-# dependencies = [
-#   "tree-sitter==0.25.2",
-#   "tree-sitter-haskell==0.23.1",
-# ]
-# ///
 
 """Tests for the backend emitted-key registry extractor.
 
@@ -22,19 +15,15 @@ No prose from the game is used; every fixture string is synthetic.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-EXTRACTOR = ROOT / "scripts" / "extract-backend-i18n-keys.py"
-ARTIFACT = ROOT / "backend" / "arkham-api" / "i18n-emitted-keys.json"
+import extract_backend_i18n_keys as extractor
 
-_spec = importlib.util.spec_from_file_location("extract_backend_i18n_keys", EXTRACTOR)
-extractor = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(extractor)
+ROOT = Path(__file__).resolve().parents[1]
+ARTIFACT = ROOT / "backend" / "arkham-api" / "i18n-emitted-keys.json"
 
 FAILURES: list[str] = []
 
@@ -491,9 +480,30 @@ def test_committed_registry_properties() -> None:
         check("class" in site and "reason" in site, f"unclassified site {site}")
 
 
+TESTS = (
+    test_point_free_alias_through_a_direct_import,
+    test_alias_reached_through_an_aliased_module_reexport,
+    test_a_restricted_reexport_does_not_create_a_rival_alias,
+    test_scope_template_resolved_from_the_call_site,
+    test_conditional_and_local_binding_scopes_fan_out,
+    test_a_local_helpers_key_parameter_is_read_from_its_call_sites,
+    test_presentation_modifiers_keep_the_key_and_shift_validate,
+    test_withvars_declares_the_names_the_backend_sends,
+    test_amount_labels_are_choice_scoped_and_readers_are_ignored,
+    test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
+    test_same_named_local_scopes_do_not_share_their_call_sites,
+    test_a_local_helper_is_scoped_by_its_call_site,
+    test_a_top_level_helper_is_resolved_across_modules_but_not_across_definitions,
+    test_a_condition_that_already_chose_a_branch_is_not_fanned_out,
+    test_a_scope_primitive_does_not_scope_arguments_it_never_takes,
+    test_a_wrapper_emits_under_the_scope_it_pushes,
+    test_a_presentation_emitter_keeps_a_module_from_being_waived,
+    test_committed_registry_properties,
+)
+
+
 def main() -> int:
-    tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
-    for test in tests:
+    for test in TESTS:
         try:
             test()
         except Exception as error:  # noqa: BLE001 - report, do not abort the suite
@@ -503,7 +513,7 @@ def main() -> int:
         for failure in FAILURES:
             print(f"backend-i18n-tests: {failure}", file=sys.stderr)
         return 1
-    print(f"backend-i18n-tests: {len(tests)} tests passed")
+    print(f"backend-i18n-tests: {len(TESTS)} tests passed")
     return 0
 
 
