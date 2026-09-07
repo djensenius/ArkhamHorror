@@ -391,7 +391,9 @@ runner environment either. A maintainer running these tasks locally names it
 the same way and just as deliberately — for example
 `LOCALE_CATALOG_MISE_ROOT="$HOME/.local/share/mise" mise run contracts:validate` — and
 an unset or empty root is refused with that exact diagnostic rather than being
-guessed from `$HOME`.
+guessed from `$HOME`. Workflow steps that need Node or npm outside the governed
+launcher use `mise exec -- ...`; they do not widen that sealed ambient `PATH`
+or rely on action-provided path mutations surviving `env -i`.
 The real backend-probe task also receives one explicit host authority:
 `LOCALE_CATALOG_PROBE=/absolute/path/to/arkham-capabilities-probe`; it rejects
 a bare command, wrapper, or PATH lookup. CI binds the already-built executable
@@ -410,6 +412,11 @@ launcher happen to be checked before anything imports or starts them, which is
 worth having only because a half-edited lint should not be deciding anything.
 The suite exercises this by replacing the lint with a permissive stand-in and
 requiring the run to stop before that stand-in's top-level code executes.
+Interpreter binaries and active platform `sysconfigdata` sources are pinned as
+non-empty, lowercase SHA-256 candidate lists per platform. This permits only
+the explicitly reviewed standalone builds that mise caches or currently
+installs; an empty, malformed, duplicate, cross-platform, or otherwise
+undeclared identity is refused.
 
 **The importable prefix, not just its sources.** Hashing `*.py` under the
 stdlib root leaves two ways into the process before any of it is checked:

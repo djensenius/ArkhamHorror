@@ -222,8 +222,8 @@ fi
 
 # A path under the explicit toolchain root is not enough: an attacker who can
 # replace a binary there could retain the expected version/path.  Bind the
-# executable bytes before the first one runs.  The two Linux CPython hashes
-# correspond to the two pinned standalone builds in the committed profile;
+# executable bytes before the first one runs.  The Linux CPython hashes
+# correspond to the pinned standalone builds in the committed profile;
 # every other platform is rejected rather than approximated.
 case "$("${UNAME}" -s):$("${UNAME}" -m)" in
   Darwin:arm64)
@@ -240,7 +240,8 @@ case "$("${UNAME}" -s):$("${UNAME}" -m)" in
   Linux:x86_64)
     readonly PYTHON_DIGESTS=(
       "23cfacd2e3ce3d8745b9405641ca3d91e9803e49003faa7882f80a4da9414be7" \
-      "ce7402fee6629ce791aeb871cd4d1a1e21ad2e90ca4b3236611484053a7e06ac"
+      "ce7402fee6629ce791aeb871cd4d1a1e21ad2e90ca4b3236611484053a7e06ac" \
+      "241bf774a81580bb760adf960b48df7e6b23b1de026c9c912d4ca6be1a08241e"
     )
     require_digest "${PYTHON}" "sealed CPython 3.14.7" "${PYTHON_DIGESTS[@]}"
     require_digest "${NODE}" "sealed Node 26.7.0" \
@@ -249,7 +250,8 @@ case "$("${UNAME}" -s):$("${UNAME}" -m)" in
       "d381f11517c66523211b0876552ff7dea5c1b4b0f13800571b35225761302fba"
     readonly SYSCONFIG_SOURCE="_sysconfigdata__linux_x86_64-linux-gnu.py"
     require_digest "${STDLIB}/${SYSCONFIG_SOURCE}" "active CPython sysconfig source" \
-      "90ce56ecd6e00b572c035dafaab3a66a756e2c488cbd86b919dfee41fd364bf4"
+      "90ce56ecd6e00b572c035dafaab3a66a756e2c488cbd86b919dfee41fd364bf4" \
+      "7083e42223269fa933d7c506bda020f2a79601e05bb7401c9f3fc7f9651b107c"
     ;;
   *)
     die "unsupported toolchain platform $(${UNAME} -s):$(${UNAME} -m); no portable exact binary identity is declared"

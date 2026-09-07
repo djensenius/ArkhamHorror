@@ -126,6 +126,20 @@ def runtime_platform() -> str:
     refuse(f"unsupported toolchain platform {sys.platform}/{machine}; no exact binary identity is declared")
 
 
+def valid_digest_candidates(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest)
+            for digest in value
+        )
+        and len(value) == len(set(value))
+    )
+
+
 def verify_binary_digest(profile_item: object, binary: Path, what: str) -> None:
     if not isinstance(profile_item, dict):
         refuse(f"{PROFILE.relative_to(ROOT)} has no complete identity for {what}")
@@ -133,16 +147,7 @@ def verify_binary_digest(profile_item: object, binary: Path, what: str) -> None:
     if not isinstance(digests, dict):
         refuse(f"{PROFILE.relative_to(ROOT)} has no platform digest table for {what}")
     expected = digests.get(runtime_platform())
-    if not (
-        isinstance(expected, list)
-        and expected
-        and all(
-            isinstance(digest, str)
-            and len(digest) == 64
-            and all(character in "0123456789abcdef" for character in digest)
-            for digest in expected
-        )
-    ):
+    if not valid_digest_candidates(expected):
         refuse(f"{PROFILE.relative_to(ROOT)} has no valid digest identity for {what} on this platform")
     actual = hashlib.sha256(binary.read_bytes()).hexdigest()
     if actual not in expected:
@@ -417,13 +422,13 @@ def verify_active_sysconfig_source(profile: dict, stdlib_root: Path) -> None:
         not isinstance(entry, dict)
         or set(entry) != {"path", "sha256"}
         or not isinstance(entry["path"], str)
-        or not isinstance(entry["sha256"], str)
+        or not valid_digest_candidates(entry["sha256"])
     ):
         refuse("toolchain lock does not pin this platform's active sysconfig source")
     path = stdlib_root / entry["path"]
     if path.is_symlink() or not path.is_file():
         refuse(f"active sysconfig source {entry['path']!r} is not a regular file")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
+    if hashlib.sha256(path.read_bytes()).hexdigest() not in entry["sha256"]:
         refuse(f"active sysconfig source {entry['path']!r} does not match the toolchain lock")
 
 

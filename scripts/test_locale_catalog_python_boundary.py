@@ -3588,6 +3588,15 @@ def executed_program(
         index += 1
     while index < len(words):
         name = normalise_reference(words[index]).rsplit("/", 1)[-1]
+        if name == "mise":
+            if (
+                index + 2 < len(words)
+                and words[index + 1] == "exec"
+                and words[index + 2] == "--"
+            ):
+                index += 3
+                continue
+            break
         if name not in COMMAND_WRAPPERS:
             break
         value_options = COMMAND_WRAPPERS[name]
@@ -5354,6 +5363,16 @@ PRODUCTION_POLICY_FIXTURES: dict[str, tuple[str, str, bool]] = {
         "node -- scripts/locale-catalog/generator-launcher.mjs generate.mjs --check\n",
         True,
     ),
+    "the launcher through the exact mise execution environment": (
+        ".github/workflows/locale-catalog.yml",
+        "mise exec -- node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs\n",
+        True,
+    ),
+    "a generator through the exact mise execution environment without the launcher": (
+        ".github/workflows/locale-catalog.yml",
+        "mise exec -- node scripts/locale-catalog/generate.mjs\n",
+        False,
+    ),
 }
 
 
@@ -5855,6 +5874,143 @@ def test_npm_install_lifecycle_policy() -> int:
     return checked
 
 
+NODE_RUNTIME_EXECUTABLES = frozenset({"node", "npm", "npx"})
+
+
+def scan_explicit_mise_node_commands(
+    source: str, label: str, *, shell_depth: int = 0
+) -> tuple[int, list[str]]:
+    checked = 0
+    violations: list[str] = []
+    for line_number, command in logical_shell_commands(source):
+        command_segments, resolved = split_command_segments(command)
+        if not resolved and any(
+            executable in command.lower() for executable in NODE_RUNTIME_EXECUTABLES
+        ):
+            violations.append(
+                f"{label}:{line_number}: cannot resolve possible Node command substitutions"
+            )
+        for command_segment in command_segments:
+            try:
+                words = shell_words(command_segment)
+            except ValueError as error:
+                violations.append(
+                    f"{label}:{line_number}: cannot parse possible Node command: {error}"
+                )
+                continue
+            for segment in shell_command_segments(words):
+                for index, word in enumerate(segment[:-1]):
+                    if Path(word).name.lower() not in SHELL_COMMAND_EXECUTABLES:
+                        continue
+                    payload = shell_command_payload(segment, index)
+                    if payload is None:
+                        continue
+                    if shell_depth >= 8:
+                        violations.append(
+                            f"{label}:{line_number}: shell -c nesting exceeds the scanner limit"
+                        )
+                        continue
+                    nested_checked, nested_violations = scan_explicit_mise_node_commands(
+                        payload,
+                        f"{label}:{line_number}:shell-c",
+                        shell_depth=shell_depth + 1,
+                    )
+                    checked += nested_checked
+                    violations.extend(nested_violations)
+                for index, word in enumerate(segment):
+                    if Path(word).name.lower() not in NODE_RUNTIME_EXECUTABLES:
+                        continue
+                    checked += 1
+                    if not (
+                        index >= 3
+                        and Path(segment[index - 3]).name.lower() == "mise"
+                        and segment[index - 2] == "exec"
+                        and segment[index - 1] == "--"
+                    ):
+                        violations.append(f"{label}:{line_number}: {command_segment}")
+    return checked, violations
+
+
+def test_explicit_mise_node_workflow_policy() -> int:
+    """Workflow Node commands must survive the deliberately sealed PATH."""
+    workflow_paths = (
+        ".github/workflows/locale-catalog.yml",
+        ".github/workflows/haskell.yml",
+    )
+    required_counts = {
+        ".github/workflows/locale-catalog.yml": 7,
+        ".github/workflows/haskell.yml": 1,
+    }
+    for command in (
+        "mise exec -- npm ci --ignore-scripts",
+        "/opt/mise/bin/mise exec -- node verify-dist.mjs",
+        "PRECOMPRESS_DIST=dist mise exec -- npm run build",
+        'version="$(mise exec -- node --version)"',
+    ):
+        regression_checked, regression_violations = scan_explicit_mise_node_commands(
+            command + "\n", "<mise Node scanner safe regression>"
+        )
+        require(
+            regression_checked == 1 and not regression_violations,
+            f"the mise Node scanner rejected or missed a safe command: {command}",
+        )
+    for command in (
+        "npm ci --ignore-scripts",
+        "node verify-dist.mjs",
+        "npx actionlint",
+        "bash --norc -c 'npm ci --ignore-scripts'",
+        'version="$(node --version)"',
+        "echo \"`npx foo`\"",
+    ):
+        regression_checked, regression_violations = scan_explicit_mise_node_commands(
+            command + "\n", "<mise Node scanner unsafe regression>"
+        )
+        require(
+            regression_checked == 1 and len(regression_violations) == 1,
+            f"the mise Node scanner accepted or missed an unsafe command: {command}",
+        )
+
+    checked = 0
+    checked_by_path: dict[str, int] = {}
+    violations: list[str] = []
+    for relative in workflow_paths:
+        workflow = yaml.safe_load((ROOT / relative).read_text(encoding="utf-8"))
+        require(isinstance(workflow, dict), f"workflow {relative} is not a mapping")
+        jobs = workflow.get("jobs")
+        require(isinstance(jobs, dict), f"workflow {relative} has no jobs mapping")
+        path_checked = 0
+        for job_name, job in jobs.items():
+            require(isinstance(job, dict), f"workflow {relative} job {job_name} is not a mapping")
+            steps = job.get("steps")
+            require(isinstance(steps, list), f"workflow {relative} job {job_name} has no steps")
+            for step_index, step in enumerate(steps):
+                if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+                    continue
+                step_checked, step_violations = scan_explicit_mise_node_commands(
+                    step["run"], f"{relative}:{job_name}:step-{step_index + 1}"
+                )
+                path_checked += step_checked
+                violations.extend(step_violations)
+        checked_by_path[relative] = path_checked
+        checked += path_checked
+    require(
+        not violations,
+        "these workflow Node commands bypass mise's explicit tool environment:\n"
+        + "\n".join(violations),
+    )
+    missing = [
+        f"{relative}: expected at least {minimum}, examined {checked_by_path[relative]}"
+        for relative, minimum in required_counts.items()
+        if checked_by_path[relative] < minimum
+    ]
+    require(
+        not missing,
+        "the mise Node workflow scan missed required production commands:\n"
+        + "\n".join(missing),
+    )
+    return checked
+
+
 # ---------------------------------------------------------------------------
 # Identity: the whole import surface of the pinned interpreter prefix
 # ---------------------------------------------------------------------------
@@ -6118,7 +6274,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--probe",
-        choices=("capability-matrix", "generator-production-policy", "ci-privilege-policy"),
+        choices=(
+            "capability-matrix",
+            "generator-production-policy",
+            "ci-privilege-policy",
+            "workflow-node-policy",
+        ),
     )
     parser.add_argument("--owner-token")
     arguments = parser.parse_args()
@@ -6139,6 +6300,10 @@ def main() -> None:
     if arguments.probe == "ci-privilege-policy":
         checked = test_ci_privilege_policy()
         print(f"locale-catalog policy: {checked} CI privilege assertions passed")
+        return
+    if arguments.probe == "workflow-node-policy":
+        checked = test_explicit_mise_node_workflow_policy()
+        print(f"locale-catalog policy: {checked} workflow Node commands use mise exec")
         return
 
     if arguments.probe is not None:
@@ -6167,6 +6332,7 @@ def main() -> None:
         totals["generator production fixtures"] = test_generator_production_fixtures(scratch, token)
         totals["generator inventory discovery"] = test_generator_inventory_discovery(scratch, token)
         totals["npm lifecycle policy"] = test_npm_install_lifecycle_policy()
+        totals["explicit mise Node workflow policy"] = test_explicit_mise_node_workflow_policy()
         totals["analyzer matrix"] = test_analyzer_matrix(scratch, token)
         totals["analyzer grammar coverage"] = test_analyzer_grammar_coverage()
         totals["reviewed source drift"] = test_reviewed_source_drift(scratch, token)

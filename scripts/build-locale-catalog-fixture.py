@@ -128,6 +128,20 @@ RUNTIME_IDENTITY_KEYS = ("implementation", "version", "cacheTag", "stdlibIdentit
 RUNTIME_PLATFORMS = frozenset({"darwin-arm64", "linux-x86_64"})
 
 
+def has_digest_candidates(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest)
+            for digest in value
+        )
+        and len(value) == len(set(value))
+    )
+
+
 def has_binary_identity(value: object, fields: set[str]) -> bool:
     if not isinstance(value, dict) or set(value) != fields | {"binarySha256"}:
         return False
@@ -135,17 +149,7 @@ def has_binary_identity(value: object, fields: set[str]) -> bool:
     return (
         isinstance(digests, dict)
         and set(digests) == RUNTIME_PLATFORMS
-        and all(
-            isinstance(candidates, list)
-            and candidates
-            and all(
-                isinstance(digest, str)
-                and len(digest) == 64
-                and all(character in "0123456789abcdef" for character in digest)
-                for digest in candidates
-            )
-            for candidates in digests.values()
-        )
+        and all(has_digest_candidates(candidates) for candidates in digests.values())
     )
 
 
@@ -195,8 +199,7 @@ def runtime_identity() -> dict[str, object]:
             isinstance(entry, dict)
             and set(entry) == {"path", "sha256"}
             and isinstance(entry["path"], str)
-            and isinstance(entry["sha256"], str)
-            and len(entry["sha256"]) == 64
+            and has_digest_candidates(entry["sha256"])
             for entry in profile["activeSysconfigSources"].values()
         ),
         f"{RUNTIME_PROFILE} does not pin active platform sysconfig sources",

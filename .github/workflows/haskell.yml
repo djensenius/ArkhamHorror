@@ -83,7 +83,7 @@ jobs:
         esac
         mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
     - name: Install frontend dependencies
-      run: npm ci --ignore-scripts
+      run: mise exec -- npm ci --ignore-scripts
       working-directory: ${{ github.workspace }}/frontend
     - name: Bind the built capabilities probe authority
       id: capabilities-probe

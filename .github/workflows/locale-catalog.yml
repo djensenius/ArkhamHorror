@@ -49,7 +49,7 @@ jobs:
           esac
           mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
       - name: Install frontend dependencies
-        run: npm ci --ignore-scripts
+        run: mise exec -- npm ci --ignore-scripts
         working-directory: frontend
       - run: mise run locale-catalog:backend-keys-test
       - run: mise run locale-catalog:backend-keys-check
@@ -92,7 +92,7 @@ jobs:
           esac
           mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
       - name: Install frontend dependencies
-        run: npm ci --ignore-scripts
+        run: mise exec -- npm ci --ignore-scripts
         working-directory: frontend
       - run: mise run locale-catalog:test
       - name: Generate the attested public catalog for frontend builds
@@ -101,10 +101,10 @@ jobs:
       # sealed command above, so the deployment build cannot silently use a
       # second PATH-selected Node generator.
       - name: Build the frontend
-        run: npm run build
+        run: mise exec -- npm run build
         working-directory: frontend
       - name: Verify the catalog ships in the build output
-        run: node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs
+        run: mise exec -- node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs
         working-directory: frontend
       # The offline cache restores a build output without `frontend/public`.
       - run: mise run locale-catalog:offline-cache-hit-test
@@ -115,8 +115,8 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in first second; do
-            PRECOMPRESS_DIST=dist-custom npm run build -- --outDir dist-custom --emptyOutDir
-            node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist dist-custom
+            PRECOMPRESS_DIST=dist-custom mise exec -- npm run build -- --outDir dist-custom --emptyOutDir
+            mise exec -- node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --dist dist-custom
             test -f dist-custom/locale-catalog/manifest.json.br
           done
         working-directory: frontend
@@ -151,7 +151,7 @@ jobs:
           esac
           mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
       - name: Install frontend dependencies
-        run: npm ci --ignore-scripts
+        run: mise exec -- npm ci --ignore-scripts
         working-directory: frontend
       - run: mise run locale-catalog:offline-toolchain-authority-test
       - run: mise run locale-catalog:offline-output-authority-test
