@@ -119,6 +119,7 @@ test('every supported UI locale is published with an explicit fallback', () => {
 test('the contract fixtures\u2019 required keys all resolve', () => {
   const required = new Set()
   for (const fixture of [
+    'question-mulligan.json',
     'question-read.json',
     'question-read-scenario-intro.json',
     'question-read-with-cards.json',

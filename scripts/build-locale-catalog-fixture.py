@@ -261,7 +261,11 @@ DEFAULT_LOCALE = "en"
 
 SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
     "en": {
-        "core": {"continue": "core.continue.en", "setup": "core.setup.en"},
+        "core": {
+            "continue": "core.continue.en",
+            "label.doneWithMulligan": "core.doneWithMulligan.en",
+            "setup": "core.setup.en",
+        },
         "nightOfTheZealot": {
             "nightOfTheZealot.theGathering.intro.body": "notz.intro.body.en",
             "nightOfTheZealot.theGathering.intro.title": "notz.intro.title.en",

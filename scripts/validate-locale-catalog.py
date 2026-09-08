@@ -55,6 +55,7 @@ WORKSPACE_PREFIX = ".locale-catalog-validate-"
 WORKSPACE_OWNER_FILE = "owner"
 
 REQUIRED_KEY_FIXTURES = (
+    "contracts/fixtures/question-mulligan.json",
     "contracts/fixtures/question-read.json",
     "contracts/fixtures/question-read-scenario-intro.json",
     "contracts/fixtures/question-read-with-cards.json",

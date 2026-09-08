@@ -291,9 +291,12 @@ and `WindowChooseOne` encoders. Backend tests bind every golden independently
 to both `Aeson.toJSON` and the actual `Aeson.encode`/`toEncoding` wire path.
 
 Native rendering uses the label/component tags, investigator/card identity,
-token type, and ability display identity. Nested messages, criteria, windows,
-sources, costs, and additive ability fields are losslessly preserved opaque
-engine data: clients must not evaluate them, execute them, or derive new legal
+token type, and ability display identity. The opening mulligan additionally
+governs exactly `Label("$label.doneWithMulligan")` and
+`TargetLabel(CardIdTarget)`; arbitrary `Label` values and other target
+constructors remain unsupported. Nested messages, criteria, windows, sources,
+costs, and additive ability fields are losslessly preserved opaque engine
+data: clients must not evaluate them, execute them, or derive new legal
 actions from them. Message values are constrained only to their guaranteed
 production constructor-object outer shape (`tag` plus opaque/additive
 constructor data). Selecting a choice sends its zero-based array index.
@@ -309,8 +312,9 @@ the authoritative `PublicGame.scenarioSteps` from the snapshot that supplied
 the question. The native `Answer` schema requires both fields; the backend
 decoder's optional legacy behavior is intentionally outside this native
 branch. UUID spelling is exactly lowercase and hyphenated (`schemas/uuid.schema.json`,
-shared by every governed UUID-string field, including a `LocationTarget`'s
-`contents` below). `choice`, `questionVersion`, and `scenarioSteps` share the
+shared by every governed UUID-string field, including `LocationTarget` and
+`CardIdTarget` `contents` below). `choice`, `questionVersion`, and
+`scenarioSteps` share the
 non-negative signed-64 range `0...9223372036854775807` and use canonical raw
 JSON integer tokens: no sign, decimal point, exponent, or leading zero. The
 paired `answer-question.json` golden decodes through the real
@@ -318,12 +322,12 @@ paired `answer-question.json` golden decodes through the real
 selects the third (`EndTurnButton`) CORE option and version `3` equals that
 snapshot's `scenarioSteps`.
 
-#### The Gathering's opening `Read`/`ChooseOne(LocationTarget)` prompts
+#### The Gathering's opening narrative, mulligan, and starting-location prompts
 
 The same schema also covers the production-authentic opening prompt sequence
 for Night of the Zealot's "The Gathering": its `PreScenarioSetup` narrative
-`Read`, the setup-instructions `Read`, and the `startAt` starting-location
-`ChooseOne`.
+`Read`, the opening mulligan `ChooseOne`, the setup-instructions `Read`, and
+the `startAt` starting-location `ChooseOne`.
 
 - `question-read-scenario-intro.json` is the real `PreScenarioSetup` narrative
   `Read`, whose body begins with
@@ -332,6 +336,13 @@ for Night of the Zealot's "The Gathering": its `PreScenarioSetup` narrative
   and `3` are the complete set currently emitted by the backend's `h`/`h1`
   and `h3` helpers; other levels fail closed until their semantics are
   governed. The fixture carries only keys, never rendered narrative text.
+- `question-mulligan.json` is emitted by the real production
+  `InvestigatorMulligan` handler from a deterministic hand of real player
+  cards. It keeps the localized done action at source index `0`, followed by
+  one `TargetLabel(CardIdTarget)` per card in authoritative hand order. Card
+  instance identifiers are canonical UUIDs used only to resolve the
+  authoritative card presentation; clients submit the choice's unchanged
+  array index and never execute the opaque engine messages.
 - `question-read.json` is the real `setupTheGathering` setup-instructions `Read`
   (`Arkham.Helpers.FlavorText.setup` -> `flavor` -> `Arkham.Message.story`):
   `BasicReadChoices` with exactly one semantic continue choice
@@ -353,11 +364,12 @@ for Night of the Zealot's "The Gathering": its `PreScenarioSetup` narrative
   (`Arkham.Scenario.Setup.startAt`) that follows: `ChooseOne` with a single
   `TargetLabel(LocationTarget)` choice for the real starting location
   ("Study", `d5a66e84-c729-4066-8475-d8a155609025`, matching `get-game.json`).
-  Only the `LocationTarget` variant of the much broader `Arkham.Target` sum
-  is modeled; every other `Target` constructor remains an explicit
-  unsupported value here while staying opaque inside the broader
-  `PublicGame.question` map (see the paired `forwardCompatibilityChecks`
-  entry proving a `TargetLabel(EnemyTarget)` choice there).
+  Along with the mulligan's `CardIdTarget`, this is one of the two governed
+  variants of the much broader `Arkham.Target` sum. Every other `Target`
+  constructor remains an explicit unsupported value here while staying
+  opaque inside the broader `PublicGame.question` map (see the paired
+  `forwardCompatibilityChecks` entry proving a
+  `TargetLabel(EnemyTarget)` choice there).
 - `question-choose-one-location-multiple.json` generalizes `startAt` to
   three real "The Gathering" locations (Attic, Hallway, Parlor) via the
   same shared `chooseTargetM`/`targeting`/`unsafeReveal`/`placeAllAt`

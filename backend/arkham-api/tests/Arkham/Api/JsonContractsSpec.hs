@@ -456,6 +456,48 @@ fixtureReadWithCardsQuestion =
         (Map.lookup fixturePlayerId askMap)
     other -> error $ "fixtureReadWithCardsQuestion: expected AskMap, got " <> show other
 
+{- | A deterministic opening hand built from real player-card values with fixed
+card-instance ids. The production 'InvestigatorMulligan' handler below reads
+this exact hand and constructs the governed question; the fixture does not
+reimplement or hand-assemble any 'UI Message' constructor.
+-}
+fixtureMulliganCards :: [Card]
+fixtureMulliganCards =
+  [ lookupCard AssetCards.machete (unsafeMakeCardId $ UUID.fromWords 0 0 0 n)
+  | n <- [960, 961, 962]
+  ]
+
+{- | The real production opening mulligan prompt emitted by
+'Arkham.Investigator.Runner' for a replaceable hand: the localized
+@"$label.doneWithMulligan"@ 'Label' followed by one
+'TargetLabel'\/'CardIdTarget' per hand card, in authoritative hand order.
+
+The surrounding deterministic board is reused only as a fully initialized
+game environment. Its existing player-window question is cleared, the fixed
+real cards above are installed as Roland's hand, and the actual
+'InvestigatorMulligan' message is run through the ordinary game/investigator
+dispatch before the resulting question is read back.
+-}
+fixtureMulliganQuestion :: Question Message
+fixtureMulliganQuestion = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  overTest (questionL .~ mempty)
+  overTest
+    ( entitiesL
+        . investigatorsL
+        . ix iid
+        %~ overAttrs (\attrs -> attrs {investigatorHand = fixtureMulliganCards})
+    )
+  pushAndRunAll [InvestigatorMulligan iid]
+  questionMap <- gameQuestion <$> getGame
+  case Map.lookup fixturePlayerId questionMap of
+    Just question -> pure question
+    Nothing ->
+      liftIO
+        $ IOError.ioError
+        $ IOError.userError "fixtureMulliganQuestion: fixture player has no active question"
+{-# NOINLINE fixtureMulliganQuestion #-}
+
 {- | Three real "The Gathering" location cards (Attic, Hallway, Parlor --
 Location\/CardDefs\/NightOfTheZealot\/TheGathering.hs, the exact same
 'setupTheGathering' encounter set 'fixtureBoardGame' itself draws from) used
@@ -820,6 +862,7 @@ is: to both 'Aeson.toJSON' and the real 'Aeson.encode'\/'toEncoding' wire path.
 fixtureOpeningQuestionFixtures :: [(FilePath, Question Message)]
 fixtureOpeningQuestionFixtures =
   [ ("question-read-scenario-intro.json", fixtureScenarioIntroReadQuestion)
+  , ("question-mulligan.json", fixtureMulliganQuestion)
   , ("question-read.json", fixtureIntroReadQuestion)
   , ("question-choose-one-location.json", fixtureStartAtChooseOneQuestion)
   , ("question-read-with-cards.json", fixtureReadWithCardsQuestion)
@@ -1117,11 +1160,23 @@ spec = describe "Native client contract fixtures" do
       viaWireEncoding response `shouldBe` fixture
 
   for_ fixtureOpeningQuestionFixtures \(fileName, question) ->
-    it ("matches the real Read/ChooseOne(LocationTarget) opening-prompt encoder for " <> fileName) do
+    it ("matches the real opening-prompt encoder for " <> fileName) do
       fixture <- loadFixture fileName
 
       Aeson.toJSON question `shouldBe` fixture
       viaWireEncoding question `shouldBe` fixture
+
+  it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
+    case fixtureMulliganQuestion of
+      ChooseOne (Label "$label.doneWithMulligan" [FinishedWithMulligan iid] : choices) -> do
+        iid `shouldBe` InvestigatorId "01001"
+        let targets = [cardId | TargetLabel (CardIdTarget cardId) _ <- choices]
+        length choices `shouldBe` length fixtureMulliganCards
+        targets `shouldBe` map toCardId fixtureMulliganCards
+      other ->
+        expectationFailure
+          $ "Expected Label(doneWithMulligan) followed by ordered CardIdTargets, got "
+          <> show other
 
   it "keeps The Gathering's scenario intro HeaderEntry and body key stable" do
     case fixtureScenarioIntroReadQuestion of

@@ -2,11 +2,12 @@
   "artifactVersion": "1.0.0",
   "source": {
     "files": 3,
-    "sha256": "ebd5bc1d23d1467a6c725e2fb10cd9000dd029e771465de465751a72443c4627"
+    "sha256": "cbb3b9c1ad4bc1710563c0eba5148b7d633999632b354c4f5c6b6d5d399442d9"
   },
   "dynamicSites": 0,
   "emittedKeys": [
     "continue",
+    "label.doneWithMulligan",
     "nightOfTheZealot.theGathering.intro.body",
     "nightOfTheZealot.theGathering.intro.title",
     "nightOfTheZealot.theGathering.setup.gatherSets",
@@ -17,6 +18,7 @@
   ],
   "requiredKeys": [
     "continue",
+    "label.doneWithMulligan",
     "nightOfTheZealot.theGathering.intro.body",
     "nightOfTheZealot.theGathering.intro.title",
     "nightOfTheZealot.theGathering.setup.gatherSets",

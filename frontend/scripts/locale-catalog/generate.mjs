@@ -77,6 +77,7 @@ const SCHEMA_FILES = [
 // The contract fixtures whose I18n keys this catalog revision must resolve.
 // Required keys are read out of the fixtures themselves, never transcribed.
 const REQUIRED_KEY_FIXTURES = [
+  'contracts/fixtures/question-mulligan.json',
   'contracts/fixtures/question-read.json',
   'contracts/fixtures/question-read-scenario-intro.json',
   'contracts/fixtures/question-read-with-cards.json',

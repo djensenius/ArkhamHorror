@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/PlayerWindowChooseOne/WindowChooseOne/Read question slice. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/PlayerWindowChooseOne/WindowChooseOne/Read question slice, including the opening mulligan's done Label and CardIdTarget choices. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
     {
       "$ref": "#/$defs/chooseOneQuestion"
@@ -79,6 +79,9 @@
           "$ref": "#/$defs/componentLabel"
         },
         {
+          "$ref": "#/$defs/mulliganDoneLabel"
+        },
+        {
           "$ref": "#/$defs/endTurnButton"
         },
         {
@@ -88,6 +91,27 @@
           "$ref": "#/$defs/targetLabel"
         }
       ]
+    },
+    "mulliganDoneLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "label",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Label"
+        },
+        "label": {
+          "const": "$label.doneWithMulligan"
+        },
+        "messages": {
+          "$ref": "#/$defs/messages"
+        }
+      },
+      "description": "The production opening-mulligan completion action. This narrow branch does not claim support for arbitrary Label values."
     },
     "componentLabel": {
       "type": "object",
@@ -177,13 +201,23 @@
           "const": "TargetLabel"
         },
         "target": {
-          "$ref": "#/$defs/locationTarget"
+          "$ref": "#/$defs/choiceTarget"
         },
         "messages": {
           "$ref": "#/$defs/messages"
         }
       },
-      "description": "Only the LocationTarget variant of the broader Arkham.Target sum is supported here (e.g. the startAt starting-location prompt). Every other Target constructor is closed out by locationTarget's own 'tag' const and remains an explicit unsupported value, opaque wherever it appears inside PublicGame."
+      "description": "Only the governed LocationTarget (starting location) and CardIdTarget (opening mulligan) variants of the broader Arkham.Target sum are supported here. Every other Target constructor remains an explicit unsupported value, opaque wherever it appears inside PublicGame."
+    },
+    "choiceTarget": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/locationTarget"
+        },
+        {
+          "$ref": "#/$defs/cardIdTarget"
+        }
+      ]
     },
     "locationTarget": {
       "type": "object",
@@ -199,6 +233,23 @@
         "contents": {
           "$ref": "./uuid.schema.json",
           "description": "The real LocationId (Arkham/Id.hs, deriving ToJSON newtype from UUID)."
+        }
+      }
+    },
+    "cardIdTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "CardIdTarget"
+        },
+        "contents": {
+          "$ref": "./uuid.schema.json",
+          "description": "The canonical card-instance UUID used to resolve the target against PublicGame.cards and investigator hand state."
         }
       }
     },
