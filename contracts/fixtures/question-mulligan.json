@@ -1,0 +1,93 @@
+{
+  "tag": "ChooseOne",
+  "choices": [
+    {
+      "tag": "Label",
+      "label": "$label.doneWithMulligan",
+      "messages": [
+        {
+          "tag": "FinishedWithMulligan",
+          "contents": "c01001"
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "00000000-0000-0000-0000-0000000003c0"
+      },
+      "messages": [
+        {
+          "tag": "DiscardCard",
+          "contents": [
+            "c01001",
+            {
+              "tag": "GameSource"
+            },
+            "00000000-0000-0000-0000-0000000003c0"
+          ]
+        },
+        {
+          "tag": "InvestigatorMessage",
+          "contents": {
+            "tag": "InvestigatorMulligan_",
+            "contents": "c01001"
+          }
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "00000000-0000-0000-0000-0000000003c1"
+      },
+      "messages": [
+        {
+          "tag": "DiscardCard",
+          "contents": [
+            "c01001",
+            {
+              "tag": "GameSource"
+            },
+            "00000000-0000-0000-0000-0000000003c1"
+          ]
+        },
+        {
+          "tag": "InvestigatorMessage",
+          "contents": {
+            "tag": "InvestigatorMulligan_",
+            "contents": "c01001"
+          }
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "00000000-0000-0000-0000-0000000003c2"
+      },
+      "messages": [
+        {
+          "tag": "DiscardCard",
+          "contents": [
+            "c01001",
+            {
+              "tag": "GameSource"
+            },
+            "00000000-0000-0000-0000-0000000003c2"
+          ]
+        },
+        {
+          "tag": "InvestigatorMessage",
+          "contents": {
+            "tag": "InvestigatorMulligan_",
+            "contents": "c01001"
+          }
+        }
+      ]
+    }
+  ]
+}
