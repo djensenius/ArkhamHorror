@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.28",
+  "schemaRevision": "0.1.29",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -103,6 +103,22 @@
     },
     {
       "path": "contracts/fixtures/question-window-choose-one.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-investigate-fast-window.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-investigate-commit.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-investigate-reveal-window.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-investigate-apply-results.json",
       "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
@@ -754,6 +770,415 @@
             "type",
             "actions",
             "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "was expected"
+        }
+      ]
+    },
+    {
+      "description": "SkipTriggersButton requires the authoritative investigatorId.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skipTriggersButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-fast-window.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/investigatorId"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'investigatorId' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "SkipTriggersButton rejects an investigatorId without the canonical card-code prefix.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skipTriggersButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-fast-window.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/investigatorId",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "investigatorId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "SkipTriggersButton rejects uppercase investigatorId spelling.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skipTriggersButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-fast-window.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/investigatorId",
+        "value": "c0100A"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "investigatorId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "SkipTriggersButton rejects an investigatorID alias beside the canonical investigatorId.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skipTriggersButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-fast-window.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/investigatorID",
+        "value": "c01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'investigatorID' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "SkipTriggersButton rejects an invented messages payload because the production control is zero-message.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skipTriggersButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-fast-window.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/messages",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'messages' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "SkipTriggersButton is closed and rejects an unrelated ability field.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skipTriggersButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-fast-window.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/ability",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'ability' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "SkipTriggersButton requires its exact tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skipTriggersButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-fast-window.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "SkipTriggersButton rejects a near-match tag rather than normalizing it.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skipTriggersButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-fast-window.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "SkipTriggerButton"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "was expected"
+        }
+      ]
+    },
+    {
+      "description": "StartSkillTestButton requires the authoritative investigatorId.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "startSkillTestButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-commit.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/investigatorId"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'investigatorId' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "StartSkillTestButton rejects an investigatorId without the canonical card-code prefix.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "startSkillTestButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-commit.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/investigatorId",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "investigatorId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "StartSkillTestButton rejects uppercase investigatorId spelling.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "startSkillTestButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-commit.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/investigatorId",
+        "value": "c0100A"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "investigatorId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "StartSkillTestButton rejects an investigatorID alias beside the canonical investigatorId.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "startSkillTestButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-commit.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/investigatorID",
+        "value": "c01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'investigatorID' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "StartSkillTestButton rejects an invented messages payload because the production control is zero-message.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "startSkillTestButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-commit.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/messages",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'messages' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "StartSkillTestButton is closed and rejects an unrelated before field.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "startSkillTestButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-commit.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/before",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'before' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "StartSkillTestButton requires its exact tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "startSkillTestButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-commit.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "StartSkillTestButton rejects a near-match tag rather than normalizing it.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "startSkillTestButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-commit.json",
+      "basePointer": "/choices/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "BeginSkillTestButton"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "was expected"
+        }
+      ]
+    },
+    {
+      "description": "SkillTestApplyResultsButton rejects an invented messages payload because the production control has only its tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skillTestApplyResultsButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-apply-results.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/messages",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'messages' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "SkillTestApplyResultsButton is closed and rejects an unrelated investigatorId field.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skillTestApplyResultsButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-apply-results.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/investigatorId",
+        "value": "c01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "'investigatorId' was unexpected"
+        }
+      ]
+    },
+    {
+      "description": "SkillTestApplyResultsButton requires its exact tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skillTestApplyResultsButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-apply-results.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "SkillTestApplyResultsButton rejects a near-match tag rather than normalizing it.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "skillTestApplyResultsButton",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-investigate-apply-results.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "ApplySkillTestResultsButton"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
           ],
           "keyword": "const",
           "messageContains": "was expected"
@@ -1772,8 +2197,8 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "e443e95294b8a8f1b2d7324564c3e827caeb0a4b8c8073b13e062849149edada",
-    "contracts/fixtures/capabilities.json": "dccaeca0e25b84ece7924fb5f274e1c83242dedffcbc3f5d0b4862a29819b470",
+    "contracts/fixtures/capabilities-locale-catalog.json": "fe0d49e40f890a34c5f733bec09a25777096e9b1d5da01e51ad7d32abc504916",
+    "contracts/fixtures/capabilities.json": "fc31aa05174312a27835af3931e9fa5ff303aebc4fa839c1c4db7e48ee6c8116",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -1800,7 +2225,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "58712088a3d5ca2aa0903a6867d9d224c8b33e0606cb1a96fbd021b69528aa1e",
+    "contracts/fixtures/locale-catalog-manifest.json": "a9c996731497039bf9bd5badda5ccbc765ec74d0f17bf9fcd723b0f2825a17ec",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -1813,6 +2238,10 @@
     "contracts/fixtures/question-choose-one-location-multiple.json": "25751cccc02dc18de38e0cbebf71acb5303d47df3705367f0c14089853bcbe07",
     "contracts/fixtures/question-choose-one-location.json": "5ce62cbaee22e32f4b8d84e563d331b58d087c3d5f6b3061c7cbfdb177af0f79",
     "contracts/fixtures/question-choose-one.json": "854d6a2891155ff4da9e075224d4cd5a7519e4e4cb2ec659a740c872f8b799fc",
+    "contracts/fixtures/question-investigate-apply-results.json": "ca3834a719c64a263c31982cfb5987c08da40ec3494d2380ccffaebb46e11774",
+    "contracts/fixtures/question-investigate-commit.json": "0cef8bb88be1ac2feb7cd2d37b952bf54fa47b4ea7d83474326baf9da7fb9b18",
+    "contracts/fixtures/question-investigate-fast-window.json": "faa049601d544817746c3621e6865a119c5a38c5eba8daf477da2728a250a913",
+    "contracts/fixtures/question-investigate-reveal-window.json": "faa049601d544817746c3621e6865a119c5a38c5eba8daf477da2728a250a913",
     "contracts/fixtures/question-mulligan.json": "88249e7206671dbb5f43a8187c9fa6e0cbbee1859e06957ca1a454455d156029",
     "contracts/fixtures/question-player-window-choose-one.json": "1a10e17e87e2e77b728484443934e3147ea14d5cdee077cf236fc5efb8334eaf",
     "contracts/fixtures/question-read-scenario-intro.json": "98cac0992deff7f08005fc25a0227ef62b9aedde00c3b6dcceb25e503d671fd3",
@@ -1821,14 +2250,14 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "8fb78e3b882be209762ab8184242a747a465595efebdf8e4a14384abe91f9384",
+    "contracts/manifest.json": "866403c8974af8a847e0bc36ace4f2a9455d9f7eadd04182a85ccf59b50a5abb",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "eb856fa7fc9136c5a8fb2bcd46a61325351fc7fb195cc5e6c7bed4f193ba51ac",
+    "contracts/schemas/basic-choice-question.schema.json": "8915c4b1a7c367835d13919ec8e76a9b3892e852c8779ccb2348ef789474e04e",
     "contracts/schemas/capabilities.schema.json": "7cc6d2805a47ee19549beab91f3c54085f2726b8d0671f0a3ae662bab820d42a",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",

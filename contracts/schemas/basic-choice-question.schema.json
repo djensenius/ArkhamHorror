@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/PlayerWindowChooseOne/WindowChooseOne/Read question slice, including the opening mulligan's done Label and CardIdTarget choices. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/PlayerWindowChooseOne/WindowChooseOne/Read question slice, including the opening mulligan and basic-investigation player-window, commit, and apply-results controls. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
     {
       "$ref": "#/$defs/chooseOneQuestion"
@@ -89,6 +89,15 @@
         },
         {
           "$ref": "#/$defs/targetLabel"
+        },
+        {
+          "$ref": "#/$defs/skipTriggersButton"
+        },
+        {
+          "$ref": "#/$defs/startSkillTestButton"
+        },
+        {
+          "$ref": "#/$defs/skillTestApplyResultsButton"
         }
       ]
     },
@@ -153,6 +162,53 @@
         }
       }
     },
+    "skipTriggersButton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "const": "SkipTriggersButton"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        }
+      },
+      "description": "The skippable player-window control. Unlike message-bearing labels, its production Aeson shape has no messages field."
+    },
+    "startSkillTestButton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "const": "StartSkillTestButton"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        }
+      },
+      "description": "The commit-step control that advances the authoritative skill test. Its production Aeson shape has no messages field."
+    },
+    "skillTestApplyResultsButton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "SkillTestApplyResultsButton"
+        }
+      },
+      "description": "The exact zero-payload control emitted after the backend determines the skill-test result."
+    },
     "abilityLabel": {
       "type": "object",
       "additionalProperties": false,
@@ -207,7 +263,7 @@
           "$ref": "#/$defs/messages"
         }
       },
-      "description": "Only the governed LocationTarget (starting location) and CardIdTarget (opening mulligan) variants of the broader Arkham.Target sum are supported here. Every other Target constructor remains an explicit unsupported value, opaque wherever it appears inside PublicGame."
+      "description": "Only the governed LocationTarget (starting location) and CardIdTarget (mulligan, playable-window, and skill-test commit choices) variants of the broader Arkham.Target sum are supported here. Every other Target constructor remains an explicit unsupported value, opaque wherever it appears inside PublicGame."
     },
     "choiceTarget": {
       "oneOf": [
