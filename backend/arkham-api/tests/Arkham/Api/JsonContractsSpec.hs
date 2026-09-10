@@ -13,12 +13,18 @@ import Arkham.Achievement.Types
   , TheDunwichLegacyAchievement (TheGangsAllHere)
   )
 import Arkham.Act (lookupAct)
+import Arkham.Attack.Types
+  ( AttackTarget (SingleAttackTarget)
+  , EnemyAttackDetails (..)
+  , EnemyAttackType (RegularAttack)
+  )
 import Arkham.Campaign (lookupCampaign)
 import Arkham.Campaign.Types (Campaign)
 import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.EnemyLocation (lookupEnemyLocation)
 import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
 import Arkham.Enemy.CardDefs.NightOfTheZealot.Rats qualified as EnemyCards (swarmOfRats)
+import Arkham.Enemy.Creation (EnemyCreation (..))
 import Arkham.Story (createStory)
 import Arkham.Story.CardDefs.FortuneAndFolly qualified as StoryCardDefs (theStakeout)
 import Arkham.Token (Token (Resource), setTokens)
@@ -35,6 +41,7 @@ import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
 import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
 import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
+import Arkham.Helpers.Message qualified as MessageHelpers (createEnemy)
 import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
 import Arkham.Message qualified as Msg (storyWithCards)
@@ -44,9 +51,10 @@ import Arkham.Message.Lifted.Move (placeAllAt)
 import Arkham.Movement (Destination (ToLocation), Movement (..), MovementMeans (Direct))
 import Arkham.Name (mkName)
 import Arkham.Phase
-  ( MythosPhaseStep (EachInvestigatorDrawsEncounterCardStep)
-  , Phase (MythosPhase)
-  , PhaseStep (MythosPhaseStep)
+  ( EnemyPhaseStep (ResolveAttacksStep)
+  , MythosPhaseStep (EachInvestigatorDrawsEncounterCardStep)
+  , Phase (EnemyPhase, MythosPhase)
+  , PhaseStep (EnemyPhaseStep, MythosPhaseStep)
   )
 import Arkham.Scenario.Types (Scenario)
 import Arkham.UltimatumsAndBoons.Types
@@ -603,6 +611,49 @@ fixtureEncounterDrawQuestion =
   fromMaybe
     (error "fixtureEncounterDrawQuestion: fixture player has no active question")
     (Map.lookup fixturePlayerId $ gameQuestion fixtureEncounterDrawGame)
+
+fixtureEnemyAttackId :: EnemyId
+fixtureEnemyAttackId = EnemyId $ UUID.fromWords 0 0 0 902
+
+fixtureEnemyAttackCard :: Card
+fixtureEnemyAttackCard =
+  lookupCard EnemyCards.swarmOfRats (unsafeMakeCardId $ UUID.fromWords 0 0 0 903)
+
+{- | Generate the first enemy-phase attack prompt from the production engine.
+Starting from the deterministic post-setup board, the real enemy-creation
+helper builds a fixed Swarm of Rats spawn engaged with Roland, the ordinary
+'CreateEnemy' handler resolves that spawn, and 'Begin EnemyPhase' runs the real
+enemy-phase queue through 'EnemiesAttack'. The resulting question is captured
+directly from 'gameQuestion'; neither the question nor its attack details are
+assembled by the fixture.
+-}
+fixtureEnemyAttackGame :: Game
+fixtureEnemyAttackGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  overTest (questionL .~ mempty)
+  creation <- MessageHelpers.createEnemy fixtureEnemyAttackCard iid
+  pushAndRunAll [CreateEnemy creation {enemyCreationEnemyId = fixtureEnemyAttackId}]
+  pushAndRunAll [Begin EnemyPhase]
+  getGame
+{-# NOINLINE fixtureEnemyAttackGame #-}
+
+fixtureEnemyAttackQuestion :: Question Message
+fixtureEnemyAttackQuestion =
+  fromMaybe
+    (error "fixtureEnemyAttackQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureEnemyAttackGame)
+
+fixtureEnemyAttackAnswer :: Aeson.Value
+fixtureEnemyAttackAnswer =
+  Aeson.object
+    [ "tag" .= ("Answer" :: Text)
+    , "contents"
+        .= Aeson.object
+          [ "choice" .= (0 :: Int)
+          , "playerId" .= fixturePlayerId
+          , "questionVersion" .= gameScenarioSteps fixtureEnemyAttackGame
+          ]
+    ]
 
 {- | Three real "The Gathering" location cards (Attic, Hallway, Parlor --
 Location\/CardDefs\/NightOfTheZealot\/TheGathering.hs, the exact same
@@ -1380,6 +1431,81 @@ spec = describe "Native client contract fixtures" do
     checkAnswer 1 (gameScenarioSteps game) \case
       Handled messages -> messages `shouldBe` [Ask fixturePlayerId fixtureEncounterDrawQuestion]
       Unhandled reason -> expectationFailure $ "Expected the unchanged prompt: " <> Text.unpack reason
+
+  it "matches the real enemy-phase attack prompt on both encoder paths" do
+    fixture <- loadFixture "question-enemy-attack.json"
+    Aeson.toJSON fixtureEnemyAttackQuestion `shouldBe` fixture
+    viaWireEncoding fixtureEnemyAttackQuestion `shouldBe` fixture
+    gamePhase fixtureEnemyAttackGame `shouldBe` EnemyPhase
+    gamePhaseStep fixtureEnemyAttackGame
+      `shouldBe` Just (EnemyPhaseStep ResolveAttacksStep)
+    gameScenarioSteps fixtureEnemyAttackGame `shouldBe` 5
+
+  it "binds every enemy-attack identity and field to the production values" do
+    let iid = InvestigatorId "01001"
+    case fixtureEnemyAttackQuestion of
+      ChooseOneAtATime [TargetLabel (EnemyTarget targetEnemy) [EnemyAttack details]] -> do
+        targetEnemy `shouldBe` fixtureEnemyAttackId
+        attackEnemy details `shouldBe` targetEnemy
+        attackSource details `shouldBe` EnemySource targetEnemy
+        attackTarget details `shouldBe` SingleAttackTarget (InvestigatorTarget iid)
+        attackOriginalTarget details `shouldBe` SingleAttackTarget (InvestigatorTarget iid)
+        attackType details `shouldBe` RegularAttack
+        attackDamageStrategy details `shouldBe` DamageAny
+        attackExhaustsEnemy details `shouldBe` True
+        attackCanBeCanceled details `shouldBe` True
+        attackAfter details `shouldBe` []
+        attackDamaged details `shouldBe` Map.empty
+        attackDealDamage details `shouldBe` True
+        attackDespiteExhausted details `shouldBe` False
+        attackCancelled details `shouldBe` False
+      other ->
+        expectationFailure
+          $ "Expected one production ChooseOneAtATime enemy attack, got "
+          <> show other
+
+  it "preserves enemy attack source index zero and the exact versioned Answer" do
+    fixture <- loadFixture "answer-enemy-attack.json"
+    fixture `shouldBe` fixtureEnemyAttackAnswer
+    let
+      game = fixtureEnemyAttackGame
+      checkAnswer answerValue check =
+        case Aeson.fromJSON answerValue of
+          Aeson.Error err -> expectationFailure $ "Could not decode enemy attack Answer: " <> err
+          Aeson.Success answer -> handleAnswerPure game fixturePlayerId answer >>= check
+      withChoiceAndVersion choice version =
+        Aeson.object
+          [ "tag" .= ("Answer" :: Text)
+          , "contents"
+              .= Aeson.object
+                [ "choice" .= (choice :: Int)
+                , "playerId" .= fixturePlayerId
+                , "questionVersion" .= (version :: Int)
+                ]
+          ]
+    case Aeson.fromJSON fixture of
+      Aeson.Error err -> expectationFailure $ "Could not decode answer-enemy-attack.json: " <> err
+      Aeson.Success (Answer (QuestionResponse choice playerId questionVersion)) -> do
+        choice `shouldBe` 0
+        playerId `shouldBe` Just fixturePlayerId
+        questionVersion `shouldBe` Just (gameScenarioSteps game)
+      Aeson.Success other ->
+        expectationFailure $ "Expected a versioned Answer fixture, got " <> show other
+    case fixtureEnemyAttackQuestion of
+      ChooseOneAtATime [choice] -> do
+        checkAnswer fixture \case
+          Handled messages -> messages `shouldBe` [uiToRun choice]
+          Unhandled reason -> expectationFailure $ "Enemy attack Answer rejected: " <> Text.unpack reason
+        checkAnswer (withChoiceAndVersion 0 $ gameScenarioSteps game + 1) \case
+          Unhandled reason -> reason `shouldBe` "Stale question"
+          Handled _ -> expectationFailure "A stale enemy attack Answer must not resolve"
+        checkAnswer (withChoiceAndVersion 1 $ gameScenarioSteps game) \case
+          Handled messages -> messages `shouldBe` [Ask fixturePlayerId fixtureEnemyAttackQuestion]
+          Unhandled reason -> expectationFailure $ "Expected the unchanged prompt: " <> Text.unpack reason
+      other ->
+        expectationFailure
+          $ "Expected one production ChooseOneAtATime enemy attack, got "
+          <> show other
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
     case fixtureMulliganQuestion of
