@@ -26,9 +26,11 @@ import Arkham.Campaign.Option (CampaignOption (..))
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
 import Arkham.Classes.HasGame (getGame)
+import Arkham.Deck qualified as Deck
 import Arkham.Difficulty (Difficulty (Easy, Standard))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Arkham.Decklist.CardPool (ArkhamBuildCardPool (..))
+import Arkham.Draw.Types (newCardDraw)
 import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
 import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
@@ -41,6 +43,11 @@ import Arkham.Message.Lifted.Location (unsafeReveal)
 import Arkham.Message.Lifted.Move (placeAllAt)
 import Arkham.Movement (Destination (ToLocation), Movement (..), MovementMeans (Direct))
 import Arkham.Name (mkName)
+import Arkham.Phase
+  ( MythosPhaseStep (EachInvestigatorDrawsEncounterCardStep)
+  , Phase (MythosPhase)
+  , PhaseStep (MythosPhaseStep)
+  )
 import Arkham.Scenario.Types (Scenario)
 import Arkham.UltimatumsAndBoons.Types
   ( Boon (BoonOfHades)
@@ -60,7 +67,7 @@ import Data.Time (secondsToDiffTime)
 import Data.UUID qualified as UUID
 import Database.Persist qualified as Persist
 import Database.Persist.Sql (toSqlKey)
-import Entity.Answer (Answer (..), QuestionResponse (..))
+import Entity.Answer (Answer (..), QuestionResponse (..), Reply (..), handleAnswerPure)
 import Entity.Arkham.Achievement qualified as AchievementEntity
 import Entity.Arkham.Deck qualified as DeckEntity
 import Entity.Arkham.Game qualified as ArkhamGame
@@ -580,6 +587,22 @@ fixtureInvestigationQuestionFixtures =
     , "question-investigate-apply-results.json"
     ]
     fixtureInvestigationQuestions
+
+-- | Run the real mythos-phase queue on the deterministic, initialized board.
+-- The phase runner (not this fixture) builds the encounter-deck target and
+-- nested DrawCards value via ForInvestigator/AllDrawEncounterCard.
+fixtureEncounterDrawGame :: Game
+fixtureEncounterDrawGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  overTest (questionL .~ mempty)
+  pushAndRunAll [Begin MythosPhase]
+  getGame
+{-# NOINLINE fixtureEncounterDrawGame #-}
+
+fixtureEncounterDrawQuestion :: Question Message
+fixtureEncounterDrawQuestion =
+  fromMaybe
+    (error "fixtureEncounterDrawQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureEncounterDrawGame)
 
 {- | Three real "The Gathering" location cards (Attic, Hallway, Parlor --
 Location\/CardDefs\/NightOfTheZealot\/TheGathering.hs, the exact same
@@ -1313,6 +1336,50 @@ spec = describe "Native client contract fixtures" do
                    ]
                  , [(0, Aeson.String "SkillTestApplyResultsButton")]
                  ]
+
+  it "matches the real mythos encounter-deck draw prompt on both encoder paths" do
+    fixture <- loadFixture "question-encounter-deck-draw.json"
+    Aeson.toJSON fixtureEncounterDrawQuestion `shouldBe` fixture
+    viaWireEncoding fixtureEncounterDrawQuestion `shouldBe` fixture
+    schema <- loadContractJson "contracts/schemas/basic-choice-question.schema.json"
+    lookupValue "title" (lookupValue "encounterDeckDrawLabel" $ lookupValue "$defs" schema)
+      `shouldBe` Aeson.String "Draw encounter card"
+    gamePhase fixtureEncounterDrawGame `shouldBe` MythosPhase
+    gamePhaseStep fixtureEncounterDrawGame
+      `shouldBe` Just (MythosPhaseStep EachInvestigatorDrawsEncounterCardStep)
+
+  it "preserves encounter draw source index zero and the exact versioned Answer" do
+    let
+      game = fixtureEncounterDrawGame
+      expectedDraw = DrawCards (InvestigatorId "01001") $ newCardDraw GameSource Deck.EncounterDeck 1
+      answerValue choice version =
+        Aeson.object
+          [ "tag" .= ("Answer" :: Text)
+          , "contents"
+              .= Aeson.object
+                [ "choice" .= (choice :: Int)
+                , "playerId" .= fixturePlayerId
+                , "questionVersion" .= (version :: Int)
+                ]
+          ]
+      checkAnswer choice version check =
+        case Aeson.fromJSON (answerValue choice version) of
+          Aeson.Error err -> expectationFailure $ "Could not decode encounter draw Answer: " <> err
+          Aeson.Success answer -> handleAnswerPure game fixturePlayerId answer >>= check
+    case fixtureEncounterDrawQuestion of
+      ChooseOne choices -> do
+        length choices `shouldBe` 1
+        choices !!? 0 `shouldBe` Just (TargetLabel EncounterDeckTarget [expectedDraw])
+      other -> expectationFailure $ "Expected the mythos encounter draw ChooseOne, got " <> show other
+    checkAnswer 0 (gameScenarioSteps game) \case
+      Handled messages -> messages `shouldBe` [Run [expectedDraw]]
+      Unhandled reason -> expectationFailure $ "Encounter draw Answer rejected: " <> Text.unpack reason
+    checkAnswer 0 (gameScenarioSteps game + 1) \case
+      Unhandled reason -> reason `shouldBe` "Stale question"
+      Handled _ -> expectationFailure "A stale encounter draw Answer must not resolve"
+    checkAnswer 1 (gameScenarioSteps game) \case
+      Handled messages -> messages `shouldBe` [Ask fixturePlayerId fixtureEncounterDrawQuestion]
+      Unhandled reason -> expectationFailure $ "Expected the unchanged prompt: " <> Text.unpack reason
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
     case fixtureMulliganQuestion of

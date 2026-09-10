@@ -1,0 +1,39 @@
+{
+  "choices": [
+    {
+      "messages": [
+        {
+          "contents": [
+            "c01001",
+            {
+              "cardDrawAction": false,
+              "cardDrawAlreadyDrawn": [],
+              "cardDrawAmount": 1,
+              "cardDrawAndThen": null,
+              "cardDrawDeck": {
+                "tag": "EncounterDeck"
+              },
+              "cardDrawDiscard": null,
+              "cardDrawKind": "StandardCardDraw",
+              "cardDrawPosition": "DrawFromTop",
+              "cardDrawRules": [],
+              "cardDrawSource": {
+                "tag": "GameSource"
+              },
+              "cardDrawState": {
+                "tag": "UnresolvedCardDraw"
+              },
+              "cardDrawTarget": null
+            }
+          ],
+          "tag": "DrawCards"
+        }
+      ],
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "EncounterDeckTarget"
+      }
+    }
+  ],
+  "tag": "ChooseOne"
+}
