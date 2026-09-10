@@ -513,12 +513,12 @@ fixtureInvestigationCard =
 
 fixtureInvestigateChoice :: UI Message
 fixtureInvestigateChoice =
-  case fixtureBasicChoiceChoices of
-    [_, _, _, choice@AbilityLabel {}] -> choice
-    choices ->
+  case drop 3 fixtureBasicChoiceChoices of
+    choice@AbilityLabel {} : _ -> choice
+    _ ->
       error
         $ "fixtureInvestigateChoice: expected CORE investigate ability at zero-based index 3, got "
-        <> show choices
+        <> show fixtureBasicChoiceChoices
 
 {- | The real production prompt sequence for one basic investigation. Starting
 from the deterministic post-setup board, this selects the actual CORE

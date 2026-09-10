@@ -1,1 +1,8 @@
-{"tag":"ChooseOne","choices":[{"tag":"SkillTestApplyResultsButton"}]}
+{
+  "tag": "ChooseOne",
+  "choices": [
+    {
+      "tag": "SkillTestApplyResultsButton"
+    }
+  ]
+}
