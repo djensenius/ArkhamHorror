@@ -60,6 +60,29 @@ spec = do
             $ "stale campaign answer was accepted: "
             <> show messages
 
+  describe "question wrappers" do
+    it "preserves nested source, label, and payment wrappers when re-asking" . gameTest $ \self -> do
+      pid <- getPlayer (toId self)
+      let
+        question =
+          QuestionWithSource GameSource Nothing
+            $ QuestionLabel "wrapped" Nothing
+            $ PayCostQuestion Free
+            $ ChooseOne [Label "choice" [ClearUI]]
+        invalidAnswer =
+          Answer
+            QuestionResponse
+              { qrChoice = 1
+              , qrPlayerId = Just pid
+              , qrQuestionVersion = Nothing
+              }
+      overTest $ \g -> g {gameQuestion = singletonMap pid question}
+
+      game <- getGame
+      liftIO (handleAnswerPure game pid invalidAnswer) >>= \case
+        Unhandled reason -> expectationFailure $ "answer rejected: " <> show reason
+        Handled messages -> messages `shouldBe` [Ask pid question]
+
   describe "ChooseOneWizard" do
     it "runs only the finally confirmed choice" . gameTest $ \self -> do
       pid <- getPlayer (toId self)

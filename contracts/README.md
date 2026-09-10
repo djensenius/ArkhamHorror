@@ -486,6 +486,50 @@ dedicated Answer fixture uses choice `0`, player UUID
 answer-handler tests cover the current version, stale rejection, and
 out-of-range re-ask behavior.
 
+#### Enemy-attack damage and horror assignment
+
+Revision `0.1.32` adds
+`question-enemy-attack-damage-assignment.json`,
+`answer-enemy-attack-assign-damage.json`, and
+`answer-enemy-attack-assign-horror.json`. The backend fixture creates a real
+Ghoul Minion (`01160`) engaged with Roland, begins the real enemy phase, and
+answers the production regular-attack ordering prompt through the normal test
+choice helper. The next `gameQuestion` is therefore the engine-generated
+assignment prompt for that enemy's printed one damage and one horror attack;
+the observed enemy instance UUID ends in `0388`, and the resulting snapshot
+has `scenarioSteps`/`questionVersion` **6**.
+
+The governed root is a separate, closed
+`QuestionWithSource(EnemyAttackSource) -> QuestionLabel -> ChooseOne` branch.
+The outer tooltip and label card are required explicit nulls, and the label is
+exactly `Assign 1 damage and 1 horror`. Exactly two source-indexed
+`ComponentLabel(InvestigatorComponent)` choices are accepted in fixed order:
+
+- index **0**, `DamageToken`, sends the exact direct `(1 damage, 0 horror)`
+  message followed by the exact `DamageAny`/`AnyAsset` continuation with
+  `(0 damage, 1 horror)` remaining, one investigator damage candidate, and no
+  horror candidate;
+- index **1**, `HorrorToken`, sends the exact direct `(0 damage, 1 horror)`
+  message followed by the exact continuation with `(1 damage, 0 horror)`
+  remaining, no damage candidate, and one investigator horror candidate.
+
+Every wrapper, constructor object, tuple length, amount, strategy, matcher,
+candidate array, card-code ID, and UUID is closed. The generic
+`QuestionWithSource`, `QuestionLabel`, `ComponentLabel`, and message branches
+were not broadened, so other assignment amounts, sources, targets, strategies,
+asset matchers, and choice arrangements remain unsupported rather than
+guessed.
+
+JSON Schema cannot require every repeated enemy UUID or investigator ID to be
+equal. Backend assertions therefore bind the outer source and all four message
+sources to the same Ghoul Minion, bind both component IDs, both direct-message
+IDs, both continuation IDs, and both candidate targets to Roland, and assert
+that each token label matches its direct and remaining amount tuple. Both
+dedicated Answer fixtures use the authenticated player UUID and preserve their
+source indices (`0` and `1`); production answer-handler tests cover both current
+answers, stale rejection, and out-of-range re-ask behavior. The manifest adds
+114 deterministic single-mutation negatives for this slice.
+
 ## Game creation and multiplayer lobbies
 
 - Creating a game requires authentication and at least one non-null
