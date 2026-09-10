@@ -382,6 +382,35 @@ the negotiated `schemaRevision`. The existing versioned `Answer` frame (above)
 remains sufficient to answer either prompt -- no new answer constructor was
 required.
 
+#### Basic investigation and skill-test controls
+
+The basic-investigation fixture sequence starts from the same deterministic
+post-setup "The Gathering" board and selects its real CORE Investigate
+`AbilityLabel`. A fixed, owned Magnifying Glass remains in Roland's hand so
+production playability and commit discovery emit genuine
+`TargetLabel(CardIdTarget)` siblings rather than synthetic stand-ins.
+
+- `question-investigate-fast-window.json` is the first production
+  `WindowChooseOne`: playable-card targets stay in backend order beside the
+  exact `SkipTriggersButton`.
+- `question-investigate-commit.json` is the real commit/start prompt:
+  committable-card targets stay in backend order beside the exact
+  `StartSkillTestButton`.
+- `question-investigate-reveal-window.json` is the second production
+  `WindowChooseOne`, after a deterministic zero chaos token has been revealed
+  and resolved, with the same exact skip control.
+- `question-investigate-apply-results.json` is the authoritative final
+  `ChooseOne [SkillTestApplyResultsButton]` prompt.
+
+`SkipTriggersButton` and `StartSkillTestButton` contain exactly `tag` and
+`investigatorId`; `SkillTestApplyResultsButton` contains only `tag`. None has
+a `messages` field. `CardIdTarget` messages remain opaque engine data, and the
+native action is still only the unchanged zero-based array index. A malformed
+individual choice must remain visible as unsupported at its original index;
+clients must never filter or renumber its supported siblings. The backend
+alone advances windows, reveals and resolves chaos tokens, decides success or
+failure, applies modifiers, and awards clues.
+
 ## Game creation and multiplayer lobbies
 
 - Creating a game requires authentication and at least one non-null

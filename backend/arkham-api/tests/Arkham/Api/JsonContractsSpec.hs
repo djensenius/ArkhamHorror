@@ -21,6 +21,7 @@ import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
 import Arkham.Enemy.CardDefs.NightOfTheZealot.Rats qualified as EnemyCards (swarmOfRats)
 import Arkham.Story (createStory)
 import Arkham.Story.CardDefs.FortuneAndFolly qualified as StoryCardDefs (theStakeout)
+import Arkham.Token (Token (Resource), setTokens)
 import Arkham.Campaign.Option (CampaignOption (..))
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
@@ -497,6 +498,88 @@ fixtureMulliganQuestion = unsafePerformIO $ runAgainstFixtureBoardGame do
         $ IOError.ioError
         $ IOError.userError "fixtureMulliganQuestion: fixture player has no active question"
 {-# NOINLINE fixtureMulliganQuestion #-}
+
+{- | One fixed, real Magnifying Glass with Roland as its owner. Its Fast
+playability and intellect icon cause the production window and commit
+handlers to emit the same @TargetLabel(CardIdTarget)@ choice form observed in
+the live basic-investigate flow.
+-}
+fixtureInvestigationCard :: Card
+fixtureInvestigationCard =
+  overPlayerCard (setPlayerCardOwner $ InvestigatorId "01001")
+    $ lookupCard AssetCards.magnifyingGlass
+    $ unsafeMakeCardId
+    $ UUID.fromWords 0 0 0 963
+
+fixtureInvestigateChoice :: UI Message
+fixtureInvestigateChoice =
+  case fixtureBasicChoiceChoices of
+    [_, _, _, choice@AbilityLabel {}] -> choice
+    choices ->
+      error
+        $ "fixtureInvestigateChoice: expected CORE investigate ability at zero-based index 3, got "
+        <> show choices
+
+{- | The real production prompt sequence for one basic investigation. Starting
+from the deterministic post-setup board, this selects the actual CORE
+investigate ability, skips both real fast windows, starts the actual skill
+test, reveals a deterministic zero token, and stops at the authoritative
+apply-results question.
+
+The fixed Magnifying Glass remains in hand so both the fast-window and
+commit-to-test handlers produce genuine @TargetLabel(CardIdTarget)@ choices
+alongside the governed control buttons.
+-}
+fixtureInvestigationQuestions :: [Question Message]
+fixtureInvestigationQuestions = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+      lookupQuestion label = do
+        questionMap <- gameQuestion <$> getGame
+        case Map.lookup fixturePlayerId questionMap of
+          Just question -> pure question
+          Nothing ->
+            liftIO
+              $ IOError.ioError
+              $ IOError.userError
+              $ label
+              <> ": fixture player has no active question"
+  overTest (questionL .~ mempty)
+  replaceCard (toCardId fixtureInvestigationCard) fixtureInvestigationCard
+  overTest
+    ( entitiesL
+        . investigatorsL
+        . ix iid
+        %~ overAttrs
+          ( \attrs ->
+              attrs
+                { investigatorHand = [fixtureInvestigationCard]
+                , investigatorTokens = setTokens Resource 5 (investigatorTokens attrs)
+                }
+          )
+    )
+  pushAndRunAll [SetChaosTokens [Zero]]
+  pushAndRunAll [uiToRun fixtureInvestigateChoice]
+  firstWindow <- lookupQuestion "fixtureInvestigationQuestions (first fast window)"
+  skip
+  commitQuestion <- lookupQuestion "fixtureInvestigationQuestions (commit/start)"
+  chooseOptionMatching "start fixture investigation skill test" \case
+    StartSkillTestButton {} -> True
+    _ -> False
+  secondWindow <- lookupQuestion "fixtureInvestigationQuestions (second fast window)"
+  skip
+  applyQuestion <- lookupQuestion "fixtureInvestigationQuestions (apply results)"
+  pure [firstWindow, commitQuestion, secondWindow, applyQuestion]
+{-# NOINLINE fixtureInvestigationQuestions #-}
+
+fixtureInvestigationQuestionFixtures :: [(FilePath, Question Message)]
+fixtureInvestigationQuestionFixtures =
+  zip
+    [ "question-investigate-fast-window.json"
+    , "question-investigate-commit.json"
+    , "question-investigate-reveal-window.json"
+    , "question-investigate-apply-results.json"
+    ]
+    fixtureInvestigationQuestions
 
 {- | Three real "The Gathering" location cards (Attic, Hallway, Parlor --
 Location\/CardDefs\/NightOfTheZealot\/TheGathering.hs, the exact same
@@ -1165,6 +1248,71 @@ spec = describe "Native client contract fixtures" do
 
       Aeson.toJSON question `shouldBe` fixture
       viaWireEncoding question `shouldBe` fixture
+
+  for_ fixtureInvestigationQuestionFixtures \(fileName, question) ->
+    it ("matches the real basic-investigation question encoder for " <> fileName) do
+      fixture <- loadFixture fileName
+
+      Aeson.toJSON question `shouldBe` fixture
+      viaWireEncoding question `shouldBe` fixture
+
+  it "keeps the production basic-investigation controls, CardIdTarget choices, and zero-based answer indices stable" do
+    let
+      iid = InvestigatorId "01001"
+      cid = toCardId fixtureInvestigationCard
+      objectKeys choice = case Aeson.toJSON choice of
+        Aeson.Object fields -> Set.fromList $ AesonKeyMap.keys fields
+        other -> error $ "Expected a choice object, got " <> show other
+
+    case fixtureInvestigationQuestions of
+      [ WindowChooseOne
+          [ TargetLabel (CardIdTarget firstWindowCardId) _
+            , firstSkip@(SkipTriggersButton firstWindowInvestigatorId)
+            ]
+        , ChooseOne
+          [ TargetLabel (CardIdTarget commitCardId) _
+            , start@(StartSkillTestButton commitInvestigatorId)
+            ]
+        , WindowChooseOne
+          [ TargetLabel (CardIdTarget revealWindowCardId) _
+            , revealSkip@(SkipTriggersButton revealWindowInvestigatorId)
+            ]
+        , ChooseOne [apply@SkillTestApplyResultsButton]
+        ] -> do
+          firstWindowCardId `shouldBe` cid
+          commitCardId `shouldBe` cid
+          revealWindowCardId `shouldBe` cid
+          firstWindowInvestigatorId `shouldBe` iid
+          commitInvestigatorId `shouldBe` iid
+          revealWindowInvestigatorId `shouldBe` iid
+          objectKeys firstSkip `shouldBe` Set.fromList ["tag", "investigatorId"]
+          objectKeys start `shouldBe` Set.fromList ["tag", "investigatorId"]
+          objectKeys revealSkip `shouldBe` Set.fromList ["tag", "investigatorId"]
+          objectKeys apply `shouldBe` Set.fromList ["tag"]
+      other ->
+        expectationFailure
+          $ "Expected fast-window, commit, reveal-window, and apply-results questions, got "
+          <> show other
+
+  it "binds each production investigation control to its exact source choice index" do
+    let
+      tags question = case stripQuestionWrappers question of
+        ChooseOne choices -> map (lookupValue "tag" . Aeson.toJSON) choices
+        WindowChooseOne choices -> map (lookupValue "tag" . Aeson.toJSON) choices
+        other -> error $ "Expected a governed basic-choice question, got " <> show other
+
+    map (zip ([0 ..] :: [Int]) . tags) fixtureInvestigationQuestions
+      `shouldBe` [ [ (0, Aeson.String "TargetLabel")
+                   , (1, Aeson.String "SkipTriggersButton")
+                   ]
+                 , [ (0, Aeson.String "TargetLabel")
+                   , (1, Aeson.String "StartSkillTestButton")
+                   ]
+                 , [ (0, Aeson.String "TargetLabel")
+                   , (1, Aeson.String "SkipTriggersButton")
+                   ]
+                 , [(0, Aeson.String "SkillTestApplyResultsButton")]
+                 ]
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
     case fixtureMulliganQuestion of
