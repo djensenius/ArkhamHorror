@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.30",
+  "schemaRevision": "0.1.31",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -288,6 +288,14 @@
     {
       "path": "contracts/fixtures/answer-campaign-step.json",
       "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-enemy-attack.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
     }
   ],
   "compatibility": {
@@ -296,7 +304,7 @@
   },
   "canonicalIntegerChecks": [
     {
-      "description": "Native question choice/version fields and the encounter draw amount use canonical non-negative signed-64 JSON integer tokens.",
+      "description": "Native question choice/version fields, including the dedicated enemy-attack Answer, and the encounter draw amount use canonical non-negative signed-64 JSON integer tokens.",
       "schema": "contracts/schemas/non-negative-int64.schema.json",
       "validBoundaryValues": [
         0,
@@ -320,6 +328,13 @@
           "path": "contracts/fixtures/question-encounter-deck-draw.json",
           "pointers": [
             "/choices/0/messages/0/contents/1/cardDrawAmount"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/answer-enemy-attack.json",
+          "pointers": [
+            "/contents/choice",
+            "/contents/questionVersion"
           ]
         },
         {
@@ -374,7 +389,7 @@
       }
     },
     {
-      "description": "PublicGame keeps an ungoverned TargetLabel (e.g. TargetLabel(EnemyTarget)) as opaque object data, even though the standalone basic-choice-question native slice rejects targets outside its LocationTarget/CardIdTarget/encounter-deck-draw branches (see the negativeFixtures entry below).",
+      "description": "PublicGame keeps an ungoverned ChooseOne TargetLabel(EnemyTarget) as opaque object data. The standalone basic-choice-question slice governs EnemyTarget only in its isolated, exact single-choice ChooseOneAtATime enemy-attack root branch; generic ChooseOne targets remain closed.",
       "schema": "contracts/schemas/public-game.schema.json",
       "basePositiveFixture": "contracts/fixtures/get-game.json",
       "basePointer": "/game",
@@ -2944,7 +2959,7 @@
       ]
     },
     {
-      "description": "Outside the governed LocationTarget, CardIdTarget, and encounter-deck-draw branches, a different Target (e.g. EnemyTarget) remains unsupported, though it stays opaque inside the broader PublicGame contract (see forwardCompatibilityChecks).",
+      "description": "The generic ChooseOne TargetLabel branch still rejects EnemyTarget; only the isolated exact ChooseOneAtATime enemy-attack root governs it. The same payload stays opaque inside the broader PublicGame contract (see forwardCompatibilityChecks).",
       "schema": "contracts/schemas/basic-choice-question.schema.json",
       "schemaBranch": "locationTarget",
       "rejectionSchemaBranch": "targetLabel",
@@ -3407,6 +3422,1877 @@
           "messageContains": "does not match '^[a-z]{2,3}(-(?:[A-Z]{2}|"
         }
       ]
+    },
+    {
+      "description": "Enemy attack root requires its exact ChooseOneAtATime tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "rejectionSchemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "ChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ChooseOneAtATime' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack root requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "rejectionSchemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack root requires its choices property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "rejectionSchemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'choices' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack root rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "rejectionSchemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/future",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('future' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack choices must be an array.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "rejectionSchemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack choices cannot be empty.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "rejectionSchemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Only one enemy attack choice is governed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "rejectionSchemaBranch": "chooseOneAtATimeEnemyAttackQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/-",
+        "value": {
+          "tag": "TargetLabel",
+          "target": {
+            "tag": "EnemyTarget",
+            "contents": "00000000-0000-0000-0000-000000000386"
+          },
+          "messages": [
+            {
+              "tag": "EnemyAttackMessage",
+              "contents": {
+                "tag": "EnemyAttack_",
+                "contents": {
+                  "attackTarget": {
+                    "tag": "SingleAttackTarget",
+                    "contents": {
+                      "tag": "InvestigatorTarget",
+                      "contents": "c01001"
+                    }
+                  },
+                  "attackOriginalTarget": {
+                    "tag": "SingleAttackTarget",
+                    "contents": {
+                      "tag": "InvestigatorTarget",
+                      "contents": "c01001"
+                    }
+                  },
+                  "attackEnemy": "00000000-0000-0000-0000-000000000386",
+                  "attackType": "RegularAttack",
+                  "attackDamageStrategy": {
+                    "tag": "DamageAny"
+                  },
+                  "attackExhaustsEnemy": true,
+                  "attackSource": {
+                    "tag": "EnemySource",
+                    "contents": "00000000-0000-0000-0000-000000000386"
+                  },
+                  "attackCanBeCanceled": true,
+                  "attackAfter": [],
+                  "attackDamaged": [],
+                  "attackDealDamage": true,
+                  "attackDespiteExhausted": false,
+                  "attackCancelled": false
+                }
+              }
+            }
+          ]
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'TargetLabel', 'target': {'tag': 'EnemyTarget', 'contents': '00000000-0000-0000-0000-000000000386'}, 'messages': [{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}]}, {'tag': 'TargetLabel', 'target': {'tag': 'EnemyTarget', 'contents': '00000000-0000-0000-0000-000000000386'}, 'messages': [{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}]}] is too long"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack choice must be an object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "None is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack choice requires its exact TargetLabel tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "Label"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'TargetLabel' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack choice requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack choice requires its target property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/target"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'target' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack choice requires its messages property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/messages"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'messages' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack choice rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/label",
+        "value": "Enemy"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('label' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack messages must be an array.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/messages",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "messages"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        }
+      ]
+    },
+    {
+      "description": "Enemy attack messages cannot be empty.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/messages",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "messages"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Only one EnemyAttackMessage is governed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackLabel",
+      "rejectionSchemaBranch": "enemyAttackLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/messages/-",
+        "value": {
+          "tag": "EnemyAttackMessage",
+          "contents": {
+            "tag": "EnemyAttack_",
+            "contents": {
+              "attackTarget": {
+                "tag": "SingleAttackTarget",
+                "contents": {
+                  "tag": "InvestigatorTarget",
+                  "contents": "c01001"
+                }
+              },
+              "attackOriginalTarget": {
+                "tag": "SingleAttackTarget",
+                "contents": {
+                  "tag": "InvestigatorTarget",
+                  "contents": "c01001"
+                }
+              },
+              "attackEnemy": "00000000-0000-0000-0000-000000000386",
+              "attackType": "RegularAttack",
+              "attackDamageStrategy": {
+                "tag": "DamageAny"
+              },
+              "attackExhaustsEnemy": true,
+              "attackSource": {
+                "tag": "EnemySource",
+                "contents": "00000000-0000-0000-0000-000000000386"
+              },
+              "attackCanBeCanceled": true,
+              "attackAfter": [],
+              "attackDamaged": [],
+              "attackDealDamage": true,
+              "attackDespiteExhausted": false,
+              "attackCancelled": false
+            }
+          }
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "messages"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}, {'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}] is too long"
+        }
+      ]
+    },
+    {
+      "description": "EnemyTarget must be an object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackTarget",
+      "rejectionSchemaBranch": "enemyAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/target",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "EnemyTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'EnemyTarget' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "EnemyTarget requires its exact tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackTarget",
+      "rejectionSchemaBranch": "enemyAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/target",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "AssetTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemyTarget' was expected"
+        }
+      ]
+    },
+    {
+      "description": "EnemyTarget requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackTarget",
+      "rejectionSchemaBranch": "enemyAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/target",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyTarget requires its contents property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackTarget",
+      "rejectionSchemaBranch": "enemyAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/target",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyTarget rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackTarget",
+      "rejectionSchemaBranch": "enemyAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/target",
+      "mutation": {
+        "op": "add",
+        "pointer": "/enemyId",
+        "value": "00000000-0000-0000-0000-000000000386"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('enemyId' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "EnemyTarget rejects malformed enemy UUIDs.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackTarget",
+      "rejectionSchemaBranch": "enemyAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/target",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "EnemyTarget rejects uppercase UUID spelling.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackTarget",
+      "rejectionSchemaBranch": "enemyAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/target",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackMessage must be an object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackMessage",
+      "rejectionSchemaBranch": "enemyAttackMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "EnemyAttackMessage"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'EnemyAttackMessage' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackMessage requires its exact wrapper tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackMessage",
+      "rejectionSchemaBranch": "enemyAttackMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "EnemyAttack"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemyAttackMessage' was expected"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackMessage requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackMessage",
+      "rejectionSchemaBranch": "enemyAttackMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackMessage requires its contents property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackMessage",
+      "rejectionSchemaBranch": "enemyAttackMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackMessage rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackMessage",
+      "rejectionSchemaBranch": "enemyAttackMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/future",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('future' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "The nested enemy attack constructor must be an object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackMessage",
+      "rejectionSchemaBranch": "enemyAttackMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "EnemyAttack_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "type",
+          "messageContains": "'EnemyAttack_' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttack_ requires its exact constructor tag.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackConstructor",
+      "rejectionSchemaBranch": "enemyAttackConstructor",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "EnemyWillAttack_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemyAttack_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttack_ requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackConstructor",
+      "rejectionSchemaBranch": "enemyAttackConstructor",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttack_ requires its contents property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackConstructor",
+      "rejectionSchemaBranch": "enemyAttackConstructor",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttack_ rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackConstructor",
+      "rejectionSchemaBranch": "enemyAttackConstructor",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents",
+      "mutation": {
+        "op": "add",
+        "pointer": "/future",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('future' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttack_ details must be an object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackConstructor",
+      "rejectionSchemaBranch": "enemyAttackConstructor",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "type",
+          "messageContains": "None is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails must be an object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "None is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackTarget.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackTarget' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackOriginalTarget.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackOriginalTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackOriginalTarget' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackEnemy.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackEnemy"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackEnemy' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackType.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackType"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackType' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackDamageStrategy.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackDamageStrategy"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackDamageStrategy' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackExhaustsEnemy.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackExhaustsEnemy"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackExhaustsEnemy' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackSource.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackSource' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackCanBeCanceled.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackCanBeCanceled"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackCanBeCanceled' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackAfter.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackAfter"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackAfter' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackDamaged.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackDamaged"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackDamaged' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackDealDamage.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackDealDamage"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackDealDamage' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackDespiteExhausted.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackDespiteExhausted"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackDespiteExhausted' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails requires attackCancelled.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/attackCancelled"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'attackCancelled' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackDetails rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "add",
+        "pointer": "/future",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('future' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "attackTarget must be a tagged object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "singleInvestigatorAttackTarget",
+      "rejectionSchemaBranch": "singleInvestigatorAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "SingleAttackTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'SingleAttackTarget' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Only SingleAttackTarget is governed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "singleInvestigatorAttackTarget",
+      "rejectionSchemaBranch": "singleInvestigatorAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "MassiveAttackTargets"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'SingleAttackTarget' was expected"
+        }
+      ]
+    },
+    {
+      "description": "SingleAttackTarget requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "singleInvestigatorAttackTarget",
+      "rejectionSchemaBranch": "singleInvestigatorAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "SingleAttackTarget requires its contents property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "singleInvestigatorAttackTarget",
+      "rejectionSchemaBranch": "singleInvestigatorAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "SingleAttackTarget rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "singleInvestigatorAttackTarget",
+      "rejectionSchemaBranch": "singleInvestigatorAttackTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget",
+      "mutation": {
+        "op": "add",
+        "pointer": "/targets",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('targets' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "InvestigatorTarget must be an object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "InvestigatorTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'InvestigatorTarget' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Only InvestigatorTarget is governed for this attack.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "EnemyTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        }
+      ]
+    },
+    {
+      "description": "InvestigatorTarget requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "InvestigatorTarget requires its contents property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget/contents",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "InvestigatorTarget rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget/contents",
+      "mutation": {
+        "op": "add",
+        "pointer": "/investigatorId",
+        "value": "c01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('investigatorId' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "attackTarget investigator ID requires the c-prefixed card-code grammar.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "attackTarget investigator ID rejects uppercase spelling.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackTarget/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "c0100A"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'c0100A' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "attackOriginalTarget investigator ID requires the c-prefixed card-code grammar.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackOriginalTarget/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "attackOriginalTarget investigator ID rejects uppercase spelling.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "attackInvestigatorTarget",
+      "rejectionSchemaBranch": "attackInvestigatorTarget",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackOriginalTarget/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "c0100A"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'c0100A' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "attackEnemy rejects malformed UUIDs.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackEnemy",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackEnemy"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "attackEnemy"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "attackEnemy rejects uppercase UUID spelling.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackEnemy",
+        "value": "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackEnemy"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Only RegularAttack is governed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackType",
+        "value": "AlertAttack"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackType"
+          ],
+          "keyword": "const",
+          "messageContains": "'RegularAttack' was expected"
+        }
+      ]
+    },
+    {
+      "description": "EnemyAttackType is an all-nullary string, not a tagged object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackType",
+        "value": {
+          "tag": "RegularAttack"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackType"
+          ],
+          "keyword": "const",
+          "messageContains": "'RegularAttack' was expected"
+        }
+      ]
+    },
+    {
+      "description": "DamageAny must be a tagged object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAny",
+      "rejectionSchemaBranch": "damageAny",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackDamageStrategy",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "DamageAny"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'DamageAny' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Only DamageAny is governed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAny",
+      "rejectionSchemaBranch": "damageAny",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackDamageStrategy",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "DamageDirect"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        }
+      ]
+    },
+    {
+      "description": "DamageAny requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAny",
+      "rejectionSchemaBranch": "damageAny",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackDamageStrategy",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "DamageAny is a closed nullary constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAny",
+      "rejectionSchemaBranch": "damageAny",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackDamageStrategy",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('contents' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "attackExhaustsEnemy requires its exact observed boolean.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackExhaustsEnemy",
+        "value": false
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackExhaustsEnemy"
+          ],
+          "keyword": "const",
+          "messageContains": "True was expected"
+        }
+      ]
+    },
+    {
+      "description": "attackCanBeCanceled requires its exact observed boolean.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackCanBeCanceled",
+        "value": false
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackCanBeCanceled"
+          ],
+          "keyword": "const",
+          "messageContains": "True was expected"
+        }
+      ]
+    },
+    {
+      "description": "attackDealDamage requires its exact observed boolean.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackDealDamage",
+        "value": false
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackDealDamage"
+          ],
+          "keyword": "const",
+          "messageContains": "True was expected"
+        }
+      ]
+    },
+    {
+      "description": "attackDespiteExhausted requires its exact observed boolean.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackDespiteExhausted",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackDespiteExhausted"
+          ],
+          "keyword": "const",
+          "messageContains": "False was expected"
+        }
+      ]
+    },
+    {
+      "description": "attackCancelled requires its exact observed boolean.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackCancelled",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackCancelled"
+          ],
+          "keyword": "const",
+          "messageContains": "False was expected"
+        }
+      ]
+    },
+    {
+      "description": "Boolean false must not accept numeric zero.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/attackCancelled",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackCancelled"
+          ],
+          "keyword": "const",
+          "messageContains": "False was expected"
+        }
+      ]
+    },
+    {
+      "description": "attackAfter must remain exactly empty.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "add",
+        "pointer": "/attackAfter/-",
+        "value": {
+          "tag": "Noop"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackAfter"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
+    },
+    {
+      "description": "attackDamaged must remain exactly empty.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDetails",
+      "rejectionSchemaBranch": "enemyAttackDetails",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents",
+      "mutation": {
+        "op": "add",
+        "pointer": "/attackDamaged/-",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "attackDamaged"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
+    },
+    {
+      "description": "EnemySource must be an object.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemySource",
+      "rejectionSchemaBranch": "enemySource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackSource",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "EnemySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'EnemySource' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Only EnemySource is governed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemySource",
+      "rejectionSchemaBranch": "enemySource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackSource",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "GameSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemySource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "EnemySource requires its tag property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemySource",
+      "rejectionSchemaBranch": "enemySource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackSource",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemySource requires its contents property.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemySource",
+      "rejectionSchemaBranch": "enemySource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackSource",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "EnemySource rejects additive fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemySource",
+      "rejectionSchemaBranch": "enemySource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackSource",
+      "mutation": {
+        "op": "add",
+        "pointer": "/enemyId",
+        "value": "00000000-0000-0000-0000-000000000386"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('enemyId' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "EnemySource rejects malformed UUIDs.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemySource",
+      "rejectionSchemaBranch": "enemySource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackSource",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "EnemySource rejects uppercase UUID spelling.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemySource",
+      "rejectionSchemaBranch": "enemySource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack.json",
+      "basePointer": "/choices/0/messages/0/contents/contents/attackSource",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -3420,6 +5306,7 @@
     "contracts/fixtures/answer-campaign-step.json": "448ae784aa4b518ddfd5a8c71b997abdca327e55bd8a3d2ddf7ee862059eca76",
     "contracts/fixtures/answer-deck-list.json": "132616f55e43bdf1e464178d71dd707b86b8917c213d1f56fef07eafd235cb89",
     "contracts/fixtures/answer-deck.json": "c60e5744f958d74b8deac3fcae0e5dee02317fda930c649aae27e4dcf67a9883",
+    "contracts/fixtures/answer-enemy-attack.json": "d99928af1d38ffe97adbeea9861e8f5edc43b937a309e90e27f5fb6071b555b4",
     "contracts/fixtures/answer-exchange-amounts.json": "358e6dbd9a75ddf0080df46954cc58dd0df538205375cab61bd882396bf84f9e",
     "contracts/fixtures/answer-payment-amounts.json": "d55055b00a8d4d7c93ca121af1d870367dd110ae95e271b47770b14bcf12bd1e",
     "contracts/fixtures/answer-pick-destiny.json": "711e45c443be781868e7f30fde1d45c8b659bae6a53d9537cc021a5c2eccc8a0",
@@ -3427,8 +5314,8 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "9e0bdf03dfe244a50163e2f55c9d9d46c28ce83f0cc8a642be20da88061a3b33",
-    "contracts/fixtures/capabilities.json": "7697f96b016226fb6f322b002721fbb12ae407b8b4937bb192fb13ebd6fe8bff",
+    "contracts/fixtures/capabilities-locale-catalog.json": "3dd08f2c06c47acb8715881eda963720f9b394ea8aa374a9a41f3920f3bd1272",
+    "contracts/fixtures/capabilities.json": "764869f1d8f0d1f05e00644ca4dadccb8cbd83fb3bc47c65c45364f233645a3d",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -3455,7 +5342,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "04013ff84851ce0bf15ddb30c394bceed97052854b4b23acdb89c638fe48b365",
+    "contracts/fixtures/locale-catalog-manifest.json": "6d1a93250d05c9c6134e8c0f6827cd1abf8447636ca12c586278b4caba07ad81",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -3469,6 +5356,7 @@
     "contracts/fixtures/question-choose-one-location.json": "5ce62cbaee22e32f4b8d84e563d331b58d087c3d5f6b3061c7cbfdb177af0f79",
     "contracts/fixtures/question-choose-one.json": "854d6a2891155ff4da9e075224d4cd5a7519e4e4cb2ec659a740c872f8b799fc",
     "contracts/fixtures/question-encounter-deck-draw.json": "fb341f57cba32fd0d01e3d67098fa7684cd51b6b2b008c65fea61db5487ac703",
+    "contracts/fixtures/question-enemy-attack.json": "1f5ce9f0742e0f3e6891c9e464c19a863038d75cb95ebf7b4ea0ddbbc9fd6b1d",
     "contracts/fixtures/question-investigate-apply-results.json": "ca3834a719c64a263c31982cfb5987c08da40ec3494d2380ccffaebb46e11774",
     "contracts/fixtures/question-investigate-commit.json": "0cef8bb88be1ac2feb7cd2d37b952bf54fa47b4ea7d83474326baf9da7fb9b18",
     "contracts/fixtures/question-investigate-fast-window.json": "faa049601d544817746c3621e6865a119c5a38c5eba8daf477da2728a250a913",
@@ -3481,14 +5369,14 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "d942e9d41a5e28ab0ccdc7a70d8a547f7228bb65c9308ec7faedbb23de218bda",
+    "contracts/manifest.json": "2f79411740cda866da2534bf1fc96c5c301069e1829fc634f98d5f80b77acc09",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "f7973e1d1f1382570287e15673fcb550ed3bec94e12f54384a072839909ebf7e",
+    "contracts/schemas/basic-choice-question.schema.json": "2aa91bdd3de9a20a503b80cc6c12bca2206a23ec0358b99b42e366736ab16107",
     "contracts/schemas/capabilities.schema.json": "7cc6d2805a47ee19549beab91f3c54085f2726b8d0671f0a3ae662bab820d42a",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",

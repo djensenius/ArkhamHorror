@@ -1,0 +1,52 @@
+{
+  "tag": "ChooseOneAtATime",
+  "choices": [
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "EnemyTarget",
+        "contents": "00000000-0000-0000-0000-000000000386"
+      },
+      "messages": [
+        {
+          "tag": "EnemyAttackMessage",
+          "contents": {
+            "tag": "EnemyAttack_",
+            "contents": {
+              "attackTarget": {
+                "tag": "SingleAttackTarget",
+                "contents": {
+                  "tag": "InvestigatorTarget",
+                  "contents": "c01001"
+                }
+              },
+              "attackOriginalTarget": {
+                "tag": "SingleAttackTarget",
+                "contents": {
+                  "tag": "InvestigatorTarget",
+                  "contents": "c01001"
+                }
+              },
+              "attackEnemy": "00000000-0000-0000-0000-000000000386",
+              "attackType": "RegularAttack",
+              "attackDamageStrategy": {
+                "tag": "DamageAny"
+              },
+              "attackExhaustsEnemy": true,
+              "attackSource": {
+                "tag": "EnemySource",
+                "contents": "00000000-0000-0000-0000-000000000386"
+              },
+              "attackCanBeCanceled": true,
+              "attackAfter": [],
+              "attackDamaged": [],
+              "attackDealDamage": true,
+              "attackDespiteExhausted": false,
+              "attackCancelled": false
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

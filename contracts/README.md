@@ -294,13 +294,15 @@ Native rendering uses the label/component tags, investigator/card identity,
 token type, and ability display identity. The opening mulligan additionally
 governs exactly `Label("$label.doneWithMulligan")` and
 `TargetLabel(CardIdTarget)`; arbitrary `Label` values and other target
-constructors remain unsupported except for the encounter-deck draw below.
+constructors remain unsupported except for the isolated encounter-deck draw
+and enemy-attack roots below.
 Nested messages, criteria, windows, sources,
 costs, and additive ability fields are losslessly preserved opaque engine
 data: clients must not evaluate them, execute them, or derive new legal
 actions from them. Message values are constrained only to their guaranteed
 production constructor-object outer shape (`tag` plus opaque/additive
-constructor data), except for the explicitly closed encounter-draw slice.
+constructor data), except for the explicitly closed encounter-draw and
+enemy-attack slices.
 Selecting a choice sends its zero-based array index.
 
 For this slice, native clients send:
@@ -366,13 +368,14 @@ the `startAt` starting-location `ChooseOne`.
   (`Arkham.Scenario.Setup.startAt`) that follows: `ChooseOne` with a single
   `TargetLabel(LocationTarget)` choice for the real starting location
   ("Study", `d5a66e84-c729-4066-8475-d8a155609025`, matching `get-game.json`).
-  Along with the mulligan's `CardIdTarget` and the mythos
-  `EncounterDeckTarget` below, this is a governed
+  Along with the mulligan's `CardIdTarget`, the mythos
+  `EncounterDeckTarget`, and the isolated enemy-attack `EnemyTarget` below,
+  this is a governed
   variant of the much broader `Arkham.Target` sum. Every other `Target`
-  constructor remains an explicit unsupported value here while staying
-  opaque inside the broader `PublicGame.question` map (see the paired
-  `forwardCompatibilityChecks` entry proving a
-  `TargetLabel(EnemyTarget)` choice there).
+  constructor remains an explicit unsupported value here. A generic
+  `ChooseOne` `TargetLabel(EnemyTarget)` also remains unsupported while
+  staying opaque inside the broader `PublicGame.question` map; only the exact
+  `ChooseOneAtATime` shape below opts that target into this standalone schema.
 - `question-choose-one-location-multiple.json` generalizes `startAt` to
   three real "The Gathering" locations (Attic, Hallway, Parlor) via the
   same shared `chooseTargetM`/`targeting`/`unsafeReveal`/`placeAllAt`
@@ -449,6 +452,39 @@ with `choice: 0`, the owning `playerId`, and the originating snapshot's
 `scenarioSteps` as `questionVersion`. Tests dispatch this exact frame through
 the production answer handler and reject stale versions. No new capability
 identifier or answer constructor is introduced; gate support by revision.
+
+#### Enemy-phase regular attack
+
+Revision `0.1.31` adds `question-enemy-attack.json` and
+`answer-enemy-attack.json`. The backend fixture starts from the same
+deterministic post-setup board, creates a real Swarm of Rats with the
+production enemy-creation helper, resolves the normal spawn engaged with
+Roland, and runs the real `Begin EnemyPhase` queue through
+`EnemyPhaseStep ResolveAttacksStep`. The golden question is read directly
+from `gameQuestion`; the observed enemy instance UUID ends in `0386`, and
+the resulting snapshot has `scenarioSteps`/`questionVersion` **5**.
+
+The governed root is deliberately isolated:
+`ChooseOneAtATime` with exactly one source-index-`0`
+`TargetLabel(EnemyTarget)`, exactly one `EnemyAttackMessage`, and exactly the
+nested `EnemyAttack_` regular-attack record production emitted. It requires
+`SingleAttackTarget(InvestigatorTarget)` for both target fields, `RegularAttack`,
+`DamageAny`, `EnemySource`, the observed five boolean values, and empty
+`attackAfter`/`attackDamaged` arrays. The canonical fixture targets Roland
+(`c01001`), while the schema accepts any canonical investigator ID. Every
+object is closed and every wrapper/property/card-code/UUID/cardinality is
+exact. No `EnemyTarget` or attack message was added to the generic `ChooseOne`
+unions, so every other `ChooseOneAtATime` or enemy-attack variant stays
+fail-closed.
+
+JSON Schema cannot require the three repeated enemy UUID fields to equal one
+another or both investigator targets to match. Backend assertions therefore
+bind outer `EnemyTarget == attackEnemy == EnemySource`, bind both investigator
+targets to Roland, and assert every remaining attack field exactly. The
+dedicated Answer fixture uses choice `0`, player UUID
+`00000000-0000-0000-0000-000000000001`, and question version `5`; production
+answer-handler tests cover the current version, stale rejection, and
+out-of-range re-ask behavior.
 
 ## Game creation and multiplayer lobbies
 

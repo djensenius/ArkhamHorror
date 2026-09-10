@@ -2,10 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/PlayerWindowChooseOne/WindowChooseOne/Read question slice, including the opening mulligan, basic-investigation controls, and mythos encounter-deck draw. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read question slice, including the opening mulligan, basic-investigation controls, mythos encounter-deck draw, and the exact single-enemy regular-attack ordering prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
     {
       "$ref": "#/$defs/chooseOneQuestion"
+    },
+    {
+      "$ref": "#/$defs/chooseOneAtATimeEnemyAttackQuestion"
     },
     {
       "$ref": "#/$defs/playerWindowChooseOneQuestion"
@@ -31,6 +34,223 @@
         },
         "choices": {
           "$ref": "#/$defs/choices"
+        }
+      }
+    },
+    "chooseOneAtATimeEnemyAttackQuestion": {
+      "title": "Resolve enemy attack",
+      "description": "The isolated production enemy-phase ordering prompt for exactly one regular attack. This root branch is deliberately separate from generic choiceLabel/choiceTarget/messages: no other ChooseOneAtATime shape and no other EnemyTarget or enemy-attack message is governed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ChooseOneAtATime"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/enemyAttackLabel"
+          }
+        }
+      }
+    },
+    "enemyAttackLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "target",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "TargetLabel"
+        },
+        "target": {
+          "$ref": "#/$defs/enemyAttackTarget"
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/enemyAttackMessage"
+          }
+        }
+      }
+    },
+    "enemyAttackTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EnemyTarget"
+        },
+        "contents": {
+          "$ref": "./uuid.schema.json"
+        }
+      }
+    },
+    "enemyAttackMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EnemyAttackMessage"
+        },
+        "contents": {
+          "$ref": "#/$defs/enemyAttackConstructor"
+        }
+      }
+    },
+    "enemyAttackConstructor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EnemyAttack_"
+        },
+        "contents": {
+          "$ref": "#/$defs/enemyAttackDetails"
+        }
+      }
+    },
+    "enemyAttackDetails": {
+      "description": "The exact EnemyAttackDetails emitted for a ready Swarm of Rats' ordinary enemy-phase attack. JSON Schema cannot express equality among the repeated enemy UUIDs or between both investigator targets; production-value Haskell assertions bind those identities.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attackTarget",
+        "attackOriginalTarget",
+        "attackEnemy",
+        "attackType",
+        "attackDamageStrategy",
+        "attackExhaustsEnemy",
+        "attackSource",
+        "attackCanBeCanceled",
+        "attackAfter",
+        "attackDamaged",
+        "attackDealDamage",
+        "attackDespiteExhausted",
+        "attackCancelled"
+      ],
+      "properties": {
+        "attackTarget": {
+          "$ref": "#/$defs/singleInvestigatorAttackTarget"
+        },
+        "attackOriginalTarget": {
+          "$ref": "#/$defs/singleInvestigatorAttackTarget"
+        },
+        "attackEnemy": {
+          "$ref": "./uuid.schema.json"
+        },
+        "attackType": {
+          "const": "RegularAttack"
+        },
+        "attackDamageStrategy": {
+          "$ref": "#/$defs/damageAny"
+        },
+        "attackExhaustsEnemy": {
+          "const": true
+        },
+        "attackSource": {
+          "$ref": "#/$defs/enemySource"
+        },
+        "attackCanBeCanceled": {
+          "const": true
+        },
+        "attackAfter": {
+          "const": []
+        },
+        "attackDamaged": {
+          "const": []
+        },
+        "attackDealDamage": {
+          "const": true
+        },
+        "attackDespiteExhausted": {
+          "const": false
+        },
+        "attackCancelled": {
+          "const": false
+        }
+      }
+    },
+    "singleInvestigatorAttackTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "SingleAttackTarget"
+        },
+        "contents": {
+          "$ref": "#/$defs/attackInvestigatorTarget"
+        }
+      }
+    },
+    "attackInvestigatorTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorTarget"
+        },
+        "contents": {
+          "$ref": "#/$defs/investigatorId"
+        }
+      }
+    },
+    "damageAny": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "DamageAny"
+        }
+      }
+    },
+    "enemySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EnemySource"
+        },
+        "contents": {
+          "$ref": "./uuid.schema.json"
         }
       }
     },
@@ -266,7 +486,7 @@
           "$ref": "#/$defs/messages"
         }
       },
-      "description": "The LocationTarget (starting location) and CardIdTarget (mulligan, playable-window, and skill-test commit choices) variants retain opaque messages. EncounterDeckTarget is governed separately by encounterDeckDrawLabel with closed draw messages, so it cannot bypass that schema through this branch. Other Target constructors remain unsupported here and opaque inside PublicGame."
+      "description": "The LocationTarget (starting location) and CardIdTarget (mulligan, playable-window, and skill-test commit choices) variants retain opaque messages. EncounterDeckTarget is governed separately by encounterDeckDrawLabel with closed draw messages, and EnemyTarget only by the isolated ChooseOneAtATime enemy-attack root, so neither can bypass its closed schema through this generic branch. Other Target constructors remain unsupported here and opaque inside PublicGame."
     },
     "encounterDeckDrawLabel": {
       "title": "Draw encounter card",
