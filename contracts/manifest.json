@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.31",
+  "schemaRevision": "0.1.32",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -296,6 +296,18 @@
     {
       "path": "contracts/fixtures/answer-enemy-attack.json",
       "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack-assign-damage.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack-assign-horror.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
     }
   ],
   "compatibility": {
@@ -304,7 +316,7 @@
   },
   "canonicalIntegerChecks": [
     {
-      "description": "Native question choice/version fields, including the dedicated enemy-attack Answer, and the encounter draw amount use canonical non-negative signed-64 JSON integer tokens.",
+      "description": "Native question choice/version fields, including the enemy-attack and damage-assignment Answers, plus the encounter draw and damage-assignment amounts use canonical non-negative signed-64 JSON integer tokens.",
       "schema": "contracts/schemas/non-negative-int64.schema.json",
       "validBoundaryValues": [
         0,
@@ -332,6 +344,33 @@
         },
         {
           "path": "contracts/fixtures/answer-enemy-attack.json",
+          "pointers": [
+            "/contents/choice",
+            "/contents/questionVersion"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+          "pointers": [
+            "/question/question/choices/0/messages/0/contents/contents/2",
+            "/question/question/choices/0/messages/0/contents/contents/3",
+            "/question/question/choices/0/messages/1/contents/contents/4",
+            "/question/question/choices/0/messages/1/contents/contents/5",
+            "/question/question/choices/1/messages/0/contents/contents/2",
+            "/question/question/choices/1/messages/0/contents/contents/3",
+            "/question/question/choices/1/messages/1/contents/contents/4",
+            "/question/question/choices/1/messages/1/contents/contents/5"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/answer-enemy-attack-assign-damage.json",
+          "pointers": [
+            "/contents/choice",
+            "/contents/questionVersion"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/answer-enemy-attack-assign-horror.json",
           "pointers": [
             "/contents/choice",
             "/contents/questionVersion"
@@ -5293,6 +5332,2845 @@
           "messageContains": "'ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
         }
       ]
+    },
+    {
+      "description": "Damage assignment: root must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "QuestionWithSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'QuestionWithSource' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: root tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "ChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'QuestionWithSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: root requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: root requires source",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/source"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'source' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: root requires tooltip",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tooltip"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tooltip' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: root tooltip is explicitly null",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tooltip",
+        "value": "damage"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tooltip"
+          ],
+          "keyword": "type",
+          "messageContains": "'damage' is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: root requires question",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/question"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'question' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: root rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/future",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('future' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: enemy attack source must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "EnemyAttackSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'EnemyAttackSource' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: enemy attack source tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "EnemySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemyAttackSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: enemy attack source requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: enemy attack source requires contents",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: enemy attack source rejects malformed UUIDs",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: enemy attack source rejects uppercase UUID spelling",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents",
+        "value": "ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEFAB' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: enemy attack source rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "add",
+        "pointer": "/enemyId",
+        "value": "00000000-0000-0000-0000-000000000388"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('enemyId' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "QuestionLabel"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'QuestionLabel' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "ChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'QuestionLabel' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label text is exact",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/label",
+        "value": "Assign damage and horror"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "label"
+          ],
+          "keyword": "const",
+          "messageContains": "'Assign 1 damage and 1 horror' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label requires label",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/label"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'label' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label card is explicitly null",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/card",
+        "value": "c01160"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "card"
+          ],
+          "keyword": "type",
+          "messageContains": "'c01160' is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label requires card",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/card"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'card' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label requires nested question",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/question"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'question' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: question label rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "add",
+        "pointer": "/tooltip",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('tooltip' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: nested choice question must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "ChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'ChooseOne' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: nested choice tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "ChooseSome"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ChooseOne' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: nested choice requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: nested choice requires choices",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'choices' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: nested choices must be an array",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: nested choices require both source indices",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices/1"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[{'tag': 'ComponentLabel', 'component': {'tag': 'InvestigatorComponent', 'investigatorId': 'c01001', 'tokenType': 'DamageToken'}, 'messages': [{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0]}}, {'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDoAssignDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}], []]}}]}] is too short"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: nested choices reject a third source index",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/-",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'ComponentLabel', 'component': {'tag': 'InvestigatorComponent', 'investigatorId': 'c01001', 'tokenType': 'DamageToken'}, 'messages': [{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0]}}, {'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDoAssignDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}], []]}}]}, {'tag': 'ComponentLabel', 'component': {'tag': 'InvestigatorComponent', 'investigatorId': 'c01001', 'tokenType': 'HorrorToken'}, 'messages': [{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 0, 1]}}, {'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDoAssignDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 1, 0, [], [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}]]}}]}, None] is too long"
+        },
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "items",
+          "messageContains": "Expected at most 2 items but found 1 extra: None"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: nested choice rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "add",
+        "pointer": "/questionVersion",
+        "value": 6
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('questionVersion' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first choice must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "ComponentLabel"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'ComponentLabel' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first choice tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "Label"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ComponentLabel' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first choice requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first choice requires component",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/component"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'component' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first choice requires messages",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/messages"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'messages' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first messages must be an array",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/messages",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "messages"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first choice requires both messages",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/messages/1"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "messages"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0]}}] is too short"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first choice rejects a third message",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/messages/-",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "messages"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0]}}, {'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDoAssignDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}], []]}}, None] is too long"
+        },
+        {
+          "path": [
+            "messages"
+          ],
+          "keyword": "items",
+          "messageContains": "Expected at most 2 items but found 1 extra: None"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first choice rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignDamageChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignDamageChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/label",
+        "value": "damage"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('label' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "InvestigatorComponent"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'InvestigatorComponent' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "AssetComponent"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorComponent' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component requires investigator ID",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/investigatorId"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'investigatorId' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component investigator ID requires the c-prefix",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/investigatorId",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "investigatorId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component investigator ID rejects uppercase spelling",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/investigatorId",
+        "value": "c0100A"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "investigatorId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'c0100A' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component requires token type",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tokenType"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tokenType' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: source index zero is specifically DamageToken",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tokenType",
+        "value": "HorrorToken"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tokenType"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageToken' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component rejects unrelated token types",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tokenType",
+        "value": "ResourceToken"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tokenType"
+          ],
+          "keyword": "enum",
+          "messageContains": "'ResourceToken' is not one of ['DamageToken', 'HorrorToken']"
+        },
+        {
+          "path": [
+            "tokenType"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageToken' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage component rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "add",
+        "pointer": "/amount",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('amount' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror component must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "horrorAssignmentComponent",
+      "rejectionSchemaBranch": "horrorAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "InvestigatorComponent"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'InvestigatorComponent' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror component tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "horrorAssignmentComponent",
+      "rejectionSchemaBranch": "horrorAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "AssetComponent"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorComponent' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror component requires investigator ID",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "horrorAssignmentComponent",
+      "rejectionSchemaBranch": "horrorAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/component",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/investigatorId"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'investigatorId' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror component investigator ID requires the c-prefix",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "horrorAssignmentComponent",
+      "rejectionSchemaBranch": "horrorAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/investigatorId",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "investigatorId"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: source index one is specifically HorrorToken",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "horrorAssignmentComponent",
+      "rejectionSchemaBranch": "horrorAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tokenType",
+        "value": "DamageToken"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tokenType"
+          ],
+          "keyword": "const",
+          "messageContains": "'HorrorToken' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror component rejects unrelated token types",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "horrorAssignmentComponent",
+      "rejectionSchemaBranch": "horrorAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tokenType",
+        "value": "ResourceToken"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tokenType"
+          ],
+          "keyword": "enum",
+          "messageContains": "'ResourceToken' is not one of ['DamageToken', 'HorrorToken']"
+        },
+        {
+          "path": [
+            "tokenType"
+          ],
+          "keyword": "const",
+          "messageContains": "'HorrorToken' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct message must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "InvestigatorMessage"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'InvestigatorMessage' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct message tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "EnemyAttackMessage"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorMessage' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct message requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct message requires contents",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct message rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/playerId",
+        "value": "00000000-0000-0000-0000-000000000001"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('playerId' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first constructor tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/tag",
+        "value": "InvestigatorDoAssignDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first constructor requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first constructor requires tuple contents",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents/contents"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "required",
+          "messageContains": "'contents' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first constructor rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/future",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('future' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct tuple must be an array",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct tuple rejects missing values",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents/contents/3"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents"
+          ],
+          "keyword": "minItems",
+          "messageContains": "['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1] is too short"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct tuple rejects extra values",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/contents/-",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0, 0] is too long"
+        },
+        {
+          "path": [
+            "contents",
+            "contents"
+          ],
+          "keyword": "items",
+          "messageContains": "Expected at most 4 items but found 1 extra: 0"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct investigator ID requires the c-prefix",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/0",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "0"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "0"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct investigator ID rejects uppercase spelling",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/0",
+        "value": "c0100A"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "0"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'c0100A' does not match '^c[0-9a-z:._-]+$'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "0"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'c0100A' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct source tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/1/tag",
+        "value": "EnemySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemyAttackSource' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemyAttackSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct source rejects malformed UUIDs",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/1/contents",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct damage amount is exactly one",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/2",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first direct horror amount is exactly zero",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/3",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "InvestigatorMessage"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'InvestigatorMessage' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation outer tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "EnemyAttackMessage"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorMessage' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation constructor tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/tag",
+        "value": "InvestigatorDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDoAssignDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation tuple rejects missing values",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents/contents/7"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents"
+          ],
+          "keyword": "minItems",
+          "messageContains": "['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}]] is too short"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation tuple rejects extra values",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/contents/-",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}], [], []] is too long"
+        },
+        {
+          "path": [
+            "contents",
+            "contents"
+          ],
+          "keyword": "items",
+          "messageContains": "Expected at most 8 items but found 1 extra: []"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation investigator ID requires the c-prefix",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/0",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "0"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "0"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation source rejects malformed UUIDs",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/1/contents",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage strategy must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/2",
+        "value": "DamageAny"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "type",
+          "messageContains": "'DamageAny' is not of type 'object'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "type",
+          "messageContains": "'DamageAny' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: only DamageAny is governed for assignment",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/2/tag",
+        "value": "DamageDirect"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: DamageAny requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents/contents/2/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: DamageAny rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/contents/2/contents",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('contents' was unexpected)"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('contents' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: asset matcher must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/3",
+        "value": "AnyAsset"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "type",
+          "messageContains": "'AnyAsset' is not of type 'object'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "type",
+          "messageContains": "'AnyAsset' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: only AnyAsset is governed for assignment",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/3/tag",
+        "value": "AssetWithTitle"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AnyAsset' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AnyAsset' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: AnyAsset requires tag",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/contents/contents/3/tag"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "required",
+          "messageContains": "'tag' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: AnyAsset rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/contents/3/contents",
+        "value": null
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('contents' was unexpected)"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('contents' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation has zero damage remaining",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/4",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "4"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation has one horror remaining",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/5",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "5"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation requires a damage target",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/6",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation rejects multiple damage targets",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/contents/6/-",
+        "value": {
+          "tag": "InvestigatorTarget",
+          "contents": "c01001"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'InvestigatorTarget', 'contents': 'c01001'}, {'tag': 'InvestigatorTarget', 'contents': 'c01001'}] is too long"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'InvestigatorTarget', 'contents': 'c01001'}, {'tag': 'InvestigatorTarget', 'contents': 'c01001'}] is too long"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation damage targets must be an array",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/6",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation target tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/6/0/tag",
+        "value": "AssetTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation target ID requires the c-prefix",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/6/0/contents",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6",
+            "0",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6",
+            "0",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: damage-first continuation requires no horror target yet",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterDamageFirstMessage",
+      "rejectionSchemaBranch": "continueAfterDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/contents/7/-",
+        "value": {
+          "tag": "InvestigatorTarget",
+          "contents": "c01001"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first choice tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignHorrorChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignHorrorChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "Label"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ComponentLabel' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first choice requires both messages",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignHorrorChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignHorrorChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/messages/1"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "messages"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 0, 1]}}] is too short"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first choice rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackAssignHorrorChoice",
+      "rejectionSchemaBranch": "enemyAttackAssignHorrorChoice",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/label",
+        "value": "horror"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('label' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first direct constructor tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignHorrorFirstMessage",
+      "rejectionSchemaBranch": "assignHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/tag",
+        "value": "InvestigatorDoAssignDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first direct damage amount is exactly zero",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignHorrorFirstMessage",
+      "rejectionSchemaBranch": "assignHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/2",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first direct horror amount is exactly one",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignHorrorFirstMessage",
+      "rejectionSchemaBranch": "assignHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/3",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first direct source rejects malformed UUIDs",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignHorrorFirstMessage",
+      "rejectionSchemaBranch": "assignHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/1/contents",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation constructor tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/tag",
+        "value": "InvestigatorDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDoAssignDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation has one damage remaining",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/4",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "4"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation has zero horror remaining",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/5",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "5"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation requires no damage target yet",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/contents/6/-",
+        "value": {
+          "tag": "InvestigatorTarget",
+          "contents": "c01001"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation requires a horror target",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/7",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation rejects multiple horror targets",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "add",
+        "pointer": "/contents/contents/7/-",
+        "value": {
+          "tag": "InvestigatorTarget",
+          "contents": "c01001"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'InvestigatorTarget', 'contents': 'c01001'}, {'tag': 'InvestigatorTarget', 'contents': 'c01001'}] is too long"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'InvestigatorTarget', 'contents': 'c01001'}, {'tag': 'InvestigatorTarget', 'contents': 'c01001'}] is too long"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation horror targets must be an array",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/7",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'array'"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation target tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/7/0/tag",
+        "value": "AssetTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Damage assignment: horror-first continuation target ID requires the c-prefix",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "continueAfterHorrorFirstMessage",
+      "rejectionSchemaBranch": "continueAfterHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "basePointer": "/question/question/choices/1/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/7/0/contents",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7",
+            "0",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7",
+            "0",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -5306,6 +8184,8 @@
     "contracts/fixtures/answer-campaign-step.json": "448ae784aa4b518ddfd5a8c71b997abdca327e55bd8a3d2ddf7ee862059eca76",
     "contracts/fixtures/answer-deck-list.json": "132616f55e43bdf1e464178d71dd707b86b8917c213d1f56fef07eafd235cb89",
     "contracts/fixtures/answer-deck.json": "c60e5744f958d74b8deac3fcae0e5dee02317fda930c649aae27e4dcf67a9883",
+    "contracts/fixtures/answer-enemy-attack-assign-damage.json": "5111ec20fa5af6e53f7558715529085f2a17e8f2941510ea0ca6c9439cd6ebc7",
+    "contracts/fixtures/answer-enemy-attack-assign-horror.json": "0799759424dbcec2420a41c8e800e0d41a5eee5bc2e4f032027837503fcc85d6",
     "contracts/fixtures/answer-enemy-attack.json": "d99928af1d38ffe97adbeea9861e8f5edc43b937a309e90e27f5fb6071b555b4",
     "contracts/fixtures/answer-exchange-amounts.json": "358e6dbd9a75ddf0080df46954cc58dd0df538205375cab61bd882396bf84f9e",
     "contracts/fixtures/answer-payment-amounts.json": "d55055b00a8d4d7c93ca121af1d870367dd110ae95e271b47770b14bcf12bd1e",
@@ -5314,8 +8194,8 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "3dd08f2c06c47acb8715881eda963720f9b394ea8aa374a9a41f3920f3bd1272",
-    "contracts/fixtures/capabilities.json": "764869f1d8f0d1f05e00644ca4dadccb8cbd83fb3bc47c65c45364f233645a3d",
+    "contracts/fixtures/capabilities-locale-catalog.json": "4c53db006fae92f0dc45f13669f10ab2a2c6fcf7ee22cb0e8b3fc60a364fefb5",
+    "contracts/fixtures/capabilities.json": "81e1e8c889ae9712781597df639849a52d6d1dc78bfc84b20011ad6ead053dbd",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -5342,7 +8222,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "6d1a93250d05c9c6134e8c0f6827cd1abf8447636ca12c586278b4caba07ad81",
+    "contracts/fixtures/locale-catalog-manifest.json": "6987d1369924fd163eeb607c6f0cde419a8de42ac3e175f0821f06121bd6be5f",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -5356,6 +8236,7 @@
     "contracts/fixtures/question-choose-one-location.json": "5ce62cbaee22e32f4b8d84e563d331b58d087c3d5f6b3061c7cbfdb177af0f79",
     "contracts/fixtures/question-choose-one.json": "854d6a2891155ff4da9e075224d4cd5a7519e4e4cb2ec659a740c872f8b799fc",
     "contracts/fixtures/question-encounter-deck-draw.json": "fb341f57cba32fd0d01e3d67098fa7684cd51b6b2b008c65fea61db5487ac703",
+    "contracts/fixtures/question-enemy-attack-damage-assignment.json": "36d20df58661bb583dfbe5350519d164d751f5ddc85924a0f8e2917ce1bbbdff",
     "contracts/fixtures/question-enemy-attack.json": "1f5ce9f0742e0f3e6891c9e464c19a863038d75cb95ebf7b4ea0ddbbc9fd6b1d",
     "contracts/fixtures/question-investigate-apply-results.json": "ca3834a719c64a263c31982cfb5987c08da40ec3494d2380ccffaebb46e11774",
     "contracts/fixtures/question-investigate-commit.json": "0cef8bb88be1ac2feb7cd2d37b952bf54fa47b4ea7d83474326baf9da7fb9b18",
@@ -5369,14 +8250,14 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "2f79411740cda866da2534bf1fc96c5c301069e1829fc634f98d5f80b77acc09",
+    "contracts/manifest.json": "18daa96c58fbc1760e06ac2bdceae9741c4e08cc86695f5bcca175c6490e220b",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "2aa91bdd3de9a20a503b80cc6c12bca2206a23ec0358b99b42e366736ab16107",
+    "contracts/schemas/basic-choice-question.schema.json": "8b957d89e981eda141324d9bac90d4e3f8d80c998b971937f8b13b93fece41d8",
     "contracts/schemas/capabilities.schema.json": "7cc6d2805a47ee19549beab91f3c54085f2726b8d0671f0a3ae662bab820d42a",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",

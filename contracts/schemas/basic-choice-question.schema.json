@@ -2,13 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read question slice, including the opening mulligan, basic-investigation controls, mythos encounter-deck draw, and the exact single-enemy regular-attack ordering prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic-investigation controls, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
     {
       "$ref": "#/$defs/chooseOneQuestion"
     },
     {
       "$ref": "#/$defs/chooseOneAtATimeEnemyAttackQuestion"
+    },
+    {
+      "$ref": "#/$defs/enemyAttackDamageAssignmentQuestion"
     },
     {
       "$ref": "#/$defs/playerWindowChooseOneQuestion"
@@ -252,6 +255,485 @@
         "contents": {
           "$ref": "./uuid.schema.json"
         }
+      }
+    },
+    "enemyAttackDamageAssignmentQuestion": {
+      "title": "Assign 1 damage and 1 horror",
+      "description": "The isolated production QuestionWithSource -> QuestionLabel -> ChooseOne prompt emitted after the governed Ghoul Minion regular attack. The two fixed array positions are the Answer.choice source indices: 0 assigns damage first and 1 assigns horror first. No generic QuestionWithSource, QuestionLabel, ComponentLabel, InvestigatorMessage, damage assignment, or arbitrary attack amount is authorized by this branch.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "source",
+        "tooltip",
+        "question"
+      ],
+      "properties": {
+        "tag": {
+          "const": "QuestionWithSource"
+        },
+        "source": {
+          "$ref": "#/$defs/enemyAttackSource"
+        },
+        "tooltip": {
+          "type": "null"
+        },
+        "question": {
+          "$ref": "#/$defs/enemyAttackDamageAssignmentLabel"
+        }
+      }
+    },
+    "enemyAttackDamageAssignmentLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "label",
+        "card",
+        "question"
+      ],
+      "properties": {
+        "tag": {
+          "const": "QuestionLabel"
+        },
+        "label": {
+          "const": "Assign 1 damage and 1 horror"
+        },
+        "card": {
+          "type": "null"
+        },
+        "question": {
+          "$ref": "#/$defs/enemyAttackDamageAssignmentChoices"
+        }
+      }
+    },
+    "enemyAttackDamageAssignmentChoices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/enemyAttackAssignDamageChoice"
+            },
+            {
+              "$ref": "#/$defs/enemyAttackAssignHorrorChoice"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "enemyAttackAssignDamageChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "component",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ComponentLabel"
+        },
+        "component": {
+          "$ref": "#/$defs/damageAssignmentComponent"
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/assignDamageFirstMessage"
+            },
+            {
+              "$ref": "#/$defs/continueAfterDamageFirstMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "enemyAttackAssignHorrorChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "component",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ComponentLabel"
+        },
+        "component": {
+          "$ref": "#/$defs/horrorAssignmentComponent"
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/assignHorrorFirstMessage"
+            },
+            {
+              "$ref": "#/$defs/continueAfterHorrorFirstMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "damageAssignmentComponent": {
+      "$ref": "#/$defs/damageAssignmentInvestigatorComponent",
+      "properties": {
+        "tokenType": {
+          "const": "DamageToken"
+        }
+      }
+    },
+    "horrorAssignmentComponent": {
+      "$ref": "#/$defs/damageAssignmentInvestigatorComponent",
+      "properties": {
+        "tokenType": {
+          "const": "HorrorToken"
+        }
+      }
+    },
+    "damageAssignmentInvestigatorComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "tokenType"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorComponent"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        },
+        "tokenType": {
+          "enum": [
+            "DamageToken",
+            "HorrorToken"
+          ]
+        }
+      }
+    },
+    "assignDamageFirstMessage": {
+      "$ref": "#/$defs/investigatorDamageMessage",
+      "properties": {
+        "contents": {
+          "$ref": "#/$defs/directDamageOneHorrorZero"
+        }
+      }
+    },
+    "assignHorrorFirstMessage": {
+      "$ref": "#/$defs/investigatorDamageMessage",
+      "properties": {
+        "contents": {
+          "$ref": "#/$defs/directDamageZeroHorrorOne"
+        }
+      }
+    },
+    "investigatorDamageMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "$ref": "#/$defs/investigatorDamageConstructor"
+        }
+      }
+    },
+    "investigatorDamageConstructor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorDamage_"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/investigatorId"
+            },
+            {
+              "$ref": "#/$defs/enemyAttackSource"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "directDamageOneHorrorZero": {
+      "type": "object",
+      "properties": {
+        "contents": {
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/investigatorId"
+            },
+            {
+              "$ref": "#/$defs/enemyAttackSource"
+            },
+            {
+              "const": 1
+            },
+            {
+              "const": 0
+            }
+          ]
+        }
+      }
+    },
+    "directDamageZeroHorrorOne": {
+      "type": "object",
+      "properties": {
+        "contents": {
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/investigatorId"
+            },
+            {
+              "$ref": "#/$defs/enemyAttackSource"
+            },
+            {
+              "const": 0
+            },
+            {
+              "const": 1
+            }
+          ]
+        }
+      }
+    },
+    "continueAfterDamageFirstMessage": {
+      "$ref": "#/$defs/investigatorDoAssignDamageMessage",
+      "properties": {
+        "contents": {
+          "$ref": "#/$defs/remainingHorrorAssignment"
+        }
+      }
+    },
+    "continueAfterHorrorFirstMessage": {
+      "$ref": "#/$defs/investigatorDoAssignDamageMessage",
+      "properties": {
+        "contents": {
+          "$ref": "#/$defs/remainingDamageAssignment"
+        }
+      }
+    },
+    "investigatorDoAssignDamageMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "$ref": "#/$defs/investigatorDoAssignDamageConstructor"
+        }
+      }
+    },
+    "investigatorDoAssignDamageConstructor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorDoAssignDamage_"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/investigatorId"
+            },
+            {
+              "$ref": "#/$defs/enemyAttackSource"
+            },
+            {
+              "$ref": "#/$defs/damageAny"
+            },
+            {
+              "$ref": "#/$defs/anyAsset"
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1
+            },
+            {
+              "$ref": "#/$defs/investigatorTargetCandidates"
+            },
+            {
+              "$ref": "#/$defs/investigatorTargetCandidates"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "remainingHorrorAssignment": {
+      "type": "object",
+      "properties": {
+        "contents": {
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/investigatorId"
+            },
+            {
+              "$ref": "#/$defs/enemyAttackSource"
+            },
+            {
+              "$ref": "#/$defs/damageAny"
+            },
+            {
+              "$ref": "#/$defs/anyAsset"
+            },
+            {
+              "const": 0
+            },
+            {
+              "const": 1
+            },
+            {
+              "$ref": "#/$defs/singleInvestigatorTargetCandidates"
+            },
+            {
+              "const": []
+            }
+          ]
+        }
+      }
+    },
+    "remainingDamageAssignment": {
+      "type": "object",
+      "properties": {
+        "contents": {
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/investigatorId"
+            },
+            {
+              "$ref": "#/$defs/enemyAttackSource"
+            },
+            {
+              "$ref": "#/$defs/damageAny"
+            },
+            {
+              "$ref": "#/$defs/anyAsset"
+            },
+            {
+              "const": 1
+            },
+            {
+              "const": 0
+            },
+            {
+              "const": []
+            },
+            {
+              "$ref": "#/$defs/singleInvestigatorTargetCandidates"
+            }
+          ]
+        }
+      }
+    },
+    "enemyAttackSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EnemyAttackSource"
+        },
+        "contents": {
+          "$ref": "./uuid.schema.json"
+        }
+      }
+    },
+    "anyAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AnyAsset"
+        }
+      }
+    },
+    "investigatorTargetCandidates": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/attackInvestigatorTarget"
+      }
+    },
+    "singleInvestigatorTargetCandidates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "$ref": "#/$defs/attackInvestigatorTarget"
       }
     },
     "playerWindowChooseOneQuestion": {

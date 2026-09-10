@@ -61,7 +61,7 @@ the same 'Maybe', so a client can never be shown one without the other.
 serverCapabilities :: Maybe LocaleCatalog -> ServerCapabilities
 serverCapabilities localeCatalog =
   ServerCapabilities
-    { schemaRevision = "0.1.31"
+    { schemaRevision = "0.1.32"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.0"

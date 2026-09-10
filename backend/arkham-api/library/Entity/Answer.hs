@@ -559,9 +559,9 @@ handleAnswerPure game@Game {..} playerId = \case
     -> QuestionResponse
     -> [Message]
   go f q response = case q of
-    QuestionLabel lbl mCard q' -> go (QuestionLabel lbl mCard) q' response
-    PayCostQuestion cost q' -> go (PayCostQuestion cost) q' response
-    QuestionWithSource s tt q' -> go (QuestionWithSource s tt) q' response
+    QuestionLabel lbl mCard q' -> go (f . QuestionLabel lbl mCard) q' response
+    PayCostQuestion cost q' -> go (f . PayCostQuestion cost) q' response
+    QuestionWithSource s tt q' -> go (f . QuestionWithSource s tt) q' response
     Read t (BasicReadChoices qs) mcs -> case qs !!? qrChoice response of
       Nothing -> [Ask playerId $ f $ Read t (BasicReadChoices qs) mcs]
       Just msg -> [uiToRun msg]

@@ -1,0 +1,124 @@
+{
+  "tag": "QuestionWithSource",
+  "source": {
+    "tag": "EnemyAttackSource",
+    "contents": "00000000-0000-0000-0000-000000000388"
+  },
+  "tooltip": null,
+  "question": {
+    "tag": "QuestionLabel",
+    "label": "Assign 1 damage and 1 horror",
+    "card": null,
+    "question": {
+      "tag": "ChooseOne",
+      "choices": [
+        {
+          "tag": "ComponentLabel",
+          "component": {
+            "tag": "InvestigatorComponent",
+            "investigatorId": "c01001",
+            "tokenType": "DamageToken"
+          },
+          "messages": [
+            {
+              "tag": "InvestigatorMessage",
+              "contents": {
+                "tag": "InvestigatorDamage_",
+                "contents": [
+                  "c01001",
+                  {
+                    "tag": "EnemyAttackSource",
+                    "contents": "00000000-0000-0000-0000-000000000388"
+                  },
+                  1,
+                  0
+                ]
+              }
+            },
+            {
+              "tag": "InvestigatorMessage",
+              "contents": {
+                "tag": "InvestigatorDoAssignDamage_",
+                "contents": [
+                  "c01001",
+                  {
+                    "tag": "EnemyAttackSource",
+                    "contents": "00000000-0000-0000-0000-000000000388"
+                  },
+                  {
+                    "tag": "DamageAny"
+                  },
+                  {
+                    "tag": "AnyAsset"
+                  },
+                  0,
+                  1,
+                  [
+                    {
+                      "tag": "InvestigatorTarget",
+                      "contents": "c01001"
+                    }
+                  ],
+                  []
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "tag": "ComponentLabel",
+          "component": {
+            "tag": "InvestigatorComponent",
+            "investigatorId": "c01001",
+            "tokenType": "HorrorToken"
+          },
+          "messages": [
+            {
+              "tag": "InvestigatorMessage",
+              "contents": {
+                "tag": "InvestigatorDamage_",
+                "contents": [
+                  "c01001",
+                  {
+                    "tag": "EnemyAttackSource",
+                    "contents": "00000000-0000-0000-0000-000000000388"
+                  },
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "tag": "InvestigatorMessage",
+              "contents": {
+                "tag": "InvestigatorDoAssignDamage_",
+                "contents": [
+                  "c01001",
+                  {
+                    "tag": "EnemyAttackSource",
+                    "contents": "00000000-0000-0000-0000-000000000388"
+                  },
+                  {
+                    "tag": "DamageAny"
+                  },
+                  {
+                    "tag": "AnyAsset"
+                  },
+                  1,
+                  0,
+                  [],
+                  [
+                    {
+                      "tag": "InvestigatorTarget",
+                      "contents": "c01001"
+                    }
+                  ]
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -23,6 +23,7 @@ import Arkham.Campaign.Types (Campaign)
 import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.EnemyLocation (lookupEnemyLocation)
 import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
+import Arkham.Enemy.CardDefs.NightOfTheZealot.Ghouls qualified as GhoulCards (ghoulMinion)
 import Arkham.Enemy.CardDefs.NightOfTheZealot.Rats qualified as EnemyCards (swarmOfRats)
 import Arkham.Enemy.Creation (EnemyCreation (..))
 import Arkham.Story (createStory)
@@ -44,6 +45,7 @@ import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Helpers.Message qualified as MessageHelpers (createEnemy)
 import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
+import Arkham.Matcher (AssetMatcher (AnyAsset))
 import Arkham.Message qualified as Msg (storyWithCards)
 import Arkham.Message.Lifted.Choose (chooseTargetM)
 import Arkham.Message.Lifted.Location (unsafeReveal)
@@ -652,6 +654,56 @@ fixtureEnemyAttackAnswer =
           [ "choice" .= (0 :: Int)
           , "playerId" .= fixturePlayerId
           , "questionVersion" .= gameScenarioSteps fixtureEnemyAttackGame
+          ]
+    ]
+
+fixtureDamageAssignmentEnemyId :: EnemyId
+fixtureDamageAssignmentEnemyId = EnemyId $ UUID.fromWords 0 0 0 904
+
+fixtureDamageAssignmentEnemyCard :: Card
+fixtureDamageAssignmentEnemyCard =
+  lookupCard GhoulCards.ghoulMinion (unsafeMakeCardId $ UUID.fromWords 0 0 0 905)
+
+{- | Advance the real enemy-phase flow one prompt beyond the regular attack.
+A fixed Ghoul Minion is created engaged with Roland because its printed attack
+deals exactly one damage and one horror. The production enemy runner emits the
+regular attack choice; 'chooseOptionMatching' resolves that actual choice and
+the production investigator damage runner constructs the nested
+'QuestionWithSource' / 'QuestionLabel' / 'ChooseOne' assignment prompt.
+Nothing in the resulting question or either choice is assembled by this
+fixture.
+-}
+fixtureDamageAssignmentGame :: Game
+fixtureDamageAssignmentGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  overTest (questionL .~ mempty)
+  creation <- MessageHelpers.createEnemy fixtureDamageAssignmentEnemyCard iid
+  pushAndRunAll
+    [CreateEnemy creation {enemyCreationEnemyId = fixtureDamageAssignmentEnemyId}]
+  pushAndRunAll [Begin EnemyPhase]
+  chooseOptionMatching "resolve fixture Ghoul Minion attack" \case
+    TargetLabel (EnemyTarget eid) [EnemyAttack details] ->
+      eid == fixtureDamageAssignmentEnemyId
+        && attackEnemy details == fixtureDamageAssignmentEnemyId
+    _ -> False
+  getGame
+{-# NOINLINE fixtureDamageAssignmentGame #-}
+
+fixtureDamageAssignmentQuestion :: Question Message
+fixtureDamageAssignmentQuestion =
+  fromMaybe
+    (error "fixtureDamageAssignmentQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureDamageAssignmentGame)
+
+fixtureDamageAssignmentAnswer :: Int -> Aeson.Value
+fixtureDamageAssignmentAnswer choice =
+  Aeson.object
+    [ "tag" .= ("Answer" :: Text)
+    , "contents"
+        .= Aeson.object
+          [ "choice" .= choice
+          , "playerId" .= fixturePlayerId
+          , "questionVersion" .= gameScenarioSteps fixtureDamageAssignmentGame
           ]
     ]
 
@@ -1505,6 +1557,108 @@ spec = describe "Native client contract fixtures" do
       other ->
         expectationFailure
           $ "Expected one production ChooseOneAtATime enemy attack, got "
+          <> show other
+
+  it "matches the real post-attack damage assignment prompt on both encoder paths" do
+    fixture <- loadFixture "question-enemy-attack-damage-assignment.json"
+    Aeson.toJSON fixtureDamageAssignmentQuestion `shouldBe` fixture
+    viaWireEncoding fixtureDamageAssignmentQuestion `shouldBe` fixture
+    gamePhase fixtureDamageAssignmentGame `shouldBe` EnemyPhase
+    gamePhaseStep fixtureDamageAssignmentGame
+      `shouldBe` Just (EnemyPhaseStep ResolveAttacksStep)
+    gameScenarioSteps fixtureDamageAssignmentGame `shouldBe` 6
+
+  it "binds both damage-assignment choices to the same production attack and investigator" do
+    let
+      iid = InvestigatorId "01001"
+      source = EnemyAttackSource fixtureDamageAssignmentEnemyId
+      expectedDamageMessages =
+        [ InvestigatorDamage iid source 1 0
+        , InvestigatorDoAssignDamage
+            iid
+            source
+            DamageAny
+            AnyAsset
+            0
+            1
+            [InvestigatorTarget iid]
+            []
+        ]
+      expectedHorrorMessages =
+        [ InvestigatorDamage iid source 0 1
+        , InvestigatorDoAssignDamage
+            iid
+            source
+            DamageAny
+            AnyAsset
+            1
+            0
+            []
+            [InvestigatorTarget iid]
+        ]
+    case fixtureDamageAssignmentQuestion of
+      QuestionWithSource source' Nothing
+        (QuestionLabel label Nothing (ChooseOne [DamageLabel damageIid damageMessages, HorrorLabel horrorIid horrorMessages])) -> do
+          source' `shouldBe` source
+          label `shouldBe` "Assign 1 damage and 1 horror"
+          damageIid `shouldBe` iid
+          horrorIid `shouldBe` iid
+          damageMessages `shouldBe` expectedDamageMessages
+          horrorMessages `shouldBe` expectedHorrorMessages
+      other ->
+        expectationFailure
+          $ "Expected the production 1 damage / 1 horror assignment prompt, got "
+          <> show other
+
+  it "preserves both assignment source indices and their exact versioned Answers" do
+    damageFixture <- loadFixture "answer-enemy-attack-assign-damage.json"
+    horrorFixture <- loadFixture "answer-enemy-attack-assign-horror.json"
+    damageFixture `shouldBe` fixtureDamageAssignmentAnswer 0
+    horrorFixture `shouldBe` fixtureDamageAssignmentAnswer 1
+    let
+      game = fixtureDamageAssignmentGame
+      checkAnswer answerValue check =
+        case Aeson.fromJSON answerValue of
+          Aeson.Error err -> expectationFailure $ "Could not decode damage assignment Answer: " <> err
+          Aeson.Success answer -> handleAnswerPure game fixturePlayerId answer >>= check
+      withChoiceAndVersion choice version =
+        Aeson.object
+          [ "tag" .= ("Answer" :: Text)
+          , "contents"
+              .= Aeson.object
+                [ "choice" .= (choice :: Int)
+                , "playerId" .= fixturePlayerId
+                , "questionVersion" .= (version :: Int)
+                ]
+          ]
+      assertFixture expectedChoice fixture =
+        case Aeson.fromJSON fixture of
+          Aeson.Error err -> expectationFailure $ "Could not decode assignment Answer fixture: " <> err
+          Aeson.Success (Answer (QuestionResponse choice playerId questionVersion)) -> do
+            choice `shouldBe` expectedChoice
+            playerId `shouldBe` Just fixturePlayerId
+            questionVersion `shouldBe` Just (gameScenarioSteps game)
+          Aeson.Success other ->
+            expectationFailure $ "Expected a versioned Answer fixture, got " <> show other
+    assertFixture 0 damageFixture
+    assertFixture 1 horrorFixture
+    case fixtureDamageAssignmentQuestion of
+      QuestionWithSource _ _ (QuestionLabel _ _ (ChooseOne choices@[damageChoice, horrorChoice])) -> do
+        checkAnswer damageFixture \case
+          Handled messages -> messages `shouldBe` [uiToRun damageChoice]
+          Unhandled reason -> expectationFailure $ "Damage assignment Answer rejected: " <> Text.unpack reason
+        checkAnswer horrorFixture \case
+          Handled messages -> messages `shouldBe` [uiToRun horrorChoice]
+          Unhandled reason -> expectationFailure $ "Horror assignment Answer rejected: " <> Text.unpack reason
+        checkAnswer (withChoiceAndVersion 0 $ gameScenarioSteps game + 1) \case
+          Unhandled reason -> reason `shouldBe` "Stale question"
+          Handled _ -> expectationFailure "A stale damage assignment Answer must not resolve"
+        checkAnswer (withChoiceAndVersion (length choices) $ gameScenarioSteps game) \case
+          Handled messages -> messages `shouldBe` [Ask fixturePlayerId fixtureDamageAssignmentQuestion]
+          Unhandled reason -> expectationFailure $ "Expected the unchanged prompt: " <> Text.unpack reason
+      other ->
+        expectationFailure
+          $ "Expected two production damage assignment choices, got "
           <> show other
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
