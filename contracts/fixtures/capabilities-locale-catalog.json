@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.29",
+  "schemaRevision": "0.1.30",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "nativeClientMinimumRevision": "0.1.0",
@@ -12,7 +12,7 @@
   ],
   "localeCatalog": {
     "manifestUrl": "/locale-catalog/manifest.json",
-    "catalogRevision": "1.55f557f32014ed70fced0af0efdd9a94",
+    "catalogRevision": "1.c49062ddf4fa2514c171cb641dc9e5df",
     "schemaVersion": "1.0.0",
     "defaultLocale": "en",
     "supportedLocales": [
@@ -20,6 +20,6 @@
       "en",
       "pt-BR"
     ],
-    "manifestSha256": "a9c996731497039bf9bd5badda5ccbc765ec74d0f17bf9fcd723b0f2825a17ec"
+    "manifestSha256": "04013ff84851ce0bf15ddb30c394bceed97052854b4b23acdb89c638fe48b365"
   }
 }
