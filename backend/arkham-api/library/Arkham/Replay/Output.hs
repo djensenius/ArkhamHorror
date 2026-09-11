@@ -22,12 +22,13 @@ import Data.ByteString.Lazy qualified as BSL
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import System.Directory (canonicalizePath, makeAbsolute, removeFile, renameFile)
+import Foreign.C.Error (throwErrnoIfMinus1_)
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types (CInt (..))
+import System.Directory (canonicalizePath, makeAbsolute)
 import System.FilePath (normalise, takeDirectory, takeFileName)
-import System.IO (openBinaryTempFile)
 import System.Posix.Files (
   FileStatus,
-  createLink,
   deviceID,
   fileID,
   getFdStatus,
@@ -36,15 +37,18 @@ import System.Posix.Files (
   isDirectory,
   isRegularFile,
   isSymbolicLink,
+  ownerReadMode,
+  ownerWriteMode,
+  unionFileModes,
  )
 import System.Posix.IO (
   OpenFileFlags (..),
-  OpenMode (ReadOnly),
+  OpenMode (ReadOnly, WriteOnly),
   closeFd,
   defaultFileFlags,
   fdSeek,
-  handleToFd,
   openFd,
+  openFdAt,
  )
 import System.Posix.IO.ByteString (fdRead, fdWrite)
 import System.Posix.Types (DeviceID, Fd, FileID)
@@ -79,8 +83,10 @@ data ReplayOutputArtifact = ReplayOutputArtifact
   }
 
 data ReplayPublishPhase
-  = ReplayStageCompleted ReplayOutputRole
+  = ReplayBeforeStageCreate ReplayOutputRole
+  | ReplayStageCompleted ReplayOutputRole
   | ReplayOutputsStaged
+  | ReplayBeforeSecondaryPublish ReplayOutputRole
   | ReplaySecondaryPublished ReplayOutputRole
   | ReplayBeforeCheckpointPublish
   | ReplayCheckpointLinked
@@ -91,6 +97,7 @@ data ResolvedOutput = ResolvedOutput
   , resolvedOutputOriginal :: FilePath
   , resolvedOutputCanonical :: FilePath
   , resolvedOutputParent :: FilePath
+  , resolvedOutputName :: FilePath
   , resolvedOutputParentIdentity :: FileIdentity
   , resolvedOutputExistingIdentity :: Maybe FileIdentity
   }
@@ -100,11 +107,20 @@ data ReplayOutputPlan = ReplayOutputPlan
   , replayOutputPlanOutputs :: [ResolvedOutput]
   }
 
+data OpenOutput = OpenOutput
+  { openOutputResolved :: ResolvedOutput
+  , openOutputParentDescriptor :: Fd
+  }
+
 data StagedOutput = StagedOutput
-  { stagedOutputResolved :: ResolvedOutput
-  , stagedOutputPath :: FilePath
+  { stagedOutputOpen :: OpenOutput
+  , stagedOutputName :: FilePath
+  , stagedOutputDescriptor :: Fd
   , stagedOutputIdentity :: FileIdentity
   }
+
+stagedOutputRole :: StagedOutput -> ReplayOutputRole
+stagedOutputRole = resolvedOutputRole . openOutputResolved . stagedOutputOpen
 
 withReplayInput :: FilePath -> (ReplayInput -> IO a) -> IO a
 withReplayInput path = bracket (openReplayInput path) (closeFd . replayInputDescriptor)
@@ -206,25 +222,29 @@ publishReplayOutputsWithHook
   -> IO ()
 publishReplayOutputsWithHook hook plan artifacts = mask \restore -> do
   artifactMap <- validateArtifacts plan artifacts
-  staged <- stageAll restore hook plan.replayOutputPlanOutputs artifactMap
-  let cleanupAll = traverse_ cleanupStage staged
-      withCleanup action = restore (allowInterrupt >> action) `onException` cleanupAll
-      (checkpointStages, secondaryStages) =
-        List.partition
-          ((== ReplayCheckpointOutput) . resolvedOutputRole . stagedOutputResolved)
-          staged
-  checkpoint <- case checkpointStages of
-    [value] -> pure value
-    _ -> cleanupAll >> replayOutputFailure "internal error: checkpoint stage is not unique"
-  for_ secondaryStages \secondary -> do
-    withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
-    withCleanup $ revalidateOutput plan secondary.stagedOutputResolved
-    withCleanup $ publishStage secondary
-    withCleanup $ hook $ ReplaySecondaryPublished secondary.stagedOutputResolved.resolvedOutputRole
-  withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
-  withCleanup $ hook ReplayBeforeCheckpointPublish
-  withCleanup $ publishCheckpoint hook plan checkpoint
-  cleanupAll
+  opened <- openReplayOutputs plan.replayOutputPlanOutputs
+  let closeParents = traverse_ closeOpenOutput opened
+  ( do
+      staged <- stageAll restore hook opened artifactMap
+      let cleanupAll = traverse_ cleanupStage staged
+          withCleanup action = restore (allowInterrupt >> action) `onException` cleanupAll
+          (checkpointStages, secondaryStages) =
+            List.partition ((== ReplayCheckpointOutput) . stagedOutputRole) staged
+      checkpoint <- case checkpointStages of
+        [value] -> pure value
+        _ -> cleanupAll >> replayOutputFailure "internal error: checkpoint stage is not unique"
+      for_ secondaryStages \secondary -> do
+        withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
+        withCleanup $ revalidateOutput plan secondary.stagedOutputOpen
+        withCleanup $ hook $ ReplayBeforeSecondaryPublish $ stagedOutputRole secondary
+        withCleanup $ publishStage secondary
+        withCleanup $ hook $ ReplaySecondaryPublished $ stagedOutputRole secondary
+      withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
+      withCleanup $ hook ReplayBeforeCheckpointPublish
+      withCleanup $ publishCheckpoint hook plan checkpoint
+      cleanupAll
+    )
+    `finally` closeParents
 
 validateArtifacts
   :: ReplayOutputPlan
@@ -242,7 +262,7 @@ validateArtifacts plan artifacts = do
 stageAll
   :: (IO () -> IO ())
   -> (ReplayPublishPhase -> IO ())
-  -> [ResolvedOutput]
+  -> [OpenOutput]
   -> Map ReplayOutputRole BSL.ByteString
   -> IO [StagedOutput]
 stageAll restore hook outputs artifacts = go outputs
@@ -250,7 +270,7 @@ stageAll restore hook outputs artifacts = go outputs
   go [] = hook ReplayOutputsStaged $> []
   go (output : rest) = do
     bytes <- maybe (replayOutputFailure "internal error: missing output artifact") pure
-      $ Map.lookup output.resolvedOutputRole artifacts
+      $ Map.lookup output.openOutputResolved.resolvedOutputRole artifacts
     staged <- stageOutput restore hook output bytes
     remaining <- go rest `onException` cleanupStage staged
     pure $ staged : remaining
@@ -258,40 +278,87 @@ stageAll restore hook outputs artifacts = go outputs
 stageOutput
   :: (IO () -> IO ())
   -> (ReplayPublishPhase -> IO ())
-  -> ResolvedOutput
+  -> OpenOutput
   -> BSL.ByteString
   -> IO StagedOutput
 stageOutput restore hook output bytes = do
-  acquired@(stagePath, fd, identity) <- openStage output.resolvedOutputParent template
-  let staged =
-        StagedOutput
-          { stagedOutputResolved = output
-          , stagedOutputPath = stagePath
-          , stagedOutputIdentity = identity
-          }
-      complete = do
-        restore $ traverse_ (writeDescriptor fd) $ BSL.toChunks bytes
-        restore $ fileSynchronise fd
-        restore $ closeFd fd
-        hook $ ReplayStageCompleted output.resolvedOutputRole
+  hook $ ReplayBeforeStageCreate role
+  staged <- openStage output template
+  let complete = do
+        restore $ traverse_ (writeDescriptor staged.stagedOutputDescriptor) $ BSL.toChunks bytes
+        restore $ fileSynchronise staged.stagedOutputDescriptor
+        hook $ ReplayStageCompleted role
         pure staged
-  complete `onException` cleanupOpenStage acquired
+  complete `onException` cleanupOpenStage staged
  where
-  template = "." <> takeFileName output.resolvedOutputCanonical <> ".arkham-replay-stage"
+  role = output.openOutputResolved.resolvedOutputRole
+  template = "." <> output.openOutputResolved.resolvedOutputName <> ".arkham-replay-stage"
 
-openStage :: FilePath -> String -> IO (FilePath, Fd, FileIdentity)
-openStage parent template = do
-  (path, outputHandle) <- openBinaryTempFile parent template
-  fd <-
-    handleToFd outputHandle `onException` do
-      ignoreIOException $ hClose outputHandle
-  status <- getFdStatus fd `onException` ignoreIOException (closeFd fd)
-  pure (path, fd, statusIdentity status)
+openReplayOutputs :: [ResolvedOutput] -> IO [OpenOutput]
+openReplayOutputs = go
+ where
+  go [] = pure []
+  go (output : rest) = do
+    opened <- openReplayOutput output
+    remaining <- go rest `onException` closeOpenOutput opened
+    pure $ opened : remaining
 
-cleanupOpenStage :: (FilePath, Fd, FileIdentity) -> IO ()
-cleanupOpenStage (path, fd, identity) = do
-  ignoreIOException $ closeFd fd
-  removePathIfOwned path identity
+openReplayOutput :: ResolvedOutput -> IO OpenOutput
+openReplayOutput output =
+  bracketOnError
+    ( openFd
+        output.resolvedOutputParent
+        ReadOnly
+        defaultFileFlags {cloexec = True, directory = True, nofollow = True}
+        `catch` pathFailure "open output parent" output.resolvedOutputOriginal
+    )
+    closeFd
+    \fd -> do
+      status <- getFdStatus fd
+      unless
+        (isDirectory status && statusIdentity status == output.resolvedOutputParentIdentity)
+        $ replayOutputFailure
+        $ "replay output parent changed during execution: "
+        <> output.resolvedOutputOriginal
+      pure OpenOutput {openOutputResolved = output, openOutputParentDescriptor = fd}
+
+closeOpenOutput :: OpenOutput -> IO ()
+closeOpenOutput = ignoreIOException . closeFd . openOutputParentDescriptor
+
+openStage :: OpenOutput -> String -> IO StagedOutput
+openStage output template = do
+  name <- freshRelativeName template
+  let flags =
+        defaultFileFlags
+          { cloexec = True
+          , creat = Just $ ownerReadMode `unionFileModes` ownerWriteMode
+          , exclusive = True
+          , nofollow = True
+          }
+      parentFd = output.openOutputParentDescriptor
+  tryIOError (openFdAt (Just parentFd) name WriteOnly flags) >>= \case
+    Left err
+      | isAlreadyExistsError err -> openStage output template
+      | otherwise -> throwIO err
+    Right fd ->
+      bracketOnError (pure fd) closeFd \ownedFd -> do
+        status <- getFdStatus ownedFd
+        unless (isRegularFile status) $
+          replayOutputFailure "replay staging path is not a regular file"
+        -- Retaining this descriptor prevents inode reuse after a path replacement
+        -- and carries ownership through publication or cleanup.
+        pure
+          StagedOutput
+            { stagedOutputOpen = output
+            , stagedOutputName = name
+            , stagedOutputDescriptor = ownedFd
+            , stagedOutputIdentity = statusIdentity status
+            }
+
+cleanupOpenStage :: StagedOutput -> IO ()
+cleanupOpenStage staged =
+  ignoreIOException (void $ removeEntryIfOwned staged staged.stagedOutputName)
+    `finally` ignoreIOException (closeFd staged.stagedOutputDescriptor)
 
 writeDescriptor :: Fd -> BS.ByteString -> IO ()
 writeDescriptor _ bytes | BS.null bytes = pure ()
@@ -302,12 +369,17 @@ writeDescriptor fd bytes = do
 
 cleanupStage :: StagedOutput -> IO ()
 cleanupStage staged =
-  removePathIfOwned staged.stagedOutputPath staged.stagedOutputIdentity
+  ignoreIOException (void $ removeEntryIfOwned staged staged.stagedOutputName)
+    `finally` ignoreIOException (closeFd staged.stagedOutputDescriptor)
 
 publishStage :: StagedOutput -> IO ()
-publishStage staged = do
-  renameFile staged.stagedOutputPath staged.stagedOutputResolved.resolvedOutputCanonical
-  syncDirectory staged.stagedOutputResolved.resolvedOutputParent
+publishStage staged = mask \restore -> do
+  captured <- captureOwnedStage staged staged.stagedOutputName
+  let parentFd = staged.stagedOutputOpen.openOutputParentDescriptor
+      destination = staged.stagedOutputOpen.openOutputResolved.resolvedOutputName
+      cleanupCaptured = ignoreIOException $ void $ removeEntryIfOwned staged captured
+  restore (renameAt parentFd captured parentFd destination) `onException` cleanupCaptured
+  restore $ syncDirectoryDescriptor parentFd
 
 publishCheckpoint
   :: (ReplayPublishPhase -> IO ())
@@ -315,54 +387,66 @@ publishCheckpoint
   -> StagedOutput
   -> IO ()
 publishCheckpoint hook plan staged = mask \restore -> do
-  let output = staged.stagedOutputResolved
-      destination = output.resolvedOutputCanonical
-      rollback = removePublishedCheckpointIfOwned staged
-  restore (revalidateOutput plan output)
-  restore (createLink staged.stagedOutputPath destination) `onException` rollback
+  let output = staged.stagedOutputOpen
+      parentFd = output.openOutputParentDescriptor
+      destination = output.openOutputResolved.resolvedOutputName
+  restore $ revalidateOutput plan output
+  captured <- captureOwnedStage staged staged.stagedOutputName
+  let rollback = do
+        removePublishedCheckpointIfOwned staged destination
+        ignoreIOException $ void $ removeEntryIfOwned staged captured
+  restore (linkAt parentFd captured parentFd destination) `onException` rollback
   ( restore $ do
       hook ReplayCheckpointLinked
-      preserved <- destinationHasIdentity destination staged.stagedOutputIdentity
+      preserved <- entryHasIdentityAt parentFd destination staged.stagedOutputIdentity
       unless preserved $
         replayOutputFailure "checkpoint publication did not preserve the staged file identity"
-      syncDirectory output.resolvedOutputParent
+      syncDirectoryDescriptor parentFd
     )
     `onException` rollback
-  cleanupStage staged
-  restore $ syncDirectory output.resolvedOutputParent
+  ignoreIOException $ void $ removeEntryIfOwned staged captured
+  restore $ syncDirectoryDescriptor parentFd
 
-removePublishedCheckpointIfOwned :: StagedOutput -> IO ()
-removePublishedCheckpointIfOwned staged = do
-  let output = staged.stagedOutputResolved
-      destination = output.resolvedOutputCanonical
-  stageOwned <- pathHasIdentity staged.stagedOutputPath staged.stagedOutputIdentity
-  destinationOwned <- destinationHasIdentity destination staged.stagedOutputIdentity
-  when (stageOwned && destinationOwned) do
-    ignoreIOException $ removeFile destination
-    ignoreIOException $ syncDirectory output.resolvedOutputParent
+removePublishedCheckpointIfOwned :: StagedOutput -> FilePath -> IO ()
+removePublishedCheckpointIfOwned staged destination = do
+  removed <- removeEntryIfOwned staged destination
+  when removed $
+    ignoreIOException $ syncDirectoryDescriptor staged.stagedOutputOpen.openOutputParentDescriptor
 
-revalidateOutput :: ReplayOutputPlan -> ResolvedOutput -> IO ()
+revalidateOutput :: ReplayOutputPlan -> OpenOutput -> IO ()
 revalidateOutput plan output = do
-  parentStatus <- getFileStatus output.resolvedOutputParent
+  descriptorStatus <- getFdStatus output.openOutputParentDescriptor
+  let resolved = output.openOutputResolved
   unless
-    (isDirectory parentStatus && statusIdentity parentStatus == output.resolvedOutputParentIdentity)
+    ( isDirectory descriptorStatus
+        && statusIdentity descriptorStatus == resolved.resolvedOutputParentIdentity
+    )
+    $ replayOutputFailure
+    $ "replay output parent descriptor changed during execution: "
+    <> resolved.resolvedOutputOriginal
+  parentStatus <- getSymbolicLinkStatus resolved.resolvedOutputParent
+  unless
+    ( isDirectory parentStatus
+        && not (isSymbolicLink parentStatus)
+        && statusIdentity parentStatus == resolved.resolvedOutputParentIdentity
+    )
     $ replayOutputFailure
     $ "replay output parent changed during execution: "
-    <> output.resolvedOutputOriginal
-  currentStatus <- symbolicStatusMaybe output.resolvedOutputCanonical
+    <> resolved.resolvedOutputOriginal
+  currentStatus <- symbolicStatusMaybe resolved.resolvedOutputCanonical
   currentIdentity <- case currentStatus of
     Nothing -> pure Nothing
     Just status
       | isSymbolicLink status ->
-          replayOutputFailure $ "replay output became a symbolic link: " <> output.resolvedOutputOriginal
+          replayOutputFailure $ "replay output became a symbolic link: " <> resolved.resolvedOutputOriginal
       | not (isRegularFile status) ->
-          replayOutputFailure $ "replay output became a special file: " <> output.resolvedOutputOriginal
+          replayOutputFailure $ "replay output became a special file: " <> resolved.resolvedOutputOriginal
       | otherwise -> pure $ Just $ statusIdentity status
-  unless (currentIdentity == output.resolvedOutputExistingIdentity) $
-    replayOutputFailure $ "replay output changed during execution: " <> output.resolvedOutputOriginal
+  unless (currentIdentity == resolved.resolvedOutputExistingIdentity) $
+    replayOutputFailure $ "replay output changed during execution: " <> resolved.resolvedOutputOriginal
   for_ currentIdentity \identity ->
     when (identity `elem` map replayInputIdentity plan.replayOutputPlanInputs) $
-      replayOutputFailure $ "replay output became a hard-link alias of an input: " <> output.resolvedOutputOriginal
+      replayOutputFailure $ "replay output became a hard-link alias of an input: " <> resolved.resolvedOutputOriginal
 
 resolveOutput :: ReplayOutputRequest -> IO ResolvedOutput
 resolveOutput ReplayOutputRequest {..} = do
@@ -393,6 +477,7 @@ resolveOutput ReplayOutputRequest {..} = do
       , resolvedOutputOriginal = replayOutputRequestPath
       , resolvedOutputCanonical = canonical
       , resolvedOutputParent = parent
+      , resolvedOutputName = fileName
       , resolvedOutputParentIdentity = statusIdentity parentStatus
       , resolvedOutputExistingIdentity = existingIdentity
       }
@@ -430,29 +515,131 @@ symbolicStatusMaybe path =
       | isDoesNotExistError err -> pure Nothing
       | otherwise -> throwIO err
 
-destinationHasIdentity :: FilePath -> FileIdentity -> IO Bool
-destinationHasIdentity = pathHasIdentity
+data CapturedEntry
+  = CapturedEntryMissing
+  | CapturedEntryForeign
+  | CapturedEntryOwned FilePath
 
-pathHasIdentity :: FilePath -> FileIdentity -> IO Bool
-pathHasIdentity path expected =
-  symbolicStatusMaybe path <&> \case
-    Just status -> isRegularFile status && statusIdentity status == expected
-    Nothing -> False
+captureOwnedStage :: StagedOutput -> FilePath -> IO FilePath
+captureOwnedStage staged source =
+  captureEntry staged source >>= \case
+    CapturedEntryOwned captured -> pure captured
+    CapturedEntryMissing ->
+      replayOutputFailure
+        $ "replay staging file disappeared before publication: "
+        <> staged.stagedOutputOpen.openOutputResolved.resolvedOutputOriginal
+    CapturedEntryForeign ->
+      replayOutputFailure
+        $ "replay staging file changed before publication: "
+        <> staged.stagedOutputOpen.openOutputResolved.resolvedOutputOriginal
 
-removePathIfOwned :: FilePath -> FileIdentity -> IO ()
-removePathIfOwned path identity = do
-  owned <- pathHasIdentity path identity
-  when owned $ ignoreIOException $ removeFile path
+removeEntryIfOwned :: StagedOutput -> FilePath -> IO Bool
+removeEntryIfOwned staged source = do
+  owned <- entryHasIdentityAt parentFd source staged.stagedOutputIdentity
+  if not owned
+    then pure False
+    else
+      captureEntry staged source >>= \case
+        CapturedEntryOwned captured -> unlinkAt parentFd captured $> True
+        CapturedEntryMissing -> pure False
+        CapturedEntryForeign -> pure False
+ where
+  parentFd = staged.stagedOutputOpen.openOutputParentDescriptor
+
+captureEntry :: StagedOutput -> FilePath -> IO CapturedEntry
+captureEntry staged source = do
+  ownerStatus <- getFdStatus staged.stagedOutputDescriptor
+  unless
+    (isRegularFile ownerStatus && statusIdentity ownerStatus == staged.stagedOutputIdentity)
+    $ replayOutputFailure "replay staging descriptor changed during execution"
+  captured <- freshRelativeName ".arkham-replay-capture"
+  let parentFd = staged.stagedOutputOpen.openOutputParentDescriptor
+  -- Atomically move the directory entry out of the attacker-visible name
+  -- before checking or unlinking it.
+  tryIOError (renameAt parentFd source parentFd captured) >>= \case
+    Left err
+      | isDoesNotExistError err -> pure CapturedEntryMissing
+      | otherwise -> throwIO err
+    Right () -> do
+      owned <- entryHasIdentityAt parentFd captured staged.stagedOutputIdentity
+      if owned
+        then pure $ CapturedEntryOwned captured
+        else restoreCapturedEntry parentFd captured source $> CapturedEntryForeign
+
+restoreCapturedEntry :: Fd -> FilePath -> FilePath -> IO ()
+restoreCapturedEntry parentFd captured destination =
+  -- linkat is the no-clobber restoration step: a concurrent replacement at
+  -- destination is preserved, and so is the captured foreign entry.
+  tryIOError (linkAt parentFd captured parentFd destination) >>= \case
+    Right () -> ignoreIOException $ unlinkAt parentFd captured
+    Left _ -> pure ()
+
+entryHasIdentityAt :: Fd -> FilePath -> FileIdentity -> IO Bool
+entryHasIdentityAt parentFd path expected =
+  tryIOError
+    ( bracket
+        ( openFdAt
+            (Just parentFd)
+            path
+            ReadOnly
+            defaultFileFlags {cloexec = True, nonBlock = True, nofollow = True}
+        )
+        closeFd
+        \fd -> do
+          status <- getFdStatus fd
+          pure $ isRegularFile status && statusIdentity status == expected
+    )
+    <&> either (const False) id
+
+freshRelativeName :: String -> IO FilePath
+freshRelativeName prefix = do
+  left <- getRandom :: IO Word64
+  right <- getRandom :: IO Word64
+  pure $ prefix <> "-" <> show left <> "-" <> show right
 
 statusIdentity :: FileStatus -> FileIdentity
 statusIdentity status = (deviceID status, fileID status)
 
-syncDirectory :: FilePath -> IO ()
-syncDirectory path =
-  bracket
-    (openFd path ReadOnly defaultFileFlags {cloexec = True, directory = True})
-    closeFd
-    fileSynchronise
+syncDirectoryDescriptor :: Fd -> IO ()
+syncDirectoryDescriptor = fileSynchronise
+
+renameAt :: Fd -> FilePath -> Fd -> FilePath -> IO ()
+renameAt oldDirectory oldPath newDirectory newPath =
+  withCString oldPath \oldPathCString ->
+    withCString newPath \newPathCString ->
+      throwErrnoIfMinus1_ "renameat" $
+        c_renameat
+          (fromIntegral oldDirectory)
+          oldPathCString
+          (fromIntegral newDirectory)
+          newPathCString
+
+linkAt :: Fd -> FilePath -> Fd -> FilePath -> IO ()
+linkAt oldDirectory oldPath newDirectory newPath =
+  withCString oldPath \oldPathCString ->
+    withCString newPath \newPathCString ->
+      throwErrnoIfMinus1_ "linkat" $
+        c_linkat
+          (fromIntegral oldDirectory)
+          oldPathCString
+          (fromIntegral newDirectory)
+          newPathCString
+          0
+
+unlinkAt :: Fd -> FilePath -> IO ()
+unlinkAt directory path =
+  withCString path \pathCString ->
+    throwErrnoIfMinus1_ "unlinkat" $
+      c_unlinkat (fromIntegral directory) pathCString 0
+
+foreign import ccall unsafe "renameat"
+  c_renameat :: CInt -> CString -> CInt -> CString -> IO CInt
+
+foreign import ccall unsafe "linkat"
+  c_linkat :: CInt -> CString -> CInt -> CString -> CInt -> IO CInt
+
+foreign import ccall unsafe "unlinkat"
+  c_unlinkat :: CInt -> CString -> CInt -> IO CInt
 
 pathFailure :: String -> FilePath -> IOException -> IO a
 pathFailure operation path err =

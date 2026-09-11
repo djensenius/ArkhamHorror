@@ -10,6 +10,7 @@ import Data.List qualified as List
 import GHC.Conc (BlockReason (..), ThreadStatus (..), threadStatus)
 import System.Directory (
   createDirectory,
+  createDirectoryLink,
   createDirectoryIfMissing,
   createFileLink,
   doesFileExist,
@@ -17,6 +18,7 @@ import System.Directory (
   listDirectory,
   removeFile,
   removePathForcibly,
+  renameDirectory,
   renameFile,
  )
 import System.Posix.Files (
@@ -85,6 +87,61 @@ spec = describe "deterministic replay file handling" do
           \(message, output) ->
             expectIOExceptionContaining message $
               prepareReplayOutputs [opened] [checkpointRequest output]
+
+  it "stages through a retained no-follow parent descriptor after a symlink retarget" $
+    withWorkspace "parent-retarget" \workspace -> do
+      let input = workspace </> "source"
+          outputParent = workspace </> "output"
+          retainedParent = workspace </> "retained-output"
+          escapeParent = workspace </> "escape"
+          checkpoint = outputParent </> "checkpoint"
+      BSL8.writeFile input "source"
+      createDirectory outputParent
+      createDirectory escapeParent
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        expectIOExceptionContaining "parent changed" $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayBeforeStageCreate ReplayCheckpointOutput -> do
+                  renameDirectory outputParent retainedParent
+                  createDirectoryLink escapeParent outputParent
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "checkpoint"]
+        listDirectory escapeParent `shouldReturn` []
+        doesFileExist (retainedParent </> "checkpoint") `shouldReturn` False
+        assertNoStages retainedParent
+        assertNoCaptures retainedParent
+
+  it "preserves a foreign stage replacement immediately before cleanup" $
+    withWorkspace "cleanup-replacement" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+      BSL8.writeFile input "source"
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        foreignPath <- newEmptyMVar
+        expectIOExceptionContaining "force cleanup" $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayOutputsStaged -> do
+                  path <- stageFor workspace "checkpoint"
+                  removeFile path
+                  BSL8.writeFile path "foreign"
+                  putMVar foreignPath path
+                  ioError $ userError "force cleanup"
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "checkpoint"]
+        path <- readMVar foreignPath
+        BSL8.readFile path `shouldReturn` "foreign"
+        doesFileExist checkpoint `shouldReturn` False
+        removeFile path
+      assertNoStages workspace
+      assertNoCaptures workspace
 
   it "transfers each completed stage to masked ownership before cancellation" $
     withWorkspace "stage-acquisition-cancellation" \workspace -> do
@@ -171,6 +228,41 @@ spec = describe "deterministic replay file handling" do
         stagedPaths workspace `shouldReturn` [path]
         removeFile path
       assertNoStages workspace
+
+  it "rejects replacement bytes immediately before publishing every secondary role" $
+    for_
+      [(ReplayFinalGameOutput, "game"), (ReplayMetricsOutput, "metrics")]
+      \(role, outputName) ->
+        withWorkspace ("secondary-replacement-" <> outputName) \workspace -> do
+          let input = workspace </> "source"
+              checkpoint = workspace </> "checkpoint"
+              secondary = workspace </> outputName
+          BSL8.writeFile input "source"
+          withReplayInput input \opened -> do
+            plan <-
+              prepareReplayOutputs
+                [opened]
+                [checkpointRequest checkpoint, ReplayOutputRequest role secondary]
+            foreignPath <- newEmptyMVar
+            expectIOExceptionContaining "staging file changed" $
+              publishReplayOutputsWithHook
+                ( \case
+                    ReplayBeforeSecondaryPublish actual | actual == role -> do
+                      path <- stageFor workspace outputName
+                      removeFile path
+                      BSL8.writeFile path "foreign"
+                      putMVar foreignPath path
+                    _ -> pure ()
+                )
+                plan
+                [artifact ReplayCheckpointOutput "checkpoint", artifact role "owned"]
+            path <- readMVar foreignPath
+            BSL8.readFile path `shouldReturn` "foreign"
+            doesFileExist checkpoint `shouldReturn` False
+            doesFileExist secondary `shouldReturn` False
+            removeFile path
+          assertNoStages workspace
+          assertNoCaptures workspace
 
   it "cleans the checkpoint stage when cancelled at the secondary publication handoff" $
     withWorkspace "post-secondary-cancellation" \workspace -> do
@@ -346,6 +438,13 @@ stagedPaths workspace =
     . filter (List.isInfixOf ".arkham-replay-stage")
     <$> listDirectory workspace
 
+stageFor :: FilePath -> FilePath -> IO FilePath
+stageFor workspace outputName =
+  stagedPaths workspace >>= \paths ->
+    case filter (List.isInfixOf $ "." <> outputName <> ".arkham-replay-stage-") paths of
+      [path] -> pure path
+      other -> expectationFailure ("expected one stage for " <> outputName <> ", got " <> show other) >> error "unreachable"
+
 withWorkspace :: String -> (FilePath -> IO a) -> IO a
 withWorkspace name action = do
   cwd <- getCurrentDirectory
@@ -355,7 +454,9 @@ withWorkspace name action = do
   createDirectoryIfMissing True workspace
   action workspace `E.finally` do
     removePathForcibly workspace `E.catch` \(_ :: E.IOException) -> pure ()
-    remaining <- listDirectory parent
+    remaining <-
+      listDirectory parent `E.catch` \err ->
+        if isDoesNotExistError err then pure [] else E.throwIO (err :: E.IOException)
     when (null remaining) $
       removePathForcibly parent `E.catch` \(_ :: E.IOException) -> pure ()
 
@@ -367,3 +468,8 @@ assertNoStages :: FilePath -> Expectation
 assertNoStages workspace =
   listDirectory workspace
     >>= (`shouldSatisfy` all (not . List.isInfixOf ".arkham-replay-stage"))
+
+assertNoCaptures :: FilePath -> Expectation
+assertNoCaptures workspace =
+  listDirectory workspace
+    >>= (`shouldSatisfy` all (not . List.isInfixOf ".arkham-replay-capture"))
