@@ -1,13 +1,18 @@
 module Arkham.Api.GameImportSpec (spec) where
 
 import Api.Handler.Arkham.Game.Debug
-  ( makeReplayPlayerRemapping
+  ( makeReplayPlayerIdMap
+  , makeReplayPlayerRemapping
+  , remapReplayMessagePlayerIds
   , selectUploadedExportFile
   )
 import Arkham.Id (PlayerId (..))
+import Arkham.Message (Message (..))
 import Arkham.Prelude
+import Arkham.Question (Question (..))
 import Arkham.Replay.ImportAuthority
 import Data.Either (isLeft)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import Data.UUID qualified as UUID
@@ -72,6 +77,76 @@ spec = describe "selectUploadedExportFile" do
       makeReplayPlayerRemapping "c01001" checkpointPlayerId "not-a-uuid" False
         `shouldSatisfy` isLeft
 
+    it "builds only complete persisted-state remappings and rejects malformed live IDs" do
+      let importedUUID = UUID.fromWords 0 0 0 2
+          remapped =
+            ReplayPlayerRemapping
+              { replayPlayerInvestigatorId = "c01001"
+              , replayPlayerCheckpointPlayerId = PlayerId checkpointUUID
+              , replayPlayerImportedPlayerId = importedPlayerId
+              , replayPlayerLivePlayerId = importedPlayerId
+              , replayPlayerStateRemapped = True
+              }
+          unremapped =
+            remapped
+              { replayPlayerLivePlayerId = checkpointPlayerId
+              , replayPlayerStateRemapped = False
+              }
+      makeReplayPlayerIdMap [remapped]
+        `shouldBe` Right
+          (Map.singleton (PlayerId checkpointUUID) (PlayerId importedUUID))
+      makeReplayPlayerIdMap [unremapped] `shouldBe` Right Map.empty
+      makeReplayPlayerIdMap
+        [ remapped
+        , remapped {replayPlayerInvestigatorId = "c02001"}
+        ]
+        `shouldSatisfy` isLeft
+      makeReplayPlayerIdMap
+        [ remapped
+            { replayPlayerImportedPlayerId = "not-a-uuid"
+            , replayPlayerLivePlayerId = "not-a-uuid"
+            }
+        ]
+        `shouldSatisfy` isLeft
+      makeReplayPlayerIdMap
+        [remapped {replayPlayerLivePlayerId = "not-a-uuid"}]
+        `shouldSatisfy` isLeft
+
+  describe "remapReplayMessagePlayerIds" do
+    let checkpointPlayerId = PlayerId UUID.nil
+        importedPlayerId = PlayerId $ UUID.fromWords 0 0 0 2
+        unrelatedPlayerId = PlayerId $ UUID.fromWords 0 0 0 3
+        question = ChooseOne []
+        replacements = Map.singleton checkpointPlayerId importedPlayerId
+
+    it "remaps direct and nested player references in retained queue messages" do
+      remapReplayMessagePlayerIds
+        replacements
+        [ SetActivePlayer checkpointPlayerId
+        , Ask checkpointPlayerId question
+        , Run [SetActivePlayer checkpointPlayerId, SetActivePlayer unrelatedPlayerId]
+        ]
+        `shouldBe` [ SetActivePlayer importedPlayerId
+                   , Ask importedPlayerId question
+                   , Run [SetActivePlayer importedPlayerId, SetActivePlayer unrelatedPlayerId]
+                   ]
+
+    it "remaps player IDs used as keys while preserving unrelated seats" do
+      remapReplayMessagePlayerIds
+        replacements
+        [ AskMap $
+            Map.fromList
+              [ (checkpointPlayerId, question)
+              , (unrelatedPlayerId, question)
+              ]
+        ]
+        `shouldBe` [ AskMap $
+                       Map.fromList
+                         [ (importedPlayerId, question)
+                         , (unrelatedPlayerId, question)
+                         ]
+                   ]
+
   it "preserves the production PublicGame import body and authority headers" do
     source <- readDebugSource
     let normalized = T.unwords $ T.words source
@@ -91,12 +166,19 @@ spec = describe "selectUploadedExportFile" do
       `shouldSatisfy` T.isInfixOf
         "postApiV1ArkhamGamesImportR :: Handler (PublicGame ArkhamGameId)"
     decodePosition <- position "decodeExportBytes"
-    transactionPosition <- position "(key, importReceipt) <- runDB"
+    transactionPosition <- position "(importedGame, importReceipt) <- runDB"
+    queueRemapPosition <-
+      position
+        "choiceMessages = remapReplayMessagePlayerIds replayPlayerIds s.choice.choiceMessages"
+    stepInsertPosition <-
+      position
+        "insertMany_ [ArkhamStep gameId (importedChoice s) s.step s.actionDiff | s <- agedSteps]"
     headerPosition <-
       position
         "replayImportResponseHeaders serverBuildIdentity importReceipt"
-    publicGamePosition <- position "$ toPublicGame"
+    publicGamePosition <- position "$ toPublicGame importedGame"
     decodePosition `shouldSatisfy` (< transactionPosition)
+    queueRemapPosition `shouldSatisfy` (< stepInsertPosition)
     headerPosition `shouldSatisfy` (< publicGamePosition)
     importHandler
       `shouldSatisfy` T.isInfixOf
@@ -106,7 +188,38 @@ spec = describe "selectUploadedExportFile" do
         "traverse_ (uncurry addHeader) (replayImportResponseHeaders serverBuildIdentity importReceipt)"
     importHandler
       `shouldSatisfy` T.isInfixOf
-        "$ toPublicGame (Entity key $ ArkhamGame agedName agedCurrentData agedStep variant now now)"
+        "game <- get404 gameId pure (Entity gameId game, importReceipt)"
+    importHandler
+      `shouldSatisfy` T.isInfixOf
+        "$ toPublicGame importedGame"
+
+  it "governs the full import body, authority headers, and fail-closed checkpoint build" do
+    source <- readOpenApiSource
+    let normalized = T.unwords $ T.words source
+        importAndRest = snd $ T.breakOn "/arkham/games/import:" normalized
+        importContract =
+          fst $ T.breakOn "/arkham/games/{gameId}:" importAndRest
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "body is the complete `PublicGame` snapshot"
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "$ref: \"#/components/schemas/PublicGame\""
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "X-Arkham-Backend-Build-Identity: required: true"
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "X-Arkham-Replay-Import-Receipt:"
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "present only when the uploaded bytes were accepted as a validated replay checkpoint"
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "`sourceClean: true` and `attestation: \"git-clean\"`"
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "Dirty, `source-sha256`-attested, unattested, mismatched, or tampered checkpoints fail with 400 before game creation"
 
   it "binds replay attestation reads to the authenticated game membership" do
     source <- readDebugSource
@@ -131,6 +244,20 @@ readDebugSource = go candidatePaths
     , "arkham-api/library/Api/Handler/Arkham/Game/Debug.hs"
     ]
   go [] = error $ "could not find Debug.hs under: " <> show candidatePaths
+  go (path : rest) = do
+    exists <- doesFileExist path
+    if exists then T.readFile path else go rest
+
+readOpenApiSource :: IO Text
+readOpenApiSource = go candidatePaths
+ where
+  candidatePaths :: [FilePath]
+  candidatePaths =
+    [ "contracts/openapi.yaml"
+    , "../contracts/openapi.yaml"
+    , "../../contracts/openapi.yaml"
+    ]
+  go [] = error $ "could not find contracts/openapi.yaml under: " <> show candidatePaths
   go (path : rest) = do
     exists <- doesFileExist path
     if exists then T.readFile path else go rest

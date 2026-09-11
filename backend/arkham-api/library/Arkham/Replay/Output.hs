@@ -30,20 +30,30 @@ import System.FilePath (normalise, takeDirectory, takeFileName)
 import System.Posix.Files (
   FileStatus,
   deviceID,
+  fileMode,
+  fileOwner,
   fileID,
   getFdStatus,
   getFileStatus,
   getSymbolicLinkStatus,
+  groupModes,
+  groupWriteMode,
+  intersectFileModes,
   isDirectory,
   isRegularFile,
   isSymbolicLink,
+  nullFileMode,
+  otherModes,
+  otherWriteMode,
+  ownerModes,
   ownerReadMode,
   ownerWriteMode,
+  setFdMode,
   unionFileModes,
  )
 import System.Posix.IO (
   OpenFileFlags (..),
-  OpenMode (ReadOnly, WriteOnly),
+  OpenMode (ReadOnly, ReadWrite, WriteOnly),
   closeFd,
   defaultFileFlags,
   fdSeek,
@@ -51,8 +61,9 @@ import System.Posix.IO (
   openFdAt,
  )
 import System.Posix.IO.ByteString (fdRead, fdWrite)
-import System.Posix.Types (DeviceID, Fd, FileID)
+import System.Posix.Types (DeviceID, Fd, FileID, FileMode)
 import System.Posix.Unistd (fileSynchronise)
+import System.Posix.User (getEffectiveUserID)
 
 type FileIdentity = (DeviceID, FileID)
 
@@ -87,6 +98,8 @@ data ReplayPublishPhase
   | ReplayStageCompleted ReplayOutputRole
   | ReplayOutputsStaged
   | ReplayBeforeSecondaryPublish ReplayOutputRole
+  | ReplayBeforeDestinationCreate ReplayOutputRole
+  | ReplayDestinationCreated ReplayOutputRole
   | ReplaySecondaryPublished ReplayOutputRole
   | ReplayBeforeCheckpointPublish
   | ReplayCheckpointLinked
@@ -114,9 +127,24 @@ data OpenOutput = OpenOutput
 
 data StagedOutput = StagedOutput
   { stagedOutputOpen :: OpenOutput
-  , stagedOutputName :: FilePath
   , stagedOutputDescriptor :: Fd
   , stagedOutputIdentity :: FileIdentity
+  , stagedOutputSha256 :: Text
+  }
+
+data CapturedOutput = CapturedOutput
+  { capturedOutputOpen :: OpenOutput
+  , capturedOutputName :: FilePath
+  , capturedOutputDescriptor :: Fd
+  , capturedOutputIdentity :: FileIdentity
+  , capturedOutputMode :: FileMode
+  }
+
+data CreatedOutput = CreatedOutput
+  { createdOutputOpen :: OpenOutput
+  , createdOutputName :: FilePath
+  , createdOutputDescriptor :: Fd
+  , createdOutputIdentity :: FileIdentity
   }
 
 stagedOutputRole :: StagedOutput -> ReplayOutputRole
@@ -237,7 +265,7 @@ publishReplayOutputsWithHook hook plan artifacts = mask \restore -> do
         withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
         withCleanup $ revalidateOutput plan secondary.stagedOutputOpen
         withCleanup $ hook $ ReplayBeforeSecondaryPublish $ stagedOutputRole secondary
-        withCleanup $ publishStage secondary
+        withCleanup $ publishStage hook plan secondary
         withCleanup $ hook $ ReplaySecondaryPublished $ stagedOutputRole secondary
       withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
       withCleanup $ hook ReplayBeforeCheckpointPublish
@@ -283,7 +311,7 @@ stageOutput
   -> IO StagedOutput
 stageOutput restore hook output bytes = do
   hook $ ReplayBeforeStageCreate role
-  staged <- openStage output template
+  staged <- openStage output template $ sha256Strict $ BSL.toStrict bytes
   let complete = do
         restore $ traverse_ (writeDescriptor staged.stagedOutputDescriptor) $ BSL.toChunks bytes
         restore $ fileSynchronise staged.stagedOutputDescriptor
@@ -320,13 +348,14 @@ openReplayOutput output =
         $ replayOutputFailure
         $ "replay output parent changed during execution: "
         <> output.resolvedOutputOriginal
+      validateOutputParentPermissions output.resolvedOutputOriginal status
       pure OpenOutput {openOutputResolved = output, openOutputParentDescriptor = fd}
 
 closeOpenOutput :: OpenOutput -> IO ()
 closeOpenOutput = ignoreIOException . closeFd . openOutputParentDescriptor
 
-openStage :: OpenOutput -> String -> IO StagedOutput
-openStage output template = do
+openStage :: OpenOutput -> String -> Text -> IO StagedOutput
+openStage output template contentSha256 = do
   name <- freshRelativeName template
   let flags =
         defaultFileFlags
@@ -336,29 +365,44 @@ openStage output template = do
           , nofollow = True
           }
       parentFd = output.openOutputParentDescriptor
-  tryIOError (openFdAt (Just parentFd) name WriteOnly flags) >>= \case
+      cleanupCreated fd =
+        ignoreIOException
+          ( do
+              status <- getFdStatus fd
+              when (isRegularFile status) $
+                void $
+                  removeReadableEntryWithIdentity output name $ statusIdentity status
+          )
+          `finally` ignoreIOException (closeFd fd)
+  tryIOError (openFdAt (Just parentFd) name ReadWrite flags) >>= \case
     Left err
-      | isAlreadyExistsError err -> openStage output template
+      | isAlreadyExistsError err -> openStage output template contentSha256
       | otherwise -> throwIO err
     Right fd ->
-      bracketOnError (pure fd) closeFd \ownedFd -> do
+      bracketOnError (pure fd) cleanupCreated \ownedFd -> do
         status <- getFdStatus ownedFd
         unless (isRegularFile status) $
           replayOutputFailure "replay staging path is not a regular file"
-        -- Retaining this descriptor prevents inode reuse after a path replacement
-        -- and carries ownership through publication or cleanup.
+        let identity = statusIdentity status
+        -- Detach the stage immediately. Publication copies only from this
+        -- retained descriptor, so no later pathname replacement can select
+        -- bytes for publication or cleanup.
+        detached <- removeReadableEntryWithIdentity output name identity
+        unless detached $
+          replayOutputFailure "replay staging path changed during acquisition"
+        detachedStatus <- getFdStatus ownedFd
+        unless (isRegularFile detachedStatus && statusIdentity detachedStatus == identity) $
+          replayOutputFailure "replay staging descriptor changed during acquisition"
         pure
           StagedOutput
             { stagedOutputOpen = output
-            , stagedOutputName = name
             , stagedOutputDescriptor = ownedFd
-            , stagedOutputIdentity = statusIdentity status
+            , stagedOutputIdentity = identity
+            , stagedOutputSha256 = contentSha256
             }
 
 cleanupOpenStage :: StagedOutput -> IO ()
-cleanupOpenStage staged =
-  ignoreIOException (void $ removeEntryIfOwned staged staged.stagedOutputName)
-    `finally` ignoreIOException (closeFd staged.stagedOutputDescriptor)
+cleanupOpenStage = ignoreIOException . closeFd . stagedOutputDescriptor
 
 writeDescriptor :: Fd -> BS.ByteString -> IO ()
 writeDescriptor _ bytes | BS.null bytes = pure ()
@@ -368,71 +412,155 @@ writeDescriptor fd bytes = do
   writeDescriptor fd $ BS.drop written bytes
 
 cleanupStage :: StagedOutput -> IO ()
-cleanupStage staged =
-  ignoreIOException (void $ removeEntryIfOwned staged staged.stagedOutputName)
-    `finally` ignoreIOException (closeFd staged.stagedOutputDescriptor)
+cleanupStage = ignoreIOException . closeFd . stagedOutputDescriptor
 
-publishStage :: StagedOutput -> IO ()
-publishStage staged = mask \restore -> do
-  captured <- captureOwnedStage staged staged.stagedOutputName
-  let parentFd = staged.stagedOutputOpen.openOutputParentDescriptor
-      destination = staged.stagedOutputOpen.openOutputResolved.resolvedOutputName
-      cleanupCaptured = ignoreIOException $ void $ removeEntryIfOwned staged captured
-  restore (renameAt parentFd captured parentFd destination) `onException` cleanupCaptured
-  restore $ syncDirectoryDescriptor parentFd
+publishStage
+  :: (ReplayPublishPhase -> IO ())
+  -> ReplayOutputPlan
+  -> StagedOutput
+  -> IO ()
+publishStage hook plan staged =
+  publishStagedOutput hook plan staged $ pure ()
 
 publishCheckpoint
   :: (ReplayPublishPhase -> IO ())
   -> ReplayOutputPlan
   -> StagedOutput
   -> IO ()
-publishCheckpoint hook plan staged = mask \restore -> do
+publishCheckpoint hook plan staged =
+  publishStagedOutput hook plan staged $ hook ReplayCheckpointLinked
+
+publishStagedOutput
+  :: (ReplayPublishPhase -> IO ())
+  -> ReplayOutputPlan
+  -> StagedOutput
+  -> IO ()
+  -> IO ()
+publishStagedOutput hook plan staged afterPublish = mask \restore -> do
   let output = staged.stagedOutputOpen
-      parentFd = output.openOutputParentDescriptor
-      destination = output.openOutputResolved.resolvedOutputName
+      role = stagedOutputRole staged
   restore $ revalidateOutput plan output
-  captured <- captureOwnedStage staged staged.stagedOutputName
-  let rollback = do
-        removePublishedCheckpointIfOwned staged destination
-        ignoreIOException $ void $ removeEntryIfOwned staged captured
-  restore (linkAt parentFd captured parentFd destination) `onException` rollback
+  captured <- captureExpectedOutput output
+  let restoreCaptured = traverse_ restoreCapturedOutput captured
+  created <-
+    ( do
+        restore $ hook $ ReplayBeforeDestinationCreate role
+        restore $ revalidateOutputParent output
+        createOutput output
+    )
+      `onException` restoreCaptured
+  let rollback =
+        removeCreatedOutputIfOwned created
+          `finally` ( restoreCaptured
+                        `finally` ignoreIOException (closeFd created.createdOutputDescriptor)
+                    )
   ( restore $ do
-      hook ReplayCheckpointLinked
-      preserved <- entryHasIdentityAt parentFd destination staged.stagedOutputIdentity
-      unless preserved $
-        replayOutputFailure "checkpoint publication did not preserve the staged file identity"
-      syncDirectoryDescriptor parentFd
+      hook $ ReplayDestinationCreated role
+      revalidateOutputParent output
+      copyStagedOutput staged created
+      revalidateOutputParent output
+      afterPublish
     )
     `onException` rollback
-  ignoreIOException $ void $ removeEntryIfOwned staged captured
-  restore $ syncDirectoryDescriptor parentFd
+  ignoreIOException $ closeFd created.createdOutputDescriptor
+  traverse_ (ignoreIOException . discardCapturedOutput) captured
 
-removePublishedCheckpointIfOwned :: StagedOutput -> FilePath -> IO ()
-removePublishedCheckpointIfOwned staged destination = do
-  removed <- removeEntryIfOwned staged destination
-  when removed $
-    ignoreIOException $ syncDirectoryDescriptor staged.stagedOutputOpen.openOutputParentDescriptor
+createOutput :: OpenOutput -> IO CreatedOutput
+createOutput output =
+  createNamedOutput output output.openOutputResolved.resolvedOutputName
+
+createNamedOutput :: OpenOutput -> FilePath -> IO CreatedOutput
+createNamedOutput output destination = do
+  let parentFd = output.openOutputParentDescriptor
+      flags =
+        defaultFileFlags
+          { cloexec = True
+          , creat = Just ownerWriteMode
+          , exclusive = True
+          , nofollow = True
+          }
+  fd <-
+    openFdAt (Just parentFd) destination ReadWrite flags
+      `catch` pathFailure "create" output.openOutputResolved.resolvedOutputOriginal
+  bracketOnError (pure fd) closeFd \ownedFd -> do
+    status <- getFdStatus ownedFd
+    unless (isRegularFile status) $
+      replayOutputFailure "created replay output is not a regular file"
+    pure
+      CreatedOutput
+        { createdOutputOpen = output
+        , createdOutputName = destination
+        , createdOutputDescriptor = ownedFd
+        , createdOutputIdentity = statusIdentity status
+        }
+
+copyStagedOutput :: StagedOutput -> CreatedOutput -> IO ()
+copyStagedOutput staged created = do
+  bytes <-
+    readRetainedDescriptor
+      staged.stagedOutputDescriptor
+      staged.stagedOutputIdentity
+  unless (sha256Strict bytes == staged.stagedOutputSha256) $
+    replayOutputFailure "replay staging descriptor contents changed before publication"
+  publishDescriptorBytes
+    created
+    (ownerReadMode `unionFileModes` ownerWriteMode)
+    bytes
+
+ensureCreatedOutputOwned :: CreatedOutput -> IO ()
+ensureCreatedOutputOwned created = do
+  descriptorStatus <- getFdStatus created.createdOutputDescriptor
+  let output = created.createdOutputOpen
+  pathOwned <-
+    entryHasIdentityAtWithMode
+      WriteOnly
+      output.openOutputParentDescriptor
+      created.createdOutputName
+      created.createdOutputIdentity
+  unless
+    ( isRegularFile descriptorStatus
+        && statusIdentity descriptorStatus == created.createdOutputIdentity
+        && pathOwned
+    )
+    $ replayOutputFailure "created replay output changed before publication"
+
+publishDescriptorBytes :: CreatedOutput -> FileMode -> BS.ByteString -> IO ()
+publishDescriptorBytes created mode bytes = do
+  ensureCreatedOutputOwned created
+  writeDescriptor created.createdOutputDescriptor bytes
+  fileSynchronise created.createdOutputDescriptor
+  -- The destination is owner-write-only until every byte is durable. fchmod
+  -- is the single readable-publication gate and acts on the retained fd.
+  setFdMode created.createdOutputDescriptor mode
+  fileSynchronise created.createdOutputDescriptor
+  descriptorStatus <- getFdStatus created.createdOutputDescriptor
+  unless
+    (isRegularFile descriptorStatus && statusIdentity descriptorStatus == created.createdOutputIdentity)
+    $ replayOutputFailure "created replay output descriptor changed during publication"
+  let output = created.createdOutputOpen
+      parentFd = output.openOutputParentDescriptor
+      destination = created.createdOutputName
+  preserved <-
+    entryHasIdentityAtWithMode WriteOnly parentFd destination created.createdOutputIdentity
+  unless preserved $
+    replayOutputFailure "replay output path changed before the readable-publication gate completed"
+  syncDirectoryDescriptor parentFd
+
+readRetainedDescriptor :: Fd -> FileIdentity -> IO BS.ByteString
+readRetainedDescriptor fd expected = do
+  before <- getFdStatus fd
+  unless (isRegularFile before && statusIdentity before == expected) $
+    replayOutputFailure "retained replay descriptor changed before publication"
+  bytes <- readDescriptor fd
+  after <- getFdStatus fd
+  unless (isRegularFile after && statusIdentity after == expected) $
+    replayOutputFailure "retained replay descriptor changed during publication"
+  pure bytes
 
 revalidateOutput :: ReplayOutputPlan -> OpenOutput -> IO ()
 revalidateOutput plan output = do
-  descriptorStatus <- getFdStatus output.openOutputParentDescriptor
+  revalidateOutputParent output
   let resolved = output.openOutputResolved
-  unless
-    ( isDirectory descriptorStatus
-        && statusIdentity descriptorStatus == resolved.resolvedOutputParentIdentity
-    )
-    $ replayOutputFailure
-    $ "replay output parent descriptor changed during execution: "
-    <> resolved.resolvedOutputOriginal
-  parentStatus <- getSymbolicLinkStatus resolved.resolvedOutputParent
-  unless
-    ( isDirectory parentStatus
-        && not (isSymbolicLink parentStatus)
-        && statusIdentity parentStatus == resolved.resolvedOutputParentIdentity
-    )
-    $ replayOutputFailure
-    $ "replay output parent changed during execution: "
-    <> resolved.resolvedOutputOriginal
   currentStatus <- symbolicStatusMaybe resolved.resolvedOutputCanonical
   currentIdentity <- case currentStatus of
     Nothing -> pure Nothing
@@ -448,6 +576,29 @@ revalidateOutput plan output = do
     when (identity `elem` map replayInputIdentity plan.replayOutputPlanInputs) $
       replayOutputFailure $ "replay output became a hard-link alias of an input: " <> resolved.resolvedOutputOriginal
 
+revalidateOutputParent :: OpenOutput -> IO ()
+revalidateOutputParent output = do
+  descriptorStatus <- getFdStatus output.openOutputParentDescriptor
+  let resolved = output.openOutputResolved
+  unless
+    ( isDirectory descriptorStatus
+        && statusIdentity descriptorStatus == resolved.resolvedOutputParentIdentity
+    )
+    $ replayOutputFailure
+    $ "replay output parent descriptor changed during execution: "
+    <> resolved.resolvedOutputOriginal
+  validateOutputParentPermissions resolved.resolvedOutputOriginal descriptorStatus
+  parentStatus <- getSymbolicLinkStatus resolved.resolvedOutputParent
+  unless
+    ( isDirectory parentStatus
+        && not (isSymbolicLink parentStatus)
+        && statusIdentity parentStatus == resolved.resolvedOutputParentIdentity
+    )
+    $ replayOutputFailure
+    $ "replay output parent changed during execution: "
+    <> resolved.resolvedOutputOriginal
+  validateOutputParentPermissions resolved.resolvedOutputOriginal parentStatus
+
 resolveOutput :: ReplayOutputRequest -> IO ResolvedOutput
 resolveOutput ReplayOutputRequest {..} = do
   absolute <- normalise <$> makeAbsolute replayOutputRequestPath
@@ -459,6 +610,7 @@ resolveOutput ReplayOutputRequest {..} = do
   parentStatus <- getFileStatus parent
   unless (isDirectory parentStatus) $
     replayOutputFailure $ "replay output parent is not a directory: " <> parentSpelling
+  validateOutputParentPermissions replayOutputRequestPath parentStatus
   let canonical = parent </> fileName
   existingStatus <- symbolicStatusMaybe canonical
   existingIdentity <- case existingStatus of
@@ -515,73 +667,190 @@ symbolicStatusMaybe path =
       | isDoesNotExistError err -> pure Nothing
       | otherwise -> throwIO err
 
-data CapturedEntry
-  = CapturedEntryMissing
-  | CapturedEntryForeign
-  | CapturedEntryOwned FilePath
+validateOutputParentPermissions :: FilePath -> FileStatus -> IO ()
+validateOutputParentPermissions original status = do
+  effectiveUser <- getEffectiveUserID
+  unless (fileOwner status == effectiveUser) $
+    replayOutputFailure $ "replay output parent is not owned by the running user: " <> original
+  let unsafeWriteModes = groupWriteMode `unionFileModes` otherWriteMode
+  unless (fileMode status `intersectFileModes` unsafeWriteModes == nullFileMode) $
+    replayOutputFailure $ "replay output parent has group/world write mode bits: " <> original
 
-captureOwnedStage :: StagedOutput -> FilePath -> IO FilePath
-captureOwnedStage staged source =
-  captureEntry staged source >>= \case
-    CapturedEntryOwned captured -> pure captured
-    CapturedEntryMissing ->
-      replayOutputFailure
-        $ "replay staging file disappeared before publication: "
-        <> staged.stagedOutputOpen.openOutputResolved.resolvedOutputOriginal
-    CapturedEntryForeign ->
-      replayOutputFailure
-        $ "replay staging file changed before publication: "
-        <> staged.stagedOutputOpen.openOutputResolved.resolvedOutputOriginal
+captureExpectedOutput :: OpenOutput -> IO (Maybe CapturedOutput)
+captureExpectedOutput output =
+  for output.openOutputResolved.resolvedOutputExistingIdentity \expected -> do
+    let parentFd = output.openOutputParentDescriptor
+        destination = output.openOutputResolved.resolvedOutputName
+    capturedName <-
+      freshRelativeName $ "." <> destination <> ".arkham-replay-replaced"
+    renameAt parentFd destination parentFd capturedName
+      `catch` pathFailure "capture existing output" output.openOutputResolved.resolvedOutputOriginal
+    captured <- openCapturedOutput output capturedName
+    if captured.capturedOutputIdentity == expected
+      then pure captured
+      else do
+        preserveCapturedEntry captured destination
+        ignoreIOException $ closeFd captured.capturedOutputDescriptor
+        replayOutputFailure
+          $ "replay output changed while it was captured: "
+          <> output.openOutputResolved.resolvedOutputOriginal
 
-removeEntryIfOwned :: StagedOutput -> FilePath -> IO Bool
-removeEntryIfOwned staged source = do
-  owned <- entryHasIdentityAt parentFd source staged.stagedOutputIdentity
-  if not owned
+openCapturedOutput :: OpenOutput -> FilePath -> IO CapturedOutput
+openCapturedOutput = openCapturedOutputWithMode ReadOnly
+
+openCapturedOutputWithMode :: OpenMode -> OpenOutput -> FilePath -> IO CapturedOutput
+openCapturedOutputWithMode mode output name = do
+  let parentFd = output.openOutputParentDescriptor
+      flags = defaultFileFlags {cloexec = True, nonBlock = True, nofollow = True}
+  fd <-
+    openFdAt (Just parentFd) name mode flags
+      `catch` pathFailure "open captured output" output.openOutputResolved.resolvedOutputOriginal
+  bracketOnError (pure fd) closeFd \ownedFd -> do
+    status <- getFdStatus ownedFd
+    unless (isRegularFile status) $
+      replayOutputFailure "captured replay output is not a regular file"
+    pure
+      CapturedOutput
+        { capturedOutputOpen = output
+        , capturedOutputName = name
+        , capturedOutputDescriptor = ownedFd
+        , capturedOutputIdentity = statusIdentity status
+        , capturedOutputMode =
+            fileMode status
+              `intersectFileModes` (ownerModes `unionFileModes` groupModes `unionFileModes` otherModes)
+        }
+
+restoreCapturedOutput :: CapturedOutput -> IO ()
+restoreCapturedOutput captured =
+  ( do
+      restored <-
+        try @_ @IOException do
+          created <-
+            createNamedOutput
+              captured.capturedOutputOpen
+              captured.capturedOutputOpen.openOutputResolved.resolvedOutputName
+          let cleanupCreated =
+                removeCreatedOutputIfOwned created
+                  `finally` ignoreIOException (closeFd created.createdOutputDescriptor)
+          bytes <-
+            readRetainedDescriptor
+              captured.capturedOutputDescriptor
+              captured.capturedOutputIdentity
+              `onException` cleanupCreated
+          publishDescriptorBytes created captured.capturedOutputMode bytes
+            `onException` cleanupCreated
+          ignoreIOException $ closeFd created.createdOutputDescriptor
+          pure ()
+      case restored of
+        Left _ -> pure ()
+        Right () ->
+          ignoreIOException $
+            void $
+              removeReadableEntryWithIdentity
+                captured.capturedOutputOpen
+                captured.capturedOutputName
+                captured.capturedOutputIdentity
+    )
+    `finally` ignoreIOException (closeFd captured.capturedOutputDescriptor)
+
+discardCapturedOutput :: CapturedOutput -> IO ()
+discardCapturedOutput captured =
+  ( do
+      removed <-
+        removeReadableEntryWithIdentity
+          captured.capturedOutputOpen
+          captured.capturedOutputName
+          captured.capturedOutputIdentity
+      unless removed $
+        replayOutputFailure
+          $ "captured prior replay output changed before cleanup: "
+          <> captured.capturedOutputOpen.openOutputResolved.resolvedOutputOriginal
+    )
+    `finally` ignoreIOException (closeFd captured.capturedOutputDescriptor)
+
+removeCreatedOutputIfOwned :: CreatedOutput -> IO ()
+removeCreatedOutputIfOwned created = do
+  removed <-
+    removeCreatedEntryWithIdentity
+      created.createdOutputOpen
+      created.createdOutputName
+      created.createdOutputIdentity
+  when removed $
+    ignoreIOException
+      $ syncDirectoryDescriptor created.createdOutputOpen.openOutputParentDescriptor
+
+removeReadableEntryWithIdentity :: OpenOutput -> FilePath -> FileIdentity -> IO Bool
+removeReadableEntryWithIdentity =
+  removeEntryWithIdentity ReadOnly preserveCapturedEntry
+
+removeCreatedEntryWithIdentity :: OpenOutput -> FilePath -> FileIdentity -> IO Bool
+removeCreatedEntryWithIdentity =
+  removeEntryWithIdentity WriteOnly \_ _ -> pure ()
+
+removeEntryWithIdentity
+  :: OpenMode
+  -> (CapturedOutput -> FilePath -> IO ())
+  -> OpenOutput
+  -> FilePath
+  -> FileIdentity
+  -> IO Bool
+removeEntryWithIdentity mode preserveMismatch output source expected = do
+  let parentFd = output.openOutputParentDescriptor
+  initiallyOwned <- entryHasIdentityAtWithMode mode parentFd source expected
+  if not initiallyOwned
     then pure False
-    else
-      captureEntry staged source >>= \case
-        CapturedEntryOwned captured -> unlinkAt parentFd captured $> True
-        CapturedEntryMissing -> pure False
-        CapturedEntryForeign -> pure False
- where
-  parentFd = staged.stagedOutputOpen.openOutputParentDescriptor
+    else do
+      capturedName <- freshRelativeName ".arkham-replay-capture"
+      tryIOError (renameAt parentFd source parentFd capturedName) >>= \case
+        Left err
+          | isDoesNotExistError err -> pure False
+          | otherwise -> throwIO err
+        Right () -> do
+          captured <- openCapturedOutputWithMode mode output capturedName
+          if captured.capturedOutputIdentity == expected
+            then
+              ( do
+                  -- Portable POSIX has no unlink-by-fd. The verification fd
+                  -- stays open through unlink, and the parent is owner-only;
+                  -- a cooperating same-UID process can still race this final
+                  -- pathname operation, which is documented as a limit.
+                  unlinkAt parentFd capturedName
+                  status <- getFdStatus captured.capturedOutputDescriptor
+                  unless (statusIdentity status == expected) $
+                    replayOutputFailure "captured replay output descriptor changed during cleanup"
+                  pure True
+              )
+                `finally` ignoreIOException (closeFd captured.capturedOutputDescriptor)
+            else do
+              preserveMismatch captured source
+              ignoreIOException $ closeFd captured.capturedOutputDescriptor
+              pure False
 
-captureEntry :: StagedOutput -> FilePath -> IO CapturedEntry
-captureEntry staged source = do
-  ownerStatus <- getFdStatus staged.stagedOutputDescriptor
-  unless
-    (isRegularFile ownerStatus && statusIdentity ownerStatus == staged.stagedOutputIdentity)
-    $ replayOutputFailure "replay staging descriptor changed during execution"
-  captured <- freshRelativeName ".arkham-replay-capture"
-  let parentFd = staged.stagedOutputOpen.openOutputParentDescriptor
-  -- Atomically move the directory entry out of the attacker-visible name
-  -- before checking or unlinking it.
-  tryIOError (renameAt parentFd source parentFd captured) >>= \case
-    Left err
-      | isDoesNotExistError err -> pure CapturedEntryMissing
-      | otherwise -> throwIO err
-    Right () -> do
-      owned <- entryHasIdentityAt parentFd captured staged.stagedOutputIdentity
-      if owned
-        then pure $ CapturedEntryOwned captured
-        else restoreCapturedEntry parentFd captured source $> CapturedEntryForeign
+preserveCapturedEntry :: CapturedOutput -> FilePath -> IO ()
+preserveCapturedEntry captured destination =
+  void
+    $ try @_ @IOException do
+      created <- createNamedOutput captured.capturedOutputOpen destination
+      let cleanupCreated =
+            removeCreatedOutputIfOwned created
+              `finally` ignoreIOException (closeFd created.createdOutputDescriptor)
+      bytes <-
+        readRetainedDescriptor
+          captured.capturedOutputDescriptor
+          captured.capturedOutputIdentity
+          `onException` cleanupCreated
+      publishDescriptorBytes created captured.capturedOutputMode bytes
+        `onException` cleanupCreated
+      ignoreIOException $ closeFd created.createdOutputDescriptor
 
-restoreCapturedEntry :: Fd -> FilePath -> FilePath -> IO ()
-restoreCapturedEntry parentFd captured destination =
-  -- linkat is the no-clobber restoration step: a concurrent replacement at
-  -- destination is preserved, and so is the captured foreign entry.
-  tryIOError (linkAt parentFd captured parentFd destination) >>= \case
-    Right () -> ignoreIOException $ unlinkAt parentFd captured
-    Left _ -> pure ()
-
-entryHasIdentityAt :: Fd -> FilePath -> FileIdentity -> IO Bool
-entryHasIdentityAt parentFd path expected =
+entryHasIdentityAtWithMode :: OpenMode -> Fd -> FilePath -> FileIdentity -> IO Bool
+entryHasIdentityAtWithMode mode parentFd path expected =
   tryIOError
     ( bracket
         ( openFdAt
             (Just parentFd)
             path
-            ReadOnly
+            mode
             defaultFileFlags {cloexec = True, nonBlock = True, nofollow = True}
         )
         closeFd
@@ -614,18 +883,6 @@ renameAt oldDirectory oldPath newDirectory newPath =
           (fromIntegral newDirectory)
           newPathCString
 
-linkAt :: Fd -> FilePath -> Fd -> FilePath -> IO ()
-linkAt oldDirectory oldPath newDirectory newPath =
-  withCString oldPath \oldPathCString ->
-    withCString newPath \newPathCString ->
-      throwErrnoIfMinus1_ "linkat" $
-        c_linkat
-          (fromIntegral oldDirectory)
-          oldPathCString
-          (fromIntegral newDirectory)
-          newPathCString
-          0
-
 unlinkAt :: Fd -> FilePath -> IO ()
 unlinkAt directory path =
   withCString path \pathCString ->
@@ -634,9 +891,6 @@ unlinkAt directory path =
 
 foreign import ccall unsafe "renameat"
   c_renameat :: CInt -> CString -> CInt -> CString -> IO CInt
-
-foreign import ccall unsafe "linkat"
-  c_linkat :: CInt -> CString -> CInt -> CString -> CInt -> IO CInt
 
 foreign import ccall unsafe "unlinkat"
   c_unlinkat :: CInt -> CString -> CInt -> IO CInt

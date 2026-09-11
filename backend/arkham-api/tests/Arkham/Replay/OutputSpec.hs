@@ -24,14 +24,25 @@ import System.Directory (
 import System.Posix.Files (
   createLink,
   createNamedPipe,
+  fileMode,
+  getFileStatus,
+  groupWriteMode,
+  intersectFileModes,
+  nullFileMode,
+  ownerExecuteMode,
   ownerReadMode,
   ownerWriteMode,
+  setFileMode,
   unionFileModes,
  )
 import TestImport.New
 
 spec :: Spec
-spec = describe "deterministic replay file handling" do
+-- These examples share a cleanup root and deliberately coordinate
+-- asynchronous cancellation. The project's default parallel hook can let one
+-- example remove that root during another example's acquisition handoff.
+-- Keep examples sequential while preserving each example's internal races.
+spec = sequential $ describe "deterministic replay file handling" do
   it "opens regular inputs without following symlinks or accepting special files" $
     withWorkspace "input-types" \workspace -> do
       let target = workspace </> "target"
@@ -88,6 +99,22 @@ spec = describe "deterministic replay file handling" do
             expectIOExceptionContaining message $
               prepareReplayOutputs [opened] [checkpointRequest output]
 
+  it "rejects output parents writable by another user or group" $
+    withWorkspace "shared-output-parent" \workspace -> do
+      let input = workspace </> "source"
+          outputParent = workspace </> "shared"
+          checkpoint = outputParent </> "checkpoint"
+      BSL8.writeFile input "source"
+      createDirectory outputParent
+      setFileMode outputParent $
+        ownerReadMode
+          `unionFileModes` ownerWriteMode
+          `unionFileModes` ownerExecuteMode
+          `unionFileModes` groupWriteMode
+      withReplayInput input \opened ->
+        expectIOExceptionContaining "group/world write mode bits" $
+          prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+
   it "stages through a retained no-follow parent descriptor after a symlink retarget" $
     withWorkspace "parent-retarget" \workspace -> do
       let input = workspace </> "source"
@@ -112,50 +139,45 @@ spec = describe "deterministic replay file handling" do
             [artifact ReplayCheckpointOutput "checkpoint"]
         listDirectory escapeParent `shouldReturn` []
         doesFileExist (retainedParent </> "checkpoint") `shouldReturn` False
-        assertNoStages retainedParent
-        assertNoCaptures retainedParent
+        assertNoInternalArtifacts retainedParent
 
-  it "preserves a foreign stage replacement immediately before cleanup" $
-    withWorkspace "cleanup-replacement" \workspace -> do
+  it "keeps completed stages anonymous and preserves stage-shaped files during cleanup" $
+    withWorkspace "anonymous-cleanup" \workspace -> do
       let input = workspace </> "source"
           checkpoint = workspace </> "checkpoint"
+          decoy = stageDecoy workspace "checkpoint"
       BSL8.writeFile input "source"
       withReplayInput input \opened -> do
         plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
-        foreignPath <- newEmptyMVar
         expectIOExceptionContaining "force cleanup" $
           publishReplayOutputsWithHook
             ( \case
                 ReplayOutputsStaged -> do
-                  path <- stageFor workspace "checkpoint"
-                  removeFile path
-                  BSL8.writeFile path "foreign"
-                  putMVar foreignPath path
+                  assertNoInternalArtifacts workspace
+                  BSL8.writeFile decoy "foreign"
                   ioError $ userError "force cleanup"
                 _ -> pure ()
             )
             plan
             [artifact ReplayCheckpointOutput "checkpoint"]
-        path <- readMVar foreignPath
-        BSL8.readFile path `shouldReturn` "foreign"
+        BSL8.readFile decoy `shouldReturn` "foreign"
         doesFileExist checkpoint `shouldReturn` False
-        removeFile path
-      assertNoStages workspace
-      assertNoCaptures workspace
+        removeFile decoy
+      assertNoInternalArtifacts workspace
 
-  it "transfers each completed stage to masked ownership before cancellation" $
+  it "transfers each anonymous stage to masked ownership before cancellation" $
     withWorkspace "stage-acquisition-cancellation" \workspace -> do
       let input = workspace </> "source"
           checkpoint = workspace </> "checkpoint"
           secondary = workspace </> "game"
+          decoy = stageDecoy workspace "checkpoint"
       BSL8.writeFile input "source"
       withReplayInput input \opened -> do
         plan <-
           prepareReplayOutputs
             [opened]
             [checkpointRequest checkpoint, ReplayOutputRequest ReplayFinalGameOutput secondary]
-        checkpointStage <- newEmptyMVar
-        foreignPath <- newEmptyMVar
+        checkpointCompleted <- newEmptyMVar
         completed <- newEmptyMVar
         sender <- newEmptyMVar
         armed <- newEmptyMVar
@@ -164,42 +186,36 @@ spec = describe "deterministic replay file handling" do
             $ publishReplayOutputsWithHook
               ( \case
                   ReplayStageCompleted ReplayCheckpointOutput -> do
-                    stagedPaths workspace >>= \case
-                      [path] -> void $ tryPutMVar checkpointStage path
-                      other -> expectationFailure ("expected one completed stage, got " <> show other)
+                    assertNoInternalArtifacts workspace
+                    void $ tryPutMVar checkpointCompleted ()
                   ReplayStageCompleted ReplayFinalGameOutput -> do
-                    path <-
-                      tryReadMVar checkpointStage
-                        >>= maybe (expectationFailure "checkpoint stage was not retained" >> error "unreachable") pure
-                    removeFile path
-                    BSL8.writeFile path "foreign"
-                    void $ tryPutMVar foreignPath path
+                    readMVar checkpointCompleted
+                    assertNoInternalArtifacts workspace
+                    BSL8.writeFile decoy "foreign"
                     holdMaskedHandoff completed sender armed
                   _ -> pure ()
               )
               plan
               [artifact ReplayCheckpointOutput "checkpoint", artifact ReplayFinalGameOutput "game"]
         cancelPendingAt worker completed sender armed
-        path <- readMVar foreignPath
-        BSL8.readFile path `shouldReturn` "foreign"
+        BSL8.readFile decoy `shouldReturn` "foreign"
         doesFileExist checkpoint `shouldReturn` False
         doesFileExist secondary `shouldReturn` False
-        stagedPaths workspace `shouldReturn` [path]
-        removeFile path
-      assertNoStages workspace
+        removeFile decoy
+      assertNoInternalArtifacts workspace
 
-  it "arms cleanup before delivering cancellation pending at the acquisition handoff" $
+  it "arms cleanup before delivering cancellation after all anonymous stages are acquired" $
     withWorkspace "acquisition-cancellation" \workspace -> do
       let input = workspace </> "source"
           checkpoint = workspace </> "checkpoint"
           secondary = workspace </> "game"
+          decoy = stageDecoy workspace "game"
       BSL8.writeFile input "source"
       withReplayInput input \opened -> do
         plan <-
           prepareReplayOutputs
             [opened]
             [checkpointRequest checkpoint, ReplayOutputRequest ReplayFinalGameOutput secondary]
-        foreignPath <- newEmptyMVar
         acquired <- newEmptyMVar
         sender <- newEmptyMVar
         armed <- newEmptyMVar
@@ -208,61 +224,212 @@ spec = describe "deterministic replay file handling" do
             $ publishReplayOutputsWithHook
               ( \case
                   ReplayOutputsStaged -> do
-                    paths <- stagedPaths workspace
-                    stagePath <- case paths of
-                      [path, _] -> pure path
-                      other -> expectationFailure ("expected two stages, got " <> show other) >> error "unreachable"
-                    removeFile stagePath
-                    BSL8.writeFile stagePath "foreign"
-                    void $ tryPutMVar foreignPath stagePath
+                    assertNoInternalArtifacts workspace
+                    BSL8.writeFile decoy "foreign"
                     holdMaskedHandoff acquired sender armed
                   _ -> pure ()
               )
               plan
               [artifact ReplayCheckpointOutput "checkpoint", artifact ReplayFinalGameOutput "game"]
         cancelPendingAt worker acquired sender armed
-        path <- readMVar foreignPath
-        BSL8.readFile path `shouldReturn` "foreign"
+        BSL8.readFile decoy `shouldReturn` "foreign"
         doesFileExist checkpoint `shouldReturn` False
         doesFileExist secondary `shouldReturn` False
-        stagedPaths workspace `shouldReturn` [path]
-        removeFile path
-      assertNoStages workspace
+        removeFile decoy
+      assertNoInternalArtifacts workspace
 
-  it "rejects replacement bytes immediately before publishing every secondary role" $
+  it "publishes retained bytes despite stage-path decoys before every secondary role" $
     for_
       [(ReplayFinalGameOutput, "game"), (ReplayMetricsOutput, "metrics")]
       \(role, outputName) ->
-        withWorkspace ("secondary-replacement-" <> outputName) \workspace -> do
+        withWorkspace ("secondary-stage-decoy-" <> outputName) \workspace -> do
           let input = workspace </> "source"
               checkpoint = workspace </> "checkpoint"
               secondary = workspace </> outputName
+              decoy = stageDecoy workspace outputName
           BSL8.writeFile input "source"
           withReplayInput input \opened -> do
             plan <-
               prepareReplayOutputs
                 [opened]
                 [checkpointRequest checkpoint, ReplayOutputRequest role secondary]
-            foreignPath <- newEmptyMVar
-            expectIOExceptionContaining "staging file changed" $
-              publishReplayOutputsWithHook
-                ( \case
-                    ReplayBeforeSecondaryPublish actual | actual == role -> do
-                      path <- stageFor workspace outputName
-                      removeFile path
-                      BSL8.writeFile path "foreign"
-                      putMVar foreignPath path
-                    _ -> pure ()
-                )
-                plan
-                [artifact ReplayCheckpointOutput "checkpoint", artifact role "owned"]
-            path <- readMVar foreignPath
-            BSL8.readFile path `shouldReturn` "foreign"
-            doesFileExist checkpoint `shouldReturn` False
-            doesFileExist secondary `shouldReturn` False
-            removeFile path
-          assertNoStages workspace
-          assertNoCaptures workspace
+            publishReplayOutputsWithHook
+              ( \case
+                  ReplayBeforeSecondaryPublish actual | actual == role -> do
+                    assertNoInternalArtifacts workspace
+                    BSL8.writeFile decoy "foreign"
+                  _ -> pure ()
+              )
+              plan
+              [artifact ReplayCheckpointOutput "checkpoint", artifact role "owned"]
+            BSL8.readFile decoy `shouldReturn` "foreign"
+            BSL8.readFile secondary `shouldReturn` "owned"
+            BSL8.readFile checkpoint `shouldReturn` "checkpoint"
+            removeFile decoy
+          assertNoInternalArtifacts workspace
+
+  it "publishes retained checkpoint bytes despite a stage-path decoy" $
+    withWorkspace "checkpoint-stage-decoy" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+          decoy = stageDecoy workspace "checkpoint"
+      BSL8.writeFile input "source"
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        publishReplayOutputsWithHook
+          ( \case
+              ReplayBeforeCheckpointPublish -> do
+                assertNoInternalArtifacts workspace
+                BSL8.writeFile decoy "foreign"
+              _ -> pure ()
+          )
+          plan
+          [artifact ReplayCheckpointOutput "checkpoint"]
+        BSL8.readFile decoy `shouldReturn` "foreign"
+        BSL8.readFile checkpoint `shouldReturn` "checkpoint"
+        removeFile decoy
+      assertNoInternalArtifacts workspace
+
+  it "does not clobber a destination created immediately before checkpoint creation" $
+    withWorkspace "checkpoint-create-race" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+      BSL8.writeFile input "source"
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        expectIOException $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayBeforeDestinationCreate ReplayCheckpointOutput ->
+                  BSL8.writeFile checkpoint "foreign"
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "owned"]
+        BSL8.readFile checkpoint `shouldReturn` "foreign"
+      assertNoInternalArtifacts workspace
+
+  it "does not write, publish, or delete a destination replaced after creation" $
+    withWorkspace "checkpoint-created-replacement" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+      BSL8.writeFile input "source"
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        expectIOExceptionContaining "created replay output changed before publication" $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayDestinationCreated ReplayCheckpointOutput -> do
+                  status <- getFileStatus checkpoint
+                  fileMode status `intersectFileModes` ownerReadMode
+                    `shouldBe` nullFileMode
+                  removeFile checkpoint
+                  BSL8.writeFile checkpoint "foreign"
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "owned"]
+        BSL8.readFile checkpoint `shouldReturn` "foreign"
+      assertNoInternalArtifacts workspace
+
+  it "preserves both a raced secondary destination and its captured prior bytes" $
+    withWorkspace "secondary-create-race" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+          secondary = workspace </> "game"
+      BSL8.writeFile input "source"
+      BSL8.writeFile secondary "prior"
+      withReplayInput input \opened -> do
+        plan <-
+          prepareReplayOutputs
+            [opened]
+            [checkpointRequest checkpoint, ReplayOutputRequest ReplayFinalGameOutput secondary]
+        expectIOException $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayBeforeDestinationCreate ReplayFinalGameOutput ->
+                  BSL8.writeFile secondary "foreign"
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "checkpoint", artifact ReplayFinalGameOutput "owned"]
+        BSL8.readFile secondary `shouldReturn` "foreign"
+        recovery <- replacementFor workspace "game"
+        BSL8.readFile recovery `shouldReturn` "prior"
+        doesFileExist checkpoint `shouldReturn` False
+        removeFile recovery
+      assertNoInternalArtifacts workspace
+
+  it "replaces an expected secondary from retained descriptors without capture residue" $
+    withWorkspace "secondary-existing" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+          secondary = workspace </> "game"
+      BSL8.writeFile input "source"
+      BSL8.writeFile secondary "prior"
+      withReplayInput input \opened -> do
+        plan <-
+          prepareReplayOutputs
+            [opened]
+            [checkpointRequest checkpoint, ReplayOutputRequest ReplayFinalGameOutput secondary]
+        publishReplayOutputs
+          plan
+          [artifact ReplayCheckpointOutput "checkpoint", artifact ReplayFinalGameOutput "owned"]
+        BSL8.readFile secondary `shouldReturn` "owned"
+        BSL8.readFile checkpoint `shouldReturn` "checkpoint"
+      assertNoInternalArtifacts workspace
+
+  it "cannot escape a retained parent retargeted before destination creation" $
+    withWorkspace "destination-parent-retarget" \workspace -> do
+      let input = workspace </> "source"
+          outputParent = workspace </> "output"
+          retainedParent = workspace </> "retained-output"
+          escapeParent = workspace </> "escape"
+          checkpoint = outputParent </> "checkpoint"
+      BSL8.writeFile input "source"
+      createDirectory outputParent
+      createDirectory escapeParent
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        expectIOExceptionContaining "parent changed" $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayBeforeDestinationCreate ReplayCheckpointOutput -> do
+                  renameDirectory outputParent retainedParent
+                  createDirectoryLink escapeParent outputParent
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "checkpoint"]
+        listDirectory escapeParent `shouldReturn` []
+        doesFileExist (retainedParent </> "checkpoint") `shouldReturn` False
+        assertNoInternalArtifacts retainedParent
+
+  it "rolls back through the retained parent after a post-create retarget" $
+    withWorkspace "created-parent-retarget" \workspace -> do
+      let input = workspace </> "source"
+          outputParent = workspace </> "output"
+          retainedParent = workspace </> "retained-output"
+          escapeParent = workspace </> "escape"
+          checkpoint = outputParent </> "checkpoint"
+      BSL8.writeFile input "source"
+      createDirectory outputParent
+      createDirectory escapeParent
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        expectIOExceptionContaining "parent changed" $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayDestinationCreated ReplayCheckpointOutput -> do
+                  renameDirectory outputParent retainedParent
+                  createDirectoryLink escapeParent outputParent
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "checkpoint"]
+        listDirectory escapeParent `shouldReturn` []
+        doesFileExist (retainedParent </> "checkpoint") `shouldReturn` False
+        assertNoInternalArtifacts retainedParent
 
   it "cleans the checkpoint stage when cancelled at the secondary publication handoff" $
     withWorkspace "post-secondary-cancellation" \workspace -> do
@@ -282,7 +449,22 @@ spec = describe "deterministic replay file handling" do
           [artifact ReplayCheckpointOutput "checkpoint", artifact ReplayFinalGameOutput "game"]
         BSL8.readFile secondary `shouldReturn` "game"
         doesFileExist checkpoint `shouldReturn` False
-      assertNoStages workspace
+      assertNoInternalArtifacts workspace
+
+  it "preserves a foreign replacement when cancellation follows readable publication" $
+    withWorkspace "cancellation-replacement" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+      BSL8.writeFile input "source"
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        cancelPublisherAt
+          ReplayCheckpointLinked
+          (removeFile checkpoint >> BSL8.writeFile checkpoint "foreign")
+          plan
+          [artifact ReplayCheckpointOutput "owned"]
+        BSL8.readFile checkpoint `shouldReturn` "foreign"
+      assertNoInternalArtifacts workspace
 
   it "publishes secondaries first and leaves no checkpoint after their failure" $
     withWorkspace "checkpoint-last" \workspace -> do
@@ -319,7 +501,7 @@ spec = describe "deterministic replay file handling" do
             plan
             [artifact ReplayCheckpointOutput "checkpoint", artifact ReplayFinalGameOutput "game"]
         doesFileExist checkpoint `shouldReturn` False
-      assertNoStages workspace
+      assertNoInternalArtifacts workspace
 
   it "atomically permits exactly one concurrent checkpoint publisher without clobbering" $
     withWorkspace "no-clobber" \workspace -> do
@@ -431,19 +613,23 @@ cancelPendingAt worker reached sender armed = do
     Left err | Just E.ThreadKilled <- E.fromException err -> pure ()
     other -> expectationFailure $ "worker did not receive pending cancellation: " <> show other
 
-stagedPaths :: FilePath -> IO [FilePath]
-stagedPaths workspace =
-  map (workspace </>)
-    . List.sort
-    . filter (List.isInfixOf ".arkham-replay-stage")
-    <$> listDirectory workspace
+stageDecoy :: FilePath -> FilePath -> FilePath
+stageDecoy workspace outputName =
+  workspace </> ("." <> outputName <> ".arkham-replay-stage-decoy")
 
-stageFor :: FilePath -> FilePath -> IO FilePath
-stageFor workspace outputName =
-  stagedPaths workspace >>= \paths ->
-    case filter (List.isInfixOf $ "." <> outputName <> ".arkham-replay-stage-") paths of
-      [path] -> pure path
-      other -> expectationFailure ("expected one stage for " <> outputName <> ", got " <> show other) >> error "unreachable"
+replacementFor :: FilePath -> FilePath -> IO FilePath
+replacementFor workspace outputName =
+  listDirectory workspace >>= \entries ->
+    case
+      filter
+        (List.isPrefixOf $ "." <> outputName <> ".arkham-replay-replaced-")
+        entries
+    of
+      [entry] -> pure $ workspace </> entry
+      other ->
+        expectationFailure
+          ("expected one retained prior output for " <> outputName <> ", got " <> show other)
+          >> error "unreachable"
 
 withWorkspace :: String -> (FilePath -> IO a) -> IO a
 withWorkspace name action = do
@@ -464,12 +650,28 @@ expectIOExceptionContaining :: String -> IO a -> Expectation
 expectIOExceptionContaining needle action =
   action `shouldThrow` \(err :: E.IOException) -> needle `List.isInfixOf` show err
 
+expectIOException :: IO a -> Expectation
+expectIOException action =
+  action `shouldThrow` \(_ :: E.IOException) -> True
+
 assertNoStages :: FilePath -> Expectation
 assertNoStages workspace =
   listDirectory workspace
     >>= (`shouldSatisfy` all (not . List.isInfixOf ".arkham-replay-stage"))
 
-assertNoCaptures :: FilePath -> Expectation
-assertNoCaptures workspace =
+assertNoInternalArtifacts :: FilePath -> Expectation
+assertNoInternalArtifacts workspace =
   listDirectory workspace
-    >>= (`shouldSatisfy` all (not . List.isInfixOf ".arkham-replay-capture"))
+    >>= ( `shouldSatisfy`
+            all
+              ( \entry ->
+                  all
+                    (`notElemIn` entry)
+                    [ ".arkham-replay-stage"
+                    , ".arkham-replay-capture"
+                    , ".arkham-replay-replaced"
+                    ]
+              )
+        )
+ where
+  notElemIn needle haystack = not $ needle `List.isInfixOf` haystack

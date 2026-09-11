@@ -125,7 +125,9 @@ identifies the imported game, but the body is not an ID-only `{ "id": ... }`
 envelope. Both ordinary exports and replay checkpoints return this same full
 body together with `X-Arkham-Backend-Build-Identity`. A successful checkpoint
 import additionally returns `X-Arkham-Replay-Import-Receipt`; ordinary exports
-omit only that receipt header.
+omit only that receipt header. The response snapshot is loaded from the
+persisted game after import-time remapping rather than reconstructed from the
+uploaded pre-remap value.
 
 The checkpoint receipt's schema-versioned JSON binds the new game id, retained
 `gameGitRevision`, import-time clean backend build, SHA-256 of the exact
@@ -137,6 +139,11 @@ the game, players, and retained steps. The server does not accept
 caller-provided expected identities or digests. The Apple coordinator must
 decode the full `PublicGame` body and both applicable authority headers from
 this actual response rather than substituting an ID-only response contract.
+For a `WithFriends` checkpoint import, `stateRemapped: true` means the selected
+checkpoint `PlayerId` was replaced both throughout persisted `current_data` and
+by typed traversal of every retained queue message, including direct fields,
+nested message lists, questions, and map keys. Unrelated seats remain
+unchanged.
 
 After import, an authenticated administrator or member of that exact game can
 read `GET /api/v1/arkham/games/{gameId}/replay-attestation`. It returns the
@@ -174,18 +181,47 @@ Game, seed, open question, and next continuation remain intact.
 Export/script inputs use no-follow opens, descriptor `fstat`, descriptor reads,
 and identity/content-digest revalidation before publication; inspection uses
 the same path. Aliases, symlinks, hard links, directories, special files, and
-changed parents/destinations are rejected. Output parents are opened with
-`O_DIRECTORY|O_NOFOLLOW` and retained; stages are exclusively created, written,
-and published relative to those descriptors. Each stage descriptor remains open
-through publication or cleanup, preventing a removed inode from being reused as
-false ownership. Cleanup and publication first atomically capture the visible
-stage entry under a private sibling name, then verify it against the retained
-descriptor before unlinking or renaming it. A foreign replacement is restored
-without clobbering another concurrent entry. Secondaries publish first; the
-checkpoint uses an atomic hard-link-to-absent operation, so concurrent writers
-cannot clobber it. Acquisition and each ownership handoff stay masked, while
-potentially blocking writes, fsyncs, hooks, and publication operations remain
-interruptible with cleanup already armed.
+changed parents/destinations are rejected. An output parent must be owned by
+the running effective UID and may not have group- or world-write mode bits. It
+is opened with `O_DIRECTORY|O_NOFOLLOW`, retained, and identity/permission
+revalidated; all creation, capture, rollback, and cleanup operations are
+descriptor-relative.
+
+Each artifact is created with `O_EXCL|O_NOFOLLOW`, opened read/write, verified,
+and immediately unlinked. Its bytes, inode identity, and SHA-256 remain owned
+only through the anonymous descriptor, so no later stage pathname can select
+publication or cleanup bytes. For an expected existing secondary, its inode is
+moved to a random recovery name and retained by descriptor before replacement.
+The final destination is then created with `O_EXCL` as owner-write-only. Bytes
+are copied from the retained anonymous stage to the retained final descriptor
+and fsynced; `fchmod` is the single readable-publication gate. Descriptor and
+pathname identities are rechecked and the parent directory is fsynced.
+Checkpoint publication uses the same no-clobber creation and remains last, so
+concurrent publishers permit exactly one winner.
+
+Rollback and cleanup capture and verify an entry while retaining its descriptor
+through the final pathname syscall. They remove only a matching owned inode.
+Detected foreign replacements remain at their path; if a final same-UID race
+is detected only after capture, its bytes remain quarantined rather than being
+unlinked. If a raced foreign destination blocks restoration, the prior
+secondary remains under its
+`.arkham-replay-replaced-*` recovery name rather than being discarded.
+Acquisition and ownership handoffs stay masked, while potentially blocking
+writes, fsyncs, hooks, and publication operations remain interruptible with
+cleanup already armed.
+
+Portable POSIX does not provide a general unlink-by-regular-file-descriptor or
+portable no-replace rename/exchange primitive. Consequently, a cooperating
+process running as the same effective UID can still race the final
+descriptor-relative rename/unlink pathname operation (including the tiny
+create/open/unlink acquisition interval). Random recovery names, retained
+verification descriptors, no-clobber creation, and foreign-preserving rollback
+minimize that exposure, but the implementation does not claim immunity from a
+malicious same-UID peer. Rejecting group/world write mode bits makes that
+explicit same-UID boundary enforceable across supported POSIX hosts.
+Platform-specific ACL grants and privileged/root overrides are not portable to
+inspect here and remain part of the host trust boundary rather than a claimed
+filesystem guarantee.
 
 Only schema `1`, exact answer scripts, and question checkpoints are supported.
 Every scripted answer constructor must match the exact current prompt before its

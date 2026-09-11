@@ -581,6 +581,19 @@ paths:
         Coordinators must decode the body and both applicable headers from this
         same production response. They must not substitute an ID-only response
         model or treat caller-provided expected strings as authority.
+
+        Before creating a game row for checkpoint bytes, the importer runs the
+        backend's exact checkpoint-envelope decoder and validator over the
+        uploaded bytes. It rejects non-canonical or unknown JSON, recomputes
+        and verifies the export, retained-queue, and canonical-envelope
+        digests, and requires the checkpoint provenance `replayBuild` to equal
+        the running server's compiled build identity. That identity must have
+        `sourceClean: true` and `attestation: "git-clean"`. Dirty,
+        `source-sha256`-attested, unattested, mismatched, or tampered
+        checkpoints fail with 400 before game creation and receive no receipt.
+        Ordinary exports do not acquire checkpoint authority: they still
+        return the full `PublicGame` and running build header, but never the
+        checkpoint receipt or durable replay attestation.
       parameters:
         - name: multiplayerVariant
           in: query
@@ -608,7 +621,11 @@ paths:
                   description: Ordinary Arkham export or deterministic checkpoint JSON, optionally gzip-compressed
                 investigatorId:
                   type: string
-                  description: Investigator selected for an ordinary WithFriends import
+                  description: |
+                    Investigator selected for a WithFriends import. For a
+                    validated checkpoint this selects the checkpoint player
+                    whose persisted game state and retained queue references
+                    are remapped to the newly inserted player.
       responses:
         "200":
           description: Complete imported game snapshot with server authority headers
@@ -635,7 +652,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/PublicGame"
         "400":
-          description: Upload, export, checkpoint, mode, or player remapping validation failed
+          description: |
+            Upload, export, checkpoint, mode, or player remapping validation
+            failed. Checkpoint failures include dirty, source-SHA-attested,
+            unattested, mismatched, non-canonical, or tampered authority and
+            occur before game creation.
         "401":
           description: Token is absent or invalid
   /arkham/games/{gameId}:

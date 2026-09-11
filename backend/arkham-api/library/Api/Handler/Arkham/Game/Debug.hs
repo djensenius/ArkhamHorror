@@ -11,7 +11,9 @@ module Api.Handler.Arkham.Game.Debug (
   postApiV1ArkhamGameClaimSeatR,
 
   -- * Exposed for regression tests
+  makeReplayPlayerIdMap,
   makeReplayPlayerRemapping,
+  remapReplayMessagePlayerIds,
   selectUploadedExportFile,
 ) where
 
@@ -23,13 +25,16 @@ import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Card.CardCode
 import Arkham.Game
 import Arkham.Id
+import Arkham.Message (Message)
 import Arkham.Replay.ImportAuthority
 import Arkham.Replay.ServerBuildIdentity (serverBuildIdentity)
 import Codec.Compression.GZip qualified as GZip
 import Conduit
 import Control.Exception (evaluate)
+import Data.Data (Data, cast, gmapT)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock
 import Data.UUID qualified as UUID
@@ -162,6 +167,42 @@ makeReplayPlayerRemapping investigatorId checkpointPlayerId importedPlayerId sta
       , replayPlayerStateRemapped = stateRemapped
       }
 
+makeReplayPlayerIdMap
+  :: [ReplayPlayerRemapping]
+  -> Either Text (Map PlayerId PlayerId)
+makeReplayPlayerIdMap remappings = do
+  remappingPairs <- catMaybes <$> traverse toPair remappings
+  let result = Map.fromList remappingPairs
+  unless (Map.size result == length remappingPairs) $
+    Left "Replay player remappings contain duplicate checkpoint player IDs"
+  pure result
+ where
+  toPair mapping
+    | not mapping.replayPlayerStateRemapped = Right Nothing
+    | otherwise = do
+        importedUUID <-
+          maybe
+            (Left "Remapped replay player ID is not a UUID")
+            Right
+            $ UUID.fromText mapping.replayPlayerImportedPlayerId
+        unless
+          (mapping.replayPlayerLivePlayerId == mapping.replayPlayerImportedPlayerId)
+          $ Left "Remapped replay player live ID does not match the imported player"
+        pure
+          $ Just
+            ( mapping.replayPlayerCheckpointPlayerId
+            , PlayerId importedUUID
+            )
+
+remapReplayMessagePlayerIds :: Map PlayerId PlayerId -> [Message] -> [Message]
+remapReplayMessagePlayerIds replacements = map go
+ where
+  go :: Data value => value -> value
+  go value = case cast value :: Maybe PlayerId of
+    Just playerId ->
+      maybe value (fromMaybe value . cast) $ Map.lookup playerId replacements
+    Nothing -> gmapT go value
+
 getApiV1ArkhamGameExportR :: ArkhamGameId -> Handler ArkhamExport
 getApiV1ArkhamGameExportR gameId = do
   Entity userId user <- getRequestUser
@@ -255,7 +296,7 @@ postApiV1ArkhamGamesImportR = do
               , nonEmpty (aeCampaignPlayers export)
               ]
         campaignInvestigatorIds = map normalizeJsonInvestigatorId $ aeCampaignPlayers export
-      (key, importReceipt) <- runDB $ do
+      (importedGame, importReceipt) <- runDB $ do
         gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now
         playerRemappings <- case variant of
           Solo -> do
@@ -323,7 +364,17 @@ postApiV1ArkhamGamesImportR = do
           \  END IF; \
           \END$$;"
           []
-        insertMany_ [ArkhamStep gameId s.choice s.step s.actionDiff | s <- agedSteps]
+        replayPlayerIds <-
+          either
+            (lift . invalidArgs . pure)
+            pure
+            $ makeReplayPlayerIdMap playerRemappings
+        let importedChoice s =
+              s.choice
+                { choiceMessages =
+                    remapReplayMessagePlayerIds replayPlayerIds s.choice.choiceMessages
+                }
+        insertMany_ [ArkhamStep gameId (importedChoice s) s.step s.actionDiff | s <- agedSteps]
 
         rawExecute
           "DO $$ \
@@ -355,13 +406,14 @@ postApiV1ArkhamGamesImportR = do
           insertKey
             (ArkhamReplayAttestationKey gameId)
             (ArkhamReplayAttestation $ toJSON receipt)
-        pure (gameId, importReceipt)
+        game <- get404 gameId
+        pure (Entity gameId game, importReceipt)
       traverse_
         (uncurry addHeader)
         (replayImportResponseHeaders serverBuildIdentity importReceipt)
       pure
         $ toPublicGame
-          (Entity key $ ArkhamGame agedName agedCurrentData agedStep variant now now)
+          importedGame
           (GameLog $ map arkhamLogEntryBody agedLog)
 
 getApiV1ArkhamGameReplayAttestationR
