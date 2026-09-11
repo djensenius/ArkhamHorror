@@ -71,10 +71,10 @@ validateReplayBuildIdentity :: ReplayBuildIdentity -> Either String ()
 validateReplayBuildIdentity ReplayBuildIdentity {..} =
   case replayBuildAttestation of
     ReplayBuildUnattested ->
-      Left "replay binary has no build attestation for its embedded source identity"
+      Left "backend build has no build attestation for its embedded source identity"
     ReplayBuildGitClean
       | not replayBuildSourceClean ->
-          Left "replay binary claims a clean-Git attestation for dirty sources"
+          Left "backend build claims a clean-Git attestation for dirty sources"
     _ -> Right ()
 
 embedReplayBuildIdentity :: Q Exp

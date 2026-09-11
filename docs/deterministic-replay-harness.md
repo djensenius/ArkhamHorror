@@ -84,16 +84,43 @@ tests explicitly rebuild against the previously embedded exact source digest.
 Unattested, false-clean, stale, or mismatched identities reject replay.
 `arkham-replay --build-identity` prints this embedded identity.
 
+The running `arkham-api` independently embeds the same build-identity shape.
+`GET /api/v1/capabilities` returns it as JSON in
+`X-Arkham-Backend-Build-Identity`. This is the compiled server authority, not
+`Game.gameGitRevision` (the revision retained in game state), and no request
+field, query parameter, or runtime Git checkout can replace it. A local native
+workflow must reject an absent/malformed header, `unattested`, a false-clean
+claim, or any identity unequal to both `arkham-replay --build-identity` and the
+checkpoint provenance. `arkham-api --build-identity` prints the exact value
+compiled into the server executable without starting network or database
+services; it must equal the capabilities header once that executable is
+running. A server build lacking Git metadata or an independently verified
+source-SHA attestation remains `unattested` and rejects checkpoint imports.
+
 The output is an `ArkhamExport` with a mandatory `replayCheckpoint` envelope.
 Its provenance binds the plan/source hashes and kinds, game revision, complete
 build identity, contract revision, applied counts, exact checkpoint, and
 Game/queue hashes. `envelopeSha256` covers the typed export plus every provenance
 field except itself. Missing or changed metadata fails closed.
 
-Production import accepts the extra envelope but persists only typed
-`ArkhamExport` fields. A later production export is therefore an ordinary
-export with no original lineage. Retain/pin the original checkpoint and its
-printed full-file SHA-256 for the native workflow.
+Normal game import remains the only import endpoint. It now routes a checkpoint
+through the same envelope/build validator before touching the database. A
+successful checkpoint import returns `X-Arkham-Replay-Import-Receipt`, a JSON
+object with schema version `1`, the newly allocated game id, retained
+`gameGitRevision`, the running server build identity, SHA-256 of the exact
+decompressed checkpoint bytes the server parsed, and the validated
+`envelopeSha256`. The receipt and capabilities build headers are derived by the
+server; there are no caller-provided "expected" values. Ordinary imports receive
+the server-build header but no replay receipt.
+
+The Apple live driver must compare the receipt's `gameId` with the response
+game, `gameGitRevision` with the checkpoint game/provenance, `backendBuild` with
+the capabilities header and replay executable, `checkpointSha256` with the
+uploaded deterministic file, and `envelopeSha256` with the checkpoint envelope.
+Any missing or unequal authority keeps live replay disabled. The imported
+database row deliberately persists only typed `ArkhamExport` fields, so later
+ordinary exports do not recreate this receipt; retain the original checkpoint
+and import response. No public replay endpoint is added.
 
 The checkpoint rebases to step `0`; one synthetic step carries the pending
 queue. Prior undo patches, action diffs, and UI/log history are intentionally

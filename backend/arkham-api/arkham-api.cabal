@@ -6311,7 +6311,9 @@ library
       Arkham.Random
       Arkham.Replay.BuildIdentity
       Arkham.Replay.Checkpoint
+      Arkham.Replay.ImportAuthority
       Arkham.Replay.Output
+      Arkham.Replay.ServerBuildIdentity
       Arkham.RequestedChaosTokenStrategy
       Arkham.Resolution
       Arkham.Scenario
@@ -8332,8 +8334,10 @@ executable arkham-api
   build-tool-depends:
       cards-discover:cards-discover
   build-depends:
-      arkham-api
+      aeson
+    , arkham-api
     , base
+    , bytestring
     , foreign-store
     , warp
   default-language: GHC2021

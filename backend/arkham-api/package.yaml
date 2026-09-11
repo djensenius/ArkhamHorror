@@ -164,6 +164,8 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
+      - aeson
+      - bytestring
       - foreign-store
       - warp
       - arkham-api

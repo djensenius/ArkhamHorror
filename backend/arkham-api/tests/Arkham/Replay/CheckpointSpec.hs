@@ -6,13 +6,17 @@ import Arkham.CampaignStep qualified as CS
 import Arkham.Classes.HasGame (getGame)
 import Arkham.Git (GitSha (..))
 import Arkham.Replay.Checkpoint
+import Arkham.Replay.ImportAuthority
+import Arkham.Replay.ServerBuildIdentity (serverBuildIdentity)
 import Arkham.Token (Token (Resource))
+import Base.Api.Handler.Capabilities (capabilitiesResponseHeaders)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy qualified as BSL
 import Data.Either (isLeft, isRight)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Data.UUID qualified as UUID
 import Entity.Answer
 import Entity.Arkham.Game qualified as GameEntity
@@ -206,6 +210,71 @@ spec = describe "deterministic replay checkpoint harness" do
         Aeson.toJSON decodedData.agedCurrentData `shouldBe` Aeson.toJSON game
         decodedProvenance `shouldBe` provenance
       other -> expectationFailure $ "unexpected checkpoint result: " <> showKind other
+    envelope <- case decodeReplayInputEnvelope fixtureBuild encoded of
+      Right (_, ReplayCheckpoint, Just value) -> pure value
+      Left err -> expectationFailure err >> fail err
+      _ -> expectationFailure "validated checkpoint did not retain its envelope" >> fail "missing envelope"
+    case decodeReplayImport fixtureBuild ordinaryBytes of
+      Right (_, Nothing) -> pure ()
+      Left err -> expectationFailure err
+      Right _ -> expectationFailure "ordinary import unexpectedly produced replay authority"
+    authority <- case decodeReplayImport fixtureBuild encoded of
+      Right (_, Just value) -> pure value
+      Left err -> expectationFailure err >> fail err
+      _ -> expectationFailure "checkpoint import did not produce authority" >> fail "missing authority"
+    authority.replayImportCheckpointSha256 `shouldBe` sha256Strict encoded
+    authority.replayImportEnvelopeSha256 `shouldBe` envelope.replayCheckpointEnvelopeSha256
+    authority.replayImportGameGitRevision `shouldBe` provenance.provenanceSourceGameGitRevision
+    paddedAuthority <- case decodeReplayImport fixtureBuild (encoded <> "\n") of
+      Right (_, Just value) -> pure value
+      Left err -> expectationFailure err >> fail err
+      _ -> expectationFailure "padded checkpoint import did not produce authority" >> fail "missing authority"
+    paddedAuthority.replayImportCheckpointSha256
+      `shouldNotBe` authority.replayImportCheckpointSha256
+    paddedAuthority.replayImportEnvelopeSha256
+      `shouldBe` authority.replayImportEnvelopeSha256
+    let receipt = makeReplayImportReceipt fixtureBuild "imported-game-id" authority
+    receipt.replayImportReceiptGameId `shouldBe` "imported-game-id"
+    receipt.replayImportReceiptGameGitRevision `shouldBe` provenance.provenanceSourceGameGitRevision
+    receipt.replayImportReceiptBackendBuild `shouldBe` fixtureBuild
+    Aeson.toJSON receipt
+      `shouldBe` Aeson.object
+        [ "schemaVersion" Aeson..= (1 :: Int)
+        , "gameId" Aeson..= ("imported-game-id" :: Text)
+        , "gameGitRevision" Aeson..= provenance.provenanceSourceGameGitRevision
+        , "backendBuild" Aeson..= fixtureBuild
+        , "checkpointSha256" Aeson..= authority.replayImportCheckpointSha256
+        , "envelopeSha256" Aeson..= authority.replayImportEnvelopeSha256
+        ]
+    Aeson.eitherDecodeStrict' @ReplayBuildIdentity
+      (TE.encodeUtf8 $ backendBuildIdentityHeaderValue fixtureBuild)
+      `shouldBe` Right fixtureBuild
+    Aeson.eitherDecodeStrict' @ReplayImportReceipt
+      (TE.encodeUtf8 $ replayImportReceiptHeaderValue receipt)
+      `shouldBe` Right receipt
+    length capabilitiesResponseHeaders `shouldBe` 1
+    case lookup backendBuildIdentityHeaderName capabilitiesResponseHeaders of
+      Nothing -> expectationFailure "capabilities omitted the server build identity header"
+      Just value ->
+        Aeson.eitherDecodeStrict' @ReplayBuildIdentity (TE.encodeUtf8 value)
+          `shouldBe` Right serverBuildIdentity
+    replayImportResponseHeaders fixtureBuild (Just receipt)
+      `shouldBe`
+        [ (backendBuildIdentityHeaderName, backendBuildIdentityHeaderValue fixtureBuild)
+        , (replayImportReceiptHeaderName, replayImportReceiptHeaderValue receipt)
+        ]
+    Aeson.eitherDecodeStrict' @ReplayImportReceipt
+      ( TE.encodeUtf8
+          $ replayImportReceiptHeaderValue
+            receipt
+              { replayImportReceiptBackendBuild =
+                  fixtureBuild {replayBuildAttestation = ReplayBuildUnattested}
+              }
+      )
+      `shouldSatisfy` isLeft
+    case decodeReplayImport staleBuild encoded of
+      Left _ -> pure ()
+      Right _ -> expectationFailure "checkpoint import accepted a different server build"
     traverse_
       shouldReject
       [ mapRoot (KeyMap.delete "replayCheckpoint") encodedValue

@@ -21,6 +21,8 @@ import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Card.CardCode
 import Arkham.Game
 import Arkham.Id
+import Arkham.Replay.ImportAuthority
+import Arkham.Replay.ServerBuildIdentity (serverBuildIdentity)
 import Codec.Compression.GZip qualified as GZip
 import Conduit
 import Control.Exception (evaluate)
@@ -51,14 +53,16 @@ attempted; the production handler wires this directly to an explicit
 selectUploadedExportFile :: [(Text, a)] -> Maybe a
 selectUploadedExportFile = fmap snd . headMay
 
-decodeExportBytes :: BS.ByteString -> Handler (Either String ArkhamExport)
+decodeExportBytes
+  :: BS.ByteString
+  -> Handler (Either String (ArkhamExport, Maybe ReplayImportAuthority))
 decodeExportBytes bytes
   | isGzipped bytes = do
       eDecompressed <- liftIO $ try @_ @SomeException $ evaluate $ BSL.toStrict $ GZip.decompress $ BSL.fromStrict bytes
       pure $ case eDecompressed of
         Left err -> Left $ displayException err
-        Right decompressed -> eitherDecodeStrict' decompressed
-  | otherwise = pure $ eitherDecodeStrict' bytes
+        Right decompressed -> decodeReplayImport serverBuildIdentity decompressed
+  | otherwise = pure $ decodeReplayImport serverBuildIdentity bytes
 
 -- Compress each emitted JSON chunk as its own gzip member. Gzip readers are
 -- required to handle concatenated members, and this guarantees we keep sending
@@ -193,13 +197,13 @@ postApiV1ArkhamGamesImportR = do
   uploadedFile <- case selectUploadedExportFile files of
     Nothing -> invalidArgs ["No export file uploaded"]
     Just fi -> pure fi
-  eExportData :: Either String ArkhamExport <-
+  eExportData :: Either String (ArkhamExport, Maybe ReplayImportAuthority) <-
     decodeExportBytes =<< fileSourceByteString uploadedFile
   now <- liftIO getCurrentTime
 
   case eExportData of
     Left err -> invalidArgs [T.pack err]
-    Right export -> do
+    Right (export, importAuthority) -> do
       let
         ArkhamGameExportData {..} = aeCampaignData export
         exportVariant = agedMultiplayerVariant
@@ -265,6 +269,12 @@ postApiV1ArkhamGamesImportR = do
           \END$$;"
           []
         pure gameId
+      let importReceipt =
+            makeReplayImportReceipt serverBuildIdentity (toPathPiece key)
+              <$> importAuthority
+      traverse_
+        (uncurry addHeader)
+        (replayImportResponseHeaders serverBuildIdentity importReceipt)
       pure
         $ toPublicGame
           (Entity key $ ArkhamGame agedName agedCurrentData agedStep variant now now)

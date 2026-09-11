@@ -53,6 +53,19 @@ jobs:
         stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks --only-dependencies
     - name: Build
       run: stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks cards-discover && stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks
+    - name: Verify server and replay executable build identity
+      run: |
+        set -eu
+        install_root="$(stack path --local-install-root --system-ghc)"
+        server="${install_root}/bin/arkham-api"
+        replay="${install_root}/bin/arkham-replay"
+        test -x "${server}" && test ! -L "${server}"
+        test -x "${replay}" && test ! -L "${replay}"
+        server_identity="$("${server}" --build-identity)"
+        replay_identity="$("${replay}" --build-identity)"
+        test "${server_identity}" = "${replay_identity}"
+        IDENTITY="${server_identity}" python3 -c \
+          'import json, os; value=json.loads(os.environ["IDENTITY"]); assert value["attestation"] == "git-clean", value'
     - name: Run tests
       run: stack test --system-ghc
 

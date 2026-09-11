@@ -16,6 +16,7 @@ module Arkham.Replay.Checkpoint (
   sha256Lazy,
   decodeReplayPlan,
   decodeReplayInput,
+  decodeReplayInputEnvelope,
   validateReplaySource,
   validateRetainedSteps,
   retainedQueueAt,
@@ -252,6 +253,14 @@ decodeReplayInput
   -> BS.ByteString
   -> Either String (ArkhamExport, ReplayInputKind, Maybe ReplayProvenance)
 decodeReplayInput buildIdentity bytes = do
+  (export, inputKind, envelope) <- decodeReplayInputEnvelope buildIdentity bytes
+  pure (export, inputKind, replayCheckpointProvenance <$> envelope)
+
+decodeReplayInputEnvelope
+  :: ReplayBuildIdentity
+  -> BS.ByteString
+  -> Either String (ArkhamExport, ReplayInputKind, Maybe ReplayCheckpointEnvelope)
+decodeReplayInputEnvelope buildIdentity bytes = do
   value <- eitherDecodeStrict' bytes
   export <- resultToEither "Failed to parse export" $ fromJSON value
   envelopeValue <- case value of
@@ -269,7 +278,7 @@ decodeReplayInput buildIdentity bytes = do
       envelope <-
         resultToEither "Failed to parse replayCheckpoint" $ fromJSON encodedEnvelope
       validateCheckpointExport buildIdentity export envelope
-      pure (export, ReplayCheckpoint, Just envelope.replayCheckpointProvenance)
+      pure (export, ReplayCheckpoint, Just envelope)
 
 validateReplaySource
   :: ReplayBuildIdentity
