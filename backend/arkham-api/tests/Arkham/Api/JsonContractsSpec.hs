@@ -695,17 +695,67 @@ fixtureDamageAssignmentQuestion =
     (error "fixtureDamageAssignmentQuestion: fixture player has no active question")
     (Map.lookup fixturePlayerId $ gameQuestion fixtureDamageAssignmentGame)
 
-fixtureDamageAssignmentAnswer :: Int -> Aeson.Value
-fixtureDamageAssignmentAnswer choice =
+fixtureAssignmentAnswer :: Game -> Int -> Aeson.Value
+fixtureAssignmentAnswer game choice =
   Aeson.object
     [ "tag" .= ("Answer" :: Text)
     , "contents"
         .= Aeson.object
           [ "choice" .= choice
           , "playerId" .= fixturePlayerId
-          , "questionVersion" .= gameScenarioSteps fixtureDamageAssignmentGame
+          , "questionVersion" .= gameScenarioSteps game
           ]
     ]
+
+fixtureDamageAssignmentAnswer :: Int -> Aeson.Value
+fixtureDamageAssignmentAnswer = fixtureAssignmentAnswer fixtureDamageAssignmentGame
+
+{- | Resolve each real source-indexed choice from the combined Ghoul Minion
+assignment prompt, then capture the next prompt emitted by the ordinary
+investigator damage runner. Starting from 'fixtureDamageAssignmentGame'
+preserves the exact production attack source, accumulated target arrays, and
+question version; 'chooseOptionMatching' dispatches the choice's real messages
+rather than reconstructing either continuation.
+-}
+fixtureRemainingHorrorAssignmentGame :: Game
+fixtureRemainingHorrorAssignmentGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  overTest $ const fixtureDamageAssignmentGame
+  chooseOptionMatching "assign fixture Ghoul Minion damage first" \case
+    DamageLabel iid' _ -> iid' == iid
+    _ -> False
+  getGame
+{-# NOINLINE fixtureRemainingHorrorAssignmentGame #-}
+
+fixtureRemainingHorrorAssignmentQuestion :: Question Message
+fixtureRemainingHorrorAssignmentQuestion =
+  fromMaybe
+    (error "fixtureRemainingHorrorAssignmentQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureRemainingHorrorAssignmentGame)
+
+fixtureRemainingHorrorAssignmentAnswer :: Aeson.Value
+fixtureRemainingHorrorAssignmentAnswer =
+  fixtureAssignmentAnswer fixtureRemainingHorrorAssignmentGame 0
+
+fixtureRemainingDamageAssignmentGame :: Game
+fixtureRemainingDamageAssignmentGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  overTest $ const fixtureDamageAssignmentGame
+  chooseOptionMatching "assign fixture Ghoul Minion horror first" \case
+    HorrorLabel iid' _ -> iid' == iid
+    _ -> False
+  getGame
+{-# NOINLINE fixtureRemainingDamageAssignmentGame #-}
+
+fixtureRemainingDamageAssignmentQuestion :: Question Message
+fixtureRemainingDamageAssignmentQuestion =
+  fromMaybe
+    (error "fixtureRemainingDamageAssignmentQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureRemainingDamageAssignmentGame)
+
+fixtureRemainingDamageAssignmentAnswer :: Aeson.Value
+fixtureRemainingDamageAssignmentAnswer =
+  fixtureAssignmentAnswer fixtureRemainingDamageAssignmentGame 0
 
 {- | Three real "The Gathering" location cards (Attic, Hallway, Parlor --
 Location\/CardDefs\/NightOfTheZealot\/TheGathering.hs, the exact same
@@ -1660,6 +1710,137 @@ spec = describe "Native client contract fixtures" do
         expectationFailure
           $ "Expected two production damage assignment choices, got "
           <> show other
+
+  it "matches both real single-type continuation prompts on both encoder paths" do
+    horrorFixture <- loadFixture "question-enemy-attack-remaining-horror-assignment.json"
+    damageFixture <- loadFixture "question-enemy-attack-remaining-damage-assignment.json"
+    Aeson.toJSON fixtureRemainingHorrorAssignmentQuestion `shouldBe` horrorFixture
+    viaWireEncoding fixtureRemainingHorrorAssignmentQuestion `shouldBe` horrorFixture
+    Aeson.toJSON fixtureRemainingDamageAssignmentQuestion `shouldBe` damageFixture
+    viaWireEncoding fixtureRemainingDamageAssignmentQuestion `shouldBe` damageFixture
+    gamePhase fixtureRemainingHorrorAssignmentGame `shouldBe` EnemyPhase
+    gamePhase fixtureRemainingDamageAssignmentGame `shouldBe` EnemyPhase
+    gamePhaseStep fixtureRemainingHorrorAssignmentGame
+      `shouldBe` Just (EnemyPhaseStep ResolveAttacksStep)
+    gamePhaseStep fixtureRemainingDamageAssignmentGame
+      `shouldBe` Just (EnemyPhaseStep ResolveAttacksStep)
+    gameScenarioSteps fixtureRemainingHorrorAssignmentGame `shouldBe` 7
+    gameScenarioSteps fixtureRemainingDamageAssignmentGame `shouldBe` 7
+
+  it "binds both single-type continuations to the same production attack and investigator" do
+    let
+      iid = InvestigatorId "01001"
+      source = EnemyAttackSource fixtureDamageAssignmentEnemyId
+      completedTargets = [InvestigatorTarget iid]
+      expectedHorrorMessages =
+        [ InvestigatorDamage iid source 0 1
+        , InvestigatorDoAssignDamage
+            iid
+            source
+            DamageAny
+            AnyAsset
+            0
+            0
+            completedTargets
+            completedTargets
+        ]
+      expectedDamageMessages =
+        [ InvestigatorDamage iid source 1 0
+        , InvestigatorDoAssignDamage
+            iid
+            source
+            DamageAny
+            AnyAsset
+            0
+            0
+            completedTargets
+            completedTargets
+        ]
+    case fixtureRemainingHorrorAssignmentQuestion of
+      QuestionWithSource source' Nothing
+        (QuestionLabel label Nothing (ChooseOne [HorrorLabel componentIid messages])) -> do
+          source' `shouldBe` source
+          label `shouldBe` "Assign 1 horror"
+          componentIid `shouldBe` iid
+          messages `shouldBe` expectedHorrorMessages
+      other ->
+        expectationFailure
+          $ "Expected the production remaining-horror assignment prompt, got "
+          <> show other
+    case fixtureRemainingDamageAssignmentQuestion of
+      QuestionWithSource source' Nothing
+        (QuestionLabel label Nothing (ChooseOne [DamageLabel componentIid messages])) -> do
+          source' `shouldBe` source
+          label `shouldBe` "Assign 1 damage"
+          componentIid `shouldBe` iid
+          messages `shouldBe` expectedDamageMessages
+      other ->
+        expectationFailure
+          $ "Expected the production remaining-damage assignment prompt, got "
+          <> show other
+
+  it "preserves continuation Answers and exact wrappers on invalid source indices" do
+    horrorFixture <- loadFixture "answer-enemy-attack-assign-remaining-horror.json"
+    damageFixture <- loadFixture "answer-enemy-attack-assign-remaining-damage.json"
+    horrorFixture `shouldBe` fixtureRemainingHorrorAssignmentAnswer
+    damageFixture `shouldBe` fixtureRemainingDamageAssignmentAnswer
+    let
+      checkAnswer game answerValue check =
+        case Aeson.fromJSON answerValue of
+          Aeson.Error err -> expectationFailure $ "Could not decode continuation Answer: " <> err
+          Aeson.Success answer -> handleAnswerPure game fixturePlayerId answer >>= check
+      withChoiceAndVersion choice version =
+        Aeson.object
+          [ "tag" .= ("Answer" :: Text)
+          , "contents"
+              .= Aeson.object
+                [ "choice" .= (choice :: Int)
+                , "playerId" .= fixturePlayerId
+                , "questionVersion" .= (version :: Int)
+                ]
+          ]
+      assertFixture game fixture =
+        case Aeson.fromJSON fixture of
+          Aeson.Error err -> expectationFailure $ "Could not decode continuation Answer fixture: " <> err
+          Aeson.Success (Answer (QuestionResponse choice playerId questionVersion)) -> do
+            choice `shouldBe` 0
+            playerId `shouldBe` Just fixturePlayerId
+            questionVersion `shouldBe` Just (gameScenarioSteps game)
+          Aeson.Success other ->
+            expectationFailure $ "Expected a versioned Answer fixture, got " <> show other
+      assertContinuation game question fixture =
+        case question of
+          QuestionWithSource _ _ (QuestionLabel _ _ (ChooseOne [choice])) -> do
+            assertFixture game fixture
+            checkAnswer game fixture \case
+              Handled messages -> messages `shouldBe` [uiToRun choice]
+              Unhandled reason ->
+                expectationFailure $ "Continuation Answer rejected: " <> Text.unpack reason
+            checkAnswer
+              game
+              (withChoiceAndVersion 0 $ gameScenarioSteps game + 1)
+              \case
+                Unhandled reason -> reason `shouldBe` "Stale question"
+                Handled _ -> expectationFailure "A stale continuation Answer must not resolve"
+            checkAnswer
+              game
+              (withChoiceAndVersion 1 $ gameScenarioSteps game)
+              \case
+                Handled messages -> messages `shouldBe` [Ask fixturePlayerId question]
+                Unhandled reason ->
+                  expectationFailure $ "Expected the exact wrapped prompt: " <> Text.unpack reason
+          other ->
+            expectationFailure
+              $ "Expected one wrapped production continuation choice, got "
+              <> show other
+    assertContinuation
+      fixtureRemainingHorrorAssignmentGame
+      fixtureRemainingHorrorAssignmentQuestion
+      horrorFixture
+    assertContinuation
+      fixtureRemainingDamageAssignmentGame
+      fixtureRemainingDamageAssignmentQuestion
+      damageFixture
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
     case fixtureMulliganQuestion of

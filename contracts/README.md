@@ -486,7 +486,7 @@ dedicated Answer fixture uses choice `0`, player UUID
 answer-handler tests cover the current version, stale rejection, and
 out-of-range re-ask behavior.
 
-#### Enemy-attack damage and horror assignment
+#### Enemy-attack damage and horror assignment family
 
 Revision `0.1.32` adds
 `question-enemy-attack-damage-assignment.json`,
@@ -529,6 +529,51 @@ dedicated Answer fixtures use the authenticated player UUID and preserve their
 source indices (`0` and `1`); production answer-handler tests cover both current
 answers, stale rejection, and out-of-range re-ask behavior. The manifest adds
 114 deterministic single-mutation negatives for this slice.
+
+Revision `0.1.33` extends that production-grounded root into a bounded family
+with both continuations the engine really emits. Starting from
+`fixtureDamageAssignmentGame`, each fixture clones the deterministic board
+through `runAgainstFixtureBoardGame`, resolves one of the combined prompt's
+real `DamageLabel`/`HorrorLabel` choices through `chooseOptionMatching`, and
+captures the next `gameQuestion`; neither continuation is assembled as JSON or
+as a parallel Haskell value:
+
+- `question-enemy-attack-remaining-horror-assignment.json` follows source
+  index **0**. Its exact label is `Assign 1 horror`, and its sole
+  `HorrorToken` choice sends direct `(0 damage, 1 horror)` followed by the
+  production completion tuple `(0 damage, 0 horror)` with both accumulated
+  investigator-target arrays containing Roland.
+- `question-enemy-attack-remaining-damage-assignment.json` follows source
+  index **1**. Its exact label is `Assign 1 damage`, and its sole
+  `DamageToken` choice sends direct `(1 damage, 0 horror)` followed by the
+  same production completion tuple and accumulated targets.
+
+Both continuation snapshots retain the Ghoul Minion attack source, remain in
+`EnemyPhaseStep ResolveAttacksStep`, and have
+`scenarioSteps`/`questionVersion` **7**. Their dedicated Answer fixtures
+(`answer-enemy-attack-assign-remaining-horror.json` and
+`answer-enemy-attack-assign-remaining-damage.json`) preserve the sole source
+index **0**. Backend tests dispatch both exact Answers, reject stale versions,
+and prove an invalid index re-asks the byte-equivalent
+`QuestionWithSource -> QuestionLabel -> ChooseOne` wrapper rather than
+stripping its source or label.
+
+The schema adds two constructor-disjoint closed roots and does not widen the
+generic question/component/message unions. Haskell assertions bind every outer,
+direct-message, continuation-message, component, and accumulated-target
+identity, plus all amounts, strategy, matcher, and message order. The manifest
+adds **32** deterministic single-mutation negatives (16 per continuation)
+covering wrappers, closed tags/fields, labels, cardinality, components, message
+positions, sources, targets, amounts, strategy, matcher, and both candidate
+arrays; the canonical-integer byte checks also include every new prompt amount
+and Answer choice/version.
+
+`AssetComponent` allocation is deliberately **not** admitted in this batch.
+Although `assignDamageDivided` can emit asset choices when a soakable asset is
+present, producing and governing that additional board state would expand the
+identity/capacity/deferred-damage surface beyond this review budget. It remains
+fail-closed in all three assignment roots and is the next bounded batch. The
+Vue client and runtime behavior are unchanged.
 
 ## Game creation and multiplayer lobbies
 
