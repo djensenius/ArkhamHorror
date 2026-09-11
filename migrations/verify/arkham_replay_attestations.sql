@@ -24,7 +24,20 @@ BEGIN
     SELECT 1
       FROM pg_constraint
      WHERE conrelid = 'public.arkham_replay_attestations'::regclass
+       AND conname = 'arkham_replay_attestations_pkey'
        AND contype = 'p'
+       AND conkey = ARRAY[
+         (
+           SELECT attnum
+             FROM pg_attribute
+            WHERE attrelid = 'public.arkham_replay_attestations'::regclass
+              AND attname = 'id'
+              AND NOT attisdropped
+         )
+       ]::smallint[]
+       AND NOT condeferrable
+       AND NOT condeferred
+       AND convalidated
   ) THEN
     RAISE EXCEPTION 'arkham_replay_attestations must be keyed by game id';
   END IF;
@@ -37,6 +50,29 @@ BEGIN
        AND confrelid = 'public.arkham_games'::regclass
        AND contype = 'f'
        AND confdeltype = 'c'
+       AND confupdtype = 'a'
+       AND confmatchtype = 's'
+       AND conkey = ARRAY[
+         (
+           SELECT attnum
+             FROM pg_attribute
+            WHERE attrelid = 'public.arkham_replay_attestations'::regclass
+              AND attname = 'id'
+              AND NOT attisdropped
+         )
+       ]::smallint[]
+       AND confkey = ARRAY[
+         (
+           SELECT attnum
+             FROM pg_attribute
+            WHERE attrelid = 'public.arkham_games'::regclass
+              AND attname = 'id'
+              AND NOT attisdropped
+         )
+       ]::smallint[]
+       AND NOT condeferrable
+       AND NOT condeferred
+       AND convalidated
   ) THEN
     RAISE EXCEPTION 'arkham_replay_attestations must cascade with its game';
   END IF;

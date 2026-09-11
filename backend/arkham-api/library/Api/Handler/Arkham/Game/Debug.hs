@@ -15,6 +15,7 @@ module Api.Handler.Arkham.Game.Debug (
   makeReplayPlayerRemapping,
   remapReplayMessagePlayerIds,
   selectUploadedExportFile,
+  validateReplayCheckpointPlayerId,
 ) where
 
 import Api.Arkham.Export
@@ -167,6 +168,16 @@ makeReplayPlayerRemapping investigatorId checkpointPlayerId importedPlayerId sta
       , replayPlayerStateRemapped = stateRemapped
       }
 
+validateReplayCheckpointPlayerId :: PlayerId -> Text -> Either Text ()
+validateReplayCheckpointPlayerId expected checkpointPlayerId = do
+  checkpointUUID <-
+    maybe
+      (Left "Checkpoint investigator playerId is not a UUID")
+      Right
+      $ UUID.fromText checkpointPlayerId
+  unless (PlayerId checkpointUUID == expected) $
+    Left "Selected investigator playerId does not match the replay checkpoint player"
+
 makeReplayPlayerIdMap
   :: [ReplayPlayerRemapping]
   -> Either Text (Map PlayerId PlayerId)
@@ -306,12 +317,18 @@ postApiV1ArkhamGamesImportR = do
             newPlayerId <- insert $ ArkhamPlayer userId gameId iid
             case importAuthority of
               Nothing -> pure []
-              Just _ -> do
+              Just authority -> do
                 checkpointPlayerId <-
                   storedInvestigatorPlayerId gameId iid
                     >>= maybe
                       (lift $ invalidArgs ["Replay checkpoint investigator has no playerId"])
                       pure
+                either
+                  (lift . invalidArgs . pure)
+                  pure
+                  $ validateReplayCheckpointPlayerId
+                    (replayImportCheckpointPlayerId authority)
+                    checkpointPlayerId
                 mapping <-
                   either
                     (lift . invalidArgs . pure)
@@ -327,6 +344,18 @@ postApiV1ArkhamGamesImportR = do
             chosenInvestigator <- case mChosen of
               Nothing -> lift $ invalidArgs ["No investigator specified"]
               Just iid -> pure iid
+            for_ importAuthority \authority -> do
+              checkpointPlayerId <-
+                storedInvestigatorPlayerId gameId chosenInvestigator
+                  >>= maybe
+                    (lift $ invalidArgs ["Replay checkpoint investigator has no playerId"])
+                    pure
+              either
+                (lift . invalidArgs . pure)
+                pure
+                $ validateReplayCheckpointPlayerId
+                  (replayImportCheckpointPlayerId authority)
+                  checkpointPlayerId
             newPlayerId <- insert $ ArkhamPlayer userId gameId chosenInvestigator
             mCheckpointPlayerId <-
               remapInvestigatorUUID gameId chosenInvestigator newPlayerId

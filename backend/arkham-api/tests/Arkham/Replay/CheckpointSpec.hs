@@ -338,6 +338,18 @@ spec = describe "deterministic replay checkpoint harness" do
     validateReplayImportReceipt
       receipt {replayImportReceiptPlayerRemappings = []}
       `shouldSatisfy` isLeft
+    validateReplayImportReceipt
+      ( makeReplayImportReceipt
+          fixtureBuild
+          gameId
+          [ playerRemapping
+              { replayPlayerCheckpointPlayerId =
+                  PlayerId $ UUID.fromWords 0 0 0 99
+              }
+          ]
+          authority
+      )
+      `shouldSatisfy` isLeft
     case decodeReplayImport staleBuild encoded of
       Left _ -> pure ()
       Right _ -> expectationFailure "checkpoint import accepted a different server build"

@@ -5,6 +5,7 @@ import Api.Handler.Arkham.Game.Debug
   , makeReplayPlayerRemapping
   , remapReplayMessagePlayerIds
   , selectUploadedExportFile
+  , validateReplayCheckpointPlayerId
   )
 import Arkham.Id (PlayerId (..))
 import Arkham.Message (Message (..))
@@ -75,6 +76,20 @@ spec = describe "selectUploadedExportFile" do
       makeReplayPlayerRemapping "c01001" "not-a-uuid" importedPlayerId False
         `shouldSatisfy` isLeft
       makeReplayPlayerRemapping "c01001" checkpointPlayerId "not-a-uuid" False
+        `shouldSatisfy` isLeft
+
+    it "binds the selected investigator to the checkpoint prompt player" do
+      validateReplayCheckpointPlayerId
+        (PlayerId checkpointUUID)
+        checkpointPlayerId
+        `shouldBe` Right ()
+      validateReplayCheckpointPlayerId
+        (PlayerId $ UUID.fromWords 0 0 0 1)
+        checkpointPlayerId
+        `shouldSatisfy` isLeft
+      validateReplayCheckpointPlayerId
+        (PlayerId checkpointUUID)
+        "not-a-uuid"
         `shouldSatisfy` isLeft
 
     it "builds only complete persisted-state remappings and rejects malformed live IDs" do
@@ -162,11 +177,20 @@ spec = describe "selectUploadedExportFile" do
            in if T.null suffix
                 then expectationFailure ("missing import-handler source: " <> T.unpack needle) >> error "missing source"
                 else pure $ T.length prefix
+        checkpointPlayerBindingNeedle =
+          "validateReplayCheckpointPlayerId (replayImportCheckpointPlayerId authority) checkpointPlayerId"
+        checkpointPlayerBindingPositions =
+          map (T.length . fst) $
+            T.breakOnAll checkpointPlayerBindingNeedle importHandler
     normalized
       `shouldSatisfy` T.isInfixOf
         "postApiV1ArkhamGamesImportR :: Handler (PublicGame ArkhamGameId)"
     decodePosition <- position "decodeExportBytes"
     transactionPosition <- position "(importedGame, importReceipt) <- runDB"
+    withFriendsBranchPosition <- position "WithFriends -> do"
+    investigatorRemapPosition <-
+      position
+        "mCheckpointPlayerId <- remapInvestigatorUUID gameId chosenInvestigator newPlayerId"
     queueRemapPosition <-
       position
         "choiceMessages = remapReplayMessagePlayerIds replayPlayerIds s.choice.choiceMessages"
@@ -178,6 +202,12 @@ spec = describe "selectUploadedExportFile" do
         "replayImportResponseHeaders serverBuildIdentity importReceipt"
     publicGamePosition <- position "$ toPublicGame importedGame"
     decodePosition `shouldSatisfy` (< transactionPosition)
+    case checkpointPlayerBindingPositions of
+      [soloBindingPosition, withFriendsBindingPosition] -> do
+        soloBindingPosition `shouldSatisfy` (< withFriendsBranchPosition)
+        withFriendsBranchPosition `shouldSatisfy` (< withFriendsBindingPosition)
+        withFriendsBindingPosition `shouldSatisfy` (< investigatorRemapPosition)
+      _ -> expectationFailure "expected Solo and WithFriends checkpoint-player validation"
     queueRemapPosition `shouldSatisfy` (< stepInsertPosition)
     headerPosition `shouldSatisfy` (< publicGamePosition)
     importHandler

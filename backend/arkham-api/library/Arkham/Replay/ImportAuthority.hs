@@ -9,6 +9,7 @@ module Arkham.Replay.ImportAuthority (
   replayImportReceiptHeaderValue,
   backendBuildIdentityHeaders,
   replayImportResponseHeaders,
+  replayImportCheckpointPlayerId,
   decodeReplayImport,
   makeReplayImportReceipt,
   makeReplayAttestation,
@@ -149,6 +150,10 @@ replayImportResponseHeaders buildIdentity receipt =
        | value <- maybeToList receipt
        ]
 
+replayImportCheckpointPlayerId :: ReplayImportAuthority -> PlayerId
+replayImportCheckpointPlayerId ReplayImportAuthority {..} =
+  replayImportCheckpointProvenance.provenanceCheckpoint.checkpointPlayerId
+
 decodeReplayImport
   :: ReplayBuildIdentity
   -> BS.ByteString
@@ -225,6 +230,13 @@ validateReplayImportReceipt receipt@ReplayImportReceipt {..} = do
   when (null replayImportReceiptPlayerRemappings) $
     Left "replay import receipt must contain a player remapping"
   traverse_ validateReplayPlayerRemapping replayImportReceiptPlayerRemappings
+  let boundCheckpointPlayerId =
+        replayImportReceiptCheckpointProvenance.provenanceCheckpoint.checkpointPlayerId
+  unless
+    ( boundCheckpointPlayerId
+        `elem` map (.replayPlayerCheckpointPlayerId) replayImportReceiptPlayerRemappings
+    )
+    $ Left "replay import receipt is not bound to the checkpoint prompt player"
   let remappedInvestigators =
         map (.replayPlayerInvestigatorId) replayImportReceiptPlayerRemappings
   unless (length remappedInvestigators == length (ordNub remappedInvestigators)) $

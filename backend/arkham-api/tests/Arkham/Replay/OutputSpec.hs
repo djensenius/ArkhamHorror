@@ -360,6 +360,29 @@ spec = sequential $ describe "deterministic replay file handling" do
         removeFile recovery
       assertNoInternalArtifacts workspace
 
+  it "preserves an unreadable existing secondary when capture open fails" $
+    withWorkspace "secondary-capture-open-failure" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+          secondary = workspace </> "game"
+      BSL8.writeFile input "source"
+      BSL8.writeFile secondary "prior"
+      setFileMode secondary ownerWriteMode
+      withReplayInput input \opened -> do
+        plan <-
+          prepareReplayOutputs
+            [opened]
+            [checkpointRequest checkpoint, ReplayOutputRequest ReplayFinalGameOutput secondary]
+        expectIOExceptionContaining "open captured output" $
+          publishReplayOutputs
+            plan
+            [artifact ReplayCheckpointOutput "checkpoint", artifact ReplayFinalGameOutput "owned"]
+        doesFileExist secondary `shouldReturn` True
+        setFileMode secondary $ ownerReadMode `unionFileModes` ownerWriteMode
+        BSL8.readFile secondary `shouldReturn` "prior"
+        doesFileExist checkpoint `shouldReturn` False
+      assertNoInternalArtifacts workspace
+
   it "replaces an expected secondary from retained descriptors without capture residue" $
     withWorkspace "secondary-existing" \workspace -> do
       let input = workspace </> "source"

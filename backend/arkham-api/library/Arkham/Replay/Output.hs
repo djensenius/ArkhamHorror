@@ -683,17 +683,27 @@ captureExpectedOutput output =
         destination = output.openOutputResolved.resolvedOutputName
     capturedName <-
       freshRelativeName $ "." <> destination <> ".arkham-replay-replaced"
+    opened <- openCapturedOutput output destination
+    unless (opened.capturedOutputIdentity == expected) $ do
+      ignoreIOException $ closeFd opened.capturedOutputDescriptor
+      replayOutputFailure
+        $ "replay output changed before it was captured: "
+        <> output.openOutputResolved.resolvedOutputOriginal
+    let captured = opened {capturedOutputName = capturedName}
     renameAt parentFd destination parentFd capturedName
-      `catch` pathFailure "capture existing output" output.openOutputResolved.resolvedOutputOriginal
-    captured <- openCapturedOutput output capturedName
-    if captured.capturedOutputIdentity == expected
-      then pure captured
-      else do
-        preserveCapturedEntry captured destination
+      `catch` \err -> do
         ignoreIOException $ closeFd captured.capturedOutputDescriptor
-        replayOutputFailure
-          $ "replay output changed while it was captured: "
-          <> output.openOutputResolved.resolvedOutputOriginal
+        pathFailure "capture existing output" output.openOutputResolved.resolvedOutputOriginal err
+    ( do
+        capturedPathOwned <-
+          entryHasIdentityAtWithMode ReadOnly parentFd capturedName expected
+        unless capturedPathOwned $
+          replayOutputFailure
+            $ "replay output changed while it was captured: "
+            <> output.openOutputResolved.resolvedOutputOriginal
+        pure captured
+      )
+      `onException` restoreCapturedOutput captured
 
 openCapturedOutput :: OpenOutput -> FilePath -> IO CapturedOutput
 openCapturedOutput = openCapturedOutputWithMode ReadOnly
