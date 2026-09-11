@@ -99,15 +99,21 @@ def main():
         first, second = work / "first.checkpoint.json", work / "second.checkpoint.json"
         metrics = work / "metrics.txt"
         write(plan_path, answer_plan)
-        invoke(
+        traced = invoke(
             source_path,
             "--undo",
             1,
+            "--trace",
             "--replay-script",
             plan_path,
             "--checkpoint-output",
             first,
         )
+        trace_lines = [line for line in traced.stderr.splitlines() if line.startswith("> ")]
+        clear_index = trace_lines.index("> ClearUI")
+        ask_index = next(i for i, line in enumerate(trace_lines) if line.startswith("> Ask "))
+        assert clear_index < ask_index, trace_lines
+        assert "> Noop" not in trace_lines, trace_lines
         invoke(
             source_path,
             "--undo",
@@ -167,13 +173,33 @@ def main():
         unused = copy.deepcopy(answer_plan)
         unused["answers"].append(copy.deepcopy(unused["answers"][0]))
         reject(work, source_path, unused, "unused", "still unused", ("--undo", 1))
-        unhandled = copy.deepcopy(answer_plan)
-        unhandled["answers"][0]["answer"] = {
+        incompatible = copy.deepcopy(answer_plan)
+        incompatible["answers"][0]["answer"] = {
             "tag": "DeckAnswer",
             "deckId": "00000000-0000-0000-0000-000000000002",
             "playerId": template["answers"][0]["expect"]["playerId"],
         }
-        reject(work, source_path, unhandled, "unhandled", "requires database access", ("--undo", 1))
+        reject(
+            work,
+            source_path,
+            incompatible,
+            "incompatible",
+            "not compatible with checkpoint prompt",
+            ("--undo", 1),
+        )
+        wrong_destiny = copy.deepcopy(answer_plan)
+        wrong_destiny["answers"][0]["answer"] = {
+            "tag": "PickDestinyAnswer",
+            "contents": [],
+        }
+        reject(
+            work,
+            source_path,
+            wrong_destiny,
+            "wrong-destiny",
+            "PickDestinyAnswer is not compatible",
+            ("--undo", 1),
+        )
         unreachable = copy.deepcopy(answer_plan)
         unreachable["stopAt"]["questionVersion"] = 3
         reject(work, source_path, unreachable, "unreachable", "Stop checkpoint not reached", ("--undo", 1))

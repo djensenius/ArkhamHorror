@@ -35,7 +35,7 @@ import Data.Aeson (Result (..), Value, eitherDecodeFileStrict', eitherDecode, en
 import Data.ByteString.Lazy qualified as BSL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Foldable (for_)
-import Data.IORef (newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sortOn)
 import Data.Maybe (fromMaybe, isJust, isNothing, maybeToList)
 import Data.Ord (Down (..))
@@ -313,6 +313,9 @@ runReplay opts exportInput scriptInput = do
         | otherwise = pure ()
 
   let app = GameApp gameRef queueRef genRef clientLogger Nothing
+      prependAnswerQueue messages =
+        atomicModifyIORef' (queueToRef queueRef) \currentQueue ->
+          (prependReplayAnswerMessages messages currentQueue, ())
 
   for_ replayPlan \(plan, _) ->
     case checkQuestionCheckpoint currentData plan.replayPlanStopAt of
@@ -422,7 +425,7 @@ runReplay opts exportInput scriptInput = do
                           [SetActivePlayer answerPid | activePid /= answerPid]
                             <> msgs
                             <> [SetActivePlayer activePid | activePid /= answerPid]
-                    runGameApp app (pushAll (ClearUI : bracketed))
+                    prependAnswerQueue (ClearUI : bracketed)
                     runGameApp app (runMessages "headless" tracerCallback)
                     ge <- readIORef gameRef
                     when (optSimulateServer opts) $ void $ simulateServerWork g ge
@@ -458,7 +461,7 @@ runReplay opts exportInput scriptInput = do
                         [SetActivePlayer answerPid | activePid /= answerPid]
                           <> msgs
                           <> [SetActivePlayer activePid | activePid /= answerPid]
-                  runGameApp app (pushAll (ClearUI : bracketed))
+                  prependAnswerQueue (ClearUI : bracketed)
                   runGameApp app (runMessages "headless" tracerCallback)
         pure []
 

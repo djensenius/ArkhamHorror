@@ -2,9 +2,11 @@ module Arkham.Replay.CheckpointSpec (spec) where
 
 import Api.Arkham.Export
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
+import Arkham.CampaignStep qualified as CS
 import Arkham.Classes.HasGame (getGame)
 import Arkham.Git (GitSha (..))
 import Arkham.Replay.Checkpoint
+import Arkham.Token (Token (Resource))
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy qualified as BSL
@@ -36,6 +38,89 @@ spec = describe "deterministic replay checkpoint harness" do
     validateReplayAnswer game (response Nothing $ Just checkpoint.checkpointPlayerId)
       `shouldSatisfy` isLeft
     validateReplayAnswer game (response (Just 7) Nothing) `shouldSatisfy` isLeft
+
+  it "fails closed on prompt and answer constructor mismatches" . gameTest $ \_ -> do
+    game <- checkpointGame
+    let player = game.gameActivePlayerId
+        firstInvestigator = "01001" :: InvestigatorId
+        secondInvestigator = "01002" :: InvestigatorId
+        choiceAnswer =
+          Answer
+            QuestionResponse
+              { qrChoice = 0
+              , qrPlayerId = Just player
+              , qrQuestionVersion = Just game.gameScenarioSteps
+              }
+        amountsAnswer =
+          AmountsAnswer
+            AmountsResponse
+              { arAmounts = mempty
+              , arQuestionVersion = Just game.gameScenarioSteps
+              , arPlayerId = Just player
+              }
+        paymentAnswer =
+          PaymentAmountsAnswer
+            PaymentAmountsResponse
+              { parAmounts = mempty
+              , parQuestionVersion = Just game.gameScenarioSteps
+              , parPlayerId = Just player
+              }
+        destinyPrompt = PickDestiny []
+        destinyAnswer = PickDestinyAnswer []
+        exchangePrompt =
+          ChooseExchangeAmounts GameSource firstInvestigator 0 secondInvestigator 0 Resource
+        exchangeAnswer =
+          ExchangeAmountsAnswer GameSource firstInvestigator secondInvestigator Resource 1
+        validCases =
+          [ (ChooseOne [Label "continue" [Noop]], choiceAnswer)
+          ,
+            ( QuestionWithSource GameSource Nothing
+                $ PayCostQuestion Free
+                $ QuestionLabel "wrapped" Nothing
+                $ ChooseOne [Label "continue" [Noop]]
+            , choiceAnswer
+            )
+          , (ChooseAmounts "amounts" (TotalAmountTarget 0) [] GameTarget, amountsAnswer)
+          ,
+            ( QuestionLabel
+                "amounts"
+                Nothing
+                (ChooseAmounts "amounts" (TotalAmountTarget 0) [] GameTarget)
+            , amountsAnswer
+            )
+          , (ChoosePaymentAmounts "payment" Nothing [], paymentAnswer)
+          , (PayCostQuestion Free $ ChoosePaymentAmounts "payment" Nothing [], paymentAnswer)
+          , (PickScenarioSettings, StandaloneSettingsAnswer [])
+          , (PickCampaignSettings, CampaignSettingsAnswer $ CampaignSettings [] mempty mempty [])
+          , (destinyPrompt, destinyAnswer)
+          , (QuestionLabel "destiny" Nothing destinyPrompt, destinyAnswer)
+          , (PickCampaignSpecific "campaign" Aeson.Null, CampaignSpecificAnswer "choice" Aeson.Null)
+          , (PickScenarioSpecific "scenario" Aeson.Null, ScenarioSpecificAnswer "choice" Aeson.Null)
+          , (exchangePrompt, exchangeAnswer)
+          , (ContinueCampaign, CampaignStepAnswer CS.PrologueStep)
+          ]
+    for_ validCases \(prompt, answer) ->
+      validateAtPrompt game prompt answer `shouldBe` Right player
+    for_
+      [ destinyAnswer
+      , StandaloneSettingsAnswer []
+      , CampaignSettingsAnswer $ CampaignSettings [] mempty mempty []
+      , CampaignSpecificAnswer "choice" Aeson.Null
+      , ScenarioSpecificAnswer "choice" Aeson.Null
+      , exchangeAnswer
+      , CampaignStepAnswer CS.PrologueStep
+      ]
+      \answer ->
+        validateAtPrompt game (ChooseOne [Label "continue" [Noop]]) answer
+          `shouldSatisfy` isLeft
+    validateAtPrompt game destinyPrompt choiceAnswer `shouldSatisfy` isLeft
+    validateAtPrompt game (ChooseOne [Label "continue" [Noop]]) (Raw Noop)
+      `shouldSatisfy` isLeft
+    validateAtPrompt
+      game
+      exchangePrompt
+      (ExchangeAmountsAnswer GameSource firstInvestigator firstInvestigator Resource 1)
+      `shouldSatisfy` isLeft
 
   it "rejects malformed/history plans and stale, dirty, or unattested builds" . gameTest $ \_ -> do
     game <- checkpointGame
@@ -90,6 +175,8 @@ spec = describe "deterministic replay checkpoint harness" do
     case retainedQueueAt 0 [step0] of
       Left err -> expectationFailure err
       Right queue -> Aeson.toJSON queue `shouldBe` Aeson.toJSON [Noop]
+    Aeson.toJSON (prependReplayAnswerMessages [ClearUI] [Noop])
+      `shouldBe` Aeson.toJSON [ClearUI, Noop]
     pure () :: IO ()
 
   it "distinguishes ordinary exports and verifies every checkpoint envelope authority" . gameTest $ \_ -> do
@@ -144,6 +231,13 @@ onlyCheckpoint :: Game -> TestAppT QuestionCheckpoint
 onlyCheckpoint game = case questionCheckpoints game of
   Right [checkpoint] -> pure checkpoint {checkpointName = "target"}
   other -> error $ "expected one checkpoint, got " <> show other
+
+validateAtPrompt :: Game -> Question Message -> Answer -> Either String PlayerId
+validateAtPrompt game prompt answer =
+  let prompted = game {gameQuestion = Map.singleton game.gameActivePlayerId prompt}
+   in case questionCheckpoints prompted of
+        Right [checkpoint] -> validateReplayAnswer prompted $ ReplayAnswerStep checkpoint answer
+        other -> Left $ "expected one checkpoint, got " <> show other
 
 ordinaryExport :: Game -> [Message] -> ArkhamExport
 ordinaryExport game queue =

@@ -105,25 +105,29 @@ Game, seed, open question, and next continuation remain intact.
 Export/script inputs use no-follow opens, descriptor `fstat`, descriptor reads,
 and identity/content-digest revalidation before publication; inspection uses
 the same path. Aliases, symlinks, hard links, directories, special files, and
-changed parents/destinations are rejected. Outputs are exclusively staged and
-fsynced in their destination directories. Secondaries publish first; the
+changed parents/destinations are rejected. Output parents are opened with
+`O_DIRECTORY|O_NOFOLLOW` and retained; stages are exclusively created, written,
+and published relative to those descriptors. Each stage descriptor remains open
+through publication or cleanup, preventing a removed inode from being reused as
+false ownership. Cleanup and publication first atomically capture the visible
+stage entry under a private sibling name, then verify it against the retained
+descriptor before unlinking or renaming it. A foreign replacement is restored
+without clobbering another concurrent entry. Secondaries publish first; the
 checkpoint uses an atomic hard-link-to-absent operation, so concurrent writers
-cannot clobber it. Acquisition stays masked while the completed stage list is
-handed to cleanup ownership. Each temp is opened, identified, and assigned
-inode-aware cleanup while masked; only its writes, fsync, and close are restored,
-and the completed stage returns masked. Subsequent hooks and filesystem work
-are likewise restored inside the publish state machine, with an explicit
-cancellation point before each operation can publish a side effect. Cleanup
-removes only device/inode identities still owned by the process.
+cannot clobber it. Acquisition and each ownership handoff stay masked, while
+potentially blocking writes, fsyncs, hooks, and publication operations remain
+interruptible with cleanup already armed.
 
 Only schema `1`, exact answer scripts, and question checkpoints are supported.
-Malformed/stale prompts, missing steps, provenance drift, unhandled/unused
-answers, and unreachable stops exit non-zero without a checkpoint. Database-only
-answers, database/epic-event side effects, and historical undo/log replay remain
-outside this harness.
+Every scripted answer constructor must match the exact current prompt before its
+messages can enter the queue. Malformed/stale prompts, incompatible constructors,
+missing steps, provenance drift, unhandled/unused answers, and unreachable stops
+exit non-zero without a checkpoint. Database-only answers, database/epic-event
+side effects, and historical undo/log replay remain outside this harness.
 
 `mise run replay:harness:test` also runs the committed process fixture through
-the actual executable. It proves pre-drain queue preservation, a nonzero
+the actual executable. It proves pre-drain queue preservation, answer messages
+running before a non-empty retained queue across an answer boundary, a nonzero
 `--undo` plus exact Answer reaching a later prompt, byte-identical simulated and
 unsimulated checkpoints, server metric spans, checkpoint import/inspection, and
 the fail-closed rejection matrix (including an actually unattested build).

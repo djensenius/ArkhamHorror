@@ -19,6 +19,7 @@ module Arkham.Replay.Checkpoint (
   validateReplaySource,
   validateRetainedSteps,
   retainedQueueAt,
+  prependReplayAnswerMessages,
   questionCheckpoints,
   checkQuestionCheckpoint,
   requireQuestionCheckpoint,
@@ -34,7 +35,7 @@ import Arkham.Id (PlayerId)
 import Arkham.Json (aesonOptions)
 import Arkham.Message (Message)
 import Arkham.Prelude
-import Arkham.Question (Question)
+import Arkham.Question (Question (..))
 import Arkham.Replay.BuildIdentity
 import Base.Api.Types.Capabilities qualified as Capabilities
 import Control.Monad.Fail (fail)
@@ -324,6 +325,10 @@ retainedQueueAt step steps =
     [] -> Left $ "missing retained resume step " <> show step
     _ -> Left $ "duplicate retained resume step " <> show step
 
+prependReplayAnswerMessages :: [message] -> [message] -> [message]
+prependReplayAnswerMessages answerMessages retainedQueue =
+  answerMessages <> retainedQueue
+
 questionCheckpoints :: Game -> Either String [QuestionCheckpoint]
 questionCheckpoints game =
   traverse
@@ -402,7 +407,112 @@ validateReplayAnswer game ReplayAnswerStep {..} = do
     DeckAnswer _ player -> unless (player == expectedPlayer) $ Left "DeckAnswer playerId does not match expected checkpoint player"
     DeckListAnswer _ player -> unless (player == expectedPlayer) $ Left "DeckListAnswer playerId does not match expected checkpoint player"
     _ -> pure ()
+  prompt <-
+    maybe
+      (Left "expected checkpoint player is no longer being asked")
+      Right
+      $ Map.lookup expectedPlayer game.gameQuestion
+  unless (replayAnswerMatchesPrompt replayAnswerValue prompt) $
+    Left
+      $ replayAnswerConstructor replayAnswerValue
+      <> " is not compatible with checkpoint prompt "
+      <> T.unpack replayAnswerExpected.checkpointPromptTag
   pure expectedPlayer
+
+replayAnswerMatchesPrompt :: Answer -> Question Message -> Bool
+replayAnswerMatchesPrompt answer prompt = case answer of
+  Answer {} -> isChoicePrompt $ stripPromptWrappers prompt
+  Raw {} -> False
+  PaymentAmountsAnswer {} -> isPaymentAmountsPrompt prompt
+  AmountsAnswer {} -> isAmountsPrompt prompt
+  StandaloneSettingsAnswer {} -> case stripPromptWrappers prompt of
+    PickScenarioSettings -> True
+    _ -> False
+  CampaignSettingsAnswer {} -> case stripPromptWrappers prompt of
+    PickCampaignSettings -> True
+    _ -> False
+  DeckAnswer {} -> isDeckPrompt $ stripPromptWrappers prompt
+  DeckListAnswer {} -> isDeckPrompt $ stripPromptWrappers prompt
+  PickDestinyAnswer {} -> case stripPromptWrappers prompt of
+    PickDestiny {} -> True
+    _ -> False
+  CampaignSpecificAnswer {} -> case stripPromptWrappers prompt of
+    PickCampaignSpecific {} -> True
+    _ -> False
+  ScenarioSpecificAnswer {} -> case stripPromptWrappers prompt of
+    PickScenarioSpecific {} -> True
+    _ -> False
+  ExchangeAmountsAnswer answerSource answerFrom answerTo answerToken _ ->
+    case stripPromptWrappers prompt of
+      ChooseExchangeAmounts promptSource firstInvestigator _ secondInvestigator _ promptToken ->
+        answerSource == promptSource
+          && answerToken == promptToken
+          && ( (answerFrom == firstInvestigator && answerTo == secondInvestigator)
+                || (answerFrom == secondInvestigator && answerTo == firstInvestigator)
+             )
+      _ -> False
+  CampaignStepAnswer {} -> case stripPromptWrappers prompt of
+    ContinueCampaign -> True
+    _ -> False
+
+stripPromptWrappers :: Question message -> Question message
+stripPromptWrappers = \case
+  QuestionLabel _ _ prompt -> stripPromptWrappers prompt
+  PayCostQuestion _ prompt -> stripPromptWrappers prompt
+  QuestionWithSource _ _ prompt -> stripPromptWrappers prompt
+  prompt -> prompt
+
+isChoicePrompt :: Question message -> Bool
+isChoicePrompt = \case
+  ChooseOne {} -> True
+  PlayerWindowChooseOne {} -> True
+  WindowChooseOne {} -> True
+  ChooseOneFromEach {} -> True
+  ChooseN {} -> True
+  ChooseSome {} -> True
+  ChooseSome1 {} -> True
+  ChooseUpToN {} -> True
+  ChooseOneAtATime {} -> True
+  ChooseOneAtATimeWithAuto {} -> True
+  Read {} -> True
+  ChooseOneWizard {} -> True
+  PickSupplies {} -> True
+  DropDown {} -> True
+  _ -> False
+
+isAmountsPrompt :: Question message -> Bool
+isAmountsPrompt = \case
+  ChooseAmounts {} -> True
+  QuestionLabel _ _ (ChooseAmounts {}) -> True
+  _ -> False
+
+isPaymentAmountsPrompt :: Question message -> Bool
+isPaymentAmountsPrompt = \case
+  ChoosePaymentAmounts {} -> True
+  PayCostQuestion _ (ChoosePaymentAmounts {}) -> True
+  _ -> False
+
+isDeckPrompt :: Question message -> Bool
+isDeckPrompt = \case
+  ChooseDeck -> True
+  ChooseUpgradeDeck -> True
+  _ -> False
+
+replayAnswerConstructor :: Answer -> String
+replayAnswerConstructor = \case
+  Answer {} -> "Answer"
+  Raw {} -> "Raw"
+  PaymentAmountsAnswer {} -> "PaymentAmountsAnswer"
+  AmountsAnswer {} -> "AmountsAnswer"
+  StandaloneSettingsAnswer {} -> "StandaloneSettingsAnswer"
+  CampaignSettingsAnswer {} -> "CampaignSettingsAnswer"
+  DeckAnswer {} -> "DeckAnswer"
+  DeckListAnswer {} -> "DeckListAnswer"
+  PickDestinyAnswer {} -> "PickDestinyAnswer"
+  CampaignSpecificAnswer {} -> "CampaignSpecificAnswer"
+  ScenarioSpecificAnswer {} -> "ScenarioSpecificAnswer"
+  ExchangeAmountsAnswer {} -> "ExchangeAmountsAnswer"
+  CampaignStepAnswer {} -> "CampaignStepAnswer"
 
 makeCheckpointExport :: ArkhamExport -> Game -> [Message] -> ArkhamExport
 makeCheckpointExport source game pendingQueue =
