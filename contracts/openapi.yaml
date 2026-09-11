@@ -176,10 +176,25 @@ paths:
         always `https`. A client must never rewrite it onto another host, and
         must verify the manifest it downloads against `manifestSha256` before
         using it.
+
+        The `X-Arkham-Backend-Build-Identity` response header is separate from
+        retained game-state revisions. It is JSON embedded when the running
+        backend executable is compiled; clients requiring deterministic local
+        replay must reject a missing, malformed, unattested, or unexpected
+        identity rather than accepting a caller-provided expected value.
       security: []
       responses:
         "200":
           description: Contract compatibility and server capabilities
+          headers:
+            X-Arkham-Backend-Build-Identity:
+              description: |
+                Compact JSON `ReplayBuildIdentity` compiled into the running
+                backend. Fields are `gitRevision`, `gitTree`, `sourceSha256`,
+                `sourceClean`, and `attestation`; this is build authority, not a
+                game's retained `gameGitRevision`.
+              schema:
+                type: string
           content:
             application/json:
               schema:
