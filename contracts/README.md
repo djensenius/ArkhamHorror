@@ -562,11 +562,11 @@ The schema adds two constructor-disjoint closed roots and does not widen the
 generic question/component/message unions. Haskell assertions bind every outer,
 direct-message, continuation-message, component, and accumulated-target
 identity, plus all amounts, strategy, matcher, and message order. The manifest
-adds **30** deterministic single-mutation negatives (15 per continuation)
+adds **32** deterministic single-mutation negatives (16 per continuation)
 covering wrappers, closed tags/fields, labels, cardinality, components, message
-positions, sources, targets, amounts, strategy, and both candidate arrays; the
-canonical-integer byte checks also include every new prompt amount and Answer
-choice/version.
+positions, sources, targets, amounts, strategy, matcher, and both candidate
+arrays; the canonical-integer byte checks also include every new prompt amount
+and Answer choice/version.
 
 `AssetComponent` allocation is deliberately **not** admitted in this batch.
 Although `assignDamageDivided` can emit asset choices when a soakable asset is
