@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.32",
+  "schemaRevision": "0.1.33",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -308,6 +308,22 @@
     {
       "path": "contracts/fixtures/answer-enemy-attack-assign-horror.json",
       "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-horror.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-damage.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
     }
   ],
   "compatibility": {
@@ -371,6 +387,38 @@
         },
         {
           "path": "contracts/fixtures/answer-enemy-attack-assign-horror.json",
+          "pointers": [
+            "/contents/choice",
+            "/contents/questionVersion"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+          "pointers": [
+            "/question/question/choices/0/messages/0/contents/contents/2",
+            "/question/question/choices/0/messages/0/contents/contents/3",
+            "/question/question/choices/0/messages/1/contents/contents/4",
+            "/question/question/choices/0/messages/1/contents/contents/5"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-horror.json",
+          "pointers": [
+            "/contents/choice",
+            "/contents/questionVersion"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+          "pointers": [
+            "/question/question/choices/0/messages/0/contents/contents/2",
+            "/question/question/choices/0/messages/0/contents/contents/3",
+            "/question/question/choices/0/messages/1/contents/contents/4",
+            "/question/question/choices/0/messages/1/contents/contents/5"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-damage.json",
           "pointers": [
             "/contents/choice",
             "/contents/questionVersion"
@@ -8171,6 +8219,732 @@
           "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
         }
       ]
+    },
+    {
+      "description": "Remaining horror assignment: root wrapper must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingHorrorAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackRemainingHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "QuestionWithSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'QuestionWithSource' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: root tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingHorrorAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackRemainingHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "QuestionLabel"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'QuestionWithSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: root wrapper rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingHorrorAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackRemainingHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/future",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('future' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: label is exact",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingHorrorAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackRemainingHorrorAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/label",
+        "value": "Assign horror"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "label"
+          ],
+          "keyword": "const",
+          "messageContains": "'Assign 1 horror' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: choice cardinality requires one source index",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingHorrorAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackRemainingHorrorAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices/0"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: component is specifically HorrorToken",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "horrorAssignmentComponent",
+      "rejectionSchemaBranch": "horrorAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tokenType",
+        "value": "DamageToken"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tokenType"
+          ],
+          "keyword": "const",
+          "messageContains": "'HorrorToken' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: message order keeps direct horror first",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignHorrorFirstMessage",
+      "rejectionSchemaBranch": "assignHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/tag",
+        "value": "InvestigatorDoAssignDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: message order keeps the continuation second",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/tag",
+        "value": "InvestigatorDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDoAssignDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: source tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "EnemySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemyAttackSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: direct horror amount is exactly one",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignHorrorFirstMessage",
+      "rejectionSchemaBranch": "assignHorrorFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/3",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: completed damage amount is exactly zero",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/4",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "4"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: strategy is exactly DamageAny",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/2/tag",
+        "value": "DamageDirect"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: completed damage candidates stay non-empty",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/6",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: completed horror candidates stay non-empty",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/7",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Remaining horror assignment: completed target tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/7/0/tag",
+        "value": "AssetTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: root wrapper must be an object",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackRemainingDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "",
+        "value": "QuestionWithSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "type",
+          "messageContains": "'QuestionWithSource' is not of type 'object'"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: root tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackRemainingDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "QuestionLabel"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'QuestionWithSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: root wrapper rejects additive fields",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingDamageAssignmentQuestion",
+      "rejectionSchemaBranch": "enemyAttackRemainingDamageAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/future",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('future' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: label is exact",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingDamageAssignmentLabel",
+      "rejectionSchemaBranch": "enemyAttackRemainingDamageAssignmentLabel",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/label",
+        "value": "Assign damage"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "label"
+          ],
+          "keyword": "const",
+          "messageContains": "'Assign 1 damage' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: choice cardinality requires one source index",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackRemainingDamageAssignmentChoices",
+      "rejectionSchemaBranch": "enemyAttackRemainingDamageAssignmentChoices",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices/0"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: component is specifically DamageToken",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "damageAssignmentComponent",
+      "rejectionSchemaBranch": "damageAssignmentComponent",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/component",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tokenType",
+        "value": "HorrorToken"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tokenType"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageToken' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: message order keeps direct damage first",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/tag",
+        "value": "InvestigatorDoAssignDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: message order keeps the continuation second",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/tag",
+        "value": "InvestigatorDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDoAssignDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: source tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "enemyAttackSource",
+      "rejectionSchemaBranch": "enemyAttackSource",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/source",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "EnemySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'EnemyAttackSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: direct damage amount is exactly one",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "assignDamageFirstMessage",
+      "rejectionSchemaBranch": "assignDamageFirstMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/2",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: completed horror amount is exactly zero",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/5",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "5"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: strategy is exactly DamageAny",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/2/tag",
+        "value": "DamageDirect"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: completed damage candidates stay non-empty",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/6",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: completed horror candidates stay non-empty",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/7",
+        "value": []
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Remaining damage assignment: completed target tag is closed",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "completeRemainingAssignmentMessage",
+      "rejectionSchemaBranch": "completeRemainingAssignmentMessage",
+      "basePositiveFixture": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "basePointer": "/question/question/choices/0/messages/1",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/contents/contents/6/0/tag",
+        "value": "AssetTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        },
+        {
+          "path": [
+            "contents",
+            "contents",
+            "6",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -8186,6 +8960,8 @@
     "contracts/fixtures/answer-deck.json": "c60e5744f958d74b8deac3fcae0e5dee02317fda930c649aae27e4dcf67a9883",
     "contracts/fixtures/answer-enemy-attack-assign-damage.json": "5111ec20fa5af6e53f7558715529085f2a17e8f2941510ea0ca6c9439cd6ebc7",
     "contracts/fixtures/answer-enemy-attack-assign-horror.json": "0799759424dbcec2420a41c8e800e0d41a5eee5bc2e4f032027837503fcc85d6",
+    "contracts/fixtures/answer-enemy-attack-assign-remaining-damage.json": "e7c4bcbd8f246c8c34c3c1ef42e11bd342ca18fe88d8193c46b4647fd424a767",
+    "contracts/fixtures/answer-enemy-attack-assign-remaining-horror.json": "e7c4bcbd8f246c8c34c3c1ef42e11bd342ca18fe88d8193c46b4647fd424a767",
     "contracts/fixtures/answer-enemy-attack.json": "d99928af1d38ffe97adbeea9861e8f5edc43b937a309e90e27f5fb6071b555b4",
     "contracts/fixtures/answer-exchange-amounts.json": "358e6dbd9a75ddf0080df46954cc58dd0df538205375cab61bd882396bf84f9e",
     "contracts/fixtures/answer-payment-amounts.json": "d55055b00a8d4d7c93ca121af1d870367dd110ae95e271b47770b14bcf12bd1e",
@@ -8194,8 +8970,8 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "4c53db006fae92f0dc45f13669f10ab2a2c6fcf7ee22cb0e8b3fc60a364fefb5",
-    "contracts/fixtures/capabilities.json": "81e1e8c889ae9712781597df639849a52d6d1dc78bfc84b20011ad6ead053dbd",
+    "contracts/fixtures/capabilities-locale-catalog.json": "06824c09b6902cc8044290419284932dc151bc49c3bbc8edf726f800e6eb0516",
+    "contracts/fixtures/capabilities.json": "e1c09faf521213b450bdeafd54b12e9546682635bb45184ad94778d2e5224b2a",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -8222,7 +8998,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "6987d1369924fd163eeb607c6f0cde419a8de42ac3e175f0821f06121bd6be5f",
+    "contracts/fixtures/locale-catalog-manifest.json": "4ca1f25688f119917751321205818c183389228e41bfa8628fcfd20ce09acfc2",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -8237,6 +9013,8 @@
     "contracts/fixtures/question-choose-one.json": "854d6a2891155ff4da9e075224d4cd5a7519e4e4cb2ec659a740c872f8b799fc",
     "contracts/fixtures/question-encounter-deck-draw.json": "fb341f57cba32fd0d01e3d67098fa7684cd51b6b2b008c65fea61db5487ac703",
     "contracts/fixtures/question-enemy-attack-damage-assignment.json": "36d20df58661bb583dfbe5350519d164d751f5ddc85924a0f8e2917ce1bbbdff",
+    "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json": "99e09d65b292ed3535e1d908a76e90855db7b256adfda55755c41fccf4c96018",
+    "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json": "5e3eb6076ebeb406632b4aab3a5d0d9b02275c531afb2db52dffb369182df4c7",
     "contracts/fixtures/question-enemy-attack.json": "1f5ce9f0742e0f3e6891c9e464c19a863038d75cb95ebf7b4ea0ddbbc9fd6b1d",
     "contracts/fixtures/question-investigate-apply-results.json": "ca3834a719c64a263c31982cfb5987c08da40ec3494d2380ccffaebb46e11774",
     "contracts/fixtures/question-investigate-commit.json": "0cef8bb88be1ac2feb7cd2d37b952bf54fa47b4ea7d83474326baf9da7fb9b18",
@@ -8250,14 +9028,14 @@
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "18daa96c58fbc1760e06ac2bdceae9741c4e08cc86695f5bcca175c6490e220b",
+    "contracts/manifest.json": "b1e6634554ba91846face55debf2290671d04c4dc0366544bd4fc6eeda353252",
     "contracts/openapi.yaml": "1fbbc11558d25c22e96549786f6baacdb1f14fa7aa1c997fc84437ebcba478d6",
     "contracts/route-inventory.json": "e28381b9f9ca1889ab1c80591f8791a2187310de689f7b13d4a5d094fb72f5b8",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "8b957d89e981eda141324d9bac90d4e3f8d80c998b971937f8b13b93fece41d8",
+    "contracts/schemas/basic-choice-question.schema.json": "3e11ef81bd3468b58a000cbede1d2876658a8dd309b5ee9cc20e643b9df9b3dc",
     "contracts/schemas/capabilities.schema.json": "7cc6d2805a47ee19549beab91f3c54085f2726b8d0671f0a3ae662bab820d42a",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
