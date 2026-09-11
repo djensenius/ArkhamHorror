@@ -72,22 +72,45 @@ spec = describe "selectUploadedExportFile" do
       makeReplayPlayerRemapping "c01001" checkpointPlayerId "not-a-uuid" False
         `shouldSatisfy` isLeft
 
-  it "binds replay attestation reads to the authenticated game membership" do
+  it "preserves the production PublicGame import body and authority headers" do
     source <- readDebugSource
     let normalized = T.unwords $ T.words source
-        importHandler =
+        handlerAndRest =
           snd $ T.breakOn "postApiV1ArkhamGamesImportR = do" normalized
+        importHandler =
+          fst
+            $ T.breakOn
+              "getApiV1ArkhamGameReplayAttestationR"
+              handlerAndRest
         position needle =
           let (prefix, suffix) = T.breakOn needle importHandler
            in if T.null suffix
                 then expectationFailure ("missing import-handler source: " <> T.unpack needle) >> error "missing source"
                 else pure $ T.length prefix
+    normalized
+      `shouldSatisfy` T.isInfixOf
+        "postApiV1ArkhamGamesImportR :: Handler (PublicGame ArkhamGameId)"
     decodePosition <- position "decodeExportBytes"
     transactionPosition <- position "(key, importReceipt) <- runDB"
+    headerPosition <-
+      position
+        "replayImportResponseHeaders serverBuildIdentity importReceipt"
+    publicGamePosition <- position "$ toPublicGame"
     decodePosition `shouldSatisfy` (< transactionPosition)
+    headerPosition `shouldSatisfy` (< publicGamePosition)
     importHandler
       `shouldSatisfy` T.isInfixOf
         "for_ importReceipt \\receipt -> do"
+    importHandler
+      `shouldSatisfy` T.isInfixOf
+        "traverse_ (uncurry addHeader) (replayImportResponseHeaders serverBuildIdentity importReceipt)"
+    importHandler
+      `shouldSatisfy` T.isInfixOf
+        "$ toPublicGame (Entity key $ ArkhamGame agedName agedCurrentData agedStep variant now now)"
+
+  it "binds replay attestation reads to the authenticated game membership" do
+    source <- readDebugSource
+    let normalized = T.unwords $ T.words source
     normalized
       `shouldSatisfy` T.isInfixOf
         "getApiV1ArkhamGameReplayAttestationR gameId = do Entity userId user <- getRequestUser withGameAccess user.admin (isJust <$> runDB (getBy $ UniquePlayer userId gameId)) notFound"

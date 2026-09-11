@@ -119,15 +119,24 @@ Changing export/provenance fields, adding ignored fields, duplicate-key or
 whitespace rewrites, and retaining a plausible embedded digest are all rejected
 before any game row exists.
 
-A successful checkpoint import returns `X-Arkham-Replay-Import-Receipt`. Its
-schema-versioned JSON binds the new game id, retained `gameGitRevision`,
-import-time clean backend build, SHA-256 of the exact decompressed checkpoint
-bytes, server-recomputed `canonicalEnvelopeSha256`, full checkpoint provenance,
-the checkpoint/imported/live player-ID mapping, whether game state was
-remapped, and a digest over the receipt. The same receipt is persisted
-atomically with the game, players, and retained steps. The server does not
-accept caller-provided expected identities or digests. Ordinary exports receive
-the server-build header but no receipt or persisted replay authority.
+The successful `POST /api/v1/arkham/games/import` body remains the production
+handler's complete `PublicGame ArkhamGameId` JSON snapshot. Its top-level `id`
+identifies the imported game, but the body is not an ID-only `{ "id": ... }`
+envelope. Both ordinary exports and replay checkpoints return this same full
+body together with `X-Arkham-Backend-Build-Identity`. A successful checkpoint
+import additionally returns `X-Arkham-Replay-Import-Receipt`; ordinary exports
+omit only that receipt header.
+
+The checkpoint receipt's schema-versioned JSON binds the new game id, retained
+`gameGitRevision`, import-time clean backend build, SHA-256 of the exact
+decompressed checkpoint bytes, server-recomputed
+`canonicalEnvelopeSha256`, full checkpoint provenance, the
+checkpoint/imported/live player-ID mapping, whether game state was remapped,
+and a digest over the receipt. The same receipt is persisted atomically with
+the game, players, and retained steps. The server does not accept
+caller-provided expected identities or digests. The Apple coordinator must
+decode the full `PublicGame` body and both applicable authority headers from
+this actual response rather than substituting an ID-only response contract.
 
 After import, an authenticated administrator or member of that exact game can
 read `GET /api/v1/arkham/games/{gameId}/replay-attestation`. It returns the
@@ -144,8 +153,8 @@ The Apple live driver must require all of the following:
    identity, attestation `runningServerBuild`, receipt `backendBuild`, checkpoint
    provenance `replayBuild`, and `arkham-replay --build-identity` are identical
    clean Git identities;
-2. response game id, attestation/receipt game id, and the requested game id are
-   identical;
+2. the import response's full `PublicGame.id`, attestation/receipt game id, and
+   the requested game id are identical;
 3. the retained game revision equals the attestation, receipt, and checkpoint
    provenance revision;
 4. the import header receipt equals the durable `importReceipt`, including its

@@ -282,6 +282,9 @@ spec = describe "deterministic replay checkpoint harness" do
         [ (backendBuildIdentityHeaderName, backendBuildIdentityHeaderValue fixtureBuild)
         , (replayImportReceiptHeaderName, replayImportReceiptHeaderValue receipt)
         ]
+    replayImportResponseHeaders fixtureBuild Nothing
+      `shouldBe`
+        [(backendBuildIdentityHeaderName, backendBuildIdentityHeaderValue fixtureBuild)]
     Aeson.eitherDecodeStrict' @ReplayImportReceipt
       ( TE.encodeUtf8
           $ replayImportReceiptHeaderValue

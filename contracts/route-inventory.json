@@ -29,7 +29,7 @@
     {"method": "DELETE", "path": "/api/v1/arkham/achievements", "resource": "ApiV1ArkhamAchievementsR", "surface": "achievements", "scope": "native-client", "coverage": "documented"},
     {"method": "GET", "path": "/api/v1/arkham/games", "resource": "ApiV1ArkhamGamesR", "surface": "games", "scope": "native-client", "coverage": "documented"},
     {"method": "POST", "path": "/api/v1/arkham/games", "resource": "ApiV1ArkhamGamesR", "surface": "games", "scope": "native-client", "coverage": "documented"},
-    {"method": "POST", "path": "/api/v1/arkham/games/import", "resource": "ApiV1ArkhamGamesImportR", "surface": "games", "scope": "native-client", "coverage": "required"},
+    {"method": "POST", "path": "/api/v1/arkham/games/import", "resource": "ApiV1ArkhamGamesImportR", "surface": "games", "scope": "native-client", "coverage": "documented"},
     {"method": "POST", "path": "/api/v1/arkham/games/fix", "resource": "ApiV1ArkhamGamesFixR", "surface": "maintenance", "scope": "server-operator", "coverage": "excluded"},
     {"method": "GET", "path": "/api/v1/arkham/games/reload", "resource": "ApiV1ArkhamGamesReloadR", "surface": "maintenance", "scope": "server-operator", "coverage": "excluded"},
     {"method": "GET", "path": "/api/v1/arkham/games/old", "resource": "ApiV1ArkhamGamesOldR", "surface": "maintenance", "scope": "server-operator", "coverage": "excluded"},

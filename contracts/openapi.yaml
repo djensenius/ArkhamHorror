@@ -560,6 +560,84 @@ paths:
           description: Token is absent or invalid
         "500":
           description: Campaign or scenario initialization failed
+  /arkham/games/import:
+    post:
+      operationId: importGame
+      summary: Import a complete saved game or validated replay checkpoint
+      description: |
+        This is the existing production import route. A successful response
+        body is the complete `PublicGame` snapshot used by the web client,
+        including its top-level `id`; it is not an ID-only object such as
+        `{ "id": "..." }`.
+
+        Every successful ordinary-export or checkpoint import also returns
+        `X-Arkham-Backend-Build-Identity`, containing the JSON build identity
+        compiled into the running server. A successfully validated checkpoint
+        import additionally returns `X-Arkham-Replay-Import-Receipt`, containing
+        the exact JSON receipt persisted for the new game. Ordinary exports
+        omit only the receipt header, not the `PublicGame` response body or
+        backend-identity header.
+
+        Coordinators must decode the body and both applicable headers from this
+        same production response. They must not substitute an ID-only response
+        model or treat caller-provided expected strings as authority.
+      parameters:
+        - name: multiplayerVariant
+          in: query
+          required: false
+          description: |
+            Optional ordinary-export mode override. Validated checkpoint
+            imports reject any override so their retained mode cannot change.
+          schema:
+            type: string
+            enum:
+              - Solo
+              - WithFriends
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - debugFile
+              properties:
+                debugFile:
+                  type: string
+                  format: binary
+                  description: Ordinary Arkham export or deterministic checkpoint JSON, optionally gzip-compressed
+                investigatorId:
+                  type: string
+                  description: Investigator selected for an ordinary WithFriends import
+      responses:
+        "200":
+          description: Complete imported game snapshot with server authority headers
+          headers:
+            X-Arkham-Backend-Build-Identity:
+              required: true
+              description: |
+                Compact JSON `ReplayBuildIdentity` compiled into the running
+                backend. Present for every successful import.
+              content:
+                application/json:
+                  schema:
+                    $ref: "./schemas/replay-attestation.schema.json#/$defs/replayBuildIdentity"
+            X-Arkham-Replay-Import-Receipt:
+              description: |
+                Compact JSON `ReplayImportReceipt`, present only when the
+                uploaded bytes were accepted as a validated replay checkpoint.
+              content:
+                application/json:
+                  schema:
+                    $ref: "./schemas/replay-attestation.schema.json#/$defs/importReceipt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicGame"
+        "400":
+          description: Upload, export, checkpoint, mode, or player remapping validation failed
+        "401":
+          description: Token is absent or invalid
   /arkham/games/{gameId}:
     get:
       operationId: getGame
