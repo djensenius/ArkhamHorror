@@ -9,6 +9,7 @@ version:        0.0.0
 build-type:     Simple
 extra-source-files:
     digital-ocean.crt
+    tests/fixtures/replay/smoke-current-data.json
 
 flag dev
   description: Turn on development settings, like auto-reload templates.
@@ -6308,6 +6309,9 @@ library
       Arkham.Question
       Arkham.Queue
       Arkham.Random
+      Arkham.Replay.BuildIdentity
+      Arkham.Replay.Checkpoint
+      Arkham.Replay.Output
       Arkham.RequestedChaosTokenStrategy
       Arkham.Resolution
       Arkham.Scenario
@@ -8264,6 +8268,7 @@ library
     , time
     , tls
     , transformers
+    , unix
     , unliftio
     , unordered-containers
     , uri-bytestring
@@ -8419,6 +8424,7 @@ executable arkham-replay
     , arkham-api
     , base
     , bytestring
+    , template-haskell
     , text
   default-language: GHC2021
   if flag(library-only)
@@ -8729,6 +8735,8 @@ test-suite spec
       Arkham.Matcher.OutOfPlayEnemySpec
       Arkham.Modifier.CannotAttackDuringEnemyPhaseSpec
       Arkham.Modifier.SearchAllInvestigatorsSpec
+      Arkham.Replay.CheckpointSpec
+      Arkham.Replay.OutputSpec
       Arkham.Scenario.DancingMadSpec
       Arkham.Scenario.Scenarios.DeadHeatSpec
       Arkham.Scenario.Scenarios.DealingsInTheDarkSpec
@@ -8872,6 +8880,7 @@ test-suite spec
     , amazonka
     , amazonka-core
     , arkham-api
+    , async
     , base
     , base16-bytestring
     , bytestring
@@ -8895,6 +8904,7 @@ test-suite spec
     , relude
     , text
     , time
+    , unix
     , unordered-containers
     , uuid
     , yaml
