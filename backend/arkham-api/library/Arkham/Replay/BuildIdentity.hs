@@ -4,6 +4,7 @@ module Arkham.Replay.BuildIdentity (
   ReplayBuildAttestation (..),
   ReplayBuildIdentity (..),
   embedReplayBuildIdentity,
+  validateCleanReplayBuildIdentity,
   validateReplayBuildIdentity,
 ) where
 
@@ -76,6 +77,14 @@ validateReplayBuildIdentity ReplayBuildIdentity {..} =
       | not replayBuildSourceClean ->
           Left "backend build claims a clean-Git attestation for dirty sources"
     _ -> Right ()
+
+validateCleanReplayBuildIdentity :: ReplayBuildIdentity -> Either String ()
+validateCleanReplayBuildIdentity identity@ReplayBuildIdentity {..} = do
+  validateReplayBuildIdentity identity
+  unless replayBuildSourceClean $
+    Left "backend build source is not clean"
+  unless (replayBuildAttestation == ReplayBuildGitClean) $
+    Left "backend build is not attested by a clean Git tree"
 
 embedReplayBuildIdentity :: Q Exp
 embedReplayBuildIdentity = do

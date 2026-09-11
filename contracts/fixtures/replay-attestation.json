@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "gameId": "00000000-0000-0000-0000-000000000010",
+  "gameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+  "checkpointSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "canonicalEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "checkpointProvenance": {
+    "schemaVersion": 1,
+    "contractSchemaRevision": "0.1.34",
+    "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "sourceExportSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "sourceInputKind": "export",
+    "sourceGameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+    "replayBuild": {
+      "gitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+      "gitTree": "dddddddddddddddddddddddddddddddddddddddd",
+      "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sourceClean": true,
+      "attestation": "git-clean"
+    },
+    "mode": "answers",
+    "undoSteps": 0,
+    "answersApplied": 1,
+    "checkpoint": {
+      "type": "question",
+      "name": "apple-live-import",
+      "questionVersion": 7,
+      "playerId": "00000000-0000-0000-0000-000000000000",
+      "promptTag": "ChooseOne",
+      "promptSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "checkpointGameSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "checkpointQueueSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "runningServerBuild": {
+    "gitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+    "gitTree": "dddddddddddddddddddddddddddddddddddddddd",
+    "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "sourceClean": true,
+    "attestation": "git-clean"
+  },
+  "importReceipt": {
+    "schemaVersion": 1,
+    "gameId": "00000000-0000-0000-0000-000000000010",
+    "gameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+    "backendBuild": {
+      "gitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+      "gitTree": "dddddddddddddddddddddddddddddddddddddddd",
+      "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sourceClean": true,
+      "attestation": "git-clean"
+    },
+    "checkpointSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "canonicalEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "checkpointProvenance": {
+      "schemaVersion": 1,
+      "contractSchemaRevision": "0.1.34",
+      "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "sourceExportSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "sourceInputKind": "export",
+      "sourceGameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+      "replayBuild": {
+        "gitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+        "gitTree": "dddddddddddddddddddddddddddddddddddddddd",
+        "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "sourceClean": true,
+        "attestation": "git-clean"
+      },
+      "mode": "answers",
+      "undoSteps": 0,
+      "answersApplied": 1,
+      "checkpoint": {
+        "type": "question",
+        "name": "apple-live-import",
+        "questionVersion": 7,
+        "playerId": "00000000-0000-0000-0000-000000000000",
+        "promptTag": "ChooseOne",
+        "promptSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "checkpointGameSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "checkpointQueueSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "playerRemappings": [
+      {
+        "investigatorId": "c01001",
+        "checkpointPlayerId": "00000000-0000-0000-0000-000000000000",
+        "importedPlayerId": "00000000-0000-0000-0000-000000000020",
+        "livePlayerId": "00000000-0000-0000-0000-000000000020",
+        "stateRemapped": true
+      }
+    ],
+    "receiptSha256": "6e641fc2c833d845ebf18a085a12aa7432f127bda2cc91070f3b4ca65a8b9605"
+  }
+}

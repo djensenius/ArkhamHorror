@@ -765,6 +765,42 @@ paths:
                 $ref: "#/components/schemas/GetGame"
         "404":
           description: Game does not exist
+  /arkham/games/{gameId}/replay-attestation:
+    get:
+      operationId: getGameReplayAttestation
+      summary: Read durable authority for a validated replay checkpoint import
+      description: |
+        Requires administrator access or membership in the exact game. This is
+        a metadata-only replay-import authority and exposes no game rules,
+        prompts, answer path, or mutable state.
+
+        The importer runs the backend's exact checkpoint-envelope decoder and
+        validator over the uploaded bytes before opening the game-creation
+        transaction. Only a successfully validated checkpoint import receives
+        a durable receipt. `canonicalEnvelopeSha256` is recomputed by the
+        server from the decoded export and full provenance; it is never trusted
+        from the checkpoint's embedded digest field.
+
+        A successful response proves that the retained game revision, full
+        checkpoint provenance and replay build, import-time clean backend
+        build, player remapping, and current clean running backend build still
+        agree. Missing records, malformed receipts, dirty or unattested
+        binaries, changed game revisions, and build mismatches fail closed.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Validated game-bound replay import authority
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayAttestation"
+        "400":
+          description: Persisted authority or current clean-build validation failed closed
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Game, participant membership, or replay import attestation does not exist
   /arkham/games/{gameId}/step:
     get:
       operationId: getGameStep
@@ -934,6 +970,8 @@ components:
       $ref: "./schemas/game-lifecycle.schema.json#/$defs/openSeats"
     GameStep:
       $ref: "./schemas/game-step.schema.json"
+    ReplayAttestation:
+      $ref: "./schemas/replay-attestation.schema.json"
     GameList:
       $ref: "./schemas/game-list.schema.json"
     GetGame:

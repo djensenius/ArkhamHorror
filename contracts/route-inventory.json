@@ -40,6 +40,7 @@
     {"method": "GET", "path": "/api/v1/arkham/games/{ArkhamGameId}/join", "resource": "ApiV1ArkhamPendingGameR", "surface": "games", "scope": "native-client", "coverage": "documented"},
     {"method": "PUT", "path": "/api/v1/arkham/games/{ArkhamGameId}/join", "resource": "ApiV1ArkhamPendingGameR", "surface": "games", "scope": "native-client", "coverage": "documented"},
     {"method": "GET", "path": "/api/v1/arkham/games/{ArkhamGameId}/replay/{Int}", "resource": "ApiV1ArkhamGameReplayR", "surface": "games", "scope": "native-client", "coverage": "required"},
+    {"method": "GET", "path": "/api/v1/arkham/games/{ArkhamGameId}/replay-attestation", "resource": "ApiV1ArkhamGameReplayAttestationR", "surface": "games", "scope": "native-client", "coverage": "documented"},
     {"method": "PUT", "path": "/api/v1/arkham/games/{ArkhamGameId}/decks", "resource": "ApiV1ArkhamGameDecksR", "surface": "games", "scope": "native-client", "coverage": "documented"},
     {"method": "PUT", "path": "/api/v1/arkham/games/{ArkhamGameId}/undo", "resource": "ApiV1ArkhamGameUndoR", "surface": "games", "scope": "native-client", "coverage": "required"},
     {"method": "PUT", "path": "/api/v1/arkham/games/{ArkhamGameId}/undo/scenario", "resource": "ApiV1ArkhamGameUndoScenarioR", "surface": "games", "scope": "native-client", "coverage": "required"},

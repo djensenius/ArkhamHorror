@@ -1,6 +1,7 @@
 module Arkham.Replay.Checkpoint (
   ReplayBuildAttestation (..),
   ReplayBuildIdentity (..),
+  validateCleanReplayBuildIdentity,
   validateReplayBuildIdentity,
   ReplayMode (..),
   ReplayInputKind (..),
@@ -27,6 +28,7 @@ module Arkham.Replay.Checkpoint (
   validateReplayAnswer,
   makeCheckpointExport,
   checkpointExportValue,
+  canonicalReplayCheckpointEnvelopeSha256,
 ) where
 
 import Api.Arkham.Export
@@ -277,7 +279,20 @@ decodeReplayInputEnvelope buildIdentity bytes = do
     Just encodedEnvelope -> do
       envelope <-
         resultToEither "Failed to parse replayCheckpoint" $ fromJSON encodedEnvelope
+      unless (encodedEnvelope == toJSON envelope) $
+        Left "replay checkpoint envelope contains non-canonical or unknown fields"
+      canonicalExportValue <- case value of
+        Object o -> Right $ Object $ KeyMap.delete "replayCheckpoint" o
+        _ -> Left "Failed to parse export: expected a JSON object"
+      unless (canonicalExportValue == toJSON export) $
+        Left "replay checkpoint export contains non-canonical or unknown fields"
       validateCheckpointExport buildIdentity export envelope
+      let canonicalBytes =
+            BSL.toStrict
+              $ encode
+              $ checkpointExportValue export envelope.replayCheckpointProvenance
+      unless (bytes == canonicalBytes) $
+        Left "replay checkpoint bytes are not the canonical deterministic encoding"
       pure (export, ReplayCheckpoint, Just envelope)
 
 validateReplaySource
@@ -542,13 +557,14 @@ checkpointExportValue export provenance = case toJSON export of
     let envelope =
           ReplayCheckpointEnvelope
             { replayCheckpointProvenance = provenance
-            , replayCheckpointEnvelopeSha256 = checkpointEnvelopeDigest export provenance
+            , replayCheckpointEnvelopeSha256 =
+                canonicalReplayCheckpointEnvelopeSha256 export provenance
             }
      in Object $ KeyMap.insert "replayCheckpoint" (toJSON envelope) o
   _ -> error "ArkhamExport did not encode as an object"
 
-checkpointEnvelopeDigest :: ArkhamExport -> ReplayProvenance -> Text
-checkpointEnvelopeDigest export provenance =
+canonicalReplayCheckpointEnvelopeSha256 :: ArkhamExport -> ReplayProvenance -> Text
+canonicalReplayCheckpointEnvelopeSha256 export provenance =
   sha256Lazy $ encode $ object ["type" .= String "arkham-replay-checkpoint", "export" .= export, "provenance" .= provenance]
 
 questionCheckpoint :: ToJSON message => Text -> Game -> PlayerId -> Question message -> Either String QuestionCheckpoint
@@ -582,7 +598,7 @@ validateCheckpointExport
     , ..
     } = do
   unless
-    (checkpointEnvelopeDigest export provenance == replayCheckpointEnvelopeSha256)
+    (canonicalReplayCheckpointEnvelopeSha256 export provenance == replayCheckpointEnvelopeSha256)
     $ Left "replay checkpoint envelope hash does not match its export and provenance"
   unless (agedStep == 0) $ Left "replay checkpoint provenance requires export step 0"
   unless (null agedLog) $ Left "replay checkpoint provenance requires an empty log"

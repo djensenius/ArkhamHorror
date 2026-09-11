@@ -1,0 +1,264 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/replay-attestation.schema.json",
+  "title": "ReplayAttestation",
+  "description": "Authenticated, game-bound authority for a validated deterministic replay checkpoint import.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gameId",
+    "gameGitRevision",
+    "checkpointSha256",
+    "canonicalEnvelopeSha256",
+    "checkpointProvenance",
+    "runningServerBuild",
+    "importReceipt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "gameId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "gameGitRevision": {
+      "$ref": "#/$defs/gitSha"
+    },
+    "checkpointSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "canonicalEnvelopeSha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "checkpointProvenance": {
+      "$ref": "#/$defs/replayProvenance"
+    },
+    "runningServerBuild": {
+      "$ref": "#/$defs/replayBuildIdentity"
+    },
+    "importReceipt": {
+      "$ref": "#/$defs/importReceipt"
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "replayBuildIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gitRevision",
+        "gitTree",
+        "sourceSha256",
+        "sourceClean",
+        "attestation"
+      ],
+      "properties": {
+        "gitRevision": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "gitTree": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "sourceSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sourceClean": {
+          "const": true
+        },
+        "attestation": {
+          "const": "git-clean"
+        }
+      }
+    },
+    "questionCheckpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "name",
+        "questionVersion",
+        "playerId",
+        "promptTag",
+        "promptSha256"
+      ],
+      "properties": {
+        "type": {
+          "const": "question"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "questionVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "playerId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "promptTag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promptSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "replayProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "contractSchemaRevision",
+        "planSha256",
+        "sourceExportSha256",
+        "sourceInputKind",
+        "sourceGameGitRevision",
+        "replayBuild",
+        "mode",
+        "undoSteps",
+        "answersApplied",
+        "checkpoint",
+        "checkpointGameSha256",
+        "checkpointQueueSha256"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "contractSchemaRevision": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "planSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sourceExportSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "sourceInputKind": {
+          "enum": [
+            "export",
+            "checkpoint"
+          ]
+        },
+        "sourceGameGitRevision": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "replayBuild": {
+          "$ref": "#/$defs/replayBuildIdentity"
+        },
+        "mode": {
+          "const": "answers"
+        },
+        "undoSteps": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "answersApplied": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "checkpoint": {
+          "$ref": "#/$defs/questionCheckpoint"
+        },
+        "checkpointGameSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "checkpointQueueSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "playerRemapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "investigatorId",
+        "checkpointPlayerId",
+        "importedPlayerId",
+        "livePlayerId",
+        "stateRemapped"
+      ],
+      "properties": {
+        "investigatorId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checkpointPlayerId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "importedPlayerId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "livePlayerId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "stateRemapped": {
+          "type": "boolean"
+        }
+      }
+    },
+    "importReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "gameId",
+        "gameGitRevision",
+        "backendBuild",
+        "checkpointSha256",
+        "canonicalEnvelopeSha256",
+        "checkpointProvenance",
+        "playerRemappings",
+        "receiptSha256"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "gameId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "gameGitRevision": {
+          "$ref": "#/$defs/gitSha"
+        },
+        "backendBuild": {
+          "$ref": "#/$defs/replayBuildIdentity"
+        },
+        "checkpointSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "canonicalEnvelopeSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "checkpointProvenance": {
+          "$ref": "#/$defs/replayProvenance"
+        },
+        "playerRemappings": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/playerRemapping"
+          }
+        },
+        "receiptSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

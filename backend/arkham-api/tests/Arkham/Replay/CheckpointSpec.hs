@@ -223,28 +223,44 @@ spec = describe "deterministic replay checkpoint harness" do
       Left err -> expectationFailure err >> fail err
       _ -> expectationFailure "checkpoint import did not produce authority" >> fail "missing authority"
     authority.replayImportCheckpointSha256 `shouldBe` sha256Strict encoded
-    authority.replayImportEnvelopeSha256 `shouldBe` envelope.replayCheckpointEnvelopeSha256
+    authority.replayImportCanonicalEnvelopeSha256
+      `shouldBe` canonicalReplayCheckpointEnvelopeSha256 checkpointExport provenance
+    authority.replayImportCanonicalEnvelopeSha256
+      `shouldBe` envelope.replayCheckpointEnvelopeSha256
     authority.replayImportGameGitRevision `shouldBe` provenance.provenanceSourceGameGitRevision
-    paddedAuthority <- case decodeReplayImport fixtureBuild (encoded <> "\n") of
-      Right (_, Just value) -> pure value
-      Left err -> expectationFailure err >> fail err
-      _ -> expectationFailure "padded checkpoint import did not produce authority" >> fail "missing authority"
-    paddedAuthority.replayImportCheckpointSha256
-      `shouldNotBe` authority.replayImportCheckpointSha256
-    paddedAuthority.replayImportEnvelopeSha256
-      `shouldBe` authority.replayImportEnvelopeSha256
-    let receipt = makeReplayImportReceipt fixtureBuild "imported-game-id" authority
-    receipt.replayImportReceiptGameId `shouldBe` "imported-game-id"
+    authority.replayImportCheckpointProvenance `shouldBe` provenance
+    case decodeReplayImport fixtureBuild (encoded <> "\n") of
+      Left _ -> pure ()
+      Right _ ->
+        expectationFailure
+          "checkpoint import accepted bytes outside the deterministic canonical encoding"
+    let gameId = "00000000-0000-0000-0000-000000000010" :: Text
+        importedPlayerId = "00000000-0000-0000-0000-000000000020"
+        playerRemapping =
+          ReplayPlayerRemapping
+            "c01001"
+            checkpoint.checkpointPlayerId
+            importedPlayerId
+            importedPlayerId
+            True
+        receipt =
+          makeReplayImportReceipt fixtureBuild gameId [playerRemapping] authority
+    receipt.replayImportReceiptGameId `shouldBe` gameId
     receipt.replayImportReceiptGameGitRevision `shouldBe` provenance.provenanceSourceGameGitRevision
     receipt.replayImportReceiptBackendBuild `shouldBe` fixtureBuild
+    validateReplayImportReceipt receipt `shouldBe` Right ()
     Aeson.toJSON receipt
       `shouldBe` Aeson.object
         [ "schemaVersion" Aeson..= (1 :: Int)
-        , "gameId" Aeson..= ("imported-game-id" :: Text)
+        , "gameId" Aeson..= gameId
         , "gameGitRevision" Aeson..= provenance.provenanceSourceGameGitRevision
         , "backendBuild" Aeson..= fixtureBuild
         , "checkpointSha256" Aeson..= authority.replayImportCheckpointSha256
-        , "envelopeSha256" Aeson..= authority.replayImportEnvelopeSha256
+        , "canonicalEnvelopeSha256"
+            Aeson..= authority.replayImportCanonicalEnvelopeSha256
+        , "checkpointProvenance" Aeson..= provenance
+        , "playerRemappings" Aeson..= [playerRemapping]
+        , "receiptSha256" Aeson..= receipt.replayImportReceiptSha256
         ]
     Aeson.eitherDecodeStrict' @ReplayBuildIdentity
       (TE.encodeUtf8 $ backendBuildIdentityHeaderValue fixtureBuild)
@@ -252,6 +268,9 @@ spec = describe "deterministic replay checkpoint harness" do
     Aeson.eitherDecodeStrict' @ReplayImportReceipt
       (TE.encodeUtf8 $ replayImportReceiptHeaderValue receipt)
       `shouldBe` Right receipt
+    Aeson.eitherDecodeStrict' @ReplayImportReceipt
+      (encodeStrict $ mapRoot (KeyMap.insert "ignoredTamper" Aeson.Null) $ Aeson.toJSON receipt)
+      `shouldSatisfy` isLeft
     length capabilitiesResponseHeaders `shouldBe` 1
     case lookup backendBuildIdentityHeaderName capabilitiesResponseHeaders of
       Nothing -> expectationFailure "capabilities omitted the server build identity header"
@@ -272,13 +291,88 @@ spec = describe "deterministic replay checkpoint harness" do
               }
       )
       `shouldSatisfy` isLeft
+    attestation <- case
+      makeReplayAttestation
+        fixtureBuild
+        gameId
+        provenance.provenanceSourceGameGitRevision
+        receipt of
+      Left err -> expectationFailure err >> fail err
+      Right value -> pure value
+    attestation.replayAttestationGameId `shouldBe` gameId
+    attestation.replayAttestationCheckpointSha256
+      `shouldBe` authority.replayImportCheckpointSha256
+    attestation.replayAttestationCanonicalEnvelopeSha256
+      `shouldBe` authority.replayImportCanonicalEnvelopeSha256
+    attestation.replayAttestationCheckpointProvenance `shouldBe` provenance
+    attestation.replayAttestationRunningServerBuild `shouldBe` fixtureBuild
+    attestation.replayAttestationImportReceipt `shouldBe` receipt
+    Aeson.toJSON attestation
+      `shouldBe` Aeson.object
+        [ "schemaVersion" Aeson..= (1 :: Int)
+        , "gameId" Aeson..= gameId
+        , "gameGitRevision" Aeson..= provenance.provenanceSourceGameGitRevision
+        , "checkpointSha256" Aeson..= authority.replayImportCheckpointSha256
+        , "canonicalEnvelopeSha256"
+            Aeson..= authority.replayImportCanonicalEnvelopeSha256
+        , "checkpointProvenance" Aeson..= provenance
+        , "runningServerBuild" Aeson..= fixtureBuild
+        , "importReceipt" Aeson..= receipt
+        ]
+    makeReplayAttestation fixtureBuild "00000000-0000-0000-0000-000000000011"
+      provenance.provenanceSourceGameGitRevision receipt
+      `shouldSatisfy` isLeft
+    makeReplayAttestation fixtureBuild gameId (GitSha $ T.replicate 40 "0") receipt
+      `shouldSatisfy` isLeft
+    makeReplayAttestation staleBuild gameId provenance.provenanceSourceGameGitRevision receipt
+      `shouldSatisfy` isLeft
+    validateReplayImportReceipt
+      receipt
+        { replayImportReceiptPlayerRemappings =
+            [playerRemapping {replayPlayerLivePlayerId = checkpoint.checkpointPlayerId & unPlayerId & UUID.toText}]
+        }
+      `shouldSatisfy` isLeft
+    validateReplayImportReceipt
+      receipt {replayImportReceiptPlayerRemappings = []}
+      `shouldSatisfy` isLeft
     case decodeReplayImport staleBuild encoded of
       Left _ -> pure ()
       Right _ -> expectationFailure "checkpoint import accepted a different server build"
+    let sourceAttestedBuild =
+          fixtureBuild
+            { replayBuildSourceSha256 = T.replicate 64 "9"
+            , replayBuildSourceClean = False
+            , replayBuildAttestation = ReplayBuildSourceSha256
+            }
+        sourceAttestedProvenance =
+          provenance {provenanceReplayBuild = sourceAttestedBuild}
+        sourceAttestedEncoded =
+          encodeStrict $ checkpointExportValue checkpointExport sourceAttestedProvenance
+    case decodeReplayInput sourceAttestedBuild sourceAttestedEncoded of
+      Left err -> expectationFailure err
+      Right _ -> pure ()
+    case decodeReplayImport sourceAttestedBuild sourceAttestedEncoded of
+      Left _ -> pure ()
+      Right _ ->
+        expectationFailure
+          "replay import accepted a source-attested but non-clean backend build"
+    makeReplayAttestation
+      sourceAttestedBuild
+      gameId
+      provenance.provenanceSourceGameGitRevision
+      receipt
+      `shouldSatisfy` isLeft
     traverse_
       shouldReject
       [ mapRoot (KeyMap.delete "replayCheckpoint") encodedValue
+      , mapRoot (KeyMap.insert "ignoredTamper" Aeson.Null) encodedValue
       , mapEnvelope (KeyMap.delete "provenance") encodedValue
+      , mapEnvelope
+          ( adjustKey "provenance"
+              $ mapRoot
+              $ KeyMap.insert "ignoredTamper" Aeson.Null
+          )
+          encodedValue
       , mapEnvelope
           (adjustKey "provenance" $ const $ Aeson.object ["answersApplied" Aeson..= (99 :: Int)])
           encodedValue
@@ -396,9 +490,12 @@ adjustKey key f values =
   maybe values (\value -> KeyMap.insert key (f value) values) $ KeyMap.lookup key values
 
 shouldReject :: MonadIO m => Aeson.Value -> m ()
-shouldReject value =
-  when (isRight $ decodeReplayInput fixtureBuild $ encodeStrict value) $
+shouldReject value = do
+  let bytes = encodeStrict value
+  when (isRight $ decodeReplayInput fixtureBuild bytes) $
     liftIO $ expectationFailure "expected replay input rejection"
+  when (isRight $ decodeReplayImport fixtureBuild bytes) $
+    liftIO $ expectationFailure "expected replay import rejection"
 
 encodeStrict :: Aeson.ToJSON a => a -> ByteString
 encodeStrict = BSL.toStrict . Aeson.encode

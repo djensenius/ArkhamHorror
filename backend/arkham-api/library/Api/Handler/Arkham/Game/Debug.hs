@@ -6,10 +6,12 @@ module Api.Handler.Arkham.Game.Debug (
   postApiV1ArkhamGamesFixR,
   getApiV1ArkhamGamesReloadR,
   getApiV1ArkhamGameReloadR,
+  getApiV1ArkhamGameReplayAttestationR,
   getApiV1ArkhamGameOpenSeatsR,
   postApiV1ArkhamGameClaimSeatR,
 
   -- * Exposed for regression tests
+  makeReplayPlayerRemapping,
   selectUploadedExportFile,
 ) where
 
@@ -30,10 +32,12 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
 import Data.Text qualified as T
 import Data.Time.Clock
+import Data.UUID qualified as UUID
 import Database.Esqueleto.Experimental hiding (update)
 import Database.Persist qualified as Persist
 import Entity.Arkham.LogEntry
 import Entity.Arkham.Player
+import Entity.Arkham.ReplayAttestation
 import Entity.Arkham.Step
 import Import hiding (delete, exists, on, (==.))
 import Json
@@ -108,16 +112,20 @@ generateFullExportSource gameId = do
 
 -- Swap the investigator's original player UUID for the new one by doing a
 -- text-level replace on the stored JSONB, then casting back.
-remapInvestigatorUUID :: ArkhamGameId -> Text -> ArkhamPlayerId -> DB ()
-remapInvestigatorUUID gameId iCode newPlayerId = do
-  let newUUID = toPathPiece newPlayerId
+storedInvestigatorPlayerId :: ArkhamGameId -> Text -> DB (Maybe Text)
+storedInvestigatorPlayerId gameId iCode = do
   results :: [Single (Maybe Text)] <-
     rawSql
       "SELECT current_data->'gameEntities'->'investigators'->?->>'playerId' \
       \FROM arkham_games WHERE id = ?"
       [PersistText iCode, PersistText (toPathPiece gameId)]
-  case results of
-    (Single (Just origUUID) : _) ->
+  pure $ join $ unSingle <$> headMay results
+
+remapInvestigatorUUID :: ArkhamGameId -> Text -> ArkhamPlayerId -> DB (Maybe Text)
+remapInvestigatorUUID gameId iCode newPlayerId = do
+  let newUUID = toPathPiece newPlayerId
+  storedInvestigatorPlayerId gameId iCode >>= \case
+    Just origUUID -> do
       rawExecute
         "UPDATE arkham_games \
         \SET current_data = replace(current_data::text, ?, ?)::jsonb \
@@ -126,7 +134,33 @@ remapInvestigatorUUID gameId iCode newPlayerId = do
         , PersistText ("\"" <> newUUID <> "\"")
         , PersistText (toPathPiece gameId)
         ]
-    _ -> pure ()
+      currentUUID <- storedInvestigatorPlayerId gameId iCode
+      pure $ origUUID <$ guard (currentUUID == Just newUUID)
+    Nothing -> pure Nothing
+
+makeReplayPlayerRemapping
+  :: Text
+  -> Text
+  -> Text
+  -> Bool
+  -> Either Text ReplayPlayerRemapping
+makeReplayPlayerRemapping investigatorId checkpointPlayerId importedPlayerId stateRemapped = do
+  checkpointUUID <-
+    maybe
+      (Left "Checkpoint investigator playerId is not a UUID")
+      Right
+      $ UUID.fromText checkpointPlayerId
+  unless (isJust $ UUID.fromText importedPlayerId) $
+    Left "Imported Arkham player ID is not a UUID"
+  pure
+    ReplayPlayerRemapping
+      { replayPlayerInvestigatorId = investigatorId
+      , replayPlayerCheckpointPlayerId = PlayerId checkpointUUID
+      , replayPlayerImportedPlayerId = importedPlayerId
+      , replayPlayerLivePlayerId =
+          if stateRemapped then importedPlayerId else checkpointPlayerId
+      , replayPlayerStateRemapped = stateRemapped
+      }
 
 getApiV1ArkhamGameExportR :: ArkhamGameId -> Handler ArkhamExport
 getApiV1ArkhamGameExportR gameId = do
@@ -204,6 +238,8 @@ postApiV1ArkhamGamesImportR = do
   case eExportData of
     Left err -> invalidArgs [T.pack err]
     Right (export, importAuthority) -> do
+      when (isJust importAuthority && isJust mVariantOverride) $
+        invalidArgs ["Replay checkpoint imports do not allow multiplayerVariant overrides"]
       let
         ArkhamGameExportData {..} = aeCampaignData export
         exportVariant = agedMultiplayerVariant
@@ -219,21 +255,58 @@ postApiV1ArkhamGamesImportR = do
               , nonEmpty (aeCampaignPlayers export)
               ]
         campaignInvestigatorIds = map normalizeJsonInvestigatorId $ aeCampaignPlayers export
-      key <- runDB $ do
+      (key, importReceipt) <- runDB $ do
         gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now
-        case variant of
+        playerRemappings <- case variant of
           Solo -> do
             iid <- case headMay allInvestigatorIds of
               Nothing -> lift $ invalidArgs ["No investigators found in game data"]
               Just iid -> pure iid
-            insert_ $ ArkhamPlayer userId gameId iid
+            newPlayerId <- insert $ ArkhamPlayer userId gameId iid
+            case importAuthority of
+              Nothing -> pure []
+              Just _ -> do
+                checkpointPlayerId <-
+                  storedInvestigatorPlayerId gameId iid
+                    >>= maybe
+                      (lift $ invalidArgs ["Replay checkpoint investigator has no playerId"])
+                      pure
+                mapping <-
+                  either
+                    (lift . invalidArgs . pure)
+                    pure
+                    $ makeReplayPlayerRemapping
+                      iid
+                      checkpointPlayerId
+                      (toPathPiece newPlayerId)
+                      False
+                pure [mapping]
           WithFriends -> do
             let mChosen = mInvestigatorId <|> headMay campaignInvestigatorIds
             chosenInvestigator <- case mChosen of
               Nothing -> lift $ invalidArgs ["No investigator specified"]
               Just iid -> pure iid
             newPlayerId <- insert $ ArkhamPlayer userId gameId chosenInvestigator
-            remapInvestigatorUUID gameId chosenInvestigator newPlayerId
+            mCheckpointPlayerId <-
+              remapInvestigatorUUID gameId chosenInvestigator newPlayerId
+            case importAuthority of
+              Nothing -> pure []
+              Just _ -> do
+                checkpointPlayerId <-
+                  maybe
+                    (lift $ invalidArgs ["Replay checkpoint investigator remapping failed"])
+                    pure
+                    mCheckpointPlayerId
+                mapping <-
+                  either
+                    (lift . invalidArgs . pure)
+                    pure
+                    $ makeReplayPlayerRemapping
+                      chosenInvestigator
+                      checkpointPlayerId
+                      (toPathPiece newPlayerId)
+                      True
+                pure [mapping]
         rawExecute
           "DO $$ \
           \BEGIN \
@@ -268,10 +341,21 @@ postApiV1ArkhamGamesImportR = do
           \  END IF; \
           \END$$;"
           []
-        pure gameId
-      let importReceipt =
-            makeReplayImportReceipt serverBuildIdentity (toPathPiece key)
-              <$> importAuthority
+        let importReceipt =
+              makeReplayImportReceipt
+                serverBuildIdentity
+                (toPathPiece gameId)
+                playerRemappings
+                <$> importAuthority
+        for_ importReceipt \receipt -> do
+          either
+            (lift . invalidArgs . pure . T.pack)
+            pure
+            $ validateReplayImportReceipt receipt
+          insertKey
+            (ArkhamReplayAttestationKey gameId)
+            (ArkhamReplayAttestation $ toJSON receipt)
+        pure (gameId, importReceipt)
       traverse_
         (uncurry addHeader)
         (replayImportResponseHeaders serverBuildIdentity importReceipt)
@@ -279,6 +363,35 @@ postApiV1ArkhamGamesImportR = do
         $ toPublicGame
           (Entity key $ ArkhamGame agedName agedCurrentData agedStep variant now now)
           (GameLog $ map arkhamLogEntryBody agedLog)
+
+getApiV1ArkhamGameReplayAttestationR
+  :: ArkhamGameId
+  -> Handler ReplayAttestation
+getApiV1ArkhamGameReplayAttestationR gameId = do
+  Entity userId user <- getRequestUser
+  withGameAccess
+    user.admin
+    (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
+    notFound
+    do
+      (game, storedAttestation) <- runDB do
+        game <- get404 gameId
+        storedAttestation <- Persist.get $ ArkhamReplayAttestationKey gameId
+        pure (game, storedAttestation)
+      ArkhamReplayAttestation receiptValue <-
+        maybe notFound pure storedAttestation
+      receipt <- case fromJSON receiptValue of
+        Error err ->
+          invalidArgs ["Stored replay attestation is invalid: " <> T.pack err]
+        Success value -> pure value
+      either
+        (invalidArgs . pure . ("Replay attestation is unavailable: " <>) . T.pack)
+        pure
+        $ makeReplayAttestation
+          serverBuildIdentity
+          (toPathPiece gameId)
+          (gameGitRevision game.currentData)
+          receipt
 
 getApiV1ArkhamGameOpenSeatsR :: ArkhamGameId -> Handler [Text]
 getApiV1ArkhamGameOpenSeatsR gameId = do
@@ -319,4 +432,4 @@ postApiV1ArkhamGameClaimSeatR gameId = do
     when (isJust mAlreadyJoined) do
       lift $ permissionDenied "You already have a seat in this game"
     newPlayerId <- insert $ ArkhamPlayer userId gameId investigatorId
-    remapInvestigatorUUID gameId investigatorId newPlayerId
+    void $ remapInvestigatorUUID gameId investigatorId newPlayerId

@@ -2,7 +2,8 @@
 
 `arkham-replay` is a fail-closed CLI/test seam. It uses the normal Haskell
 `Game`, fixed seed, `handleAnswerPure`, queue runner, undo, and optional server
-simulation; it adds neither another rules implementation nor a production API.
+simulation. It adds no rules implementation or public replay/answer API; the
+only HTTP addition is authenticated, game-bound import-attestation metadata.
 
 Inspect an export (optionally after `--undo N`):
 
@@ -94,8 +95,13 @@ claim, or any identity unequal to both `arkham-replay --build-identity` and the
 checkpoint provenance. `arkham-api --build-identity` prints the exact value
 compiled into the server executable without starting network or database
 services; it must equal the capabilities header once that executable is
-running. A server build lacking Git metadata or an independently verified
-source-SHA attestation remains `unattested` and rejects checkpoint imports.
+running. Live checkpoint import is intentionally stricter than offline replay:
+both the checkpoint/replay build and running server must report
+`sourceClean: true` with `attestation: "git-clean"`. A source-SHA-attested dirty
+development build may still exercise the offline harness, but it cannot create
+a live replay game or produce game-bound authority. The current Docker build
+omits Git metadata and therefore remains `unattested`; live replay stays
+fail-closed until that build supplies independently verified source authority.
 
 The output is an `ArkhamExport` with a mandatory `replayCheckpoint` envelope.
 Its provenance binds the plan/source hashes and kinds, game revision, complete
@@ -103,24 +109,51 @@ build identity, contract revision, applied counts, exact checkpoint, and
 Game/queue hashes. `envelopeSha256` covers the typed export plus every provenance
 field except itself. Missing or changed metadata fails closed.
 
-Normal game import remains the only import endpoint. It now routes a checkpoint
-through the same envelope/build validator before touching the database. A
-successful checkpoint import returns `X-Arkham-Replay-Import-Receipt`, a JSON
-object with schema version `1`, the newly allocated game id, retained
-`gameGitRevision`, the running server build identity, SHA-256 of the exact
-decompressed checkpoint bytes the server parsed, and the validated
-`envelopeSha256`. The receipt and capabilities build headers are derived by the
-server; there are no caller-provided "expected" values. Ordinary imports receive
-the server-build header but no replay receipt.
+Normal game import remains the only import endpoint. For checkpoint bytes it
+runs `decodeReplayInputEnvelope` and the complete backend checkpoint validator
+before opening the game-creation transaction. That validator parses the typed
+export and provenance, recomputes the canonical envelope digest over both,
+compares it with the embedded `envelopeSha256`, and requires the complete JSON
+bytes to equal the deterministic encoding the backend itself produces.
+Changing export/provenance fields, adding ignored fields, duplicate-key or
+whitespace rewrites, and retaining a plausible embedded digest are all rejected
+before any game row exists.
 
-The Apple live driver must compare the receipt's `gameId` with the response
-game, `gameGitRevision` with the checkpoint game/provenance, `backendBuild` with
-the capabilities header and replay executable, `checkpointSha256` with the
-uploaded deterministic file, and `envelopeSha256` with the checkpoint envelope.
-Any missing or unequal authority keeps live replay disabled. The imported
-database row deliberately persists only typed `ArkhamExport` fields, so later
-ordinary exports do not recreate this receipt; retain the original checkpoint
-and import response. No public replay endpoint is added.
+A successful checkpoint import returns `X-Arkham-Replay-Import-Receipt`. Its
+schema-versioned JSON binds the new game id, retained `gameGitRevision`,
+import-time clean backend build, SHA-256 of the exact decompressed checkpoint
+bytes, server-recomputed `canonicalEnvelopeSha256`, full checkpoint provenance,
+the checkpoint/imported/live player-ID mapping, whether game state was
+remapped, and a digest over the receipt. The same receipt is persisted
+atomically with the game, players, and retained steps. The server does not
+accept caller-provided expected identities or digests. Ordinary exports receive
+the server-build header but no receipt or persisted replay authority.
+
+After import, an authenticated administrator or member of that exact game can
+read `GET /api/v1/arkham/games/{gameId}/replay-attestation`. It returns the
+persisted receipt, exact checkpoint-byte digest, full checkpoint provenance,
+canonical envelope digest, retained game revision, and the build identity compiled into the currently
+running server. Ordinary games return 404. Malformed persisted authority, a
+changed game revision, a dirty/unattested server, or any import-time/current
+build mismatch fails closed rather than returning an attestation. The route is
+metadata-only: it exposes no rules state, prompt, answer bridge, or mutation.
+
+The Apple live driver must require all of the following:
+
+1. capabilities `X-Arkham-Backend-Build-Identity`, import-response backend
+   identity, attestation `runningServerBuild`, receipt `backendBuild`, checkpoint
+   provenance `replayBuild`, and `arkham-replay --build-identity` are identical
+   clean Git identities;
+2. response game id, attestation/receipt game id, and the requested game id are
+   identical;
+3. the retained game revision equals the attestation, receipt, and checkpoint
+   provenance revision;
+4. the import header receipt equals the durable `importReceipt`, including its
+   player remapping and receipt digest;
+5. the checkpoint byte SHA-256 and server-recomputed canonical envelope digest
+   equal the locally retained checkpoint authorities.
+
+Any missing, malformed, or unequal value keeps live replay disabled.
 
 The checkpoint rebases to step `0`; one synthetic step carries the pending
 queue. Prior undo patches, action diffs, and UI/log history are intentionally
