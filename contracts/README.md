@@ -575,6 +575,11 @@ identity/capacity/deferred-damage surface beyond this review budget. It remains
 fail-closed in all three assignment roots and is the next bounded batch. The
 Vue client and runtime behavior are unchanged.
 
+Revision `0.1.34` records the deterministic replay harness's governed
+`schemaRevision` binding and refreshes locale-catalog provenance after its mise
+tasks became declared generator inputs. It adds no production endpoint or
+native-client payload shape.
+
 ## Game creation and multiplayer lobbies
 
 - Creating a game requires authentication and at least one non-null

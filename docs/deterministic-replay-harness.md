@@ -31,7 +31,7 @@ provenance, and every open question's version/player/tag/full-prompt SHA-256.
       "sourceClean": true,
       "attestation": "git-clean"
     },
-    "schemaRevision": "0.1.32"
+    "schemaRevision": "0.1.34"
   },
   "answers": [{
     "expect": {

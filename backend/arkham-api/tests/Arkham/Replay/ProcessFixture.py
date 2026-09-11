@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[5]
 EXE = Path(sys.argv[1]).resolve()
 EXPECT_UNATTESTED = sys.argv[2:] == ["--expect-unattested"]
 FIXTURE = ROOT / "backend/arkham-api/tests/fixtures/replay/smoke-current-data.json"

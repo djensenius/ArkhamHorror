@@ -37,7 +37,7 @@ if [ "$RUN_MODE" = "1" ]; then
   exec "$EXE" "$@"
 fi
 if [ "$ATTESTATION" = "unattested" ]; then
-  python3 scripts/test-replay-harness-process.py "$EXE" --expect-unattested
+  python3 backend/arkham-api/tests/Arkham/Replay/ProcessFixture.py "$EXE" --expect-unattested
   SOURCE_SHA=$(printf '%s' "$IDENTITY" | python3 -c 'import json,sys; print(json.load(sys.stdin)["sourceSha256"])')
   build_replay "$SOURCE_SHA"
 else
@@ -46,4 +46,4 @@ fi
 IDENTITY=$("$EXE" --build-identity)
 printf '%s' "$IDENTITY" |
   python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["attestation"] != "unattested", value'
-python3 scripts/test-replay-harness-process.py "$EXE"
+python3 backend/arkham-api/tests/Arkham/Replay/ProcessFixture.py "$EXE"
