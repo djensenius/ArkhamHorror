@@ -4,23 +4,32 @@ import Api.Handler.Arkham.Game.Debug
   ( makeReplayPlayerIdMap
   , makeReplayPlayerIdReplacement
   , makeReplayPlayerRemapping
+  , remapReplayActionDiffPlayerIds
   , remapReplayMessagePlayerIds
+  , remapReplayPatchPlayerIds
   , selectUploadedExportFile
   , tryImportDecode
   , validateReplayCheckpointPlayerId
   )
+import Arkham.Game.Diff (patchValueWithRecovery)
 import Arkham.Id (PlayerId (..))
 import Arkham.Message (Message (..))
 import Arkham.Prelude
 import Arkham.Question (Question (..))
 import Arkham.Replay.ImportAuthority
 import Control.Exception qualified as E
+import Data.Aeson (Result (..))
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Patch (Operation (..), Patch (..))
+import Data.Aeson.Pointer (Key (..), Pointer (..))
 import Data.Either (isLeft)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
 import Data.UUID qualified as UUID
+import Entity.Arkham.Step (ActionDiff (..))
 import System.Directory (doesFileExist)
 import Test.Hspec
 
@@ -202,6 +211,90 @@ spec = describe "selectUploadedExportFile" do
       makeReplayPlayerIdReplacement originalPlayerId "not-a-uuid"
         `shouldSatisfy` isLeft
 
+  describe "remapReplayPatchPlayerIds" do
+    let checkpointPlayerId = PlayerId UUID.nil
+        importedPlayerId = PlayerId $ UUID.fromWords 0 0 0 2
+        unrelatedPlayerId = PlayerId $ UUID.fromWords 0 0 0 3
+        checkpointText = UUID.toText $ unPlayerId checkpointPlayerId
+        importedText = UUID.toText $ unPlayerId importedPlayerId
+        unrelatedText = UUID.toText $ unPlayerId unrelatedPlayerId
+        replacements = Map.singleton checkpointPlayerId importedPlayerId
+        retainedUndoPatch =
+          Patch
+            [ Rep
+                (Pointer [OKey "gameActivePlayerId"])
+                (String checkpointText)
+            , Rep
+                ( Pointer
+                    [ OKey "gameQuestion"
+                    , OKey $ Key.fromText checkpointText
+                    , OKey "playerId"
+                    ]
+                )
+                (String checkpointText)
+            , Rep
+                (Pointer [OKey "owners"])
+                ( Object
+                    $ KeyMap.singleton
+                      (Key.fromText checkpointText)
+                      (String checkpointText)
+                )
+            ]
+        importedCurrent =
+          object
+            [ "gameActivePlayerId" .= unrelatedText
+            , "gameQuestion"
+                .= object
+                  [ Key.fromText importedText
+                      .= object ["playerId" .= unrelatedText]
+                  ]
+            , "owners" .= object []
+            ]
+        expectedUndoState =
+          object
+            [ "gameActivePlayerId" .= importedText
+            , "gameQuestion"
+                .= object
+                  [ Key.fromText importedText
+                      .= object ["playerId" .= importedText]
+                  ]
+            , "owners"
+                .= Object
+                  ( KeyMap.singleton
+                      (Key.fromText importedText)
+                      (String importedText)
+                  )
+            ]
+
+    it "keeps retained undo patches aligned with a multiplayer player remap" do
+      remappedPatch <- case remapReplayPatchPlayerIds replacements retainedUndoPatch of
+        Left err -> expectationFailure (T.unpack err) >> error "patch remapping failed"
+        Right value -> pure value
+      patchValueWithRecovery importedCurrent remappedPatch
+        `shouldBe` Success expectedUndoState
+
+      case remapReplayActionDiffPlayerIds replacements (ActionDiff [retainedUndoPatch]) of
+        Left err -> expectationFailure (T.unpack err)
+        Right (ActionDiff [remappedActionPatch]) ->
+          patchValueWithRecovery importedCurrent remappedActionPatch
+            `shouldBe` Success expectedUndoState
+        Right _ -> expectationFailure "expected one remapped action patch"
+
+    it "fails closed when remapping would collapse JSON object keys" do
+      let collisionPatch =
+            Patch
+              [ Rep
+                  (Pointer [OKey "owners"])
+                  ( Object
+                      $ KeyMap.fromList
+                        [ (Key.fromText checkpointText, toJSON (0 :: Int))
+                        , (Key.fromText importedText, toJSON (1 :: Int))
+                        ]
+                  )
+              ]
+      remapReplayPatchPlayerIds replacements collisionPatch
+        `shouldSatisfy` isLeft
+
   it "preserves the production PublicGame import body and authority headers" do
     source <- readDebugSource
     let normalized = T.unwords $ T.words source
@@ -235,12 +328,18 @@ spec = describe "selectUploadedExportFile" do
     ordinaryQueueMapPosition <-
       position
         "$ makeReplayPlayerIdReplacement remappedFromPlayerId (toPathPiece newPlayerId)"
+    patchRemapPosition <-
+      position
+        "$ remapReplayPatchPlayerIds replayPlayerIds s.choice.choicePatchDown"
+    actionDiffRemapPosition <-
+      position
+        "$ remapReplayActionDiffPlayerIds replayPlayerIds s.actionDiff"
     queueRemapPosition <-
       position
         "choiceMessages = remapReplayMessagePlayerIds replayPlayerIds s.choice.choiceMessages"
     stepInsertPosition <-
       position
-        "insertMany_ [ArkhamStep gameId (importedChoice s) s.step s.actionDiff | s <- agedSteps]"
+        "insertMany_ importedSteps"
     headerPosition <-
       position
         "replayImportResponseHeaders serverBuildIdentity importReceipt"
@@ -252,7 +351,9 @@ spec = describe "selectUploadedExportFile" do
       _ -> expectationFailure "expected one pre-transaction checkpoint-player validation"
     transactionPosition `shouldSatisfy` (< investigatorRemapPosition)
     investigatorRemapPosition `shouldSatisfy` (< ordinaryQueueMapPosition)
-    ordinaryQueueMapPosition `shouldSatisfy` (< queueRemapPosition)
+    ordinaryQueueMapPosition `shouldSatisfy` (< patchRemapPosition)
+    patchRemapPosition `shouldSatisfy` (< actionDiffRemapPosition)
+    actionDiffRemapPosition `shouldSatisfy` (< queueRemapPosition)
     queueRemapPosition `shouldSatisfy` (< stepInsertPosition)
     headerPosition `shouldSatisfy` (< publicGamePosition)
     importHandler

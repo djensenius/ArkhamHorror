@@ -14,8 +14,10 @@ module Api.Handler.Arkham.Game.Debug (
   makeReplayPlayerIdReplacement,
   makeReplayPlayerIdMap,
   makeReplayPlayerRemapping,
+  remapReplayActionDiffPlayerIds,
   checkpointInvestigatorPlayerId,
   remapReplayMessagePlayerIds,
+  remapReplayPatchPlayerIds,
   selectUploadedExportFile,
   tryImportDecode,
   validateReplayCheckpointPlayerId,
@@ -37,7 +39,11 @@ import Arkham.Replay.ImportAuthority
 import Arkham.Replay.ServerBuildIdentity (serverBuildIdentity)
 import Codec.Compression.GZip qualified as GZip
 import Conduit
-import Control.Exception (SomeAsyncException, evaluate, fromException)
+import Control.Exception (SomeAsyncException, evaluate)
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Patch qualified as Patch
+import Data.Aeson.Pointer qualified as Pointer
 import Data.Data (Data, cast, gmapT)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
@@ -255,6 +261,65 @@ remapReplayMessagePlayerIds replacements = map go
       maybe value (fromMaybe value . cast) $ Map.lookup playerId replacements
     Nothing -> gmapT go value
 
+remapReplayPatchPlayerIds
+  :: Map PlayerId PlayerId
+  -> Patch.Patch
+  -> Either Text Patch.Patch
+remapReplayPatchPlayerIds replacements (Patch.Patch operations) =
+  Patch.Patch <$> traverse remapOperation operations
+ where
+  replacementText =
+    Map.fromList
+      [ (UUID.toText $ unPlayerId source, UUID.toText $ unPlayerId destination)
+      | (source, destination) <- Map.toList replacements
+      ]
+
+  remapText value = Map.findWithDefault value value replacementText
+
+  remapKey = Key.fromText . remapText . Key.toText
+
+  remapPointerKey = \case
+    Pointer.OKey key -> Pointer.OKey $ remapKey key
+    Pointer.AKey index -> Pointer.AKey index
+
+  remapPointer (Pointer.Pointer keys) =
+    Pointer.Pointer $ map remapPointerKey keys
+
+  remapValue = \case
+    String value -> Right $ String $ remapText value
+    Array values -> Array <$> traverse remapValue values
+    Object values -> do
+      entries <-
+        traverse
+          (\(key, value) -> (remapKey key,) <$> remapValue value)
+          (KeyMap.toList values)
+      let remapped = KeyMap.fromList entries
+      unless (KeyMap.size remapped == length entries) $
+        Left "Replay player remapping collapses JSON object keys"
+      Right $ Object remapped
+    value -> Right value
+
+  remapOperation = \case
+    Patch.Add pointer value ->
+      Patch.Add (remapPointer pointer) <$> remapValue value
+    Patch.Cpy pointer source ->
+      Right $ Patch.Cpy (remapPointer pointer) (remapPointer source)
+    Patch.Mov pointer source ->
+      Right $ Patch.Mov (remapPointer pointer) (remapPointer source)
+    Patch.Rem pointer ->
+      Right $ Patch.Rem $ remapPointer pointer
+    Patch.Rep pointer value ->
+      Patch.Rep (remapPointer pointer) <$> remapValue value
+    Patch.Tst pointer value ->
+      Patch.Tst (remapPointer pointer) <$> remapValue value
+
+remapReplayActionDiffPlayerIds
+  :: Map PlayerId PlayerId
+  -> ActionDiff
+  -> Either Text ActionDiff
+remapReplayActionDiffPlayerIds replacements (ActionDiff patches) =
+  ActionDiff <$> traverse (remapReplayPatchPlayerIds replacements) patches
+
 getApiV1ArkhamGameExportR :: ArkhamGameId -> Handler ArkhamExport
 getApiV1ArkhamGameExportR gameId = do
   Entity userId user <- getRequestUser
@@ -441,12 +506,28 @@ postApiV1ArkhamGamesImportR = do
           \  END IF; \
           \END$$;"
           []
-        let importedChoice s =
+        importedSteps <- forM agedSteps \s -> do
+          importedPatch <-
+            either
+              (lift . invalidArgs . pure)
+              pure
+              $ remapReplayPatchPlayerIds
+                replayPlayerIds
+                s.choice.choicePatchDown
+          importedActionDiff <-
+            either
+              (lift . invalidArgs . pure)
+              pure
+              $ remapReplayActionDiffPlayerIds replayPlayerIds s.actionDiff
+          let
+            importedChoice =
               s.choice
-                { choiceMessages =
+                { choicePatchDown = importedPatch
+                , choiceMessages =
                     remapReplayMessagePlayerIds replayPlayerIds s.choice.choiceMessages
                 }
-        insertMany_ [ArkhamStep gameId (importedChoice s) s.step s.actionDiff | s <- agedSteps]
+          pure $ ArkhamStep gameId importedChoice s.step importedActionDiff
+        insertMany_ importedSteps
 
         rawExecute
           "DO $$ \
