@@ -6312,6 +6312,7 @@ library
       Arkham.Replay.BuildIdentity
       Arkham.Replay.Checkpoint
       Arkham.Replay.ImportAuthority
+      Arkham.Replay.MessageTimeout
       Arkham.Replay.Output
       Arkham.Replay.ServerBuildIdentity
       Arkham.RequestedChaosTokenStrategy
@@ -8741,6 +8742,7 @@ test-suite spec
       Arkham.Modifier.CannotAttackDuringEnemyPhaseSpec
       Arkham.Modifier.SearchAllInvestigatorsSpec
       Arkham.Replay.CheckpointSpec
+      Arkham.Replay.MessageTimeoutSpec
       Arkham.Replay.OutputSpec
       Arkham.Scenario.DancingMadSpec
       Arkham.Scenario.Scenarios.DeadHeatSpec

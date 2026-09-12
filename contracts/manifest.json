@@ -9135,7 +9135,7 @@
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
     "contracts/schemas/public-game.schema.json": "b7f974060d346dfec20b2fdd7ebf6ec2022c9de71d7219a6de6ef7e396b3bc56",
-    "contracts/schemas/replay-attestation.schema.json": "06f0fd88924cc25cdb9a96db0fc69a3784dd13263794d4b6a4072c94be125d6c",
+    "contracts/schemas/replay-attestation.schema.json": "6bf8f8dd83abf52bee49e01c18ce77d6eae4bb6098d7ead800e0014f1129ae3c",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6",
     "contracts/schemas/uuid.schema.json": "40b33cbd961ecec12a03cd163076684b1a8ff2c68785a2e1ba8b3464dc7410c8"

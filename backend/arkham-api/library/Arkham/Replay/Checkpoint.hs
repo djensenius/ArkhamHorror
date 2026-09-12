@@ -15,6 +15,7 @@ module Arkham.Replay.Checkpoint (
   replayContractSchemaRevision,
   sha256Strict,
   sha256Lazy,
+  canonicalQuestionSha256,
   decodeReplayPlan,
   decodeReplayInput,
   decodeReplayInputEnvelope,
@@ -686,6 +687,11 @@ canonicalReplayCheckpointEnvelopeSha256 :: ArkhamExport -> ReplayProvenance -> T
 canonicalReplayCheckpointEnvelopeSha256 export provenance =
   sha256Lazy $ encode $ object ["type" .= String "arkham-replay-checkpoint", "export" .= export, "provenance" .= provenance]
 
+-- Force the question through 'Value' encoding so object keys use the same
+-- deterministic lexical order that native clients use for prompt verification.
+canonicalQuestionSha256 :: ToJSON message => Question message -> Text
+canonicalQuestionSha256 = sha256Lazy . encode . toJSON
+
 questionCheckpoint :: ToJSON message => Text -> Game -> PlayerId -> Question message -> Either String QuestionCheckpoint
 questionCheckpoint name game player question = do
   when (T.null name) $ Left "checkpoint name must not be empty"
@@ -701,7 +707,7 @@ questionCheckpoint name game player question = do
       , checkpointQuestionVersion = game.gameScenarioSteps
       , checkpointPlayerId = player
       , checkpointPromptTag = tag
-      , checkpointPromptSha256 = sha256Lazy $ encode question
+      , checkpointPromptSha256 = canonicalQuestionSha256 question
       }
 
 validateCheckpointExport

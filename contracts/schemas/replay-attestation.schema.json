@@ -167,7 +167,8 @@
           "minLength": 1
         },
         "promptSha256": {
-          "$ref": "#/$defs/sha256"
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 of the compact UTF-8 prompt JSON after recursively sorting every object key lexically."
         }
       }
     },

@@ -27,6 +27,7 @@ import Arkham.Metrics (dumpMetricsTo, enableMetrics, formatMetrics, withMetric)
 import Arkham.Queue (queueToRef)
 import Arkham.Replay.BuildIdentity (embedReplayBuildIdentity)
 import Arkham.Replay.Checkpoint
+import Arkham.Replay.MessageTimeout
 import Arkham.Replay.Output
 import Control.Exception (evaluate)
 import Control.Monad (forM_, void, when)
@@ -316,6 +317,15 @@ runReplay opts exportInput scriptInput = do
       prependAnswerQueue messages =
         atomicModifyIORef' (queueToRef queueRef) \currentQueue ->
           (prependReplayAnswerMessages messages currentQueue, ())
+      drainMessages = do
+        completed <-
+          runReplayMessagesWithTimeout
+            $ runGameApp app (runMessages "headless" tracerCallback)
+        when (isNothing completed)
+          $ die
+          $ "Replay message processing timed out after "
+          <> show (replayMessageTimeoutMicros `div` 1000000)
+          <> " seconds"
 
   for_ replayPlan \(plan, _) ->
     case checkQuestionCheckpoint currentData plan.replayPlanStopAt of
@@ -337,7 +347,7 @@ runReplay opts exportInput scriptInput = do
   let drainResumeQueue =
         not (optInspectCheckpoint opts)
           && not (isJust replayPlan)
-  when drainResumeQueue $ runGameApp app (runMessages "headless" tracerCallback)
+  when drainResumeQueue drainMessages
 
   when (optInspectCheckpoint opts) $ do
     inspectedGame <- readIORef gameRef
@@ -381,7 +391,7 @@ runReplay opts exportInput scriptInput = do
             gBefore <- readIORef gameRef
             runGameApp app (pushAll (ClearUI : msgs))
             t0 <- getMonotonicTimeNSec
-            runGameApp app (runMessages "headless" tracerCallback)
+            drainMessages
             t1 <- getMonotonicTimeNSec
             ge <- readIORef gameRef
             serverNs <-
@@ -426,7 +436,7 @@ runReplay opts exportInput scriptInput = do
                             <> msgs
                             <> [SetActivePlayer activePid | activePid /= answerPid]
                     prependAnswerQueue (ClearUI : bracketed)
-                    runGameApp app (runMessages "headless" tracerCallback)
+                    drainMessages
                     ge <- readIORef gameRef
                     when (optSimulateServer opts) $ void $ simulateServerWork g ge
                     case checkQuestionCheckpoint ge replayPlanStopAt of
@@ -462,7 +472,7 @@ runReplay opts exportInput scriptInput = do
                           <> msgs
                           <> [SetActivePlayer activePid | activePid /= answerPid]
                   prependAnswerQueue (ClearUI : bracketed)
-                  runGameApp app (runMessages "headless" tracerCallback)
+                  drainMessages
         pure []
 
   wallEnd <- getMonotonicTimeNSec

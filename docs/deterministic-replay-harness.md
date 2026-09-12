@@ -14,6 +14,9 @@ mise run replay:harness -- game-export.json --inspect-checkpoint > inspection.js
 The inspection reports the exact input SHA-256/kind, game revision, governed
 capabilities `schemaRevision`, executable build identity, retained checkpoint
 provenance, and every open question's version/player/tag/full-prompt SHA-256.
+The prompt digest hashes compact UTF-8 JSON after recursively sorting every
+object key lexically, so native clients can reproduce it without depending on
+Haskell constructor field order.
 
 ## Plan
 

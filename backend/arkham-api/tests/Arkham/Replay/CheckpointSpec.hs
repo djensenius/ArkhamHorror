@@ -35,6 +35,8 @@ spec = describe "deterministic replay checkpoint harness" do
     game <- checkpointGame
     checkpoint <- onlyCheckpoint game
     checkQuestionCheckpoint game checkpoint `shouldBe` CheckpointReached
+    checkpoint.checkpointPromptSha256
+      `shouldBe` "0918cd501919fbabf16815e00e091c56ad2f9a7668a53da58b20159ea293db47"
     checkQuestionCheckpoint
       (game {gameQuestion = Map.singleton checkpoint.checkpointPlayerId (ChooseOne [Label "different" [Noop]])})
       checkpoint
