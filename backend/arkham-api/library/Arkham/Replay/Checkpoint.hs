@@ -38,7 +38,7 @@ import Arkham.Id (PlayerId)
 import Arkham.Json (aesonOptions)
 import Arkham.Message (Message)
 import Arkham.Prelude
-import Arkham.Question (Question (..))
+import Arkham.Question (Question (..), ReadChoices (..))
 import Arkham.Replay.BuildIdentity
 import Base.Api.Types.Capabilities qualified as Capabilities
 import Control.Monad.Fail (fail)
@@ -461,7 +461,8 @@ validateReplayAnswer game ReplayAnswerStep {..} = do
 
 replayAnswerMatchesPrompt :: Answer -> Question Message -> Bool
 replayAnswerMatchesPrompt answer prompt = case answer of
-  Answer {} -> isChoicePrompt $ stripPromptWrappers prompt
+  Answer QuestionResponse {qrChoice} ->
+    replayChoiceIndexInRange qrChoice $ stripPromptWrappers prompt
   Raw {} -> False
   PaymentAmountsAnswer {} -> isPaymentAmountsPrompt prompt
   AmountsAnswer {} -> isAmountsPrompt prompt
@@ -502,23 +503,31 @@ stripPromptWrappers = \case
   QuestionWithSource _ _ prompt -> stripPromptWrappers prompt
   prompt -> prompt
 
-isChoicePrompt :: Question message -> Bool
-isChoicePrompt = \case
-  ChooseOne {} -> True
-  PlayerWindowChooseOne {} -> True
-  WindowChooseOne {} -> True
-  ChooseOneFromEach {} -> True
-  ChooseN {} -> True
-  ChooseSome {} -> True
-  ChooseSome1 {} -> True
-  ChooseUpToN {} -> True
-  ChooseOneAtATime {} -> True
-  ChooseOneAtATimeWithAuto {} -> True
-  Read {} -> True
-  ChooseOneWizard {} -> True
-  PickSupplies {} -> True
-  DropDown {} -> True
+replayChoiceIndexInRange :: Int -> Question message -> Bool
+replayChoiceIndexInRange choice = \case
+  Read _ (BasicReadChoices choices) _ -> inRange choices
+  Read _ (BasicReadChoicesN _ choices) _ -> inRange choices
+  Read _ (BasicReadChoicesUpToN _ choices) _ -> inRange choices
+  Read _ (LeadInvestigatorMustDecide choices) _ -> inRange choices
+  ChooseOneWizard _ choices _ _ -> inRange choices
+  ChooseOne choices -> inRange choices
+  PlayerWindowChooseOne choices -> inRange choices
+  WindowChooseOne choices -> inRange choices
+  ChooseOneFromEach choices -> inRange $ concat choices
+  ChooseN _ choices -> inRange choices
+  ChooseSome choices -> inRange choices
+  ChooseSome1 _ choices -> inRange choices
+  ChooseUpToN _ choices -> inRange choices
+  ChooseOneAtATime choices -> inRange choices
+  ChooseOneAtATimeWithAuto _ choices ->
+    not (null choices)
+      && (choice == 0 || isJust (choices !!? (choice - 1)))
+  PickSupplies _ _ choices _ -> inRange choices
+  DropDown choices -> inRange choices
   _ -> False
+ where
+   inRange :: [a] -> Bool
+   inRange choices = isJust $ choices !!? choice
 
 isAmountsPrompt :: Question message -> Bool
 isAmountsPrompt = \case

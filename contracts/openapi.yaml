@@ -638,7 +638,7 @@ paths:
               content:
                 application/json:
                   schema:
-                    $ref: "./schemas/replay-attestation.schema.json#/$defs/replayBuildIdentity"
+                    $ref: "./schemas/replay-attestation.schema.json#/$defs/buildIdentity"
             X-Arkham-Replay-Import-Receipt:
               description: |
                 Compact JSON `ReplayImportReceipt`, present only when the

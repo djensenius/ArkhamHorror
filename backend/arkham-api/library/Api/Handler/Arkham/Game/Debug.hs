@@ -13,6 +13,7 @@ module Api.Handler.Arkham.Game.Debug (
   -- * Exposed for regression tests
   makeReplayPlayerIdMap,
   makeReplayPlayerRemapping,
+  checkpointInvestigatorPlayerId,
   remapReplayMessagePlayerIds,
   selectUploadedExportFile,
   validateReplayCheckpointPlayerId,
@@ -24,8 +25,11 @@ import Api.Arkham.Types.Game (ClaimSeatPost (..))
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Card.CardCode
+import Arkham.Classes.Entity (attr)
+import Arkham.Entities (entitiesInvestigators)
 import Arkham.Game
 import Arkham.Id
+import Arkham.Investigator.Types (investigatorPlayerId)
 import Arkham.Message (Message)
 import Arkham.Replay.ImportAuthority
 import Arkham.Replay.ServerBuildIdentity (serverBuildIdentity)
@@ -178,6 +182,15 @@ validateReplayCheckpointPlayerId expected checkpointPlayerId = do
   unless (PlayerId checkpointUUID == expected) $
     Left "Selected investigator playerId does not match the replay checkpoint player"
 
+checkpointInvestigatorPlayerId :: Game -> Text -> Either Text PlayerId
+checkpointInvestigatorPlayerId game investigatorId =
+  maybe
+    (Left "Selected investigator is not present in replay checkpoint game data")
+    (Right . attr investigatorPlayerId)
+    $ Map.lookup
+      (InvestigatorId $ CardCode $ T.dropWhile (== 'c') investigatorId)
+      (entitiesInvestigators $ gameEntities game)
+
 makeReplayPlayerIdMap
   :: [ReplayPlayerRemapping]
   -> Either Text (Map PlayerId PlayerId)
@@ -307,73 +320,66 @@ postApiV1ArkhamGamesImportR = do
               , nonEmpty (aeCampaignPlayers export)
               ]
         campaignInvestigatorIds = map normalizeJsonInvestigatorId $ aeCampaignPlayers export
+      selectedInvestigator <- case variant of
+        Solo -> case headMay allInvestigatorIds of
+          Nothing -> invalidArgs ["No investigators found in game data"]
+          Just iid -> pure iid
+        WithFriends -> case mInvestigatorId <|> headMay campaignInvestigatorIds of
+          Nothing -> invalidArgs ["No investigator specified"]
+          Just iid -> pure iid
+      checkpointPlayerId <- forM importAuthority \authority -> do
+        playerId <-
+          either
+            (invalidArgs . pure)
+            pure
+            $ checkpointInvestigatorPlayerId agedCurrentData selectedInvestigator
+        let checkpointPlayerId = UUID.toText $ unPlayerId playerId
+        either
+          (invalidArgs . pure)
+          pure
+          $ validateReplayCheckpointPlayerId
+            (replayImportCheckpointPlayerId authority)
+            checkpointPlayerId
+        pure checkpointPlayerId
       (importedGame, importReceipt) <- runDB $ do
         gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now
         playerRemappings <- case variant of
           Solo -> do
-            iid <- case headMay allInvestigatorIds of
-              Nothing -> lift $ invalidArgs ["No investigators found in game data"]
-              Just iid -> pure iid
-            newPlayerId <- insert $ ArkhamPlayer userId gameId iid
-            case importAuthority of
+            newPlayerId <- insert $ ArkhamPlayer userId gameId selectedInvestigator
+            case checkpointPlayerId of
               Nothing -> pure []
-              Just authority -> do
-                checkpointPlayerId <-
-                  storedInvestigatorPlayerId gameId iid
-                    >>= maybe
-                      (lift $ invalidArgs ["Replay checkpoint investigator has no playerId"])
-                      pure
-                either
-                  (lift . invalidArgs . pure)
-                  pure
-                  $ validateReplayCheckpointPlayerId
-                    (replayImportCheckpointPlayerId authority)
-                    checkpointPlayerId
+              Just originalPlayerId -> do
                 mapping <-
                   either
                     (lift . invalidArgs . pure)
                     pure
                     $ makeReplayPlayerRemapping
-                      iid
-                      checkpointPlayerId
+                      selectedInvestigator
+                      originalPlayerId
                       (toPathPiece newPlayerId)
                       False
                 pure [mapping]
           WithFriends -> do
-            let mChosen = mInvestigatorId <|> headMay campaignInvestigatorIds
-            chosenInvestigator <- case mChosen of
-              Nothing -> lift $ invalidArgs ["No investigator specified"]
-              Just iid -> pure iid
-            for_ importAuthority \authority -> do
-              checkpointPlayerId <-
-                storedInvestigatorPlayerId gameId chosenInvestigator
-                  >>= maybe
-                    (lift $ invalidArgs ["Replay checkpoint investigator has no playerId"])
-                    pure
-              either
-                (lift . invalidArgs . pure)
-                pure
-                $ validateReplayCheckpointPlayerId
-                  (replayImportCheckpointPlayerId authority)
-                  checkpointPlayerId
-            newPlayerId <- insert $ ArkhamPlayer userId gameId chosenInvestigator
+            newPlayerId <- insert $ ArkhamPlayer userId gameId selectedInvestigator
             mCheckpointPlayerId <-
-              remapInvestigatorUUID gameId chosenInvestigator newPlayerId
-            case importAuthority of
+              remapInvestigatorUUID gameId selectedInvestigator newPlayerId
+            case checkpointPlayerId of
               Nothing -> pure []
-              Just _ -> do
-                checkpointPlayerId <-
+              Just originalPlayerId -> do
+                remappedFromPlayerId <-
                   maybe
                     (lift $ invalidArgs ["Replay checkpoint investigator remapping failed"])
                     pure
                     mCheckpointPlayerId
+                unless (remappedFromPlayerId == originalPlayerId) $
+                  lift $ invalidArgs ["Replay checkpoint investigator playerId changed during import"]
                 mapping <-
                   either
                     (lift . invalidArgs . pure)
                     pure
                     $ makeReplayPlayerRemapping
-                      chosenInvestigator
-                      checkpointPlayerId
+                      selectedInvestigator
+                      originalPlayerId
                       (toPathPiece newPlayerId)
                       True
                 pure [mapping]

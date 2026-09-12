@@ -180,17 +180,18 @@ spec = describe "selectUploadedExportFile" do
         checkpointPlayerBindingNeedle =
           "validateReplayCheckpointPlayerId (replayImportCheckpointPlayerId authority) checkpointPlayerId"
         checkpointPlayerBindingPositions =
-          map (T.length . fst) $
-            T.breakOnAll checkpointPlayerBindingNeedle importHandler
+          map (T.length . fst) $ T.breakOnAll checkpointPlayerBindingNeedle importHandler
     normalized
       `shouldSatisfy` T.isInfixOf
         "postApiV1ArkhamGamesImportR :: Handler (PublicGame ArkhamGameId)"
     decodePosition <- position "decodeExportBytes"
+    checkpointBindingPosition <-
+      position
+        "checkpointPlayerId <- forM importAuthority \\authority -> do"
     transactionPosition <- position "(importedGame, importReceipt) <- runDB"
-    withFriendsBranchPosition <- position "WithFriends -> do"
     investigatorRemapPosition <-
       position
-        "mCheckpointPlayerId <- remapInvestigatorUUID gameId chosenInvestigator newPlayerId"
+        "mCheckpointPlayerId <- remapInvestigatorUUID gameId selectedInvestigator newPlayerId"
     queueRemapPosition <-
       position
         "choiceMessages = remapReplayMessagePlayerIds replayPlayerIds s.choice.choiceMessages"
@@ -202,12 +203,11 @@ spec = describe "selectUploadedExportFile" do
         "replayImportResponseHeaders serverBuildIdentity importReceipt"
     publicGamePosition <- position "$ toPublicGame importedGame"
     decodePosition `shouldSatisfy` (< transactionPosition)
+    checkpointBindingPosition `shouldSatisfy` (< transactionPosition)
     case checkpointPlayerBindingPositions of
-      [soloBindingPosition, withFriendsBindingPosition] -> do
-        soloBindingPosition `shouldSatisfy` (< withFriendsBranchPosition)
-        withFriendsBranchPosition `shouldSatisfy` (< withFriendsBindingPosition)
-        withFriendsBindingPosition `shouldSatisfy` (< investigatorRemapPosition)
-      _ -> expectationFailure "expected Solo and WithFriends checkpoint-player validation"
+      [bindingPosition] -> bindingPosition `shouldSatisfy` (< transactionPosition)
+      _ -> expectationFailure "expected one pre-transaction checkpoint-player validation"
+    transactionPosition `shouldSatisfy` (< investigatorRemapPosition)
     queueRemapPosition `shouldSatisfy` (< stepInsertPosition)
     headerPosition `shouldSatisfy` (< publicGamePosition)
     importHandler
@@ -238,6 +238,9 @@ spec = describe "selectUploadedExportFile" do
     importContract
       `shouldSatisfy` T.isInfixOf
         "X-Arkham-Backend-Build-Identity: required: true"
+    importContract
+      `shouldSatisfy` T.isInfixOf
+        "$ref: \"./schemas/replay-attestation.schema.json#/$defs/buildIdentity\""
     importContract
       `shouldSatisfy` T.isInfixOf
         "X-Arkham-Replay-Import-Receipt:"

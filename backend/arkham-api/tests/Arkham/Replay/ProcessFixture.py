@@ -187,6 +187,16 @@ def main():
             "not compatible with checkpoint prompt",
             ("--undo", 1),
         )
+        out_of_range = copy.deepcopy(answer_plan)
+        out_of_range["answers"][0]["answer"]["contents"]["choice"] = 1
+        reject(
+            work,
+            source_path,
+            out_of_range,
+            "out-of-range",
+            "not compatible with checkpoint prompt",
+            ("--undo", 1),
+        )
         wrong_destiny = copy.deepcopy(answer_plan)
         wrong_destiny["answers"][0]["answer"] = {
             "tag": "PickDestinyAnswer",

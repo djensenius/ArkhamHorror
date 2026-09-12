@@ -54,7 +54,7 @@
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },
-    "replayBuildIdentity": {
+    "buildIdentity": {
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -75,12 +75,66 @@
           "$ref": "#/$defs/sha256"
         },
         "sourceClean": {
-          "const": true
+          "type": "boolean"
         },
         "attestation": {
-          "const": "git-clean"
+          "enum": [
+            "git-clean",
+            "source-sha256",
+            "unattested"
+          ]
         }
-      }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "sourceClean",
+            "attestation"
+          ],
+          "properties": {
+            "sourceClean": {
+              "const": true
+            },
+            "attestation": {
+              "const": "git-clean"
+            }
+          }
+        },
+        {
+          "required": [
+            "sourceClean",
+            "attestation"
+          ],
+          "properties": {
+            "sourceClean": {
+              "const": false
+            },
+            "attestation": {
+              "enum": [
+                "source-sha256",
+                "unattested"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "replayBuildIdentity": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/buildIdentity"
+        },
+        {
+          "properties": {
+            "sourceClean": {
+              "const": true
+            },
+            "attestation": {
+              "const": "git-clean"
+            }
+          }
+        }
+      ]
     },
     "questionCheckpoint": {
       "type": "object",

@@ -1,5 +1,6 @@
 module Arkham.Replay.CheckpointSpec (spec) where
 
+import Api.Handler.Arkham.Game.Debug (checkpointInvestigatorPlayerId)
 import Api.Arkham.Export
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
 import Arkham.CampaignStep qualified as CS
@@ -42,6 +43,34 @@ spec = describe "deterministic replay checkpoint harness" do
     validateReplayAnswer game (response Nothing $ Just checkpoint.checkpointPlayerId)
       `shouldSatisfy` isLeft
     validateReplayAnswer game (response (Just 7) Nothing) `shouldSatisfy` isLeft
+    validateReplayAnswer
+      game
+      ( ReplayAnswerStep checkpoint
+          $ Answer
+          $ QuestionResponse
+            { qrChoice = 1
+            , qrPlayerId = Just checkpoint.checkpointPlayerId
+            , qrQuestionVersion = Just 7
+            }
+      )
+      `shouldSatisfy` isLeft
+    validateReplayAnswer
+      game
+      ( ReplayAnswerStep checkpoint
+          $ Answer
+          $ QuestionResponse
+            { qrChoice = -1
+            , qrPlayerId = Just checkpoint.checkpointPlayerId
+            , qrQuestionVersion = Just 7
+            }
+      )
+      `shouldSatisfy` isLeft
+
+  it "derives checkpoint player binding from decoded game state" . gameTest $ \self -> do
+    game <- getGame
+    checkpointInvestigatorPlayerId game ("c" <> unCardCode (unInvestigatorId $ toId self))
+      `shouldBe` Right self.player
+    checkpointInvestigatorPlayerId game "c99999" `shouldSatisfy` isLeft
 
   it "fails closed on prompt and answer constructor mismatches" . gameTest $ \_ -> do
     game <- checkpointGame

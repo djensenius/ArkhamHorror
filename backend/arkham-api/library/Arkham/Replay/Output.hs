@@ -109,6 +109,7 @@ data ResolvedOutput = ResolvedOutput
   { resolvedOutputRole :: ReplayOutputRole
   , resolvedOutputOriginal :: FilePath
   , resolvedOutputCanonical :: FilePath
+  , resolvedOutputParentSpelling :: FilePath
   , resolvedOutputParent :: FilePath
   , resolvedOutputName :: FilePath
   , resolvedOutputParentIdentity :: FileIdentity
@@ -588,6 +589,17 @@ revalidateOutputParent output = do
     $ "replay output parent descriptor changed during execution: "
     <> resolved.resolvedOutputOriginal
   validateOutputParentPermissions resolved.resolvedOutputOriginal descriptorStatus
+  spelledParentStatus <-
+    getFileStatus resolved.resolvedOutputParentSpelling
+      `catch` pathFailure "revalidate output parent" resolved.resolvedOutputOriginal
+  unless
+    ( isDirectory spelledParentStatus
+        && statusIdentity spelledParentStatus == resolved.resolvedOutputParentIdentity
+    )
+    $ replayOutputFailure
+    $ "replay output parent changed during execution: "
+    <> resolved.resolvedOutputOriginal
+  validateOutputParentPermissions resolved.resolvedOutputOriginal spelledParentStatus
   parentStatus <- getSymbolicLinkStatus resolved.resolvedOutputParent
   unless
     ( isDirectory parentStatus
@@ -608,8 +620,17 @@ resolveOutput ReplayOutputRequest {..} = do
     replayOutputFailure $ "invalid replay output path: " <> replayOutputRequestPath
   parent <- canonicalizePath parentSpelling `catch` pathFailure "resolve output parent" parentSpelling
   parentStatus <- getFileStatus parent
+  spelledParentStatus <-
+    getFileStatus parentSpelling `catch` pathFailure "resolve output parent" parentSpelling
   unless (isDirectory parentStatus) $
     replayOutputFailure $ "replay output parent is not a directory: " <> parentSpelling
+  unless
+    ( isDirectory spelledParentStatus
+        && statusIdentity spelledParentStatus == statusIdentity parentStatus
+    )
+    $ replayOutputFailure
+    $ "replay output parent changed while it was resolved: "
+    <> replayOutputRequestPath
   validateOutputParentPermissions replayOutputRequestPath parentStatus
   let canonical = parent </> fileName
   existingStatus <- symbolicStatusMaybe canonical
@@ -628,6 +649,7 @@ resolveOutput ReplayOutputRequest {..} = do
       { resolvedOutputRole = replayOutputRequestRole
       , resolvedOutputOriginal = replayOutputRequestPath
       , resolvedOutputCanonical = canonical
+      , resolvedOutputParentSpelling = parentSpelling
       , resolvedOutputParent = parent
       , resolvedOutputName = fileName
       , resolvedOutputParentIdentity = statusIdentity parentStatus

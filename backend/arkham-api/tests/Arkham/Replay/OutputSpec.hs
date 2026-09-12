@@ -141,6 +141,33 @@ spec = sequential $ describe "deterministic replay file handling" do
         doesFileExist (retainedParent </> "checkpoint") `shouldReturn` False
         assertNoInternalArtifacts retainedParent
 
+  it "rejects retargeting the caller-provided symlink parent" $
+    withWorkspace "spelled-parent-retarget" \workspace -> do
+      let input = workspace </> "source"
+          firstParent = workspace </> "first"
+          secondParent = workspace </> "second"
+          outputParent = workspace </> "output"
+          checkpoint = outputParent </> "checkpoint"
+      BSL8.writeFile input "source"
+      createDirectory firstParent
+      createDirectory secondParent
+      createDirectoryLink firstParent outputParent
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        expectIOExceptionContaining "parent changed" $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayBeforeStageCreate ReplayCheckpointOutput -> do
+                  removeFile outputParent
+                  createDirectoryLink secondParent outputParent
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "checkpoint"]
+        listDirectory firstParent `shouldReturn` []
+        listDirectory secondParent `shouldReturn` []
+        assertNoInternalArtifacts firstParent
+
   it "keeps completed stages anonymous and preserves stage-shaped files during cleanup" $
     withWorkspace "anonymous-cleanup" \workspace -> do
       let input = workspace </> "source"
