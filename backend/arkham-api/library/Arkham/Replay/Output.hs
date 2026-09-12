@@ -151,6 +151,11 @@ data CreatedOutput = CreatedOutput
   , createdOutputIdentity :: FileIdentity
   }
 
+data PublishedOutput = PublishedOutput
+  { publishedOutputCreated :: CreatedOutput
+  , publishedOutputCaptured :: Maybe CapturedOutput
+  }
+
 stagedOutputRole :: StagedOutput -> ReplayOutputRole
 stagedOutputRole = resolvedOutputRole . openOutputResolved . stagedOutputOpen
 
@@ -324,15 +329,29 @@ publishReplayOutputsWithHook hook plan artifacts = mask \restore -> do
       checkpoint <- case checkpointStages of
         [value] -> pure value
         _ -> cleanupAll >> replayOutputFailure "internal error: checkpoint stage is not unique"
-      for_ secondaryStages \secondary -> do
-        withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
-        withCleanup $ revalidateOutput plan secondary.stagedOutputOpen
-        withCleanup $ hook $ ReplayBeforeSecondaryPublish $ stagedOutputRole secondary
-        withCleanup $ publishStage hook plan secondary
-        withCleanup $ hook $ ReplaySecondaryPublished $ stagedOutputRole secondary
-      withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
-      withCleanup $ hook ReplayBeforeCheckpointPublish
-      withCleanup $ publishCheckpoint hook plan checkpoint
+      let publishSecondaries [] = pure []
+          publishSecondaries (secondary : rest) = do
+            withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
+            withCleanup $ revalidateOutput plan secondary.stagedOutputOpen
+            withCleanup $ hook $ ReplayBeforeSecondaryPublish $ stagedOutputRole secondary
+            published <- publishStage hook plan secondary `onException` cleanupAll
+            remaining <-
+              ( do
+                  withCleanup $ hook $ ReplaySecondaryPublished $ stagedOutputRole secondary
+                  publishSecondaries rest
+              )
+                `onException` rollbackPublishedOutput published
+            pure $ published : remaining
+      publishedSecondaries <- publishSecondaries secondaryStages
+      let rollbackSecondaries = rollbackPublishedOutputs $ reverse publishedSecondaries
+      ( do
+          withCleanup $ revalidateReplayInputs plan.replayOutputPlanInputs
+          withCleanup $ hook ReplayBeforeCheckpointPublish
+          publishedCheckpoint <- publishCheckpoint hook plan checkpoint `onException` cleanupAll
+          commitPublishedOutput publishedCheckpoint
+          traverse_ commitPublishedOutput publishedSecondaries
+        )
+        `onException` rollbackSecondaries
       cleanupAll
     )
     `finally` closeParents
@@ -481,7 +500,7 @@ publishStage
   :: (ReplayPublishPhase -> IO ())
   -> ReplayOutputPlan
   -> StagedOutput
-  -> IO ()
+  -> IO PublishedOutput
 publishStage hook plan staged =
   publishStagedOutput hook plan staged $ pure ()
 
@@ -489,7 +508,7 @@ publishCheckpoint
   :: (ReplayPublishPhase -> IO ())
   -> ReplayOutputPlan
   -> StagedOutput
-  -> IO ()
+  -> IO PublishedOutput
 publishCheckpoint hook plan staged =
   publishStagedOutput hook plan staged $ hook ReplayCheckpointLinked
 
@@ -498,7 +517,7 @@ publishStagedOutput
   -> ReplayOutputPlan
   -> StagedOutput
   -> IO ()
-  -> IO ()
+  -> IO PublishedOutput
 publishStagedOutput hook plan staged afterPublish = mask \restore -> do
   let output = staged.stagedOutputOpen
       role = stagedOutputRole staged
@@ -525,8 +544,30 @@ publishStagedOutput hook plan staged afterPublish = mask \restore -> do
       afterPublish
     )
     `onException` rollback
-  ignoreIOException $ closeFd created.createdOutputDescriptor
-  traverse_ (ignoreIOException . discardCapturedOutput) captured
+  pure
+    PublishedOutput
+      { publishedOutputCreated = created
+      , publishedOutputCaptured = captured
+      }
+
+rollbackPublishedOutput :: PublishedOutput -> IO ()
+rollbackPublishedOutput published =
+  removeCreatedOutputIfOwned published.publishedOutputCreated
+    `finally` ( traverse_ restoreCapturedOutput published.publishedOutputCaptured
+                  `finally` ignoreIOException
+                    (closeFd published.publishedOutputCreated.createdOutputDescriptor)
+              )
+
+rollbackPublishedOutputs :: [PublishedOutput] -> IO ()
+rollbackPublishedOutputs =
+  foldr
+    (\published remaining -> rollbackPublishedOutput published `finally` remaining)
+    (pure ())
+
+commitPublishedOutput :: PublishedOutput -> IO ()
+commitPublishedOutput published =
+  ignoreIOException (closeFd published.publishedOutputCreated.createdOutputDescriptor)
+    `finally` traverse_ (ignoreIOException . discardCapturedOutput) published.publishedOutputCaptured
 
 createOutput :: OpenOutput -> IO CreatedOutput
 createOutput output =

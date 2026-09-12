@@ -196,8 +196,10 @@ The final destination is then created with `O_EXCL` as owner-write-only. Bytes
 are copied from the retained anonymous stage to the retained final descriptor
 and fsynced; `fchmod` is the single readable-publication gate. Descriptor and
 pathname identities are rechecked and the parent directory is fsynced.
-Checkpoint publication uses the same no-clobber creation and remains last, so
-concurrent publishers permit exactly one winner.
+Checkpoint publication uses the same no-clobber creation and remains last.
+Published secondaries retain their created descriptors and any captured prior
+files until that checkpoint commits, so a losing concurrent publisher rolls
+its secondaries back and exactly one complete output set wins.
 
 Rollback and cleanup capture and verify an entry while retaining its descriptor
 through the final pathname syscall. They remove only a matching owned inode.

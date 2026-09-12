@@ -52,7 +52,7 @@ test_build_identity_source_dependencies() {
   test ! -e "$untracked_probe"
   sleep 1
   mkdir -p "$probe_dir"
-  trap 'rm -f "$ignored_probe" "$untracked_probe" "$interface_dump"; rmdir "$probe_dir" 2>/dev/null || true' EXIT HUP INT TERM
+  trap 'rm -f "$ignored_probe" "$untracked_probe" "$interface_dump"; rmdir "$probe_dir" 2>/dev/null || true' 0 HUP INT TERM
 
   cat >"$ignored_probe" <<'EOF'
 module ReplayBuildIdentityIgnoredProbe where
@@ -112,7 +112,7 @@ EOF
   run_replay_build
   restored=$("$EXE" --build-identity)
   test "$(identity_sha "$restored")" = "$baseline_sha"
-  trap - EXIT HUP INT TERM
+  trap - 0 HUP INT TERM
   printf '%s\n' "build identity source appearance, content, and dependency regression: ok"
 }
 build_replay

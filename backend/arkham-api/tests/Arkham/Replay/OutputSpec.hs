@@ -499,7 +499,7 @@ spec = sequential $ describe "deterministic replay file handling" do
         doesFileExist (retainedParent </> "checkpoint") `shouldReturn` False
         assertNoInternalArtifacts retainedParent
 
-  it "cleans the checkpoint stage when cancelled at the secondary publication handoff" $
+  it "rolls back a published secondary when cancelled before checkpoint publication" $
     withWorkspace "post-secondary-cancellation" \workspace -> do
       let input = workspace </> "source"
           secondary = workspace </> "game"
@@ -515,7 +515,7 @@ spec = sequential $ describe "deterministic replay file handling" do
           (pure ())
           plan
           [artifact ReplayCheckpointOutput "checkpoint", artifact ReplayFinalGameOutput "game"]
-        BSL8.readFile secondary `shouldReturn` "game"
+        doesFileExist secondary `shouldReturn` False
         doesFileExist checkpoint `shouldReturn` False
       assertNoInternalArtifacts workspace
 
@@ -595,6 +595,61 @@ spec = sequential $ describe "deterministic replay file handling" do
         length (filter isRight results) `shouldBe` 1
         BSL8.readFile checkpoint >>= (`shouldSatisfy` (`elem` ["left", "right"]))
       assertNoStages workspace
+
+  it "restores a winner's secondary when a later publisher loses the checkpoint race" $
+    withWorkspace "concurrent-secondary-rollback" \workspace -> do
+      let input = workspace </> "source"
+          secondary = workspace </> "game"
+          checkpoint = workspace </> "checkpoint"
+      BSL8.writeFile input "source"
+      withReplayInput input \leftInput -> withReplayInput input \rightInput -> do
+        leftPlan <-
+          prepareReplayOutputs
+            [leftInput]
+            [checkpointRequest checkpoint, ReplayOutputRequest ReplayFinalGameOutput secondary]
+        leftSecondaryPublished <- newEmptyMVar
+        releaseLeftCheckpoint <- newEmptyMVar
+        let leftHook = \case
+              ReplaySecondaryPublished ReplayFinalGameOutput ->
+                putMVar leftSecondaryPublished ()
+              ReplayBeforeCheckpointPublish ->
+                readMVar releaseLeftCheckpoint
+              _ -> pure ()
+        left <-
+          async $
+            publishReplayOutputsWithHook
+              leftHook
+              leftPlan
+              [artifact ReplayCheckpointOutput "left-checkpoint", artifact ReplayFinalGameOutput "left-game"]
+        takeMVar leftSecondaryPublished
+        rightPlan <-
+          prepareReplayOutputs
+            [rightInput]
+            [checkpointRequest checkpoint, ReplayOutputRequest ReplayFinalGameOutput secondary]
+        rightAtCheckpoint <- newEmptyMVar
+        releaseRightCheckpoint <- newEmptyMVar
+        let rightHook = \case
+              ReplayBeforeCheckpointPublish ->
+                putMVar rightAtCheckpoint () >> readMVar releaseRightCheckpoint
+              _ -> pure ()
+        right <-
+          async $
+            publishReplayOutputsWithHook
+              rightHook
+              rightPlan
+              [ artifact ReplayCheckpointOutput "right-checkpoint"
+              , artifact ReplayFinalGameOutput "right-game"
+              ]
+        takeMVar rightAtCheckpoint
+        putMVar releaseLeftCheckpoint ()
+        leftResult <- waitCatch left
+        leftResult `shouldSatisfy` isRight
+        putMVar releaseRightCheckpoint ()
+        rightResult <- waitCatch right
+        rightResult `shouldSatisfy` isLeft
+        BSL8.readFile checkpoint `shouldReturn` "left-checkpoint"
+        BSL8.readFile secondary `shouldReturn` "left-game"
+      assertNoInternalArtifacts workspace
 
   it "cancels interruptibly after linking and removes only its unpublished inode" $
     withWorkspace "cancellation" \workspace -> do
