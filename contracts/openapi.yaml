@@ -591,6 +591,12 @@ paths:
         `sourceClean: true` and `attestation: "git-clean"`. Dirty,
         `source-sha256`-attested, unattested, mismatched, or tampered
         checkpoints fail with 400 before game creation and receive no receipt.
+        The receipt exposes only the prompt, game, queue, contract, revision,
+        and build facts the importer independently validates. Self-reported
+        generation fields such as plan/source hashes, source kind, answer and
+        undo counts, and the checkpoint label remain in the checkpoint file
+        for local reproducibility checks but are not authenticated by the
+        import receipt.
         Ordinary exports do not acquire checkpoint authority: they still
         return the full `PublicGame` and running build header, but never the
         checkpoint receipt or durable replay attestation.
@@ -871,20 +877,26 @@ paths:
       description: |
         Requires administrator access or membership in the exact game. This is
         a metadata-only replay-import authority and exposes no game rules,
-        prompts, answer path, or mutable state.
+        prompt contents, answer path, or mutable state.
 
         The importer runs the backend's exact checkpoint-envelope decoder and
         validator over the uploaded bytes before opening the game-creation
         transaction. Only a successfully validated checkpoint import receives
         a durable receipt. `canonicalEnvelopeSha256` is recomputed by the
-        server from the decoded export and full provenance; it is never trusted
-        from the checkpoint's embedded digest field.
+        server from the decoded export and full generation metadata; it is
+        never trusted from the checkpoint's embedded digest field. This hash
+        binds the exact canonical envelope but is not treated as proof that
+        self-reported generation history is true.
 
-        A successful response proves that the retained game revision, full
-        checkpoint provenance and replay build, import-time clean backend
-        build, player remapping, and current clean running backend build still
-        agree. Missing records, malformed receipts, dirty or unattested
-        binaries, changed game revisions, and build mismatches fail closed.
+        A successful response proves that the retained game revision,
+        server-validated prompt and game/queue hashes, contract revision,
+        import-time clean backend build, player remapping, and current clean
+        running backend build still agree. It deliberately omits plan/source
+        hashes, source kind, answer and undo counts, and the caller-selected
+        checkpoint label because the server cannot derive those claims from
+        the imported checkpoint state. Missing records, malformed receipts,
+        dirty or unattested binaries, changed game revisions, and build
+        mismatches fail closed.
       parameters:
         - $ref: "#/components/parameters/GameId"
       responses:

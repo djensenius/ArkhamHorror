@@ -4,26 +4,10 @@
   "gameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
   "checkpointSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "canonicalEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "checkpointProvenance": {
+  "validatedCheckpoint": {
     "schemaVersion": 1,
     "contractSchemaRevision": "0.1.34",
-    "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
-    "sourceExportSha256": "2222222222222222222222222222222222222222222222222222222222222222",
-    "sourceInputKind": "export",
-    "sourceGameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
-    "replayBuild": {
-      "gitRevision": "cccccccccccccccccccccccccccccccccccccccc",
-      "gitTree": "dddddddddddddddddddddddddddddddddddddddd",
-      "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-      "sourceClean": true,
-      "attestation": "git-clean"
-    },
-    "mode": "answers",
-    "undoSteps": 0,
-    "answersApplied": 1,
-    "checkpoint": {
-      "type": "question",
-      "name": "apple-live-import",
+    "prompt": {
       "questionVersion": 7,
       "playerId": "00000000-0000-0000-0000-000000000000",
       "promptTag": "ChooseOne",
@@ -52,26 +36,10 @@
     },
     "checkpointSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "canonicalEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "checkpointProvenance": {
+    "validatedCheckpoint": {
       "schemaVersion": 1,
       "contractSchemaRevision": "0.1.34",
-      "planSha256": "1111111111111111111111111111111111111111111111111111111111111111",
-      "sourceExportSha256": "2222222222222222222222222222222222222222222222222222222222222222",
-      "sourceInputKind": "export",
-      "sourceGameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
-      "replayBuild": {
-        "gitRevision": "cccccccccccccccccccccccccccccccccccccccc",
-        "gitTree": "dddddddddddddddddddddddddddddddddddddddd",
-        "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-        "sourceClean": true,
-        "attestation": "git-clean"
-      },
-      "mode": "answers",
-      "undoSteps": 0,
-      "answersApplied": 1,
-      "checkpoint": {
-        "type": "question",
-        "name": "apple-live-import",
+      "prompt": {
         "questionVersion": 7,
         "playerId": "00000000-0000-0000-0000-000000000000",
         "promptTag": "ChooseOne",
@@ -89,6 +57,6 @@
         "stateRemapped": true
       }
     ],
-    "receiptSha256": "6e641fc2c833d845ebf18a085a12aa7432f127bda2cc91070f3b4ca65a8b9605"
+    "receiptSha256": "07ff69d7e7fb49492c75f19cf3bd13b51d37909f7a65c6e4c7e7e68d9d01d6c8"
   }
 }

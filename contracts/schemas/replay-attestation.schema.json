@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/replay-attestation.schema.json",
   "title": "ReplayAttestation",
-  "description": "Authenticated, game-bound authority for a validated deterministic replay checkpoint import.",
+  "description": "Authenticated, game-bound authority for the independently validated state of a deterministic replay checkpoint import.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,7 @@
     "gameGitRevision",
     "checkpointSha256",
     "canonicalEnvelopeSha256",
-    "checkpointProvenance",
+    "validatedCheckpoint",
     "runningServerBuild",
     "importReceipt"
   ],
@@ -29,10 +29,11 @@
       "$ref": "#/$defs/sha256"
     },
     "canonicalEnvelopeSha256": {
-      "$ref": "#/$defs/sha256"
+      "$ref": "#/$defs/sha256",
+      "description": "Server-recomputed identity of the canonical export-plus-metadata envelope. It binds the imported bytes but does not authenticate self-reported generation history."
     },
-    "checkpointProvenance": {
-      "$ref": "#/$defs/replayProvenance"
+    "validatedCheckpoint": {
+      "$ref": "#/$defs/validatedCheckpoint"
     },
     "runningServerBuild": {
       "$ref": "#/$defs/replayBuildIdentity"
@@ -136,25 +137,16 @@
         }
       ]
     },
-    "questionCheckpoint": {
+    "validatedPrompt": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "type",
-        "name",
         "questionVersion",
         "playerId",
         "promptTag",
         "promptSha256"
       ],
       "properties": {
-        "type": {
-          "const": "question"
-        },
-        "name": {
-          "type": "string",
-          "minLength": 1
-        },
         "questionVersion": {
           "type": "integer",
           "minimum": 1
@@ -172,21 +164,13 @@
         }
       }
     },
-    "replayProvenance": {
+    "validatedCheckpoint": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "schemaVersion",
         "contractSchemaRevision",
-        "planSha256",
-        "sourceExportSha256",
-        "sourceInputKind",
-        "sourceGameGitRevision",
-        "replayBuild",
-        "mode",
-        "undoSteps",
-        "answersApplied",
-        "checkpoint",
+        "prompt",
         "checkpointGameSha256",
         "checkpointQueueSha256"
       ],
@@ -198,43 +182,16 @@
           "type": "string",
           "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         },
-        "planSha256": {
-          "$ref": "#/$defs/sha256"
-        },
-        "sourceExportSha256": {
-          "$ref": "#/$defs/sha256"
-        },
-        "sourceInputKind": {
-          "enum": [
-            "export",
-            "checkpoint"
-          ]
-        },
-        "sourceGameGitRevision": {
-          "$ref": "#/$defs/gitSha"
-        },
-        "replayBuild": {
-          "$ref": "#/$defs/replayBuildIdentity"
-        },
-        "mode": {
-          "const": "answers"
-        },
-        "undoSteps": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "answersApplied": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "checkpoint": {
-          "$ref": "#/$defs/questionCheckpoint"
+        "prompt": {
+          "$ref": "#/$defs/validatedPrompt"
         },
         "checkpointGameSha256": {
-          "$ref": "#/$defs/sha256"
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 recomputed by the server from the decoded checkpoint game."
         },
         "checkpointQueueSha256": {
-          "$ref": "#/$defs/sha256"
+          "$ref": "#/$defs/sha256",
+          "description": "SHA-256 recomputed by the server from the decoded retained queue."
         }
       }
     },
@@ -277,7 +234,7 @@
         "backendBuild",
         "checkpointSha256",
         "canonicalEnvelopeSha256",
-        "checkpointProvenance",
+        "validatedCheckpoint",
         "playerRemappings",
         "receiptSha256"
       ],
@@ -298,10 +255,11 @@
           "$ref": "#/$defs/sha256"
         },
         "canonicalEnvelopeSha256": {
-          "$ref": "#/$defs/sha256"
+          "$ref": "#/$defs/sha256",
+          "description": "Server-recomputed identity of the canonical export-plus-metadata envelope. It binds the imported bytes but does not authenticate self-reported generation history."
         },
-        "checkpointProvenance": {
-          "$ref": "#/$defs/replayProvenance"
+        "validatedCheckpoint": {
+          "$ref": "#/$defs/validatedCheckpoint"
         },
         "playerRemappings": {
           "type": "array",

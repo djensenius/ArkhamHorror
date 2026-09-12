@@ -580,7 +580,7 @@ spec = describe "deterministic replay checkpoint harness" do
       `shouldBe` Aeson.toJSON [ClearUI, Noop]
     pure () :: IO ()
 
-  it "distinguishes ordinary exports and verifies every checkpoint envelope authority" . gameTest $ \_ -> do
+  it "distinguishes ordinary exports and exposes only server-validated checkpoint authority" . gameTest $ \_ -> do
     game <- checkpointGame
     checkpoint <- onlyCheckpoint game
     let queue = [Noop]
@@ -625,7 +625,72 @@ spec = describe "deterministic replay checkpoint harness" do
     authority.replayImportCanonicalEnvelopeSha256
       `shouldBe` envelope.replayCheckpointEnvelopeSha256
     authority.replayImportGameGitRevision `shouldBe` provenance.provenanceSourceGameGitRevision
-    authority.replayImportCheckpointProvenance `shouldBe` provenance
+    authority.replayImportBackendBuild `shouldBe` fixtureBuild
+    let expectedValidatedCheckpoint =
+          Aeson.object
+            [ "schemaVersion" Aeson..= (1 :: Int)
+            , "contractSchemaRevision"
+                Aeson..= provenance.provenanceContractSchemaRevision
+            , "prompt"
+                Aeson..= Aeson.object
+                  [ "questionVersion"
+                      Aeson..= checkpoint.checkpointQuestionVersion
+                  , "playerId" Aeson..= checkpoint.checkpointPlayerId
+                  , "promptTag" Aeson..= checkpoint.checkpointPromptTag
+                  , "promptSha256"
+                      Aeson..= checkpoint.checkpointPromptSha256
+                  ]
+            , "checkpointGameSha256"
+                Aeson..= provenance.provenanceCheckpointGameSha256
+            , "checkpointQueueSha256"
+                Aeson..= provenance.provenanceCheckpointQueueSha256
+            ]
+    Aeson.toJSON authority.replayImportValidatedCheckpoint
+      `shouldBe` expectedValidatedCheckpoint
+    authority.replayImportValidatedCheckpoint
+      `shouldBe`
+        ReplayValidatedCheckpoint
+          { replayValidatedCheckpointSchemaVersion = 1
+          , replayValidatedCheckpointContractSchemaRevision =
+              provenance.provenanceContractSchemaRevision
+          , replayValidatedCheckpointPrompt =
+              ReplayValidatedPrompt
+                { replayValidatedPromptQuestionVersion =
+                    checkpoint.checkpointQuestionVersion
+                , replayValidatedPromptPlayerId =
+                    checkpoint.checkpointPlayerId
+                , replayValidatedPromptPromptTag =
+                    checkpoint.checkpointPromptTag
+                , replayValidatedPromptPromptSha256 =
+                    checkpoint.checkpointPromptSha256
+                }
+          , replayValidatedCheckpointGameSha256 =
+              provenance.provenanceCheckpointGameSha256
+          , replayValidatedCheckpointQueueSha256 =
+              provenance.provenanceCheckpointQueueSha256
+          }
+    let forgedMetadata =
+          provenance
+            { provenancePlanSha256 = T.replicate 64 "1"
+            , provenanceSourceExportSha256 = T.replicate 64 "2"
+            , provenanceSourceInputKind = ReplayCheckpoint
+            , provenanceUndoSteps = 99
+            , provenanceAnswersApplied = 42
+            , provenanceCheckpoint =
+                checkpoint {checkpointName = "forged-generation-label"}
+            }
+        forgedBytes =
+          encodeStrict $ checkpointExportValue checkpointExport forgedMetadata
+    forgedAuthority <- case decodeReplayImport fixtureBuild forgedBytes of
+      Right (_, Just value) -> pure value
+      Left err -> expectationFailure err >> fail err
+      _ -> expectationFailure "forged metadata checkpoint did not produce authority" >> fail "missing authority"
+    forgedAuthority.replayImportValidatedCheckpoint
+      `shouldBe` authority.replayImportValidatedCheckpoint
+    forgedAuthority.replayImportGameGitRevision
+      `shouldBe` authority.replayImportGameGitRevision
+    forgedAuthority.replayImportBackendBuild
+      `shouldBe` authority.replayImportBackendBuild
     case decodeReplayImport fixtureBuild (encoded <> "\n") of
       Left _ -> pure ()
       Right _ ->
@@ -641,7 +706,7 @@ spec = describe "deterministic replay checkpoint harness" do
             importedPlayerId
             True
         receipt =
-          makeReplayImportReceipt fixtureBuild gameId [playerRemapping] authority
+          makeReplayImportReceipt gameId [playerRemapping] authority
     receipt.replayImportReceiptGameId `shouldBe` gameId
     receipt.replayImportReceiptGameGitRevision `shouldBe` provenance.provenanceSourceGameGitRevision
     receipt.replayImportReceiptBackendBuild `shouldBe` fixtureBuild
@@ -655,10 +720,15 @@ spec = describe "deterministic replay checkpoint harness" do
         , "checkpointSha256" Aeson..= authority.replayImportCheckpointSha256
         , "canonicalEnvelopeSha256"
             Aeson..= authority.replayImportCanonicalEnvelopeSha256
-        , "checkpointProvenance" Aeson..= provenance
+        , "validatedCheckpoint" Aeson..= expectedValidatedCheckpoint
         , "playerRemappings" Aeson..= [playerRemapping]
         , "receiptSha256" Aeson..= receipt.replayImportReceiptSha256
         ]
+    case Aeson.toJSON receipt of
+      Aeson.Object objectValue -> do
+        KeyMap.member "checkpointProvenance" objectValue `shouldBe` False
+        KeyMap.member "validatedCheckpoint" objectValue `shouldBe` True
+      _ -> expectationFailure "replay receipt did not encode as an object"
     Aeson.eitherDecodeStrict' @ReplayBuildIdentity
       (TE.encodeUtf8 $ backendBuildIdentityHeaderValue fixtureBuild)
       `shouldBe` Right fixtureBuild
@@ -704,7 +774,8 @@ spec = describe "deterministic replay checkpoint harness" do
       `shouldBe` authority.replayImportCheckpointSha256
     attestation.replayAttestationCanonicalEnvelopeSha256
       `shouldBe` authority.replayImportCanonicalEnvelopeSha256
-    attestation.replayAttestationCheckpointProvenance `shouldBe` provenance
+    attestation.replayAttestationValidatedCheckpoint
+      `shouldBe` authority.replayImportValidatedCheckpoint
     attestation.replayAttestationRunningServerBuild `shouldBe` fixtureBuild
     attestation.replayAttestationImportReceipt `shouldBe` receipt
     Aeson.toJSON attestation
@@ -715,7 +786,7 @@ spec = describe "deterministic replay checkpoint harness" do
         , "checkpointSha256" Aeson..= authority.replayImportCheckpointSha256
         , "canonicalEnvelopeSha256"
             Aeson..= authority.replayImportCanonicalEnvelopeSha256
-        , "checkpointProvenance" Aeson..= provenance
+        , "validatedCheckpoint" Aeson..= expectedValidatedCheckpoint
         , "runningServerBuild" Aeson..= fixtureBuild
         , "importReceipt" Aeson..= receipt
         ]
@@ -737,7 +808,6 @@ spec = describe "deterministic replay checkpoint harness" do
       `shouldSatisfy` isLeft
     validateReplayImportReceipt
       ( makeReplayImportReceipt
-          fixtureBuild
           gameId
           [ playerRemapping
               { replayPlayerCheckpointPlayerId =
@@ -756,7 +826,6 @@ spec = describe "deterministic replay checkpoint harness" do
             True
     validateReplayImportReceipt
       ( makeReplayImportReceipt
-          fixtureBuild
           gameId
           [playerRemapping, duplicateCheckpointPlayerRemapping]
           authority

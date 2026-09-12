@@ -547,7 +547,6 @@ postApiV1ArkhamGamesImportR = do
           []
         let importReceipt =
               makeReplayImportReceipt
-                serverBuildIdentity
                 (toPathPiece gameId)
                 playerRemappings
                 <$> importAuthority

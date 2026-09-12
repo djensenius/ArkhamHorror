@@ -580,7 +580,11 @@ Revision `0.1.34` records the deterministic replay harness's governed
 tasks became declared generator inputs. It adds the authenticated
 `/api/v1/arkham/games/{gameId}/replay-attestation` authority endpoint, but no
 production replay-execution route or new `PublicGame`, question, or Answer
-payload shape.
+payload shape. Replay receipts expose only the prompt, Game/queue hashes,
+contract revision, game revision, clean backend build, and player remapping
+that the importer independently validates. Plan/source hashes, source kind,
+applied counts, and the caller-selected checkpoint label remain local
+generation metadata rather than server-authenticated claims.
 
 ## Game creation and multiplayer lobbies
 

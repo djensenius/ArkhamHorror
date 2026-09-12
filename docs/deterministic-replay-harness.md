@@ -110,7 +110,11 @@ The output is an `ArkhamExport` with a mandatory `replayCheckpoint` envelope.
 Its provenance binds the plan/source hashes and kinds, game revision, complete
 build identity, contract revision, applied counts, exact checkpoint, and
 Game/queue hashes. `envelopeSha256` covers the typed export plus every provenance
-field except itself. Missing or changed metadata fails closed.
+field except itself. This is deterministic generation metadata, not a
+credential: a caller who changes self-reported fields can recompute the
+unkeyed envelope digest. Import authority therefore exposes only the subset the
+server independently validates against decoded checkpoint state and its own
+compiled build.
 
 Normal game import remains the only import endpoint. For checkpoint bytes it
 runs `decodeReplayInputEnvelope` and the complete backend checkpoint validator
@@ -135,13 +139,15 @@ uploaded pre-remap value.
 The checkpoint receipt's schema-versioned JSON binds the new game id, retained
 `gameGitRevision`, import-time clean backend build, SHA-256 of the exact
 decompressed checkpoint bytes, server-recomputed
-`canonicalEnvelopeSha256`, full checkpoint provenance, the
-checkpoint/imported/live player-ID mapping, whether game state was remapped,
-and a digest over the receipt. The same receipt is persisted atomically with
-the game, players, and retained steps. The server does not accept
-caller-provided expected identities or digests. The Apple coordinator must
-decode the full `PublicGame` body and both applicable authority headers from
-this actual response rather than substituting an ID-only response contract.
+`canonicalEnvelopeSha256`, the validated contract/prompt/Game/queue authority,
+the checkpoint/imported/live player-ID mapping, whether game state was
+remapped, and a digest over the receipt. The receipt deliberately excludes
+self-reported plan/source hashes, source kind, answer/undo counts, and
+checkpoint label. The same receipt is persisted atomically with the game,
+players, and retained steps. The server does not accept caller-provided
+expected identities or digests. The Apple coordinator must decode the full
+`PublicGame` body and both applicable authority headers from this actual
+response rather than substituting an ID-only response contract.
 For a `WithFriends` checkpoint import, `stateRemapped: true` means the selected
 checkpoint `PlayerId` was replaced both throughout persisted `current_data` and
 by typed traversal of every retained queue message, including direct fields,
@@ -150,27 +156,32 @@ unchanged.
 
 After import, an authenticated administrator or member of that exact game can
 read `GET /api/v1/arkham/games/{gameId}/replay-attestation`. It returns the
-persisted receipt, exact checkpoint-byte digest, full checkpoint provenance,
-canonical envelope digest, retained game revision, and the build identity compiled into the currently
-running server. Ordinary games return 404. Malformed persisted authority, a
-changed game revision, a dirty/unattested server, or any import-time/current
-build mismatch fails closed rather than returning an attestation. The route is
-metadata-only: it exposes no rules state, prompt, answer bridge, or mutation.
+persisted receipt, exact checkpoint-byte digest, validated prompt and
+Game/queue hashes, canonical envelope digest, retained game revision, and the
+build identity compiled into the currently running server. Ordinary games
+return 404. Malformed persisted authority, a changed game revision, a
+dirty/unattested server, or any import-time/current build mismatch fails closed
+rather than returning an attestation. The route is metadata-only: it exposes no
+rules state, answer bridge, or mutation.
 
 The Apple live driver must require all of the following:
 
 1. capabilities `X-Arkham-Backend-Build-Identity`, import-response backend
-   identity, attestation `runningServerBuild`, receipt `backendBuild`, checkpoint
-   provenance `replayBuild`, and `arkham-replay --build-identity` are identical
-   clean Git identities;
+   identity, attestation `runningServerBuild`, receipt `backendBuild`, locally
+   decoded checkpoint generation metadata `replayBuild`, and
+   `arkham-replay --build-identity` are identical clean Git identities;
 2. the import response's full `PublicGame.id`, attestation/receipt game id, and
    the requested game id are identical;
-3. the retained game revision equals the attestation, receipt, and checkpoint
-   provenance revision;
+3. the retained game revision equals the attestation, receipt, and locally
+   decoded checkpoint generation revision;
 4. the import header receipt equals the durable `importReceipt`, including its
    player remapping and receipt digest;
-5. the checkpoint byte SHA-256 and server-recomputed canonical envelope digest
-   equal the locally retained checkpoint authorities.
+5. the checkpoint byte SHA-256, server-recomputed canonical envelope digest,
+   validated prompt, and validated Game/queue hashes equal the locally retained
+   checkpoint authorities;
+6. plan/source hashes, source kind, applied counts, and the checkpoint label
+   are checked only against the locally generated plan/source/checkpoint
+   artifacts and are never treated as server-authenticated claims.
 
 Any missing, malformed, or unequal value keeps live replay disabled.
 

@@ -1,4 +1,6 @@
 module Arkham.Replay.ImportAuthority (
+  ReplayValidatedPrompt (..),
+  ReplayValidatedCheckpoint (..),
   ReplayImportAuthority (..),
   ReplayPlayerRemapping (..),
   ReplayImportReceipt (..),
@@ -35,9 +37,69 @@ data ReplayImportAuthority = ReplayImportAuthority
   { replayImportCheckpointSha256 :: Text
   , replayImportCanonicalEnvelopeSha256 :: Text
   , replayImportGameGitRevision :: GitSha
-  , replayImportCheckpointProvenance :: ReplayProvenance
+  , replayImportBackendBuild :: ReplayBuildIdentity
+  , replayImportValidatedCheckpoint :: ReplayValidatedCheckpoint
   }
   deriving stock (Eq, Show)
+
+data ReplayValidatedPrompt = ReplayValidatedPrompt
+  { replayValidatedPromptQuestionVersion :: Int
+  , replayValidatedPromptPlayerId :: PlayerId
+  , replayValidatedPromptPromptTag :: Text
+  , replayValidatedPromptPromptSha256 :: Text
+  }
+  deriving stock (Eq, Generic, Show)
+
+instance ToJSON ReplayValidatedPrompt where
+  toJSON = genericToJSON $ aesonOptions $ Just "replayValidatedPrompt"
+  toEncoding = genericToEncoding $ aesonOptions $ Just "replayValidatedPrompt"
+
+instance FromJSON ReplayValidatedPrompt where
+  parseJSON value = do
+    prompt <-
+      genericParseJSON (aesonOptions $ Just "replayValidatedPrompt") value
+    unless (value == toJSON prompt) $
+      fail "validated replay prompt contains non-canonical or unknown fields"
+    either fail pure $ validateReplayValidatedPrompt prompt
+    pure prompt
+
+data ReplayValidatedCheckpoint = ReplayValidatedCheckpoint
+  { replayValidatedCheckpointSchemaVersion :: Int
+  , replayValidatedCheckpointContractSchemaRevision :: Text
+  , replayValidatedCheckpointPrompt :: ReplayValidatedPrompt
+  , replayValidatedCheckpointGameSha256 :: Text
+  , replayValidatedCheckpointQueueSha256 :: Text
+  }
+  deriving stock (Eq, Generic, Show)
+
+instance ToJSON ReplayValidatedCheckpoint where
+  toJSON ReplayValidatedCheckpoint {..} =
+    object
+      [ "schemaVersion" .= replayValidatedCheckpointSchemaVersion
+      , "contractSchemaRevision"
+          .= replayValidatedCheckpointContractSchemaRevision
+      , "prompt" .= replayValidatedCheckpointPrompt
+      , "checkpointGameSha256" .= replayValidatedCheckpointGameSha256
+      , "checkpointQueueSha256" .= replayValidatedCheckpointQueueSha256
+      ]
+
+instance FromJSON ReplayValidatedCheckpoint where
+  parseJSON value = do
+    checkpoint <-
+      withObject "ReplayValidatedCheckpoint"
+        ( \o ->
+            ReplayValidatedCheckpoint
+              <$> o .: "schemaVersion"
+              <*> o .: "contractSchemaRevision"
+              <*> o .: "prompt"
+              <*> o .: "checkpointGameSha256"
+              <*> o .: "checkpointQueueSha256"
+        )
+        value
+    unless (value == toJSON checkpoint) $
+      fail "validated replay checkpoint contains non-canonical or unknown fields"
+    either fail pure $ validateReplayValidatedCheckpoint checkpoint
+    pure checkpoint
 
 data ReplayPlayerRemapping = ReplayPlayerRemapping
   { replayPlayerInvestigatorId :: Text
@@ -66,7 +128,7 @@ data ReplayImportReceipt = ReplayImportReceipt
   , replayImportReceiptBackendBuild :: ReplayBuildIdentity
   , replayImportReceiptCheckpointSha256 :: Text
   , replayImportReceiptCanonicalEnvelopeSha256 :: Text
-  , replayImportReceiptCheckpointProvenance :: ReplayProvenance
+  , replayImportReceiptValidatedCheckpoint :: ReplayValidatedCheckpoint
   , replayImportReceiptPlayerRemappings :: [ReplayPlayerRemapping]
   , replayImportReceiptSha256 :: Text
   }
@@ -81,7 +143,7 @@ instance ToJSON ReplayImportReceipt where
       , "backendBuild" .= replayImportReceiptBackendBuild
       , "checkpointSha256" .= replayImportReceiptCheckpointSha256
       , "canonicalEnvelopeSha256" .= replayImportReceiptCanonicalEnvelopeSha256
-      , "checkpointProvenance" .= replayImportReceiptCheckpointProvenance
+      , "validatedCheckpoint" .= replayImportReceiptValidatedCheckpoint
       , "playerRemappings" .= replayImportReceiptPlayerRemappings
       , "receiptSha256" .= replayImportReceiptSha256
       ]
@@ -98,7 +160,7 @@ instance FromJSON ReplayImportReceipt where
               <*> o .: "backendBuild"
               <*> o .: "checkpointSha256"
               <*> o .: "canonicalEnvelopeSha256"
-              <*> o .: "checkpointProvenance"
+              <*> o .: "validatedCheckpoint"
               <*> o .: "playerRemappings"
               <*> o .: "receiptSha256"
         )
@@ -114,7 +176,7 @@ data ReplayAttestation = ReplayAttestation
   , replayAttestationGameGitRevision :: GitSha
   , replayAttestationCheckpointSha256 :: Text
   , replayAttestationCanonicalEnvelopeSha256 :: Text
-  , replayAttestationCheckpointProvenance :: ReplayProvenance
+  , replayAttestationValidatedCheckpoint :: ReplayValidatedCheckpoint
   , replayAttestationRunningServerBuild :: ReplayBuildIdentity
   , replayAttestationImportReceipt :: ReplayImportReceipt
   }
@@ -152,7 +214,7 @@ replayImportResponseHeaders buildIdentity receipt =
 
 replayImportCheckpointPlayerId :: ReplayImportAuthority -> PlayerId
 replayImportCheckpointPlayerId ReplayImportAuthority {..} =
-  replayImportCheckpointProvenance.provenanceCheckpoint.checkpointPlayerId
+  replayImportValidatedCheckpoint.replayValidatedCheckpointPrompt.replayValidatedPromptPlayerId
 
 decodeReplayImport
   :: ReplayBuildIdentity
@@ -165,6 +227,7 @@ decodeReplayImport buildIdentity bytes = do
     (ReplayCheckpoint, Just ReplayCheckpointEnvelope {..}) -> do
       validateCleanReplayBuildIdentity buildIdentity
       let provenance = replayCheckpointProvenance
+          checkpoint = provenance.provenanceCheckpoint
       pure
         $ Just
         $ ReplayImportAuthority
@@ -173,29 +236,49 @@ decodeReplayImport buildIdentity bytes = do
               canonicalReplayCheckpointEnvelopeSha256 export provenance
           , replayImportGameGitRevision =
               provenance.provenanceSourceGameGitRevision
-          , replayImportCheckpointProvenance = provenance
+          , replayImportBackendBuild = buildIdentity
+          , replayImportValidatedCheckpoint =
+              ReplayValidatedCheckpoint
+                { replayValidatedCheckpointSchemaVersion = 1
+                , replayValidatedCheckpointContractSchemaRevision =
+                    provenance.provenanceContractSchemaRevision
+                , replayValidatedCheckpointPrompt =
+                    ReplayValidatedPrompt
+                      { replayValidatedPromptQuestionVersion =
+                          checkpoint.checkpointQuestionVersion
+                      , replayValidatedPromptPlayerId =
+                          checkpoint.checkpointPlayerId
+                      , replayValidatedPromptPromptTag =
+                          checkpoint.checkpointPromptTag
+                      , replayValidatedPromptPromptSha256 =
+                          checkpoint.checkpointPromptSha256
+                      }
+                , replayValidatedCheckpointGameSha256 =
+                    provenance.provenanceCheckpointGameSha256
+                , replayValidatedCheckpointQueueSha256 =
+                    provenance.provenanceCheckpointQueueSha256
+                }
           }
     _ -> Left "replay import authority does not match the decoded input kind"
   pure (export, authority)
 
 makeReplayImportReceipt
-  :: ReplayBuildIdentity
-  -> Text
+  :: Text
   -> [ReplayPlayerRemapping]
   -> ReplayImportAuthority
   -> ReplayImportReceipt
-makeReplayImportReceipt buildIdentity gameId remappings ReplayImportAuthority {..} =
+makeReplayImportReceipt gameId remappings ReplayImportAuthority {..} =
   let receiptWithoutDigest =
         ReplayImportReceipt
           { replayImportReceiptSchemaVersion = 1
           , replayImportReceiptGameId = gameId
           , replayImportReceiptGameGitRevision = replayImportGameGitRevision
-          , replayImportReceiptBackendBuild = buildIdentity
+          , replayImportReceiptBackendBuild = replayImportBackendBuild
           , replayImportReceiptCheckpointSha256 = replayImportCheckpointSha256
           , replayImportReceiptCanonicalEnvelopeSha256 =
               replayImportCanonicalEnvelopeSha256
-          , replayImportReceiptCheckpointProvenance =
-              replayImportCheckpointProvenance
+          , replayImportReceiptValidatedCheckpoint =
+              replayImportValidatedCheckpoint
           , replayImportReceiptPlayerRemappings =
               List.sortOn (.replayPlayerInvestigatorId) remappings
           , replayImportReceiptSha256 = ""
@@ -227,11 +310,12 @@ validateReplayImportReceipt receipt@ReplayImportReceipt {..} = do
     "replay import receipt receiptSha256"
     64
     replayImportReceiptSha256
+  validateReplayValidatedCheckpoint replayImportReceiptValidatedCheckpoint
   when (null replayImportReceiptPlayerRemappings) $
     Left "replay import receipt must contain a player remapping"
   traverse_ validateReplayPlayerRemapping replayImportReceiptPlayerRemappings
   let boundCheckpointPlayerId =
-        replayImportReceiptCheckpointProvenance.provenanceCheckpoint.checkpointPlayerId
+        replayImportReceiptValidatedCheckpoint.replayValidatedCheckpointPrompt.replayValidatedPromptPlayerId
   unless
     ( boundCheckpointPlayerId
         `elem` map (.replayPlayerCheckpointPlayerId) replayImportReceiptPlayerRemappings
@@ -246,20 +330,10 @@ validateReplayImportReceipt receipt@ReplayImportReceipt {..} = do
   unless (length checkpointPlayerIds == length (ordNub checkpointPlayerIds)) $
     Left "replay import receipt contains duplicate checkpoint player remappings"
   unless
-    ( replayImportReceiptCheckpointProvenance.provenanceSourceGameGitRevision
-        == replayImportReceiptGameGitRevision
-    )
-    $ Left "replay import receipt gameGitRevision does not match checkpoint provenance"
-  unless
-    ( replayImportReceiptCheckpointProvenance.provenanceReplayBuild
-        == replayImportReceiptBackendBuild
-    )
-    $ Left "replay import receipt backendBuild does not match checkpoint provenance"
-  unless
-    ( replayImportReceiptCheckpointProvenance.provenanceContractSchemaRevision
+    ( replayImportReceiptValidatedCheckpoint.replayValidatedCheckpointContractSchemaRevision
         == replayContractSchemaRevision
     )
-    $ Left "replay import receipt checkpoint contract revision does not match this backend"
+    $ Left "replay import receipt validated checkpoint contract revision does not match this backend"
   let expectedDigest =
         replayImportReceiptDigest receipt {replayImportReceiptSha256 = ""}
   unless (replayImportReceiptSha256 == expectedDigest) $
@@ -289,8 +363,8 @@ makeReplayAttestation runningBuild gameId gameGitRevision receipt@ReplayImportRe
           replayImportReceiptCheckpointSha256
       , replayAttestationCanonicalEnvelopeSha256 =
           replayImportReceiptCanonicalEnvelopeSha256
-      , replayAttestationCheckpointProvenance =
-          replayImportReceiptCheckpointProvenance
+      , replayAttestationValidatedCheckpoint =
+          replayImportReceiptValidatedCheckpoint
       , replayAttestationRunningServerBuild = runningBuild
       , replayAttestationImportReceipt = receipt
       }
@@ -305,9 +379,36 @@ replayImportReceiptDigest ReplayImportReceipt {..} =
       , "backendBuild" .= replayImportReceiptBackendBuild
       , "checkpointSha256" .= replayImportReceiptCheckpointSha256
       , "canonicalEnvelopeSha256" .= replayImportReceiptCanonicalEnvelopeSha256
-      , "checkpointProvenance" .= replayImportReceiptCheckpointProvenance
+      , "validatedCheckpoint" .= replayImportReceiptValidatedCheckpoint
       , "playerRemappings" .= replayImportReceiptPlayerRemappings
       ]
+
+validateReplayValidatedPrompt :: ReplayValidatedPrompt -> Either String ()
+validateReplayValidatedPrompt ReplayValidatedPrompt {..} = do
+  when (replayValidatedPromptQuestionVersion <= 0) $
+    Left "validated replay prompt questionVersion must be positive"
+  when (T.null replayValidatedPromptPromptTag) $
+    Left "validated replay prompt promptTag must not be empty"
+  validateLowerHex
+    "validated replay prompt promptSha256"
+    64
+    replayValidatedPromptPromptSha256
+
+validateReplayValidatedCheckpoint :: ReplayValidatedCheckpoint -> Either String ()
+validateReplayValidatedCheckpoint ReplayValidatedCheckpoint {..} = do
+  unless (replayValidatedCheckpointSchemaVersion == 1) $
+    Left "validated replay checkpoint schemaVersion must be 1"
+  when (T.null replayValidatedCheckpointContractSchemaRevision) $
+    Left "validated replay checkpoint contractSchemaRevision must not be empty"
+  validateReplayValidatedPrompt replayValidatedCheckpointPrompt
+  validateLowerHex
+    "validated replay checkpoint gameSha256"
+    64
+    replayValidatedCheckpointGameSha256
+  validateLowerHex
+    "validated replay checkpoint queueSha256"
+    64
+    replayValidatedCheckpointQueueSha256
 
 validateReplayPlayerRemapping :: ReplayPlayerRemapping -> Either String ()
 validateReplayPlayerRemapping ReplayPlayerRemapping {..} = do
