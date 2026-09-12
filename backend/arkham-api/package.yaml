@@ -121,6 +121,7 @@ library:
     - persistent-postgresql
     - pretty-simple
     - process
+    - typed-process
     - random-shuffle
     - regex-posix
     - relude

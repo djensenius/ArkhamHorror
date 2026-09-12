@@ -297,8 +297,7 @@ makeReplayAttestation runningBuild gameId gameGitRevision receipt@ReplayImportRe
 
 replayImportReceiptDigest :: ReplayImportReceipt -> Text
 replayImportReceiptDigest ReplayImportReceipt {..} =
-  sha256Lazy
-    $ encode
+  canonicalJsonSha256
     $ object
       [ "schemaVersion" .= replayImportReceiptSchemaVersion
       , "gameId" .= replayImportReceiptGameId

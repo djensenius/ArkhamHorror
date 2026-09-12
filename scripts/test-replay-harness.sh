@@ -49,14 +49,22 @@ test_build_identity_source_dependencies() {
   untracked_probe=backend/arkham-api/replay-build-identity-untracked-probe.txt
   framing_probe_a=backend/arkham-api/replay-build-identity-frame-a.bin
   framing_probe_b=backend/arkham-api/replay-build-identity-frame-b.bin
+  unicode_path_probe_a="$probe_dir/ReplayBuildIdentity$(printf '\320\220')Probe.hs"
+  unicode_path_probe_b="$probe_dir/ReplayBuildIdentity$(printf '\324\220')Probe.hs"
+  tracked_byte_probe=backend/arkham-api/tests/fixtures/replay/build-identity-byte-probe.txt
+  tracked_byte_backup="$DIST_ABS/build-identity-byte-probe.backup"
   interface_dump="$DIST_ABS/build-identity-main.iface"
   test ! -e "$ignored_probe"
   test ! -e "$untracked_probe"
   test ! -e "$framing_probe_a"
   test ! -e "$framing_probe_b"
+  test ! -e "$unicode_path_probe_a"
+  test ! -e "$unicode_path_probe_b"
+  git ls-files --error-unmatch -- "$tracked_byte_probe" >/dev/null
+  cp "$tracked_byte_probe" "$tracked_byte_backup"
   sleep 1
   mkdir -p "$probe_dir"
-  trap 'rm -f "$ignored_probe" "$untracked_probe" "$framing_probe_a" "$framing_probe_b" "$interface_dump"; rmdir "$probe_dir" 2>/dev/null || true' 0 HUP INT TERM
+  trap 'cp "$tracked_byte_backup" "$tracked_byte_probe"; rm -f "$tracked_byte_backup" "$ignored_probe" "$untracked_probe" "$framing_probe_a" "$framing_probe_b" "$unicode_path_probe_a" "$unicode_path_probe_b" "$interface_dump"; rmdir "$probe_dir" 2>/dev/null || true' 0 HUP INT TERM
 
   cat >"$ignored_probe" <<'EOF'
 module ReplayBuildIdentityIgnoredProbe where
@@ -127,12 +135,47 @@ EOF
 
   sleep 1
   rm -f "$framing_probe_a" "$framing_probe_b"
+
+  printf '\304\200\n' >"$tracked_byte_probe"
+  run_replay_build
+  first_diff=$("$EXE" --build-identity)
+  first_diff_sha=$(identity_sha "$first_diff")
+
+  sleep 1
+  printf '\310\200\n' >"$tracked_byte_probe"
+  run_replay_build
+  second_diff=$("$EXE" --build-identity)
+  second_diff_sha=$(identity_sha "$second_diff")
+  test "$second_diff_sha" != "$first_diff_sha"
+
+  sleep 1
+  cp "$tracked_byte_backup" "$tracked_byte_probe"
+  cat >"$unicode_path_probe_a" <<'EOF'
+module ReplayBuildIdentityUnicodeProbe where
+EOF
+  run_replay_build
+  first_path=$("$EXE" --build-identity)
+  first_path_sha=$(identity_sha "$first_path")
+
+  sleep 1
+  rm -f "$unicode_path_probe_a"
+  cat >"$unicode_path_probe_b" <<'EOF'
+module ReplayBuildIdentityUnicodeProbe where
+EOF
+  run_replay_build
+  second_path=$("$EXE" --build-identity)
+  second_path_sha=$(identity_sha "$second_path")
+  test "$second_path_sha" != "$first_path_sha"
+
+  sleep 1
+  rm -f "$unicode_path_probe_b"
   rmdir "$probe_dir" 2>/dev/null || true
   run_replay_build
   restored=$("$EXE" --build-identity)
   test "$(identity_sha "$restored")" = "$baseline_sha"
+  rm -f "$tracked_byte_backup"
   trap - 0 HUP INT TERM
-  printf '%s\n' "build identity source appearance, content, framing, and dependency regression: ok"
+  printf '%s\n' "build identity source appearance, raw bytes, framing, and dependency regression: ok"
 }
 build_replay
 IDENTITY=$("$EXE" --build-identity)

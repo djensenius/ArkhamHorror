@@ -17,8 +17,10 @@ import Data.Aeson.Types (Parser)
 import Data.ByteString qualified as BS
 import Data.ByteString.Base16 qualified as Base16
 import Data.ByteString.Char8 qualified as BSC
+import Data.ByteString.Lazy qualified as BSL
 import Data.List qualified as List
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
 import Language.Haskell.TH (Exp, Q)
 import Language.Haskell.TH.Syntax (addDependentFile, runIO)
 import Language.Haskell.TH.Syntax qualified as TH
@@ -27,7 +29,7 @@ import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath qualified as FilePath
 import System.Posix.Files qualified as Posix
-import System.Process (readProcessWithExitCode)
+import System.Process.Typed qualified as Process
 
 data ReplayBuildAttestation
   = ReplayBuildGitClean
@@ -116,28 +118,30 @@ discoverBuildIdentity :: IO (ReplayBuildIdentity, [FilePath])
 discoverBuildIdentity =
   (do
     cwd <- getCurrentDirectory
-    root <- git cwd ["rev-parse", "--show-toplevel"]
-    revision <- git root ["rev-parse", "HEAD"]
-    tree <- git root ["rev-parse", "HEAD^{tree}"]
-    status <- git root ["status", "--porcelain=v1", "--untracked-files=all", "--", "backend"]
-    diffBytes <- BSC.pack <$> git root ["diff", "--binary", "--no-ext-diff", "HEAD", "--", "backend"]
-    untracked <- gitPaths root ["ls-files", "--others", "--exclude-standard", "-z", "--", "backend"]
+    root <- gitText cwd ["rev-parse", "--show-toplevel"]
+    revisionBytes <- gitBytes root ["rev-parse", "HEAD"]
+    revision <- decodeGitOutput "revision" revisionBytes
+    treeBytes <- gitBytes root ["rev-parse", "HEAD^{tree}"]
+    tree <- decodeGitOutput "tree" treeBytes
+    status <- gitRawBytes root ["status", "--porcelain=v1", "--untracked-files=all", "--", "backend"]
+    diffBytes <- gitRawBytes root ["diff", "--binary", "--no-ext-diff", "HEAD", "--", "backend"]
+    untracked <- gitPathEntries root ["ls-files", "--others", "--exclude-standard", "-z", "--", "backend"]
     ignored <-
-      gitPaths
+      gitPathEntries
         root
         (["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"] <> compiledSourceRoots)
-        >>= filterM (isRegularFile . (root </>))
-    untrackedBytes <- fmap BS.concat . for (List.sort $ untracked <> ignored) $ \path ->
-      frameSourceRecord (BSC.pack path) <$> BS.readFile (root </> path)
+        >>= filterM (isRegularFile . (root </>) . snd)
+    untrackedBytes <- fmap BS.concat . for (List.sortOn fst $ untracked <> ignored) $ \(pathBytes, path) ->
+      frameSourceRecord pathBytes <$> BS.readFile (root </> path)
     let source =
           hashBytes
-            $ BSC.intercalate "\0" [BSC.pack revision, BSC.pack tree, diffBytes]
+            $ BS.intercalate "\0" [revisionBytes, treeBytes, diffBytes]
             <> "\0"
             <> untrackedBytes
-        clean = null status && null ignored
+        clean = BS.null status && null ignored
     expected <- lookupEnv "ARKHAM_REPLAY_ATTEST_SOURCE_SHA256"
     gitDependencyPaths <- gitDependencies root
-    sourceDependencyPaths <- sourceDependencies root untracked ignored
+    sourceDependencyPaths <- sourceDependencies root (snd <$> untracked) (snd <$> ignored)
     let dependencies = List.sort $ ordNub $ gitDependencyPaths <> sourceDependencyPaths
     pure
       ( ReplayBuildIdentity
@@ -165,19 +169,41 @@ compiledSourceRoots =
   , "backend/devel-store-lock/library"
   ]
 
-git :: FilePath -> [String] -> IO String
-git root args = do
-  (code, out, err) <- readProcessWithExitCode "git" ("-C" : root : args) ""
-  case code of
-    ExitSuccess -> pure $ trimEnd out
-    ExitFailure _ -> ioError $ userError $ "git " <> unwords args <> " failed: " <> trimEnd err
+gitBytes :: FilePath -> [String] -> IO BS.ByteString
+gitBytes root args = trimEndBytes <$> gitRawBytes root args
 
-gitPaths :: FilePath -> [String] -> IO [FilePath]
-gitPaths root args = splitNull <$> git root args
+gitRawBytes :: FilePath -> [String] -> IO BS.ByteString
+gitRawBytes root args = do
+  (code, out, err) <- Process.readProcess $ Process.proc "git" ("-C" : root : args)
+  case code of
+    ExitSuccess -> pure $ BSL.toStrict out
+    ExitFailure _ ->
+      ioError
+        $ userError
+        $ "git "
+        <> unwords args
+        <> " failed: "
+        <> BSC.unpack (trimEndBytes $ BSL.toStrict err)
+
+gitText :: FilePath -> [String] -> IO String
+gitText root args =
+  gitBytes root args >>= decodeGitOutput ("git " <> unwords args)
+
+gitPathEntries :: FilePath -> [String] -> IO [(BS.ByteString, FilePath)]
+gitPathEntries root args = do
+  paths <- splitNullBytes <$> gitRawBytes root args
+  for paths $ \pathBytes -> do
+    path <- decodeGitOutput "Git path" pathBytes
+    pure (pathBytes, path)
+
+decodeGitOutput :: String -> BS.ByteString -> IO String
+decodeGitOutput label bytes = case TE.decodeUtf8' bytes of
+  Left err -> ioError $ userError $ label <> " is not valid UTF-8: " <> show err
+  Right value -> pure $ T.unpack value
 
 sourceDependencies :: FilePath -> [FilePath] -> [FilePath] -> IO [FilePath]
 sourceDependencies root untracked ignored = do
-  tracked <- gitPaths root ["ls-files", "--cached", "-z", "--", "backend"]
+  tracked <- map snd <$> gitPathEntries root ["ls-files", "--cached", "-z", "--", "backend"]
   let candidates = tracked <> untracked <> ignored
   regular <- filterM (isRegularFile . (root </>)) candidates
   pure $ (root </>) <$> List.sort regular
@@ -189,16 +215,16 @@ isRegularFile path = do
 
 gitDependencies :: FilePath -> IO [FilePath]
 gitDependencies root = do
-  gitDir <- git root ["rev-parse", "--absolute-git-dir"]
-  ref <- git root ["symbolic-ref", "-q", "HEAD"] `catch` \(_ :: IOException) -> pure ""
+  gitDir <- gitText root ["rev-parse", "--absolute-git-dir"]
+  ref <- gitText root ["symbolic-ref", "-q", "HEAD"] `catch` \(_ :: IOException) -> pure ""
   refPath <-
     if null ref
       then pure Nothing
       else do
-        path <- git root ["rev-parse", "--git-path", ref]
+        path <- gitText root ["rev-parse", "--git-path", ref]
         pure $ Just $ if FilePath.isAbsolute path then path else root </> path
   globalExcludes <-
-    git root ["config", "--path", "--get", "core.excludesFile"]
+    gitText root ["config", "--path", "--get", "core.excludesFile"]
       `catch` \(_ :: IOException) -> pure ""
   let files =
         [ gitDir </> "HEAD"
@@ -247,14 +273,13 @@ frameSourceComponent :: BS.ByteString -> BS.ByteString
 frameSourceComponent bytes =
   BSC.pack (show $ BS.length bytes) <> ":" <> bytes
 
-trimEnd :: String -> String
-trimEnd = reverse . dropWhile (`elem` ['\n', '\r']) . reverse
+trimEndBytes :: BS.ByteString -> BS.ByteString
+trimEndBytes =
+  BS.reverse . BS.dropWhile (`elem` [0x0A, 0x0D]) . BS.reverse
 
-splitNull :: String -> [String]
-splitNull = \case
-  "" -> []
-  value ->
-    let (path, rest) = break (== '\0') value
-     in path : case rest of
-          [] -> []
-          _ : remaining -> splitNull remaining
+splitNullBytes :: BS.ByteString -> [BS.ByteString]
+splitNullBytes value
+  | BS.null value = []
+  | otherwise =
+      let (path, rest) = BS.break (== 0) value
+       in path : if BS.null rest then [] else splitNullBytes (BS.tail rest)

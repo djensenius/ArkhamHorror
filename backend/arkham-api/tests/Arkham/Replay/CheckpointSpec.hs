@@ -29,8 +29,29 @@ import Entity.Arkham.Game qualified as GameEntity
 import Entity.Arkham.Step (ActionDiff (..), ArkhamStep (..), Choice (..))
 import TestImport.New hiding (ArkhamExport, ArkhamGameExportData)
 
+canonicalJsonHashSpec :: IO ()
+canonicalJsonHashSpec = do
+  let firstValue :: Aeson.Value
+      firstValue =
+        Aeson.object
+          [ "z" Aeson..= [Aeson.object ["d" Aeson..= (4 :: Int), "c" Aeson..= (3 :: Int)]]
+          , "a" Aeson..= Aeson.object ["b" Aeson..= (2 :: Int), "a" Aeson..= (1 :: Int)]
+          ]
+      secondValue :: Aeson.Value
+      secondValue =
+        Aeson.object
+          [ "a" Aeson..= Aeson.object ["a" Aeson..= (1 :: Int), "b" Aeson..= (2 :: Int)]
+          , "z" Aeson..= [Aeson.object ["c" Aeson..= (3 :: Int), "d" Aeson..= (4 :: Int)]]
+          ]
+      expected :: Text
+      expected = "3733063eae4764a370f17cd1c3152dbc98f253d583b6437c2d54310550437799"
+  canonicalJsonSha256 firstValue `shouldBe` expected
+  canonicalJsonSha256 secondValue `shouldBe` expected
+
 spec :: Spec
 spec = describe "deterministic replay checkpoint harness" do
+  it "sorts every object level in canonical JSON hashes" canonicalJsonHashSpec
+
   it "binds exact prompts and versioned answers" . gameTest $ \_ -> do
     game <- checkpointGame
     checkpoint <- onlyCheckpoint game

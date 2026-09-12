@@ -8272,6 +8272,7 @@ library
     , time
     , tls
     , transformers
+    , typed-process
     , unix
     , unliftio
     , unordered-containers

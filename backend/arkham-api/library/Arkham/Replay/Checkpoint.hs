@@ -15,6 +15,7 @@ module Arkham.Replay.Checkpoint (
   replayContractSchemaRevision,
   sha256Strict,
   sha256Lazy,
+  canonicalJsonSha256,
   canonicalQuestionSha256,
   decodeReplayPlan,
   decodeReplayInput,
@@ -54,11 +55,14 @@ import Control.Monad.Fail (fail)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
 import Data.Aeson.Diff (Patch)
+import Data.Aeson.Encoding qualified as Encoding
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser)
 import Data.ByteString qualified as BS
 import Data.ByteString.Base16 qualified as Base16
 import Data.ByteString.Lazy qualified as BSL
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
@@ -685,12 +689,33 @@ checkpointExportValue export provenance = case toJSON export of
 
 canonicalReplayCheckpointEnvelopeSha256 :: ArkhamExport -> ReplayProvenance -> Text
 canonicalReplayCheckpointEnvelopeSha256 export provenance =
-  sha256Lazy $ encode $ object ["type" .= String "arkham-replay-checkpoint", "export" .= export, "provenance" .= provenance]
+  canonicalJsonSha256
+    $ object
+      [ "type" .= String "arkham-replay-checkpoint"
+      , "export" .= export
+      , "provenance" .= provenance
+      ]
 
--- Force the question through 'Value' encoding so object keys use the same
--- deterministic lexical order that native clients use for prompt verification.
+canonicalJsonSha256 :: Value -> Text
+canonicalJsonSha256 =
+  sha256Lazy . Encoding.encodingToLazyByteString . canonicalJsonEncoding
+
+canonicalJsonEncoding :: Value -> Encoding.Encoding
+canonicalJsonEncoding = \case
+  Object objectValue ->
+    Encoding.pairs
+      $ foldMap
+        (\(key, value) -> Encoding.pair key $ canonicalJsonEncoding value)
+      $ List.sortOn (Key.toText . fst)
+      $ KeyMap.toList objectValue
+  Array values -> Encoding.list canonicalJsonEncoding $ toList values
+  String value -> Encoding.text value
+  Number value -> Encoding.scientific value
+  Bool value -> Encoding.bool value
+  Null -> Encoding.null_
+
 canonicalQuestionSha256 :: ToJSON message => Question message -> Text
-canonicalQuestionSha256 = sha256Lazy . encode . toJSON
+canonicalQuestionSha256 = canonicalJsonSha256 . toJSON
 
 questionCheckpoint :: ToJSON message => Text -> Game -> PlayerId -> Question message -> Either String QuestionCheckpoint
 questionCheckpoint name game player question = do
