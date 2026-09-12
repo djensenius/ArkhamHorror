@@ -17,6 +17,7 @@ module Api.Handler.Arkham.Game.Debug (
   checkpointInvestigatorPlayerId,
   remapReplayMessagePlayerIds,
   selectUploadedExportFile,
+  tryImportDecode,
   validateReplayCheckpointPlayerId,
 ) where
 
@@ -36,7 +37,7 @@ import Arkham.Replay.ImportAuthority
 import Arkham.Replay.ServerBuildIdentity (serverBuildIdentity)
 import Codec.Compression.GZip qualified as GZip
 import Conduit
-import Control.Exception (evaluate)
+import Control.Exception (SomeAsyncException, evaluate, fromException)
 import Data.Data (Data, cast, gmapT)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
@@ -52,7 +53,7 @@ import Entity.Arkham.ReplayAttestation
 import Entity.Arkham.Step
 import Import hiding (delete, exists, on, (==.))
 import Json
-import UnliftIO.Exception (catch, try)
+import UnliftIO.Exception (catch, throwIO, try)
 
 normalizeJsonInvestigatorId :: Text -> Text
 normalizeJsonInvestigatorId iid = if "c" `T.isPrefixOf` iid then iid else "c" <> iid
@@ -68,15 +69,27 @@ attempted; the production handler wires this directly to an explicit
 selectUploadedExportFile :: [(Text, a)] -> Maybe a
 selectUploadedExportFile = fmap snd . headMay
 
+tryImportDecode :: IO a -> IO (Either String a)
+tryImportDecode action =
+  try @_ @SomeException action >>= \case
+    Left err
+      | isJust (fromException @SomeAsyncException err) -> throwIO err
+      | otherwise -> pure $ Left $ displayException err
+    Right value -> pure $ Right value
+
 decodeExportBytes
   :: BS.ByteString
   -> Handler (Either String (ArkhamExport, Maybe ReplayImportAuthority))
 decodeExportBytes bytes
   | isGzipped bytes = do
-      eDecompressed <- liftIO $ try @_ @SomeException $ evaluate $ BSL.toStrict $ GZip.decompress $ BSL.fromStrict bytes
-      pure $ case eDecompressed of
-        Left err -> Left $ displayException err
-        Right decompressed -> decodeReplayImport serverBuildIdentity decompressed
+      eDecompressed <-
+        liftIO $
+          tryImportDecode $
+            evaluate $
+              BSL.toStrict $
+                GZip.decompress $
+                  BSL.fromStrict bytes
+      pure $ eDecompressed >>= decodeReplayImport serverBuildIdentity
   | otherwise = pure $ decodeReplayImport serverBuildIdentity bytes
 
 -- Compress each emitted JSON chunk as its own gzip member. Gzip readers are

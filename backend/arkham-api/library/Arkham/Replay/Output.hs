@@ -98,6 +98,7 @@ data ReplayOutputArtifact = ReplayOutputArtifact
 
 data ReplayPublishPhase
   = ReplayBeforeStageCreate ReplayOutputRole
+  | ReplayEntryRenamedForRemoval ReplayOutputRole
   | ReplayStageCompleted ReplayOutputRole
   | ReplayOutputsStaged
   | ReplayBeforeSecondaryPublish ReplayOutputRole
@@ -393,7 +394,7 @@ stageOutput
   -> IO StagedOutput
 stageOutput restore hook output bytes = do
   hook $ ReplayBeforeStageCreate role
-  staged <- openStage output template $ sha256Strict $ BSL.toStrict bytes
+  staged <- openStage hook output template $ sha256Strict $ BSL.toStrict bytes
   let complete = do
         restore $ traverse_ (writeDescriptor staged.stagedOutputDescriptor) $ BSL.toChunks bytes
         restore $ fileSynchronise staged.stagedOutputDescriptor
@@ -436,8 +437,13 @@ openReplayOutput output =
 closeOpenOutput :: OpenOutput -> IO ()
 closeOpenOutput = ignoreIOException . closeFd . openOutputParentDescriptor
 
-openStage :: OpenOutput -> String -> Text -> IO StagedOutput
-openStage output template contentSha256 = do
+openStage
+  :: (ReplayPublishPhase -> IO ())
+  -> OpenOutput
+  -> String
+  -> Text
+  -> IO StagedOutput
+openStage hook output template contentSha256 = do
   name <- freshRelativeName template
   let flags =
         defaultFileFlags
@@ -458,7 +464,7 @@ openStage output template contentSha256 = do
           `finally` ignoreIOException (closeFd fd)
   tryIOError (openFdAt (Just parentFd) name ReadWrite flags) >>= \case
     Left err
-      | isAlreadyExistsError err -> openStage output template contentSha256
+      | isAlreadyExistsError err -> openStage hook output template contentSha256
       | otherwise -> throwIO err
     Right fd ->
       bracketOnError (pure fd) cleanupCreated \ownedFd -> do
@@ -469,7 +475,12 @@ openStage output template contentSha256 = do
         -- Detach the stage immediately. Publication copies only from this
         -- retained descriptor, so no later pathname replacement can select
         -- bytes for publication or cleanup.
-        detached <- removeReadableEntryWithIdentity output name identity
+        detached <-
+          removeReadableEntryWithIdentityAfter
+            (hook $ ReplayEntryRenamedForRemoval output.openOutputResolved.resolvedOutputRole)
+            output
+            name
+            identity
         unless detached $
           replayOutputFailure "replay staging path changed during acquisition"
         detachedStatus <- getFdStatus ownedFd
@@ -916,50 +927,66 @@ removeCreatedOutputIfOwned created = do
 
 removeReadableEntryWithIdentity :: OpenOutput -> FilePath -> FileIdentity -> IO Bool
 removeReadableEntryWithIdentity =
-  removeEntryWithIdentity ReadOnly preserveCapturedEntry
+  removeReadableEntryWithIdentityAfter $ pure ()
 
-removeCreatedEntryWithIdentity :: OpenOutput -> FilePath -> FileIdentity -> IO Bool
-removeCreatedEntryWithIdentity =
-  removeEntryWithIdentity WriteOnly \_ _ -> pure ()
-
-removeEntryWithIdentity
-  :: OpenMode
-  -> (CapturedOutput -> FilePath -> IO ())
+removeReadableEntryWithIdentityAfter
+  :: IO ()
   -> OpenOutput
   -> FilePath
   -> FileIdentity
   -> IO Bool
-removeEntryWithIdentity mode preserveMismatch output source expected = do
-  let parentFd = output.openOutputParentDescriptor
-  initiallyOwned <- entryHasIdentityAtWithMode mode parentFd source expected
-  if not initiallyOwned
-    then pure False
-    else do
-      capturedName <- freshRelativeName ".arkham-replay-capture"
-      tryIOError (renameAt parentFd source parentFd capturedName) >>= \case
-        Left err
-          | isDoesNotExistError err -> pure False
-          | otherwise -> throwIO err
-        Right () -> do
-          captured <- openCapturedOutputWithMode mode output capturedName
-          if captured.capturedOutputIdentity == expected
-            then
-              ( do
-                  -- Portable POSIX has no unlink-by-fd. The verification fd
-                  -- stays open through unlink, and the parent is owner-only;
-                  -- a cooperating same-UID process can still race this final
-                  -- pathname operation, which is documented as a limit.
-                  unlinkAt parentFd capturedName
-                  status <- getFdStatus captured.capturedOutputDescriptor
-                  unless (statusIdentity status == expected) $
-                    replayOutputFailure "captured replay output descriptor changed during cleanup"
-                  pure True
-              )
-                `finally` ignoreIOException (closeFd captured.capturedOutputDescriptor)
-            else do
-              preserveMismatch captured source
-              ignoreIOException $ closeFd captured.capturedOutputDescriptor
-              pure False
+removeReadableEntryWithIdentityAfter =
+  removeEntryWithIdentity ReadOnly preserveCapturedEntry
+
+removeCreatedEntryWithIdentity :: OpenOutput -> FilePath -> FileIdentity -> IO Bool
+removeCreatedEntryWithIdentity =
+  removeEntryWithIdentity WriteOnly (\_ _ -> pure ()) $ pure ()
+
+removeEntryWithIdentity
+  :: OpenMode
+  -> (CapturedOutput -> FilePath -> IO ())
+  -> IO ()
+  -> OpenOutput
+  -> FilePath
+  -> FileIdentity
+  -> IO Bool
+removeEntryWithIdentity mode preserveMismatch afterRename output source expected =
+  mask \restore -> do
+    let parentFd = output.openOutputParentDescriptor
+    initiallyOwned <- restore $ entryHasIdentityAtWithMode mode parentFd source expected
+    if not initiallyOwned
+      then pure False
+      else do
+        capturedName <- freshRelativeName ".arkham-replay-capture"
+        tryIOError (renameAt parentFd source parentFd capturedName) >>= \case
+          Left err
+            | isDoesNotExistError err -> pure False
+            | otherwise -> throwIO err
+          Right () -> do
+            let cleanupRenamed =
+                  ignoreIOException (unlinkAt parentFd capturedName)
+                    `finally` ignoreIOException (syncDirectoryDescriptor parentFd)
+            captured <-
+              restore
+                (afterRename >> openCapturedOutputWithMode mode output capturedName)
+                `onException` cleanupRenamed
+            if captured.capturedOutputIdentity == expected
+              then
+                ( do
+                    -- Portable POSIX has no unlink-by-fd. The verification fd
+                    -- stays open through unlink, and the parent is owner-only;
+                    -- a cooperating same-UID process can still race this final
+                    -- pathname operation, which is documented as a limit.
+                    unlinkAt parentFd capturedName
+                    status <- getFdStatus captured.capturedOutputDescriptor
+                    unless (statusIdentity status == expected) $
+                      replayOutputFailure "captured replay output descriptor changed during cleanup"
+                    pure True
+                )
+                  `finally` ignoreIOException (closeFd captured.capturedOutputDescriptor)
+              else
+                (restore (preserveMismatch captured source) $> False)
+                  `finally` ignoreIOException (closeFd captured.capturedOutputDescriptor)
 
 preserveCapturedEntry :: CapturedOutput -> FilePath -> IO ()
 preserveCapturedEntry captured destination =

@@ -6,6 +6,7 @@ import Api.Handler.Arkham.Game.Debug
   , makeReplayPlayerRemapping
   , remapReplayMessagePlayerIds
   , selectUploadedExportFile
+  , tryImportDecode
   , validateReplayCheckpointPlayerId
   )
 import Arkham.Id (PlayerId (..))
@@ -13,7 +14,9 @@ import Arkham.Message (Message (..))
 import Arkham.Prelude
 import Arkham.Question (Question (..))
 import Arkham.Replay.ImportAuthority
+import Control.Exception qualified as E
 import Data.Either (isLeft)
+import Data.List qualified as List
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Text.IO qualified as T
@@ -37,6 +40,23 @@ spec = describe "selectUploadedExportFile" do
 
   it "returns the first uploaded file's payload when present" do
     selectUploadedExportFile [("export", 42 :: Int), ("other", 7)] `shouldBe` Just 42
+
+  describe "tryImportDecode" do
+    it "converts synchronous decoding failures into import errors" do
+      result <- tryImportDecode (E.throwIO (userError "invalid gzip") :: IO ())
+      result
+        `shouldSatisfy` \case
+          Left err -> "invalid gzip" `List.isInfixOf` err
+          Right () -> False
+
+    it "rethrows asynchronous cancellation instead of returning a normal import error" do
+      result <-
+        E.try @E.AsyncException $
+          tryImportDecode (E.throwIO E.ThreadKilled :: IO ())
+      result
+        `shouldSatisfy` \case
+          Left E.ThreadKilled -> True
+          _ -> False
 
   describe "makeReplayPlayerRemapping" do
     let checkpointPlayerId = "00000000-0000-0000-0000-000000000000"

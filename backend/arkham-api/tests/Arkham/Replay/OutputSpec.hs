@@ -249,6 +249,47 @@ spec = sequential $ describe "deterministic replay file handling" do
         removeFile decoy
       assertNoInternalArtifacts workspace
 
+  it "removes a renamed stage when cancellation interrupts the descriptor handoff" $
+    withWorkspace "capture-handoff-cancellation" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+      BSL8.writeFile input "source"
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        cancelPublisherAt
+          (ReplayEntryRenamedForRemoval ReplayCheckpointOutput)
+          (pure ())
+          plan
+          [artifact ReplayCheckpointOutput "checkpoint"]
+        doesFileExist checkpoint `shouldReturn` False
+      assertNoInternalArtifacts workspace
+
+  it "removes a renamed stage when opening its capture descriptor fails" $
+    withWorkspace "capture-handoff-open-failure" \workspace -> do
+      let input = workspace </> "source"
+          checkpoint = workspace </> "checkpoint"
+      BSL8.writeFile input "source"
+      withReplayInput input \opened -> do
+        plan <- prepareReplayOutputs [opened] [checkpointRequest checkpoint]
+        expectIOExceptionContaining "open captured output" $
+          publishReplayOutputsWithHook
+            ( \case
+                ReplayEntryRenamedForRemoval ReplayCheckpointOutput -> do
+                  captures <-
+                    filter (List.isPrefixOf ".arkham-replay-capture-")
+                      <$> listDirectory workspace
+                  case captures of
+                    [capture] -> setFileMode (workspace </> capture) nullFileMode
+                    other ->
+                      expectationFailure
+                        ("expected one renamed capture, got " <> show other)
+                _ -> pure ()
+            )
+            plan
+            [artifact ReplayCheckpointOutput "checkpoint"]
+        doesFileExist checkpoint `shouldReturn` False
+      assertNoInternalArtifacts workspace
+
   it "arms cleanup before delivering cancellation after all anonymous stages are acquired" $
     withWorkspace "acquisition-cancellation" \workspace -> do
       let input = workspace </> "source"
