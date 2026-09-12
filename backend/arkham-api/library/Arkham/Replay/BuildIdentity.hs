@@ -128,7 +128,7 @@ discoverBuildIdentity =
         (["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"] <> compiledSourceRoots)
         >>= filterM (isRegularFile . (root </>))
     untrackedBytes <- fmap BS.concat . for (List.sort $ untracked <> ignored) $ \path ->
-      (\bytes -> BSC.pack path <> "\0" <> bytes <> "\0") <$> BS.readFile (root </> path)
+      frameSourceRecord (BSC.pack path) <$> BS.readFile (root </> path)
     let source =
           hashBytes
             $ BSC.intercalate "\0" [BSC.pack revision, BSC.pack tree, diffBytes]
@@ -238,6 +238,14 @@ validateHex label size value
 
 hashBytes :: BS.ByteString -> Text
 hashBytes = decodeUtf8 . Base16.encode . SHA256.hash
+
+frameSourceRecord :: BS.ByteString -> BS.ByteString -> BS.ByteString
+frameSourceRecord path bytes =
+  frameSourceComponent path <> frameSourceComponent bytes
+
+frameSourceComponent :: BS.ByteString -> BS.ByteString
+frameSourceComponent bytes =
+  BSC.pack (show $ BS.length bytes) <> ":" <> bytes
 
 trimEnd :: String -> String
 trimEnd = reverse . dropWhile (`elem` ['\n', '\r']) . reverse

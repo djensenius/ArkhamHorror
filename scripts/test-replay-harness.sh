@@ -47,12 +47,16 @@ test_build_identity_source_dependencies() {
   probe_dir=backend/arkham-api/app-replay/tmp
   ignored_probe="$probe_dir/ReplayBuildIdentityIgnoredProbe.hs"
   untracked_probe=backend/arkham-api/replay-build-identity-untracked-probe.txt
+  framing_probe_a=backend/arkham-api/replay-build-identity-frame-a.bin
+  framing_probe_b=backend/arkham-api/replay-build-identity-frame-b.bin
   interface_dump="$DIST_ABS/build-identity-main.iface"
   test ! -e "$ignored_probe"
   test ! -e "$untracked_probe"
+  test ! -e "$framing_probe_a"
+  test ! -e "$framing_probe_b"
   sleep 1
   mkdir -p "$probe_dir"
-  trap 'rm -f "$ignored_probe" "$untracked_probe" "$interface_dump"; rmdir "$probe_dir" 2>/dev/null || true' 0 HUP INT TERM
+  trap 'rm -f "$ignored_probe" "$untracked_probe" "$framing_probe_a" "$framing_probe_b" "$interface_dump"; rmdir "$probe_dir" 2>/dev/null || true' 0 HUP INT TERM
 
   cat >"$ignored_probe" <<'EOF'
 module ReplayBuildIdentityIgnoredProbe where
@@ -108,12 +112,27 @@ EOF
 
   sleep 1
   rm -f "$ignored_probe" "$untracked_probe"
+  printf 'payload\000%s\000' "$framing_probe_b" >"$framing_probe_a"
+  run_replay_build
+  single_record=$("$EXE" --build-identity)
+  single_record_sha=$(identity_sha "$single_record")
+
+  sleep 1
+  printf '%s' "payload" >"$framing_probe_a"
+  : >"$framing_probe_b"
+  run_replay_build
+  two_records=$("$EXE" --build-identity)
+  two_records_sha=$(identity_sha "$two_records")
+  test "$two_records_sha" != "$single_record_sha"
+
+  sleep 1
+  rm -f "$framing_probe_a" "$framing_probe_b"
   rmdir "$probe_dir" 2>/dev/null || true
   run_replay_build
   restored=$("$EXE" --build-identity)
   test "$(identity_sha "$restored")" = "$baseline_sha"
   trap - 0 HUP INT TERM
-  printf '%s\n' "build identity source appearance, content, and dependency regression: ok"
+  printf '%s\n' "build identity source appearance, content, framing, and dependency regression: ok"
 }
 build_replay
 IDENTITY=$("$EXE" --build-identity)

@@ -434,7 +434,92 @@ spec = describe "deterministic replay checkpoint harness" do
                   (adjustKey "contents" addUnknown)
                   answer
             ]
-    decodeReplayPlan (encodeStrict validPlan) `shouldSatisfy` isRight
+        standaloneSetting =
+          Aeson.object
+            [ "type" Aeson..= ("ToggleRecords" :: Text)
+            , "key" Aeson..= ("DrivenInsaneInvestigators" :: Text)
+            , "recordable" Aeson..= ("RecordableCardCode" :: Text)
+            , "content"
+                Aeson..=
+                  [ Aeson.object
+                      [ "label" Aeson..= ("investigator" :: Text)
+                      , "key" Aeson..= ("01001" :: Text)
+                      , "content" Aeson..= True
+                      ]
+                  ]
+            ]
+        standaloneAnswer setting =
+          Aeson.object
+            [ "tag" Aeson..= ("StandaloneSettingsAnswer" :: Text)
+            , "contents" Aeson..= [setting]
+            ]
+        standaloneSettingUnknown =
+          withAnswers [step checkpoint $ standaloneAnswer $ addUnknown standaloneSetting]
+        standaloneEntryUnknown =
+          withAnswers
+            [ step checkpoint
+                $ standaloneAnswer
+                $ mapRoot
+                  ( adjustKey "content"
+                      $ \case
+                        Aeson.Array entries ->
+                          Aeson.toJSON $ addUnknown <$> toList entries
+                        other -> other
+                  )
+                  standaloneSetting
+            ]
+        campaignEntry =
+          Aeson.object
+            [ "tag" Aeson..= ("Recorded" :: Text)
+            , "value"
+                Aeson..= Aeson.object
+                  ["intentionallyArbitrary" Aeson..= True]
+            ]
+        campaignRecorded entry =
+          Aeson.object
+            [ "recordable" Aeson..= ("RecordableGeneric" :: Text)
+            , "entries" Aeson..= [entry]
+            ]
+        campaignAnswer recorded =
+          Aeson.object
+            [ "tag" Aeson..= ("CampaignSettingsAnswer" :: Text)
+            , "contents"
+                Aeson..= Aeson.object
+                  [ "keys" Aeson..= ([] :: [Aeson.Value])
+                  , "counts" Aeson..= ([] :: [Aeson.Value])
+                  , "sets"
+                      Aeson..=
+                        [ [ Aeson.String "DrivenInsaneInvestigators"
+                          , recorded
+                          ]
+                        ]
+                  , "options" Aeson..= ([] :: [Aeson.Value])
+                  ]
+            ]
+        validStandalonePlan =
+          withAnswers [step checkpoint $ standaloneAnswer standaloneSetting]
+        validCampaignPlan =
+          withAnswers [step checkpoint $ campaignAnswer $ campaignRecorded campaignEntry]
+        campaignRecordedUnknown =
+          withAnswers
+            [ step checkpoint
+                $ campaignAnswer
+                $ addUnknown
+                $ campaignRecorded campaignEntry
+            ]
+        campaignEntryUnknown =
+          withAnswers
+            [ step checkpoint
+                $ campaignAnswer
+                $ campaignRecorded
+                $ addUnknown campaignEntry
+            ]
+    traverse_
+      (`shouldSatisfy` isRight)
+      [ decodeReplayPlan $ encodeStrict validPlan
+      , decodeReplayPlan $ encodeStrict validStandalonePlan
+      , decodeReplayPlan $ encodeStrict validCampaignPlan
+      ]
     traverse_
       (`shouldSatisfy` isLeft)
       [ decodeReplayPlan $ encodeStrict $ addUnknown validPlan
@@ -445,6 +530,10 @@ spec = describe "deterministic replay checkpoint harness" do
       , decodeReplayPlan $ encodeStrict expectedUnknown
       , decodeReplayPlan $ encodeStrict answerUnknown
       , decodeReplayPlan $ encodeStrict answerContentsUnknown
+      , decodeReplayPlan $ encodeStrict standaloneSettingUnknown
+      , decodeReplayPlan $ encodeStrict standaloneEntryUnknown
+      , decodeReplayPlan $ encodeStrict campaignRecordedUnknown
+      , decodeReplayPlan $ encodeStrict campaignEntryUnknown
       ]
     pure () :: IO ()
 

@@ -780,11 +780,14 @@ parseExactReplayAnswer value = do
         "AmountsAnswer contents"
         ["amounts", "playerId", "questionVersion"]
         value
-    CampaignSettingsAnswer _ ->
+    StandaloneSettingsAnswer _ ->
+      requireExactStandaloneSettingsAnswer value
+    CampaignSettingsAnswer _ -> do
       requireExactAnswerContents
         "CampaignSettingsAnswer contents"
         ["keys", "counts", "sets", "options"]
         value
+      requireExactCampaignSettingsAnswer value
     _ -> pure ()
   pure answer
 
@@ -801,6 +804,163 @@ requireExactAnswerContents label fields =
   withObject "Replay Answer" \o -> do
     contents <- o .: "contents"
     withObject label (requireExactObjectFields label fields) contents
+
+requireExactStandaloneSettingsAnswer :: Value -> Parser ()
+requireExactStandaloneSettingsAnswer =
+  withAnswerContents "StandaloneSettingsAnswer contents"
+    $ withArray "StandaloneSettingsAnswer contents"
+    $ traverse_ requireExactStandaloneSetting
+
+requireExactStandaloneSetting :: Value -> Parser ()
+requireExactStandaloneSetting =
+  withObject "StandaloneSetting" \o -> do
+    settingType <- o .: "type" :: Parser Text
+    let fields = case settingType of
+          "Group" -> ["type", "key", "content", "ifRecorded"]
+          "ToggleCrossedOut" -> ["type", "key", "recordable", "content", "ifRecorded"]
+          "ToggleRecords" -> ["type", "key", "recordable", "content", "ifRecorded"]
+          "ToggleKey" -> ["type", "key", "content", "ifRecorded"]
+          "ToggleOption" -> ["type", "key", "content", "ifRecorded"]
+          "PickKey" -> ["type", "key", "keys", "content", "ifRecorded"]
+          "ChooseRecord" -> ["type", "recordable", "label", "key", "selected", "content", "ifRecorded"]
+          "ChooseNum" -> ["type", "key", "min", "max", "content", "ifRecorded"]
+          "SetPartnerKilled" -> ["type", "key", "content", "ifRecorded"]
+          "SetPartnerDetails" -> ["type", "key", "maxDamage", "maxHorror", "content", "ifRecorded"]
+          _ -> []
+    when (null fields) $ fail $ "unsupported standalone setting type: " <> T.unpack settingType
+    requireExactObjectFields "StandaloneSetting" fields o
+    traverse_ requireExactSettingConditions $ KeyMap.lookup "ifRecorded" o
+    case settingType of
+      "Group" ->
+        o .: "content"
+          >>= withArray
+            "StandaloneSetting Group content"
+            (traverse_ requireExactStandaloneSetting)
+      "ToggleCrossedOut" ->
+        o .: "content"
+          >>= withArray
+            "StandaloneSetting ToggleCrossedOut content"
+            (traverse_ requireExactSetRecordedEntry)
+      "ToggleRecords" ->
+        o .: "content"
+          >>= withArray
+            "StandaloneSetting ToggleRecords content"
+            (traverse_ requireExactSetRecordedEntry)
+      "ChooseRecord" ->
+        traverse_
+          ( withArray "StandaloneSetting ChooseRecord content"
+              $ traverse_
+              $ withObject "StandaloneSetting ChooseRecord entry"
+              $ requireExactObjectFields "StandaloneSetting ChooseRecord entry" ["key"]
+          )
+          (KeyMap.lookup "content" o)
+      "SetPartnerDetails" ->
+        o .: "content"
+          >>= withObject
+            "StandaloneSetting SetPartnerDetails content"
+            ( requireExactObjectFields
+                "StandaloneSetting SetPartnerDetails content"
+                ["damage", "horror", "status"]
+            )
+      _ -> pure ()
+
+requireExactSetRecordedEntry :: Value -> Parser ()
+requireExactSetRecordedEntry =
+  withObject "StandaloneSetting recorded entry" \o -> do
+    requireExactObjectFields
+      "StandaloneSetting recorded entry"
+      ["label", "key", "content", "ifRecorded"]
+      o
+    traverse_ requireExactSettingConditions $ KeyMap.lookup "ifRecorded" o
+
+requireExactSettingConditions :: Value -> Parser ()
+requireExactSettingConditions =
+  withArray "StandaloneSetting conditions"
+    $ traverse_ requireExactSettingCondition
+
+requireExactSettingCondition :: Value -> Parser ()
+requireExactSettingCondition =
+  withObject "StandaloneSetting condition" \o -> do
+    conditionType <- o .: "type" :: Parser Text
+    let fields = case conditionType of
+          "key" -> ["type", "key"]
+          "inSet" -> ["type", "key", "recordable", "content"]
+          "crossedOut" -> ["type", "key", "recordable", "content"]
+          "count" -> ["type", "key", "predicate"]
+          "option" -> ["type", "key"]
+          "and" -> ["type", "content"]
+          "or" -> ["type", "content"]
+          "not" -> ["type", "content"]
+          "nor" -> ["type", "content"]
+          "survivedPlaneCrash" -> ["type", "key"]
+          _ -> []
+    when (null fields) $ fail $ "unsupported standalone setting condition: " <> T.unpack conditionType
+    requireExactObjectFields "StandaloneSetting condition" fields o
+    case conditionType of
+      "count" ->
+        o .: "predicate"
+          >>= withObject
+            "StandaloneSetting count predicate"
+            ( requireExactObjectFields
+                "StandaloneSetting count predicate"
+                ["type", "value"]
+            )
+      "and" -> recurseConditions o
+      "or" -> recurseConditions o
+      "not" -> o .: "content" >>= requireExactSettingCondition
+      "nor" -> recurseConditions o
+      _ -> pure ()
+ where
+  recurseConditions o =
+    o .: "content"
+      >>= withArray
+        "StandaloneSetting nested conditions"
+        (traverse_ requireExactSettingCondition)
+
+requireExactCampaignSettingsAnswer :: Value -> Parser ()
+requireExactCampaignSettingsAnswer =
+  withAnswerContents "CampaignSettingsAnswer contents"
+    $ withObject "CampaignSettingsAnswer contents"
+    $ \o ->
+      o .: "sets"
+        >>= requireExactMapValues
+          "CampaignSettingsAnswer sets"
+          requireExactCampaignRecorded
+
+requireExactCampaignRecorded :: Value -> Parser ()
+requireExactCampaignRecorded =
+  withObject "CampaignRecorded" \o -> do
+    requireExactObjectFields
+      "CampaignRecorded"
+      ["recordable", "entries"]
+      o
+    o .: "entries"
+      >>= withArray
+        "CampaignRecorded entries"
+        (traverse_ requireExactCampaignRecordedEntry)
+
+requireExactCampaignRecordedEntry :: Value -> Parser ()
+requireExactCampaignRecordedEntry =
+  withObject "CampaignRecordedEntry"
+    $ requireExactObjectFields
+      "CampaignRecordedEntry"
+      ["tag", "value"]
+
+requireExactMapValues :: String -> (Value -> Parser ()) -> Value -> Parser ()
+requireExactMapValues label validate = \case
+  Object values -> traverse_ validate $ KeyMap.elems values
+  Array entries ->
+    for_ entries
+      $ withArray (label <> " entry")
+      $ \entry -> case toList entry of
+        [_key, item] -> validate item
+        _ -> fail $ label <> " entry must contain exactly one key and one value"
+  _ -> fail $ label <> " must be an object or an array of key/value pairs"
+
+withAnswerContents :: String -> (Value -> Parser ()) -> Value -> Parser ()
+withAnswerContents label validate =
+  withObject label \o ->
+    o .: "contents" >>= validate
 
 requireExactObjectFields :: String -> [Key] -> Object -> Parser ()
 requireExactObjectFields label fields objectValue =
