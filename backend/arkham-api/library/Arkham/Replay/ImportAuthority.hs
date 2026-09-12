@@ -241,6 +241,10 @@ validateReplayImportReceipt receipt@ReplayImportReceipt {..} = do
         map (.replayPlayerInvestigatorId) replayImportReceiptPlayerRemappings
   unless (length remappedInvestigators == length (ordNub remappedInvestigators)) $
     Left "replay import receipt contains duplicate investigator remappings"
+  let checkpointPlayerIds =
+        map (.replayPlayerCheckpointPlayerId) replayImportReceiptPlayerRemappings
+  unless (length checkpointPlayerIds == length (ordNub checkpointPlayerIds)) $
+    Left "replay import receipt contains duplicate checkpoint player remappings"
   unless
     ( replayImportReceiptCheckpointProvenance.provenanceSourceGameGitRevision
         == replayImportReceiptGameGitRevision

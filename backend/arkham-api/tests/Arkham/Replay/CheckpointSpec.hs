@@ -155,6 +155,98 @@ spec = describe "deterministic replay checkpoint harness" do
       (ExchangeAmountsAnswer GameSource firstInvestigator firstInvestigator Resource 1)
       `shouldSatisfy` isLeft
 
+  it "rejects unknown, out-of-range, and target-violating replay amounts" . gameTest $ \_ -> do
+    game <- checkpointGame
+    let player = game.gameActivePlayerId
+        investigator = "01001" :: InvestigatorId
+        firstChoice = UUID.fromWords 0 0 0 1
+        secondChoice = UUID.fromWords 0 0 0 2
+        unknownChoice = UUID.fromWords 0 0 0 3
+        amountPrompt =
+          ChooseAmounts
+            "amounts"
+            (TotalAmountTarget 3)
+            [ AmountChoice firstChoice "first" 1 2
+            , AmountChoice secondChoice "second" 0 2
+            ]
+            GameTarget
+        paymentPrompt =
+          PayCostQuestion Free
+            $ ChoosePaymentAmounts
+              "payment"
+              (Just $ AmountOneOf [2, 3])
+              [ PaymentAmountChoice firstChoice investigator 1 2 "first" Noop
+              , PaymentAmountChoice secondChoice investigator 0 2 "second" Noop
+              ]
+        maxPaymentPrompt =
+          ChoosePaymentAmounts
+            "payment"
+            (Just $ MaxAmountTarget 1)
+            [PaymentAmountChoice firstChoice investigator 0 2 "first" Noop]
+        minPaymentPrompt =
+          ChoosePaymentAmounts
+            "payment"
+            (Just $ MinAmountTarget 2)
+            [PaymentAmountChoice firstChoice investigator 0 2 "first" Noop]
+        duplicateAmountPrompt =
+          ChooseAmounts
+            "amounts"
+            (TotalAmountTarget 1)
+            [ AmountChoice firstChoice "first" 0 1
+            , AmountChoice firstChoice "duplicate" 0 1
+            ]
+            GameTarget
+        duplicatePaymentPrompt =
+          ChoosePaymentAmounts
+            "payment"
+            (Just $ TotalAmountTarget 1)
+            [ PaymentAmountChoice firstChoice investigator 0 1 "first" Noop
+            , PaymentAmountChoice firstChoice investigator 0 1 "duplicate" Noop
+            ]
+        amountsAnswer values =
+          AmountsAnswer
+            AmountsResponse
+              { arAmounts = Map.fromList values
+              , arQuestionVersion = Just game.gameScenarioSteps
+              , arPlayerId = Just player
+              }
+        paymentAnswer values =
+          PaymentAmountsAnswer
+            PaymentAmountsResponse
+              { parAmounts = Map.fromList values
+              , parQuestionVersion = Just game.gameScenarioSteps
+              , parPlayerId = Just player
+              }
+    validateAtPrompt game amountPrompt (amountsAnswer [(firstChoice, 1), (secondChoice, 2)])
+      `shouldBe` Right player
+    validateAtPrompt game paymentPrompt (paymentAnswer [(firstChoice, 2)])
+      `shouldBe` Right player
+    traverse_
+      (`shouldSatisfy` isLeft)
+      [ validateAtPrompt game amountPrompt
+          $ amountsAnswer [(firstChoice, 1), (secondChoice, 2), (unknownChoice, 0)]
+      , validateAtPrompt game amountPrompt
+          $ amountsAnswer [(firstChoice, 3), (secondChoice, 0)]
+      , validateAtPrompt game amountPrompt
+          $ amountsAnswer [(firstChoice, 1), (secondChoice, 1)]
+      , validateAtPrompt game amountPrompt
+          $ amountsAnswer [(secondChoice, 2)]
+      , validateAtPrompt game paymentPrompt
+          $ paymentAnswer [(firstChoice, 1), (unknownChoice, 1)]
+      , validateAtPrompt game paymentPrompt
+          $ paymentAnswer [(firstChoice, 0), (secondChoice, 2)]
+      , validateAtPrompt game paymentPrompt
+          $ paymentAnswer [(firstChoice, 2), (secondChoice, 2)]
+      , validateAtPrompt game maxPaymentPrompt
+          $ paymentAnswer [(firstChoice, 2)]
+      , validateAtPrompt game minPaymentPrompt
+          $ paymentAnswer [(firstChoice, 1)]
+      , validateAtPrompt game duplicateAmountPrompt
+          $ amountsAnswer [(firstChoice, 1)]
+      , validateAtPrompt game duplicatePaymentPrompt
+          $ paymentAnswer [(firstChoice, 1)]
+      ]
+
   it "rejects malformed/history plans and stale, dirty, or unattested builds" . gameTest $ \_ -> do
     game <- checkpointGame
     checkpoint <- onlyCheckpoint game
@@ -443,6 +535,21 @@ spec = describe "deterministic replay checkpoint harness" do
                   PlayerId $ UUID.fromWords 0 0 0 99
               }
           ]
+          authority
+      )
+      `shouldSatisfy` isLeft
+    let duplicateCheckpointPlayerRemapping =
+          ReplayPlayerRemapping
+            "c01002"
+            checkpoint.checkpointPlayerId
+            "00000000-0000-0000-0000-000000000021"
+            "00000000-0000-0000-0000-000000000021"
+            True
+    validateReplayImportReceipt
+      ( makeReplayImportReceipt
+          fixtureBuild
+          gameId
+          [playerRemapping, duplicateCheckpointPlayerRemapping]
           authority
       )
       `shouldSatisfy` isLeft

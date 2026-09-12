@@ -38,7 +38,13 @@ import Arkham.Id (PlayerId)
 import Arkham.Json (aesonOptions)
 import Arkham.Message (Message)
 import Arkham.Prelude
-import Arkham.Question (Question (..), ReadChoices (..))
+import Arkham.Question (
+  AmountChoice (..),
+  AmountTarget (..),
+  PaymentAmountChoice (..),
+  Question (..),
+  ReadChoices (..),
+ )
 import Arkham.Replay.BuildIdentity
 import Base.Api.Types.Capabilities qualified as Capabilities
 import Control.Monad.Fail (fail)
@@ -464,8 +470,10 @@ replayAnswerMatchesPrompt answer prompt = case answer of
   Answer QuestionResponse {qrChoice} ->
     replayChoiceIndexInRange qrChoice $ stripPromptWrappers prompt
   Raw {} -> False
-  PaymentAmountsAnswer {} -> isPaymentAmountsPrompt prompt
-  AmountsAnswer {} -> isAmountsPrompt prompt
+  PaymentAmountsAnswer PaymentAmountsResponse {parAmounts} ->
+    replayPaymentAmountsValid parAmounts $ stripPromptWrappers prompt
+  AmountsAnswer AmountsResponse {arAmounts} ->
+    replayAmountsValid arAmounts $ stripPromptWrappers prompt
   StandaloneSettingsAnswer {} -> case stripPromptWrappers prompt of
     PickScenarioSettings -> True
     _ -> False
@@ -529,17 +537,50 @@ replayChoiceIndexInRange choice = \case
    inRange :: [a] -> Bool
    inRange choices = isJust $ choices !!? choice
 
-isAmountsPrompt :: Question message -> Bool
-isAmountsPrompt = \case
-  ChooseAmounts {} -> True
-  QuestionLabel _ _ (ChooseAmounts {}) -> True
+replayAmountsValid :: Map UUID.UUID Int -> Question message -> Bool
+replayAmountsValid amounts = \case
+  ChooseAmounts _ target choices _ ->
+    replayAmountAllocationValid
+      [(choiceId, lowerBound, upperBound) | AmountChoice choiceId _ lowerBound upperBound <- choices]
+      (Just target)
+      amounts
   _ -> False
 
-isPaymentAmountsPrompt :: Question message -> Bool
-isPaymentAmountsPrompt = \case
-  ChoosePaymentAmounts {} -> True
-  PayCostQuestion _ (ChoosePaymentAmounts {}) -> True
+replayPaymentAmountsValid :: Map UUID.UUID Int -> Question message -> Bool
+replayPaymentAmountsValid amounts = \case
+  ChoosePaymentAmounts _ target choices ->
+    replayAmountAllocationValid
+      [ (choiceId, lowerBound, upperBound)
+      | PaymentAmountChoice choiceId _ lowerBound upperBound _ _ <- choices
+      ]
+      target
+      amounts
   _ -> False
+
+replayAmountAllocationValid
+  :: [(UUID.UUID, Int, Int)]
+  -> Maybe AmountTarget
+  -> Map UUID.UUID Int
+  -> Bool
+replayAmountAllocationValid choices target amounts =
+  length choices == Map.size bounds
+    && all validChoice choices
+    && all (`Map.member` bounds) (Map.keys amounts)
+    && amountTargetSatisfied target (sum $ map (toInteger . snd) $ Map.toList amounts)
+ where
+  bounds = Map.fromList [(choiceId, (lowerBound, upperBound)) | (choiceId, lowerBound, upperBound) <- choices]
+  validChoice (choiceId, lowerBound, upperBound) =
+    lowerBound <= upperBound
+      && let amount = Map.findWithDefault 0 choiceId amounts
+          in amount >= lowerBound && amount <= upperBound
+
+amountTargetSatisfied :: Maybe AmountTarget -> Integer -> Bool
+amountTargetSatisfied target total = case target of
+  Nothing -> True
+  Just (MinAmountTarget minimumAmount) -> total >= toInteger minimumAmount
+  Just (MaxAmountTarget maximumAmount) -> total <= toInteger maximumAmount
+  Just (TotalAmountTarget requiredAmount) -> total == toInteger requiredAmount
+  Just (AmountOneOf allowedAmounts) -> total `elem` map toInteger allowedAmounts
 
 isDeckPrompt :: Question message -> Bool
 isDeckPrompt = \case

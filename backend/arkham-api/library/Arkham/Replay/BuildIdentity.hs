@@ -26,6 +26,7 @@ import System.Directory (doesFileExist, getCurrentDirectory)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath qualified as FilePath
+import System.Posix.Files qualified as Posix
 import System.Process (readProcessWithExitCode)
 
 data ReplayBuildAttestation
@@ -120,17 +121,24 @@ discoverBuildIdentity =
     tree <- git root ["rev-parse", "HEAD^{tree}"]
     status <- git root ["status", "--porcelain=v1", "--untracked-files=all", "--", "backend"]
     diffBytes <- BSC.pack <$> git root ["diff", "--binary", "--no-ext-diff", "HEAD", "--", "backend"]
-    untracked <- lines <$> git root ["ls-files", "--others", "--exclude-standard", "--", "backend"]
-    untrackedBytes <- fmap BS.concat . for (List.sort untracked) $ \path ->
+    untracked <- gitPaths root ["ls-files", "--others", "--exclude-standard", "-z", "--", "backend"]
+    ignored <-
+      gitPaths
+        root
+        (["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"] <> compiledSourceRoots)
+        >>= filterM (isRegularFile . (root </>))
+    untrackedBytes <- fmap BS.concat . for (List.sort $ untracked <> ignored) $ \path ->
       (\bytes -> BSC.pack path <> "\0" <> bytes <> "\0") <$> BS.readFile (root </> path)
     let source =
           hashBytes
             $ BSC.intercalate "\0" [BSC.pack revision, BSC.pack tree, diffBytes]
             <> "\0"
             <> untrackedBytes
-        clean = null status
+        clean = null status && null ignored
     expected <- lookupEnv "ARKHAM_REPLAY_ATTEST_SOURCE_SHA256"
-    dependencies <- gitDependencies root
+    gitDependencyPaths <- gitDependencies root
+    sourceDependencyPaths <- sourceDependencies root untracked ignored
+    let dependencies = List.sort $ ordNub $ gitDependencyPaths <> sourceDependencyPaths
     pure
       ( ReplayBuildIdentity
           (GitSha $ T.pack revision)
@@ -146,12 +154,38 @@ discoverBuildIdentity =
   )
   `catch` \(_ :: IOException) -> pure (unattestedIdentity, [])
 
+compiledSourceRoots :: [FilePath]
+compiledSourceRoots =
+  [ "backend/arkham-api/library"
+  , "backend/arkham-api/app"
+  , "backend/arkham-api/app-replay"
+  , "backend/arkham-api/app-capabilities-probe"
+  , "backend/cards-discover/library"
+  , "backend/cards-discover/app"
+  , "backend/devel-store-lock/library"
+  ]
+
 git :: FilePath -> [String] -> IO String
 git root args = do
   (code, out, err) <- readProcessWithExitCode "git" ("-C" : root : args) ""
   case code of
     ExitSuccess -> pure $ trimEnd out
     ExitFailure _ -> ioError $ userError $ "git " <> unwords args <> " failed: " <> trimEnd err
+
+gitPaths :: FilePath -> [String] -> IO [FilePath]
+gitPaths root args = splitNull <$> git root args
+
+sourceDependencies :: FilePath -> [FilePath] -> [FilePath] -> IO [FilePath]
+sourceDependencies root untracked ignored = do
+  tracked <- gitPaths root ["ls-files", "--cached", "-z", "--", "backend"]
+  let candidates = tracked <> untracked <> ignored
+  regular <- filterM (isRegularFile . (root </>)) candidates
+  pure $ (root </>) <$> List.sort regular
+
+isRegularFile :: FilePath -> IO Bool
+isRegularFile path = do
+  exists <- doesFileExist path
+  if exists then Posix.isRegularFile <$> Posix.getFileStatus path else pure False
 
 gitDependencies :: FilePath -> IO [FilePath]
 gitDependencies root = do
@@ -163,7 +197,19 @@ gitDependencies root = do
       else do
         path <- git root ["rev-parse", "--git-path", ref]
         pure $ Just $ if FilePath.isAbsolute path then path else root </> path
-  filterM doesFileExist $ [gitDir </> "HEAD", gitDir </> "index"] <> maybeToList refPath
+  globalExcludes <-
+    git root ["config", "--path", "--get", "core.excludesFile"]
+      `catch` \(_ :: IOException) -> pure ""
+  let files =
+        [ gitDir </> "HEAD"
+        , gitDir </> "index"
+        , gitDir </> "config"
+        , gitDir </> "info" </> "exclude"
+        , root </> ".gitignore"
+        ]
+          <> maybeToList refPath
+          <> [globalExcludes | not $ null globalExcludes]
+  filterM doesFileExist files
 
 unattestedIdentity :: ReplayBuildIdentity
 unattestedIdentity =
@@ -195,3 +241,12 @@ hashBytes = decodeUtf8 . Base16.encode . SHA256.hash
 
 trimEnd :: String -> String
 trimEnd = reverse . dropWhile (`elem` ['\n', '\r']) . reverse
+
+splitNull :: String -> [String]
+splitNull = \case
+  "" -> []
+  value ->
+    let (path, rest) = break (== '\0') value
+     in path : case rest of
+          [] -> []
+          _ : remaining -> splitNull remaining
