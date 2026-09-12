@@ -9,6 +9,11 @@ import Arkham.Git (GitSha (..))
 import Arkham.Replay.Checkpoint
 import Arkham.Replay.ImportAuthority
 import Arkham.Replay.ServerBuildIdentity (serverBuildIdentity)
+import Arkham.Tarot (
+  TarotCard (..),
+  TarotCardArcana (TheFool0, TheHighPriestessII, TheMagicianI),
+  TarotCardFacing (Reversed, Upright),
+ )
 import Arkham.Token (Token (Resource))
 import Base.Api.Handler.Capabilities (capabilitiesResponseHeaders)
 import Data.Aeson qualified as Aeson
@@ -101,7 +106,7 @@ spec = describe "deterministic replay checkpoint harness" do
         destinyPrompt = PickDestiny []
         destinyAnswer = PickDestinyAnswer []
         exchangePrompt =
-          ChooseExchangeAmounts GameSource firstInvestigator 0 secondInvestigator 0 Resource
+          ChooseExchangeAmounts GameSource firstInvestigator 2 secondInvestigator 3 Resource
         exchangeAnswer =
           ExchangeAmountsAnswer GameSource firstInvestigator secondInvestigator Resource 1
         validCases =
@@ -154,6 +159,98 @@ spec = describe "deterministic replay checkpoint harness" do
       exchangePrompt
       (ExchangeAmountsAnswer GameSource firstInvestigator firstInvestigator Resource 1)
       `shouldSatisfy` isLeft
+
+  it "accepts only the prompt destiny drawings with the required reversed count" . gameTest $ \_ -> do
+    game <- checkpointGame
+    let firstDrawing = DestinyDrawing "first" $ TarotCard Upright TheFool0
+        secondDrawing = DestinyDrawing "second" $ TarotCard Upright TheMagicianI
+        thirdDrawing = DestinyDrawing "third" $ TarotCard Upright TheHighPriestessII
+        prompt = PickDestiny [firstDrawing, secondDrawing, thirdDrawing]
+        answer drawings = PickDestinyAnswer drawings
+        reversed scope arcana = DestinyDrawing scope $ TarotCard Reversed arcana
+        upright scope arcana = DestinyDrawing scope $ TarotCard Upright arcana
+    validateAtPrompt
+      game
+      prompt
+      (answer [reversed "first" TheFool0, reversed "second" TheMagicianI, upright "third" TheHighPriestessII])
+      `shouldBe` Right game.gameActivePlayerId
+    traverse_
+      (`shouldSatisfy` isLeft)
+      [ validateAtPrompt
+          game
+          prompt
+          (answer [reversed "first" TheFool0, upright "second" TheMagicianI, upright "third" TheHighPriestessII])
+      , validateAtPrompt
+          game
+          prompt
+          (answer [reversed "first" TheFool0, reversed "second" TheMagicianI])
+      , validateAtPrompt
+          game
+          prompt
+          ( answer
+              [ reversed "first" TheFool0
+              , reversed "second" TheMagicianI
+              , upright "third" TheHighPriestessII
+              , upright "extra" TheHighPriestessII
+              ]
+          )
+      , validateAtPrompt
+          game
+          prompt
+          ( answer
+              [ reversed "first" TheFool0
+              , reversed "second" TheMagicianI
+              , upright "third" TheMagicianI
+              ]
+          )
+      , validateAtPrompt
+          game
+          prompt
+          ( answer
+              [ reversed "first" TheFool0
+              , reversed "first" TheMagicianI
+              , upright "third" TheHighPriestessII
+              ]
+          )
+      , validateAtPrompt
+          game
+          prompt
+          ( answer
+              [ reversed "second" TheMagicianI
+              , reversed "first" TheFool0
+              , upright "third" TheHighPriestessII
+              ]
+          )
+      ]
+
+  it "bounds signed token exchanges by the corresponding initial balances" . gameTest $ \_ -> do
+    game <- checkpointGame
+    let firstInvestigator = "01001" :: InvestigatorId
+        secondInvestigator = "01002" :: InvestigatorId
+        prompt =
+          ChooseExchangeAmounts GameSource firstInvestigator 2 secondInvestigator 3 Resource
+        answer fromInvestigator destinationInvestigator amount =
+          ExchangeAmountsAnswer
+            GameSource
+            fromInvestigator
+            destinationInvestigator
+            Resource
+            amount
+    traverse_
+      (`shouldBe` Right game.gameActivePlayerId)
+      [ validateAtPrompt game prompt $ answer firstInvestigator secondInvestigator 2
+      , validateAtPrompt game prompt $ answer firstInvestigator secondInvestigator (-3)
+      , validateAtPrompt game prompt $ answer secondInvestigator firstInvestigator 3
+      , validateAtPrompt game prompt $ answer secondInvestigator firstInvestigator (-2)
+      ]
+    traverse_
+      (`shouldSatisfy` isLeft)
+      [ validateAtPrompt game prompt $ answer firstInvestigator secondInvestigator 3
+      , validateAtPrompt game prompt $ answer firstInvestigator secondInvestigator (-4)
+      , validateAtPrompt game prompt $ answer secondInvestigator firstInvestigator 4
+      , validateAtPrompt game prompt $ answer secondInvestigator firstInvestigator (-3)
+      , validateAtPrompt game prompt $ answer firstInvestigator secondInvestigator minBound
+      ]
 
   it "rejects unknown, out-of-range, and target-violating replay amounts" . gameTest $ \_ -> do
     game <- checkpointGame

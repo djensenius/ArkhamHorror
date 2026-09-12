@@ -34,18 +34,20 @@ module Arkham.Replay.Checkpoint (
 import Api.Arkham.Export
 import Arkham.Game (Game (..))
 import Arkham.Git (GitSha (..))
-import Arkham.Id (PlayerId)
+import Arkham.Id (InvestigatorId, PlayerId)
 import Arkham.Json (aesonOptions)
 import Arkham.Message (Message)
 import Arkham.Prelude
 import Arkham.Question (
   AmountChoice (..),
   AmountTarget (..),
+  DestinyDrawing (..),
   PaymentAmountChoice (..),
   Question (..),
   ReadChoices (..),
  )
 import Arkham.Replay.BuildIdentity
+import Arkham.Tarot (TarotCard (..), TarotCardFacing (Reversed))
 import Base.Api.Types.Capabilities qualified as Capabilities
 import Control.Monad.Fail (fail)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -482,8 +484,8 @@ replayAnswerMatchesPrompt answer prompt = case answer of
     _ -> False
   DeckAnswer {} -> isDeckPrompt $ stripPromptWrappers prompt
   DeckListAnswer {} -> isDeckPrompt $ stripPromptWrappers prompt
-  PickDestinyAnswer {} -> case stripPromptWrappers prompt of
-    PickDestiny {} -> True
+  PickDestinyAnswer answerDrawings -> case stripPromptWrappers prompt of
+    PickDestiny drawings -> replayDestinyAnswerMatches drawings answerDrawings
     _ -> False
   CampaignSpecificAnswer {} -> case stripPromptWrappers prompt of
     PickCampaignSpecific {} -> True
@@ -491,18 +493,69 @@ replayAnswerMatchesPrompt answer prompt = case answer of
   ScenarioSpecificAnswer {} -> case stripPromptWrappers prompt of
     PickScenarioSpecific {} -> True
     _ -> False
-  ExchangeAmountsAnswer answerSource answerFrom answerTo answerToken _ ->
+  ExchangeAmountsAnswer answerSource answerFrom answerTo answerToken amount ->
     case stripPromptWrappers prompt of
-      ChooseExchangeAmounts promptSource firstInvestigator _ secondInvestigator _ promptToken ->
+      ChooseExchangeAmounts
+        promptSource
+        firstInvestigator
+        firstAmount
+        secondInvestigator
+        secondAmount
+        promptToken ->
         answerSource == promptSource
           && answerToken == promptToken
           && ( (answerFrom == firstInvestigator && answerTo == secondInvestigator)
                 || (answerFrom == secondInvestigator && answerTo == firstInvestigator)
              )
+          && replayExchangeAmountWithinBalances
+            firstInvestigator
+            firstAmount
+            secondInvestigator
+            secondAmount
+            answerFrom
+            answerTo
+            amount
       _ -> False
   CampaignStepAnswer {} -> case stripPromptWrappers prompt of
     ContinueCampaign -> True
     _ -> False
+
+replayDestinyAnswerMatches :: [DestinyDrawing] -> [DestinyDrawing] -> Bool
+replayDestinyAnswerMatches drawings answerDrawings =
+  length drawings == length answerDrawings
+    && and (zipWith sameDrawing drawings answerDrawings)
+    && reversedCount == (length drawings + 1) `div` 2
+ where
+  sameDrawing
+    (DestinyDrawing expectedScope (TarotCard _ expectedArcana))
+    (DestinyDrawing actualScope (TarotCard _ actualArcana)) =
+      expectedScope == actualScope && expectedArcana == actualArcana
+  reversedCount =
+    length
+      [ ()
+      | DestinyDrawing _ (TarotCard Reversed _) <- answerDrawings
+      ]
+
+replayExchangeAmountWithinBalances
+  :: InvestigatorId
+  -> Int
+  -> InvestigatorId
+  -> Int
+  -> InvestigatorId
+  -> InvestigatorId
+  -> Int
+  -> Bool
+replayExchangeAmountWithinBalances iid1 iid1Amount iid2 iid2Amount fromIid toIid amount
+  | iid1Amount < 0 || iid2Amount < 0 = False
+  | fromIid == iid1 && toIid == iid2 =
+      transferred <= toInteger iid1Amount
+        && transferred >= negate (toInteger iid2Amount)
+  | fromIid == iid2 && toIid == iid1 =
+      transferred <= toInteger iid2Amount
+        && transferred >= negate (toInteger iid1Amount)
+  | otherwise = False
+ where
+  transferred = toInteger amount
 
 stripPromptWrappers :: Question message -> Question message
 stripPromptWrappers = \case

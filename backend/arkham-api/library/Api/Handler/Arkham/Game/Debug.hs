@@ -11,6 +11,7 @@ module Api.Handler.Arkham.Game.Debug (
   postApiV1ArkhamGameClaimSeatR,
 
   -- * Exposed for regression tests
+  makeReplayPlayerIdReplacement,
   makeReplayPlayerIdMap,
   makeReplayPlayerRemapping,
   checkpointInvestigatorPlayerId,
@@ -218,6 +219,20 @@ makeReplayPlayerIdMap remappings = do
             , PlayerId importedUUID
             )
 
+makeReplayPlayerIdReplacement :: Text -> Text -> Either Text (Map PlayerId PlayerId)
+makeReplayPlayerIdReplacement originalPlayerId importedPlayerId = do
+  originalUUID <-
+    maybe
+      (Left "Original replay player ID is not a UUID")
+      Right
+      $ UUID.fromText originalPlayerId
+  importedUUID <-
+    maybe
+      (Left "Imported Arkham player ID is not a UUID")
+      Right
+      $ UUID.fromText importedPlayerId
+  pure $ Map.singleton (PlayerId originalUUID) (PlayerId importedUUID)
+
 remapReplayMessagePlayerIds :: Map PlayerId PlayerId -> [Message] -> [Message]
 remapReplayMessagePlayerIds replacements = map go
  where
@@ -343,10 +358,10 @@ postApiV1ArkhamGamesImportR = do
         pure checkpointPlayerId
       (importedGame, importReceipt) <- runDB $ do
         gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now
-        playerRemappings <- case variant of
+        (playerRemappings, replayPlayerIds) <- case variant of
           Solo -> do
             newPlayerId <- insert $ ArkhamPlayer userId gameId selectedInvestigator
-            case checkpointPlayerId of
+            playerRemappings <- case checkpointPlayerId of
               Nothing -> pure []
               Just originalPlayerId -> do
                 mapping <-
@@ -359,18 +374,31 @@ postApiV1ArkhamGamesImportR = do
                       (toPathPiece newPlayerId)
                       False
                 pure [mapping]
+            replayPlayerIds <-
+              either
+                (lift . invalidArgs . pure)
+                pure
+                $ makeReplayPlayerIdMap playerRemappings
+            pure (playerRemappings, replayPlayerIds)
           WithFriends -> do
             newPlayerId <- insert $ ArkhamPlayer userId gameId selectedInvestigator
-            mCheckpointPlayerId <-
+            mRemappedPlayerId <-
               remapInvestigatorUUID gameId selectedInvestigator newPlayerId
-            case checkpointPlayerId of
+            remappedFromPlayerId <-
+              maybe
+                (lift $ invalidArgs ["Imported investigator playerId remapping failed"])
+                pure
+                mRemappedPlayerId
+            replayPlayerIds <-
+              either
+                (lift . invalidArgs . pure)
+                pure
+                $ makeReplayPlayerIdReplacement
+                  remappedFromPlayerId
+                  (toPathPiece newPlayerId)
+            playerRemappings <- case checkpointPlayerId of
               Nothing -> pure []
               Just originalPlayerId -> do
-                remappedFromPlayerId <-
-                  maybe
-                    (lift $ invalidArgs ["Replay checkpoint investigator remapping failed"])
-                    pure
-                    mCheckpointPlayerId
                 unless (remappedFromPlayerId == originalPlayerId) $
                   lift $ invalidArgs ["Replay checkpoint investigator playerId changed during import"]
                 mapping <-
@@ -383,6 +411,7 @@ postApiV1ArkhamGamesImportR = do
                       (toPathPiece newPlayerId)
                       True
                 pure [mapping]
+            pure (playerRemappings, replayPlayerIds)
         rawExecute
           "DO $$ \
           \BEGIN \
@@ -399,11 +428,6 @@ postApiV1ArkhamGamesImportR = do
           \  END IF; \
           \END$$;"
           []
-        replayPlayerIds <-
-          either
-            (lift . invalidArgs . pure)
-            pure
-            $ makeReplayPlayerIdMap playerRemappings
         let importedChoice s =
               s.choice
                 { choiceMessages =

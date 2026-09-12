@@ -2,6 +2,7 @@ module Arkham.Api.GameImportSpec (spec) where
 
 import Api.Handler.Arkham.Game.Debug
   ( makeReplayPlayerIdMap
+  , makeReplayPlayerIdReplacement
   , makeReplayPlayerRemapping
   , remapReplayMessagePlayerIds
   , selectUploadedExportFile
@@ -162,6 +163,25 @@ spec = describe "selectUploadedExportFile" do
                          ]
                    ]
 
+    it "remaps ordinary multiplayer retained prompts from the imported state replacement" do
+      let originalPlayerId = "00000000-0000-0000-0000-000000000000"
+          importedPlayerIdText = "00000000-0000-0000-0000-000000000002"
+      ordinaryReplacements <- case makeReplayPlayerIdReplacement originalPlayerId importedPlayerIdText of
+        Left err -> expectationFailure (T.unpack err) >> error "invalid player replacement"
+        Right value -> pure value
+      remapReplayMessagePlayerIds
+        ordinaryReplacements
+        [ Ask checkpointPlayerId question
+        , AskMap $ Map.singleton checkpointPlayerId question
+        ]
+        `shouldBe` [ Ask importedPlayerId question
+                   , AskMap $ Map.singleton importedPlayerId question
+                   ]
+      makeReplayPlayerIdReplacement "not-a-uuid" importedPlayerIdText
+        `shouldSatisfy` isLeft
+      makeReplayPlayerIdReplacement originalPlayerId "not-a-uuid"
+        `shouldSatisfy` isLeft
+
   it "preserves the production PublicGame import body and authority headers" do
     source <- readDebugSource
     let normalized = T.unwords $ T.words source
@@ -191,7 +211,10 @@ spec = describe "selectUploadedExportFile" do
     transactionPosition <- position "(importedGame, importReceipt) <- runDB"
     investigatorRemapPosition <-
       position
-        "mCheckpointPlayerId <- remapInvestigatorUUID gameId selectedInvestigator newPlayerId"
+        "mRemappedPlayerId <- remapInvestigatorUUID gameId selectedInvestigator newPlayerId"
+    ordinaryQueueMapPosition <-
+      position
+        "$ makeReplayPlayerIdReplacement remappedFromPlayerId (toPathPiece newPlayerId)"
     queueRemapPosition <-
       position
         "choiceMessages = remapReplayMessagePlayerIds replayPlayerIds s.choice.choiceMessages"
@@ -208,6 +231,8 @@ spec = describe "selectUploadedExportFile" do
       [bindingPosition] -> bindingPosition `shouldSatisfy` (< transactionPosition)
       _ -> expectationFailure "expected one pre-transaction checkpoint-player validation"
     transactionPosition `shouldSatisfy` (< investigatorRemapPosition)
+    investigatorRemapPosition `shouldSatisfy` (< ordinaryQueueMapPosition)
+    ordinaryQueueMapPosition `shouldSatisfy` (< queueRemapPosition)
     queueRemapPosition `shouldSatisfy` (< stepInsertPosition)
     headerPosition `shouldSatisfy` (< publicGamePosition)
     importHandler

@@ -78,6 +78,9 @@ jobs:
           'import json, os; value=json.loads(os.environ["IDENTITY"]); assert value["attestation"] == "git-clean", value'
     - name: Run tests
       run: stack test --system-ghc
+    - name: Run executable replay harness
+      run: /bin/sh scripts/test-replay-harness.sh
+      working-directory: ${{ github.workspace }}
 
     # The deployment seam: generate a *real* catalog and drive the production
     # settings parser, capabilities handler and toEncoding over it, rather than

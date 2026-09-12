@@ -72,6 +72,24 @@ spec = sequential $ describe "deterministic replay file handling" do
         BSL8.writeFile original "mutated"
         expectIOExceptionContaining "changed" $ revalidateReplayInputs [opened]
 
+  it "rejects retargeting the caller-provided symlink input parent" $
+    withWorkspace "input-parent-retarget" \workspace -> do
+      let firstParent = workspace </> "first"
+          secondParent = workspace </> "second"
+          inputParent = workspace </> "input"
+          input = inputParent </> "source"
+      createDirectory firstParent
+      createDirectory secondParent
+      BSL8.writeFile (firstParent </> "source") "first"
+      BSL8.writeFile (secondParent </> "source") "second"
+      createDirectoryLink firstParent inputParent
+      withReplayInput input \opened -> do
+        replayInputBytes opened `shouldBe` "first"
+        removeFile inputParent
+        createDirectoryLink secondParent inputParent
+        replayInputBytes opened `shouldBe` "first"
+        expectIOExceptionContaining "parent changed" $ revalidateReplayInputs [opened]
+
   it "rejects path, case, hard-link, directory, symlink, and special output aliases" $
     withWorkspace "output-types" \workspace -> do
       let input = workspace </> "source.json"

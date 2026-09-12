@@ -70,6 +70,9 @@ type FileIdentity = (DeviceID, FileID)
 data ReplayInput = ReplayInput
   { replayInputOriginal :: FilePath
   , replayInputCanonical :: FilePath
+  , replayInputParentSpelling :: FilePath
+  , replayInputParent :: FilePath
+  , replayInputParentIdentity :: FileIdentity
   , replayInputDescriptor :: Fd
   , replayInputIdentity :: FileIdentity
   , replayInputBytes :: BS.ByteString
@@ -162,6 +165,18 @@ openReplayInput original = do
   when (null fileName || fileName == "." || fileName == "..") $
     replayOutputFailure $ "invalid replay input path: " <> original
   parent <- canonicalizePath parentSpelling `catch` pathFailure "resolve" original
+  parentStatus <- getFileStatus parent `catch` pathFailure "resolve" original
+  spelledParentStatus <-
+    getFileStatus parentSpelling `catch` pathFailure "resolve" original
+  unless (isDirectory parentStatus) $
+    replayOutputFailure $ "replay input parent is not a directory: " <> original
+  unless
+    ( isDirectory spelledParentStatus
+        && statusIdentity spelledParentStatus == statusIdentity parentStatus
+    )
+    $ replayOutputFailure
+    $ "replay input parent changed while it was resolved: "
+    <> original
   let canonical = parent </> fileName
       flags = defaultFileFlags {nofollow = True, cloexec = True, nonBlock = True}
   bracketOnError
@@ -171,7 +186,13 @@ openReplayInput original = do
       status <- getFdStatus fd
       unless (isRegularFile status) $
         replayOutputFailure $ "replay input is not a regular file: " <> original
-      verifyInputPath original canonical $ statusIdentity status
+      verifyInputPath
+        original
+        parentSpelling
+        parent
+        (statusIdentity parentStatus)
+        canonical
+        (statusIdentity status)
       bytes <- readDescriptor fd
       finalStatus <- getFdStatus fd
       unless (isRegularFile finalStatus && statusIdentity finalStatus == statusIdentity status) $
@@ -180,6 +201,9 @@ openReplayInput original = do
         ReplayInput
           { replayInputOriginal = original
           , replayInputCanonical = canonical
+          , replayInputParentSpelling = parentSpelling
+          , replayInputParent = parent
+          , replayInputParentIdentity = statusIdentity parentStatus
           , replayInputDescriptor = fd
           , replayInputIdentity = statusIdentity status
           , replayInputBytes = bytes
@@ -191,7 +215,13 @@ revalidateReplayInputs = traverse_ \input -> do
   status <- getFdStatus input.replayInputDescriptor
   unless (isRegularFile status && statusIdentity status == input.replayInputIdentity) $
     changedInput input
-  verifyInputPath input.replayInputOriginal input.replayInputCanonical input.replayInputIdentity
+  verifyInputPath
+    input.replayInputOriginal
+    input.replayInputParentSpelling
+    input.replayInputParent
+    input.replayInputParentIdentity
+    input.replayInputCanonical
+    input.replayInputIdentity
   currentBytes <- readDescriptor input.replayInputDescriptor
   unless (sha256Strict currentBytes == input.replayInputSha256) $ changedInput input
 
@@ -206,11 +236,43 @@ readDescriptor fd = do
         if isEOFError err then pure BS.empty else throwIO (err :: IOException)
     if BS.null chunk then pure chunks else go (chunk : chunks)
 
-verifyInputPath :: FilePath -> FilePath -> FileIdentity -> IO ()
-verifyInputPath original canonical expected = do
+verifyInputPath
+  :: FilePath
+  -> FilePath
+  -> FilePath
+  -> FileIdentity
+  -> FilePath
+  -> FileIdentity
+  -> IO ()
+verifyInputPath original parentSpelling parent expectedParent canonical expectedInput = do
+  spelledParentStatus <-
+    getFileStatus parentSpelling `catch` pathFailure "revalidate" original
+  unless
+    ( isDirectory spelledParentStatus
+        && statusIdentity spelledParentStatus == expectedParent
+    )
+    $ replayOutputFailure
+    $ "replay input parent changed during execution: "
+    <> original
+  parentStatus <-
+    getSymbolicLinkStatus parent `catch` pathFailure "revalidate" original
+  unless
+    ( isDirectory parentStatus
+        && not (isSymbolicLink parentStatus)
+        && statusIdentity parentStatus == expectedParent
+    )
+    $ replayOutputFailure
+    $ "replay input parent changed during execution: "
+    <> original
   status <- getSymbolicLinkStatus canonical `catch` pathFailure "revalidate" original
-  unless (isRegularFile status && not (isSymbolicLink status) && statusIdentity status == expected) $
-    replayOutputFailure $ "replay input changed during execution: " <> original
+  unless
+    ( isRegularFile status
+        && not (isSymbolicLink status)
+        && statusIdentity status == expectedInput
+    )
+    $ replayOutputFailure
+    $ "replay input changed during execution: "
+    <> original
 
 changedInput :: ReplayInput -> IO a
 changedInput input =
