@@ -66,6 +66,8 @@ instance FromJSON ReplayBuildIdentity where
     void $ parseGitSha "build gitRevision" replayBuildGitRevision
     void $ parseGitSha "build gitTree" replayBuildGitTree
     void $ parseHash "build sourceSha256" 64 replayBuildSourceSha256
+    unless (value == toJSON build) $
+      fail "replay build identity contains non-canonical or unknown fields"
     pure build
 
 validateReplayBuildIdentity :: ReplayBuildIdentity -> Either String ()
@@ -74,9 +76,13 @@ validateReplayBuildIdentity ReplayBuildIdentity {..} =
     ReplayBuildUnattested ->
       Left "backend build has no build attestation for its embedded source identity"
     ReplayBuildGitClean
-      | not replayBuildSourceClean ->
+      | replayBuildSourceClean -> Right ()
+      | otherwise ->
           Left "backend build claims a clean-Git attestation for dirty sources"
-    _ -> Right ()
+    ReplayBuildSourceSha256
+      | replayBuildSourceClean ->
+          Left "backend build claims a source-SHA attestation for clean sources"
+      | otherwise -> Right ()
 
 validateCleanReplayBuildIdentity :: ReplayBuildIdentity -> Either String ()
 validateCleanReplayBuildIdentity identity@ReplayBuildIdentity {..} = do

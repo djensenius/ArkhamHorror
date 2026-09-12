@@ -160,8 +160,75 @@ spec = describe "deterministic replay checkpoint harness" do
       , validateReplayBuildIdentity
           fixtureBuild {replayBuildSourceClean = False, replayBuildAttestation = ReplayBuildGitClean}
       , validateReplayBuildIdentity
+          fixtureBuild {replayBuildSourceClean = True, replayBuildAttestation = ReplayBuildSourceSha256}
+      , validateReplayBuildIdentity
           fixtureBuild {replayBuildSourceClean = False, replayBuildAttestation = ReplayBuildUnattested}
       ]
+
+  it "rejects unknown fields throughout exact replay plans" do
+    let checkpoint = planCheckpointValue
+        answer =
+          Aeson.object
+            [ "tag" Aeson..= ("Answer" :: Text)
+            , "contents"
+                Aeson..= Aeson.object
+                  [ "choice" Aeson..= (0 :: Int)
+                  , "playerId" Aeson..= ("00000000-0000-0000-0000-000000000001" :: Text)
+                  , "questionVersion" Aeson..= (1 :: Int)
+                  ]
+            ]
+        step expected value =
+          Aeson.object
+            [ "expect" Aeson..= expected
+            , "answer" Aeson..= value
+            ]
+        withAnswers values =
+          mapRoot
+            (KeyMap.insert "answers" $ Aeson.toJSON values)
+            (planValue 1 "answers" True)
+        validPlan = withAnswers [step checkpoint answer]
+        addUnknown = mapRoot $ KeyMap.insert "ignoredTamper" Aeson.Null
+        sourceUnknown =
+          mapRoot
+            (adjustKey "source" addUnknown)
+            validPlan
+        buildUnknown =
+          mapRoot
+            ( adjustKey "source"
+                $ mapRoot
+                $ adjustKey "replayBuild" addUnknown
+            )
+            validPlan
+        stopUnknown =
+          mapRoot
+            (adjustKey "stopAt" addUnknown)
+            validPlan
+        stepUnknown =
+          withAnswers [addUnknown $ step checkpoint answer]
+        expectedUnknown =
+          withAnswers [step (addUnknown checkpoint) answer]
+        answerUnknown =
+          withAnswers [step checkpoint $ addUnknown answer]
+        answerContentsUnknown =
+          withAnswers
+            [ step checkpoint
+                $ mapRoot
+                  (adjustKey "contents" addUnknown)
+                  answer
+            ]
+    decodeReplayPlan (encodeStrict validPlan) `shouldSatisfy` isRight
+    traverse_
+      (`shouldSatisfy` isLeft)
+      [ decodeReplayPlan $ encodeStrict $ addUnknown validPlan
+      , decodeReplayPlan $ encodeStrict sourceUnknown
+      , decodeReplayPlan $ encodeStrict buildUnknown
+      , decodeReplayPlan $ encodeStrict stopUnknown
+      , decodeReplayPlan $ encodeStrict stepUnknown
+      , decodeReplayPlan $ encodeStrict expectedUnknown
+      , decodeReplayPlan $ encodeStrict answerUnknown
+      , decodeReplayPlan $ encodeStrict answerContentsUnknown
+      ]
+    pure () :: IO ()
 
   it "requires the exact retained current step, including zero, and preserves its queue" do
     let step0 = fixtureStep 0 [Noop]
@@ -468,9 +535,11 @@ staleBuild :: ReplayBuildIdentity
 staleBuild = fixtureBuild {replayBuildSourceSha256 = T.replicate 64 "f"}
 
 planBytes :: Int -> Text -> Bool -> ByteString
-planBytes schema mode includeAnswers =
-  encodeStrict
-    $ Aeson.object
+planBytes schema mode includeAnswers = encodeStrict $ planValue schema mode includeAnswers
+
+planValue :: Int -> Text -> Bool -> Aeson.Value
+planValue schema mode includeAnswers =
+  Aeson.object
     $ [ "schemaVersion" Aeson..= schema
       , "mode" Aeson..= mode
       , "source"
@@ -480,17 +549,20 @@ planBytes schema mode includeAnswers =
             (GitSha $ T.replicate 40 "b")
             fixtureBuild
             replayContractSchemaRevision
-      , "stopAt"
-          Aeson..= Aeson.object
-            [ "type" Aeson..= ("question" :: Text)
-            , "name" Aeson..= ("target" :: Text)
-            , "questionVersion" Aeson..= (1 :: Int)
-            , "playerId" Aeson..= ("00000000-0000-0000-0000-000000000001" :: Text)
-            , "promptTag" Aeson..= ("ChooseOne" :: Text)
-            , "promptSha256" Aeson..= T.replicate 64 "d"
-            ]
+      , "stopAt" Aeson..= planCheckpointValue
       ]
       <> ["answers" Aeson..= ([] :: [Aeson.Value]) | includeAnswers]
+
+planCheckpointValue :: Aeson.Value
+planCheckpointValue =
+  Aeson.object
+    [ "type" Aeson..= ("question" :: Text)
+    , "name" Aeson..= ("target" :: Text)
+    , "questionVersion" Aeson..= (1 :: Int)
+    , "playerId" Aeson..= ("00000000-0000-0000-0000-000000000001" :: Text)
+    , "promptTag" Aeson..= ("ChooseOne" :: Text)
+    , "promptSha256" Aeson..= T.replicate 64 "d"
+    ]
 
 mapRoot :: (Aeson.Object -> Aeson.Object) -> Aeson.Value -> Aeson.Value
 mapRoot f = \case

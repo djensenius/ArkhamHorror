@@ -105,6 +105,8 @@ instance FromJSON ReplaySource where
     void $ parseSha256 "source exportSha256" replaySourceExportSha256
     void $ parseGitSha "source gameGitRevision" replaySourceGameGitRevision
     when (T.null replaySourceSchemaRevision) $ fail "source schemaRevision must not be empty"
+    unless (value == toJSON source) $
+      fail "replay source contains non-canonical or unknown fields"
     pure source
 
 data QuestionCheckpoint = QuestionCheckpoint
@@ -128,18 +130,26 @@ instance ToJSON QuestionCheckpoint where
       ]
 
 instance FromJSON QuestionCheckpoint where
-  parseJSON = withObject "QuestionCheckpoint" \o -> do
-    checkpointType :: Text <- o .: "type"
-    unless (checkpointType == "question") $ fail "checkpoint type must be \"question\""
-    checkpointName <- o .: "name"
-    when (T.null checkpointName) $ fail "checkpoint name must not be empty"
-    checkpointQuestionVersion <- o .: "questionVersion"
-    when (checkpointQuestionVersion <= 0) $ fail "checkpoint questionVersion must be positive"
-    checkpointPlayerId <- o .: "playerId"
-    checkpointPromptTag <- o .: "promptTag"
-    when (T.null checkpointPromptTag) $ fail "checkpoint promptTag must not be empty"
-    checkpointPromptSha256 <- o .: "promptSha256" >>= parseSha256 "checkpoint promptSha256"
-    pure QuestionCheckpoint {..}
+  parseJSON value = do
+    checkpoint <-
+      withObject "QuestionCheckpoint"
+        ( \o -> do
+            checkpointType :: Text <- o .: "type"
+            unless (checkpointType == "question") $ fail "checkpoint type must be \"question\""
+            checkpointName <- o .: "name"
+            when (T.null checkpointName) $ fail "checkpoint name must not be empty"
+            checkpointQuestionVersion <- o .: "questionVersion"
+            when (checkpointQuestionVersion <= 0) $ fail "checkpoint questionVersion must be positive"
+            checkpointPlayerId <- o .: "playerId"
+            checkpointPromptTag <- o .: "promptTag"
+            when (T.null checkpointPromptTag) $ fail "checkpoint promptTag must not be empty"
+            checkpointPromptSha256 <- o .: "promptSha256" >>= parseSha256 "checkpoint promptSha256"
+            pure QuestionCheckpoint {..}
+        )
+        value
+    unless (value == toJSON checkpoint) $
+      fail "question checkpoint contains non-canonical or unknown fields"
+    pure checkpoint
 
 data ReplayAnswerStep = ReplayAnswerStep
   { replayAnswerExpected :: QuestionCheckpoint
@@ -148,10 +158,12 @@ data ReplayAnswerStep = ReplayAnswerStep
   deriving stock Show
 
 instance FromJSON ReplayAnswerStep where
-  parseJSON = withObject "ReplayAnswerStep" \o ->
-    ReplayAnswerStep
-      <$> o .: "expect"
-      <*> o .: "answer"
+  parseJSON = withObject "ReplayAnswerStep" \o -> do
+    requireExactObjectFields "replay answer step" ["expect", "answer"] o
+    replayAnswerExpected <- o .: "expect"
+    answerValue <- o .: "answer"
+    replayAnswerValue <- parseExactReplayAnswer answerValue
+    pure ReplayAnswerStep {..}
 
 data ReplayPlan = ReplayPlan
   { replayPlanSchemaVersion :: Int
@@ -164,6 +176,10 @@ data ReplayPlan = ReplayPlan
 
 instance FromJSON ReplayPlan where
   parseJSON = withObject "ReplayPlan" \o -> do
+    requireExactObjectFields
+      "replay plan"
+      ["schemaVersion", "mode", "source", "answers", "stopAt"]
+      o
     replayPlanSchemaVersion <- o .: "schemaVersion"
     unless (replayPlanSchemaVersion == 1) $ fail "replay plan schemaVersion must be 1"
     replayPlanMode <- o .: "mode"
@@ -637,6 +653,56 @@ isSyntheticCheckpointExport
     } =
     gameId == GameEntity.ArkhamGameKey UUID.nil
 isSyntheticCheckpointExport _ = False
+
+parseExactReplayAnswer :: Value -> Parser Answer
+parseExactReplayAnswer value = do
+  answer <- genericParseJSON (defaultOptions {rejectUnknownFields = True}) value
+  withObject
+    "Replay Answer"
+    (requireExactObjectFields "replay answer" $ replayAnswerRootFields answer)
+    value
+  case answer of
+    Answer _ ->
+      requireExactAnswerContents
+        "Answer contents"
+        ["choice", "playerId", "questionVersion"]
+        value
+    PaymentAmountsAnswer _ ->
+      requireExactAnswerContents
+        "PaymentAmountsAnswer contents"
+        ["amounts", "playerId", "questionVersion"]
+        value
+    AmountsAnswer _ ->
+      requireExactAnswerContents
+        "AmountsAnswer contents"
+        ["amounts", "playerId", "questionVersion"]
+        value
+    CampaignSettingsAnswer _ ->
+      requireExactAnswerContents
+        "CampaignSettingsAnswer contents"
+        ["keys", "counts", "sets", "options"]
+        value
+    _ -> pure ()
+  pure answer
+
+replayAnswerRootFields :: Answer -> [Key]
+replayAnswerRootFields = \case
+  DeckAnswer {} -> ["tag", "deckId", "playerId"]
+  DeckListAnswer {} -> ["tag", "deckList", "playerId"]
+  ExchangeAmountsAnswer {} ->
+    ["tag", "source", "fromInvestigator", "toInvestigator", "token", "amount"]
+  _ -> ["tag", "contents"]
+
+requireExactAnswerContents :: String -> [Key] -> Value -> Parser ()
+requireExactAnswerContents label fields =
+  withObject "Replay Answer" \o -> do
+    contents <- o .: "contents"
+    withObject label (requireExactObjectFields label fields) contents
+
+requireExactObjectFields :: String -> [Key] -> Object -> Parser ()
+requireExactObjectFields label fields objectValue =
+  unless (all (`elem` fields) $ KeyMap.keys objectValue) $
+    fail $ label <> " contains non-canonical or unknown fields"
 
 parseSha256 :: String -> Text -> Parser Text
 parseSha256 label value =

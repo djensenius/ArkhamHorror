@@ -577,8 +577,10 @@ Vue client and runtime behavior are unchanged.
 
 Revision `0.1.34` records the deterministic replay harness's governed
 `schemaRevision` binding and refreshes locale-catalog provenance after its mise
-tasks became declared generator inputs. It adds no production endpoint or
-native-client payload shape.
+tasks became declared generator inputs. It adds the authenticated
+`/api/v1/arkham/games/{gameId}/replay-attestation` authority endpoint, but no
+production replay-execution route or new `PublicGame`, question, or Answer
+payload shape.
 
 ## Game creation and multiplayer lobbies
 

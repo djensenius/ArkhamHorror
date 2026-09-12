@@ -83,6 +83,9 @@ BEGIN
      WHERE conname = 'arkham_replay_attestations_receipt_object'
        AND conrelid = 'public.arkham_replay_attestations'::regclass
        AND contype = 'c'
+       AND pg_get_constraintdef(oid, true)
+         = 'CHECK (jsonb_typeof(receipt) = ''object''::text)'
+       AND convalidated
   ) THEN
     RAISE EXCEPTION 'arkham_replay_attestations must require an object receipt';
   END IF;
