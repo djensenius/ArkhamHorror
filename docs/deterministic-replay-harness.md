@@ -85,6 +85,9 @@ an attestation (`git-clean`, exact build-system `source-sha256`, or
 `unattested`). Git metadata is a compile dependency and replay `Main` is
 force-recompiled; runtime Git state is never trusted. Dirty development process
 tests explicitly rebuild against the previously embedded exact source digest.
+Untracked or ignored non-regular entries are never opened or registered as
+compiler dependencies, keep the source dirty, and force an unattested identity
+even when a source digest was supplied.
 Unattested, false-clean, stale, or mismatched identities reject replay.
 `arkham-replay --build-identity` prints this embedded identity.
 

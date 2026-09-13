@@ -29,6 +29,14 @@ import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath qualified as FilePath
 import System.Posix.Files qualified as Posix
+import System.Posix.IO (
+  OpenFileFlags (..),
+  OpenMode (ReadOnly),
+  closeFd,
+  defaultFileFlags,
+  openFd,
+ )
+import System.Posix.IO.ByteString (fdRead)
 import System.Process.Typed qualified as Process
 
 data ReplayBuildAttestation
@@ -125,20 +133,25 @@ discoverBuildIdentity =
     tree <- decodeGitOutput "tree" treeBytes
     status <- gitRawBytes root ["status", "--porcelain=v1", "--untracked-files=all", "--", "backend"]
     diffBytes <- gitRawBytes root ["diff", "--binary", "--no-ext-diff", "HEAD", "--", "backend"]
-    untracked <- gitPathEntries root ["ls-files", "--others", "--exclude-standard", "-z", "--", "backend"]
-    ignored <-
+    untrackedCandidates <-
+      gitPathEntries root ["ls-files", "--others", "--exclude-standard", "-z", "--", "backend"]
+    untracked <- filterM (isRegularFile . (root </>) . snd) untrackedCandidates
+    ignoredCandidates <-
       gitPathEntries
         root
         (["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"] <> compiledSourceRoots)
-        >>= filterM (isRegularFile . (root </>) . snd)
+    ignored <- filterM (isRegularFile . (root </>) . snd) ignoredCandidates
     untrackedBytes <- fmap BS.concat . for (List.sortOn fst $ untracked <> ignored) $ \(pathBytes, path) ->
-      frameSourceRecord pathBytes <$> BS.readFile (root </> path)
+      frameSourceRecord pathBytes <$> readRegularFile (root </> path)
     let source =
           hashBytes
             $ BS.intercalate "\0" [revisionBytes, treeBytes, diffBytes]
             <> "\0"
             <> untrackedBytes
-        clean = BS.null status && null ignored
+        clean = BS.null status && null ignoredCandidates
+        hasUnsupportedSourceEntry =
+          length untracked /= length untrackedCandidates
+            || length ignored /= length ignoredCandidates
     expected <- lookupEnv "ARKHAM_REPLAY_ATTEST_SOURCE_SHA256"
     gitDependencyPaths <- gitDependencies root
     sourceDependencyPaths <- sourceDependencies root (snd <$> untracked) (snd <$> ignored)
@@ -151,7 +164,10 @@ discoverBuildIdentity =
           clean
           ( if clean
               then ReplayBuildGitClean
-              else if expected == Just (T.unpack source) then ReplayBuildSourceSha256 else ReplayBuildUnattested
+              else
+                if not hasUnsupportedSourceEntry && expected == Just (T.unpack source)
+                  then ReplayBuildSourceSha256
+                  else ReplayBuildUnattested
           )
       , dependencies
       )
@@ -209,9 +225,26 @@ sourceDependencies root untracked ignored = do
   pure $ (root </>) <$> List.sort regular
 
 isRegularFile :: FilePath -> IO Bool
-isRegularFile path = do
-  exists <- doesFileExist path
-  if exists then Posix.isRegularFile <$> Posix.getFileStatus path else pure False
+isRegularFile path =
+  (Posix.isRegularFile <$> Posix.getSymbolicLinkStatus path)
+    `catch` \(_ :: IOException) -> pure False
+
+readRegularFile :: FilePath -> IO BS.ByteString
+readRegularFile path =
+  bracket
+    (openFd path ReadOnly defaultFileFlags {nofollow = True, cloexec = True, nonBlock = True})
+    closeFd
+    \fd -> do
+      status <- Posix.getFdStatus fd
+      unless (Posix.isRegularFile status) $
+        ioError $ userError $ "build identity source is not a regular file: " <> path
+      BS.concat . reverse <$> go fd []
+ where
+  go fd chunks = do
+    chunk <-
+      fdRead fd 65536 `catch` \err ->
+        if isEOFError err then pure BS.empty else throwIO (err :: IOException)
+    if BS.null chunk then pure chunks else go fd (chunk : chunks)
 
 gitDependencies :: FilePath -> IO [FilePath]
 gitDependencies root = do

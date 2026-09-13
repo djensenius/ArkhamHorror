@@ -28,6 +28,40 @@ run_replay_build() {
       "$SETUP" --builddir="$DIST_ABS" build exe:arkham-replay --ghc-options "")
   fi
 }
+run_replay_build_bounded() {
+  python3 - "$ROOT/backend/arkham-api" "$SETUP" "$DIST_ABS" "${1-}" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+
+working_directory, setup, build_directory, expected = sys.argv[1:]
+environment = os.environ.copy()
+if expected:
+    environment["ARKHAM_REPLAY_ATTEST_SOURCE_SHA256"] = expected
+process = subprocess.Popen(
+    [
+        setup,
+        f"--builddir={build_directory}",
+        "build",
+        "exe:arkham-replay",
+        "--ghc-options",
+        "",
+    ],
+    cwd=working_directory,
+    env=environment,
+    start_new_session=True,
+)
+try:
+    return_code = process.wait(timeout=180)
+except subprocess.TimeoutExpired:
+    os.killpg(process.pid, signal.SIGKILL)
+    process.wait()
+    print("replay build exceeded the 180-second regression bound", file=sys.stderr)
+    raise SystemExit(124)
+raise SystemExit(return_code)
+PY
+}
 build_replay() {
   rm -f "$OBJECT_DIR/Main.o" "$OBJECT_DIR/Main.hi" \
     "$OBJECT_DIR/Main.dyn_o" "$OBJECT_DIR/Main.dyn_hi" "$EXE"
@@ -41,12 +75,17 @@ identity_clean() {
   printf '%s' "$1" |
     python3 -c 'import json,sys; print(str(json.load(sys.stdin)["sourceClean"]).lower())'
 }
+identity_attestation() {
+  printf '%s' "$1" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["attestation"])'
+}
 test_build_identity_source_dependencies() {
   baseline=$1
   baseline_sha=$(identity_sha "$baseline")
   probe_dir=backend/arkham-api/app-replay/tmp
   ignored_probe="$probe_dir/ReplayBuildIdentityIgnoredProbe.hs"
   untracked_probe=backend/arkham-api/replay-build-identity-untracked-probe.txt
+  untracked_fifo=backend/arkham-api/replay-build-identity-untracked-probe.fifo
   framing_probe_a=backend/arkham-api/replay-build-identity-frame-a.bin
   framing_probe_b=backend/arkham-api/replay-build-identity-frame-b.bin
   unicode_path_probe_a="$probe_dir/ReplayBuildIdentity$(printf '\320\220')Probe.hs"
@@ -56,6 +95,7 @@ test_build_identity_source_dependencies() {
   interface_dump="$DIST_ABS/build-identity-main.iface"
   test ! -e "$ignored_probe"
   test ! -e "$untracked_probe"
+  test ! -e "$untracked_fifo"
   test ! -e "$framing_probe_a"
   test ! -e "$framing_probe_b"
   test ! -e "$unicode_path_probe_a"
@@ -64,7 +104,7 @@ test_build_identity_source_dependencies() {
   cp "$tracked_byte_probe" "$tracked_byte_backup"
   sleep 1
   mkdir -p "$probe_dir"
-  trap 'cp "$tracked_byte_backup" "$tracked_byte_probe"; rm -f "$tracked_byte_backup" "$ignored_probe" "$untracked_probe" "$framing_probe_a" "$framing_probe_b" "$unicode_path_probe_a" "$unicode_path_probe_b" "$interface_dump"; rmdir "$probe_dir" 2>/dev/null || true' 0 HUP INT TERM
+  trap 'cp "$tracked_byte_backup" "$tracked_byte_probe"; rm -f "$tracked_byte_backup" "$ignored_probe" "$untracked_probe" "$untracked_fifo" "$framing_probe_a" "$framing_probe_b" "$unicode_path_probe_a" "$unicode_path_probe_b" "$interface_dump"; rmdir "$probe_dir" 2>/dev/null || true' 0 HUP INT TERM
 
   cat >"$ignored_probe" <<'EOF'
 module ReplayBuildIdentityIgnoredProbe where
@@ -78,6 +118,27 @@ EOF
     printf '%s\n' "build identity regression probe unexpectedly ignored: $untracked_probe" >&2
     exit 1
   fi
+  mkfifo "$untracked_fifo"
+  if git check-ignore -q -- "$untracked_fifo"; then
+    printf '%s\n' "build identity FIFO probe unexpectedly ignored: $untracked_fifo" >&2
+    exit 1
+  fi
+  rm -f "$OBJECT_DIR/Main.o" "$OBJECT_DIR/Main.hi" \
+    "$OBJECT_DIR/Main.dyn_o" "$OBJECT_DIR/Main.dyn_hi" "$EXE"
+  if ! run_replay_build_bounded; then
+    printf '%s\n' "build identity blocked or failed on an untracked FIFO" >&2
+    exit 1
+  fi
+  special=$("$EXE" --build-identity)
+  test "$(identity_clean "$special")" = false
+  test "$(identity_attestation "$special")" = unattested
+  $STACK exec -- ghc --show-iface "$OBJECT_DIR/Main.hi" >"$interface_dump"
+  if grep -F "addDependentFile \"$ROOT/$untracked_fifo\"" "$interface_dump" >/dev/null; then
+    printf '%s\n' "build identity registered an untracked FIFO as a source dependency" >&2
+    exit 1
+  fi
+  rm -f "$interface_dump" "$untracked_fifo"
+
   run_replay_build
   ignored=$("$EXE" --build-identity)
   ignored_sha=$(identity_sha "$ignored")
