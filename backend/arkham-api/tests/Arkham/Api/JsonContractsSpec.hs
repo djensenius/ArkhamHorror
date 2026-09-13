@@ -13,9 +13,18 @@ import Arkham.Achievement.Types
   , TheDunwichLegacyAchievement (TheGangsAllHere)
   )
 import Arkham.Act (lookupAct)
+import Arkham.Agenda.Types (AgendaAttrs (agendaDoom), Field (AgendaFlipped))
 import Arkham.Action qualified as Action
 import Arkham.Ability (abilityActions)
-import Arkham.Ability.Types (abilityCardCode, abilityIndex, abilitySource)
+import Arkham.Ability.Type (AbilityType (ForcedAbility))
+import Arkham.Ability.Types
+  ( abilityCardCode
+  , abilityIndex
+  , abilityRequestor
+  , abilitySource
+  , abilityType
+  , abilityWindow
+  )
 import Arkham.Attack.Types
   ( AttackTarget (SingleAttackTarget)
   , EnemyAttackDetails (..)
@@ -49,9 +58,15 @@ import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending)
 import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
 import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Helpers.Message qualified as MessageHelpers (createEnemy)
+import Arkham.Helpers.Scenario (scenarioField)
 import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
-import Arkham.Matcher (AssetMatcher (AnyAsset))
+import Arkham.Matcher
+  ( AssetMatcher (AnyAsset)
+  , CardMatcher (AnyCard)
+  , TreacheryMatcher (TreacheryWithId)
+  , WindowMatcher (RoundEnds)
+  )
 import Arkham.Message qualified as Msg (storyWithCards)
 import Arkham.Message.Lifted.Choose (chooseTargetM)
 import Arkham.Message.Lifted.Location (unsafeReveal)
@@ -62,11 +77,16 @@ import Arkham.Phase
   ( EnemyPhaseStep (ResolveAttacksStep)
   , InvestigationPhaseStep (InvestigatorTakesActionStep)
   , MythosPhaseStep (EachInvestigatorDrawsEncounterCardStep)
-  , Phase (EnemyPhase, InvestigationPhase, MythosPhase)
-  , PhaseStep (EnemyPhaseStep, InvestigationPhaseStep, MythosPhaseStep)
+  , Phase (EnemyPhase, InvestigationPhase, MythosPhase, UpkeepPhase)
+  , PhaseStep (EnemyPhaseStep, InvestigationPhaseStep, MythosPhaseStep, UpkeepPhaseStep)
+  , UpkeepPhaseStep (UpkeepPhaseEndsStep)
   )
+import Arkham.Replay.Checkpoint (canonicalQuestionSha256)
 import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
-import Arkham.Scenario.Types (Scenario)
+import Arkham.Scenario.Types (Field (ScenarioDiscard), Scenario)
+import Arkham.Timing qualified as Timing
+import Arkham.Treachery.CardDefs.NightOfTheZealot.StrikingFear qualified as TreacheryCards
+import Arkham.Window qualified as Window
 import Arkham.UltimatumsAndBoons.Types
   ( Boon (BoonOfHades)
   , Ultimatum (UltimatumOfChaos)
@@ -722,6 +742,193 @@ fixtureEngageActionQuestion =
   fromMaybe
     (error "fixtureEngageActionQuestion: fixture player has no active question")
     (Map.lookup fixturePlayerId $ gameQuestion fixtureEngageActionGame)
+
+fixtureRoundTransitionTreacheryId :: TreacheryId
+fixtureRoundTransitionTreacheryId =
+  TreacheryId
+    $ fromMaybe
+      (error "fixtureRoundTransitionTreacheryId: invalid UUID")
+      (UUID.fromText "9e2f9137-ff19-4993-b001-acc24d0d3736")
+
+fixtureRoundTransitionTreacheryCard :: Card
+fixtureRoundTransitionTreacheryCard =
+  lookupCard
+    TreacheryCards.dissonantVoices
+    (unsafeMakeCardId $ UUID.fromWords 0 0 0 906)
+
+fixtureRoundTransitionHand :: [Card]
+fixtureRoundTransitionHand =
+  [ case card of
+      PlayerCard playerCard ->
+        PlayerCard $ playerCard {pcOwner = Just $ InvestigatorId "01001"}
+      other -> other
+  | card <- fixtureMulliganCards
+  ]
+
+fixtureRoundTransitionAgendaId :: AgendaId
+fixtureRoundTransitionAgendaId = AgendaId "01105"
+
+{- | Reproduce the first round transition after the Engage slice using only
+production messages. The deterministic board is placed at the real end-of-
+upkeep boundary with two doom on Agenda 1, a real Dissonant Voices in Roland's
+threat area, and a non-empty real hand. The ordinary EndRoundWindow/EndRound
+and Mythos phase queues then generate Q24-Q27 without constructing any UI
+choice or nested message in fixture code.
+-}
+prepareFixtureRoundTransition :: TestAppT ()
+prepareFixtureRoundTransition = do
+  let iid = InvestigatorId "01001"
+  overTest \game ->
+    game
+      { gameQuestion = mempty
+      , gameScenarioSteps = 23
+      , gamePhase = UpkeepPhase
+      , gamePhaseStep = Just $ UpkeepPhaseStep UpkeepPhaseEndsStep
+      , gameCards =
+          foldr
+            (\card -> Map.insert (toCardId card) card)
+            (gameCards game)
+            fixtureRoundTransitionHand
+      }
+  overTest
+    ( entitiesL
+        . investigatorsL
+        . ix iid
+        %~ overAttrs
+          ( \attrs ->
+              attrs
+                { investigatorHand = fixtureRoundTransitionHand
+                }
+          )
+    )
+  overTest
+    ( entitiesL
+        . agendasL
+        . ix fixtureRoundTransitionAgendaId
+        %~ overAttrs (\attrs -> attrs {agendaDoom = 2})
+    )
+  pushAndRunAll
+    [ CreateTreacheryAt
+        fixtureRoundTransitionTreacheryId
+        fixtureRoundTransitionTreacheryCard
+        (InThreatArea iid)
+    , EndRoundWindow
+    , EndRound
+    ]
+
+data RoundTransitionFixtures = RoundTransitionFixtures
+  { roundEndForcedGame :: Game
+  , agendaAdvanceGame :: Game
+  , agendaConsequenceGame :: Game
+  , agendaHorrorAssignmentGame :: Game
+  , horrorEncounterDrawGame :: Game
+  , dissonantVoicesWasDiscarded :: Bool
+  , agendaOneWasAdvanced :: Bool
+  , horrorBeforeAssignment :: Int
+  , horrorAfterAssignment :: Int
+  }
+
+fixtureRoundTransition :: RoundTransitionFixtures
+fixtureRoundTransition = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  prepareFixtureRoundTransition
+  roundEndForcedGame <- getGame
+  chooseOptionMatching "resolve Dissonant Voices at the end of the round" \case
+    AbilityLabel _ ability _ _ _ ->
+      abilitySource ability == TreacherySource fixtureRoundTransitionTreacheryId
+        && abilityIndex ability == 1
+    _ -> False
+  agendaAdvanceGame <- getGame
+  dissonantVoicesLeftPlay <-
+    selectNone $ TreacheryWithId fixtureRoundTransitionTreacheryId
+  encounterDiscard <- scenarioField ScenarioDiscard
+  let
+    dissonantVoicesWasDiscarded =
+      dissonantVoicesLeftPlay
+        && toCardCode fixtureRoundTransitionTreacheryCard
+          `elem` map toCardCode encounterDiscard
+  chooseOptionMatching "advance Agenda 1 with doom" \case
+    TargetLabel (AgendaTarget aid) [AdvanceAgendaBy aid' AgendaAdvancedWithDoom] ->
+      aid == fixtureRoundTransitionAgendaId && aid' == aid
+    _ -> False
+  agendaConsequenceGame <- getGame
+  agendaOneWasAdvanced <- field AgendaFlipped fixtureRoundTransitionAgendaId
+  horrorBeforeAssignment <- field InvestigatorHorror iid
+  chooseOptionMatching "take the What's Going On horror consequence" \case
+    Label "$nightOfTheZealot.theGathering.label.whatsGoingOn.horror" _ -> True
+    _ -> False
+  agendaHorrorAssignmentGame <- getGame
+  chooseOptionMatching "assign the agenda horror to Roland" \case
+    HorrorLabel iid' _ -> iid' == iid
+    _ -> False
+  horrorEncounterDrawGame <- getGame
+  horrorAfterAssignment <- field InvestigatorHorror iid
+  pure RoundTransitionFixtures {..}
+{-# NOINLINE fixtureRoundTransition #-}
+
+fixtureRoundEndForcedQuestion :: Question Message
+fixtureRoundEndForcedQuestion =
+  fromMaybe
+    (error "fixtureRoundEndForcedQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureRoundTransition.roundEndForcedGame)
+
+fixtureAgendaAdvanceQuestion :: Question Message
+fixtureAgendaAdvanceQuestion =
+  fromMaybe
+    (error "fixtureAgendaAdvanceQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureRoundTransition.agendaAdvanceGame)
+
+fixtureAgendaConsequenceQuestion :: Question Message
+fixtureAgendaConsequenceQuestion =
+  fromMaybe
+    (error "fixtureAgendaConsequenceQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureRoundTransition.agendaConsequenceGame)
+
+fixtureAgendaHorrorAssignmentQuestion :: Question Message
+fixtureAgendaHorrorAssignmentQuestion =
+  fromMaybe
+    (error "fixtureAgendaHorrorAssignmentQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureRoundTransition.agendaHorrorAssignmentGame)
+
+fixtureHorrorEncounterDrawQuestion :: Question Message
+fixtureHorrorEncounterDrawQuestion =
+  fromMaybe
+    (error "fixtureHorrorEncounterDrawQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureRoundTransition.horrorEncounterDrawGame)
+
+data DiscardRoundTransitionFixture = DiscardRoundTransitionFixture
+  { discardHandSizeBefore :: Int
+  , discardHandSizeAfter :: Int
+  , discardEncounterDrawGame :: Game
+  }
+
+fixtureDiscardRoundTransition :: DiscardRoundTransitionFixture
+fixtureDiscardRoundTransition = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  prepareFixtureRoundTransition
+  chooseOptionMatching "resolve Dissonant Voices at the end of the round" \case
+    AbilityLabel _ ability _ _ _ ->
+      abilitySource ability == TreacherySource fixtureRoundTransitionTreacheryId
+        && abilityIndex ability == 1
+    _ -> False
+  chooseOptionMatching "advance Agenda 1 with doom" \case
+    TargetLabel (AgendaTarget aid) [AdvanceAgendaBy aid' AgendaAdvancedWithDoom] ->
+      aid == fixtureRoundTransitionAgendaId && aid' == aid
+    _ -> False
+  discardHandSizeBefore <- length <$> field InvestigatorHand iid
+  chooseOptionMatching "take the What's Going On discard consequence" \case
+    Label "$nightOfTheZealot.theGathering.label.whatsGoingOn.discard" _ -> True
+    _ -> False
+  discardEncounterDrawGame <- getGame
+  discardHandSizeAfter <- length <$> field InvestigatorHand iid
+  pure DiscardRoundTransitionFixture {..}
+{-# NOINLINE fixtureDiscardRoundTransition #-}
+
+fixtureDiscardEncounterDrawQuestion :: Question Message
+fixtureDiscardEncounterDrawQuestion =
+  fromMaybe
+    (error "fixtureDiscardEncounterDrawQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureDiscardRoundTransition.discardEncounterDrawGame)
 
 {- | Advance the real enemy-phase flow one prompt beyond the regular attack.
 A fixed Ghoul Minion is created engaged with Roland because its printed attack
@@ -2080,6 +2287,204 @@ spec = describe "Native client contract fixtures" do
         Handled messages -> pushAndRunAll (ClearUI : messages)
       field Enemy.EnemyPlacement fixtureDamageAssignmentEnemyId
     placement `shouldBe` InThreatArea iid
+
+  it "matches every production round-transition prompt on both encoder paths and canonical replay digest" do
+    let
+      fixtures =
+        [ ( "question-round-end-forced-ability.json"
+          , fixtureRoundEndForcedQuestion
+          , "e52ee8942cce5602a7ae68a7f8cfd98ad77b7970893ab5216413170bc0b7de44"
+          )
+        , ( "question-agenda-advance.json"
+          , fixtureAgendaAdvanceQuestion
+          , "4d665ec3dfd3caf6dce7952ae289cae90310ca600601e3a7dbcdbb1a18727bd7"
+          )
+        , ( "question-agenda-consequence.json"
+          , fixtureAgendaConsequenceQuestion
+          , "15d2e7587a32b1ab4ba4c7bb2de77645c05b3e83c03595448d49e3540749689e"
+          )
+        , ( "question-agenda-horror-assignment.json"
+          , fixtureAgendaHorrorAssignmentQuestion
+          , "5c3ece0a8ceebbd8c2a883c89bb9db753427b198fc4f5f2c9d834b036f8fe4c9"
+          )
+        ]
+    for_ fixtures \(fileName, question, expectedDigest) -> do
+      fixture <- loadFixture fileName
+      Aeson.toJSON question `shouldBe` fixture
+      viaWireEncoding question `shouldBe` fixture
+      canonicalQuestionSha256 question `shouldBe` expectedDigest
+    map
+      gameScenarioSteps
+      [ fixtureRoundTransition.roundEndForcedGame
+      , fixtureRoundTransition.agendaAdvanceGame
+      , fixtureRoundTransition.agendaConsequenceGame
+      , fixtureRoundTransition.agendaHorrorAssignmentGame
+      ]
+      `shouldBe` [24, 25, 26, 27]
+
+  it "binds the round-end forced ability to Dissonant Voices and its exact window" do
+    let
+      iid = InvestigatorId "01001"
+      source = TreacherySource fixtureRoundTransitionTreacheryId
+    case fixtureRoundEndForcedQuestion of
+      WindowChooseOne
+        [ AbilityLabel
+            choiceIid
+            ability
+            windows
+            beforeMessages
+            messages
+          ] -> do
+            choiceIid `shouldBe` iid
+            abilitySource ability `shouldBe` source
+            abilityRequestor ability `shouldBe` source
+            abilityCardCode ability `shouldBe` toCardCode fixtureRoundTransitionTreacheryCard
+            abilityIndex ability `shouldBe` 1
+            abilityType ability `shouldBe` ForcedAbility (RoundEnds Timing.When)
+            abilityWindow ability `shouldBe` RoundEnds Timing.When
+            windows `shouldBe` [Window.mkWindow Timing.When Window.AtEndOfRound]
+            beforeMessages `shouldBe` []
+            messages `shouldBe` []
+      other ->
+        expectationFailure
+          $ "Expected the production Dissonant Voices round-end prompt, got "
+          <> show other
+
+  it "binds Agenda 1 advancement and both What's Going On consequences exactly" do
+    let
+      iid = InvestigatorId "01001"
+      source = AgendaSource fixtureRoundTransitionAgendaId
+    fixtureAgendaAdvanceQuestion
+      `shouldBe` ChooseOne
+        [ TargetLabel
+            (AgendaTarget fixtureRoundTransitionAgendaId)
+            [AdvanceAgendaBy fixtureRoundTransitionAgendaId AgendaAdvancedWithDoom]
+        ]
+    fixtureAgendaConsequenceQuestion
+      `shouldBe` ChooseOne
+        [ Label
+            "$nightOfTheZealot.theGathering.label.whatsGoingOn.horror"
+            [InvestigatorAssignDamage iid source DamageAny 0 2]
+        , Label
+            "$nightOfTheZealot.theGathering.label.whatsGoingOn.discard"
+            [AllRandomDiscard source AnyCard]
+        ]
+
+  it "binds the agenda-sourced two-horror assignment shape exactly" do
+    let
+      iid = InvestigatorId "01001"
+      source = AgendaSource fixtureRoundTransitionAgendaId
+      expectedMessages =
+        [ InvestigatorDamage iid source 0 2
+        , InvestigatorDoAssignDamage
+            iid
+            source
+            DamageAny
+            AnyAsset
+            0
+            0
+            []
+            [InvestigatorTarget iid, InvestigatorTarget iid]
+        ]
+    fixtureAgendaHorrorAssignmentQuestion
+      `shouldBe` QuestionWithSource
+        source
+        Nothing
+        ( QuestionLabel
+            "Assign 2 horror"
+            Nothing
+            (ChooseOne [HorrorLabel iid expectedMessages])
+        )
+
+  it "accepts only current versions for every governed round-transition choice" do
+    let
+      answerValue sourceIndex version =
+        Aeson.object
+          [ "tag" .= ("Answer" :: Text)
+          , "contents"
+              .= Aeson.object
+                [ "choice" .= sourceIndex
+                , "playerId" .= fixturePlayerId
+                , "questionVersion" .= version
+                ]
+          ]
+      assertVersionedChoice label game question sourceIndex =
+        case stripQuestionWrappers question of
+          ChooseOne choices -> case choices !!? sourceIndex of
+            Nothing ->
+              expectationFailure
+                $ label
+                <> ": missing source choice "
+                <> show sourceIndex
+            Just choice -> do
+              let checkAnswer version check =
+                    case Aeson.fromJSON (answerValue sourceIndex version) of
+                      Aeson.Error err ->
+                        expectationFailure
+                          $ label
+                          <> ": could not decode Answer: "
+                          <> err
+                      Aeson.Success answer ->
+                        handleAnswerPure game fixturePlayerId answer >>= check
+              checkAnswer (gameScenarioSteps game) \case
+                Handled messages -> messages `shouldBe` [uiToRun choice]
+                Unhandled reason ->
+                  expectationFailure
+                    $ label
+                    <> ": current Answer rejected: "
+                    <> Text.unpack reason
+              checkAnswer (gameScenarioSteps game - 1) \case
+                Unhandled reason -> reason `shouldBe` "Stale question"
+                Handled _ ->
+                  expectationFailure
+                    $ label
+                    <> ": a stale Answer must not resolve"
+          other ->
+            expectationFailure
+              $ label
+              <> ": expected a source-indexed ChooseOne prompt, got "
+              <> show other
+    assertVersionedChoice
+      "Q24 Dissonant Voices"
+      fixtureRoundTransition.roundEndForcedGame
+      fixtureRoundEndForcedQuestion
+      0
+    assertVersionedChoice
+      "Q25 agenda advance"
+      fixtureRoundTransition.agendaAdvanceGame
+      fixtureAgendaAdvanceQuestion
+      0
+    assertVersionedChoice
+      "Q26 horror consequence"
+      fixtureRoundTransition.agendaConsequenceGame
+      fixtureAgendaConsequenceQuestion
+      0
+    assertVersionedChoice
+      "Q26 discard consequence"
+      fixtureRoundTransition.agendaConsequenceGame
+      fixtureAgendaConsequenceQuestion
+      1
+    assertVersionedChoice
+      "Q27 horror assignment"
+      fixtureRoundTransition.agendaHorrorAssignmentGame
+      fixtureAgendaHorrorAssignmentQuestion
+      0
+
+  it "executes every round-transition outcome in Haskell and reconverges on encounter draw" do
+    fixtureRoundTransition.dissonantVoicesWasDiscarded `shouldBe` True
+    fixtureRoundTransition.agendaOneWasAdvanced `shouldBe` True
+    fixtureDiscardRoundTransition.discardHandSizeBefore `shouldBe` 3
+    fixtureDiscardRoundTransition.discardHandSizeAfter `shouldBe` 2
+    fixtureRoundTransition.horrorBeforeAssignment `shouldBe` 0
+    fixtureRoundTransition.horrorAfterAssignment `shouldBe` 2
+    fixtureDiscardEncounterDrawQuestion `shouldBe` fixtureEncounterDrawQuestion
+    fixtureHorrorEncounterDrawQuestion `shouldBe` fixtureEncounterDrawQuestion
+    canonicalQuestionSha256 fixtureDiscardEncounterDrawQuestion
+      `shouldBe` "f47283f0c5a1537cbee8cdcb7b2b5faef740a5fa44ec8a8341d92a64e10594f1"
+    canonicalQuestionSha256 fixtureHorrorEncounterDrawQuestion
+      `shouldBe` "f47283f0c5a1537cbee8cdcb7b2b5faef740a5fa44ec8a8341d92a64e10594f1"
+    gameScenarioSteps fixtureDiscardRoundTransition.discardEncounterDrawGame `shouldBe` 27
+    gameScenarioSteps fixtureRoundTransition.horrorEncounterDrawGame `shouldBe` 28
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
     case fixtureMulliganQuestion of

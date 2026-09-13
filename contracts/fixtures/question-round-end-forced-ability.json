@@ -1,0 +1,74 @@
+{
+  "choices": [
+    {
+      "ability": {
+        "additionalCosts": [],
+        "basic": false,
+        "canBeCancelled": true,
+        "cardCode": "c01165",
+        "criteria": {
+          "contents": {
+            "tag": "You"
+          },
+          "tag": "InThreatAreaOf"
+        },
+        "delayAdditionalCosts": null,
+        "displayAs": null,
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "evadeCriteriaOverride": null,
+        "fightCriteriaOverride": null,
+        "highlightFromWindow": false,
+        "ignoreAllCosts": false,
+        "index": 1,
+        "limit": {
+          "contents": [
+            {
+              "tag": "PerWindow"
+            },
+            1
+          ],
+          "tag": "GroupLimit"
+        },
+        "metadata": null,
+        "requestor": {
+          "contents": "9e2f9137-ff19-4993-b001-acc24d0d3736",
+          "tag": "TreacherySource"
+        },
+        "skipForAll": false,
+        "source": {
+          "contents": "9e2f9137-ff19-4993-b001-acc24d0d3736",
+          "tag": "TreacherySource"
+        },
+        "target": null,
+        "tooltip": null,
+        "triggersSkillTest": false,
+        "type": {
+          "tag": "ForcedAbility",
+          "window": {
+            "contents": "When",
+            "tag": "RoundEnds"
+          }
+        },
+        "wantsSkillTest": null,
+        "window": {
+          "contents": "When",
+          "tag": "RoundEnds"
+        }
+      },
+      "before": [],
+      "investigatorId": "c01001",
+      "messages": [],
+      "tag": "AbilityLabel",
+      "windows": [
+        {
+          "windowBatchId": null,
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "AtEndOfRound"
+          }
+        }
+      ]
+    }
+  ],
+  "tag": "WindowChooseOne"
+}
