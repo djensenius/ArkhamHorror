@@ -13,6 +13,9 @@ import Arkham.Achievement.Types
   , TheDunwichLegacyAchievement (TheGangsAllHere)
   )
 import Arkham.Act (lookupAct)
+import Arkham.Action qualified as Action
+import Arkham.Ability (abilityActions)
+import Arkham.Ability.Types (abilityCardCode, abilityIndex, abilitySource)
 import Arkham.Attack.Types
   ( AttackTarget (SingleAttackTarget)
   , EnemyAttackDetails (..)
@@ -54,9 +57,10 @@ import Arkham.Movement (Destination (ToLocation), Movement (..), MovementMeans (
 import Arkham.Name (mkName)
 import Arkham.Phase
   ( EnemyPhaseStep (ResolveAttacksStep)
+  , InvestigationPhaseStep (InvestigatorTakesActionStep)
   , MythosPhaseStep (EachInvestigatorDrawsEncounterCardStep)
-  , Phase (EnemyPhase, MythosPhase)
-  , PhaseStep (EnemyPhaseStep, MythosPhaseStep)
+  , Phase (EnemyPhase, InvestigationPhase, MythosPhase)
+  , PhaseStep (EnemyPhaseStep, InvestigationPhaseStep, MythosPhaseStep)
   )
 import Arkham.Scenario.Types (Scenario)
 import Arkham.UltimatumsAndBoons.Types
@@ -663,6 +667,29 @@ fixtureDamageAssignmentEnemyId = EnemyId $ UUID.fromWords 0 0 0 904
 fixtureDamageAssignmentEnemyCard :: Card
 fixtureDamageAssignmentEnemyCard =
   lookupCard GhoulCards.ghoulMinion (unsafeMakeCardId $ UUID.fromWords 0 0 0 905)
+
+{- | Build the ordinary investigation-phase action menu with one real Ghoul
+Minion engaged with Roland. The production enemy creation and player-window
+handlers add the basic Fight and Evade 'AbilityLabel' values beside the
+existing resource, draw, end-turn, and investigate choices; the fixture does
+not construct any choice or ability directly.
+-}
+fixtureEnemyActionGame :: Game
+fixtureEnemyActionGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  overTest (questionL .~ mempty)
+  creation <- MessageHelpers.createEnemy fixtureDamageAssignmentEnemyCard iid
+  pushAndRunAll
+    [CreateEnemy creation {enemyCreationEnemyId = fixtureDamageAssignmentEnemyId}]
+  pushAndRunAll [PlayerWindow iid [] False False]
+  getGame
+{-# NOINLINE fixtureEnemyActionGame #-}
+
+fixtureEnemyActionQuestion :: Question Message
+fixtureEnemyActionQuestion =
+  fromMaybe
+    (error "fixtureEnemyActionQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureEnemyActionGame)
 
 {- | Advance the real enemy-phase flow one prompt beyond the regular attack.
 A fixed Ghoul Minion is created engaged with Roland because its printed attack
@@ -1841,6 +1868,83 @@ spec = describe "Native client contract fixtures" do
       fixtureRemainingDamageAssignmentGame
       fixtureRemainingDamageAssignmentQuestion
       damageFixture
+
+  it "matches the real engaged-enemy action menu on both encoder paths" do
+    fixture <- loadFixture "question-player-window-enemy-actions.json"
+    Aeson.toJSON fixtureEnemyActionQuestion `shouldBe` fixture
+    viaWireEncoding fixtureEnemyActionQuestion `shouldBe` fixture
+    gamePhase fixtureEnemyActionGame `shouldBe` InvestigationPhase
+    gamePhaseStep fixtureEnemyActionGame
+      `shouldBe` Just (InvestigationPhaseStep InvestigatorTakesActionStep)
+
+  it "binds basic Fight and Evade to their production enemy ability identities and source indices" do
+    let
+      iid = InvestigatorId "01001"
+      enemySource = EnemySource fixtureDamageAssignmentEnemyId
+      expectedCardCode = toCardCode fixtureDamageAssignmentEnemyCard
+    case fixtureEnemyActionQuestion of
+      PlayerWindowChooseOne
+        [ ResourceLabel resourceIid _
+          , ComponentLabel (InvestigatorDeckComponent drawIid) _
+          , EndTurnButton endTurnIid _
+          , AbilityLabel investigateIid investigateAbility _ _ _
+          , fightChoice@(AbilityLabel fightIid fightAbility _ _ _)
+          , evadeChoice@(AbilityLabel evadeIid evadeAbility _ _ _)
+          ] -> do
+            resourceIid `shouldBe` iid
+            drawIid `shouldBe` iid
+            endTurnIid `shouldBe` iid
+            investigateIid `shouldBe` iid
+            fightIid `shouldBe` iid
+            evadeIid `shouldBe` iid
+            abilityActions investigateAbility `shouldBe` [Action.Investigate]
+            abilitySource fightAbility `shouldBe` enemySource
+            abilityCardCode fightAbility `shouldBe` expectedCardCode
+            abilityIndex fightAbility `shouldBe` 100
+            abilityActions fightAbility `shouldBe` [Action.Fight]
+            abilitySource evadeAbility `shouldBe` enemySource
+            abilityCardCode evadeAbility `shouldBe` expectedCardCode
+            abilityIndex evadeAbility `shouldBe` 101
+            abilityActions evadeAbility `shouldBe` [Action.Evade]
+            let checkChoice sourceIndex choice = do
+                  let
+                    answerValue version =
+                      Aeson.object
+                        [ "tag" .= ("Answer" :: Text)
+                        , "contents"
+                            .= Aeson.object
+                              [ "choice" .= (sourceIndex :: Int)
+                              , "playerId" .= fixturePlayerId
+                              , "questionVersion" .= version
+                              ]
+                        ]
+                    checkAnswer version check =
+                      case Aeson.fromJSON (answerValue version) of
+                        Aeson.Error err ->
+                          expectationFailure
+                            $ "Could not decode enemy-action Answer: "
+                            <> err
+                        Aeson.Success answer ->
+                          handleAnswerPure fixtureEnemyActionGame fixturePlayerId answer
+                            >>= check
+                    expectCurrent = \case
+                      Handled messages -> messages `shouldBe` [uiToRun choice]
+                      Unhandled reason ->
+                        expectationFailure
+                          $ "Enemy-action Answer rejected: "
+                          <> Text.unpack reason
+                    expectStale = \case
+                      Unhandled reason -> reason `shouldBe` "Stale question"
+                      Handled _ ->
+                        expectationFailure "A stale enemy-action Answer must not resolve"
+                  checkAnswer (gameScenarioSteps fixtureEnemyActionGame) expectCurrent
+                  checkAnswer (gameScenarioSteps fixtureEnemyActionGame + 1) expectStale
+            checkChoice 4 fightChoice
+            checkChoice 5 evadeChoice
+      other ->
+        expectationFailure
+          $ "Expected the production resource/draw/end/investigate/fight/evade action menu, got "
+          <> show other
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
     case fixtureMulliganQuestion of

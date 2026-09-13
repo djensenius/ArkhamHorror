@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic-investigation controls, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade actions and skill-test controls, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
     {
       "$ref": "#/$defs/chooseOneQuestion"
@@ -1518,7 +1518,45 @@
           "$ref": "#/$defs/abilityTypeDisplay"
         }
       },
-      "description": "Explicit engine-owned extension boundary. Stable display identity is modeled; criteria, limits, costs, sources, and future additive fields are preserved data."
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "required": [
+                  "actions"
+                ],
+                "properties": {
+                  "actions": {
+                    "required": [
+                      "contents"
+                    ],
+                    "properties": {
+                      "contents": {
+                        "enum": [
+                          "Fight",
+                          "Evade"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/enemySource"
+              }
+            }
+          }
+        }
+      ],
+      "description": "Explicit engine-owned extension boundary. Stable display identity is modeled; criteria, limits, costs, and future additive fields are preserved data. Governed Fight/Evade actions additionally require the exact EnemySource identity used to keep their native control tied to an authoritative board enemy."
     },
     "abilityTypeDisplay": {
       "type": "object",
@@ -1543,13 +1581,17 @@
               "const": "SingleAction"
             },
             "contents": {
-              "const": "Investigate"
+              "enum": [
+                "Investigate",
+                "Fight",
+                "Evade"
+              ]
             }
           },
-          "description": "The CORE fixture's stable action label/icon semantic. Additional engine-owned action data remains opaque."
+          "description": "The governed basic action label/icon semantic. Additional engine-owned action data remains opaque."
         }
       },
-      "description": "Only the CORE ActionAbility display semantic is supported. Cost and skill fields remain opaque engine-owned data."
+      "description": "Only the governed CORE Investigate and engaged-enemy Fight/Evade ActionAbility display semantics are supported. Cost, targeting, criteria, and skill fields remain opaque engine-owned data."
     },
     "readQuestion": {
       "type": "object",
