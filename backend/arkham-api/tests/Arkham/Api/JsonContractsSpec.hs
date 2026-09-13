@@ -16,7 +16,7 @@ import Arkham.Act (lookupAct)
 import Arkham.Agenda.Types (AgendaAttrs (agendaDoom), Field (AgendaFlipped))
 import Arkham.Action qualified as Action
 import Arkham.Ability (abilityActions)
-import Arkham.Ability.Type (AbilityType (ForcedAbility))
+import Arkham.Ability.Type (AbilityType (ForcedAbility, ReactionAbility))
 import Arkham.Ability.Types
   ( abilityCardCode
   , abilityIndex
@@ -116,6 +116,7 @@ import Helpers.LocaleCatalog (catalogEnvFor, loadSyntheticCatalog, runtimeCapabi
 import System.IO.Unsafe (unsafePerformIO)
 import System.Random (mkStdGen)
 import TestImport
+import TestImport.New qualified as New
 
 loadFixture :: FilePath -> IO Aeson.Value
 loadFixture fileName = loadContractJson ("contracts/fixtures/" <> fileName)
@@ -742,6 +743,52 @@ fixtureEngageActionQuestion =
   fromMaybe
     (error "fixtureEngageActionQuestion: fixture player has no active question")
     (Map.lookup fixturePlayerId $ gameQuestion fixtureEngageActionGame)
+
+fixtureRolandDefeatEnemyId :: EnemyId
+fixtureRolandDefeatEnemyId =
+  EnemyId
+    $ fromMaybe
+      (error "fixtureRolandDefeatEnemyId: invalid UUID")
+      (UUID.fromText "6420b429-88f1-44b2-9a51-e5eb8ae44598")
+
+fixtureRolandDefeatEnemyCard :: Card
+fixtureRolandDefeatEnemyCard =
+  lookupCard EnemyCards.swarmOfRats (unsafeMakeCardId $ UUID.fromWords 0 0 0 907)
+
+{- | Reproduce the exact post-Fight Roland Banks reaction through the ordinary
+production game queue. A real Swarm of Rats is created engaged with Roland,
+the backend-owned basic Fight ability is selected, a deterministic zero token
+resolves the skill test, and the resulting one damage defeats the enemy. The
+fixture stops at the authoritative optional reaction window; it never
+constructs an 'AbilityLabel', 'Window', or 'Question' directly.
+-}
+prepareFixtureRolandDefeatReaction :: TestAppT ()
+prepareFixtureRolandDefeatReaction = do
+  let iid = InvestigatorId "01001"
+  overTest (questionL .~ mempty)
+  creation <- MessageHelpers.createEnemy fixtureRolandDefeatEnemyCard iid
+  pushAndRunAll [CreateEnemy creation {enemyCreationEnemyId = fixtureRolandDefeatEnemyId}]
+  pushAndRunAll [SetChaosTokens [Zero]]
+  pushAndRunAll [PlayerWindow iid [] False False]
+  chooseOptionMatching "fight the fixture Swarm of Rats" \case
+    AbilityLabel _ ability _ _ _ ->
+      abilitySource ability == EnemySource fixtureRolandDefeatEnemyId
+        && abilityActions ability == [Action.Fight]
+    _ -> False
+  New.startSkillTest
+  New.applyResults
+
+fixtureRolandDefeatReactionGame :: Game
+fixtureRolandDefeatReactionGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  prepareFixtureRolandDefeatReaction
+  getGame
+{-# NOINLINE fixtureRolandDefeatReactionGame #-}
+
+fixtureRolandDefeatReactionQuestion :: Question Message
+fixtureRolandDefeatReactionQuestion =
+  fromMaybe
+    (error "fixtureRolandDefeatReactionQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureRolandDefeatReactionGame)
 
 fixtureRoundTransitionTreacheryId :: TreacheryId
 fixtureRoundTransitionTreacheryId =
@@ -2287,6 +2334,104 @@ spec = describe "Native client contract fixtures" do
         Handled messages -> pushAndRunAll (ClearUI : messages)
       field Enemy.EnemyPlacement fixtureDamageAssignmentEnemyId
     placement `shouldBe` InThreatArea iid
+
+  it "matches the exact production Roland Banks defeat reaction on both encoder paths and canonical replay digest" do
+    fixture <- loadFixture "question-roland-defeat-reaction.json"
+    Aeson.toJSON fixtureRolandDefeatReactionQuestion `shouldBe` fixture
+    viaWireEncoding fixtureRolandDefeatReactionQuestion `shouldBe` fixture
+    canonicalQuestionSha256 fixtureRolandDefeatReactionQuestion
+      `shouldBe` "7ff7e00af7be0a2b933ed1a817e7e2a54d3eaa5ae2bdce17f73f7153e59f23a9"
+
+  it "binds Roland's optional reaction and skip control to their exact source indices" do
+    let
+      iid = InvestigatorId "01001"
+      source = InvestigatorSource iid
+    case fixtureRolandDefeatReactionQuestion of
+      WindowChooseOne
+        [ reactionChoice@(AbilityLabel choiceIid ability windows beforeMessages messages)
+          , skipChoice@(SkipTriggersButton skipIid)
+          ] -> do
+            choiceIid `shouldBe` iid
+            skipIid `shouldBe` iid
+            abilitySource ability `shouldBe` source
+            abilityRequestor ability `shouldBe` source
+            abilityCardCode ability `shouldBe` "01001"
+            abilityIndex ability `shouldBe` 1
+            abilityType ability `shouldSatisfy` \case
+              ReactionAbility {} -> True
+              _ -> False
+            abilityActions ability `shouldBe` []
+            length windows `shouldBe` 1
+            beforeMessages `shouldBe` []
+            messages `shouldBe` []
+            let
+              answerValue sourceIndex version =
+                Aeson.object
+                  [ "tag" .= ("Answer" :: Text)
+                  , "contents"
+                      .= Aeson.object
+                        [ "choice" .= sourceIndex
+                        , "playerId" .= fixturePlayerId
+                        , "questionVersion" .= version
+                        ]
+                  ]
+              checkAnswer sourceIndex version check =
+                case Aeson.fromJSON (answerValue sourceIndex version) of
+                  Aeson.Error err ->
+                    expectationFailure
+                      $ "Could not decode Roland defeat reaction Answer: "
+                      <> err
+                  Aeson.Success answer ->
+                    handleAnswerPure fixtureRolandDefeatReactionGame fixturePlayerId answer
+                      >>= check
+              expectCurrent expected = \case
+                Handled actual -> actual `shouldBe` [uiToRun expected]
+                Unhandled reason ->
+                  expectationFailure
+                    $ "Roland defeat reaction Answer rejected: "
+                    <> Text.unpack reason
+              expectStale = \case
+                Unhandled reason -> reason `shouldBe` "Stale question"
+                Handled _ ->
+                  expectationFailure "A stale Roland defeat reaction Answer must not resolve"
+              currentVersion = gameScenarioSteps fixtureRolandDefeatReactionGame
+            checkAnswer (0 :: Int) currentVersion (expectCurrent reactionChoice)
+            checkAnswer (1 :: Int) currentVersion (expectCurrent skipChoice)
+            checkAnswer (0 :: Int) (currentVersion - 1) expectStale
+            checkAnswer (1 :: Int) (currentVersion - 1) expectStale
+      other ->
+        expectationFailure
+          $ "Expected Roland's production reaction followed by SkipTriggersButton, got "
+          <> show other
+
+  it "executes Roland's reaction and skip branches through the authoritative game queue" do
+    let
+      iid = InvestigatorId "01001"
+      runChoice sourceIndex = runAgainstFixtureBoardGame do
+        prepareFixtureRolandDefeatReaction
+        cluesBefore <- field InvestigatorClues iid
+        game <- getGame
+        let
+          answer =
+            Answer
+              QuestionResponse
+                { qrChoice = sourceIndex
+                , qrPlayerId = Just fixturePlayerId
+                , qrQuestionVersion = Just $ gameScenarioSteps game
+                }
+        liftIO (handleAnswerPure game fixturePlayerId answer) >>= \case
+          Unhandled reason ->
+            liftIO
+              $ expectationFailure
+              $ "Roland defeat reaction Answer rejected: "
+              <> Text.unpack reason
+          Handled messages -> pushAndRunAll (ClearUI : messages)
+        cluesAfter <- field InvestigatorClues iid
+        pure (cluesBefore, cluesAfter)
+    reactionClues <- runChoice 0
+    skippedClues <- runChoice 1
+    reactionClues `shouldSatisfy` \(cluesBefore, cluesAfter) -> cluesAfter == cluesBefore + 1
+    skippedClues `shouldSatisfy` \(cluesBefore, cluesAfter) -> cluesAfter == cluesBefore
 
   it "matches every production round-transition prompt on both encoder paths and canonical replay digest" do
     let

@@ -2,8 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
+    {
+      "$ref": "#/$defs/rolandDefeatReactionQuestion"
+    },
     {
       "$ref": "#/$defs/roundEndDissonantVoicesQuestion"
     },
@@ -42,6 +45,575 @@
     }
   ],
   "$defs": {
+    "rolandDefeatReactionQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "WindowChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/rolandDefeatReactionAbilityLabel"
+            },
+            {
+              "$ref": "#/$defs/rolandDefeatReactionSkipButton"
+            }
+          ],
+          "items": false
+        }
+      },
+      "description": "The exact ordered post-defeat window for Roland Banks: source index 0 is his free once-per-round clue reaction and source index 1 is SkipTriggersButton. The enemy UUID remains dynamic; the production Haskell fixture assertion binds both occurrences to the defeated enemy."
+    },
+    "rolandDefeatReactionAbilityLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "ability",
+        "windows",
+        "before",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilityLabel"
+        },
+        "investigatorId": {
+          "const": "c01001"
+        },
+        "ability": {
+          "$ref": "#/$defs/rolandDefeatReactionAbility"
+        },
+        "windows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/rolandAfterEnemyDefeatedWindow"
+            }
+          ],
+          "items": false
+        },
+        "before": {
+          "const": []
+        },
+        "messages": {
+          "const": []
+        }
+      }
+    },
+    "rolandDefeatReactionAbility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "additionalCosts",
+        "basic",
+        "canBeCancelled",
+        "cardCode",
+        "criteria",
+        "delayAdditionalCosts",
+        "displayAs",
+        "doesNotProvokeAttacksOfOpportunity",
+        "evadeCriteriaOverride",
+        "fightCriteriaOverride",
+        "highlightFromWindow",
+        "ignoreAllCosts",
+        "index",
+        "limit",
+        "metadata",
+        "requestor",
+        "skipForAll",
+        "source",
+        "target",
+        "tooltip",
+        "triggersSkillTest",
+        "type",
+        "wantsSkillTest",
+        "window"
+      ],
+      "properties": {
+        "additionalCosts": {
+          "const": []
+        },
+        "basic": {
+          "const": false
+        },
+        "canBeCancelled": {
+          "const": true
+        },
+        "cardCode": {
+          "const": "c01001"
+        },
+        "criteria": {
+          "$ref": "#/$defs/rolandDiscoverableClueCriteria"
+        },
+        "delayAdditionalCosts": {
+          "type": "null"
+        },
+        "displayAs": {
+          "type": "null"
+        },
+        "doesNotProvokeAttacksOfOpportunity": {
+          "type": "null"
+        },
+        "evadeCriteriaOverride": {
+          "type": "null"
+        },
+        "fightCriteriaOverride": {
+          "type": "null"
+        },
+        "highlightFromWindow": {
+          "const": false
+        },
+        "ignoreAllCosts": {
+          "const": false
+        },
+        "index": {
+          "const": 1
+        },
+        "limit": {
+          "$ref": "#/$defs/rolandPerRoundLimit"
+        },
+        "metadata": {
+          "type": "null"
+        },
+        "requestor": {
+          "$ref": "#/$defs/rolandInvestigatorSource"
+        },
+        "skipForAll": {
+          "const": false
+        },
+        "source": {
+          "$ref": "#/$defs/rolandInvestigatorSource"
+        },
+        "target": {
+          "type": "null"
+        },
+        "tooltip": {
+          "type": "null"
+        },
+        "triggersSkillTest": {
+          "const": false
+        },
+        "type": {
+          "$ref": "#/$defs/rolandReactionAbilityType"
+        },
+        "wantsSkillTest": {
+          "type": "null"
+        },
+        "window": {
+          "$ref": "#/$defs/rolandIfEnemyDefeatedMatcher"
+        }
+      }
+    },
+    "rolandDiscoverableClueCriteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Criteria"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "Self"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag",
+                "contents"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "LocationExists"
+                },
+                "contents": {
+                  "$ref": "#/$defs/rolandDiscoverableClueLocationMatcher"
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "rolandDiscoverableClueLocationMatcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "LocationMatchAll"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/rolandLocationWithInvestigator"
+            },
+            {
+              "$ref": "#/$defs/rolandLocationWithDiscoverableClues"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "rolandLocationWithInvestigator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "LocationWithInvestigator"
+        },
+        "contents": {
+          "$ref": "#/$defs/rolandYou"
+        }
+      }
+    },
+    "rolandLocationWithDiscoverableClues": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "LocationWithDiscoverableCluesBy"
+        },
+        "contents": {
+          "$ref": "#/$defs/rolandYou"
+        }
+      }
+    },
+    "rolandYou": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "You"
+        }
+      }
+    },
+    "rolandPerRoundLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "PlayerLimit"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "PerRound"
+                }
+              }
+            },
+            {
+              "const": 1
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "rolandInvestigatorSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorSource"
+        },
+        "contents": {
+          "const": "c01001"
+        }
+      }
+    },
+    "rolandReactionAbilityType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "window",
+        "cost",
+        "actions"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ReactionAbility"
+        },
+        "window": {
+          "$ref": "#/$defs/rolandIfEnemyDefeatedMatcher"
+        },
+        "cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "const": "Free"
+            }
+          }
+        },
+        "actions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "AndActions"
+            },
+            "contents": {
+              "const": []
+            }
+          }
+        }
+      }
+    },
+    "rolandIfEnemyDefeatedMatcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "IfEnemyDefeated"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "const": "After"
+            },
+            {
+              "$ref": "#/$defs/rolandYou"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "ByAny"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "AnyEnemy"
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "rolandAfterEnemyDefeatedWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "windowBatchId",
+        "windowTiming",
+        "windowType"
+      ],
+      "properties": {
+        "windowBatchId": {
+          "type": "null"
+        },
+        "windowTiming": {
+          "const": "After"
+        },
+        "windowType": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "IfEnemyDefeated"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "prefixItems": [
+                {
+                  "const": "c01001"
+                },
+                {
+                  "$ref": "#/$defs/rolandDefeatedByDamage"
+                },
+                {
+                  "$ref": "#/$defs/rolandEnemyId"
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "rolandDefeatedByDamage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "DefeatedByDamage"
+        },
+        "contents": {
+          "$ref": "#/$defs/rolandUseAbilitySource"
+        }
+      }
+    },
+    "rolandUseAbilitySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "UseAbilitySource"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "const": "c01001"
+            },
+            {
+              "$ref": "#/$defs/rolandEnemySource"
+            },
+            {
+              "const": 100
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "rolandEnemySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "EnemySource"
+        },
+        "contents": {
+          "$ref": "#/$defs/rolandEnemyId"
+        }
+      }
+    },
+    "rolandEnemyId": {
+      "$ref": "./uuid.schema.json"
+    },
+    "rolandDefeatReactionSkipButton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "const": "SkipTriggersButton"
+        },
+        "investigatorId": {
+          "const": "c01001"
+        }
+      }
+    },
     "roundEndDissonantVoicesQuestion": {
       "type": "object",
       "additionalProperties": false,
