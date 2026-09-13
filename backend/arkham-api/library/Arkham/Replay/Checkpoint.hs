@@ -811,6 +811,10 @@ parseExactReplayAnswer value = do
         "AmountsAnswer contents"
         ["amounts", "playerId", "questionVersion"]
         value
+    DeckListAnswer {} ->
+      requireExactDeckListAnswer value
+    PickDestinyAnswer {} ->
+      requireExactPickDestinyAnswer value
     StandaloneSettingsAnswer _ ->
       requireExactStandaloneSettingsAnswer value
     CampaignSettingsAnswer _ -> do
@@ -836,6 +840,39 @@ requireExactAnswerContents label fields =
     contents <- o .: "contents"
     withObject label (requireExactObjectFields label fields) contents
 
+requireExactDeckListAnswer :: Value -> Parser ()
+requireExactDeckListAnswer =
+  withObject "DeckListAnswer" \o ->
+    o .: "deckList"
+      >>= withObject
+        "DeckListAnswer deckList"
+        ( requireExactObjectFields
+            "DeckListAnswer deckList"
+            [ "slots"
+            , "sideSlots"
+            , "investigator_code"
+            , "investigator_name"
+            , "meta"
+            , "taboo_id"
+            , "url"
+            , "id"
+            , "name"
+            ]
+        )
+
+requireExactPickDestinyAnswer :: Value -> Parser ()
+requireExactPickDestinyAnswer =
+  withAnswerContents "PickDestinyAnswer contents"
+    $ withArray "PickDestinyAnswer contents"
+    $ traverse_
+    $ withObject "DestinyDrawing"
+    $ \o -> do
+      requireExactObjectFields "DestinyDrawing" ["scenario", "tarot"] o
+      o .: "tarot"
+        >>= withObject
+          "TarotCard"
+          (requireExactObjectFields "TarotCard" ["facing", "arcana"])
+
 requireExactStandaloneSettingsAnswer :: Value -> Parser ()
 requireExactStandaloneSettingsAnswer =
   withAnswerContents "StandaloneSettingsAnswer contents"
@@ -856,7 +893,7 @@ requireExactStandaloneSetting =
           "ChooseRecord" -> ["type", "recordable", "label", "key", "selected", "content", "ifRecorded"]
           "ChooseNum" -> ["type", "key", "min", "max", "content", "ifRecorded"]
           "SetPartnerKilled" -> ["type", "key", "content", "ifRecorded"]
-          "SetPartnerDetails" -> ["type", "key", "maxDamage", "maxHorror", "content", "ifRecorded"]
+          "SetPartnerDetails" -> ["type", "key", "value", "maxDamage", "maxHorror", "content", "ifRecorded"]
           _ -> []
     when (null fields) $ fail $ "unsupported standalone setting type: " <> T.unpack settingType
     requireExactObjectFields "StandaloneSetting" fields o

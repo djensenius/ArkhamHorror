@@ -1,7 +1,8 @@
 module Arkham.Api.GameImportSpec (spec) where
 
 import Api.Handler.Arkham.Game.Debug
-  ( makeReplayPlayerIdMap
+  ( decompressReplayImport
+  , makeReplayPlayerIdMap
   , makeReplayPlayerIdReplacement
   , makeReplayPlayerRemapping
   , remapReplayActionDiffPlayerIds
@@ -23,6 +24,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Patch (Operation (..), Patch (..))
 import Data.Aeson.Pointer (Key (..), Pointer (..))
+import Data.ByteString qualified as BS
 import Data.Either (isLeft)
 import Data.List qualified as List
 import Data.Map.Strict qualified as Map
@@ -66,6 +68,89 @@ spec = describe "selectUploadedExportFile" do
         `shouldSatisfy` \case
           Left E.ThreadKilled -> True
           _ -> False
+
+  describe "decompressReplayImport" do
+    it "accepts gzip output at the explicit expanded-size limit" do
+      let payload = BS.replicate 128 0x41
+          compressed =
+            BS.pack
+              [ 0x1f
+              , 0x8b
+              , 0x08
+              , 0x00
+              , 0x00
+              , 0x00
+              , 0x00
+              , 0x00
+              , 0x02
+              , 0xff
+              , 0x73
+              , 0x74
+              , 0x1c
+              , 0x58
+              , 0x00
+              , 0x00
+              , 0xde
+              , 0x8a
+              , 0x18
+              , 0x04
+              , 0x80
+              , 0x00
+              , 0x00
+              , 0x00
+              ]
+      decompressReplayImport 128 compressed `shouldReturn` Right payload
+
+    it "rejects highly compressible gzip output beyond the expanded-size limit" do
+      let compressed =
+            BS.pack
+              [ 0x1f
+              , 0x8b
+              , 0x08
+              , 0x00
+              , 0x00
+              , 0x00
+              , 0x00
+              , 0x00
+              , 0x02
+              , 0xff
+              , 0xed
+              , 0xc1
+              , 0x01
+              , 0x0d
+              , 0x00
+              , 0x00
+              , 0x00
+              , 0xc2
+              , 0xa0
+              , 0x6c
+              , 0xef
+              , 0x5f
+              , 0xca
+              , 0x1e
+              , 0x0e
+              , 0x28
+              , 0x00
+              , 0x00
+              , 0x00
+              , 0xe0
+              , 0xdd
+              , 0x00
+              , 0x40
+              , 0x34
+              , 0xa6
+              , 0xfe
+              , 0x00
+              , 0x10
+              , 0x00
+              , 0x00
+              ]
+      decompressReplayImport 128 compressed
+        `shouldReturn` Left "decompressed replay import exceeds 128-byte limit"
+
+    it "reports malformed gzip bytes as an import error" do
+      result <- decompressReplayImport 128 (BS.pack [0x1f, 0x8b, 0x00])
+      result `shouldSatisfy` isLeft
 
   describe "makeReplayPlayerRemapping" do
     let checkpointPlayerId = "00000000-0000-0000-0000-000000000000"

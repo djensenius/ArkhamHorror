@@ -476,6 +476,21 @@ spec = describe "deterministic replay checkpoint harness" do
             [ "tag" Aeson..= ("StandaloneSettingsAnswer" :: Text)
             , "contents" Aeson..= [setting]
             ]
+        partnerSetting =
+          Aeson.object
+            [ "type" Aeson..= ("SetPartnerDetails" :: Text)
+            , "key" Aeson..= ("PartnerStatus" :: Text)
+            , "value" Aeson..= ("08119" :: Text)
+            , "maxDamage" Aeson..= (3 :: Int)
+            , "maxHorror" Aeson..= (2 :: Int)
+            , "content"
+                Aeson..= Aeson.object
+                  [ "damage" Aeson..= (1 :: Int)
+                  , "horror" Aeson..= (0 :: Int)
+                  , "status" Aeson..= ("Resolute" :: Text)
+                  ]
+            , "ifRecorded" Aeson..= ([] :: [Aeson.Value])
+            ]
         standaloneSettingUnknown =
           withAnswers [step checkpoint $ standaloneAnswer $ addUnknown standaloneSetting]
         standaloneEntryUnknown =
@@ -490,6 +505,38 @@ spec = describe "deterministic replay checkpoint harness" do
                         other -> other
                   )
                   standaloneSetting
+            ]
+        deckList =
+          Aeson.object
+            [ "slots" Aeson..= Aeson.object []
+            , "sideSlots" Aeson..= Aeson.object []
+            , "investigator_code" Aeson..= ("01001" :: Text)
+            , "investigator_name" Aeson..= ("Roland Banks" :: Text)
+            , "meta" Aeson..= Aeson.Null
+            , "taboo_id" Aeson..= Aeson.Null
+            , "url" Aeson..= Aeson.Null
+            , "id" Aeson..= Aeson.Null
+            , "name" Aeson..= Aeson.Null
+            ]
+        deckListAnswer value =
+          Aeson.object
+            [ "tag" Aeson..= ("DeckListAnswer" :: Text)
+            , "deckList" Aeson..= value
+            , "playerId" Aeson..= ("00000000-0000-0000-0000-000000000001" :: Text)
+            ]
+        destinyDrawing =
+          Aeson.object
+            [ "scenario" Aeson..= ("first" :: Text)
+            , "tarot"
+                Aeson..= Aeson.object
+                  [ "facing" Aeson..= ("Reversed" :: Text)
+                  , "arcana" Aeson..= ("TheFool0" :: Text)
+                  ]
+            ]
+        destinyAnswer drawings =
+          Aeson.object
+            [ "tag" Aeson..= ("PickDestinyAnswer" :: Text)
+            , "contents" Aeson..= drawings
             ]
         campaignEntry =
           Aeson.object
@@ -521,8 +568,27 @@ spec = describe "deterministic replay checkpoint harness" do
             ]
         validStandalonePlan =
           withAnswers [step checkpoint $ standaloneAnswer standaloneSetting]
+        validPartnerPlan =
+          withAnswers [step checkpoint $ standaloneAnswer partnerSetting]
+        validDeckListPlan =
+          withAnswers [step checkpoint $ deckListAnswer deckList]
+        validDestinyPlan =
+          withAnswers [step checkpoint $ destinyAnswer [destinyDrawing]]
         validCampaignPlan =
           withAnswers [step checkpoint $ campaignAnswer $ campaignRecorded campaignEntry]
+        deckListUnknown =
+          withAnswers [step checkpoint $ deckListAnswer $ addUnknown deckList]
+        destinyDrawingUnknown =
+          withAnswers [step checkpoint $ destinyAnswer [addUnknown destinyDrawing]]
+        destinyTarotUnknown =
+          withAnswers
+            [ step checkpoint
+                $ destinyAnswer
+                  [ mapRoot
+                      (adjustKey "tarot" addUnknown)
+                      destinyDrawing
+                  ]
+            ]
         campaignRecordedUnknown =
           withAnswers
             [ step checkpoint
@@ -541,6 +607,9 @@ spec = describe "deterministic replay checkpoint harness" do
       (`shouldSatisfy` isRight)
       [ decodeReplayPlan $ encodeStrict validPlan
       , decodeReplayPlan $ encodeStrict validStandalonePlan
+      , decodeReplayPlan $ encodeStrict validPartnerPlan
+      , decodeReplayPlan $ encodeStrict validDeckListPlan
+      , decodeReplayPlan $ encodeStrict validDestinyPlan
       , decodeReplayPlan $ encodeStrict validCampaignPlan
       ]
     traverse_
@@ -555,6 +624,9 @@ spec = describe "deterministic replay checkpoint harness" do
       , decodeReplayPlan $ encodeStrict answerContentsUnknown
       , decodeReplayPlan $ encodeStrict standaloneSettingUnknown
       , decodeReplayPlan $ encodeStrict standaloneEntryUnknown
+      , decodeReplayPlan $ encodeStrict deckListUnknown
+      , decodeReplayPlan $ encodeStrict destinyDrawingUnknown
+      , decodeReplayPlan $ encodeStrict destinyTarotUnknown
       , decodeReplayPlan $ encodeStrict campaignRecordedUnknown
       , decodeReplayPlan $ encodeStrict campaignEntryUnknown
       ]

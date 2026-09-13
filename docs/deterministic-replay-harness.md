@@ -127,7 +127,10 @@ compares it with the embedded `envelopeSha256`, and requires the complete JSON
 bytes to equal the deterministic encoding the backend itself produces.
 Changing export/provenance fields, adding ignored fields, duplicate-key or
 whitespace rewrites, and retaining a plausible embedded digest are all rejected
-before any game row exists.
+before any game row exists. Production request handling limits uploaded bytes
+to 200 MiB, and gzip imports independently stop after 200 MiB plus one sentinel
+byte and reject the input, so a small compressed upload cannot expand without
+bound before validation.
 
 The successful `POST /api/v1/arkham/games/import` body remains the production
 handler's complete `PublicGame ArkhamGameId` JSON snapshot. Its top-level `id`
@@ -244,10 +247,13 @@ filesystem guarantee.
 
 Only schema `1`, exact answer scripts, and question checkpoints are supported.
 Every scripted answer constructor must match the exact current prompt before its
-messages can enter the queue. Malformed/stale prompts, incompatible constructors,
-missing steps, provenance drift, unhandled/unused answers, and unreachable stops
-exit non-zero without a checkpoint. Database-only answers, database/epic-event
-side effects, and historical undo/log replay remain outside this harness.
+messages can enter the queue. Structured deck-list, destiny, standalone-setting,
+and campaign-setting answers also reject unknown fields recursively, while the
+explicitly opaque campaign/scenario-specific payloads remain opaque.
+Malformed/stale prompts, incompatible constructors, missing steps, provenance
+drift, unhandled/unused answers, and unreachable stops exit non-zero without a
+checkpoint. Database-only answers, database/epic-event side effects, and
+historical undo/log replay remain outside this harness.
 
 `mise run replay:harness:test` also runs the committed process fixture through
 the actual executable. It proves pre-drain queue preservation, answer messages

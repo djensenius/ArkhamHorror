@@ -19,6 +19,7 @@ module Api.Handler.Arkham.Game.Debug (
   remapReplayMessagePlayerIds,
   remapReplayPatchPlayerIds,
   selectUploadedExportFile,
+  decompressReplayImport,
   tryImportDecode,
   validateReplayCheckpointPlayerId,
 ) where
@@ -67,6 +68,9 @@ normalizeJsonInvestigatorId iid = if "c" `T.isPrefixOf` iid then iid else "c" <>
 isGzipped :: BS.ByteString -> Bool
 isGzipped bs = BS.take 2 bs == BS.pack [0x1f, 0x8b]
 
+maximumDecompressedReplayImportBytes :: Int
+maximumDecompressedReplayImportBytes = 200 * 1024 * 1024
+
 {- | Select the uploaded multipart export file, if any, without a partial
 selector. A 'Nothing' result must short-circuit before any decoding is
 attempted; the production handler wires this directly to an explicit
@@ -83,6 +87,26 @@ tryImportDecode action =
       | otherwise -> pure $ Left $ displayException err
     Right value -> pure $ Right value
 
+decompressReplayImport :: Int -> BS.ByteString -> IO (Either String BS.ByteString)
+decompressReplayImport maximumBytes bytes
+  | maximumBytes < 0 = pure $ Left "decompressed replay import limit must not be negative"
+  | otherwise = do
+      eDecompressed <-
+        tryImportDecode $
+          evaluate $
+            BSL.toStrict $
+              BSL.take (fromIntegral maximumBytes + 1) $
+                GZip.decompress $
+                  BSL.fromStrict bytes
+      pure $ eDecompressed >>= \decompressed ->
+        if BS.length decompressed > maximumBytes
+          then
+            Left $
+              "decompressed replay import exceeds "
+                <> show maximumBytes
+                <> "-byte limit"
+          else Right decompressed
+
 decodeExportBytes
   :: BS.ByteString
   -> Handler (Either String (ArkhamExport, Maybe ReplayImportAuthority))
@@ -90,11 +114,7 @@ decodeExportBytes bytes
   | isGzipped bytes = do
       eDecompressed <-
         liftIO $
-          tryImportDecode $
-            evaluate $
-              BSL.toStrict $
-                GZip.decompress $
-                  BSL.fromStrict bytes
+          decompressReplayImport maximumDecompressedReplayImportBytes bytes
       pure $ eDecompressed >>= decodeReplayImport serverBuildIdentity
   | otherwise = pure $ decodeReplayImport serverBuildIdentity bytes
 
