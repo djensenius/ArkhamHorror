@@ -692,6 +692,30 @@ fixtureEnemyActionQuestion =
     (error "fixtureEnemyActionQuestion: fixture player has no active question")
     (Map.lookup fixturePlayerId $ gameQuestion fixtureEnemyActionGame)
 
+{- | Build the ordinary investigation-phase action menu after the production
+enemy-evasion flow has exhausted and disengaged the same real Ghoul Minion.
+The subsequent production 'PlayerWindow' replaces Evade with Engage while
+retaining the backend-owned Fight choice; the fixture does not construct or
+rewrite either ability.
+-}
+fixtureEngageActionGame :: Game
+fixtureEngageActionGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+  overTest (questionL .~ mempty)
+  creation <- MessageHelpers.createEnemy fixtureDamageAssignmentEnemyCard iid
+  pushAndRunAll
+    [CreateEnemy creation {enemyCreationEnemyId = fixtureDamageAssignmentEnemyId}]
+  pushAndRunAll [EnemyEvaded iid fixtureDamageAssignmentEnemyId]
+  pushAndRunAll [PlayerWindow iid [] False False]
+  getGame
+{-# NOINLINE fixtureEngageActionGame #-}
+
+fixtureEngageActionQuestion :: Question Message
+fixtureEngageActionQuestion =
+  fromMaybe
+    (error "fixtureEngageActionQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureEngageActionGame)
+
 {- | Advance the real enemy-phase flow one prompt beyond the regular attack.
 A fixed Ghoul Minion is created engaged with Roland because its printed attack
 deals exactly one damage and one horror. The production enemy runner emits the
@@ -1951,6 +1975,80 @@ spec = describe "Native client contract fixtures" do
       other ->
         expectationFailure
           $ "Expected the production resource/draw/end/investigate/fight/evade action menu, got "
+          <> show other
+
+  it "matches the real post-Evade Engage action menu on both encoder paths" do
+    fixture <- loadFixture "question-player-window-engage-action.json"
+    Aeson.toJSON fixtureEngageActionQuestion `shouldBe` fixture
+    viaWireEncoding fixtureEngageActionQuestion `shouldBe` fixture
+    gamePhase fixtureEngageActionGame `shouldBe` InvestigationPhase
+    gamePhaseStep fixtureEngageActionGame
+      `shouldBe` Just (InvestigationPhaseStep InvestigatorTakesActionStep)
+
+  it "binds basic Engage to its production enemy ability identity and source index" do
+    let
+      iid = InvestigatorId "01001"
+      enemySource = EnemySource fixtureDamageAssignmentEnemyId
+      expectedCardCode = toCardCode fixtureDamageAssignmentEnemyCard
+    case fixtureEngageActionQuestion of
+      PlayerWindowChooseOne
+        [ ResourceLabel resourceIid _
+          , ComponentLabel (InvestigatorDeckComponent drawIid) _
+          , EndTurnButton endTurnIid _
+          , AbilityLabel investigateIid investigateAbility _ _ _
+          , AbilityLabel fightIid fightAbility _ _ _
+          , engageChoice@(AbilityLabel engageIid engageAbility _ _ _)
+          ] -> do
+            resourceIid `shouldBe` iid
+            drawIid `shouldBe` iid
+            endTurnIid `shouldBe` iid
+            investigateIid `shouldBe` iid
+            fightIid `shouldBe` iid
+            engageIid `shouldBe` iid
+            abilityActions investigateAbility `shouldBe` [Action.Investigate]
+            abilitySource fightAbility `shouldBe` enemySource
+            abilityCardCode fightAbility `shouldBe` expectedCardCode
+            abilityIndex fightAbility `shouldBe` 100
+            abilityActions fightAbility `shouldBe` [Action.Fight]
+            abilitySource engageAbility `shouldBe` enemySource
+            abilityCardCode engageAbility `shouldBe` expectedCardCode
+            abilityIndex engageAbility `shouldBe` 102
+            abilityActions engageAbility `shouldBe` [Action.Engage]
+            let
+              answerValue version =
+                Aeson.object
+                  [ "tag" .= ("Answer" :: Text)
+                  , "contents"
+                      .= Aeson.object
+                        [ "choice" .= (5 :: Int)
+                        , "playerId" .= fixturePlayerId
+                        , "questionVersion" .= version
+                        ]
+                  ]
+              checkAnswer version check =
+                case Aeson.fromJSON (answerValue version) of
+                  Aeson.Error err ->
+                    expectationFailure
+                      $ "Could not decode Engage Answer: "
+                      <> err
+                  Aeson.Success answer ->
+                    handleAnswerPure fixtureEngageActionGame fixturePlayerId answer
+                      >>= check
+              expectCurrent = \case
+                Handled messages -> messages `shouldBe` [uiToRun engageChoice]
+                Unhandled reason ->
+                  expectationFailure
+                    $ "Engage Answer rejected: "
+                    <> Text.unpack reason
+              expectStale = \case
+                Unhandled reason -> reason `shouldBe` "Stale question"
+                Handled _ ->
+                  expectationFailure "A stale Engage Answer must not resolve"
+            checkAnswer (gameScenarioSteps fixtureEngageActionGame) expectCurrent
+            checkAnswer (gameScenarioSteps fixtureEngageActionGame + 1) expectStale
+      other ->
+        expectationFailure
+          $ "Expected the production resource/draw/end/investigate/fight/engage action menu, got "
           <> show other
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
