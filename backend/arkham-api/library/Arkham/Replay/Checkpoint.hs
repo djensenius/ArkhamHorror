@@ -823,6 +823,8 @@ parseExactReplayAnswer value = do
         ["keys", "counts", "sets", "options"]
         value
       requireExactCampaignSettingsAnswer value
+    CampaignStepAnswer _ ->
+      requireExactCampaignStepAnswer value
     _ -> pure ()
   pure answer
 
@@ -1013,6 +1015,119 @@ requireExactCampaignRecordedEntry =
     $ requireExactObjectFields
       "CampaignRecordedEntry"
       ["tag", "value"]
+
+requireExactCampaignStepAnswer :: Value -> Parser ()
+requireExactCampaignStepAnswer =
+  withAnswerContents "CampaignStepAnswer contents" requireExactCampaignStep
+
+requireExactCampaignStep :: Value -> Parser ()
+requireExactCampaignStep value =
+  withObject "CampaignStep" validate value
+ where
+  validate o = do
+    stepType <- o .: "tag" :: Parser Text
+    let exactTagOnly = requireExactObjectFields "CampaignStep" ["tag"] o
+        exactWithContents = requireExactObjectFields "CampaignStep" ["tag", "contents"] o
+        contents = o .: "contents"
+    case stepType of
+      "PrologueStep" -> exactTagOnly
+      "EpilogueStep" -> exactTagOnly
+      "ResupplyPoint" -> exactTagOnly
+      "PrologueStepPart" -> exactWithContents
+      "ScenarioStep" -> exactWithContents
+      "InterludeStep" -> do
+        exactWithContents
+        contents >>= requireExactArrayLength "InterludeStep contents" 2
+      "InterludeStepPart" -> do
+        exactWithContents
+        contents >>= requireExactArrayLength "InterludeStepPart contents" 3
+      "EpilogueStepPart" -> exactWithContents
+      "CheckpointStep" -> exactWithContents
+      "CampaignSpecificStep" -> do
+        exactWithContents
+        contents >>= requireExactCampaignSpecificStepContents
+      "ScenarioStepWithOptions" -> do
+        exactWithContents
+        contents
+          >>= withArray "ScenarioStepWithOptions contents" \items ->
+            case toList items of
+              [_scenarioId, options] -> requireExactScenarioOptions options
+              _ -> fail "ScenarioStepWithOptions contents must contain exactly two values"
+      "ChooseDecksStep" -> do
+        exactWithContents
+        contents >>= requireExactCampaignStep
+      "UpgradeDeckStep" -> do
+        exactWithContents
+        contents >>= requireExactCampaignStep
+      "InvestigatorCampaignStep" -> do
+        exactWithContents
+        contents
+          >>= withArray "InvestigatorCampaignStep contents" \items ->
+            case toList items of
+              [_investigatorId, nextStep] -> requireExactCampaignStep nextStep
+              _ -> fail "InvestigatorCampaignStep contents must contain exactly two values"
+      "ContinueCampaignStep" -> do
+        exactWithContents
+        contents >>= requireExactContinuation
+      "StandaloneScenarioStep" -> do
+        exactWithContents
+        contents
+          >>= withArray "StandaloneScenarioStep contents" \items ->
+            case toList items of
+              [_scenarioId, nextStep] -> requireExactCampaignStep nextStep
+              _ -> fail "StandaloneScenarioStep contents must contain exactly two values"
+      "StandaloneScenarioStepWithOptions" -> do
+        exactWithContents
+        contents
+          >>= withArray "StandaloneScenarioStepWithOptions contents" \items ->
+            case toList items of
+              [_scenarioId, nextStep, options] -> do
+                requireExactCampaignStep nextStep
+                requireExactScenarioOptions options
+              _ ->
+                fail
+                  "StandaloneScenarioStepWithOptions contents must contain exactly three values"
+      _ -> fail $ "unsupported campaign step type: " <> T.unpack stepType
+
+requireExactCampaignSpecificStepContents :: Value -> Parser ()
+requireExactCampaignSpecificStepContents = \case
+  String _ -> pure ()
+  Array items ->
+    unless (length items == 2) $
+      fail "CampaignSpecificStep contents must contain exactly two values"
+  _ -> fail "CampaignSpecificStep contents must be a string or two-value array"
+
+requireExactContinuation :: Value -> Parser ()
+requireExactContinuation value =
+  withObject "Continuation" validate value
+ where
+  validate o
+    | KeyMap.member "nextStep" o = do
+        requireExactObjectFields
+          "Continuation"
+          ["nextStep", "canUpgradeDecks", "chooseSideStory", "lead", "canChooseSideStory"]
+          o
+        o .: "nextStep" >>= requireExactCampaignStep
+    | otherwise = requireExactCampaignStep value
+
+requireExactScenarioOptions :: Value -> Parser ()
+requireExactScenarioOptions =
+  withObject "ScenarioOptions"
+    $ requireExactObjectFields
+      "ScenarioOptions"
+      [ "scenarioOptionsStandalone"
+      , "scenarioOptionsPerformTarotReading"
+      , "scenarioOptionsLeadInvestigator"
+      , "scenarioOptionsDelayChoosingLead"
+      , "scenarioOptionsSkipInvestigatorSetup"
+      , "scenarioOptionsSkipStartOfGame"
+      ]
+
+requireExactArrayLength :: String -> Int -> Value -> Parser ()
+requireExactArrayLength label expected =
+  withArray label \items ->
+    unless (length items == expected) $
+      fail $ label <> " must contain exactly " <> show expected <> " values"
 
 requireExactMapValues :: String -> (Value -> Parser ()) -> Value -> Parser ()
 requireExactMapValues label validate = \case

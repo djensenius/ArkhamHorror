@@ -538,6 +538,43 @@ spec = describe "deterministic replay checkpoint harness" do
             [ "tag" Aeson..= ("PickDestinyAnswer" :: Text)
             , "contents" Aeson..= drawings
             ]
+        campaignStepAnswer campaignStep =
+          Aeson.object
+            [ "tag" Aeson..= ("CampaignStepAnswer" :: Text)
+            , "contents" Aeson..= campaignStep
+            ]
+        prologueStep =
+          Aeson.object ["tag" Aeson..= ("PrologueStep" :: Text)]
+        scenarioOptions =
+          Aeson.object
+            [ "scenarioOptionsStandalone" Aeson..= False
+            , "scenarioOptionsPerformTarotReading" Aeson..= False
+            , "scenarioOptionsLeadInvestigator" Aeson..= Aeson.Null
+            , "scenarioOptionsDelayChoosingLead" Aeson..= False
+            , "scenarioOptionsSkipInvestigatorSetup" Aeson..= False
+            , "scenarioOptionsSkipStartOfGame" Aeson..= False
+            ]
+        scenarioStepWithOptions options =
+          Aeson.object
+            [ "tag" Aeson..= ("ScenarioStepWithOptions" :: Text)
+            , "contents"
+                Aeson..=
+                  [ Aeson.String "01104"
+                  , options
+                  ]
+            ]
+        continuationStep nextStep =
+          Aeson.object
+            [ "tag" Aeson..= ("ContinueCampaignStep" :: Text)
+            , "contents"
+                Aeson..= Aeson.object
+                  [ "nextStep" Aeson..= nextStep
+                  , "canUpgradeDecks" Aeson..= True
+                  , "chooseSideStory" Aeson..= False
+                  , "lead" Aeson..= Aeson.Null
+                  , "canChooseSideStory" Aeson..= True
+                  ]
+            ]
         campaignEntry =
           Aeson.object
             [ "tag" Aeson..= ("Recorded" :: Text)
@@ -574,6 +611,15 @@ spec = describe "deterministic replay checkpoint harness" do
           withAnswers [step checkpoint $ deckListAnswer deckList]
         validDestinyPlan =
           withAnswers [step checkpoint $ destinyAnswer [destinyDrawing]]
+        validCampaignStepPlan =
+          withAnswers [step checkpoint $ campaignStepAnswer prologueStep]
+        validContinuationPlan =
+          withAnswers
+            [ step checkpoint
+                $ campaignStepAnswer
+                $ continuationStep
+                $ scenarioStepWithOptions scenarioOptions
+            ]
         validCampaignPlan =
           withAnswers [step checkpoint $ campaignAnswer $ campaignRecorded campaignEntry]
         deckListUnknown =
@@ -588,6 +634,34 @@ spec = describe "deterministic replay checkpoint harness" do
                       (adjustKey "tarot" addUnknown)
                       destinyDrawing
                   ]
+            ]
+        campaignStepUnknown =
+          withAnswers [step checkpoint $ campaignStepAnswer $ addUnknown prologueStep]
+        continuationUnknown =
+          withAnswers
+            [ step checkpoint
+                $ campaignStepAnswer
+                $ mapRoot
+                  (adjustKey "contents" addUnknown)
+                $ continuationStep prologueStep
+            ]
+        continuationNextStepUnknown =
+          withAnswers
+            [ step checkpoint
+                $ campaignStepAnswer
+                $ mapRoot
+                  ( adjustKey "contents"
+                      $ mapRoot
+                      $ adjustKey "nextStep" addUnknown
+                  )
+                $ continuationStep prologueStep
+            ]
+        scenarioOptionsUnknown =
+          withAnswers
+            [ step checkpoint
+                $ campaignStepAnswer
+                $ scenarioStepWithOptions
+                $ addUnknown scenarioOptions
             ]
         campaignRecordedUnknown =
           withAnswers
@@ -610,6 +684,8 @@ spec = describe "deterministic replay checkpoint harness" do
       , decodeReplayPlan $ encodeStrict validPartnerPlan
       , decodeReplayPlan $ encodeStrict validDeckListPlan
       , decodeReplayPlan $ encodeStrict validDestinyPlan
+      , decodeReplayPlan $ encodeStrict validCampaignStepPlan
+      , decodeReplayPlan $ encodeStrict validContinuationPlan
       , decodeReplayPlan $ encodeStrict validCampaignPlan
       ]
     traverse_
@@ -627,6 +703,10 @@ spec = describe "deterministic replay checkpoint harness" do
       , decodeReplayPlan $ encodeStrict deckListUnknown
       , decodeReplayPlan $ encodeStrict destinyDrawingUnknown
       , decodeReplayPlan $ encodeStrict destinyTarotUnknown
+      , decodeReplayPlan $ encodeStrict campaignStepUnknown
+      , decodeReplayPlan $ encodeStrict continuationUnknown
+      , decodeReplayPlan $ encodeStrict continuationNextStepUnknown
+      , decodeReplayPlan $ encodeStrict scenarioOptionsUnknown
       , decodeReplayPlan $ encodeStrict campaignRecordedUnknown
       , decodeReplayPlan $ encodeStrict campaignEntryUnknown
       ]
