@@ -62,6 +62,7 @@ import Arkham.Phase
   , Phase (EnemyPhase, InvestigationPhase, MythosPhase)
   , PhaseStep (EnemyPhaseStep, InvestigationPhaseStep, MythosPhaseStep)
   )
+import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
 import Arkham.Scenario.Types (Scenario)
 import Arkham.UltimatumsAndBoons.Types
   ( Boon (BoonOfHades)
@@ -1327,6 +1328,12 @@ spec = describe "Native client contract fixtures" do
 
     Aeson.toJSON response `shouldBe` fixture
     viaWireEncoding response `shouldBe` fixture
+
+  it "decodes the replay-attestation fixture with a valid receipt digest" do
+    _ <-
+      loadFixtureField "replay-attestation.json" "importReceipt"
+        :: IO ReplayImportReceipt
+    pure ()
 
   it "adds the locale catalog to the legacy response without changing anything else" do
     legacy <- loadFixture "capabilities.json"
