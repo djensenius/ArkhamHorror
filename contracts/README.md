@@ -417,6 +417,13 @@ clients must never filter or renumber its supported siblings. The backend
 alone advances windows, reveals and resolves chaos tokens, decides success or
 failure, applies modifiers, and awards clues.
 
+#### Replay attestation fixture integrity
+
+Revision `0.1.36` repairs the governed replay-attestation fixture's
+self-attesting import-receipt digest after the `0.1.35` revision bump. The
+wire shape and runtime replay authority are unchanged; the canonical fixture
+now validates through the same digest-verifying decoder used by production.
+
 #### Basic Fight and Evade actions
 
 Revision `0.1.35` adds
