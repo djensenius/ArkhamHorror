@@ -29,6 +29,9 @@ import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
 import Arkham.Enemy.CardDefs.NightOfTheZealot.Ghouls qualified as GhoulCards (ghoulMinion)
 import Arkham.Enemy.CardDefs.NightOfTheZealot.Rats qualified as EnemyCards (swarmOfRats)
 import Arkham.Enemy.Creation (EnemyCreation (..))
+import Arkham.Enemy.Types qualified as Enemy
+import Arkham.Placement (Placement (InThreatArea))
+import Arkham.Projection (field)
 import Arkham.Story (createStory)
 import Arkham.Story.CardDefs.FortuneAndFolly qualified as StoryCardDefs (theStakeout)
 import Arkham.Token (Token (Resource), setTokens)
@@ -700,6 +703,12 @@ rewrite either ability.
 -}
 fixtureEngageActionGame :: Game
 fixtureEngageActionGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  prepareFixtureEngageAction
+  getGame
+{-# NOINLINE fixtureEngageActionGame #-}
+
+prepareFixtureEngageAction :: TestAppT ()
+prepareFixtureEngageAction = do
   let iid = InvestigatorId "01001"
   overTest (questionL .~ mempty)
   creation <- MessageHelpers.createEnemy fixtureDamageAssignmentEnemyCard iid
@@ -707,8 +716,6 @@ fixtureEngageActionGame = unsafePerformIO $ runAgainstFixtureBoardGame do
     [CreateEnemy creation {enemyCreationEnemyId = fixtureDamageAssignmentEnemyId}]
   pushAndRunAll [EnemyEvaded iid fixtureDamageAssignmentEnemyId]
   pushAndRunAll [PlayerWindow iid [] False False]
-  getGame
-{-# NOINLINE fixtureEngageActionGame #-}
 
 fixtureEngageActionQuestion :: Question Message
 fixtureEngageActionQuestion =
@@ -2050,6 +2057,29 @@ spec = describe "Native client contract fixtures" do
         expectationFailure
           $ "Expected the production resource/draw/end/investigate/fight/engage action menu, got "
           <> show other
+
+  it "executes the production Engage answer into authoritative enemy placement" do
+    let iid = InvestigatorId "01001"
+    placement <- runAgainstFixtureBoardGame do
+      prepareFixtureEngageAction
+      game <- getGame
+      let
+        answer =
+          Answer
+            QuestionResponse
+              { qrChoice = 5
+              , qrPlayerId = Just fixturePlayerId
+              , qrQuestionVersion = Just $ gameScenarioSteps game
+              }
+      liftIO (handleAnswerPure game fixturePlayerId answer) >>= \case
+        Unhandled reason ->
+          liftIO
+            $ expectationFailure
+            $ "Engage Answer rejected: "
+            <> Text.unpack reason
+        Handled messages -> pushAndRunAll (ClearUI : messages)
+      field Enemy.EnemyPlacement fixtureDamageAssignmentEnemyId
+    placement `shouldBe` InThreatArea iid
 
   it "keeps the mulligan done action first and preserves every CardIdTarget hand index" do
     case fixtureMulliganQuestion of
