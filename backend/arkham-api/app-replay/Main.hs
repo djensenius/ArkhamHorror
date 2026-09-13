@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -fforce-recomp #-}
 
 -- | Headless replay CLI.
 --
@@ -22,21 +23,29 @@ import Arkham.Game (Game (..), PublicGame (..), runMessages)
 import Arkham.Game.Diff (diff, patchValueWithRecovery)
 import Arkham.Game.Runner (handleActionDiff)
 import Arkham.Message (Message (ClearUI, SetActivePlayer))
-import Arkham.Metrics (dumpMetricsTo, enableMetrics, withMetric)
+import Arkham.Metrics (dumpMetricsTo, enableMetrics, formatMetrics, withMetric)
+import Arkham.Queue (queueToRef)
+import Arkham.Replay.BuildIdentity (embedReplayBuildIdentity)
+import Arkham.Replay.Checkpoint
+import Arkham.Replay.MessageTimeout
+import Arkham.Replay.Output
 import Control.Exception (evaluate)
-import GHC.Clock (getMonotonicTimeNSec)
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM_, void, when)
 import Control.Monad.Random (mkStdGen)
-import Data.Aeson (Result (..), Value, eitherDecodeFileStrict', eitherDecode, encode, fromJSON, toJSON)
+import Data.Aeson (Result (..), Value, eitherDecodeFileStrict', eitherDecode, encode, fromJSON, object, toJSON, (.=))
 import Data.ByteString.Lazy qualified as BSL
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.IORef (newIORef, readIORef)
+import Data.Foldable (for_)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.List (sortOn)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust, isNothing, maybeToList)
 import Data.Ord (Down (..))
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as TE
+import Data.Word (Word64)
 import Entity.Answer (Reply (..), answerPlayer, handleAnswerPure)
 import Entity.Arkham.Step (ArkhamStep (..), Choice (..))
+import GHC.Clock (getMonotonicTimeNSec)
 import System.Environment (getArgs)
 import System.Exit (die, exitSuccess)
 import System.IO (hPutStrLn, stderr)
@@ -56,10 +65,16 @@ data Opts = Opts
   , optPerStepTopN :: Int
   , optSimulateServer :: Bool
   , optBenchActionDiff :: Int
+  , optReplayScript :: Maybe FilePath
+  , optCheckpointOutput :: Maybe FilePath
+  , optInspectCheckpoint :: Bool
   }
 
 defaultOpts :: Opts
-defaultOpts = Opts "" Nothing Nothing False 0 Nothing 50 False Nothing 30 False 0
+defaultOpts = Opts "" Nothing Nothing False 0 Nothing 50 False Nothing 30 False 0 Nothing Nothing False
+
+replayBuildIdentity :: ReplayBuildIdentity
+replayBuildIdentity = $(embedReplayBuildIdentity)
 
 {- | One-line rendering of a client (UI) message. 'ClientMessage' has no 'Show'
 instance, and the embedded card 'Value's are enormous, so keep it terse.
@@ -85,6 +100,8 @@ usage =
     [ "Usage: arkham-replay <export.json> [--undo N] [--answers answers.json] [--output out.json]"
     , "                                   [--trace] [--metrics [FILE]] [--metrics-top N]"
     , "                                   [--replay-all] [--per-step-report FILE] [--per-step-top N]"
+    , "                                   [--replay-script plan.json --checkpoint-output checkpoint.json]"
+    , "                                   [--inspect-checkpoint]"
     , ""
     , "  <export.json>      Game export from /api/v1/arkham/games/:id/export"
     , "  --undo N           Step back N steps before resuming (applies choicePatchDown)"
@@ -95,7 +112,7 @@ usage =
     , "                     (UI) message as \"client> ...\""
     , "  --metrics [FILE]   Record per-span wall-clock timings; dump table to FILE (or stderr)"
     , "  --metrics-top N    Show top-N spans in the metrics table (default 50)"
-    , "  --replay-all       Undo to step 0 then replay every step forward, timing each one."
+    , "  --replay-all       Undo to the earliest retained step, then replay forward."
     , "                     With --undo N, only undo N steps and replay those N forward."
     , "                     Top slowest steps are printed to stderr; combine with --metrics for"
     , "                     per-span breakdown across the whole replay."
@@ -107,6 +124,12 @@ usage =
     , "                     re-parse it (DB row load), and encode the PublicGame broadcast."
     , "                     Timings appear as server/* spans in --metrics and server_ms in"
     , "                     the per-step report."
+    , "  --replay-script FILE  Replay exact Answers against bound prompts/source/build."
+    , "                     Only mode=answers is deterministic; history is rejected."
+    , "  --checkpoint-output FILE  Publish a verified step-0 checkpoint envelope."
+    , "                     Required with --replay-script; accepted by normal game import."
+    , "  --inspect-checkpoint  Print provenance and prompts without draining the queue."
+    , "  --build-identity   Print the executable's embedded replay build identity, then exit."
     ]
 
 parseArgs :: [String] -> IO Opts
@@ -119,7 +142,8 @@ parseArgs = go defaultOpts
   go o ("--output" : f : rest) = go o {optOutput = Just f} rest
   go o ("--trace" : rest) = go o {optTrace = True} rest
   go o ("--undo" : n : rest) = case reads n of
-    [(k, "")] -> go o {optUndo = k} rest
+    [(k, "")] | k >= 0 -> go o {optUndo = k} rest
+    [(k, "")] -> die $ "--undo expects a non-negative integer, got: " <> show k
     _ -> die $ "--undo expects an integer, got: " <> n
   go o ("--metrics" : f : rest) | take 2 f /= "--" =
     go o {optMetrics = Just (Just f)} rest
@@ -136,18 +160,62 @@ parseArgs = go defaultOpts
   go o ("--per-step-top" : n : rest) = case reads n of
     [(k, "")] -> go o {optPerStepTopN = k} rest
     _ -> die $ "--per-step-top expects an integer, got: " <> n
+  go o ("--replay-script" : f : rest) = go o {optReplayScript = Just f} rest
+  go o ("--checkpoint-output" : f : rest) = go o {optCheckpointOutput = Just f} rest
+  go o ("--inspect-checkpoint" : rest) = go o {optInspectCheckpoint = True} rest
   go o (x : rest)
     | optExport o == "" = go o {optExport = x} rest
     | otherwise = die $ "Unexpected argument: " <> x <> "\n" <> usage
 
 main :: IO ()
 main = do
-  opts <- parseArgs =<< getArgs
+  args <- getArgs
+  when (args == ["--build-identity"]) $ BL8.putStrLn (encode replayBuildIdentity) >> exitSuccess
+  opts <- parseArgs args
   when (optExport opts == "") $ die usage
+  withReplayInput (optExport opts) \exportInput ->
+    case optReplayScript opts of
+      Nothing -> runReplay opts exportInput Nothing
+      Just path -> withReplayInput path $ runReplay opts exportInput . Just
 
-  ArkhamExport {aeCampaignData = ArkhamGameExportData {..}} <-
-    either (die . ("Failed to parse export: " <>)) pure
-      =<< eitherDecodeFileStrict' (optExport opts)
+runReplay :: Opts -> ReplayInput -> Maybe ReplayInput -> IO ()
+runReplay opts exportInput scriptInput = do
+  let exportBytes = replayInputBytes exportInput
+  ( sourceExport@ArkhamExport {aeCampaignData = ArkhamGameExportData {..}}
+    , inputKind
+    , inputProvenance
+    ) <-
+    either die pure $ decodeReplayInput replayBuildIdentity exportBytes
+  let sourceExportSha = replayInputSha256 exportInput
+
+  replayPlan <-
+    case scriptInput of
+      Nothing -> pure Nothing
+      Just input -> do
+        let bytes = replayInputBytes input
+        plan <- either (die . ("Failed to parse replay script: " <>)) pure $ decodeReplayPlan bytes
+        pure $ Just (plan, replayInputSha256 input)
+
+  validateOptions opts replayPlan
+  case replayPlan of
+    Nothing -> pure ()
+    Just (plan, _) ->
+      either (die . ("Replay provenance mismatch: " <>)) pure
+        $ validateReplaySource replayBuildIdentity sourceExportSha inputKind agedCurrentData plan
+
+  replayOutputPlan <- case (replayPlan, scriptInput, optCheckpointOutput opts) of
+    (Just _, Just script, Just checkpointPath) ->
+      Just
+        <$> prepareReplayOutputs
+          [exportInput, script]
+          ( ReplayOutputRequest ReplayCheckpointOutput checkpointPath
+              : [ReplayOutputRequest ReplayFinalGameOutput path | path <- maybeToList $ optOutput opts]
+              <> [ ReplayOutputRequest ReplayMetricsOutput path
+                 | path <- maybeToList $ optMetrics opts >>= id
+                 ]
+          )
+    (Nothing, _, _) -> pure Nothing
+    _ -> die "Internal error: replay output plan is incomplete"
 
   answers <-
     case optAnswers opts of
@@ -155,6 +223,17 @@ main = do
       Just f ->
         either (die . ("Failed to parse answers: " <>)) pure
           =<< eitherDecodeFileStrict' f
+
+  when (optUndo opts > length agedSteps) $
+    die
+      $ "--undo requested "
+      <> show (optUndo opts)
+      <> " steps, but the export retains only "
+      <> show (length agedSteps)
+
+  when (isJust replayPlan || optInspectCheckpoint opts) $
+    either (die . ("Invalid retained replay state: " <>)) pure
+      $ validateRetainedSteps agedStep agedSteps
 
   -- Apply --undo (or full undo for --replay-all): step back N steps by
   -- replaying their choicePatchDown patches (most-recent-step first).
@@ -208,10 +287,13 @@ main = do
     exitSuccess
 
   -- The queue waiting at the resume step.
-  let resumeQueue =
-        case filter ((== targetStep) . arkhamStepStep) agedSteps of
-          (s : _) -> choiceMessages (arkhamStepChoice s)
-          _ -> []
+  resumeQueue <-
+    case retainedQueueAt targetStep agedSteps of
+      Right queue -> pure queue
+      Left err
+        | isJust replayPlan || optInspectCheckpoint opts -> die err
+        | targetStep == 0 && null agedSteps -> pure []
+        | otherwise -> pure []
 
   metricsRef <- case optMetrics opts of
     Nothing -> pure Nothing
@@ -232,14 +314,62 @@ main = do
         | otherwise = pure ()
 
   let app = GameApp gameRef queueRef genRef clientLogger Nothing
+      prependAnswerQueue messages =
+        atomicModifyIORef' (queueToRef queueRef) \currentQueue ->
+          (prependReplayAnswerMessages messages currentQueue, ())
+      drainMessages = do
+        completed <-
+          runReplayMessagesWithTimeout
+            $ runGameApp app (runMessages "headless" tracerCallback)
+        when (isNothing completed)
+          $ die
+          $ "Replay message processing timed out after "
+          <> show (replayMessageTimeoutMicros `div` 1000000)
+          <> " seconds"
 
-  -- Drain any pending queue first, then process answers one at a time using
-  -- the same dance as Api.Handler.Arkham.Games.Shared.updateGame: resolve the
-  -- answer to a [Message] via handleAnswerPure, push it (bracketed by
-  -- SetActivePlayer if the answering player isn't the active player), and
-  -- run the queue.
+  for_ replayPlan \(plan, _) ->
+    case checkQuestionCheckpoint currentData plan.replayPlanStopAt of
+      CheckpointReached
+        | null plan.replayPlanAnswers -> pure ()
+        | otherwise ->
+            die
+              $ "Stop checkpoint reached with "
+              <> show (length plan.replayPlanAnswers)
+              <> " scripted answers still unused"
+      CheckpointMismatch err -> die $ "Stop checkpoint mismatch: " <> err
+      CheckpointNotReached
+        | null plan.replayPlanAnswers ->
+            either (die . ("Stop checkpoint not reached: " <>)) pure
+              $ requireQuestionCheckpoint currentData plan.replayPlanStopAt
+        | otherwise -> pure ()
+
   wallStart <- getMonotonicTimeNSec
-  runGameApp app (runMessages "headless" tracerCallback)
+  let drainResumeQueue =
+        not (optInspectCheckpoint opts)
+          && not (isJust replayPlan)
+  when drainResumeQueue drainMessages
+
+  when (optInspectCheckpoint opts) $ do
+    inspectedGame <- readIORef gameRef
+    checkpoints <- either die pure $ questionCheckpoints inspectedGame
+    when (null checkpoints) $ die "No open question checkpoint in the selected state"
+    revalidateReplayInputs [exportInput]
+    BL8.putStrLn
+      $ encode
+      $ object
+        [ "schemaVersion" .= (1 :: Int)
+        , "source"
+            .= ReplaySource
+              { replaySourceExportSha256 = sourceExportSha
+              , replaySourceInputKind = inputKind
+              , replaySourceGameGitRevision = gameGitRevision agedCurrentData
+              , replaySourceReplayBuild = replayBuildIdentity
+              , replaySourceSchemaRevision = replayContractSchemaRevision
+              }
+        , "inputProvenance" .= inputProvenance
+        , "questions" .= checkpoints
+        ]
+    exitSuccess
 
   perStepTimings <-
     if optReplayAll opts
@@ -252,81 +382,181 @@ main = do
                 $ filter ((> targetStep) . arkhamStepStep) agedSteps
         let total = length forwardSteps
         hPutStrLn stderr $ "Replaying " <> show total <> " steps forward..."
-        timings <- forM (zip [(1 :: Int) ..] forwardSteps) $ \(idx, step) -> do
-          let msgs = choiceMessages (arkhamStepChoice step)
-          when (idx `mod` 100 == 0)
-            $ hPutStrLn stderr ("  step " <> show idx <> "/" <> show total)
-          gBefore <- readIORef gameRef
-          runGameApp app (pushAll (ClearUI : msgs))
-          t0 <- getMonotonicTimeNSec
-          runGameApp app (runMessages "headless" tracerCallback)
-          t1 <- getMonotonicTimeNSec
-          serverNs <-
-            if optSimulateServer opts
-              then do
-                ge <- readIORef gameRef
-                s0 <- getMonotonicTimeNSec
-                -- Mirror Api.Handler.Arkham.Games.Shared.updateGame, in order:
-                -- 1. force the per-message action diffs saved into ArkhamStep
-                _ <- withMetric "server/forceActionDiff" $ evaluate (BSL.length (encode (gameActionDiff ge)))
-                -- 2. the step's undo patch (diff new state vs state at answer start)
-                _ <- withMetric "server/diffDown" $ evaluate (BSL.length (encode (diff ge gBefore)))
-                -- 3. encode the full game for the DB write (replace gameId g')
-                gameBytes <- withMetric "server/encodeGame" $ do
-                  let bs = encode ge
-                  _ <- evaluate (BSL.length bs)
-                  pure bs
-                -- 4. parse the full game back (every answer re-reads the row)
-                _ <- withMetric "server/parseGame" $ evaluate $ case eitherDecode @Game gameBytes of
-                  Left e -> error ("simulate-server: game failed to re-parse: " <> e)
-                  Right (g :: Game) -> gameSeed g
-                -- 5. encode the PublicGame broadcast sent to every subscriber
-                _ <-
-                  withMetric "server/encodePublicGame"
-                    $ evaluate (BSL.length (encode (PublicGame ("headless" :: T.Text) "bench" [] ge)))
-                s1 <- getMonotonicTimeNSec
-                pure (s1 - s0)
-              else pure 0
-          pure (arkhamStepStep step, t1 - t0, serverNs, length msgs)
-        pure timings
+        let
+          go _ timings [] = pure $ reverse timings
+          go idx timings (step : rest) = do
+            let msgs = choiceMessages (arkhamStepChoice step)
+            when (idx `mod` 100 == 0)
+              $ hPutStrLn stderr ("  step " <> show idx <> "/" <> show total)
+            gBefore <- readIORef gameRef
+            runGameApp app (pushAll (ClearUI : msgs))
+            t0 <- getMonotonicTimeNSec
+            drainMessages
+            t1 <- getMonotonicTimeNSec
+            ge <- readIORef gameRef
+            serverNs <-
+              if optSimulateServer opts
+                then simulateServerWork gBefore ge
+                else pure 0
+            let timing = (arkhamStepStep step, t1 - t0, serverNs, length msgs)
+            go (idx + 1) (timing : timings) rest
+        go (1 :: Int) [] forwardSteps
       else do
-        forM_ (zip [(0 :: Int) ..] answers) $ \(idx, ans) -> do
-          g <- readIORef gameRef
-          let activePid = gameActivePlayerId g
-              answerPid = fromMaybe activePid (answerPlayer ans)
-          handleAnswerPure g answerPid ans >>= \case
-            Unhandled reason ->
-              hPutStrLn stderr
-                $ "answer "
-                <> show idx
-                <> " unhandled: "
-                <> T.unpack reason
-            Handled msgs -> do
-              let bracketed =
-                    [SetActivePlayer answerPid | activePid /= answerPid]
-                      <> msgs
-                      <> [SetActivePlayer activePid | activePid /= answerPid]
-              runGameApp app (pushAll (ClearUI : bracketed))
-              runGameApp app (runMessages "headless" tracerCallback)
+        case replayPlan of
+          Just (ReplayPlan {replayPlanMode = ReplayAnswers, replayPlanAnswers, replayPlanStopAt}, _) -> do
+            let
+              go _ [] = do
+                game <- readIORef gameRef
+                either (die . ("Stop checkpoint not reached: " <>)) pure
+                  $ requireQuestionCheckpoint game replayPlanStopAt
+              go idx (scriptStep : rest) = do
+                g <- readIORef gameRef
+                case checkQuestionCheckpoint g replayPlanStopAt of
+                  CheckpointReached ->
+                    die
+                      $ "Stop checkpoint reached with "
+                      <> show (length (scriptStep : rest))
+                      <> " scripted answers still unused"
+                  CheckpointMismatch err -> die $ "Stop checkpoint mismatch: " <> err
+                  CheckpointNotReached -> pure ()
+                answerPid <-
+                  either (die . (("script answer " <> show idx <> ": ") <>)) pure
+                    $ validateReplayAnswer g scriptStep
+                handleAnswerPure g answerPid scriptStep.replayAnswerValue >>= \case
+                  Unhandled reason ->
+                    die
+                      $ "script answer "
+                      <> show idx
+                      <> " unhandled: "
+                      <> T.unpack reason
+                  Handled msgs -> do
+                    let activePid = gameActivePlayerId g
+                        bracketed =
+                          [SetActivePlayer answerPid | activePid /= answerPid]
+                            <> msgs
+                            <> [SetActivePlayer activePid | activePid /= answerPid]
+                    prependAnswerQueue (ClearUI : bracketed)
+                    drainMessages
+                    ge <- readIORef gameRef
+                    when (optSimulateServer opts) $ void $ simulateServerWork g ge
+                    case checkQuestionCheckpoint ge replayPlanStopAt of
+                      CheckpointReached
+                        | null rest -> pure ()
+                        | otherwise ->
+                            die
+                              $ "Stop checkpoint reached with "
+                              <> show (length rest)
+                              <> " scripted answers still unused"
+                      CheckpointMismatch err -> die $ "Stop checkpoint mismatch: " <> err
+                      CheckpointNotReached
+                        | null rest ->
+                            either (die . ("Stop checkpoint not reached: " <>)) pure
+                              $ requireQuestionCheckpoint ge replayPlanStopAt
+                        | otherwise -> go (idx + 1) rest
+            go (0 :: Int) replayPlanAnswers
+          _ ->
+            forM_ (zip [(0 :: Int) ..] answers) $ \(idx, ans) -> do
+              g <- readIORef gameRef
+              let activePid = gameActivePlayerId g
+                  answerPid = fromMaybe activePid (answerPlayer ans)
+              handleAnswerPure g answerPid ans >>= \case
+                Unhandled reason ->
+                  hPutStrLn stderr
+                    $ "answer "
+                    <> show idx
+                    <> " unhandled: "
+                    <> T.unpack reason
+                Handled msgs -> do
+                  let bracketed =
+                        [SetActivePlayer answerPid | activePid /= answerPid]
+                          <> msgs
+                          <> [SetActivePlayer activePid | activePid /= answerPid]
+                  prependAnswerQueue (ClearUI : bracketed)
+                  drainMessages
         pure []
 
   wallEnd <- getMonotonicTimeNSec
   finalGame <- readIORef gameRef
-  case optOutput opts of
-    Nothing -> BL8.putStrLn (encode finalGame)
-    Just f -> BSL.writeFile f (encode finalGame)
+  finalQueue <- readIORef $ queueToRef queueRef
 
-  case (optMetrics opts, metricsRef) of
-    (Just dest, Just ref) -> do
+  metricsOutputBytes <- case (optMetrics opts, metricsRef) of
+    (Just destination, Just ref) -> do
       let elapsedMs = fromIntegral (wallEnd - wallStart) / (1_000_000 :: Double)
       hPutStrLn stderr
         $ "Replay wall-clock (excluding load + final encode): "
         <> show elapsedMs
         <> " ms"
-      dumpMetricsTo dest ref (optMetricsTopN opts)
-    _ -> pure ()
+      case destination of
+        Nothing -> dumpMetricsTo Nothing ref (optMetricsTopN opts) >> pure Nothing
+        Just _ ->
+          Just . BSL.fromStrict . TE.encodeUtf8
+            <$> formatMetrics ref (optMetricsTopN opts)
+    _ -> pure Nothing
 
-  when (not (null perStepTimings)) $ do
+  perStepOutputBytes <-
+    if null perStepTimings
+      then pure Nothing
+      else do
+        printPerStepSummary opts perStepTimings
+        pure
+          $ Just
+          $ BSL.fromStrict
+          . TE.encodeUtf8
+          . T.pack
+          . formatPerStepCsv
+          $ perStepTimings
+
+  case replayPlan of
+    Nothing -> do
+      case optOutput opts of
+        Nothing -> BL8.putStrLn (encode finalGame)
+        Just path -> BSL.writeFile path (encode finalGame)
+      for_ ((,) <$> (optMetrics opts >>= id) <*> metricsOutputBytes) $
+        uncurry BSL.writeFile
+      for_ ((,) <$> optPerStepReport opts <*> perStepOutputBytes) $
+        uncurry BSL.writeFile
+    Just (plan, planSha) -> do
+      either (die . ("Final checkpoint mismatch: " <>)) pure
+        $ requireQuestionCheckpoint finalGame plan.replayPlanStopAt
+      let checkpoint = makeCheckpointExport sourceExport finalGame finalQueue
+          provenance =
+            ReplayProvenance
+              { provenanceSchemaVersion = 1
+              , provenanceContractSchemaRevision = replayContractSchemaRevision
+              , provenancePlanSha256 = planSha
+              , provenanceSourceExportSha256 = sourceExportSha
+              , provenanceSourceInputKind = inputKind
+              , provenanceSourceGameGitRevision = gameGitRevision agedCurrentData
+              , provenanceReplayBuild = replayBuildIdentity
+              , provenanceMode = ReplayAnswers
+              , provenanceUndoSteps = undoCount
+              , provenanceAnswersApplied = length plan.replayPlanAnswers
+              , provenanceCheckpoint = plan.replayPlanStopAt
+              , provenanceCheckpointGameSha256 = sha256Lazy $ encode finalGame
+              , provenanceCheckpointQueueSha256 = sha256Lazy $ encode finalQueue
+              }
+          checkpointBytes = encode $ checkpointExportValue checkpoint provenance
+          artifacts =
+            ReplayOutputArtifact ReplayCheckpointOutput checkpointBytes
+              : [ReplayOutputArtifact ReplayFinalGameOutput $ encode finalGame | isJust $ optOutput opts]
+              <> [ ReplayOutputArtifact ReplayMetricsOutput bytes
+                 | bytes <- maybeToList metricsOutputBytes
+                 ]
+      outputPath <- maybe (die "Internal error: replay script has no checkpoint output") pure
+        $ optCheckpointOutput opts
+      prepared <- maybe (die "Internal error: replay output plan was not prepared") pure replayOutputPlan
+      publishReplayOutputs prepared artifacts
+      hPutStrLn stderr
+        $ "Published checkpoint "
+        <> T.unpack plan.replayPlanStopAt.checkpointName
+        <> " to "
+        <> outputPath
+        <> " (sha256 "
+        <> T.unpack (sha256Lazy checkpointBytes)
+        <> ")"
+
+printPerStepSummary :: Opts -> [(Int, Word64, Word64, Int)] -> IO ()
+printPerStepSummary opts perStepTimings = do
     let toMs ns = fromIntegral ns / (1_000_000 :: Double)
         totalNs (_, drainNs, serverNs, _) = drainNs + serverNs
         sortedDesc = sortOn (Down . totalNs) perStepTimings
@@ -354,25 +584,24 @@ main = do
         <> padLeft 12 (printfMs (toMs serverNs))
         <> "  "
         <> padLeft 5 (show msgs)
-    case optPerStepReport opts of
-      Nothing -> pure ()
-      Just path -> do
-        let rows =
-              "step,duration_ms,server_ms,messages_pushed\n"
-                <> concatMap
-                  ( \(s, ns, serverNs, m) ->
-                      show s
-                        <> ","
-                        <> printfMs (toMs ns)
-                        <> ","
-                        <> printfMs (toMs serverNs)
-                        <> ","
-                        <> show m
-                        <> "\n"
-                  )
-                  perStepTimings
-        writeFile path rows
-        hPutStrLn stderr $ "Per-step CSV written to " <> path
+
+formatPerStepCsv :: [(Int, Word64, Word64, Int)] -> String
+formatPerStepCsv perStepTimings =
+  "step,duration_ms,server_ms,messages_pushed\n"
+    <> concatMap
+      ( \(step, durationNs, serverNs, messages) ->
+          show step
+            <> ","
+            <> printfMs (toMs durationNs)
+            <> ","
+            <> printfMs (toMs serverNs)
+            <> ","
+            <> show messages
+            <> "\n"
+      )
+      perStepTimings
+ where
+  toMs ns = fromIntegral ns / (1_000_000 :: Double)
 
 -- | Apply one step's choicePatchDown to the running JSON value. Stops on the
 -- first failure.
@@ -382,6 +611,59 @@ applyUndo (Right v) step =
   case patchValueWithRecovery v (choicePatchDown (arkhamStepChoice step)) of
     Error e -> Left $ "step " <> show (arkhamStepStep step) <> ": " <> e
     Success v' -> Right v'
+
+validateOptions :: Opts -> Maybe (ReplayPlan, T.Text) -> IO ()
+validateOptions opts replayPlan = do
+  when (optInspectCheckpoint opts) $ do
+    when
+      ( isJust replayPlan
+          || isJust (optAnswers opts)
+          || isJust (optOutput opts)
+          || isJust (optCheckpointOutput opts)
+          || isJust (optMetrics opts)
+          || isJust (optPerStepReport opts)
+          || optReplayAll opts
+          || optSimulateServer opts
+          || optBenchActionDiff opts > 0
+      )
+      $ die "--inspect-checkpoint only accepts the export, --undo, and --trace"
+
+  case replayPlan of
+    Nothing ->
+      when (isJust $ optCheckpointOutput opts) $
+        die "--checkpoint-output requires --replay-script"
+    Just _ -> do
+      when (optInspectCheckpoint opts) $
+        die "--inspect-checkpoint cannot be combined with --replay-script"
+      when (isJust $ optAnswers opts) $
+        die "--answers cannot be combined with --replay-script; put exact answers in the replay script"
+      when (optBenchActionDiff opts > 0) $
+        die "--bench-action-diff cannot be combined with --replay-script"
+      when (isNothing $ optCheckpointOutput opts) $
+        die "--replay-script requires --checkpoint-output"
+      when (optReplayAll opts) $
+        die "deterministic replay scripts cannot use --replay-all; retained steps contain residual queues, not Answers"
+      when (isJust $ optPerStepReport opts) $
+        die "--per-step-report requires legacy --replay-all and cannot be combined with --replay-script"
+
+simulateServerWork :: Game -> Game -> IO Word64
+simulateServerWork gBefore ge = do
+  s0 <- getMonotonicTimeNSec
+  -- Mirror Api.Handler.Arkham.Games.Shared.updateGame, in order.
+  _ <- withMetric "server/forceActionDiff" $ evaluate (BSL.length (encode (gameActionDiff ge)))
+  _ <- withMetric "server/diffDown" $ evaluate (BSL.length (encode (diff ge gBefore)))
+  gameBytes <- withMetric "server/encodeGame" $ do
+    let bytes = encode ge
+    _ <- evaluate (BSL.length bytes)
+    pure bytes
+  _ <- withMetric "server/parseGame" $ evaluate $ case eitherDecode @Game gameBytes of
+    Left err -> error ("simulate-server: game failed to re-parse: " <> err)
+    Right (game :: Game) -> gameSeed game
+  _ <-
+    withMetric "server/encodePublicGame"
+      $ evaluate (BSL.length (encode (PublicGame ("headless" :: T.Text) "bench" [] ge)))
+  s1 <- getMonotonicTimeNSec
+  pure $ s1 - s0
 
 padLeft :: Int -> String -> String
 padLeft n s = replicate (max 0 (n - length s)) ' ' <> s

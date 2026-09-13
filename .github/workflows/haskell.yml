@@ -53,8 +53,34 @@ jobs:
         stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks --only-dependencies
     - name: Build
       run: stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks cards-discover && stack build --system-ghc --test --no-run-tests --bench --no-run-benchmarks
+    - name: Install authoritative executables
+      run: |
+        set -eu
+        install_root="$(stack path --local-install-root --system-ghc)"
+        stack install \
+          --system-ghc \
+          --local-bin-path "${install_root}/bin" \
+          arkham-api:exe:arkham-api \
+          arkham-api:exe:arkham-replay \
+          arkham-api:exe:arkham-capabilities-probe
+    - name: Verify server and replay executable build identity
+      run: |
+        set -eu
+        install_root="$(stack path --local-install-root --system-ghc)"
+        server="${install_root}/bin/arkham-api"
+        replay="${install_root}/bin/arkham-replay"
+        test -x "${server}" && test ! -L "${server}"
+        test -x "${replay}" && test ! -L "${replay}"
+        server_identity="$("${server}" --build-identity)"
+        replay_identity="$("${replay}" --build-identity)"
+        test "${server_identity}" = "${replay_identity}"
+        IDENTITY="${server_identity}" python3 -c \
+          'import json, os; value=json.loads(os.environ["IDENTITY"]); assert value["attestation"] == "git-clean", value'
     - name: Run tests
       run: stack test --system-ghc
+    - name: Run executable replay harness
+      run: /bin/sh scripts/test-replay-harness.sh
+      working-directory: ${{ github.workspace }}
 
     # The deployment seam: generate a *real* catalog and drive the production
     # settings parser, capabilities handler and toEncoding over it, rather than

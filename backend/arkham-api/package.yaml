@@ -4,6 +4,7 @@ language: GHC2021
 
 extra-source-files:
 - digital-ocean.crt
+- tests/fixtures/replay/smoke-current-data.json
 
 default-extensions:
 - AllowAmbiguousTypes
@@ -120,6 +121,7 @@ library:
     - persistent-postgresql
     - pretty-simple
     - process
+    - typed-process
     - random-shuffle
     - regex-posix
     - relude
@@ -139,6 +141,7 @@ library:
     - unliftio
     - unordered-containers
     - uri-bytestring
+    - unix
     - uuid
     - vector
     - wai
@@ -162,6 +165,8 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
+      - aeson
+      - bytestring
       - foreign-store
       - warp
       - arkham-api
@@ -197,6 +202,7 @@ executables:
       - arkham-api
       - bytestring
       - MonadRandom
+      - template-haskell
       - text
     when:
       - condition: flag(library-only)
@@ -238,6 +244,7 @@ tests:
       - aeson-diff
       - amazonka
       - amazonka-core
+      - async
       - bytestring
       - containers
       - devel-store-lock
@@ -262,4 +269,5 @@ tests:
       - text
       - time
       - unordered-containers
+      - unix
       - yaml

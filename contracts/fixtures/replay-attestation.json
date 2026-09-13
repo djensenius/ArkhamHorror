@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "gameId": "00000000-0000-0000-0000-000000000010",
+  "gameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+  "checkpointSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "canonicalEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "validatedCheckpoint": {
+    "schemaVersion": 1,
+    "contractSchemaRevision": "0.1.34",
+    "prompt": {
+      "questionVersion": 7,
+      "playerId": "00000000-0000-0000-0000-000000000000",
+      "promptTag": "ChooseOne",
+      "promptSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "checkpointGameSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "checkpointQueueSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "runningServerBuild": {
+    "gitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+    "gitTree": "dddddddddddddddddddddddddddddddddddddddd",
+    "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "sourceClean": true,
+    "attestation": "git-clean"
+  },
+  "importReceipt": {
+    "schemaVersion": 1,
+    "gameId": "00000000-0000-0000-0000-000000000010",
+    "gameGitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+    "backendBuild": {
+      "gitRevision": "cccccccccccccccccccccccccccccccccccccccc",
+      "gitTree": "dddddddddddddddddddddddddddddddddddddddd",
+      "sourceSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "sourceClean": true,
+      "attestation": "git-clean"
+    },
+    "checkpointSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "canonicalEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "validatedCheckpoint": {
+      "schemaVersion": 1,
+      "contractSchemaRevision": "0.1.34",
+      "prompt": {
+        "questionVersion": 7,
+        "playerId": "00000000-0000-0000-0000-000000000000",
+        "promptTag": "ChooseOne",
+        "promptSha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "checkpointGameSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "checkpointQueueSha256": "5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "playerRemappings": [
+      {
+        "investigatorId": "c01001",
+        "checkpointPlayerId": "00000000-0000-0000-0000-000000000000",
+        "importedPlayerId": "00000000-0000-0000-0000-000000000020",
+        "livePlayerId": "00000000-0000-0000-0000-000000000020",
+        "stateRemapped": true
+      }
+    ],
+    "receiptSha256": "07ff69d7e7fb49492c75f19cf3bd13b51d37909f7a65c6e4c7e7e68d9d01d6c8"
+  }
+}

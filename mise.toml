@@ -3,6 +3,15 @@ node = "26.7.0"
 python = "3.14.7"
 uv = "0.12.6"
 
+[tasks."replay:harness"]
+description = "Run the backend-owned deterministic replay/checkpoint CLI"
+raw = true
+run = "/bin/sh scripts/test-replay-harness.sh --run"
+
+[tasks."replay:harness:test"]
+description = "Run focused replay unit and actual-executable fixture tests"
+run = "/bin/sh scripts/test-replay-harness.sh"
+
 [tasks."contracts:fixtures"]
 description = "Validate contract manifests, golden JSON fixtures, and negative regressions"
 run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-contract-fixtures.py"

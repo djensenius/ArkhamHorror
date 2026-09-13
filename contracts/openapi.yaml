@@ -176,10 +176,25 @@ paths:
         always `https`. A client must never rewrite it onto another host, and
         must verify the manifest it downloads against `manifestSha256` before
         using it.
+
+        The `X-Arkham-Backend-Build-Identity` response header is separate from
+        retained game-state revisions. It is JSON embedded when the running
+        backend executable is compiled; clients requiring deterministic local
+        replay must reject a missing, malformed, unattested, or unexpected
+        identity rather than accepting a caller-provided expected value.
       security: []
       responses:
         "200":
           description: Contract compatibility and server capabilities
+          headers:
+            X-Arkham-Backend-Build-Identity:
+              description: |
+                Compact JSON `ReplayBuildIdentity` compiled into the running
+                backend. Fields are `gitRevision`, `gitTree`, `sourceSha256`,
+                `sourceClean`, and `attestation`; this is build authority, not a
+                game's retained `gameGitRevision`.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -545,6 +560,111 @@ paths:
           description: Token is absent or invalid
         "500":
           description: Campaign or scenario initialization failed
+  /arkham/games/import:
+    post:
+      operationId: importGame
+      summary: Import a complete saved game or validated replay checkpoint
+      description: |
+        This is the existing production import route. A successful response
+        body is the complete `PublicGame` snapshot used by the web client,
+        including its top-level `id`; it is not an ID-only object such as
+        `{ "id": "..." }`.
+
+        Every successful ordinary-export or checkpoint import also returns
+        `X-Arkham-Backend-Build-Identity`, containing the JSON build identity
+        compiled into the running server. A successfully validated checkpoint
+        import additionally returns `X-Arkham-Replay-Import-Receipt`, containing
+        the exact JSON receipt persisted for the new game. Ordinary exports
+        omit only the receipt header, not the `PublicGame` response body or
+        backend-identity header.
+
+        Coordinators must decode the body and both applicable headers from this
+        same production response. They must not substitute an ID-only response
+        model or treat caller-provided expected strings as authority.
+
+        Before creating a game row for checkpoint bytes, the importer runs the
+        backend's exact checkpoint-envelope decoder and validator over the
+        uploaded bytes. It rejects non-canonical or unknown JSON, recomputes
+        and verifies the export, retained-queue, and canonical-envelope
+        digests, and requires the checkpoint provenance `replayBuild` to equal
+        the running server's compiled build identity. That identity must have
+        `sourceClean: true` and `attestation: "git-clean"`. Dirty,
+        `source-sha256`-attested, unattested, mismatched, or tampered
+        checkpoints fail with 400 before game creation and receive no receipt.
+        The receipt exposes only the prompt, game, queue, contract, revision,
+        and build facts the importer independently validates. Self-reported
+        generation fields such as plan/source hashes, source kind, answer and
+        undo counts, and the checkpoint label remain in the checkpoint file
+        for local reproducibility checks but are not authenticated by the
+        import receipt.
+        Ordinary exports do not acquire checkpoint authority: they still
+        return the full `PublicGame` and running build header, but never the
+        checkpoint receipt or durable replay attestation.
+      parameters:
+        - name: multiplayerVariant
+          in: query
+          required: false
+          description: |
+            Optional ordinary-export mode override. Validated checkpoint
+            imports reject any override so their retained mode cannot change.
+          schema:
+            type: string
+            enum:
+              - Solo
+              - WithFriends
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - debugFile
+              properties:
+                debugFile:
+                  type: string
+                  format: binary
+                  description: Ordinary Arkham export or deterministic checkpoint JSON, optionally gzip-compressed
+                investigatorId:
+                  type: string
+                  description: |
+                    Investigator selected for a WithFriends import. For a
+                    validated checkpoint this selects the checkpoint player
+                    whose persisted game state and retained queue references
+                    are remapped to the newly inserted player.
+      responses:
+        "200":
+          description: Complete imported game snapshot with server authority headers
+          headers:
+            X-Arkham-Backend-Build-Identity:
+              required: true
+              description: |
+                Compact JSON `ReplayBuildIdentity` compiled into the running
+                backend. Present for every successful import.
+              content:
+                application/json:
+                  schema:
+                    $ref: "./schemas/replay-attestation.schema.json#/$defs/buildIdentity"
+            X-Arkham-Replay-Import-Receipt:
+              description: |
+                Compact JSON `ReplayImportReceipt`, present only when the
+                uploaded bytes were accepted as a validated replay checkpoint.
+              content:
+                application/json:
+                  schema:
+                    $ref: "./schemas/replay-attestation.schema.json#/$defs/importReceipt"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicGame"
+        "400":
+          description: |
+            Upload, export, checkpoint, mode, or player remapping validation
+            failed. Checkpoint failures include dirty, source-SHA-attested,
+            unattested, mismatched, non-canonical, or tampered authority and
+            occur before game creation.
+        "401":
+          description: Token is absent or invalid
   /arkham/games/{gameId}:
     get:
       operationId: getGame
@@ -750,6 +870,48 @@ paths:
                 $ref: "#/components/schemas/GetGame"
         "404":
           description: Game does not exist
+  /arkham/games/{gameId}/replay-attestation:
+    get:
+      operationId: getGameReplayAttestation
+      summary: Read durable authority for a validated replay checkpoint import
+      description: |
+        Requires administrator access or membership in the exact game. This is
+        a metadata-only replay-import authority and exposes no game rules,
+        prompt contents, answer path, or mutable state.
+
+        The importer runs the backend's exact checkpoint-envelope decoder and
+        validator over the uploaded bytes before opening the game-creation
+        transaction. Only a successfully validated checkpoint import receives
+        a durable receipt. `canonicalEnvelopeSha256` is recomputed by the
+        server from the decoded export and full generation metadata; it is
+        never trusted from the checkpoint's embedded digest field. This hash
+        binds the exact canonical envelope but is not treated as proof that
+        self-reported generation history is true.
+
+        A successful response proves that the retained game revision,
+        server-validated prompt and game/queue hashes, contract revision,
+        import-time clean backend build, player remapping, and current clean
+        running backend build still agree. It deliberately omits plan/source
+        hashes, source kind, answer and undo counts, and the caller-selected
+        checkpoint label because the server cannot derive those claims from
+        the imported checkpoint state. Missing records, malformed receipts,
+        dirty or unattested binaries, changed game revisions, and build
+        mismatches fail closed.
+      parameters:
+        - $ref: "#/components/parameters/GameId"
+      responses:
+        "200":
+          description: Validated game-bound replay import authority
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplayAttestation"
+        "400":
+          description: Persisted authority or current clean-build validation failed closed
+        "401":
+          description: Token is absent or invalid
+        "404":
+          description: Game, participant membership, or replay import attestation does not exist
   /arkham/games/{gameId}/step:
     get:
       operationId: getGameStep
@@ -919,6 +1081,8 @@ components:
       $ref: "./schemas/game-lifecycle.schema.json#/$defs/openSeats"
     GameStep:
       $ref: "./schemas/game-step.schema.json"
+    ReplayAttestation:
+      $ref: "./schemas/replay-attestation.schema.json"
     GameList:
       $ref: "./schemas/game-list.schema.json"
     GetGame:
