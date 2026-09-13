@@ -35,7 +35,7 @@ Haskell constructor field order.
       "sourceClean": true,
       "attestation": "git-clean"
     },
-    "schemaRevision": "0.1.37"
+    "schemaRevision": "0.1.38"
   },
   "answers": [{
     "expect": {

@@ -1,0 +1,21 @@
+{
+  "choices": [
+    {
+      "messages": [
+        {
+          "contents": [
+            "c01105",
+            "AgendaAdvancedWithDoom"
+          ],
+          "tag": "AdvanceAgendaBy"
+        }
+      ],
+      "tag": "TargetLabel",
+      "target": {
+        "contents": "c01105",
+        "tag": "AgendaTarget"
+      }
+    }
+  ],
+  "tag": "ChooseOne"
+}

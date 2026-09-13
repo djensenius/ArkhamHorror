@@ -2,8 +2,20 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
+    {
+      "$ref": "#/$defs/roundEndDissonantVoicesQuestion"
+    },
+    {
+      "$ref": "#/$defs/agendaAdvanceQuestion"
+    },
+    {
+      "$ref": "#/$defs/agendaConsequenceQuestion"
+    },
+    {
+      "$ref": "#/$defs/agendaHorrorAssignmentQuestion"
+    },
     {
       "$ref": "#/$defs/chooseOneQuestion"
     },
@@ -30,6 +42,845 @@
     }
   ],
   "$defs": {
+    "roundEndDissonantVoicesQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "WindowChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/dissonantVoicesForcedAbilityLabel"
+            }
+          ],
+          "items": false
+        }
+      },
+      "description": "The exact end-of-round WindowChooseOne emitted by Dissonant Voices (c01165). It is isolated from the generic ability-label branch so ForcedAbility, treachery sources, windows, criteria, limits, and empty message arrays remain fail-closed."
+    },
+    "dissonantVoicesForcedAbilityLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "ability",
+        "windows",
+        "before",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilityLabel"
+        },
+        "investigatorId": {
+          "$ref": "#/$defs/investigatorId"
+        },
+        "ability": {
+          "$ref": "#/$defs/dissonantVoicesForcedAbility"
+        },
+        "windows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/atEndOfRoundWindow"
+            }
+          ],
+          "items": false
+        },
+        "before": {
+          "const": []
+        },
+        "messages": {
+          "const": []
+        }
+      }
+    },
+    "dissonantVoicesForcedAbility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "additionalCosts",
+        "basic",
+        "canBeCancelled",
+        "cardCode",
+        "criteria",
+        "delayAdditionalCosts",
+        "displayAs",
+        "doesNotProvokeAttacksOfOpportunity",
+        "evadeCriteriaOverride",
+        "fightCriteriaOverride",
+        "highlightFromWindow",
+        "ignoreAllCosts",
+        "index",
+        "limit",
+        "metadata",
+        "requestor",
+        "skipForAll",
+        "source",
+        "target",
+        "tooltip",
+        "triggersSkillTest",
+        "type",
+        "wantsSkillTest",
+        "window"
+      ],
+      "properties": {
+        "additionalCosts": {
+          "const": []
+        },
+        "basic": {
+          "const": false
+        },
+        "canBeCancelled": {
+          "const": true
+        },
+        "cardCode": {
+          "const": "c01165"
+        },
+        "criteria": {
+          "$ref": "#/$defs/dissonantVoicesCriteria"
+        },
+        "delayAdditionalCosts": {
+          "type": "null"
+        },
+        "displayAs": {
+          "type": "null"
+        },
+        "doesNotProvokeAttacksOfOpportunity": {
+          "type": "null"
+        },
+        "evadeCriteriaOverride": {
+          "type": "null"
+        },
+        "fightCriteriaOverride": {
+          "type": "null"
+        },
+        "highlightFromWindow": {
+          "const": false
+        },
+        "ignoreAllCosts": {
+          "const": false
+        },
+        "index": {
+          "const": 1
+        },
+        "limit": {
+          "$ref": "#/$defs/dissonantVoicesLimit"
+        },
+        "metadata": {
+          "type": "null"
+        },
+        "requestor": {
+          "$ref": "#/$defs/treacherySource"
+        },
+        "skipForAll": {
+          "const": false
+        },
+        "source": {
+          "$ref": "#/$defs/treacherySource"
+        },
+        "target": {
+          "type": "null"
+        },
+        "tooltip": {
+          "type": "null"
+        },
+        "triggersSkillTest": {
+          "const": false
+        },
+        "type": {
+          "$ref": "#/$defs/roundEndsForcedAbility"
+        },
+        "wantsSkillTest": {
+          "type": "null"
+        },
+        "window": {
+          "$ref": "#/$defs/roundEndsWhen"
+        }
+      },
+      "description": "The complete production Ability display payload for Dissonant Voices' first forced ability. JSON Schema cannot require source and requestor UUID equality; the production Haskell fixture assertion binds both to the same TreacheryId."
+    },
+    "treacherySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "TreacherySource"
+        },
+        "contents": {
+          "$ref": "./uuid.schema.json"
+        }
+      }
+    },
+    "dissonantVoicesCriteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InThreatAreaOf"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "const": "You"
+            }
+          }
+        }
+      }
+    },
+    "dissonantVoicesLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "GroupLimit"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "PerWindow"
+                }
+              }
+            },
+            {
+              "const": 1
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "roundEndsForcedAbility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "window"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ForcedAbility"
+        },
+        "window": {
+          "$ref": "#/$defs/roundEndsWhen"
+        }
+      }
+    },
+    "roundEndsWhen": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "RoundEnds"
+        },
+        "contents": {
+          "const": "When"
+        }
+      }
+    },
+    "atEndOfRoundWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "windowTiming",
+        "windowType",
+        "windowBatchId"
+      ],
+      "properties": {
+        "windowTiming": {
+          "const": "When"
+        },
+        "windowType": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "const": "AtEndOfRound"
+            }
+          }
+        },
+        "windowBatchId": {
+          "type": "null"
+        }
+      }
+    },
+    "agendaAdvanceQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/agendaAdvanceLabel"
+            }
+          ],
+          "items": false
+        }
+      },
+      "description": "The exact one-choice Agenda 1 threshold prompt. Only AgendaTarget c01105 and AdvanceAgendaBy [c01105, AgendaAdvancedWithDoom] are governed."
+    },
+    "agendaAdvanceLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "target",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "TargetLabel"
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "AgendaTarget"
+            },
+            "contents": {
+              "const": "c01105"
+            }
+          }
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/advanceAgendaOneMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "advanceAgendaOneMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AdvanceAgendaBy"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "const": "c01105"
+            },
+            {
+              "const": "AgendaAdvancedWithDoom"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "agendaConsequenceQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/agendaHorrorConsequenceLabel"
+            },
+            {
+              "$ref": "#/$defs/agendaDiscardConsequenceLabel"
+            }
+          ],
+          "items": false
+        }
+      },
+      "description": "The exact ordered two-choice consequence prompt emitted by What's Going On?! (c01105). Choice 0 assigns 0 damage/2 horror to the lead investigator; choice 1 randomly discards one AnyCard from every eligible investigator."
+    },
+    "agendaHorrorConsequenceLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "label",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Label"
+        },
+        "label": {
+          "const": "$nightOfTheZealot.theGathering.label.whatsGoingOn.horror"
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/agendaAssignTwoHorrorMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "agendaDiscardConsequenceLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "label",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Label"
+        },
+        "label": {
+          "const": "$nightOfTheZealot.theGathering.label.whatsGoingOn.discard"
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/agendaRandomDiscardMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "agendaAssignTwoHorrorMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "InvestigatorAssignDamage_"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 5,
+              "maxItems": 5,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/investigatorId"
+                },
+                {
+                  "$ref": "#/$defs/agendaOneSource"
+                },
+                {
+                  "$ref": "#/$defs/damageAny"
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "const": 2
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "agendaRandomDiscardMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AllRandomDiscard"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/agendaOneSource"
+            },
+            {
+              "$ref": "#/$defs/anyCard"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "agendaOneSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AgendaSource"
+        },
+        "contents": {
+          "const": "c01105"
+        }
+      }
+    },
+    "anyCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AnyCard"
+        }
+      }
+    },
+    "agendaHorrorAssignmentQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "source",
+        "tooltip",
+        "question"
+      ],
+      "properties": {
+        "tag": {
+          "const": "QuestionWithSource"
+        },
+        "source": {
+          "$ref": "#/$defs/agendaOneSource"
+        },
+        "tooltip": {
+          "type": "null"
+        },
+        "question": {
+          "$ref": "#/$defs/agendaHorrorAssignmentLabel"
+        }
+      },
+      "description": "The exact Agenda 1 QuestionWithSource -> QuestionLabel -> ChooseOne assignment prompt. It permits only the investigator HorrorToken choice and the two exact agenda-sourced assignment messages for 0 damage/2 horror."
+    },
+    "agendaHorrorAssignmentLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "label",
+        "card",
+        "question"
+      ],
+      "properties": {
+        "tag": {
+          "const": "QuestionLabel"
+        },
+        "label": {
+          "const": "Assign 2 horror"
+        },
+        "card": {
+          "type": "null"
+        },
+        "question": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "choices"
+          ],
+          "properties": {
+            "tag": {
+              "const": "ChooseOne"
+            },
+            "choices": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/agendaHorrorAssignmentChoice"
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "agendaHorrorAssignmentChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "component",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ComponentLabel"
+        },
+        "component": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "investigatorId",
+            "tokenType"
+          ],
+          "properties": {
+            "tag": {
+              "const": "InvestigatorComponent"
+            },
+            "investigatorId": {
+              "$ref": "#/$defs/investigatorId"
+            },
+            "tokenType": {
+              "const": "HorrorToken"
+            }
+          }
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/agendaDirectTwoHorrorMessage"
+            },
+            {
+              "$ref": "#/$defs/agendaCompleteTwoHorrorMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "agendaDirectTwoHorrorMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "InvestigatorDamage_"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/investigatorId"
+                },
+                {
+                  "$ref": "#/$defs/agendaOneSource"
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "const": 2
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "agendaCompleteTwoHorrorMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "InvestigatorDoAssignDamage_"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 8,
+              "maxItems": 8,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/investigatorId"
+                },
+                {
+                  "$ref": "#/$defs/agendaOneSource"
+                },
+                {
+                  "$ref": "#/$defs/damageAny"
+                },
+                {
+                  "$ref": "#/$defs/anyAsset"
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "const": []
+                },
+                {
+                  "type": "array",
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "prefixItems": [
+                    {
+                      "$ref": "#/$defs/agendaInvestigatorTarget"
+                    },
+                    {
+                      "$ref": "#/$defs/agendaInvestigatorTarget"
+                    }
+                  ],
+                  "items": false
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      },
+      "description": "JSON Schema cannot require the three repeated investigator ids to be equal; the production Haskell fixture assertion binds the component, message target, and both candidate targets to the same InvestigatorId."
+    },
+    "agendaInvestigatorTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorTarget"
+        },
+        "contents": {
+          "$ref": "#/$defs/investigatorId"
+        }
+      }
+    },
     "chooseOneQuestion": {
       "type": "object",
       "additionalProperties": false,

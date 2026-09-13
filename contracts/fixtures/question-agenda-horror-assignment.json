@@ -1,0 +1,75 @@
+{
+  "question": {
+    "card": null,
+    "label": "Assign 2 horror",
+    "question": {
+      "choices": [
+        {
+          "component": {
+            "investigatorId": "c01001",
+            "tag": "InvestigatorComponent",
+            "tokenType": "HorrorToken"
+          },
+          "messages": [
+            {
+              "contents": {
+                "contents": [
+                  "c01001",
+                  {
+                    "contents": "c01105",
+                    "tag": "AgendaSource"
+                  },
+                  0,
+                  2
+                ],
+                "tag": "InvestigatorDamage_"
+              },
+              "tag": "InvestigatorMessage"
+            },
+            {
+              "contents": {
+                "contents": [
+                  "c01001",
+                  {
+                    "contents": "c01105",
+                    "tag": "AgendaSource"
+                  },
+                  {
+                    "tag": "DamageAny"
+                  },
+                  {
+                    "tag": "AnyAsset"
+                  },
+                  0,
+                  0,
+                  [],
+                  [
+                    {
+                      "contents": "c01001",
+                      "tag": "InvestigatorTarget"
+                    },
+                    {
+                      "contents": "c01001",
+                      "tag": "InvestigatorTarget"
+                    }
+                  ]
+                ],
+                "tag": "InvestigatorDoAssignDamage_"
+              },
+              "tag": "InvestigatorMessage"
+            }
+          ],
+          "tag": "ComponentLabel"
+        }
+      ],
+      "tag": "ChooseOne"
+    },
+    "tag": "QuestionLabel"
+  },
+  "source": {
+    "contents": "c01105",
+    "tag": "AgendaSource"
+  },
+  "tag": "QuestionWithSource",
+  "tooltip": null
+}

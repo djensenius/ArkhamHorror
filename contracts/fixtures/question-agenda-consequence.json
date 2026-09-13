@@ -1,0 +1,47 @@
+{
+  "choices": [
+    {
+      "label": "$nightOfTheZealot.theGathering.label.whatsGoingOn.horror",
+      "messages": [
+        {
+          "contents": {
+            "contents": [
+              "c01001",
+              {
+                "contents": "c01105",
+                "tag": "AgendaSource"
+              },
+              {
+                "tag": "DamageAny"
+              },
+              0,
+              2
+            ],
+            "tag": "InvestigatorAssignDamage_"
+          },
+          "tag": "InvestigatorMessage"
+        }
+      ],
+      "tag": "Label"
+    },
+    {
+      "label": "$nightOfTheZealot.theGathering.label.whatsGoingOn.discard",
+      "messages": [
+        {
+          "contents": [
+            {
+              "contents": "c01105",
+              "tag": "AgendaSource"
+            },
+            {
+              "tag": "AnyCard"
+            }
+          ],
+          "tag": "AllRandomDiscard"
+        }
+      ],
+      "tag": "Label"
+    }
+  ],
+  "tag": "ChooseOne"
+}

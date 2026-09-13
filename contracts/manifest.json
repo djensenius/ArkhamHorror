@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.37",
+  "schemaRevision": "0.1.38",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -112,6 +112,22 @@
     },
     {
       "path": "contracts/fixtures/question-player-window-engage-action.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-round-end-forced-ability.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-agenda-advance.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-agenda-consequence.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-agenda-horror-assignment.json",
       "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
@@ -9125,6 +9141,1399 @@
           "messageContains": "'InvestigatorTarget' was expected"
         }
       ]
+    },
+    {
+      "description": "Dissonant Voices cleanup rejects a different root question constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "PlayerWindowChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'WindowChooseOne' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup rejects a different choice-label constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/tag",
+        "value": "TargetLabel"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AbilityLabel' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup is bound to canonical card code c01165.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/cardCode",
+        "value": "c01164"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "cardCode"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01165' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup rejects a non-treachery ability source.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/source/tag",
+        "value": "EventSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "source",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'TreacherySource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup rejects non-canonical uppercase source UUID spelling.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/source/contents",
+        "value": "9E2F9137-FF19-4993-B001-ACC24D0D3736"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "source",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'9E2F9137-FF19-4993-B001-ACC24D0D3736' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup rejects a non-treachery requestor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/requestor/tag",
+        "value": "AgendaSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "requestor",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'TreacherySource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup remains forced rather than reaction-triggered.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/tag",
+        "value": "ReactionAbility"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ForcedAbility' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup is bound to the When timing in its forced matcher.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/contents",
+        "value": "After"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "'When' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup rejects a RoundBegins display window.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/tag",
+        "value": "RoundBegins"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'RoundEnds' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup remains restricted to the investigator threat area.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/criteria/tag",
+        "value": "InPlayAreaOf"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "criteria",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InThreatAreaOf' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup preserves the exact AtEndOfRound outer window.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/tag",
+        "value": "AtBeginningOfRound"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AtEndOfRound' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Dissonant Voices cleanup rejects additive choice fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "roundEndDissonantVoicesQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-round-end-forced-ability.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Agenda advancement rejects a different root question constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaAdvanceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-advance.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "WindowChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ChooseOne' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda advancement rejects a non-agenda target constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaAdvanceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-advance.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/target/tag",
+        "value": "ActTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "target",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AgendaTarget' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda advancement is bound to canonical Agenda 1 code c01105.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaAdvanceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-advance.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/target/contents",
+        "value": "c01106"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "target",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01105' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda advancement rejects a different message constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaAdvanceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-advance.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/tag",
+        "value": "AdvanceActBy"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AdvanceAgendaBy' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda advancement message remains bound to canonical Agenda 1 code c01105.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaAdvanceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-advance.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/0",
+        "value": "c01106"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "0"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01105' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda advancement remains explicitly doom-driven.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaAdvanceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-advance.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/1",
+        "value": "AgendaAdvanced"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "1"
+          ],
+          "keyword": "const",
+          "messageContains": "'AgendaAdvancedWithDoom' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda advancement rejects additive target fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaAdvanceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-advance.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/target/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "target"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "What's Going On?! rejects a different root question constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "WindowChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ChooseOne' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence preserves its exact localized label key.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/label",
+        "value": "$nightOfTheZealot.theGathering.label.whatsGoingOn.damage"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "label"
+          ],
+          "keyword": "const",
+          "messageContains": "'$nightOfTheZealot.theGathering.label.whatsGoingOn.horror' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The discard consequence preserves its exact localized label key.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/1/label",
+        "value": "$nightOfTheZealot.theGathering.label.whatsGoingOn.discards"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1",
+            "label"
+          ],
+          "keyword": "const",
+          "messageContains": "'$nightOfTheZealot.theGathering.label.whatsGoingOn.discard' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence rejects a different outer message constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/tag",
+        "value": "AllRandomDiscard"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorMessage' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence rejects a direct-damage constructor in place of assignment.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/tag",
+        "value": "InvestigatorDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorAssignDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence rejects a non-canonical investigator id.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/contents/0",
+        "value": "01001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "0"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'01001' does not match '^c[0-9a-z:._-]+$'"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence rejects a non-agenda source constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/contents/1/tag",
+        "value": "EnemySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "1",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AgendaSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence remains bound to canonical Agenda 1 code c01105.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/contents/1/contents",
+        "value": "c01106"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "1",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01105' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence preserves DamageAny assignment strategy.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/contents/2/tag",
+        "value": "DamageDirect"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence assigns exactly zero damage.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/contents/3",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "The horror consequence assigns exactly two horror.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/messages/0/contents/contents/4",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "4"
+          ],
+          "keyword": "const",
+          "messageContains": "2 was expected"
+        }
+      ]
+    },
+    {
+      "description": "The discard consequence rejects a different message constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/1/messages/0/tag",
+        "value": "RandomDiscard"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1",
+            "messages",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AllRandomDiscard' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The discard consequence remains sourced by canonical Agenda 1.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/1/messages/0/contents/0/contents",
+        "value": "c01106"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1",
+            "messages",
+            "0",
+            "contents",
+            "0",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01105' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The discard consequence remains an unrestricted AnyCard discard.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/1/messages/0/contents/1/tag",
+        "value": "CardWithType"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1",
+            "messages",
+            "0",
+            "contents",
+            "1",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AnyCard' was expected"
+        }
+      ]
+    },
+    {
+      "description": "The agenda consequence rejects additive label fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaConsequenceQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-consequence.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/1/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment rejects a different root question constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "ChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'QuestionWithSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment rejects a non-agenda outer source.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/source/tag",
+        "value": "EnemySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "source",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AgendaSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment remains bound to canonical Agenda 1 code c01105.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/source/contents",
+        "value": "c01106"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "source",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01105' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment requires a null tooltip.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tooltip",
+        "value": "Assign horror"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tooltip"
+          ],
+          "keyword": "type",
+          "messageContains": "'Assign horror' is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment preserves its QuestionLabel wrapper.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/tag",
+        "value": "ChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'QuestionLabel' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment preserves the exact two-horror label.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/label",
+        "value": "Assign 1 horror"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "label"
+          ],
+          "keyword": "const",
+          "messageContains": "'Assign 2 horror' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment requires a null card.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/card",
+        "value": {
+          "cardCode": "c01105"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "card"
+          ],
+          "keyword": "type",
+          "messageContains": "{'cardCode': 'c01105'} is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment preserves the nested ChooseOne constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/tag",
+        "value": "ChooseN"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ChooseOne' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment preserves its ComponentLabel choice.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/tag",
+        "value": "TargetLabel"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ComponentLabel' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment remains an investigator HorrorToken choice.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/component/tokenType",
+        "value": "DamageToken"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "component",
+            "tokenType"
+          ],
+          "keyword": "const",
+          "messageContains": "'HorrorToken' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment rejects a different first message constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/0/contents/tag",
+        "value": "InvestigatorAssignDamage_"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorDamage_' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment applies exactly zero direct damage.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/0/contents/contents/2",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "2"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment applies exactly two direct horror.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/0/contents/contents/3",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "3"
+          ],
+          "keyword": "const",
+          "messageContains": "2 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment completion preserves DamageAny.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/1/contents/contents/2/tag",
+        "value": "DamageDirect"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "1",
+            "contents",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'DamageAny' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment completion preserves AnyAsset.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/1/contents/contents/3/tag",
+        "value": "AnyTreachery"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "1",
+            "contents",
+            "contents",
+            "3",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AnyAsset' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment completion has no remaining damage.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/1/contents/contents/4",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "1",
+            "contents",
+            "contents",
+            "4"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment completion has no remaining horror.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/1/contents/contents/5",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "1",
+            "contents",
+            "contents",
+            "5"
+          ],
+          "keyword": "const",
+          "messageContains": "0 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment has no damage candidates.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/question/question/choices/0/messages/1/contents/contents/6/-",
+        "value": {
+          "tag": "InvestigatorTarget",
+          "contents": "c01001"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "1",
+            "contents",
+            "contents",
+            "6"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment requires exactly two horror candidates.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/question/question/choices/0/messages/1/contents/contents/7/1"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "1",
+            "contents",
+            "contents",
+            "7"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[{'contents': 'c01001', 'tag': 'InvestigatorTarget'}] is too short"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment candidates must remain InvestigatorTarget values.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/1/contents/contents/7/0/tag",
+        "value": "AssetTarget"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "1",
+            "contents",
+            "contents",
+            "7",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorTarget' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Agenda horror assignment rejects additive component fields.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "agendaHorrorAssignmentQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/question/question/choices/0/component/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "component"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -9150,8 +10559,8 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "a213b614822044a7e0bfebf5bd6bbe45a494489c01c65ef706141f0de6877234",
-    "contracts/fixtures/capabilities.json": "ce002e1c1d018e06539270158341edbdb2884deb3177219675e5114bdb48b2b7",
+    "contracts/fixtures/capabilities-locale-catalog.json": "197acfb15c61d52da3fc99bc590860ca45270a0cba60e5a641e14996f7d4f0af",
+    "contracts/fixtures/capabilities.json": "f734193860ea6b931e9f7b795527586c167ffab9a366901096303bd102c1a68a",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -9178,7 +10587,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "46f75a3fea88a5bb6d2ff927361936a0b6adb2ee6553294dea77cd7458d30d1e",
+    "contracts/fixtures/locale-catalog-manifest.json": "fdeebef0f8c9686e61f9441be488491c732a968c6aec37fde0d6a02803d86ef2",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -9188,6 +10597,9 @@
     "contracts/fixtures/mode-campaign-scenario.json": "36a77bcf41059ca4a5d2c0e5bbd4d9ff3b429da2f6ddbc35d7fb1e1491e88c89",
     "contracts/fixtures/mode-turn-zero.json": "acc0cb8613b61d0bbb65ecdaefbae433276996fe8412b76046c4c90b3c933b71",
     "contracts/fixtures/movement.json": "c284c0b4244024a072ee7a486c5907db4981c6ff4fed1d55cbe33046fb0b63dc",
+    "contracts/fixtures/question-agenda-advance.json": "922f8e3923e2c74d28f9a2a79166b5ada177a5d75c12747195d1df2ecd17d067",
+    "contracts/fixtures/question-agenda-consequence.json": "279a0b825dd3f5c0a7b08c7f4798660c2b0a3c8e9ec9530081471c985619b0ae",
+    "contracts/fixtures/question-agenda-horror-assignment.json": "999336a2838fde0d40737a35abcab629d46af180e7869294961165c2cb60f2d4",
     "contracts/fixtures/question-choose-one-location-multiple.json": "25751cccc02dc18de38e0cbebf71acb5303d47df3705367f0c14089853bcbe07",
     "contracts/fixtures/question-choose-one-location.json": "5ce62cbaee22e32f4b8d84e563d331b58d087c3d5f6b3061c7cbfdb177af0f79",
     "contracts/fixtures/question-choose-one.json": "854d6a2891155ff4da9e075224d4cd5a7519e4e4cb2ec659a740c872f8b799fc",
@@ -9207,18 +10619,19 @@
     "contracts/fixtures/question-read-scenario-intro.json": "98cac0992deff7f08005fc25a0227ef62b9aedde00c3b6dcceb25e503d671fd3",
     "contracts/fixtures/question-read-with-cards.json": "402805337459a8e82a518d515f2bafdb4d4d6e6474ae190002dd885a5ed50ba1",
     "contracts/fixtures/question-read.json": "e7397b59c9a714a003a0edac3f584b284c5cab03e75b59c1e9b4a84d86964006",
+    "contracts/fixtures/question-round-end-forced-ability.json": "d40629f34d5727a2c9bb873feb09931e3f32e004dc80baf375758833c80ac270",
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
-    "contracts/fixtures/replay-attestation.json": "b3c0e42902b746fd5d956fce37e9a346bc1a398f54ca46ff18f46d261ca135f0",
+    "contracts/fixtures/replay-attestation.json": "dd42113bb77fa78e84670213d846ec1c8d9cea23587598f277b18be585e8bf3a",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "2cb75824ec941d2048c23c94b1a0a5892e80f5ac91f0cbf5919e6606e1d7664b",
+    "contracts/manifest.json": "74c743eac758214fd3655f14fd09964063c7c1aac7069db8910ad161bd8e344d",
     "contracts/openapi.yaml": "f3fa5f2c7595efc8e72bafc93938402a69b85c3592040e0c8accb457ce66ce77",
     "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "d55a1456c1ef4b47c39da1c1680a40d3799f9c9880a5696a493aad7507186245",
+    "contracts/schemas/basic-choice-question.schema.json": "5f772960f76f9b3b6911bd29746402b0b33e7b096baa3fe08557b40e426c6d95",
     "contracts/schemas/capabilities.schema.json": "7cc6d2805a47ee19549beab91f3c54085f2726b8d0671f0a3ae662bab820d42a",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
