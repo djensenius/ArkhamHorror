@@ -1,0 +1,149 @@
+{
+  "tag": "WindowChooseOne",
+  "choices": [
+    {
+      "tag": "AbilityLabel",
+      "investigatorId": "c01001",
+      "ability": {
+        "source": {
+          "tag": "TreacherySource",
+          "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
+        },
+        "cardCode": "c01007",
+        "index": 1,
+        "type": {
+          "tag": "ReactionAbility",
+          "window": {
+            "tag": "WouldDiscoverClues",
+            "contents": [
+              "When",
+              {
+                "tag": "You"
+              },
+              {
+                "tag": "LocationWithInvestigator",
+                "contents": {
+                  "tag": "You"
+                }
+              },
+              {
+                "tag": "GreaterThanOrEqualTo",
+                "contents": {
+                  "tag": "Static",
+                  "contents": 1
+                }
+              }
+            ]
+          },
+          "cost": {
+            "tag": "Free"
+          },
+          "actions": {
+            "contents": [],
+            "tag": "AndActions"
+          }
+        },
+        "limit": {
+          "tag": "PlayerLimit",
+          "contents": [
+            {
+              "tag": "PerWindow"
+            },
+            1
+          ]
+        },
+        "window": {
+          "tag": "WouldDiscoverClues",
+          "contents": [
+            "When",
+            {
+              "tag": "You"
+            },
+            {
+              "tag": "LocationWithInvestigator",
+              "contents": {
+                "tag": "You"
+              }
+            },
+            {
+              "tag": "GreaterThanOrEqualTo",
+              "contents": {
+                "tag": "Static",
+                "contents": 1
+              }
+            }
+          ]
+        },
+        "metadata": null,
+        "criteria": {
+          "tag": "Criteria",
+          "contents": [
+            {
+              "tag": "OnSameLocation"
+            },
+            {
+              "tag": "CluesOnThis",
+              "contents": {
+                "tag": "GreaterThanOrEqualTo",
+                "contents": {
+                  "tag": "Static",
+                  "contents": 1
+                }
+              }
+            }
+          ]
+        },
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "tooltip": null,
+        "canBeCancelled": true,
+        "displayAs": null,
+        "delayAdditionalCosts": null,
+        "basic": false,
+        "additionalCosts": [],
+        "requestor": {
+          "tag": "TreacherySource",
+          "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
+        },
+        "triggersSkillTest": false,
+        "wantsSkillTest": null,
+        "target": null,
+        "highlightFromWindow": false,
+        "skipForAll": false,
+        "ignoreAllCosts": false,
+        "fightCriteriaOverride": null,
+        "evadeCriteriaOverride": null
+      },
+      "windows": [
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "WouldDiscoverClues",
+            "contents": [
+              "c01001",
+              "d5a66e84-c729-4066-8475-d8a155609025",
+              "0e642a38-6354-4857-adaf-4c594641e77c",
+              {
+                "tag": "AbilitySource",
+                "contents": [
+                  {
+                    "tag": "InvestigatorSource",
+                    "contents": "c01001"
+                  },
+                  1
+                ]
+              },
+              1
+            ]
+          },
+          "windowBatchId": null
+        }
+      ],
+      "before": [],
+      "messages": []
+    },
+    {
+      "tag": "SkipTriggersButton",
+      "investigatorId": "c01001"
+    }
+  ]
+}
