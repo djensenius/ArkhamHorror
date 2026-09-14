@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.39",
+  "schemaRevision": "0.1.40",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -116,6 +116,10 @@
     },
     {
       "path": "contracts/fixtures/question-roland-defeat-reaction.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-cover-up-reaction.json",
       "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
@@ -365,7 +369,7 @@
   },
   "canonicalIntegerChecks": [
     {
-      "description": "Native question choice/version fields, governed ability identities, including the Roland reaction and enemy-attack/damage-assignment Answers, plus encounter-draw and assignment amounts use canonical non-negative signed-64 JSON integer tokens.",
+      "description": "Native question choice/version fields, governed ability identities, including the Roland and Cover Up reactions and enemy-attack/damage-assignment Answers, plus encounter-draw and assignment amounts use canonical non-negative signed-64 JSON integer tokens.",
       "schema": "contracts/schemas/non-negative-int64.schema.json",
       "validBoundaryValues": [
         0,
@@ -463,6 +467,18 @@
             "/choices/0/ability/index",
             "/choices/0/ability/limit/contents/1",
             "/choices/0/windows/0/windowType/contents/1/contents/contents/2"
+          ]
+        },
+        {
+          "path": "contracts/fixtures/question-cover-up-reaction.json",
+          "pointers": [
+            "/choices/0/ability/index",
+            "/choices/0/ability/limit/contents/1",
+            "/choices/0/ability/criteria/contents/1/contents/contents/contents",
+            "/choices/0/ability/window/contents/3/contents/contents",
+            "/choices/0/ability/type/window/contents/3/contents/contents",
+            "/choices/0/windows/0/windowType/contents/3/contents/1",
+            "/choices/0/windows/0/windowType/contents/4"
           ]
         },
         {
@@ -12103,6 +12119,2314 @@
           "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
         }
       ]
+    },
+    {
+      "description": "Cover Up reaction rejects a different root question constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/tag",
+        "value": "ChooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'WindowChooseOne' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction keeps its ability choice at source index zero.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/tag",
+        "value": "TargetLabel"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AbilityLabel' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction keeps SkipTriggersButton at source index one.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/1/tag",
+        "value": "EndTurnButton"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'SkipTriggersButton' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction choice remains bound to Roland Banks.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/investigatorId",
+        "value": "c01002"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "investigatorId"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01001' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction skip control remains bound to Roland Banks.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/1/investigatorId",
+        "value": "c01002"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1",
+            "investigatorId"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01001' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction requires exactly two source-indexed choices.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/-",
+        "value": {
+          "tag": "SkipTriggersButton",
+          "investigatorId": "c01001"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "items",
+          "messageContains": "Expected at most 2 items but found 1 extra: {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}"
+        },
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'tag': 'AbilityLabel', 'investigatorId': 'c01001', 'ability': {'source': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'cardCode': 'c01007', 'index': 1, 'type': {'tag': 'ReactionAbility', 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'cost': {'tag': 'Free'}, 'actions': {'contents': [], 'tag': 'AndActions'}}, 'limit': {'tag': 'PlayerLimit', 'contents': [{'tag': 'PerWindow'}, 1]}, 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'metadata': None, 'criteria': {'tag': 'Criteria', 'contents': [{'tag': 'OnSameLocation'}, {'tag': 'CluesOnThis', 'contents': {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}}]}, 'doesNotProvokeAttacksOfOpportunity': None, 'tooltip': None, 'canBeCancelled': True, 'displayAs': None, 'delayAdditionalCosts': None, 'basic': False, 'additionalCosts': [], 'requestor': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'triggersSkillTest': False, 'wantsSkillTest': None, 'target': None, 'highlightFromWindow': False, 'skipForAll': False, 'ignoreAllCosts': False, 'fightCriteriaOverride': None, 'evadeCriteriaOverride': None}, 'windows': [{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}], 'before': [], 'messages': []}, {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}, {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}] is too long"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction cannot omit its skip choice.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices/1"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[{'tag': 'AbilityLabel', 'investigatorId': 'c01001', 'ability': {'source': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'cardCode': 'c01007', 'index': 1, 'type': {'tag': 'ReactionAbility', 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'cost': {'tag': 'Free'}, 'actions': {'contents': [], 'tag': 'AndActions'}}, 'limit': {'tag': 'PlayerLimit', 'contents': [{'tag': 'PerWindow'}, 1]}, 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'metadata': None, 'criteria': {'tag': 'Criteria', 'contents': [{'tag': 'OnSameLocation'}, {'tag': 'CluesOnThis', 'contents': {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}}]}, 'doesNotProvokeAttacksOfOpportunity': None, 'tooltip': None, 'canBeCancelled': True, 'displayAs': None, 'delayAdditionalCosts': None, 'basic': False, 'additionalCosts': [], 'requestor': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'triggersSkillTest': False, 'wantsSkillTest': None, 'target': None, 'highlightFromWindow': False, 'skipForAll': False, 'ignoreAllCosts': False, 'fightCriteriaOverride': None, 'evadeCriteriaOverride': None}, 'windows': [{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}], 'before': [], 'messages': []}] is too short"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction root remains closed to additive client rules.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction ability choice remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction skip control remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/1/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction ability remains bound to card code c01007.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/cardCode",
+        "value": "c01008"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "cardCode"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01007' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction ability remains index one.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/index",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "index"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction source remains a treachery source.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/source/tag",
+        "value": "InvestigatorSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "source",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'TreacherySource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction source uses a canonical lowercase UUID.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/source/contents",
+        "value": "FEF723B4-AE76-4183-9441-B4F3CB8B1EB5"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "source",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'FEF723B4-AE76-4183-9441-B4F3CB8B1EB5' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction requestor remains a treachery source.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/requestor/tag",
+        "value": "InvestigatorSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "requestor",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'TreacherySource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction requestor uses a canonical lowercase UUID.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/requestor/contents",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "requestor",
+            "contents"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "requestor",
+            "contents"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up trigger remains a ReactionAbility.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/tag",
+        "value": "ActionAbility"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'ReactionAbility' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction remains free.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/cost/tag",
+        "value": "ActionCost"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "cost",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'Free' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction retains its empty AndActions metadata.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/actions/tag",
+        "value": "OrActions"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "actions",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AndActions' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction declares no action designators.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/type/actions/contents/-",
+        "value": "Investigate"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "actions",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction limit remains a PlayerLimit.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/limit/tag",
+        "value": "GroupLimit"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "limit",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'PlayerLimit' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction limit remains per-window.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/limit/contents/0/tag",
+        "value": "PerRound"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "limit",
+            "contents",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'PerWindow' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction limit remains one use per window.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/limit/contents/1",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "limit",
+            "contents",
+            "1"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction criteria retain the combined Criteria constructor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/criteria/tag",
+        "value": "NoRestriction"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "criteria",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'Criteria' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction criteria retain OnSameLocation.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/criteria/contents/0/tag",
+        "value": "OnLocation"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "criteria",
+            "contents",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'OnSameLocation' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction criteria retain CluesOnThis.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/criteria/contents/1/tag",
+        "value": "LocationExists"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "criteria",
+            "contents",
+            "1",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'CluesOnThis' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction criteria retain GreaterThanOrEqualTo.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/criteria/contents/1/contents/tag",
+        "value": "EqualTo"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "criteria",
+            "contents",
+            "1",
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'GreaterThanOrEqualTo' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction criteria retain a Static amount.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/criteria/contents/1/contents/contents/tag",
+        "value": "Dynamic"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "criteria",
+            "contents",
+            "1",
+            "contents",
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'Static' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction criteria require at least one clue.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/criteria/contents/1/contents/contents/contents",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "criteria",
+            "contents",
+            "1",
+            "contents",
+            "contents",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared matcher remains WouldDiscoverClues.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/tag",
+        "value": "IfEnemyDefeated"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'WouldDiscoverClues' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared matcher remains at When timing.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/contents/0",
+        "value": "After"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "contents",
+            "0"
+          ],
+          "keyword": "const",
+          "messageContains": "'When' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared matcher remains scoped to You.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/contents/1/tag",
+        "value": "Anyone"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "contents",
+            "1",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'You' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared matcher remains at your location.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/contents/2/tag",
+        "value": "Anywhere"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'LocationWithInvestigator' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared location matcher remains scoped to You.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/contents/2/contents/tag",
+        "value": "Anyone"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "contents",
+            "2",
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'You' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared amount matcher remains GreaterThanOrEqualTo.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/contents/3/tag",
+        "value": "EqualTo"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "contents",
+            "3",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'GreaterThanOrEqualTo' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared amount remains Static.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/contents/3/contents/tag",
+        "value": "Dynamic"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "contents",
+            "3",
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'Static' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared amount remains one clue.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/window/contents/3/contents/contents",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window",
+            "contents",
+            "3",
+            "contents",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type matcher remains WouldDiscoverClues.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/tag",
+        "value": "IfEnemyDefeated"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'WouldDiscoverClues' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type matcher remains at When timing.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/contents/0",
+        "value": "After"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "contents",
+            "0"
+          ],
+          "keyword": "const",
+          "messageContains": "'When' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type matcher remains scoped to You.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/contents/1/tag",
+        "value": "Anyone"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "contents",
+            "1",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'You' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type matcher remains at your location.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/contents/2/tag",
+        "value": "Anywhere"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "contents",
+            "2",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'LocationWithInvestigator' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type location matcher remains scoped to You.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/contents/2/contents/tag",
+        "value": "Anyone"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "contents",
+            "2",
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'You' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type amount matcher remains GreaterThanOrEqualTo.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/contents/3/tag",
+        "value": "EqualTo"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "contents",
+            "3",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'GreaterThanOrEqualTo' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type amount remains Static.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/contents/3/contents/tag",
+        "value": "Dynamic"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "contents",
+            "3",
+            "contents",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'Static' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type amount remains one clue.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type/window/contents/3/contents/contents",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window",
+            "contents",
+            "3",
+            "contents",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction retains no additional costs.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/additionalCosts/-",
+        "value": {
+          "tag": "ActionCost"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "additionalCosts"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction is not a basic ability.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/basic",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "basic"
+          ],
+          "keyword": "const",
+          "messageContains": "False was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction remains cancellable.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/canBeCancelled",
+        "value": false
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "canBeCancelled"
+          ],
+          "keyword": "const",
+          "messageContains": "True was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction does not delay additional costs.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/delayAdditionalCosts",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "delayAdditionalCosts"
+          ],
+          "keyword": "type",
+          "messageContains": "True is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction has no display override.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/displayAs",
+        "value": "Cover Up"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "displayAs"
+          ],
+          "keyword": "type",
+          "messageContains": "'Cover Up' is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction preserves default attack-of-opportunity behavior.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/doesNotProvokeAttacksOfOpportunity",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "doesNotProvokeAttacksOfOpportunity"
+          ],
+          "keyword": "type",
+          "messageContains": "True is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction has no evade criteria override.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/evadeCriteriaOverride",
+        "value": {
+          "tag": "NoRestriction"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "evadeCriteriaOverride"
+          ],
+          "keyword": "type",
+          "messageContains": "{'tag': 'NoRestriction'} is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction has no fight criteria override.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/fightCriteriaOverride",
+        "value": {
+          "tag": "NoRestriction"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "fightCriteriaOverride"
+          ],
+          "keyword": "type",
+          "messageContains": "{'tag': 'NoRestriction'} is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction is not highlighted from its window.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/highlightFromWindow",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "highlightFromWindow"
+          ],
+          "keyword": "const",
+          "messageContains": "False was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction does not ignore all costs.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/ignoreAllCosts",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "ignoreAllCosts"
+          ],
+          "keyword": "const",
+          "messageContains": "False was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction has no metadata.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/metadata",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "metadata"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction does not skip for all investigators.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/skipForAll",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "skipForAll"
+          ],
+          "keyword": "const",
+          "messageContains": "False was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction has no target override.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/target",
+        "value": {}
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "target"
+          ],
+          "keyword": "type",
+          "messageContains": "{} is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction has no tooltip override.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/tooltip",
+        "value": "Cover Up"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "tooltip"
+          ],
+          "keyword": "type",
+          "messageContains": "'Cover Up' is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction does not trigger a skill test.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/triggersSkillTest",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "triggersSkillTest"
+          ],
+          "keyword": "const",
+          "messageContains": "False was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction has no wants-skill-test override.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/wantsSkillTest",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "wantsSkillTest"
+          ],
+          "keyword": "type",
+          "messageContains": "True is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction ability object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction type object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/type/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction source object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/source/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "source"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction requestor object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/requestor/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "requestor"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction limit object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/limit/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "limit"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction criteria object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/criteria/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "criteria"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up declared matcher object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/window/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "window"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction-type matcher object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/ability/type/window/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "window"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window remains at When timing.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowTiming",
+        "value": "After"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowTiming"
+          ],
+          "keyword": "const",
+          "messageContains": "'When' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window retains a null batch identifier.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowBatchId",
+        "value": "00000000-0000-0000-0000-000000000001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowBatchId"
+          ],
+          "keyword": "type",
+          "messageContains": "'00000000-0000-0000-0000-000000000001' is not of type 'null'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window remains WouldDiscoverClues.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/tag",
+        "value": "IfEnemyDefeated"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'WouldDiscoverClues' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window remains bound to Roland Banks.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/0",
+        "value": "c01002"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "0"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01001' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window location uses a canonical lowercase UUID.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/1",
+        "value": "D5A66E84-C729-4066-8475-D8A155609025"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "1"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'D5A66E84-C729-4066-8475-D8A155609025' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window skill test uses a canonical UUID.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/2",
+        "value": "not-a-uuid"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "2"
+          ],
+          "keyword": "format",
+          "messageContains": "'not-a-uuid' is not a 'uuid'"
+        },
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "2"
+          ],
+          "keyword": "pattern",
+          "messageContains": "'not-a-uuid' does not match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual source remains an AbilitySource.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/3/tag",
+        "value": "InvestigatorSource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "3",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'AbilitySource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual ability source remains an investigator source.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/3/contents/0/tag",
+        "value": "TreacherySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "3",
+            "contents",
+            "0",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'InvestigatorSource' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual ability source remains bound to Roland Banks.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/3/contents/0/contents",
+        "value": "c01002"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "3",
+            "contents",
+            "0",
+            "contents"
+          ],
+          "keyword": "const",
+          "messageContains": "'c01001' was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual source remains Roland ability index one.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/3/contents/1",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "3",
+            "contents",
+            "1"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual discovery amount remains one clue.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/4",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "4"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window tuple cannot gain another field.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/windows/0/windowType/contents/-",
+        "value": 1
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents"
+          ],
+          "keyword": "items",
+          "messageContains": "Expected at most 5 items but found 1 extra: 1"
+        },
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1, 1] is too long"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window tuple cannot omit the discovery amount.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices/0/windows/0/windowType/contents/4"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents"
+          ],
+          "keyword": "minItems",
+          "messageContains": "['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}] is too short"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window type object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/windows/0/windowType/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up actual window object remains closed.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/windows/0/clientRule",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0"
+          ],
+          "keyword": "additionalProperties",
+          "messageContains": "Additional properties are not allowed ('clientRule' was unexpected)"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction has exactly one actual window.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/windows/-",
+        "value": {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "WouldDiscoverClues",
+            "contents": [
+              "c01001",
+              "d5a66e84-c729-4066-8475-d8a155609025",
+              "0e642a38-6354-4857-adaf-4c594641e77c",
+              {
+                "tag": "AbilitySource",
+                "contents": [
+                  {
+                    "tag": "InvestigatorSource",
+                    "contents": "c01001"
+                  },
+                  1
+                ]
+              },
+              1
+            ]
+          },
+          "windowBatchId": null
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows"
+          ],
+          "keyword": "items",
+          "messageContains": "Expected at most 1 item but found 1 extra: {'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}"
+        },
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows"
+          ],
+          "keyword": "maxItems",
+          "messageContains": "[{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}, {'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}] is too long"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction cannot omit its actual window.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices/0/windows/0"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows"
+          ],
+          "keyword": "minItems",
+          "messageContains": "[] should be non-empty"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction retains an empty before-message array.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/before/-",
+        "value": {
+          "tag": "DoStep",
+          "contents": 1
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "before"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
+    },
+    {
+      "description": "Cover Up reaction retains an empty message array.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "coverUpReactionQuestion",
+      "basePositiveFixture": "contracts/fixtures/question-cover-up-reaction.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/messages/-",
+        "value": {
+          "tag": "DoStep",
+          "contents": 1
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "messages"
+          ],
+          "keyword": "const",
+          "messageContains": "[] was expected"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -12128,8 +14452,8 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "63494c10b113f4109977992f10c56f1d990cf56cd4e2b85f49a8903f6f8b7f64",
-    "contracts/fixtures/capabilities.json": "b120d0339c32a3f2a4e032c13c1e289ebb1d75ec9a84360a80321de30e53d631",
+    "contracts/fixtures/capabilities-locale-catalog.json": "5bd5cb5d0876c7f28703785179db07f820a7e37ec0395420277c544c875cdb52",
+    "contracts/fixtures/capabilities.json": "c506271497345d2c95976b43988fddbcac2e598938b66589f3aab14ed261ac88",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -12156,7 +14480,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "f0336c20e4fadbc0046116303e6b51453cbfae439dca982a94cbb0c5885edcb0",
+    "contracts/fixtures/locale-catalog-manifest.json": "d6f18eb85c4029e3e1fb4deb69c5073e392da737568f0df942134d513a2af92f",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -12172,6 +14496,7 @@
     "contracts/fixtures/question-choose-one-location-multiple.json": "25751cccc02dc18de38e0cbebf71acb5303d47df3705367f0c14089853bcbe07",
     "contracts/fixtures/question-choose-one-location.json": "5ce62cbaee22e32f4b8d84e563d331b58d087c3d5f6b3061c7cbfdb177af0f79",
     "contracts/fixtures/question-choose-one.json": "854d6a2891155ff4da9e075224d4cd5a7519e4e4cb2ec659a740c872f8b799fc",
+    "contracts/fixtures/question-cover-up-reaction.json": "0043cefb8ea59423b4283691ea6bbac816ef135b0b13fa380783004cd3613d95",
     "contracts/fixtures/question-encounter-deck-draw.json": "fb341f57cba32fd0d01e3d67098fa7684cd51b6b2b008c65fea61db5487ac703",
     "contracts/fixtures/question-enemy-attack-damage-assignment.json": "36d20df58661bb583dfbe5350519d164d751f5ddc85924a0f8e2917ce1bbbdff",
     "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json": "99e09d65b292ed3535e1d908a76e90855db7b256adfda55755c41fccf4c96018",
@@ -12191,17 +14516,17 @@
     "contracts/fixtures/question-roland-defeat-reaction.json": "bd8d242cae7eb93db4ebffc9e80d3fa828304e4fc6cad746d488e7206cd0e50d",
     "contracts/fixtures/question-round-end-forced-ability.json": "d40629f34d5727a2c9bb873feb09931e3f32e004dc80baf375758833c80ac270",
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
-    "contracts/fixtures/replay-attestation.json": "9cd3630186336544607412f8f19770b977bbc4b865e0511f3f139a98ccc6e395",
+    "contracts/fixtures/replay-attestation.json": "82f2c5615b7a37907dfb5e11c10edced53fd70a11781b4edca9ab4a89d208f9e",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "97db0702cf9a213a71a12fb2828263ddf3d8dab250c80e8aa3f7dc830180fb58",
+    "contracts/manifest.json": "29aa246ec6f9a72744fdd5a58e111a4ee2b83466e34f34acfe47b500f2019e65",
     "contracts/openapi.yaml": "f3fa5f2c7595efc8e72bafc93938402a69b85c3592040e0c8accb457ce66ce77",
     "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "fd07056b238257052bc8c292f95325147aef833e08117a53da92f3cb7dc650ae",
+    "contracts/schemas/basic-choice-question.schema.json": "99fc162c95ee55126afde9bb3cd3d30662e29ebab8e1915c3afc5b1605c89281",
     "contracts/schemas/capabilities.schema.json": "7cc6d2805a47ee19549beab91f3c54085f2726b8d0671f0a3ae662bab820d42a",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",

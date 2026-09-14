@@ -60,10 +60,13 @@ import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Helpers.Message qualified as MessageHelpers (createEnemy)
 import Arkham.Helpers.Scenario (scenarioField)
 import Arkham.Investigator.Cards qualified as InvestigatorCards
+import Arkham.Location.Types qualified as Location
 import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
 import Arkham.Matcher
   ( AssetMatcher (AnyAsset)
   , CardMatcher (AnyCard)
+  , InvestigatorMatcher (InvestigatorWithId)
+  , LocationMatcher (LocationWithInvestigator)
   , TreacheryMatcher (TreacheryWithId)
   , WindowMatcher (RoundEnds)
   )
@@ -85,7 +88,9 @@ import Arkham.Replay.Checkpoint (canonicalQuestionSha256)
 import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
 import Arkham.Scenario.Types (Field (ScenarioDiscard), Scenario)
 import Arkham.Timing qualified as Timing
+import Arkham.Treachery.CardDefs.NightOfTheZealot qualified as WeaknessCards
 import Arkham.Treachery.CardDefs.NightOfTheZealot.StrikingFear qualified as TreacheryCards
+import Arkham.Treachery.Types qualified as Treachery
 import Arkham.Window qualified as Window
 import Arkham.UltimatumsAndBoons.Types
   ( Boon (BoonOfHades)
@@ -794,6 +799,49 @@ fixtureRolandDefeatReactionQuestion =
   fromMaybe
     (error "fixtureRolandDefeatReactionQuestion: fixture player has no active question")
     (Map.lookup fixturePlayerId $ gameQuestion fixtureRolandDefeatReactionGame)
+
+fixtureCoverUpTreacheryId :: TreacheryId
+fixtureCoverUpTreacheryId =
+  TreacheryId
+    $ fromMaybe
+      (error "fixtureCoverUpTreacheryId: invalid UUID")
+      (UUID.fromText "fef723b4-ae76-4183-9441-b4f3cb8b1eb5")
+
+fixtureCoverUpCard :: Card
+fixtureCoverUpCard =
+  lookupCard WeaknessCards.coverUp (unsafeMakeCardId $ UUID.fromWords 0 0 0 908)
+
+{- | Continue the production Roland defeat flow into Cover Up's exact
+'WouldDiscoverClues' replacement window. The weakness is created through the
+ordinary treachery message before the fight, so its owner, placement, clue
+tokens, ability, and trigger are all engine-produced. Selecting Roland's Q32
+reaction then stops naturally at Q33; no 'AbilityLabel', 'Window', or
+'Question' is constructed directly.
+-}
+prepareFixtureCoverUpReaction :: TestAppT ()
+prepareFixtureCoverUpReaction = do
+  let iid = InvestigatorId "01001"
+  pushAndRunAll
+    [CreateTreacheryAt fixtureCoverUpTreacheryId fixtureCoverUpCard (InThreatArea iid)]
+  prepareFixtureRolandDefeatReaction
+  chooseOptionMatching "use Roland's post-defeat reaction" \case
+    AbilityLabel _ ability _ _ _ ->
+      abilitySource ability == InvestigatorSource iid
+        && abilityCardCode ability == "01001"
+        && abilityIndex ability == 1
+    _ -> False
+
+fixtureCoverUpReactionGame :: Game
+fixtureCoverUpReactionGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  prepareFixtureCoverUpReaction
+  getGame
+{-# NOINLINE fixtureCoverUpReactionGame #-}
+
+fixtureCoverUpReactionQuestion :: Question Message
+fixtureCoverUpReactionQuestion =
+  fromMaybe
+    (error "fixtureCoverUpReactionQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureCoverUpReactionGame)
 
 fixtureRoundTransitionTreacheryId :: TreacheryId
 fixtureRoundTransitionTreacheryId =
@@ -2438,6 +2486,125 @@ spec = describe "Native client contract fixtures" do
     skippedClues <- runChoice 1
     reactionClues `shouldSatisfy` \(cluesBefore, cluesAfter) -> cluesAfter == cluesBefore + 1
     skippedClues `shouldSatisfy` \(cluesBefore, cluesAfter) -> cluesAfter == cluesBefore
+
+  it "matches the exact production Cover Up reaction on both encoder paths and canonical replay digest" do
+    fixture <- loadFixture "question-cover-up-reaction.json"
+    Aeson.toJSON fixtureCoverUpReactionQuestion `shouldBe` fixture
+    viaWireEncoding fixtureCoverUpReactionQuestion `shouldBe` fixture
+    canonicalQuestionSha256 fixtureCoverUpReactionQuestion
+      `shouldBe` "8857d15cd056ac0e4d8556676dfc5746c5f9addaa2054d0b35c245610dbf71b9"
+
+  it "binds Cover Up's optional reaction and skip control to their exact source indices" do
+    let
+      iid = InvestigatorId "01001"
+      source = TreacherySource fixtureCoverUpTreacheryId
+    case fixtureCoverUpReactionQuestion of
+      WindowChooseOne
+        [ reactionChoice@(AbilityLabel choiceIid ability windows beforeMessages messages)
+          , skipChoice@(SkipTriggersButton skipIid)
+          ] -> do
+            choiceIid `shouldBe` iid
+            skipIid `shouldBe` iid
+            abilitySource ability `shouldBe` source
+            abilityRequestor ability `shouldBe` source
+            abilityCardCode ability `shouldBe` "01007"
+            abilityIndex ability `shouldBe` 1
+            abilityType ability `shouldSatisfy` \case
+              ReactionAbility {} -> True
+              _ -> False
+            abilityActions ability `shouldBe` []
+            length windows `shouldBe` 1
+            beforeMessages `shouldBe` []
+            messages `shouldBe` []
+            let
+              answerValue sourceIndex version =
+                Aeson.object
+                  [ "tag" .= ("Answer" :: Text)
+                  , "contents"
+                      .= Aeson.object
+                        [ "choice" .= sourceIndex
+                        , "playerId" .= fixturePlayerId
+                        , "questionVersion" .= version
+                        ]
+                  ]
+              checkAnswer sourceIndex version check =
+                case Aeson.fromJSON (answerValue sourceIndex version) of
+                  Aeson.Error err ->
+                    expectationFailure
+                      $ "Could not decode Cover Up reaction Answer: "
+                      <> err
+                  Aeson.Success answer ->
+                    handleAnswerPure fixtureCoverUpReactionGame fixturePlayerId answer
+                      >>= check
+              expectCurrent expected = \case
+                Handled actual -> actual `shouldBe` [uiToRun expected]
+                Unhandled reason ->
+                  expectationFailure
+                    $ "Cover Up reaction Answer rejected: "
+                    <> Text.unpack reason
+              expectStale = \case
+                Unhandled reason -> reason `shouldBe` "Stale question"
+                Handled _ ->
+                  expectationFailure "A stale Cover Up reaction Answer must not resolve"
+              currentVersion = gameScenarioSteps fixtureCoverUpReactionGame
+            currentVersion `shouldBe` 33
+            checkAnswer (0 :: Int) currentVersion (expectCurrent reactionChoice)
+            checkAnswer (1 :: Int) currentVersion (expectCurrent skipChoice)
+            checkAnswer (0 :: Int) (currentVersion - 1) expectStale
+            checkAnswer (1 :: Int) (currentVersion - 1) expectStale
+      other ->
+        expectationFailure
+          $ "Expected Cover Up's production reaction followed by SkipTriggersButton, got "
+          <> show other
+
+  it "executes Cover Up's reaction and skip branches through the authoritative game queue" do
+    let
+      iid = InvestigatorId "01001"
+      runChoice sourceIndex = runAgainstFixtureBoardGame do
+        prepareFixtureCoverUpReaction
+        locationId <- selectJust $ LocationWithInvestigator (InvestigatorWithId iid)
+        investigatorCluesBefore <- field InvestigatorClues iid
+        locationCluesBefore <- field Location.LocationClues locationId
+        coverUpCluesBefore <- field Treachery.TreacheryClues fixtureCoverUpTreacheryId
+        game <- getGame
+        let
+          answer =
+            Answer
+              QuestionResponse
+                { qrChoice = sourceIndex
+                , qrPlayerId = Just fixturePlayerId
+                , qrQuestionVersion = Just $ gameScenarioSteps game
+                }
+        liftIO (handleAnswerPure game fixturePlayerId answer) >>= \case
+          Unhandled reason ->
+            liftIO
+              $ expectationFailure
+              $ "Cover Up reaction Answer rejected: "
+              <> Text.unpack reason
+          Handled messages -> pushAndRunAll (ClearUI : messages)
+        investigatorCluesAfter <- field InvestigatorClues iid
+        locationCluesAfter <- field Location.LocationClues locationId
+        coverUpCluesAfter <- field Treachery.TreacheryClues fixtureCoverUpTreacheryId
+        pure
+          ( investigatorCluesBefore
+          , investigatorCluesAfter
+          , locationCluesBefore
+          , locationCluesAfter
+          , coverUpCluesBefore
+          , coverUpCluesAfter
+          )
+    reactionState <- runChoice 0
+    skippedState <- runChoice 1
+    reactionState
+      `shouldSatisfy` \(investigatorBefore, investigatorAfter, locationBefore, locationAfter, coverUpBefore, coverUpAfter) ->
+        investigatorAfter == investigatorBefore
+          && locationAfter == locationBefore
+          && coverUpAfter == coverUpBefore - 1
+    skippedState
+      `shouldSatisfy` \(investigatorBefore, investigatorAfter, locationBefore, locationAfter, coverUpBefore, coverUpAfter) ->
+        investigatorAfter == investigatorBefore + 1
+          && locationAfter == locationBefore - 1
+          && coverUpAfter == coverUpBefore
 
   it "matches every production round-transition prompt on both encoder paths and canonical replay digest" do
     let

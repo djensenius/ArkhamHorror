@@ -6,7 +6,7 @@
   "canonicalEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "validatedCheckpoint": {
     "schemaVersion": 1,
-    "contractSchemaRevision": "0.1.39",
+    "contractSchemaRevision": "0.1.40",
     "prompt": {
       "questionVersion": 7,
       "playerId": "00000000-0000-0000-0000-000000000000",
@@ -38,7 +38,7 @@
     "canonicalEnvelopeSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "validatedCheckpoint": {
       "schemaVersion": 1,
-      "contractSchemaRevision": "0.1.39",
+      "contractSchemaRevision": "0.1.40",
       "prompt": {
         "questionVersion": 7,
         "playerId": "00000000-0000-0000-0000-000000000000",
@@ -57,6 +57,6 @@
         "stateRemapped": true
       }
     ],
-    "receiptSha256": "5f0270e7287dd179783f54399b32c453eac8be133d7ce6be2c0b841183c67ad1"
+    "receiptSha256": "beef4124b881b336d68a45686f0dd3158ef54d36dddabd93318bffbcc5a43b55"
   }
 }

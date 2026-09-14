@@ -2,8 +2,11 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, Cover Up's optional clue-replacement reaction, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
+    {
+      "$ref": "#/$defs/coverUpReactionQuestion"
+    },
     {
       "$ref": "#/$defs/rolandDefeatReactionQuestion"
     },
@@ -45,6 +48,514 @@
     }
   ],
   "$defs": {
+    "coverUpReactionQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "WindowChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/coverUpReactionAbilityLabel"
+            },
+            {
+              "$ref": "#/$defs/coverUpReactionSkipButton"
+            }
+          ],
+          "items": false
+        }
+      },
+      "description": "The exact ordered WouldDiscoverClues window opened while resolving Roland Banks's reaction: source index 0 is Cover Up's free replacement reaction and source index 1 is SkipTriggersButton. Location, skill-test, and treachery UUIDs remain dynamic; production Haskell assertions bind every repeated identity."
+    },
+    "coverUpReactionAbilityLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "ability",
+        "windows",
+        "before",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilityLabel"
+        },
+        "investigatorId": {
+          "const": "c01001"
+        },
+        "ability": {
+          "$ref": "#/$defs/coverUpReactionAbility"
+        },
+        "windows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/coverUpWouldDiscoverCluesWindow"
+            }
+          ],
+          "items": false
+        },
+        "before": {
+          "const": []
+        },
+        "messages": {
+          "const": []
+        }
+      }
+    },
+    "coverUpReactionAbility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "additionalCosts",
+        "basic",
+        "canBeCancelled",
+        "cardCode",
+        "criteria",
+        "delayAdditionalCosts",
+        "displayAs",
+        "doesNotProvokeAttacksOfOpportunity",
+        "evadeCriteriaOverride",
+        "fightCriteriaOverride",
+        "highlightFromWindow",
+        "ignoreAllCosts",
+        "index",
+        "limit",
+        "metadata",
+        "requestor",
+        "skipForAll",
+        "source",
+        "target",
+        "tooltip",
+        "triggersSkillTest",
+        "type",
+        "wantsSkillTest",
+        "window"
+      ],
+      "properties": {
+        "additionalCosts": {
+          "const": []
+        },
+        "basic": {
+          "const": false
+        },
+        "canBeCancelled": {
+          "const": true
+        },
+        "cardCode": {
+          "const": "c01007"
+        },
+        "criteria": {
+          "$ref": "#/$defs/coverUpCriteria"
+        },
+        "delayAdditionalCosts": {
+          "type": "null"
+        },
+        "displayAs": {
+          "type": "null"
+        },
+        "doesNotProvokeAttacksOfOpportunity": {
+          "type": "null"
+        },
+        "evadeCriteriaOverride": {
+          "type": "null"
+        },
+        "fightCriteriaOverride": {
+          "type": "null"
+        },
+        "highlightFromWindow": {
+          "const": false
+        },
+        "ignoreAllCosts": {
+          "const": false
+        },
+        "index": {
+          "const": 1
+        },
+        "limit": {
+          "$ref": "#/$defs/coverUpPerWindowLimit"
+        },
+        "metadata": {
+          "type": "null"
+        },
+        "requestor": {
+          "$ref": "#/$defs/treacherySource"
+        },
+        "skipForAll": {
+          "const": false
+        },
+        "source": {
+          "$ref": "#/$defs/treacherySource"
+        },
+        "target": {
+          "type": "null"
+        },
+        "tooltip": {
+          "type": "null"
+        },
+        "triggersSkillTest": {
+          "const": false
+        },
+        "type": {
+          "$ref": "#/$defs/coverUpReactionAbilityType"
+        },
+        "wantsSkillTest": {
+          "type": "null"
+        },
+        "window": {
+          "$ref": "#/$defs/coverUpWouldDiscoverCluesMatcher"
+        }
+      },
+      "description": "The complete production Ability payload for Cover Up's first reaction. JSON Schema cannot require source and requestor UUID equality; the production Haskell fixture assertion binds both to the same TreacheryId."
+    },
+    "coverUpCriteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Criteria"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "OnSameLocation"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag",
+                "contents"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "CluesOnThis"
+                },
+                "contents": {
+                  "$ref": "#/$defs/coverUpAtLeastOne"
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "coverUpPerWindowLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "PlayerLimit"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "PerWindow"
+                }
+              }
+            },
+            {
+              "const": 1
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "coverUpReactionAbilityType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "window",
+        "cost",
+        "actions"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ReactionAbility"
+        },
+        "window": {
+          "$ref": "#/$defs/coverUpWouldDiscoverCluesMatcher"
+        },
+        "cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "const": "Free"
+            }
+          }
+        },
+        "actions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "AndActions"
+            },
+            "contents": {
+              "const": []
+            }
+          }
+        }
+      }
+    },
+    "coverUpWouldDiscoverCluesMatcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "WouldDiscoverClues"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {
+              "const": "When"
+            },
+            {
+              "$ref": "#/$defs/coverUpYou"
+            },
+            {
+              "$ref": "#/$defs/coverUpLocationWithInvestigator"
+            },
+            {
+              "$ref": "#/$defs/coverUpAtLeastOne"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "coverUpLocationWithInvestigator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "LocationWithInvestigator"
+        },
+        "contents": {
+          "$ref": "#/$defs/coverUpYou"
+        }
+      }
+    },
+    "coverUpYou": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "You"
+        }
+      }
+    },
+    "coverUpAtLeastOne": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "GreaterThanOrEqualTo"
+        },
+        "contents": {
+          "$ref": "#/$defs/coverUpStaticOne"
+        }
+      }
+    },
+    "coverUpStaticOne": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Static"
+        },
+        "contents": {
+          "const": 1
+        }
+      }
+    },
+    "coverUpWouldDiscoverCluesWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "windowBatchId",
+        "windowTiming",
+        "windowType"
+      ],
+      "properties": {
+        "windowBatchId": {
+          "type": "null"
+        },
+        "windowTiming": {
+          "const": "When"
+        },
+        "windowType": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "WouldDiscoverClues"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 5,
+              "maxItems": 5,
+              "prefixItems": [
+                {
+                  "const": "c01001"
+                },
+                {
+                  "$ref": "./uuid.schema.json",
+                  "description": "The current location's canonical LocationId."
+                },
+                {
+                  "$ref": "./uuid.schema.json",
+                  "description": "The canonical SkillTestId associated with Roland's successful Fight."
+                },
+                {
+                  "$ref": "#/$defs/coverUpRolandAbilitySource"
+                },
+                {
+                  "const": 1
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "coverUpRolandAbilitySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilitySource"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag",
+                "contents"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "InvestigatorSource"
+                },
+                "contents": {
+                  "const": "c01001"
+                }
+              }
+            },
+            {
+              "const": 1
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "coverUpReactionSkipButton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "const": "SkipTriggersButton"
+        },
+        "investigatorId": {
+          "const": "c01001"
+        }
+      }
+    },
     "rolandDefeatReactionQuestion": {
       "type": "object",
       "additionalProperties": false,
