@@ -759,13 +759,18 @@ fixtureRolandDefeatEnemyCard =
 production game queue. A real Swarm of Rats is created engaged with Roland,
 the backend-owned basic Fight ability is selected, a deterministic zero token
 resolves the skill test, and the resulting one damage defeats the enemy. The
-fixture stops at the authoritative optional reaction window; it never
+isolated fixture seeds only the version counter so its six production prompt
+increments stop at the authoritative Q32 optional reaction window; it never
 constructs an 'AbilityLabel', 'Window', or 'Question' directly.
 -}
 prepareFixtureRolandDefeatReaction :: TestAppT ()
 prepareFixtureRolandDefeatReaction = do
   let iid = InvestigatorId "01001"
-  overTest (questionL .~ mempty)
+  overTest \game ->
+    game
+      { gameQuestion = mempty
+      , gameScenarioSteps = 26
+      }
   creation <- MessageHelpers.createEnemy fixtureRolandDefeatEnemyCard iid
   pushAndRunAll [CreateEnemy creation {enemyCreationEnemyId = fixtureRolandDefeatEnemyId}]
   pushAndRunAll [SetChaosTokens [Zero]]
@@ -2395,6 +2400,7 @@ spec = describe "Native client contract fixtures" do
                 Handled _ ->
                   expectationFailure "A stale Roland defeat reaction Answer must not resolve"
               currentVersion = gameScenarioSteps fixtureRolandDefeatReactionGame
+            currentVersion `shouldBe` 32
             checkAnswer (0 :: Int) currentVersion (expectCurrent reactionChoice)
             checkAnswer (1 :: Int) currentVersion (expectCurrent skipChoice)
             checkAnswer (0 :: Int) (currentVersion - 1) expectStale
