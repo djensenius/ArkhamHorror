@@ -73,6 +73,7 @@ SCRIPTS = ROOT / "scripts"
 
 EXECUTABLE_SOURCES = frozenset(
     {
+        "scripts/analyze-question-presentation-gaps.py",
         "scripts/build-locale-catalog-fixture.py",
         "scripts/check-locale-catalog-settings.py",
         "scripts/check-schema-revision-drift.py",
@@ -95,6 +96,7 @@ EXECUTABLE_SOURCES = frozenset(
 
 ENTRY_POINTS = frozenset(
     {
+        "scripts/analyze-question-presentation-gaps.py",
         "scripts/build-locale-catalog-fixture.py",
         "scripts/check-locale-catalog-settings.py",
         "scripts/check-schema-revision-drift.py",
@@ -148,6 +150,7 @@ ALLOWED_IMPORTS = {
     "tempfile",
     "time",
     "tomllib",
+    "typing",
     "uuid",
     "urllib.error",
     "urllib.parse",
@@ -170,6 +173,7 @@ ALLOWED_IMPORTS = {
 # shared set: a source that needs one has to name it here, and then still has
 # to declare every individual capability it uses below.
 SOURCE_SENSITIVE_IMPORTS = {
+    "scripts/analyze-question-presentation-gaps.py": frozenset({"sys"}),
     "scripts/check-locale-catalog-settings.py": frozenset({"os", "shutil", "subprocess", "sys"}),
     "scripts/check-schema-revision-drift.py": frozenset({"os", "shutil", "subprocess", "sys"}),
     "scripts/extract_backend_i18n_keys.py": frozenset({"sys"}),
@@ -205,6 +209,9 @@ CALL_RESULT = frozenset({USE_CALL, USE_RESULT})
 # Exact capability -> permitted use shapes, per source file. `os.environ` read
 # as a value does not permit `os.environ.get`; that is a separate entry.
 SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
+    "scripts/analyze-question-presentation-gaps.py": {
+        "sys.stderr": VALUE,
+    },
     "scripts/check-locale-catalog-settings.py": {
         "os.environ.items": CALL,
         "os.mkfifo": CALL,
@@ -331,7 +338,7 @@ SOURCE_SENSITIVE_CAPABILITIES: dict[str, dict[str, frozenset[str]]] = {
 
 ALLOWED_FROM_IMPORTS = {
     "__future__": frozenset({"annotations"}),
-    "collections": frozenset({"Counter"}),
+    "collections": frozenset({"Counter", "defaultdict"}),
     "builtins": frozenset(
         {
             "__import__",
@@ -355,6 +362,7 @@ ALLOWED_FROM_IMPORTS = {
     "pathlib": frozenset({"Path"}),
     "referencing": frozenset({"Registry", "Resource"}),
     "tree_sitter": frozenset({"Language", "Parser"}),
+    "typing": frozenset({"Any", "Iterable"}),
     "urllib.parse": frozenset({"urlparse"}),
     "sys": frozenset({"meta_path", "modules", "path", "path_hooks", "path_importer_cache"}),
     "locale_catalog_python_boundary": frozenset(

@@ -1,0 +1,16 @@
+{
+  "choiceCount": 1,
+  "choices": [
+    {
+      "entity": {
+        "id": "c01108",
+        "kind": "act"
+      },
+      "kind": "advanceAct",
+      "sourceIndex": 0
+    }
+  ],
+  "protocolVersion": 1,
+  "questionKind": "chooseOne",
+  "questionVersion": 35
+}

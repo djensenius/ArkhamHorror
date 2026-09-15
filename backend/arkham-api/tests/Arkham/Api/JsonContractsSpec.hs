@@ -16,10 +16,13 @@ import Arkham.Act (lookupAct)
 import Arkham.Agenda.Types (AgendaAttrs (agendaDoom), Field (AgendaFlipped))
 import Arkham.Action qualified as Action
 import Arkham.Ability (abilityActions)
-import Arkham.Ability.Type (AbilityType (ForcedAbility, ReactionAbility))
+import Arkham.Ability.Limit qualified as AbilityLimit
+import Arkham.Ability.Type qualified as AbilityType
 import Arkham.Ability.Types
   ( abilityCardCode
+  , abilityCriteria
   , abilityIndex
+  , abilityLimit
   , abilityRequestor
   , abilitySource
   , abilityType
@@ -41,21 +44,26 @@ import Arkham.Enemy.Creation (EnemyCreation (..))
 import Arkham.Enemy.Types qualified as Enemy
 import Arkham.Placement (Placement (InThreatArea))
 import Arkham.Projection (field)
+import Arkham.Question.Presentation qualified as QuestionPresentation
 import Arkham.Story (createStory)
 import Arkham.Story.CardDefs.FortuneAndFolly qualified as StoryCardDefs (theStakeout)
-import Arkham.Token (Token (Resource), setTokens)
+import Arkham.Token (Token (Clue, Resource), setTokens)
 import Arkham.Campaign.Option (CampaignOption (..))
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
 import Arkham.Classes.HasGame (getGame)
+import Arkham.Cost qualified as Cost
+import Arkham.Criteria qualified as Criteria
 import Arkham.Deck qualified as Deck
 import Arkham.Difficulty (Difficulty (Easy, Standard))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Arkham.Decklist.CardPool (ArkhamBuildCardPool (..))
 import Arkham.Draw.Types (newCardDraw)
 import Arkham.Epic.Types (SharedEventState (..))
+import Arkham.Event.Cards qualified as EventCards
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
 import Arkham.Game.Settings (AsIfRuling (Chapter1AsIfRuling))
+import Arkham.GameValue qualified as GameValue
 import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Helpers.Message qualified as MessageHelpers (createEnemy)
 import Arkham.Helpers.Scenario (scenarioField)
@@ -63,13 +71,16 @@ import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Location.Types qualified as Location
 import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
 import Arkham.Matcher
-  ( AssetMatcher (AnyAsset)
+  ( ActMatcher (ActWithId)
+  , AssetMatcher (AnyAsset)
   , CardMatcher (AnyCard)
+  , EnemyMatcher (EnemyWithId)
   , InvestigatorMatcher (InvestigatorWithId)
-  , LocationMatcher (LocationWithInvestigator)
+  , LocationMatcher (LocationIs, LocationWithInvestigator)
   , TreacheryMatcher (TreacheryWithId)
   , WindowMatcher (RoundEnds)
   )
+import Arkham.Matcher qualified as Matcher
 import Arkham.Message qualified as Msg (storyWithCards)
 import Arkham.Message.Lifted.Choose (chooseTargetM)
 import Arkham.Message.Lifted.Location (unsafeReveal)
@@ -86,7 +97,7 @@ import Arkham.Phase
   )
 import Arkham.Replay.Checkpoint (canonicalQuestionSha256)
 import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
-import Arkham.Scenario.Types (Field (ScenarioDiscard), Scenario)
+import Arkham.Scenario.Types (Field (ScenarioDiscard, ScenarioSetAsideCards), Scenario)
 import Arkham.Timing qualified as Timing
 import Arkham.Treachery.CardDefs.NightOfTheZealot qualified as WeaknessCards
 import Arkham.Treachery.CardDefs.NightOfTheZealot.StrikingFear qualified as TreacheryCards
@@ -842,6 +853,106 @@ fixtureCoverUpReactionQuestion =
   fromMaybe
     (error "fixtureCoverUpReactionQuestion: fixture player has no active question")
     (Map.lookup fixturePlayerId $ gameQuestion fixtureCoverUpReactionGame)
+
+fixtureGatheringActObjectiveId :: ActId
+fixtureGatheringActObjectiveId = ActId "01108"
+
+fixtureGatheringNextActId :: ActId
+fixtureGatheringNextActId = ActId "01109"
+
+fixtureGatheringActObjectiveEnemyId :: EnemyId
+fixtureGatheringActObjectiveEnemyId =
+  EnemyId
+    $ fromMaybe
+      (error "fixtureGatheringActObjectiveEnemyId: invalid UUID")
+      (UUID.fromText "2d2310e9-f351-4688-aa55-e33666bb356c")
+
+fixtureGatheringActObjectiveEnemyCard :: Card
+fixtureGatheringActObjectiveEnemyCard =
+  lookupCard GhoulCards.ghoulMinion (unsafeMakeCardId $ UUID.fromWords 0 0 0 909)
+
+fixtureGatheringActObjectiveHand :: [Card]
+fixtureGatheringActObjectiveHand =
+  zipWith
+    ownedCard
+    [ AssetCards.knife
+    , AssetCards.beatCop
+    , AssetCards.fortyFiveAutomatic
+    , AssetCards.machete
+    , EventCards.emergencyCache
+    , AssetCards.guardDog
+    ]
+    [ "f971e011-b98d-4583-81b0-d2a378866698"
+    , "42f70875-1782-4fa6-a034-c16a3406e8f9"
+    , "001b6b9f-fc30-413d-855c-039ffcba4d15"
+    , "1b215bc4-4405-41ac-ba8d-75bd2e4dab9a"
+    , "d2458ecc-5f9f-4ba7-8b58-1474e70e8806"
+    , "377b1268-96b7-4806-b999-5574020a28f6"
+    ]
+ where
+  ownedCard cardDef uuidText =
+    case lookupCard cardDef (unsafeMakeCardId $ parseUuid uuidText) of
+      PlayerCard card -> PlayerCard card {pcOwner = Just (InvestigatorId "01001")}
+      _ -> error "fixtureGatheringActObjectiveHand: expected a player card"
+  parseUuid uuidText =
+    fromMaybe
+      (error $ "fixtureGatheringActObjectiveHand: invalid UUID " <> show uuidText)
+      (UUID.fromText uuidText)
+
+{- | Continue the production Cover Up skip branch into the first Gathering act
+objective. Skipping the replacement effect completes Roland's pending clue
+discovery, leaving him with the two clues the server requires before it offers
+Trapped's group-clue objective at source index 12. The objective choice and
+all preceding player-window choices remain entirely engine-produced.
+-}
+prepareFixtureGatheringActObjective :: TestAppT ()
+prepareFixtureGatheringActObjective = do
+  let iid = InvestigatorId "01001"
+  setAsideCards <- scenarioField ScenarioSetAsideCards
+  for_ setAsideCards \card -> replaceCard (toCardId card) card
+  overTest
+    ( entitiesL
+        . investigatorsL
+        . ix iid
+        %~ overAttrs
+          ( \attrs ->
+              attrs
+                { investigatorTokens = setTokens Clue 1 (investigatorTokens attrs)
+                }
+          )
+    )
+  creation <- MessageHelpers.createEnemy fixtureGatheringActObjectiveEnemyCard iid
+  pushAndRunAll
+    [CreateEnemy creation {enemyCreationEnemyId = fixtureGatheringActObjectiveEnemyId}]
+  prepareFixtureCoverUpReaction
+  for_ fixtureGatheringActObjectiveHand \card -> replaceCard (toCardId card) card
+  overTest
+    ( entitiesL
+        . investigatorsL
+        . ix iid
+        %~ overAttrs
+          ( \attrs ->
+              attrs
+                { investigatorHand = fixtureGatheringActObjectiveHand
+                , investigatorTokens = setTokens Resource 5 (investigatorTokens attrs)
+                }
+          )
+    )
+  chooseOptionMatching "skip Cover Up's replacement reaction" \case
+    SkipTriggersButton choiceIid -> choiceIid == iid
+    _ -> False
+
+fixtureGatheringActObjectiveGame :: Game
+fixtureGatheringActObjectiveGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  prepareFixtureGatheringActObjective
+  getGame
+{-# NOINLINE fixtureGatheringActObjectiveGame #-}
+
+fixtureGatheringActObjectiveQuestion :: Question Message
+fixtureGatheringActObjectiveQuestion =
+  fromMaybe
+    (error "fixtureGatheringActObjectiveQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureGatheringActObjectiveGame)
 
 fixtureRoundTransitionTreacheryId :: TreacheryId
 fixtureRoundTransitionTreacheryId =
@@ -2411,7 +2522,7 @@ spec = describe "Native client contract fixtures" do
             abilityCardCode ability `shouldBe` "01001"
             abilityIndex ability `shouldBe` 1
             abilityType ability `shouldSatisfy` \case
-              ReactionAbility {} -> True
+              AbilityType.ReactionAbility {} -> True
               _ -> False
             abilityActions ability `shouldBe` []
             length windows `shouldBe` 1
@@ -2510,7 +2621,7 @@ spec = describe "Native client contract fixtures" do
             abilityCardCode ability `shouldBe` "01007"
             abilityIndex ability `shouldBe` 1
             abilityType ability `shouldSatisfy` \case
-              ReactionAbility {} -> True
+              AbilityType.ReactionAbility {} -> True
               _ -> False
             abilityActions ability `shouldBe` []
             length windows `shouldBe` 1
@@ -2606,6 +2717,400 @@ spec = describe "Native client contract fixtures" do
           && locationAfter == locationBefore - 1
           && coverUpAfter == coverUpBefore
 
+  it "matches the exact production Gathering act objective on both encoder paths and canonical replay digest" do
+    fixture <- loadFixture "question-gathering-act-objective.json"
+    Aeson.toJSON fixtureGatheringActObjectiveQuestion `shouldBe` fixture
+    viaWireEncoding fixtureGatheringActObjectiveQuestion `shouldBe` fixture
+    canonicalQuestionSha256 fixtureGatheringActObjectiveQuestion
+      `shouldBe` "c18ca7e7ab353583d977dcf56434b5703993e415f00d3e5f4ea3125c462692a8"
+
+  it "projects every Gathering act-objective choice with exact source alignment and metadata" do
+    fixture <- loadFixture "question-presentation-gathering-act-objective.json"
+    let
+      presentation =
+        QuestionPresentation.questionPresentation
+          (gameScenarioSteps fixtureGatheringActObjectiveGame)
+          fixtureGatheringActObjectiveQuestion
+    Aeson.toJSON presentation `shouldBe` fixture
+    viaWireEncoding presentation `shouldBe` fixture
+    case presentation of
+      QuestionPresentation.QuestionPresentation version questionKind choiceCount choices -> do
+        version `shouldBe` 34
+        questionKind `shouldBe` "playerWindowChooseOne"
+        choiceCount `shouldBe` 13
+        let
+          sourceIndexes =
+            [ sourceIndex
+            | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- choices
+            ]
+          choiceKinds =
+            [ choiceKind
+            | QuestionPresentation.ChoicePresentation _ choiceKind _ _ _ _ _ <- choices
+            ]
+        sourceIndexes `shouldBe` [0 .. 12]
+        choiceKinds
+          `shouldBe` [ QuestionPresentation.GainResource
+                     , QuestionPresentation.DrawCard
+                     ]
+            <> replicate 6 QuestionPresentation.ChooseTarget
+            <> [ QuestionPresentation.EndTurn
+               , QuestionPresentation.Investigate
+               , QuestionPresentation.Fight
+               , QuestionPresentation.Evade
+               , QuestionPresentation.AdvanceAct
+               ]
+        drop 12 choices
+          `shouldBe` [ QuestionPresentation.ChoicePresentation
+                         12
+                         QuestionPresentation.AdvanceAct
+                         (Just $ InvestigatorId "01001")
+                         (Just $ QuestionPresentation.ActEntity fixtureGatheringActObjectiveId)
+                         Nothing
+                         ( Just
+                             $ QuestionPresentation.AbilityPresentation
+                               "01108"
+                               999
+                               "objective"
+                               []
+                               True
+                         )
+                         ( Just
+                             $ QuestionPresentation.GroupCluePresentationCost
+                               (QuestionPresentation.PerPlayerAmount 2)
+                               QuestionPresentation.AnywhereScope
+                         )
+                     ]
+
+  it "keeps Gathering semantic choices fail-closed without changing raw source indexes" do
+    let
+      iid = InvestigatorId "01001"
+      question =
+        ChooseOne
+          [ Label "$fixture.supported" []
+          , InvalidLabel "$fixture.unsupported"
+          , EndTurnButton iid []
+          ] ::
+          Question Message
+    QuestionPresentation.questionPresentation 7 question
+      `shouldBe` QuestionPresentation.QuestionPresentation
+        7
+        "chooseOne"
+        3
+        [ QuestionPresentation.ChoicePresentation
+            0
+            QuestionPresentation.LocalizedLabel
+            Nothing
+            Nothing
+            (Just $ QuestionPresentation.EmbeddedI18nLabel "$fixture.supported")
+            Nothing
+            Nothing
+        , QuestionPresentation.ChoicePresentation
+            2
+            QuestionPresentation.EndTurn
+            (Just iid)
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+        ]
+
+  it "binds the Gathering act objective to source index twelve and its exact server-owned cost" do
+    let
+      iid = InvestigatorId "01001"
+      source = ActSource fixtureGatheringActObjectiveId
+    case fixtureGatheringActObjectiveQuestion of
+      PlayerWindowChooseOne choices -> do
+        let (precedingChoices, objectiveChoices) = splitAt 12 choices
+        length precedingChoices `shouldBe` 12
+        case objectiveChoices of
+          [objectiveChoice@(AbilityLabel choiceIid ability windows beforeMessages messages)] -> do
+            choiceIid `shouldBe` iid
+            abilitySource ability `shouldBe` source
+            abilityRequestor ability `shouldBe` source
+            abilityCardCode ability `shouldBe` "01108"
+            abilityIndex ability `shouldBe` 999
+            abilityType ability
+              `shouldBe` AbilityType.Objective
+                ( AbilityType.FastAbility'
+                    (Cost.GroupClueCost (GameValue.PerPlayer 2) Matcher.Anywhere)
+                    mempty
+                )
+            abilityActions ability `shouldBe` []
+            abilityLimit ability `shouldBe` AbilityLimit.NoLimit
+            abilityWindow ability `shouldBe` Matcher.FastPlayerWindow
+            abilityCriteria ability `shouldBe` Criteria.DuringTurn Matcher.Anyone
+            windows
+              `shouldBe` [ Window.mkWindow Timing.When (Window.DuringTurn iid)
+                         , Window.mkWindow Timing.When Window.FastPlayerWindow
+                         , Window.mkWindow Timing.When Window.NonFast
+                         ]
+            beforeMessages `shouldBe` []
+            messages `shouldBe` []
+            let
+              answerValue version =
+                Aeson.object
+                  [ "tag" .= ("Answer" :: Text)
+                  , "contents"
+                      .= Aeson.object
+                        [ "choice" .= (12 :: Int)
+                        , "playerId" .= fixturePlayerId
+                        , "questionVersion" .= version
+                        ]
+                  ]
+              checkAnswer version check =
+                case Aeson.fromJSON (answerValue version) of
+                  Aeson.Error err ->
+                    expectationFailure
+                      $ "Could not decode Gathering act objective Answer: "
+                      <> err
+                  Aeson.Success answer ->
+                    handleAnswerPure fixtureGatheringActObjectiveGame fixturePlayerId answer
+                      >>= check
+              expectCurrent = \case
+                Handled actual -> actual `shouldBe` [uiToRun objectiveChoice]
+                Unhandled reason ->
+                  expectationFailure
+                    $ "Gathering act objective Answer rejected: "
+                    <> Text.unpack reason
+              expectStale = \case
+                Unhandled reason -> reason `shouldBe` "Stale question"
+                Handled _ ->
+                  expectationFailure "A stale Gathering act objective Answer must not resolve"
+              currentVersion = gameScenarioSteps fixtureGatheringActObjectiveGame
+            currentVersion `shouldBe` 34
+            checkAnswer currentVersion expectCurrent
+            checkAnswer (currentVersion - 1) expectStale
+          other ->
+            expectationFailure
+              $ "Expected one Gathering objective at source index twelve, got "
+              <> show other
+      other ->
+        expectationFailure
+          $ "Expected the production Gathering player window, got "
+          <> show other
+
+  it "pays the Gathering objective and requires the authoritative act-advance confirmation" do
+    rawAdvanceFixture <- loadFixture "question-gathering-act-advance.json"
+    presentationAdvanceFixture <-
+      loadFixture "question-presentation-gathering-act-advance.json"
+    let iid = InvestigatorId "01001"
+    ( cluesBefore
+      , cluesAfterPayment
+      , locationBefore
+      , locationAfterPayment
+      , confirmationVersion
+      , locationAfterAdvance
+      , finalVersion
+      ) <-
+      runAgainstFixtureBoardGame do
+        prepareFixtureGatheringActObjective
+        cluesBefore <- field InvestigatorClues iid
+        locationBefore <- field InvestigatorLocation iid
+        game <- getGame
+        let
+          answer =
+            Answer
+              QuestionResponse
+                { qrChoice = 12
+                , qrPlayerId = Just fixturePlayerId
+                , qrQuestionVersion = Just $ gameScenarioSteps game
+                }
+        liftIO (handleAnswerPure game fixturePlayerId answer) >>= \case
+          Unhandled reason ->
+            liftIO
+              $ expectationFailure
+              $ "Gathering act objective Answer rejected: "
+              <> Text.unpack reason
+          Handled messages -> pushAndRunAll (ClearUI : messages)
+        cluesAfterPayment <- field InvestigatorClues iid
+        locationAfterPayment <- field InvestigatorLocation iid
+        confirmationGame <- getGame
+        liftIO
+          $ case Map.lookup fixturePlayerId (gameQuestion confirmationGame) of
+            Just
+              question@( ChooseOne
+                  [ TargetLabel
+                      (ActTarget targetActId)
+                      [AdvanceAct messageActId source AdvancedWithClues]
+                    ]
+                ) -> do
+                Aeson.toJSON question `shouldBe` rawAdvanceFixture
+                viaWireEncoding question `shouldBe` rawAdvanceFixture
+                canonicalQuestionSha256 question
+                  `shouldBe` "f4d33a06562c03ad21632689f2e30c69c6a27820cda0800e65da297cb230138a"
+                targetActId `shouldBe` fixtureGatheringActObjectiveId
+                messageActId `shouldBe` fixtureGatheringActObjectiveId
+                source `shouldBe` ActSource fixtureGatheringActObjectiveId
+            other ->
+              expectationFailure
+                $ "Expected the version-35 Gathering act-advance confirmation, got "
+                <> show other
+        let
+          confirmationVersion = gameScenarioSteps confirmationGame
+          confirmationPresentation =
+            Map.lookup
+              fixturePlayerId
+              ( QuestionPresentation.questionPresentations
+                  confirmationVersion
+                  (gameQuestion confirmationGame)
+              )
+        liftIO
+          $ case confirmationPresentation of
+            Nothing ->
+              expectationFailure
+                "Expected a semantic presentation for the version-35 Gathering confirmation"
+            Just presentation -> do
+              Aeson.toJSON presentation `shouldBe` presentationAdvanceFixture
+              viaWireEncoding presentation `shouldBe` presentationAdvanceFixture
+              presentation
+                `shouldBe` QuestionPresentation.QuestionPresentation
+                  35
+                  "chooseOne"
+                  1
+                  [ QuestionPresentation.ChoicePresentation
+                      0
+                      QuestionPresentation.AdvanceAct
+                      Nothing
+                      (Just $ QuestionPresentation.ActEntity fixtureGatheringActObjectiveId)
+                      Nothing
+                      Nothing
+                      Nothing
+                  ]
+        let
+          confirmationAnswer =
+            Answer
+              QuestionResponse
+                { qrChoice = 0
+                , qrPlayerId = Just fixturePlayerId
+                , qrQuestionVersion = Just confirmationVersion
+                }
+        liftIO (handleAnswerPure confirmationGame fixturePlayerId confirmationAnswer) >>= \case
+          Unhandled reason ->
+            liftIO
+              $ expectationFailure
+              $ "Gathering act-advance confirmation rejected: "
+              <> Text.unpack reason
+          Handled messages -> pushAndRunAll (ClearUI : messages)
+        locationAfterAdvance <- field InvestigatorLocation iid
+        finalGame <- getGame
+        hallwayId <- selectJust $ LocationIs "01112"
+        atticId <- selectJust $ LocationIs "01113"
+        cellarId <- selectJust $ LocationIs "01114"
+        _parlorId <- selectJust $ LocationIs "01115"
+        hallwayRevealed <- field Location.LocationRevealed hallwayId
+        ghoulRemoved <- selectNone $ EnemyWithId fixtureGatheringActObjectiveEnemyId
+        studyRemoved <- selectNone $ LocationIs "01111"
+        oldActRemoved <- selectNone $ ActWithId fixtureGatheringActObjectiveId
+        nextActId <- selectJust $ ActWithId fixtureGatheringNextActId
+        liftIO do
+          locationAfterAdvance `shouldBe` Just hallwayId
+          hallwayRevealed `shouldBe` True
+          ghoulRemoved `shouldBe` True
+          studyRemoved `shouldBe` True
+          oldActRemoved `shouldBe` True
+          nextActId `shouldBe` fixtureGatheringNextActId
+          case
+              ( fixtureGatheringActObjectiveQuestion
+              , Map.lookup fixturePlayerId (gameQuestion finalGame)
+              )
+            of
+              ( PlayerWindowChooseOne objectiveChoices
+                , Just (PlayerWindowChooseOne nextChoices)
+                ) -> do
+                  length nextChoices `shouldBe` 12
+                  take 9 nextChoices `shouldBe` take 9 objectiveChoices
+                  case drop 9 nextChoices of
+                    [ AbilityLabel atticIid atticAbility _ atticBefore atticMessages
+                      , AbilityLabel hallwayIid hallwayAbility _ hallwayBefore hallwayMessages
+                      , AbilityLabel cellarIid cellarAbility _ cellarBefore cellarMessages
+                      ] -> do
+                        atticIid `shouldBe` iid
+                        abilitySource atticAbility `shouldBe` LocationSource atticId
+                        abilityCardCode atticAbility `shouldBe` "01113"
+                        abilityIndex atticAbility `shouldBe` 104
+                        abilityActions atticAbility `shouldBe` [Action.Move]
+                        atticBefore `shouldBe` []
+                        atticMessages `shouldBe` []
+                        hallwayIid `shouldBe` iid
+                        abilitySource hallwayAbility `shouldBe` LocationSource hallwayId
+                        abilityCardCode hallwayAbility `shouldBe` "01112"
+                        abilityIndex hallwayAbility `shouldBe` 103
+                        abilityActions hallwayAbility `shouldBe` [Action.Investigate]
+                        hallwayBefore `shouldBe` []
+                        hallwayMessages `shouldBe` []
+                        cellarIid `shouldBe` iid
+                        abilitySource cellarAbility `shouldBe` LocationSource cellarId
+                        abilityCardCode cellarAbility `shouldBe` "01114"
+                        abilityIndex cellarAbility `shouldBe` 104
+                        abilityActions cellarAbility `shouldBe` [Action.Move]
+                        cellarBefore `shouldBe` []
+                        cellarMessages `shouldBe` []
+                    other ->
+                      expectationFailure
+                        $ "Expected the stable version-36 Hallway action suffix, got "
+                        <> show other
+              other ->
+                expectationFailure
+                  $ "Expected the version-36 Gathering player window, got "
+                  <> show other
+          case
+              Map.lookup
+                fixturePlayerId
+                ( QuestionPresentation.questionPresentations
+                    (gameScenarioSteps finalGame)
+                    (gameQuestion finalGame)
+                )
+            of
+              Just
+                ( QuestionPresentation.QuestionPresentation
+                    version
+                    questionKind
+                    choiceCount
+                    choices
+                  ) -> do
+                    version `shouldBe` 36
+                    questionKind `shouldBe` "playerWindowChooseOne"
+                    choiceCount `shouldBe` 12
+                    let
+                      sourceIndexes =
+                        [ sourceIndex
+                        | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- choices
+                        ]
+                      choiceKinds =
+                        [ choiceKind
+                        | QuestionPresentation.ChoicePresentation _ choiceKind _ _ _ _ _ <- choices
+                        ]
+                    sourceIndexes `shouldBe` [0 .. 11]
+                    choiceKinds
+                      `shouldBe` [ QuestionPresentation.GainResource
+                                 , QuestionPresentation.DrawCard
+                                 ]
+                        <> replicate 6 QuestionPresentation.ChooseTarget
+                        <> [ QuestionPresentation.EndTurn
+                           , QuestionPresentation.UseAbility
+                           , QuestionPresentation.Investigate
+                           , QuestionPresentation.UseAbility
+                           ]
+              other ->
+                expectationFailure
+                  $ "Expected the version-36 Gathering semantic presentation, got "
+                  <> show other
+        pure
+          ( cluesBefore
+          , cluesAfterPayment
+          , locationBefore
+          , locationAfterPayment
+          , confirmationVersion
+          , locationAfterAdvance
+          , gameScenarioSteps finalGame
+          )
+    cluesBefore `shouldBe` 2
+    cluesAfterPayment `shouldBe` 0
+    locationAfterPayment `shouldBe` locationBefore
+    confirmationVersion `shouldBe` 35
+    locationAfterAdvance `shouldNotBe` locationBefore
+    finalVersion `shouldBe` 36
+
   it "matches every production round-transition prompt on both encoder paths and canonical replay digest" do
     let
       fixtures =
@@ -2640,6 +3145,24 @@ spec = describe "Native client contract fixtures" do
       ]
       `shouldBe` [24, 25, 26, 27]
 
+  it "classifies the production agenda confirmation as semantic advanceAgenda" do
+    QuestionPresentation.questionPresentation
+      (gameScenarioSteps fixtureRoundTransition.agendaAdvanceGame)
+      fixtureAgendaAdvanceQuestion
+      `shouldBe` QuestionPresentation.QuestionPresentation
+        25
+        "chooseOne"
+        1
+        [ QuestionPresentation.ChoicePresentation
+            0
+            QuestionPresentation.AdvanceAgenda
+            Nothing
+            (Just $ QuestionPresentation.AgendaEntity fixtureRoundTransitionAgendaId)
+            Nothing
+            Nothing
+            Nothing
+        ]
+
   it "binds the round-end forced ability to Dissonant Voices and its exact window" do
     let
       iid = InvestigatorId "01001"
@@ -2658,7 +3181,7 @@ spec = describe "Native client contract fixtures" do
             abilityRequestor ability `shouldBe` source
             abilityCardCode ability `shouldBe` toCardCode fixtureRoundTransitionTreacheryCard
             abilityIndex ability `shouldBe` 1
-            abilityType ability `shouldBe` ForcedAbility (RoundEnds Timing.When)
+            abilityType ability `shouldBe` AbilityType.ForcedAbility (RoundEnds Timing.When)
             abilityWindow ability `shouldBe` RoundEnds Timing.When
             windows `shouldBe` [Window.mkWindow Timing.When Window.AtEndOfRound]
             beforeMessages `shouldBe` []

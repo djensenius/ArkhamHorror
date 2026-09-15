@@ -52,6 +52,7 @@
     "inSetup",
     "skillTestResults",
     "question",
+    "questionPresentation",
     "cards",
     "totalDoom",
     "totalClues",
@@ -273,6 +274,15 @@
     },
     "question": {
       "$ref": "#/$defs/uuidEntityMap"
+    },
+    "questionPresentation": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/uuidMapKey"
+      },
+      "additionalProperties": {
+        "$ref": "./question-presentation.schema.json"
+      }
     },
     "cards": {
       "$ref": "#/$defs/uuidEntityMap"

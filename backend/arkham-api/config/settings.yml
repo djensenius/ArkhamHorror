@@ -19,13 +19,14 @@ websocket-compression: "_env:ARKHAM_WS_COMPRESSION:true"
 # content; these settings only describe where the deployment publishes it.
 #
 # Leave every one of them blank to disable the pointer: the capabilities
-# response then keeps its exact legacy field and capability shape (no
-# localeCatalog member, no i18n.locale-catalog.v1 identifier); schemaRevision
-# still reports this server's real contract revision. Supplying some but not all of
-# them is a startup error by design, so a half-removed pointer can never be
-# silently dropped, and an invalid value fails startup instead of advertising
-# a broken catalog. Prefer the same-origin relative path; an absolute URL must
-# be https. See docs/locale-catalog.md.
+# response then carries no localeCatalog member and no
+# i18n.locale-catalog.v1 identifier. Globally available capabilities remain,
+# and schemaRevision still reports this server's real contract revision.
+# Supplying some but not all of them is a startup error by design, so a
+# half-removed pointer can never be silently dropped, and an invalid value
+# fails startup instead of advertising a broken catalog. Prefer the
+# same-origin relative path; an absolute URL must be https. See
+# docs/locale-catalog.md.
 locale-catalog-manifest-url: "_env:ARKHAM_LOCALE_CATALOG_MANIFEST_URL:"
 locale-catalog-revision: "_env:ARKHAM_LOCALE_CATALOG_REVISION:"
 locale-catalog-schema-version: "_env:ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION:"

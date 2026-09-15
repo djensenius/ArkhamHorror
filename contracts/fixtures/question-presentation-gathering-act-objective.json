@@ -1,0 +1,163 @@
+{
+  "choiceCount": 13,
+  "choices": [
+    {
+      "actorId": "c01001",
+      "kind": "gainResource",
+      "sourceIndex": 0
+    },
+    {
+      "actorId": "c01001",
+      "kind": "drawCard",
+      "sourceIndex": 1
+    },
+    {
+      "entity": {
+        "id": "f971e011-b98d-4583-81b0-d2a378866698",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 2
+    },
+    {
+      "entity": {
+        "id": "42f70875-1782-4fa6-a034-c16a3406e8f9",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 3
+    },
+    {
+      "entity": {
+        "id": "001b6b9f-fc30-413d-855c-039ffcba4d15",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 4
+    },
+    {
+      "entity": {
+        "id": "1b215bc4-4405-41ac-ba8d-75bd2e4dab9a",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 5
+    },
+    {
+      "entity": {
+        "id": "d2458ecc-5f9f-4ba7-8b58-1474e70e8806",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 6
+    },
+    {
+      "entity": {
+        "id": "377b1268-96b7-4806-b999-5574020a28f6",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 7
+    },
+    {
+      "actorId": "c01001",
+      "kind": "endTurn",
+      "sourceIndex": 8
+    },
+    {
+      "ability": {
+        "actions": [
+          "investigate"
+        ],
+        "canBeCancelled": true,
+        "cardCode": "c01111",
+        "index": 103,
+        "type": "action"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "amount": 1,
+        "kind": "action"
+      },
+      "entity": {
+        "id": "d5a66e84-c729-4066-8475-d8a155609025",
+        "kind": "location"
+      },
+      "kind": "investigate",
+      "sourceIndex": 9
+    },
+    {
+      "ability": {
+        "actions": [
+          "fight"
+        ],
+        "canBeCancelled": true,
+        "cardCode": "c01160",
+        "index": 100,
+        "type": "action"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "amount": 1,
+        "kind": "action"
+      },
+      "entity": {
+        "id": "2d2310e9-f351-4688-aa55-e33666bb356c",
+        "kind": "enemy"
+      },
+      "kind": "fight",
+      "sourceIndex": 10
+    },
+    {
+      "ability": {
+        "actions": [
+          "evade"
+        ],
+        "canBeCancelled": true,
+        "cardCode": "c01160",
+        "index": 101,
+        "type": "action"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "amount": 1,
+        "kind": "action"
+      },
+      "entity": {
+        "id": "2d2310e9-f351-4688-aa55-e33666bb356c",
+        "kind": "enemy"
+      },
+      "kind": "evade",
+      "sourceIndex": 11
+    },
+    {
+      "ability": {
+        "actions": [],
+        "canBeCancelled": true,
+        "cardCode": "c01108",
+        "index": 999,
+        "type": "objective"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "amount": {
+          "kind": "perPlayer",
+          "value": 2
+        },
+        "kind": "groupClue",
+        "scope": {
+          "kind": "anywhere"
+        }
+      },
+      "entity": {
+        "id": "c01108",
+        "kind": "act"
+      },
+      "kind": "advanceAct",
+      "sourceIndex": 12
+    }
+  ],
+  "protocolVersion": 1,
+  "questionKind": "playerWindowChooseOne",
+  "questionVersion": 34
+}

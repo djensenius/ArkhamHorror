@@ -44,6 +44,16 @@
   },
   "allOf": [
     {
+      "$comment": "Semantic question presentation is backend-authored and globally available in this contract revision, independent of deployment-owned locale-catalog configuration.",
+      "properties": {
+        "capabilities": {
+          "contains": {
+            "const": "questions.semantic-presentation.v1"
+          }
+        }
+      }
+    },
+    {
       "$comment": "The object and its capability string are produced from one Maybe in Base.Api.Types.Capabilities.serverCapabilities, so neither can appear without the other.",
       "if": {
         "properties": {

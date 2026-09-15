@@ -98,15 +98,30 @@ capabilities_fixtures = [
 ]
 
 # The capabilities response has exactly two production shapes, and both are
-# registered as real Aeson-encoded fixtures: the legacy one a deployment
-# without a locale catalog serves (no `localeCatalog`, no
-# `i18n.locale-catalog.v1`), and the one a deployment that publishes a catalog
-# serves. Every one of them must still agree with this manifest's own
-# identity, and must keep the object and its capability string together --
-# that pairing is what a client relies on to gate the optional behavior, and
-# in the backend both come from a single `Maybe` (see
+# registered as real Aeson-encoded fixtures: the one a deployment without a
+# locale catalog serves (no `localeCatalog`, no `i18n.locale-catalog.v1`), and
+# the one a deployment that publishes a catalog serves. The semantic question
+# presentation capability is global and must be present in both shapes.
+# Every response must still agree with this manifest's own identity, and must
+# keep the optional locale object and its capability string together -- that
+# pairing is what a client relies on to gate the optional behavior, and in the
+# backend both come from a single `Maybe` (see
 # Base.Api.Types.Capabilities.serverCapabilities).
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
+SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v1"
+QUESTION_PRESENTATION_SCHEMA = "contracts/schemas/question-presentation.schema.json"
+Q34_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-act-objective.json"
+Q34_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-act-objective.json"
+)
+Q35_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-act-advance.json"
+Q35_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-act-advance.json"
+)
+QUESTION_PRESENTATION_BINDINGS = {
+    Q34_PRESENTATION_FIXTURE: Q34_QUESTION_FIXTURE,
+    Q35_PRESENTATION_FIXTURE: Q35_QUESTION_FIXTURE,
+}
 
 require(
     len(capabilities_fixtures) == 2,
@@ -137,6 +152,11 @@ for capabilities_fixture in capabilities_fixtures:
     require(
         isinstance(capability_strings, list),
         f"{capabilities_path} capabilities must be an array",
+    )
+    require(
+        SEMANTIC_QUESTION_PRESENTATION_CAPABILITY in capability_strings,
+        f"{capabilities_path} must advertise the global "
+        f"{SEMANTIC_QUESTION_PRESENTATION_CAPABILITY} capability",
     )
     advertises_catalog = LOCALE_CATALOG_CAPABILITY in capability_strings
     has_catalog_object = "localeCatalog" in capabilities
@@ -188,6 +208,159 @@ for relative_path in documents:
     schema_ids[schema_id] = relative_path
     registry = registry.with_resource(schema_id, Resource.from_contents(schema))
 
+
+class ContractValidationError:
+    """A validator-shaped error for cross-document contract invariants.
+
+    JSON Schema owns each standalone document's shape. These errors bind a
+    semantic presentation fixture to its authoritative raw question, which a
+    standalone schema cannot observe: declared raw choice count, unique and
+    in-bounds source indices, plus the exact high-value Q34 objective semantic.
+    """
+
+    def __init__(self, path: list[str], keyword: str, message: str):
+        self.absolute_path = tuple(path)
+        self.validator = keyword
+        self.message = message
+        self.context = ()
+
+
+Q34_OBJECTIVE_PRESENTATION = {
+    "ability": {
+        "actions": [],
+        "canBeCancelled": True,
+        "cardCode": "c01108",
+        "index": 999,
+        "type": "objective",
+    },
+    "actorId": "c01001",
+    "cost": {
+        "amount": {
+            "kind": "perPlayer",
+            "value": 2,
+        },
+        "kind": "groupClue",
+        "scope": {
+            "kind": "anywhere",
+        },
+    },
+    "entity": {
+        "id": "c01108",
+        "kind": "act",
+    },
+    "kind": "advanceAct",
+    "sourceIndex": 12,
+}
+
+Q35_ADVANCE_PRESENTATION = {
+    "entity": {
+        "id": "c01108",
+        "kind": "act",
+    },
+    "kind": "advanceAct",
+    "sourceIndex": 0,
+}
+
+EXACT_PRESENTATION_CHOICES = {
+    Q34_PRESENTATION_FIXTURE: (
+        12,
+        Q34_OBJECTIVE_PRESENTATION,
+        "q34ObjectiveSemantic",
+        "Q34 source index 12 must be the exact Gathering act c01108 "
+        "objective semantic with Roland c01001 and the per-player group-clue cost",
+    ),
+    Q35_PRESENTATION_FIXTURE: (
+        0,
+        Q35_ADVANCE_PRESENTATION,
+        "q35AdvanceSemantic",
+        "Q35 source index 0 must be the exact Gathering act c01108 "
+        "advancement confirmation semantic",
+    ),
+}
+
+
+def contract_fixture_errors(
+    schema_path: str, fixture_path: str, instance: object
+) -> list[ContractValidationError]:
+    if (
+        schema_path != QUESTION_PRESENTATION_SCHEMA
+        or fixture_path not in QUESTION_PRESENTATION_BINDINGS
+        or not isinstance(instance, dict)
+    ):
+        return []
+
+    raw_fixture_path = QUESTION_PRESENTATION_BINDINGS[fixture_path]
+    raw_question = load_governed_json(raw_fixture_path)
+    require(
+        isinstance(raw_question, dict) and isinstance(raw_question.get("choices"), list),
+        f"{raw_fixture_path} must be a raw question object with a choices array",
+    )
+    raw_choice_count = len(raw_question["choices"])
+    errors: list[ContractValidationError] = []
+
+    choice_count = instance.get("choiceCount")
+    if (
+        isinstance(choice_count, int)
+        and not isinstance(choice_count, bool)
+        and choice_count != raw_choice_count
+    ):
+        errors.append(
+            ContractValidationError(
+                ["choiceCount"],
+                "rawChoiceCount",
+                f"choiceCount {choice_count} does not match the authoritative raw "
+                f"question choice count {raw_choice_count}",
+            )
+        )
+
+    descriptors = instance.get("choices")
+    if isinstance(descriptors, list):
+        seen: dict[int, int] = {}
+        for descriptor_index, descriptor in enumerate(descriptors):
+            if not isinstance(descriptor, dict):
+                continue
+            source_index = descriptor.get("sourceIndex")
+            if isinstance(source_index, bool) or not isinstance(source_index, int):
+                continue
+            if source_index in seen:
+                errors.append(
+                    ContractValidationError(
+                        ["choices", str(descriptor_index), "sourceIndex"],
+                        "uniqueSourceIndex",
+                        f"sourceIndex {source_index} duplicates "
+                        f"choices/{seen[source_index]}/sourceIndex",
+                    )
+                )
+            else:
+                seen[source_index] = descriptor_index
+            if not 0 <= source_index < raw_choice_count:
+                errors.append(
+                    ContractValidationError(
+                        ["choices", str(descriptor_index), "sourceIndex"],
+                        "sourceIndexBounds",
+                        f"sourceIndex {source_index} is outside 0..{raw_choice_count - 1} "
+                        f"for the authoritative raw question",
+                    )
+                )
+
+        exact_index, expected_choice, keyword, message = EXACT_PRESENTATION_CHOICES[
+            fixture_path
+        ]
+        if (
+            len(descriptors) <= exact_index
+            or descriptors[exact_index] != expected_choice
+        ):
+            errors.append(
+                ContractValidationError(
+                    ["choices", str(exact_index)],
+                    keyword,
+                    message,
+                )
+            )
+
+    return errors
+
+
 for fixture_index, fixture in enumerate(fixtures):
     require_entry_keys(fixture, ["path", "schema"], entry_kind="fixtures", index=fixture_index)
     fixture_path = fixture["path"]
@@ -203,10 +376,9 @@ for fixture_index, fixture in enumerate(fixtures):
         format_checker=FormatChecker(),
         registry=registry,
     )
-    errors = sorted(
-        validator.iter_errors(instance),
-        key=lambda error: tuple(map(str, error.absolute_path)),
-    )
+    errors = list(validator.iter_errors(instance))
+    errors.extend(contract_fixture_errors(schema_path, fixture_path, instance))
+    errors.sort(key=lambda error: tuple(map(str, error.absolute_path)))
 
     if errors:
         details = "; ".join(
@@ -591,7 +763,15 @@ def normalize_errors(errors):
     )
 
 
-def diagnose_negative(schema: dict, branch, instance, expected_errors: list[dict]):
+def diagnose_negative(
+    schema: dict,
+    branch,
+    instance,
+    expected_errors: list[dict],
+    *,
+    schema_path: str | None = None,
+    base_positive_fixture: str | None = None,
+):
     """Validate `instance` against `schema` (optionally scoped to one `oneOf`
     branch), and return (ok: bool, detail: str) describing whether the
     flattened error set exactly matches `expected_errors` -- every declared
@@ -601,6 +781,10 @@ def diagnose_negative(schema: dict, branch, instance, expected_errors: list[dict
     target_schema = extract_branch_schema(schema, branch) if branch is not None else schema
     validator = make_validator(target_schema)
     errors = list(flatten_errors(validator.iter_errors(instance)))
+    if schema_path is not None and base_positive_fixture is not None:
+        errors.extend(
+            contract_fixture_errors(schema_path, base_positive_fixture, instance)
+        )
 
     if not errors:
         return False, "instance unexpectedly validated"
@@ -682,7 +866,14 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
     base_value = load_base_value(base_positive_fixture, base_pointer)
     mutated_instance = apply_mutation(base_value, mutation)
 
-    ok, detail = diagnose_negative(schema, schema_branch, mutated_instance, expected_errors)
+    ok, detail = diagnose_negative(
+        schema,
+        schema_branch,
+        mutated_instance,
+        expected_errors,
+        schema_path=schema_path,
+        base_positive_fixture=base_positive_fixture,
+    )
     require(
         ok,
         f"Negative fixture ({description}) derived from {base_positive_fixture}{base_pointer} "
@@ -1203,7 +1394,13 @@ require(
 )
 require_entry_keys(
     legacy_checks,
-    ["baselineRevision", "baselineResponse", "addedCapability", "allowedDifferences"],
+    [
+        "baselineRevision",
+        "baselineResponse",
+        "addedCapability",
+        "globalCapabilities",
+        "allowedDifferences",
+    ],
     entry_kind="legacyCompatibilityChecks",
     index=0,
 )
@@ -1218,6 +1415,19 @@ require(
     "the baseline predates the locale-catalog capability, so it must not advertise it",
 )
 require(
+    legacy_checks["globalCapabilities"]
+    == [SEMANTIC_QUESTION_PRESENTATION_CAPABILITY],
+    "legacyCompatibilityChecks.globalCapabilities must register exactly the "
+    f"{SEMANTIC_QUESTION_PRESENTATION_CAPABILITY} capability",
+)
+require(
+    all(
+        capability not in legacy_baseline.get("capabilities", [])
+        for capability in legacy_checks["globalCapabilities"]
+    ),
+    "the 0.1.22 baseline must not advertise later global capabilities",
+)
+require(
     "localeCatalog" not in legacy_baseline,
     "the baseline predates the localeCatalog field, so it must not carry it",
 )
@@ -1228,10 +1438,14 @@ def normalize_against_baseline(response: dict, allowed: list[str]) -> dict:
     left is the legacy shape and nothing else."""
     normalized = {key: value for key, value in response.items() if key not in allowed}
     if "capabilities" in allowed:
+        added_capabilities = {
+            legacy_checks["addedCapability"],
+            *legacy_checks["globalCapabilities"],
+        }
         normalized["capabilities"] = [
             capability
             for capability in response.get("capabilities", [])
-            if capability != legacy_checks["addedCapability"]
+            if capability not in added_capabilities
         ]
     return normalized
 

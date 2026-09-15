@@ -2,8 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, Cover Up's optional clue-replacement reaction, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, Cover Up's optional clue-replacement reaction, The Gathering's act-objective advancement, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
+    {
+      "$ref": "#/$defs/gatheringActObjectiveQuestion"
+    },
+    {
+      "$ref": "#/$defs/gatheringActAdvanceQuestion"
+    },
     {
       "$ref": "#/$defs/coverUpReactionQuestion"
     },
@@ -48,6 +54,570 @@
     }
   ],
   "$defs": {
+    "gatheringActObjectiveQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "PlayerWindowChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 13,
+          "maxItems": 13,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/choiceLabel"
+            },
+            {
+              "$ref": "#/$defs/gatheringActObjectiveAbilityLabel"
+            }
+          ],
+          "items": false
+        }
+      },
+      "description": "The exact 13-choice player window at The Gathering question 34. Source index 12 is the act objective; the preceding action-menu choices retain their already-governed closed display shapes."
+    },
+    "gatheringActAdvanceQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/gatheringActAdvanceLabel"
+            }
+          ],
+          "items": false
+        }
+      },
+      "description": "The exact one-choice The Gathering question-35 confirmation that advances Trapped after its group clue cost has already been paid."
+    },
+    "gatheringActAdvanceLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "target",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "TargetLabel"
+        },
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "ActTarget"
+            },
+            "contents": {
+              "const": "c01108"
+            }
+          }
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/gatheringAdvanceActMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "gatheringAdvanceActMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AdvanceAct"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "const": "c01108"
+            },
+            {
+              "$ref": "#/$defs/gatheringActSource"
+            },
+            {
+              "const": "AdvancedWithClues"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "gatheringActObjectiveAbilityLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "ability",
+        "windows",
+        "before",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilityLabel"
+        },
+        "investigatorId": {
+          "const": "c01001"
+        },
+        "ability": {
+          "$ref": "#/$defs/gatheringActObjectiveAbility"
+        },
+        "windows": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/gatheringDuringTurnWindow"
+            },
+            {
+              "$ref": "#/$defs/gatheringFastPlayerWindow"
+            },
+            {
+              "$ref": "#/$defs/gatheringNonFastWindow"
+            }
+          ],
+          "items": false
+        },
+        "before": {
+          "const": []
+        },
+        "messages": {
+          "const": []
+        }
+      }
+    },
+    "gatheringActObjectiveAbility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "additionalCosts",
+        "basic",
+        "canBeCancelled",
+        "cardCode",
+        "criteria",
+        "delayAdditionalCosts",
+        "displayAs",
+        "doesNotProvokeAttacksOfOpportunity",
+        "evadeCriteriaOverride",
+        "fightCriteriaOverride",
+        "highlightFromWindow",
+        "ignoreAllCosts",
+        "index",
+        "limit",
+        "metadata",
+        "requestor",
+        "skipForAll",
+        "source",
+        "target",
+        "tooltip",
+        "triggersSkillTest",
+        "type",
+        "wantsSkillTest",
+        "window"
+      ],
+      "properties": {
+        "additionalCosts": {
+          "const": []
+        },
+        "basic": {
+          "const": false
+        },
+        "canBeCancelled": {
+          "const": true
+        },
+        "cardCode": {
+          "const": "c01108"
+        },
+        "criteria": {
+          "$ref": "#/$defs/gatheringDuringTurnCriteria"
+        },
+        "delayAdditionalCosts": {
+          "type": "null"
+        },
+        "displayAs": {
+          "type": "null"
+        },
+        "doesNotProvokeAttacksOfOpportunity": {
+          "type": "null"
+        },
+        "evadeCriteriaOverride": {
+          "type": "null"
+        },
+        "fightCriteriaOverride": {
+          "type": "null"
+        },
+        "highlightFromWindow": {
+          "const": false
+        },
+        "ignoreAllCosts": {
+          "const": false
+        },
+        "index": {
+          "const": 999
+        },
+        "limit": {
+          "$ref": "#/$defs/gatheringNoLimit"
+        },
+        "metadata": {
+          "type": "null"
+        },
+        "requestor": {
+          "$ref": "#/$defs/gatheringActSource"
+        },
+        "skipForAll": {
+          "const": false
+        },
+        "source": {
+          "$ref": "#/$defs/gatheringActSource"
+        },
+        "target": {
+          "type": "null"
+        },
+        "tooltip": {
+          "type": "null"
+        },
+        "triggersSkillTest": {
+          "const": false
+        },
+        "type": {
+          "$ref": "#/$defs/gatheringObjectiveAbilityType"
+        },
+        "wantsSkillTest": {
+          "type": "null"
+        },
+        "window": {
+          "$ref": "#/$defs/gatheringFastPlayerWindowMatcher"
+        }
+      }
+    },
+    "gatheringActSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ActSource"
+        },
+        "contents": {
+          "const": "c01108"
+        }
+      }
+    },
+    "gatheringObjectiveAbilityType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "abilityType"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Objective"
+        },
+        "abilityType": {
+          "$ref": "#/$defs/gatheringFastAbility"
+        }
+      }
+    },
+    "gatheringFastAbility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "cost",
+        "actions"
+      ],
+      "properties": {
+        "tag": {
+          "const": "FastAbility'"
+        },
+        "cost": {
+          "$ref": "#/$defs/gatheringGroupClueCost"
+        },
+        "actions": {
+          "$ref": "#/$defs/gatheringNoActions"
+        }
+      }
+    },
+    "gatheringGroupClueCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "GroupClueCost"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/gatheringPerPlayerTwo"
+            },
+            {
+              "$ref": "#/$defs/gatheringAnywhere"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "gatheringPerPlayerTwo": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "PerPlayer"
+        },
+        "contents": {
+          "const": 2
+        }
+      }
+    },
+    "gatheringAnywhere": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Anywhere"
+        }
+      }
+    },
+    "gatheringNoActions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contents",
+        "tag"
+      ],
+      "properties": {
+        "contents": {
+          "const": []
+        },
+        "tag": {
+          "const": "AndActions"
+        }
+      }
+    },
+    "gatheringNoLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "NoLimit"
+        }
+      }
+    },
+    "gatheringDuringTurnCriteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "DuringTurn"
+        },
+        "contents": {
+          "$ref": "#/$defs/gatheringAnyone"
+        }
+      }
+    },
+    "gatheringAnyone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "Anyone"
+        }
+      }
+    },
+    "gatheringFastPlayerWindowMatcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "FastPlayerWindow"
+        }
+      }
+    },
+    "gatheringDuringTurnWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "windowTiming",
+        "windowType",
+        "windowBatchId"
+      ],
+      "properties": {
+        "windowTiming": {
+          "const": "When"
+        },
+        "windowType": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "DuringTurn"
+            },
+            "contents": {
+              "const": "c01001"
+            }
+          }
+        },
+        "windowBatchId": {
+          "type": "null"
+        }
+      }
+    },
+    "gatheringFastPlayerWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "windowTiming",
+        "windowType",
+        "windowBatchId"
+      ],
+      "properties": {
+        "windowTiming": {
+          "const": "When"
+        },
+        "windowType": {
+          "$ref": "#/$defs/gatheringFastPlayerWindowMatcher"
+        },
+        "windowBatchId": {
+          "type": "null"
+        }
+      }
+    },
+    "gatheringNonFastWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "windowTiming",
+        "windowType",
+        "windowBatchId"
+      ],
+      "properties": {
+        "windowTiming": {
+          "const": "When"
+        },
+        "windowType": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "const": "NonFast"
+            }
+          }
+        },
+        "windowBatchId": {
+          "type": "null"
+        }
+      }
+    },
     "coverUpReactionQuestion": {
       "type": "object",
       "additionalProperties": false,

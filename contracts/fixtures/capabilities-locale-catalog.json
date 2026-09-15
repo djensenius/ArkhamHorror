@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.40",
+  "schemaRevision": "0.1.41",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "nativeClientMinimumRevision": "0.1.0",
@@ -7,12 +7,13 @@
     "events.shared-state-versioning",
     "games.step-probe",
     "i18n.locale-catalog.v1",
+    "questions.semantic-presentation.v1",
     "websockets.authorization-header",
     "websockets.spectator-read-only"
   ],
   "localeCatalog": {
     "manifestUrl": "/locale-catalog/manifest.json",
-    "catalogRevision": "1.c31c8856400a7e9d23cf6d842b29f6c6",
+    "catalogRevision": "1.47d301c6dbc0369cc424c817881a690b",
     "schemaVersion": "1.0.0",
     "defaultLocale": "en",
     "supportedLocales": [
@@ -20,6 +21,6 @@
       "en",
       "pt-BR"
     ],
-    "manifestSha256": "d6f18eb85c4029e3e1fb4deb69c5073e392da737568f0df942134d513a2af92f"
+    "manifestSha256": "e03bd6c603e6b954ddd58e85111ac03f26d1e61a5fd10a2c5d2cfaa000f247e1"
   }
 }

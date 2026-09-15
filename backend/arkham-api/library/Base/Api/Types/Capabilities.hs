@@ -2,6 +2,7 @@
 
 module Base.Api.Types.Capabilities (
   ServerCapabilities (..),
+  semanticQuestionPresentationCapability,
   serverCapabilities,
 ) where
 
@@ -16,10 +17,12 @@ import Relude
 deployment has a valid locale-catalog pointer configured, and omitted (not
 null) otherwise.
 
-A deployment without a catalog therefore answers with the exact /field and
-capability shape/ it did before this field existed — no @localeCatalog@ member,
-no @i18n.locale-catalog.v1@ identifier, every other field including the full
-capability list unchanged. It is deliberately not byte-identical:
+A deployment without a catalog therefore omits both the @localeCatalog@ member
+and the @i18n.locale-catalog.v1@ identifier. Other additive, globally available
+capabilities remain advertised; in particular,
+@questions.semantic-presentation.v1@ is present whether or not a catalog is
+configured. The response is deliberately not byte-identical to the historical
+baseline:
 @schemaRevision@ reports the current contract bundle (the catalog capability
 first appeared in 0.1.23), because it describes the whole server contract
 rather than one optional runtime feature. A server that under-reported it would
@@ -52,6 +55,9 @@ instance ToJSON ServerCapabilities where
   toJSON = genericToJSON serverCapabilitiesOptions
   toEncoding = genericToEncoding serverCapabilitiesOptions
 
+semanticQuestionPresentationCapability :: Text
+semanticQuestionPresentationCapability = "questions.semantic-presentation.v1"
+
 {- | The running server's contract identity, given whatever locale catalog the
 deployment has configured (see "Base.Api.Types.LocaleCatalog").
 
@@ -61,7 +67,7 @@ the same 'Maybe', so a client can never be shown one without the other.
 serverCapabilities :: Maybe LocaleCatalog -> ServerCapabilities
 serverCapabilities localeCatalog =
   ServerCapabilities
-    { schemaRevision = "0.1.40"
+    { schemaRevision = "0.1.41"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.0"
@@ -72,6 +78,7 @@ serverCapabilities localeCatalog =
   baseCapabilities =
     [ "events.shared-state-versioning"
     , "games.step-probe"
+    , semanticQuestionPresentationCapability
     , "websockets.authorization-header"
     , "websockets.spectator-read-only"
     ]

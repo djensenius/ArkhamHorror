@@ -602,7 +602,12 @@ def build_all() -> dict[str, bytes]:
     require(
         isinstance(legacy, dict)
         and isinstance(baseline, dict)
-        and isinstance(legacy.get("addedCapability"), str),
+        and isinstance(legacy.get("addedCapability"), str)
+        and isinstance(legacy.get("globalCapabilities"), list)
+        and all(
+            isinstance(capability, str)
+            for capability in legacy["globalCapabilities"]
+        ),
         "contracts/manifest.json has no complete capabilities-fixture authority",
     )
     common_capabilities = {
@@ -612,7 +617,9 @@ def build_all() -> dict[str, bytes]:
         "nativeClientMinimumRevision": contract_manifest["compatibility"][
             "nativeClientMinimumRevision"
         ],
-        "capabilities": list(baseline["capabilities"]),
+        "capabilities": sorted(
+            [*baseline["capabilities"], *legacy["globalCapabilities"]]
+        ),
     }
     files["capabilities.json"] = canonical_bytes(common_capabilities)
     files["capabilities-locale-catalog.json"] = canonical_bytes(

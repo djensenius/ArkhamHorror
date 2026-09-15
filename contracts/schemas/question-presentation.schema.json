@@ -1,0 +1,626 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/question-presentation.schema.json",
+  "title": "QuestionPresentationV1",
+  "description": "Additive, render-only semantic descriptors bound to one authoritative raw question. Clients still submit the existing source index and question version; this projection never grants legality or executes engine messages.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocolVersion",
+    "questionVersion",
+    "questionKind",
+    "choiceCount",
+    "choices"
+  ],
+  "properties": {
+    "protocolVersion": {
+      "const": 1
+    },
+    "questionVersion": {
+      "$ref": "./non-negative-int64.schema.json"
+    },
+    "questionKind": {
+      "enum": [
+        "chooseN",
+        "chooseOne",
+        "chooseOneAtATime",
+        "chooseSome",
+        "chooseUpToN",
+        "playerWindowChooseOne",
+        "read",
+        "unsupported",
+        "windowChooseOne"
+      ]
+    },
+    "choiceCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "choices": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/choice"
+      }
+    }
+  },
+  "$defs": {
+    "choice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceIndex",
+        "kind"
+      ],
+      "properties": {
+        "sourceIndex": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "enum": [
+            "advanceAct",
+            "advanceAgenda",
+            "applySkillTestResults",
+            "chooseTarget",
+            "drawCard",
+            "endTurn",
+            "engage",
+            "evade",
+            "fight",
+            "gainResource",
+            "investigate",
+            "localizedLabel",
+            "skipTriggers",
+            "startSkillTest",
+            "useAbility"
+          ]
+        },
+        "actorId": {
+          "type": "string"
+        },
+        "entity": {
+          "$ref": "#/$defs/entity"
+        },
+        "label": {
+          "$ref": "#/$defs/label"
+        },
+        "ability": {
+          "$ref": "#/$defs/ability"
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "drawCard",
+                  "endTurn",
+                  "gainResource",
+                  "skipTriggers",
+                  "startSkillTest"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "actorId"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "localizedLabel"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "label"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "chooseTarget"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "entity"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "useAbility"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "actorId",
+              "ability",
+              "cost"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "advanceAct",
+                  "advanceAgenda"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "oneOf": [
+              {
+                "required": [
+                  "actorId",
+                  "ability",
+                  "cost"
+                ]
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "actorId"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "ability"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "cost"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "advanceAct"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "properties": {
+                  "kind": {
+                    "const": "act"
+                  }
+                }
+              }
+            },
+            "required": [
+              "entity"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "advanceAgenda"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "properties": {
+                  "kind": {
+                    "const": "agenda"
+                  }
+                }
+              }
+            },
+            "required": [
+              "entity"
+            ]
+          }
+        }
+      ]
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "act",
+            "agenda",
+            "asset",
+            "card",
+            "cardCode",
+            "effect",
+            "enemy",
+            "event",
+            "investigator",
+            "location",
+            "player",
+            "scenario",
+            "skill",
+            "story",
+            "treachery"
+          ]
+        },
+        "id": {
+          "type": "string"
+        }
+      }
+    },
+    "label": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "text"
+      ],
+      "properties": {
+        "kind": {
+          "const": "embeddedI18n"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "ability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cardCode",
+        "index",
+        "type",
+        "actions",
+        "canBeCancelled"
+      ],
+      "properties": {
+        "cardCode": {
+          "type": "string"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "type": {
+          "enum": [
+            "action",
+            "delayed",
+            "effect",
+            "fast",
+            "forced",
+            "objective",
+            "other",
+            "reaction"
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "activate",
+              "circle",
+              "draw",
+              "engage",
+              "evade",
+              "explore",
+              "fight",
+              "investigate",
+              "move",
+              "parley",
+              "play",
+              "resign",
+              "resource"
+            ]
+          }
+        },
+        "canBeCancelled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "cost": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/unitCost"
+        },
+        {
+          "$ref": "#/$defs/scalarCost"
+        },
+        {
+          "$ref": "#/$defs/clueCost"
+        },
+        {
+          "$ref": "#/$defs/groupCost"
+        },
+        {
+          "$ref": "#/$defs/compositeCost"
+        },
+        {
+          "$ref": "#/$defs/otherCost"
+        }
+      ]
+    },
+    "unitCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "free"
+          ]
+        }
+      }
+    },
+    "scalarCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "amount"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "action",
+            "resource"
+          ]
+        },
+        "amount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "clueCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "amount"
+      ],
+      "properties": {
+        "kind": {
+          "const": "clue"
+        },
+        "amount": {
+          "$ref": "#/$defs/amount"
+        }
+      }
+    },
+    "groupCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "amount",
+        "scope"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "groupClue",
+            "groupResource"
+          ]
+        },
+        "amount": {
+          "$ref": "#/$defs/amount"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        }
+      }
+    },
+    "compositeCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "costs"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "all",
+            "choice"
+          ]
+        },
+        "costs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/cost"
+          }
+        }
+      }
+    },
+    "otherCost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "const": "other"
+        }
+      }
+    },
+    "amount": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "fixed",
+                "perPlayer"
+              ]
+            },
+            "value": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "fixed",
+            "perPlayer"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fixedPlusPerPlayer"
+            },
+            "fixed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "perPlayer": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "values"
+          ],
+          "properties": {
+            "kind": {
+              "const": "byPlayerCount"
+            },
+            "values": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "star",
+                "unknown",
+                "x"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "scope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "anywhere",
+                "other",
+                "sameLocation"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "locationId"
+          ],
+          "properties": {
+            "kind": {
+              "const": "location"
+            },
+            "locationId": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

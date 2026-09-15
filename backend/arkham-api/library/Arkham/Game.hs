@@ -193,6 +193,7 @@ import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.Query
+import Arkham.Question.Presentation qualified as QuestionPresentation
 import Arkham.Random
 import Arkham.Scenario
 import Arkham.Scenario.Types hiding (scenario)
@@ -874,6 +875,9 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
       <> ("inSetup" .= gameInSetup)
       <> ("skillTestResults" .= gameSkillTestResults)
       <> ("question" .= gameQuestion)
+      <> ( "questionPresentation"
+             .= QuestionPresentation.questionPresentations gameScenarioSteps gameQuestion
+         )
       <> ("cards" .= gameCards)
       <> ("totalDoom" .= doom)
       <> ("totalClues" .= clues)
@@ -976,6 +980,9 @@ instance ToJSON gid => ToJSON (PublicGame gid) where
         , "inSetup" .= toJSON gameInSetup
         , "skillTestResults" .= toJSON gameSkillTestResults
         , "question" .= toJSON gameQuestion
+        , "questionPresentation"
+            .= toJSON
+              (QuestionPresentation.questionPresentations gameScenarioSteps gameQuestion)
         , "cards" .= toJSON gameCards
         , "totalDoom" .= toJSON doom
         , "totalClues" .= toJSON clues
