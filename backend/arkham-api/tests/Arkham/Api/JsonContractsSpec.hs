@@ -2814,6 +2814,48 @@ spec = describe "Native client contract fixtures" do
             Nothing
         ]
 
+  it "fails closed when a synthetic auto action shifts every real answer index" do
+    let
+      iid = InvestigatorId "01001"
+      question =
+        ChooseOneAtATimeWithAuto
+          "$fixture.resolveAll"
+          [ Label "$fixture.first" [ClearUI]
+          , EndTurnButton iid [GameOver]
+          ]
+      game =
+        fixtureBoardGame
+          { gameQuestion = singletonMap fixturePlayerId question
+          , gameRetainedQuestion = False
+          }
+      answer sourceIndex =
+        Answer
+          QuestionResponse
+            { qrChoice = sourceIndex
+            , qrPlayerId = Just fixturePlayerId
+            , qrQuestionVersion = Nothing
+            }
+      assertAnswer sourceIndex expected =
+        handleAnswerPure game fixturePlayerId (answer sourceIndex) >>= \case
+          Unhandled reason ->
+            expectationFailure
+              $ "auto-choice answer rejected: "
+              <> Text.unpack reason
+          Handled messages -> messages `shouldBe` expected
+    QuestionPresentation.questionPresentation 7 question
+      `shouldBe` QuestionPresentation.QuestionPresentation
+        7
+        "unsupported"
+        0
+        []
+    assertAnswer 0 [Run [ClearUI], Run [GameOver]]
+    assertAnswer
+      1
+      [ Run [ClearUI]
+      , Ask fixturePlayerId
+          $ ChooseOneAtATime [EndTurnButton iid [GameOver]]
+      ]
+
   it "binds the Gathering act objective to source index twelve and its exact server-owned cost" do
     let
       iid = InvestigatorId "01001"

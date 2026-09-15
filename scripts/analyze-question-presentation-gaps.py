@@ -62,7 +62,6 @@ PRESENTATION_QUESTION_KINDS = {
     "ChooseN": "chooseN",
     "ChooseOne": "chooseOne",
     "ChooseOneAtATime": "chooseOneAtATime",
-    "ChooseOneAtATimeWithAuto": "chooseOneAtATime",
     "ChooseSome": "chooseSome",
     "ChooseSome1": "chooseSome",
     "ChooseUpToN": "chooseUpToN",
@@ -374,11 +373,12 @@ def analyze_question(
     analysis.question_count += 1
     analysis.choice_count += len(choices)
     context = f"{path}:{pointer or '/'}"
+    expected_kind = PRESENTATION_QUESTION_KINDS.get(root_tag, "unsupported")
     trusted = trusted_source_indices(
         presentation,
         expected_version=expected_version,
-        expected_kind=PRESENTATION_QUESTION_KINDS.get(root_tag, "unsupported"),
-        choice_count=len(choices),
+        expected_kind=expected_kind,
+        choice_count=0 if expected_kind == "unsupported" else len(choices),
         context=context,
         diagnostics=analysis.diagnostics,
     )
@@ -666,6 +666,41 @@ def run_self_test() -> None:
             "unsupported.json:/: presentation questionKind does not match unsupported"
         ],
         f"unexpected unsupported-kind diagnostics: {unsupported_analysis.diagnostics}",
+    )
+
+    auto_choice_analysis = empty_analysis()
+    analyze_question(
+        auto_choice_analysis,
+        path=Path("auto-choice.json"),
+        pointer="",
+        player_id=None,
+        question={
+            "tag": "ChooseOneAtATimeWithAuto",
+            "label": "$fixture.resolveAll",
+            "choices": question["choices"],
+        },
+        presentation={
+            "protocolVersion": 1,
+            "questionVersion": 34,
+            "questionKind": "unsupported",
+            "choiceCount": 0,
+            "choices": [],
+        },
+        expected_version=34,
+    )
+    require(
+        (
+            auto_choice_analysis.question_count,
+            auto_choice_analysis.choice_count,
+            auto_choice_analysis.described_choice_count,
+            sum(auto_choice_analysis.counts.values()),
+        )
+        == (1, 2, 0, 2),
+        "auto-prefixed answer indexes must remain unsupported and visible as gaps",
+    )
+    require(
+        not auto_choice_analysis.diagnostics,
+        f"unexpected auto-choice diagnostics: {auto_choice_analysis.diagnostics}",
     )
 
     public_game_analysis = empty_analysis()

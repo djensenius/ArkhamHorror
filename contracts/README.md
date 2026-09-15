@@ -598,6 +598,11 @@ produced after the Cover Up window resolves, and
 confirmation, and
 `question-presentation-gathering-act-advance.json`, its semantic projection.
 The raw questions remain the only authority for legality and execution.
+Semantic presentation v1 deliberately reports
+`ChooseOneAtATimeWithAuto` as `unsupported`: the backend reserves submitted
+answer index `0` for a synthetic "resolve all" action that is absent from the
+raw `choices` array, so exposing those entries as ordinary zero-based source
+indices would select the wrong action.
 
 The Q34 raw `PlayerWindowChooseOne` retains all 13 backend-authored choices.
 Its presentation binds protocol version `1` and question version `34` to that

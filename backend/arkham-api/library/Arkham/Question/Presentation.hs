@@ -272,8 +272,9 @@ questionChoices = \case
   ChooseSome1 _ choices -> ("chooseSome", GeneralChoiceContext, choices)
   ChooseUpToN _ choices -> ("chooseUpToN", GeneralChoiceContext, choices)
   ChooseOneAtATime choices -> ("chooseOneAtATime", GeneralChoiceContext, choices)
-  ChooseOneAtATimeWithAuto _ choices ->
-    ("chooseOneAtATime", GeneralChoiceContext, choices)
+  -- Answer index 0 is a synthetic "resolve all" action that is not present in
+  -- the raw choices array, so v1 cannot safely expose this as ordinary indices.
+  ChooseOneAtATimeWithAuto _ _ -> ("unsupported", GeneralChoiceContext, [])
   QuestionLabel _ _ question -> questionChoices question
   PayCostQuestion _ question -> questionChoices question
   QuestionWithSource _ _ question -> questionChoices question
