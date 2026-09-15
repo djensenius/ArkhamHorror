@@ -213,9 +213,9 @@ class ContractValidationError:
     """A validator-shaped error for cross-document contract invariants.
 
     JSON Schema owns each standalone document's shape. These errors bind
-    information a standalone schema cannot compare: each PublicGame question
-    map to its semantic-presentation player keys, and each standalone semantic
-    presentation fixture to its authoritative raw question.
+    information a standalone schema cannot compare: each PublicGame semantic
+    presentation to its paired raw question and snapshot version, and each
+    standalone semantic presentation fixture to its authoritative raw question.
     """
 
     def __init__(self, path: list[str], keyword: str, message: str):
@@ -225,7 +225,186 @@ class ContractValidationError:
         self.context = ()
 
 
-def public_game_player_key_errors(
+_QUESTION_KIND_BY_TAG = {
+    "ChooseN": "chooseN",
+    "ChooseOne": "chooseOne",
+    "ChooseOneAtATime": "chooseOneAtATime",
+    "ChooseSome": "chooseSome",
+    "ChooseSome1": "chooseSome",
+    "ChooseUpToN": "chooseUpToN",
+    "PlayerWindowChooseOne": "playerWindowChooseOne",
+    "WindowChooseOne": "windowChooseOne",
+}
+_QUESTION_WRAPPER_TAGS = {
+    "PayCostQuestion",
+    "QuestionLabel",
+    "QuestionWithSource",
+}
+_DIRECT_READ_CHOICE_TAGS = {
+    "BasicReadChoices",
+    "LeadInvestigatorMustDecide",
+}
+_COUNTED_READ_CHOICE_TAGS = {
+    "BasicReadChoicesN",
+    "BasicReadChoicesUpToN",
+}
+_QUESTION_PRESENTATION_KINDS = {
+    *_QUESTION_KIND_BY_TAG.values(),
+    "read",
+    "unsupported",
+}
+_MAX_NON_NEGATIVE_INT64 = (1 << 63) - 1
+
+
+def is_non_negative_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def is_non_negative_int64(value: object) -> bool:
+    return is_non_negative_integer(value) and value <= _MAX_NON_NEGATIVE_INT64
+
+
+def raw_question_presentation_shape(raw_question: object) -> tuple[str, int]:
+    while isinstance(raw_question, dict):
+        tag = raw_question.get("tag")
+        if not isinstance(tag, str) or tag not in _QUESTION_WRAPPER_TAGS:
+            break
+        raw_question = raw_question.get("question")
+
+    if not isinstance(raw_question, dict):
+        return "unsupported", 0
+
+    tag = raw_question.get("tag")
+    if not isinstance(tag, str):
+        return "unsupported", 0
+    if tag == "ChooseOneAtATimeWithAuto":
+        return "unsupported", 0
+
+    if tag == "Read":
+        read_choices = raw_question.get("readChoices")
+        choices: object = None
+        if isinstance(read_choices, dict):
+            contents = read_choices.get("contents")
+            read_choices_tag = read_choices.get("tag")
+            if (
+                isinstance(read_choices_tag, str)
+                and read_choices_tag in _DIRECT_READ_CHOICE_TAGS
+            ):
+                choices = contents
+            elif (
+                isinstance(read_choices_tag, str)
+                and read_choices_tag in _COUNTED_READ_CHOICE_TAGS
+                and isinstance(contents, list)
+                and len(contents) == 2
+            ):
+                choices = contents[1]
+        return "read", len(choices) if isinstance(choices, list) else 0
+
+    question_kind = _QUESTION_KIND_BY_TAG.get(tag)
+    choices = raw_question.get("choices")
+    if question_kind is None or not isinstance(choices, list):
+        return "unsupported", 0
+    return question_kind, len(choices)
+
+
+def presentation_binding_errors(
+    presentation: object,
+    raw_question: object,
+    question_version: object = None,
+    path: tuple[str, ...] = (),
+) -> list[ContractValidationError]:
+    if not isinstance(presentation, dict):
+        return []
+
+    errors: list[ContractValidationError] = []
+    raw_question_kind, raw_choice_count = raw_question_presentation_shape(raw_question)
+
+    presentation_version = presentation.get("questionVersion")
+    if (
+        is_non_negative_int64(question_version)
+        and is_non_negative_int64(presentation_version)
+        and presentation_version != question_version
+    ):
+        errors.append(
+            ContractValidationError(
+                [*path, "questionVersion"],
+                "questionVersionBinding",
+                f"questionVersion {presentation_version} does not match the "
+                f"authoritative PublicGame scenarioSteps {question_version}",
+            )
+        )
+
+    question_kind = presentation.get("questionKind")
+    if (
+        isinstance(question_kind, str)
+        and question_kind in _QUESTION_PRESENTATION_KINDS
+        and question_kind != raw_question_kind
+    ):
+        errors.append(
+            ContractValidationError(
+                [*path, "questionKind"],
+                "questionKindBinding",
+                f"questionKind {question_kind!r} does not match the authoritative "
+                f"raw question kind {raw_question_kind!r}",
+            )
+        )
+    choice_count = presentation.get("choiceCount")
+    if (
+        is_non_negative_integer(choice_count)
+        and choice_count != raw_choice_count
+    ):
+        errors.append(
+            ContractValidationError(
+                [*path, "choiceCount"],
+                "rawChoiceCount",
+                f"choiceCount {choice_count} does not match the authoritative raw "
+                f"question choice count {raw_choice_count}",
+            )
+        )
+
+    descriptors = presentation.get("choices")
+    if isinstance(descriptors, list):
+        seen: dict[int, int] = {}
+        for descriptor_index, descriptor in enumerate(descriptors):
+            if not isinstance(descriptor, dict):
+                continue
+            source_index = descriptor.get("sourceIndex")
+            if not is_non_negative_integer(source_index):
+                continue
+            if source_index in seen:
+                errors.append(
+                    ContractValidationError(
+                        [*path, "choices", str(descriptor_index), "sourceIndex"],
+                        "uniqueSourceIndex",
+                        f"sourceIndex {source_index} duplicates "
+                        f"choices/{seen[source_index]}/sourceIndex",
+                    )
+                )
+            else:
+                seen[source_index] = descriptor_index
+            if not 0 <= source_index < raw_choice_count:
+                if raw_choice_count == 0:
+                    message = (
+                        f"sourceIndex {source_index} cannot address the authoritative "
+                        "raw question because it has no choices"
+                    )
+                else:
+                    message = (
+                        f"sourceIndex {source_index} is outside 0..{raw_choice_count - 1} "
+                        "for the authoritative raw question"
+                    )
+                errors.append(
+                    ContractValidationError(
+                        [*path, "choices", str(descriptor_index), "sourceIndex"],
+                        "sourceIndexBounds",
+                        message,
+                    )
+                )
+
+    return errors
+
+
+def public_game_question_presentation_errors(
     value: object, path: tuple[str, ...] = ()
 ) -> list[ContractValidationError]:
     errors: list[ContractValidationError] = []
@@ -249,11 +428,24 @@ def public_game_player_key_errors(
                             f"unexpected presentation keys: {unexpected}",
                         )
                     )
+                for player_id in sorted(question_keys & presentation_keys):
+                    errors.extend(
+                        presentation_binding_errors(
+                            presentations[player_id],
+                            questions[player_id],
+                            value.get("scenarioSteps"),
+                            (*path, "questionPresentation", player_id),
+                        )
+                    )
         for key, child in value.items():
-            errors.extend(public_game_player_key_errors(child, (*path, str(key))))
+            errors.extend(
+                public_game_question_presentation_errors(child, (*path, str(key)))
+            )
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            errors.extend(public_game_player_key_errors(child, (*path, str(index))))
+            errors.extend(
+                public_game_question_presentation_errors(child, (*path, str(index)))
+            )
     return errors
 
 
@@ -314,7 +506,7 @@ EXACT_PRESENTATION_CHOICES = {
 def contract_fixture_errors(
     schema_path: str, fixture_path: str, instance: object
 ) -> list[ContractValidationError]:
-    errors = public_game_player_key_errors(instance)
+    errors = public_game_question_presentation_errors(instance)
     if (
         schema_path != QUESTION_PRESENTATION_SCHEMA
         or fixture_path not in QUESTION_PRESENTATION_BINDINGS
@@ -328,53 +520,10 @@ def contract_fixture_errors(
         isinstance(raw_question, dict) and isinstance(raw_question.get("choices"), list),
         f"{raw_fixture_path} must be a raw question object with a choices array",
     )
-    raw_choice_count = len(raw_question["choices"])
-
-    choice_count = instance.get("choiceCount")
-    if (
-        isinstance(choice_count, int)
-        and not isinstance(choice_count, bool)
-        and choice_count != raw_choice_count
-    ):
-        errors.append(
-            ContractValidationError(
-                ["choiceCount"],
-                "rawChoiceCount",
-                f"choiceCount {choice_count} does not match the authoritative raw "
-                f"question choice count {raw_choice_count}",
-            )
-        )
+    errors.extend(presentation_binding_errors(instance, raw_question))
 
     descriptors = instance.get("choices")
     if isinstance(descriptors, list):
-        seen: dict[int, int] = {}
-        for descriptor_index, descriptor in enumerate(descriptors):
-            if not isinstance(descriptor, dict):
-                continue
-            source_index = descriptor.get("sourceIndex")
-            if isinstance(source_index, bool) or not isinstance(source_index, int):
-                continue
-            if source_index in seen:
-                errors.append(
-                    ContractValidationError(
-                        ["choices", str(descriptor_index), "sourceIndex"],
-                        "uniqueSourceIndex",
-                        f"sourceIndex {source_index} duplicates "
-                        f"choices/{seen[source_index]}/sourceIndex",
-                    )
-                )
-            else:
-                seen[source_index] = descriptor_index
-            if not 0 <= source_index < raw_choice_count:
-                errors.append(
-                    ContractValidationError(
-                        ["choices", str(descriptor_index), "sourceIndex"],
-                        "sourceIndexBounds",
-                        f"sourceIndex {source_index} is outside 0..{raw_choice_count - 1} "
-                        f"for the authoritative raw question",
-                    )
-                )
-
         exact_index, expected_choice, keyword, message = EXACT_PRESENTATION_CHOICES[
             fixture_path
         ]

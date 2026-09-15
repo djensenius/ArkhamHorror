@@ -47,8 +47,11 @@ constructor.
   only to render native controls, validates their protocol/question versions
   and source-index bindings, and still submits the existing versioned answer.
   Every `PublicGame` carries exactly the same `PlayerId` keys in `question`
-  and `questionPresentation`; contract validation checks that invariant across
-  nested REST and WebSocket snapshots because JSON Schema cannot compare maps.
+  and `questionPresentation`; contract validation recursively binds each shared
+  entry's `questionVersion` to `scenarioSteps`, `questionKind` and `choiceCount`
+  to the paired raw question, and every descriptor `sourceIndex` to a unique,
+  in-bounds raw choice across nested REST and WebSocket snapshots because JSON
+  Schema cannot compare those values.
 - The response carries exactly one optional field, `localeCatalog`, paired with
   `i18n.locale-catalog.v1` (see
   [Locale catalog discovery](#locale-catalog-discovery)). Its absence is a

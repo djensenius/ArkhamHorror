@@ -276,7 +276,7 @@
       "$ref": "#/$defs/uuidEntityMap"
     },
     "questionPresentation": {
-      "description": "Additive semantic presentation keyed by exactly the same PlayerId set as question; cross-document contract validation enforces that equality.",
+      "description": "Additive semantic presentation keyed by exactly the same PlayerId set as question; cross-document contract validation binds every shared entry's version, derived question kind, raw choice count, and source indexes to the same PublicGame snapshot.",
       "type": "object",
       "propertyNames": {
         "$ref": "#/$defs/uuidMapKey"
