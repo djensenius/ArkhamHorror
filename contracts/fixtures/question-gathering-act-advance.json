@@ -1,0 +1,25 @@
+{
+  "choices": [
+    {
+      "messages": [
+        {
+          "contents": [
+            "c01108",
+            {
+              "contents": "c01108",
+              "tag": "ActSource"
+            },
+            "AdvancedWithClues"
+          ],
+          "tag": "AdvanceAct"
+        }
+      ],
+      "tag": "TargetLabel",
+      "target": {
+        "contents": "c01108",
+        "tag": "ActTarget"
+      }
+    }
+  ],
+  "tag": "ChooseOne"
+}

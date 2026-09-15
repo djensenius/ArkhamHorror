@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.40",
+  "schemaRevision": "0.1.41",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -9,6 +9,7 @@
     "contracts/schemas/account.schema.json",
     "contracts/schemas/achievements.schema.json",
     "contracts/schemas/basic-choice-question.schema.json",
+    "contracts/schemas/question-presentation.schema.json",
     "contracts/schemas/capabilities.schema.json",
     "contracts/schemas/catalog.schema.json",
     "contracts/schemas/client-answer.schema.json",
@@ -121,6 +122,22 @@
     {
       "path": "contracts/fixtures/question-cover-up-reaction.json",
       "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-gathering-act-objective.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-gathering-act-objective.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-gathering-act-advance.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-gathering-act-advance.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
     },
     {
       "path": "contracts/fixtures/question-round-end-forced-ability.json",
@@ -14427,6 +14444,289 @@
           "messageContains": "[] was expected"
         }
       ]
+    },
+    {
+      "description": "Semantic question presentation rejects an unsupported protocol version instead of asking a client to guess how to interpret it.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-gathering-act-objective.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/protocolVersion",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "protocolVersion"
+          ],
+          "keyword": "const",
+          "messageContains": "1 was expected"
+        }
+      ]
+    },
+    {
+      "description": "The semantic presentation choiceCount remains bound to the authoritative raw Q34 question rather than becoming an independent count.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-gathering-act-objective.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choiceCount",
+        "value": 14
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choiceCount"
+          ],
+          "keyword": "rawChoiceCount",
+          "messageContains": "choiceCount 14 does not match the authoritative raw question choice count 13"
+        }
+      ]
+    },
+    {
+      "description": "Semantic descriptors cannot claim the same authoritative source index twice.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-gathering-act-objective.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/1/sourceIndex",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "1",
+            "sourceIndex"
+          ],
+          "keyword": "uniqueSourceIndex",
+          "messageContains": "sourceIndex 0 duplicates choices/0/sourceIndex"
+        }
+      ]
+    },
+    {
+      "description": "A semantic descriptor source index cannot address beyond the authoritative raw Q34 choice array.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-gathering-act-objective.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/sourceIndex",
+        "value": 13
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "sourceIndex"
+          ],
+          "keyword": "sourceIndexBounds",
+          "messageContains": "sourceIndex 13 is outside 0..12 for the authoritative raw question"
+        }
+      ]
+    },
+    {
+      "description": "An embedded-i18n semantic label must carry the text the native client is expected to render.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-gathering-act-objective.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/0/label",
+        "value": {
+          "kind": "embeddedI18n"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "label"
+          ],
+          "keyword": "required",
+          "messageContains": "'text' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "The Q34 act-objective descriptor cannot silently point at a different act while preserving a superficially valid advanceAct shape.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-gathering-act-objective.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/12/entity/id",
+        "value": "c01109"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "12"
+          ],
+          "keyword": "q34ObjectiveSemantic",
+          "messageContains": "Q34 source index 12 must be the exact Gathering act c01108 objective semantic"
+        }
+      ]
+    },
+    {
+      "description": "The Q35 advancement confirmation cannot silently point at a different act while preserving a superficially valid advanceAct shape.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-gathering-act-advance.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/entity/id",
+        "value": "c01109"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0"
+          ],
+          "keyword": "q35AdvanceSemantic",
+          "messageContains": "Q35 source index 0 must be the exact Gathering act c01108 advancement confirmation semantic"
+        }
+      ]
+    },
+    {
+      "description": "Every PublicGame semantic presentation map must cover exactly the same players as its authoritative raw question map.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/questionPresentation/00000000-0000-0000-0000-000000000001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "questionPresentation"
+          ],
+          "keyword": "questionPresentationPlayerKeys",
+          "messageContains": "questionPresentation player keys must exactly match question player keys"
+        }
+      ]
+    },
+    {
+      "description": "Every embedded semantic presentation version remains bound to its authoritative PublicGame scenario step.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/questionPresentation/00000000-0000-0000-0000-000000000001/questionVersion",
+        "value": 4
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "questionPresentation",
+            "00000000-0000-0000-0000-000000000001",
+            "questionVersion"
+          ],
+          "keyword": "questionVersionBinding",
+          "messageContains": "questionVersion 4 does not match the authoritative PublicGame scenarioSteps 3"
+        }
+      ]
+    },
+    {
+      "description": "Every embedded semantic presentation kind remains bound to its paired authoritative raw question.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/questionPresentation/00000000-0000-0000-0000-000000000001/questionKind",
+        "value": "chooseOne"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "questionPresentation",
+            "00000000-0000-0000-0000-000000000001",
+            "questionKind"
+          ],
+          "keyword": "questionKindBinding",
+          "messageContains": "questionKind 'chooseOne' does not match the authoritative raw question kind 'playerWindowChooseOne'"
+        }
+      ]
+    },
+    {
+      "description": "Every embedded semantic presentation choice count remains bound to its paired authoritative raw question.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/questionPresentation/00000000-0000-0000-0000-000000000001/choiceCount",
+        "value": 5
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "questionPresentation",
+            "00000000-0000-0000-0000-000000000001",
+            "choiceCount"
+          ],
+          "keyword": "rawChoiceCount",
+          "messageContains": "choiceCount 5 does not match the authoritative raw question choice count 4"
+        }
+      ]
+    },
+    {
+      "description": "Embedded semantic descriptors cannot claim the same authoritative source index twice.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/questionPresentation/00000000-0000-0000-0000-000000000001/choices/1/sourceIndex",
+        "value": 0
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "questionPresentation",
+            "00000000-0000-0000-0000-000000000001",
+            "choices",
+            "1",
+            "sourceIndex"
+          ],
+          "keyword": "uniqueSourceIndex",
+          "messageContains": "sourceIndex 0 duplicates choices/0/sourceIndex"
+        }
+      ]
+    },
+    {
+      "description": "An embedded semantic descriptor source index cannot address beyond its paired authoritative raw question.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/questionPresentation/00000000-0000-0000-0000-000000000001/choices/0/sourceIndex",
+        "value": 4
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "questionPresentation",
+            "00000000-0000-0000-0000-000000000001",
+            "choices",
+            "0",
+            "sourceIndex"
+          ],
+          "keyword": "sourceIndexBounds",
+          "messageContains": "sourceIndex 4 is outside 0..3 for the authoritative raw question"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -14452,8 +14752,8 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "5bd5cb5d0876c7f28703785179db07f820a7e37ec0395420277c544c875cdb52",
-    "contracts/fixtures/capabilities.json": "c506271497345d2c95976b43988fddbcac2e598938b66589f3aab14ed261ac88",
+    "contracts/fixtures/capabilities-locale-catalog.json": "3b756f8f507a47ffd9e36a111b6b309917486a9ccf5fe47f27e8899aa33fb207",
+    "contracts/fixtures/capabilities.json": "d63c998d37e242e679be5db83f783508935f2646bd4e4eb36c05fa4de0cd7c61",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -14472,15 +14772,15 @@
     "contracts/fixtures/game-step.json": "441768cb79f54c925cd912b35d9650653be57232997ab4f593294fc622f01013",
     "contracts/fixtures/game-tarot.json": "a7c1c85cf8a607b395070fdd73f18a50b7c73e8a28a4ba4b7c444ec2f982bb6b",
     "contracts/fixtures/game-ui.json": "f96c401c965471510a003fdc497391369bd3930389967d1fa8a94ab43ea9f95a",
-    "contracts/fixtures/game-update.json": "ceb21a35691320516d3fe68b50d8115f092c4f32dd8f98d6240baeeeb73d07df",
-    "contracts/fixtures/get-game.json": "f406071dca455c1d87a2192729dda30c08d037bedfc78b3bb3ffc998f7304b93",
+    "contracts/fixtures/game-update.json": "cee7cfb8a7a1ee2c9a04f57eef1faf3e53064ae851a9d4806178d6991c4ccda5",
+    "contracts/fixtures/get-game.json": "44a2c79ae74489faf3321084d825238c86a32d35b6a0ca93b11ed2303b09a478",
     "contracts/fixtures/investigator-unhealed-horror-negative.json": "f251bd1a525fa0eb9508db084fbe7fb86928ec1ecb4472cf0c79cbaf9478762f",
     "contracts/fixtures/locale-catalog-backend-registry.json": "3f39e0f443341bc194a2ba645584007a161875d2e1981bb9c16c8f466880c6c4",
     "contracts/fixtures/locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json": "2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448",
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "d6f18eb85c4029e3e1fb4deb69c5073e392da737568f0df942134d513a2af92f",
+    "contracts/fixtures/locale-catalog-manifest.json": "721a907046123d6c75b16582e6c5ad799312edaeb45e8228dd069c264a2e9608",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -14502,6 +14802,8 @@
     "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json": "99e09d65b292ed3535e1d908a76e90855db7b256adfda55755c41fccf4c96018",
     "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json": "5e3eb6076ebeb406632b4aab3a5d0d9b02275c531afb2db52dffb369182df4c7",
     "contracts/fixtures/question-enemy-attack.json": "1f5ce9f0742e0f3e6891c9e464c19a863038d75cb95ebf7b4ea0ddbbc9fd6b1d",
+    "contracts/fixtures/question-gathering-act-advance.json": "21eb483b08ca6cc6ad76b3d7884dde7f817cc9da9945e71ab975527c13b7fd6b",
+    "contracts/fixtures/question-gathering-act-objective.json": "7ddb854740d021428121fd823adc288cbe50a57b163a11273d4103b04deeedee",
     "contracts/fixtures/question-investigate-apply-results.json": "ca3834a719c64a263c31982cfb5987c08da40ec3494d2380ccffaebb46e11774",
     "contracts/fixtures/question-investigate-commit.json": "0cef8bb88be1ac2feb7cd2d37b952bf54fa47b4ea7d83474326baf9da7fb9b18",
     "contracts/fixtures/question-investigate-fast-window.json": "faa049601d544817746c3621e6865a119c5a38c5eba8daf477da2728a250a913",
@@ -14510,24 +14812,26 @@
     "contracts/fixtures/question-player-window-choose-one.json": "1a10e17e87e2e77b728484443934e3147ea14d5cdee077cf236fc5efb8334eaf",
     "contracts/fixtures/question-player-window-enemy-actions.json": "153362eff3254415068fdeb21670099d0b82c8c51a82d1b7b1b188d285f1d06d",
     "contracts/fixtures/question-player-window-engage-action.json": "546a1a8c07b1bf240c61b396c9630d566f68141f10bcf14604c04f2b888f682b",
+    "contracts/fixtures/question-presentation-gathering-act-advance.json": "232062dc5467843242763a428beaa212e082752a6ae02c1f753165f76e322841",
+    "contracts/fixtures/question-presentation-gathering-act-objective.json": "768c77f900c61f6bd0e99514b6b71c38a6c939ce192e9f6d0d43d4ef8c623fc6",
     "contracts/fixtures/question-read-scenario-intro.json": "98cac0992deff7f08005fc25a0227ef62b9aedde00c3b6dcceb25e503d671fd3",
     "contracts/fixtures/question-read-with-cards.json": "402805337459a8e82a518d515f2bafdb4d4d6e6474ae190002dd885a5ed50ba1",
     "contracts/fixtures/question-read.json": "e7397b59c9a714a003a0edac3f584b284c5cab03e75b59c1e9b4a84d86964006",
     "contracts/fixtures/question-roland-defeat-reaction.json": "bd8d242cae7eb93db4ebffc9e80d3fa828304e4fc6cad746d488e7206cd0e50d",
     "contracts/fixtures/question-round-end-forced-ability.json": "d40629f34d5727a2c9bb873feb09931e3f32e004dc80baf375758833c80ac270",
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
-    "contracts/fixtures/replay-attestation.json": "82f2c5615b7a37907dfb5e11c10edced53fd70a11781b4edca9ab4a89d208f9e",
+    "contracts/fixtures/replay-attestation.json": "e39cf2043fc0790f11fb1186b34940a71ec696ee7ae79710fda2984f3c4238bf",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "29aa246ec6f9a72744fdd5a58e111a4ee2b83466e34f34acfe47b500f2019e65",
-    "contracts/openapi.yaml": "f3fa5f2c7595efc8e72bafc93938402a69b85c3592040e0c8accb457ce66ce77",
+    "contracts/manifest.json": "0125b4310cb759d23c099ac3f77c94014fe5a374769683587e2e8d95e62a5a8b",
+    "contracts/openapi.yaml": "242bc8c9ea7252ba1937bde275e0de00bf15d883b0fe009ae8406fa8ce54bfd6",
     "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "99fc162c95ee55126afde9bb3cd3d30662e29ebab8e1915c3afc5b1605c89281",
-    "contracts/schemas/capabilities.schema.json": "7cc6d2805a47ee19549beab91f3c54085f2726b8d0671f0a3ae662bab820d42a",
+    "contracts/schemas/basic-choice-question.schema.json": "b6631259f4ca0dd63399f1ff1d40d327704caef96a36f6065309552ba269bf57",
+    "contracts/schemas/capabilities.schema.json": "a9f4424e0a09d76c74e29289c98a53194e5e6690b2f0f33d2efba23720a373dc",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
     "contracts/schemas/chaos-bag.schema.json": "45c9a42563b5e13d054f5689a8acf578df81f45746445020628335794fce4339",
@@ -14549,7 +14853,8 @@
     "contracts/schemas/non-negative-int64.schema.json": "c869ad7885d3be1f548cb1d415cc5c5c7e44271a02f8ee326af88defdad29110",
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
-    "contracts/schemas/public-game.schema.json": "b7f974060d346dfec20b2fdd7ebf6ec2022c9de71d7219a6de6ef7e396b3bc56",
+    "contracts/schemas/public-game.schema.json": "0ac449ea7eb5d2d9e84cf2cfb69f4effd767e28b56b892226c0843118a953f52",
+    "contracts/schemas/question-presentation.schema.json": "56cdf7f7d24f9b468830e3a70d2412cd9f764df66c3f40a276c645b974f00095",
     "contracts/schemas/replay-attestation.schema.json": "ce0a95eb11996ed95ddc47e92a2071202e6ff01d8ff9cf0d352dd13e24739194",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6",
@@ -14815,7 +15120,7 @@
     ]
   },
   "legacyCompatibilityChecks": {
-    "description": "The exact GET /api/v1/capabilities body this contract served at revision 0.1.22, before the optional locale-catalog pointer existed. A deployment that configures no catalog is NOT byte-identical to it, and must not be: issue #53 requires a monotonic contract bump, and schemaRevision describes the backend contract bundle, not this optional runtime feature -- a server reporting 0.1.22 while serving the current schemas would be lying to every client that negotiates on it. What is guaranteed instead is the exact legacy FIELD AND CAPABILITY SHAPE: no localeCatalog member, no i18n.locale-catalog.v1 identifier, and every other field, including the full capability list, unchanged. Clients compare the three numeric revision components and ignore unknown identifiers (see 'Capability negotiation'), so an older client reading a newer revision behaves exactly as it did at 0.1.22. scripts/validate-contract-fixtures.py and Arkham.Api.LocaleCatalogCapabilitySpec both compare the real response against this baseline with allowedDifferences normalized away.",
+    "description": "The exact GET /api/v1/capabilities body this contract served at revision 0.1.22, before the optional locale-catalog pointer and later global semantic-question capability existed. A deployment that configures no catalog is NOT byte-identical to it, and must not be: issue #53 requires a monotonic contract bump, schemaRevision describes the backend contract bundle, and unknown capability identifiers are explicitly additive. What is guaranteed is the exact legacy field values and legacy identifiers after the current revision plus known additive capability identifiers are normalized away: no localeCatalog member and no i18n.locale-catalog.v1 identifier when the deployment publishes no catalog, while questions.semantic-presentation.v1 remains present in every current response. Clients compare the three numeric revision components and ignore unknown identifiers (see 'Capability negotiation'), so an older client reading a newer revision behaves exactly as it did at 0.1.22. scripts/validate-contract-fixtures.py and Arkham.Api.LocaleCatalogCapabilitySpec both compare the real response against this baseline with allowedDifferences normalized away.",
     "baselineRevision": "0.1.22",
     "baselineResponse": {
       "schemaRevision": "0.1.22",
@@ -14830,9 +15135,13 @@
       ]
     },
     "addedCapability": "i18n.locale-catalog.v1",
+    "globalCapabilities": [
+      "questions.semantic-presentation.v1"
+    ],
     "allowedDifferences": {
       "disabled": [
-        "schemaRevision"
+        "schemaRevision",
+        "capabilities"
       ],
       "advertised": [
         "schemaRevision",

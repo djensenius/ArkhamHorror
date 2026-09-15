@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Arkham Horror API
-  version: 0.1.8
+  version: 0.1.9
   description: |
     Initial native-client contract baseline. Only documented operations are
     covered; undocumented /api/v1 routes retain their existing behavior.
@@ -163,6 +163,13 @@ paths:
         A `404` from this path identifies a legacy server. Clients may offer a
         conservative compatibility mode using `/site-settings`, but must not
         infer capabilities merely because another route exists.
+
+        `questions.semantic-presentation.v1` is global for this contract
+        revision. It means game snapshots may carry backend-authored,
+        render-only `questionPresentation` descriptors bound to the
+        authoritative raw question's version and source indices. Clients still
+        submit the existing versioned Answer and must never treat presentation
+        metadata as rules authority.
 
         The optional `localeCatalog` object is additive in exactly the same
         sense: it appears only when the deployment publishes a locale catalog

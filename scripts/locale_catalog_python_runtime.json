@@ -22,7 +22,7 @@
   "trustedSources": {
     "frontend/scripts/locale-catalog/generator-launcher.mjs": "d7dd6e8fa3fb55504213bc349b9a345c48bdc03079b37d5db8534176ee233d5a",
     "scripts/locale-catalog-python-sealed.sh": "b83d81d9ef6e59212c9d3416032eaa491cfb145ac592c21e7e1322c2a9858d2a",
-    "scripts/locale_catalog_python_boundary.py": "3216102ea06787d10787eb394f052b651537811a539d71357f86e2a19a009a89",
+    "scripts/locale_catalog_python_boundary.py": "4c7b8bf496de26e8b53905999f99525560971948cdc3a708aae54f1afed28777",
     "scripts/locale_catalog_runtime.py": "43bf0e9a37f5f05e3593f22363c2cebdbde080da8431d4833943bf129e5efc30",
     "scripts/run-locale-catalog-python.sh": "5969b9f967f037bdd1df394ad99c2794315c7874e226bcebdccd2636f05b749c"
   },

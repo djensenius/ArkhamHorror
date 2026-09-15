@@ -15,7 +15,10 @@ the governed contract fixtures, in "Arkham.Api.JsonContractsSpec".
 -}
 module Arkham.Api.LocaleCatalogCapabilitySpec (spec) where
 
-import Base.Api.Types.Capabilities (ServerCapabilities (..))
+import Base.Api.Types.Capabilities (
+  ServerCapabilities (..),
+  semanticQuestionPresentationCapability,
+ )
 import Base.Api.Types.LocaleCatalog
 import Base.Api.Types.LocaleCatalog.SettingsPreflight (validateLocaleCatalogSettingsValues)
 import Data.Aeson (FromJSON (..), withObject, (.:))
@@ -129,6 +132,7 @@ data LegacyCompatibility = LegacyCompatibility
   { baselineRevision :: Text
   , baselineResponse :: Aeson.Object
   , addedCapability :: Text
+  , globalCapabilities :: [Text]
   , allowedDifferences :: AllowedDifferences
   }
 
@@ -143,6 +147,7 @@ instance FromJSON LegacyCompatibility where
       <$> o .: "baselineRevision"
       <*> o .: "baselineResponse"
       <*> o .: "addedCapability"
+      <*> o .: "globalCapabilities"
       <*> o .: "allowedDifferences"
 
 instance FromJSON AllowedDifferences where
@@ -211,7 +216,7 @@ configErrorName = \case
 {- | Drop exactly the members a revision is allowed to differ in, so what is
 left has to be the 0.1.22 shape and nothing else.
 -}
-normalizeAgainstBaseline :: Text -> [Text] -> Aeson.Value -> Aeson.Object
+normalizeAgainstBaseline :: [Text] -> [Text] -> Aeson.Value -> Aeson.Object
 normalizeAgainstBaseline added allowed = \case
   Aeson.Object fields ->
     let dropped = AesonKeyMap.filterWithKey (\key _ -> AesonKey.toText key `notElem` allowed) fields
@@ -222,7 +227,9 @@ normalizeAgainstBaseline added allowed = \case
  where
   withoutAdded fields = case AesonKeyMap.lookup "capabilities" fields of
     Just (Aeson.Array capabilities) ->
-      Aeson.toJSON $ filter (/= Aeson.String added) (toList capabilities)
+      Aeson.toJSON
+        $ filter (`notElem` map Aeson.String added)
+        $ toList capabilities
     _ -> Aeson.Null
 
 -- | 'T.isInfixOf' with its arguments in the order a test reads them.
@@ -233,10 +240,11 @@ isInfixOf' haystack needle = T.isInfixOf needle haystack
 rejectionName :: ManifestUrlRejection -> Text
 rejectionName = show
 
-legacyCapabilities :: [Text]
-legacyCapabilities =
+noCatalogCapabilities :: [Text]
+noCatalogCapabilities =
   [ "events.shared-state-versioning"
   , "games.step-probe"
+  , semanticQuestionPresentationCapability
   , "websockets.authorization-header"
   , "websockets.spectator-read-only"
   ]
@@ -284,8 +292,8 @@ spec = do
       (fmap (.localeCatalog) . responseFor) [] `shouldBe` Right Nothing
       catalogAdvertisedCoherently (responseFor []) `shouldBe` Right True
 
-    it "keeps the exact legacy capability list" do
-      capabilitiesFor [] `shouldBe` Right legacyCapabilities
+    it "keeps the legacy identifiers and advertises semantic presentation globally" do
+      capabilitiesFor [] `shouldBe` Right noCatalogCapabilities
 
    describe "when the deployment publishes a catalog" do
     it "advertises the capability alongside the object" do
@@ -297,6 +305,7 @@ spec = do
           [ "events.shared-state-versioning"
           , "games.step-probe"
           , "i18n.locale-catalog.v1"
+          , semanticQuestionPresentationCapability
           , "websockets.authorization-header"
           , "websockets.spectator-read-only"
           ]
@@ -713,15 +722,21 @@ spec = do
       reasons `shouldSatisfy` elem "InvalidCatalogRevision"
 
   describe "compatibility with the pre-feature response" do
+    it "governs semantic question presentation as a global additive capability" do
+      legacy.globalCapabilities
+        `shouldBe` [semanticQuestionPresentationCapability]
+
     it "keeps the exact legacy shape when no catalog is configured" do
-      let baseline = normalizeAgainstBaseline legacy.addedCapability ["schemaRevision"]
-      fmap (normalizeAgainstBaseline legacy.addedCapability legacy.allowedDifferences.disabled . Aeson.toJSON) (responseFor [])
+      let additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
+          baseline = normalizeAgainstBaseline additiveCapabilities ["schemaRevision"]
+      fmap (normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled . Aeson.toJSON) (responseFor [])
         `shouldBe` Right (baseline (Aeson.Object legacy.baselineResponse))
 
     it "keeps the exact legacy shape underneath the advertised catalog" do
-      let baseline = normalizeAgainstBaseline legacy.addedCapability ["schemaRevision"]
+      let additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
+          baseline = normalizeAgainstBaseline additiveCapabilities ["schemaRevision"]
       fmap
-        (normalizeAgainstBaseline legacy.addedCapability legacy.allowedDifferences.advertised . Aeson.toJSON)
+        (normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.advertised . Aeson.toJSON)
         (responseFor fixtureCatalogEnv)
         `shouldBe` Right (baseline (Aeson.Object legacy.baselineResponse))
 
@@ -737,5 +752,6 @@ spec = do
             Aeson.Object
               $ AesonKeyMap.insert "capabilities" (Aeson.toJSON ["games.step-probe" :: Text])
               $ legacy.baselineResponse
-      normalizeAgainstBaseline legacy.addedCapability legacy.allowedDifferences.disabled dropped
-        `shouldNotBe` normalizeAgainstBaseline legacy.addedCapability ["schemaRevision"] (Aeson.Object legacy.baselineResponse)
+          additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
+      normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled dropped
+        `shouldNotBe` normalizeAgainstBaseline additiveCapabilities ["schemaRevision"] (Aeson.Object legacy.baselineResponse)

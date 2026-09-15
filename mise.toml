@@ -12,6 +12,19 @@ run = "/bin/sh scripts/test-replay-harness.sh --run"
 description = "Run focused replay unit and actual-executable fixture tests"
 run = "/bin/sh scripts/test-replay-harness.sh"
 
+[tasks."questions:presentation-gaps"]
+description = "Cluster authoritative question choices that lack semantic presentation descriptors"
+raw = true
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/analyze-question-presentation-gaps.py"
+
+[tasks."questions:presentation-gaps:test"]
+description = "Run focused semantic question-presentation analyzer self-tests"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/analyze-question-presentation-gaps.py --self-test"
+
+[tasks."questions:presentation-gaps:fixtures"]
+description = "Verify governed PublicGame snapshots have complete, aligned semantic presentations"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/analyze-question-presentation-gaps.py --fail-on-gaps contracts/fixtures/get-game.json contracts/fixtures/game-update.json"
+
 [tasks."contracts:fixtures"]
 description = "Validate contract manifests, golden JSON fixtures, and negative regressions"
 run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-contract-fixtures.py"
@@ -61,6 +74,8 @@ depends = [
   "contracts:openapi",
   "contracts:asyncapi",
   "contracts:routes",
+  "questions:presentation-gaps:fixtures",
+  "questions:presentation-gaps:test",
 ]
 
 [tasks."locale-catalog:backend-keys"]

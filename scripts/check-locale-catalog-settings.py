@@ -52,6 +52,7 @@ SYNTHETIC_MANIFEST = "contracts/fixtures/locale-catalog-manifest.json"
 CONTRACT_MANIFEST = "contracts/manifest.json"
 ADVERTISED_FIXTURE = "contracts/fixtures/capabilities-locale-catalog.json"
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
+SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v1"
 SCRATCH_PREFIX = ".locale-catalog-capability-probe-"
 SCRATCH_OWNER_FILE = "owner"
 
@@ -259,6 +260,7 @@ def check_with_probe(
     settings: dict[str, str],
     advertised: dict,
     legacy_baseline: dict,
+    global_capabilities: list[str],
     contract_revision: str,
     scratch_factory=None,
 ) -> None:
@@ -272,7 +274,7 @@ def check_with_probe(
     try:
         _check_with_probe(
             command, capabilities_schema, settings, advertised, legacy_baseline,
-            contract_revision, scratch,
+            global_capabilities, contract_revision, scratch,
         )
     finally:
         release_owned_scratch(scratch, token)
@@ -312,6 +314,7 @@ def _check_with_probe(
     settings: dict[str, str],
     advertised: dict,
     legacy_baseline: dict,
+    global_capabilities: list[str],
     contract_revision: str,
     scratch: Path,
 ) -> None:
@@ -331,7 +334,9 @@ def _check_with_probe(
             "apiBasePath": legacy_baseline["apiBasePath"],
             "nativeClientMinimumRevision": legacy_baseline["nativeClientMinimumRevision"],
             "capabilities": sorted(
-                legacy_baseline["capabilities"] + [LOCALE_CATALOG_CAPABILITY]
+                legacy_baseline["capabilities"]
+                + global_capabilities
+                + [LOCALE_CATALOG_CAPABILITY]
             ),
             "localeCatalog": advertised,
         }
@@ -361,7 +366,15 @@ def _check_with_probe(
         disabled.returncode == 0,
         f"the probe failed with no catalog configured at all: {disabled.stderr.decode()}",
     )
-    expected_disabled_bytes = encoded_capabilities({**legacy_baseline, "schemaRevision": contract_revision})
+    expected_disabled_bytes = encoded_capabilities(
+        {
+            **legacy_baseline,
+            "schemaRevision": contract_revision,
+            "capabilities": sorted(
+                legacy_baseline["capabilities"] + global_capabilities
+            ),
+        }
+    )
     require(
         disabled.stdout == expected_disabled_bytes,
         "an unconfigured deployment's bytes are not the legacy shape at this revision.\n"
@@ -1066,6 +1079,7 @@ def run_scratch_cleanup_self_test() -> None:
                 {},
                 {},
                 {},
+                [],
                 "0.1.23",
             )
         except SystemExit:
@@ -1079,6 +1093,7 @@ def run_scratch_cleanup_self_test() -> None:
                 {},
                 {},
                 {},
+                [],
                 "0.1.23",
                 scratch_factory=lambda **_arguments: (_ for _ in ()).throw(OSError("setup failed")),
             )
@@ -1164,6 +1179,12 @@ def main() -> None:
         LOCALE_CATALOG_CAPABILITY in response.get("capabilities", []),
         f"{ADVERTISED_FIXTURE} must advertise {LOCALE_CATALOG_CAPABILITY}",
     )
+    require(
+        SEMANTIC_QUESTION_PRESENTATION_CAPABILITY
+        in response.get("capabilities", []),
+        f"{ADVERTISED_FIXTURE} must advertise "
+        f"{SEMANTIC_QUESTION_PRESENTATION_CAPABILITY}",
+    )
     response_errors = list(make_validator(capabilities_schema).iter_errors(response))
     require(
         not response_errors,
@@ -1204,6 +1225,7 @@ def main() -> None:
             settings,
             advertised,
             legacy["baselineResponse"],
+            legacy["globalCapabilities"],
             contract_manifest["schemaRevision"],
         )
 
