@@ -1,9 +1,9 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.47d301c6dbc0369cc424c817881a690b",
+  "catalogRevision": "1.c5c492381c6107d7465f4fa61eb63b62",
   "basePath": "/locale-catalog",
   "manifestPath": "/locale-catalog/manifest.json",
-  "revisionManifestPath": "/locale-catalog/r/1.47d301c6dbc0369cc424c817881a690b/manifest.json",
+  "revisionManifestPath": "/locale-catalog/r/1.c5c492381c6107d7465f4fa61eb63b62/manifest.json",
   "chunkPathPrefix": "/locale-catalog/c/",
   "digestAlgorithm": "sha256",
   "defaultLocale": "en",
@@ -104,7 +104,7 @@
     "unknownVariableTypes": []
   },
   "provenance": {
-    "sha256": "47d301c6dbc0369cc424c817881a690b980315af7aab96aa5be36c77618cf66d",
+    "sha256": "c5c492381c6107d7465f4fa61eb63b62fcaecde9ce823f67b80a99c935563cb6",
     "outputSha256": "c13f4303f986fa3b089a9969d9b7d821f706c641c76b76b1eeb82cf9a8cd793d",
     "generator": {
       "name": "arkham-locale-catalog",
@@ -125,6 +125,6 @@
     "localeSourceFiles": 3,
     "localeSourcesSha256": "cbb3b9c1ad4bc1710563c0eba5148b7d633999632b354c4f5c6b6d5d399442d9",
     "schemasSha256": "fdcfd731e16949ee156a2eb4f24852ad9f47d7bd370773864ed8ca6e0a1ea072",
-    "generatorSha256": "00d088236488993b09ff331782e6946174e06be92e37bdbd14470e466d01afc0"
+    "generatorSha256": "cafd63bb3773be89247e2de4c671e6adba5eceaf421d60c0d4b3f2355191049b"
   }
 }

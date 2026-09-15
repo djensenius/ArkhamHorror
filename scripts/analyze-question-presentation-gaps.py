@@ -251,7 +251,7 @@ def trusted_source_indices(
     presentation: object,
     *,
     expected_version: int | None,
-    expected_kind: str | None,
+    expected_kind: str,
     choice_count: int,
     context: str,
     diagnostics: list[str],
@@ -282,10 +282,7 @@ def trusted_source_indices(
             f"{context}: presentation questionVersion does not match {expected_version}"
         )
         return set()
-    if (
-        expected_kind is not None
-        and presentation.get("questionKind") != expected_kind
-    ):
+    if presentation.get("questionKind") != expected_kind:
         diagnostics.append(
             f"{context}: presentation questionKind does not match {expected_kind}"
         )
@@ -353,7 +350,7 @@ def analyze_question(
     trusted = trusted_source_indices(
         presentation,
         expected_version=expected_version,
-        expected_kind=PRESENTATION_QUESTION_KINDS.get(root_tag),
+        expected_kind=PRESENTATION_QUESTION_KINDS.get(root_tag, "unsupported"),
         choice_count=len(choices),
         context=context,
         diagnostics=analysis.diagnostics,
@@ -385,6 +382,7 @@ def walk_artifact(analysis: Analysis, path: Path, document: object) -> None:
 
     def walk(value: object, pointer: str) -> None:
         if isinstance(value, dict):
+            processed_child_keys: set[str] = set()
             questions = value.get("question")
             scenario_steps = value.get("scenarioSteps")
             if (
@@ -419,6 +417,7 @@ def walk_artifact(analysis: Analysis, path: Path, document: object) -> None:
                         presentation=presentation,
                         expected_version=scenario_steps,
                     )
+                processed_child_keys.update(("question", "questionPresentation"))
             if id(value) not in processed_question_ids:
                 unwrapped = unwrap_question(value)
                 if (
@@ -436,7 +435,11 @@ def walk_artifact(analysis: Analysis, path: Path, document: object) -> None:
                         expected_version=None,
                     )
                     processed_question_ids.add(id(value))
+                    if value.get("tag") in WRAPPER_TAGS:
+                        processed_child_keys.add("question")
             for key, child in value.items():
+                if key in processed_child_keys:
+                    continue
                 walk(child, child_pointer(pointer, key))
         elif isinstance(value, list):
             for index, child in enumerate(value):
@@ -446,7 +449,15 @@ def walk_artifact(analysis: Analysis, path: Path, document: object) -> None:
 
 
 def analyze(paths: Iterable[Path]) -> Analysis:
-    analysis = Analysis(
+    analysis = empty_analysis()
+    for path in paths:
+        walk_artifact(analysis, path, strict_load(path))
+    analysis.diagnostics.sort()
+    return analysis
+
+
+def empty_analysis() -> Analysis:
+    return Analysis(
         counts=Counter(),
         examples=defaultdict(list),
         diagnostics=[],
@@ -454,10 +465,6 @@ def analyze(paths: Iterable[Path]) -> Analysis:
         choice_count=0,
         described_choice_count=0,
     )
-    for path in paths:
-        walk_artifact(analysis, path, strict_load(path))
-    analysis.diagnostics.sort()
-    return analysis
 
 
 def row_for(key: GapKey, count: int, examples: list[Example]) -> dict[str, object]:
@@ -598,6 +605,92 @@ def run_self_test() -> None:
     key = gap_key(root_tag, choices[1])
     require(key.ability_type == "Objective/FastAbility'", f"bad ability type: {key}")
     require(key.source_type == "ActSource", f"bad source type: {key}")
+
+    unsupported_analysis = empty_analysis()
+    analyze_question(
+        unsupported_analysis,
+        path=Path("unsupported.json"),
+        pointer="",
+        player_id=None,
+        question={
+            "tag": "ChooseDeck",
+            "choices": [{"tag": "Label", "label": "deck", "messages": []}],
+        },
+        presentation={
+            "protocolVersion": 1,
+            "questionVersion": 1,
+            "questionKind": "chooseOne",
+            "choiceCount": 1,
+            "choices": [{"sourceIndex": 0}],
+        },
+        expected_version=1,
+    )
+    require(
+        unsupported_analysis.described_choice_count == 0,
+        "unsupported raw kinds must not trust another semantic question kind",
+    )
+    require(
+        sum(unsupported_analysis.counts.values()) == 1,
+        "unsupported raw kinds must remain gaps after a kind mismatch",
+    )
+    require(
+        unsupported_analysis.diagnostics
+        == [
+            "unsupported.json:/: presentation questionKind does not match unsupported"
+        ],
+        f"unexpected unsupported-kind diagnostics: {unsupported_analysis.diagnostics}",
+    )
+
+    public_game_analysis = empty_analysis()
+    walk_artifact(
+        public_game_analysis,
+        Path("public-game.json"),
+        {
+            "scenarioSteps": 34,
+            "question": {
+                "player": {
+                    "tag": "QuestionWithSource",
+                    "question": question,
+                }
+            },
+            "questionPresentation": {
+                "player": {
+                    "protocolVersion": 1,
+                    "questionVersion": 34,
+                    "questionKind": "playerWindowChooseOne",
+                    "choiceCount": 2,
+                    "choices": [{"sourceIndex": 1}],
+                }
+            },
+        },
+    )
+    require(
+        (
+            public_game_analysis.question_count,
+            public_game_analysis.choice_count,
+            public_game_analysis.described_choice_count,
+            sum(public_game_analysis.counts.values()),
+        )
+        == (1, 2, 1, 1),
+        f"PublicGame questions were recounted: {public_game_analysis}",
+    )
+
+    wrapper_analysis = empty_analysis()
+    walk_artifact(
+        wrapper_analysis,
+        Path("wrapper.json"),
+        {"tag": "QuestionWithSource", "question": question},
+    )
+    require(
+        (
+            wrapper_analysis.question_count,
+            wrapper_analysis.choice_count,
+            wrapper_analysis.described_choice_count,
+            sum(wrapper_analysis.counts.values()),
+        )
+        == (1, 2, 0, 2),
+        f"standalone wrapped question was recounted: {wrapper_analysis}",
+    )
 
     diagnostics = []
     trusted = trusted_source_indices(
