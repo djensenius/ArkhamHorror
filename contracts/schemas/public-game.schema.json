@@ -276,6 +276,7 @@
       "$ref": "#/$defs/uuidEntityMap"
     },
     "questionPresentation": {
+      "description": "Additive semantic presentation keyed by exactly the same PlayerId set as question; cross-document contract validation enforces that equality.",
       "type": "object",
       "propertyNames": {
         "$ref": "#/$defs/uuidMapKey"

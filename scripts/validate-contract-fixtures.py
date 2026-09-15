@@ -212,10 +212,10 @@ for relative_path in documents:
 class ContractValidationError:
     """A validator-shaped error for cross-document contract invariants.
 
-    JSON Schema owns each standalone document's shape. These errors bind a
-    semantic presentation fixture to its authoritative raw question, which a
-    standalone schema cannot observe: declared raw choice count, unique and
-    in-bounds source indices, plus the exact high-value Q34 objective semantic.
+    JSON Schema owns each standalone document's shape. These errors bind
+    information a standalone schema cannot compare: each PublicGame question
+    map to its semantic-presentation player keys, and each standalone semantic
+    presentation fixture to its authoritative raw question.
     """
 
     def __init__(self, path: list[str], keyword: str, message: str):
@@ -223,6 +223,38 @@ class ContractValidationError:
         self.validator = keyword
         self.message = message
         self.context = ()
+
+
+def public_game_player_key_errors(
+    value: object, path: tuple[str, ...] = ()
+) -> list[ContractValidationError]:
+    errors: list[ContractValidationError] = []
+    if isinstance(value, dict):
+        if value.get("tag") == "PublicGame":
+            questions = value.get("question")
+            presentations = value.get("questionPresentation")
+            if isinstance(questions, dict) and isinstance(presentations, dict):
+                question_keys = set(questions)
+                presentation_keys = set(presentations)
+                if question_keys != presentation_keys:
+                    missing = sorted(question_keys - presentation_keys)
+                    unexpected = sorted(presentation_keys - question_keys)
+                    errors.append(
+                        ContractValidationError(
+                            [*path, "questionPresentation"],
+                            "questionPresentationPlayerKeys",
+                            "questionPresentation player keys must exactly match "
+                            "question player keys; "
+                            f"missing presentation keys: {missing}; "
+                            f"unexpected presentation keys: {unexpected}",
+                        )
+                    )
+        for key, child in value.items():
+            errors.extend(public_game_player_key_errors(child, (*path, str(key))))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            errors.extend(public_game_player_key_errors(child, (*path, str(index))))
+    return errors
 
 
 Q34_OBJECTIVE_PRESENTATION = {
@@ -282,12 +314,13 @@ EXACT_PRESENTATION_CHOICES = {
 def contract_fixture_errors(
     schema_path: str, fixture_path: str, instance: object
 ) -> list[ContractValidationError]:
+    errors = public_game_player_key_errors(instance)
     if (
         schema_path != QUESTION_PRESENTATION_SCHEMA
         or fixture_path not in QUESTION_PRESENTATION_BINDINGS
         or not isinstance(instance, dict)
     ):
-        return []
+        return errors
 
     raw_fixture_path = QUESTION_PRESENTATION_BINDINGS[fixture_path]
     raw_question = load_governed_json(raw_fixture_path)
@@ -296,7 +329,6 @@ def contract_fixture_errors(
         f"{raw_fixture_path} must be a raw question object with a choices array",
     )
     raw_choice_count = len(raw_question["choices"])
-    errors: list[ContractValidationError] = []
 
     choice_count = instance.get("choiceCount")
     if (

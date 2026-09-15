@@ -4,8 +4,8 @@
 The analyzer accepts standalone question fixtures, PublicGame snapshots, game
 WebSocket frames, or directories containing any mixture of those artifacts.
 It trusts a presentation descriptor only when protocol version, question
-version, question kind, choice count, uniqueness, and source-index bounds all
-agree with the raw question.
+version, question kind, choice count, descriptor kind, uniqueness, and
+source-index bounds all agree with the raw question.
 """
 
 from __future__ import annotations
@@ -69,6 +69,23 @@ PRESENTATION_QUESTION_KINDS = {
     "PlayerWindowChooseOne": "playerWindowChooseOne",
     "Read": "read",
     "WindowChooseOne": "windowChooseOne",
+}
+PRESENTATION_CHOICE_KINDS = {
+    "advanceAct",
+    "advanceAgenda",
+    "applySkillTestResults",
+    "chooseTarget",
+    "drawCard",
+    "endTurn",
+    "engage",
+    "evade",
+    "fight",
+    "gainResource",
+    "investigate",
+    "localizedLabel",
+    "skipTriggers",
+    "startSkillTest",
+    "useAbility",
 }
 
 
@@ -311,6 +328,16 @@ def trusted_source_indices(
             )
             valid = False
             continue
+        descriptor_kind = descriptor.get("kind")
+        if (
+            not isinstance(descriptor_kind, str)
+            or descriptor_kind not in PRESENTATION_CHOICE_KINDS
+        ):
+            diagnostics.append(
+                f"{context}: descriptor {descriptor_index} kind is not a supported "
+                "v1 choice kind"
+            )
+            valid = False
         source_index = descriptor.get("sourceIndex")
         if isinstance(source_index, bool) or not isinstance(source_index, int):
             diagnostics.append(
@@ -659,7 +686,7 @@ def run_self_test() -> None:
                     "questionVersion": 34,
                     "questionKind": "playerWindowChooseOne",
                     "choiceCount": 2,
-                    "choices": [{"sourceIndex": 1}],
+                    "choices": [{"sourceIndex": 1, "kind": "advanceAct"}],
                 }
             },
         },
@@ -690,6 +717,39 @@ def run_self_test() -> None:
         )
         == (1, 2, 0, 2),
         f"standalone wrapped question was recounted: {wrapper_analysis}",
+    )
+
+    unknown_kind_analysis = empty_analysis()
+    analyze_question(
+        unknown_kind_analysis,
+        path=Path("unknown-kind.json"),
+        pointer="",
+        player_id=None,
+        question=question,
+        presentation={
+            "protocolVersion": 1,
+            "questionVersion": 34,
+            "questionKind": "playerWindowChooseOne",
+            "choiceCount": 2,
+            "choices": [{"sourceIndex": 1, "kind": "futureChoice"}],
+        },
+        expected_version=34,
+    )
+    require(
+        (
+            unknown_kind_analysis.described_choice_count,
+            sum(unknown_kind_analysis.counts.values()),
+        )
+        == (0, 2),
+        "an unknown descriptor kind must not suppress any raw choice gaps",
+    )
+    require(
+        unknown_kind_analysis.diagnostics
+        == [
+            "unknown-kind.json:/: descriptor 0 kind is not a supported "
+            "v1 choice kind"
+        ],
+        f"unexpected descriptor-kind diagnostics: {unknown_kind_analysis.diagnostics}",
     )
 
     diagnostics = []
@@ -740,11 +800,14 @@ def run_self_test() -> None:
 
     for choices_value, expected_message in (
         (
-            [{"sourceIndex": 1}, {"sourceIndex": 1}],
+            [
+                {"sourceIndex": 1, "kind": "advanceAct"},
+                {"sourceIndex": 1, "kind": "advanceAct"},
+            ],
             "duplicate sourceIndex",
         ),
         (
-            [{"sourceIndex": 2}],
+            [{"sourceIndex": 2, "kind": "advanceAct"}],
             "outside 0..1",
         ),
     ):

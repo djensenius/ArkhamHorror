@@ -46,6 +46,9 @@ constructor.
   beside the unchanged authoritative raw question. A client uses descriptors
   only to render native controls, validates their protocol/question versions
   and source-index bindings, and still submits the existing versioned answer.
+  Every `PublicGame` carries exactly the same `PlayerId` keys in `question`
+  and `questionPresentation`; contract validation checks that invariant across
+  nested REST and WebSocket snapshots because JSON Schema cannot compare maps.
 - The response carries exactly one optional field, `localeCatalog`, paired with
   `i18n.locale-catalog.v1` (see
   [Locale catalog discovery](#locale-catalog-discovery)). Its absence is a
@@ -617,7 +620,9 @@ Contract validation pairs both semantic fixtures with their corresponding raw
 questions for choice-count and source-index integrity, pins the exact Q34
 objective semantic and the exact Q35 advancement confirmation, and proves both
 exact checks with well-formed wrong-act mutations. The Q34 mutation suite also
-rejects a protocol-version mismatch and malformed embedded-i18n labels. Neither
+rejects a protocol-version mismatch and malformed embedded-i18n labels. A
+separate `PublicGame` mutation removes one player's presentation entry and
+proves the `question` and `questionPresentation` key sets cannot drift. Neither
 descriptor executes the cost or advancement; the existing backend answer path
 does. The capability is present in both catalog and no-catalog capability
 responses; only `i18n.locale-catalog.v1` remains conditional on deployment

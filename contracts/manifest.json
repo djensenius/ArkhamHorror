@@ -14594,6 +14594,25 @@
           "messageContains": "Q35 source index 0 must be the exact Gathering act c01108 advancement confirmation semantic"
         }
       ]
+    },
+    {
+      "description": "Every PublicGame semantic presentation map must cover exactly the same players as its authoritative raw question map.",
+      "schema": "contracts/schemas/public-game.schema.json",
+      "basePositiveFixture": "contracts/fixtures/get-game.json",
+      "basePointer": "/game",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/questionPresentation/00000000-0000-0000-0000-000000000001"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "questionPresentation"
+          ],
+          "keyword": "questionPresentationPlayerKeys",
+          "messageContains": "questionPresentation player keys must exactly match question player keys"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -14619,7 +14638,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "522b9ecee4623bc310c49274dc95ec137d69bddcf06b96ea90bd3e1ded62461d",
+    "contracts/fixtures/capabilities-locale-catalog.json": "f627e6b0dc7b192fe85350367248fd9592da1cb51d4c1a65f6fe771b3d2ae72f",
     "contracts/fixtures/capabilities.json": "d63c998d37e242e679be5db83f783508935f2646bd4e4eb36c05fa4de0cd7c61",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
@@ -14647,7 +14666,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "773d50e5b2a807599978f1045eef495aa4b68409cd0147cdff2848d6a7c1b5d6",
+    "contracts/fixtures/locale-catalog-manifest.json": "cb06bea7cc19fbb772977aeb19bc3d7232eb345784e2440f02f5b00bc5ab02ed",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -14690,7 +14709,7 @@
     "contracts/fixtures/replay-attestation.json": "e39cf2043fc0790f11fb1186b34940a71ec696ee7ae79710fda2984f3c4238bf",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "cee21072b743ae1f5c9e52a34e78e06bd09dd14bed5c1aeac193c9ac120e748d",
+    "contracts/manifest.json": "67900782e2b63c103b00c0a81c058e03673f067d59c37fb1060c318bd0bc412f",
     "contracts/openapi.yaml": "242bc8c9ea7252ba1937bde275e0de00bf15d883b0fe009ae8406fa8ce54bfd6",
     "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
@@ -14720,7 +14739,7 @@
     "contracts/schemas/non-negative-int64.schema.json": "c869ad7885d3be1f548cb1d415cc5c5c7e44271a02f8ee326af88defdad29110",
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
-    "contracts/schemas/public-game.schema.json": "4bdfe417d4d9e53c7b9d9d213d4f2a374c6870c4ef6751d9ac0d3ae5afc784d4",
+    "contracts/schemas/public-game.schema.json": "d396069244851c48ff47f5ae9457280dd6e4ec3e7314c968c9003029a15159cd",
     "contracts/schemas/question-presentation.schema.json": "56cdf7f7d24f9b468830e3a70d2412cd9f764df66c3f40a276c645b974f00095",
     "contracts/schemas/replay-attestation.schema.json": "ce0a95eb11996ed95ddc47e92a2071202e6ff01d8ff9cf0d352dd13e24739194",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
