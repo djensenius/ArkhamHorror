@@ -488,19 +488,22 @@ abilityChoice sourceIndex investigatorId ability =
       | Ability.abilityIgnoreAllCosts ability = Cost.Free
       | otherwise =
           abilityCost ability <> mconcat (Ability.abilityAdditionalCosts ability)
-    choice =
+    choiceFor choiceKind =
       ChoicePresentation
         sourceIndex
-        kind
+        choiceKind
         (Just investigatorId)
         entity
         Nothing
         (Just abilityPresentation)
         (Just $ presentCost totalCost)
+    choice = choiceFor kind
    in case (kind, sourceEntity, entity) of
         (Move, Just source@LocationEntity {}, Just projected)
           | source == projected -> Just choice
-        (Move, _, _) -> Nothing
+        (Move, Just LocationEntity {}, _) -> Nothing
+        (Move, Nothing, _) -> Nothing
+        (Move, Just _, _) -> Just $ choiceFor UseAbility
         ( ResolveForcedAbility
           , Just source@LocationEntity {}
           , Just projected@LocationEntity {}

@@ -2979,7 +2979,7 @@ spec = describe "Native client contract fixtures" do
           $ "Expected the Gathering Attic forced prompt, got "
           <> show other
 
-  it "omits source-bound semantics when their authoritative source is unavailable" do
+  it "fails closed for malformed location semantics without hiding other move abilities" do
     let
       locationTargetFor = \case
         LocationSource locationId -> Just $ LocationTarget locationId
@@ -3055,6 +3055,55 @@ spec = describe "Native client contract fixtures" do
           otherChoices ->
             expectationFailure
               $ "Expected both Gathering movement choices, got "
+              <> show otherChoices
+
+        case drop 9 choices of
+          AbilityLabel investigatorId ability windows beforeMessages messages : _ -> do
+            let
+              assetId = AssetId $ UUID.fromWords 0 0 0 909
+              assetMovement =
+                AbilityLabel
+                  investigatorId
+                  ( ability
+                      { abilitySource = AssetSource assetId
+                      , abilityRequestor = AssetSource assetId
+                      , abilityTarget = Nothing
+                      , abilityCardCode = "08127"
+                      , abilityIndex = 1
+                      }
+                  )
+                  windows
+                  beforeMessages
+                  messages
+            QuestionPresentation.questionPresentation 36 (ChooseOne [assetMovement])
+              `shouldBe` QuestionPresentation.QuestionPresentation
+                36
+                "chooseOne"
+                1
+                [ QuestionPresentation.ChoicePresentation
+                    0
+                    QuestionPresentation.UseAbility
+                    (Just investigatorId)
+                    (Just $ QuestionPresentation.AssetEntity assetId)
+                    Nothing
+                    ( Just
+                        $ QuestionPresentation.AbilityPresentation
+                          "08127"
+                          1
+                          "action"
+                          ["move"]
+                          True
+                    )
+                    ( Just
+                        $ QuestionPresentation.AllPresentationCosts
+                          [ QuestionPresentation.ActionPresentationCost 1
+                          , QuestionPresentation.OtherPresentationCost
+                          ]
+                    )
+                ]
+          otherChoices ->
+            expectationFailure
+              $ "Expected the Gathering Cellar movement choice, got "
               <> show otherChoices
       other ->
         expectationFailure
