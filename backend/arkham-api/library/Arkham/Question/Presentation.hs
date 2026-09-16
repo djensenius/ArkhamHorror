@@ -501,7 +501,10 @@ abilityChoice sourceIndex investigatorId ability =
         (Move, Just source@LocationEntity {}, Just projected)
           | source == projected -> Just choice
         (Move, _, _) -> Nothing
-        (ResolveForcedAbility, Just source, Just projected)
+        ( ResolveForcedAbility
+          , Just source@LocationEntity {}
+          , Just projected@LocationEntity {}
+          )
           | source == projected -> Just choice
         (ResolveForcedAbility, _, _) -> Nothing
         _ -> Just choice

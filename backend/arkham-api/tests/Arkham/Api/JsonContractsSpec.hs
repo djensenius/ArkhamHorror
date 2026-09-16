@@ -3053,6 +3053,38 @@ spec = describe "Native client contract fixtures" do
           $ "Expected the Gathering Attic forced prompt, got "
           <> show other
 
+  it "omits forced-ability semantics for matching non-location source and target" do
+    let
+      replaceWithInvestigatorSource = \case
+        AbilityLabel investigatorId ability windows beforeMessages messages ->
+          AbilityLabel
+            investigatorId
+            ( ability
+                { abilitySource = InvestigatorSource investigatorId
+                , abilityTarget = Just $ InvestigatorTarget investigatorId
+                }
+            )
+            windows
+            beforeMessages
+            messages
+        otherChoice -> otherChoice
+
+    forced <- loadQuestionFixture "question-gathering-attic-entry-forced.json"
+    case forced of
+      WindowChooseOne [choice] ->
+        QuestionPresentation.questionPresentation
+          37
+          (WindowChooseOne [replaceWithInvestigatorSource choice])
+          `shouldBe` QuestionPresentation.QuestionPresentation
+            37
+            "windowChooseOne"
+            1
+            []
+      other ->
+        expectationFailure
+          $ "Expected the Gathering Attic forced prompt, got "
+          <> show other
+
   it "keeps Gathering semantic choices fail-closed without changing raw source indexes" do
     let
       iid = InvestigatorId "01001"

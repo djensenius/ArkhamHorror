@@ -1028,11 +1028,36 @@ def nested_value(value: object, path: tuple[object, ...]) -> object | None:
     return current
 
 
+def nested_binding_value(
+    value: object, path: tuple[object, ...]
+) -> tuple[bool, object]:
+    current = value
+    for offset, component in enumerate(path):
+        terminal = offset == len(path) - 1
+        if isinstance(component, int):
+            if not isinstance(current, list):
+                return False, None
+            if not 0 <= component < len(current):
+                return terminal, None
+            current = current[component]
+        else:
+            if not isinstance(current, dict):
+                return False, None
+            if component not in current:
+                return terminal, None
+            current = current[component]
+    return True, current
+
+
 def gathering_location_source_binding_errors(
     fixture_path: str, raw_question: object
 ) -> list[ContractValidationError]:
     bindings = _GATHERING_LOCATION_SOURCE_BINDINGS.get(fixture_path)
-    if bindings is None:
+    if (
+        bindings is None
+        or not isinstance(raw_question, dict)
+        or raw_question_presentation_shape(raw_question)[0] == "unsupported"
+    ):
         return []
 
     errors: list[ContractValidationError] = []
@@ -1048,10 +1073,13 @@ def gathering_location_source_binding_errors(
         )
 
         for source_path in source_paths:
-            actual_location_id = nested_value(raw_question, source_path)
-            if (
-                isinstance(actual_location_id, str)
-                and actual_location_id != expected_location_id
+            path_applies, actual_location_id = nested_binding_value(
+                raw_question,
+                source_path,
+            )
+            if path_applies and (
+                type(actual_location_id) is not type(expected_location_id)
+                or actual_location_id != expected_location_id
             ):
                 errors.append(
                     ContractValidationError(
@@ -1069,7 +1097,11 @@ def gathering_identity_binding_errors(
     fixture_path: str, raw_question: object
 ) -> list[ContractValidationError]:
     bindings = _GATHERING_IDENTITY_BINDINGS.get(fixture_path)
-    if bindings is None:
+    if (
+        bindings is None
+        or not isinstance(raw_question, dict)
+        or raw_question_presentation_shape(raw_question)[0] == "unsupported"
+    ):
         return []
 
     errors: list[ContractValidationError] = []
@@ -1081,10 +1113,13 @@ def gathering_identity_binding_errors(
             f"{presentation_path} must expose {identity_name} as a string or integer",
         )
         for raw_path in raw_paths:
-            actual_value = nested_value(raw_question, raw_path)
-            if (
-                isinstance(actual_value, (str, int))
-                and actual_value != expected_value
+            path_applies, actual_value = nested_binding_value(
+                raw_question,
+                raw_path,
+            )
+            if path_applies and (
+                type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
             ):
                 errors.append(
                     ContractValidationError(
@@ -1098,15 +1133,22 @@ def gathering_identity_binding_errors(
 
 
 def contract_fixture_errors(
-    schema_path: str, fixture_path: str, instance: object
+    schema_path: str,
+    fixture_path: str,
+    instance: object,
+    *,
+    full_fixture_instance: object | None = None,
 ) -> list[ContractValidationError]:
     errors = public_game_question_presentation_errors(instance)
     if schema_path == BASIC_CHOICE_QUESTION_SCHEMA:
-        errors.extend(
-            gathering_location_source_binding_errors(fixture_path, instance)
+        binding_instance = (
+            instance if full_fixture_instance is None else full_fixture_instance
         )
         errors.extend(
-            gathering_identity_binding_errors(fixture_path, instance)
+            gathering_location_source_binding_errors(fixture_path, binding_instance)
+        )
+        errors.extend(
+            gathering_identity_binding_errors(fixture_path, binding_instance)
         )
     if (
         schema_path != QUESTION_PRESENTATION_SCHEMA
@@ -1557,6 +1599,7 @@ def diagnose_negative(
     *,
     schema_path: str | None = None,
     base_positive_fixture: str | None = None,
+    full_fixture_instance: object | None = None,
 ):
     """Validate `instance` against `schema` (optionally scoped to one `oneOf`
     branch), and return (ok: bool, detail: str) describing whether the
@@ -1569,7 +1612,12 @@ def diagnose_negative(
     errors = list(flatten_errors(validator.iter_errors(instance)))
     if schema_path is not None and base_positive_fixture is not None:
         errors.extend(
-            contract_fixture_errors(schema_path, base_positive_fixture, instance)
+            contract_fixture_errors(
+                schema_path,
+                base_positive_fixture,
+                instance,
+                full_fixture_instance=full_fixture_instance,
+            )
         )
 
     if not errors:
@@ -1626,6 +1674,24 @@ def load_base_value(base_positive_fixture: str, base_pointer: str):
     return resolve_json_pointer(positive_fixture_cache[base_positive_fixture], base_pointer)
 
 
+def apply_fixture_mutation(
+    base_positive_fixture: str,
+    base_pointer: str,
+    mutation: dict,
+):
+    root_mutation = copy.deepcopy(mutation)
+    mutation_pointer = root_mutation["pointer"]
+    root_mutation["pointer"] = (
+        base_pointer
+        if mutation_pointer == ""
+        else f"{base_pointer}{mutation_pointer}"
+    )
+    return apply_mutation(
+        positive_fixture_cache[base_positive_fixture],
+        root_mutation,
+    )
+
+
 for negative_fixture_index, fixture in enumerate(negative_fixtures):
     require_entry_keys(
         fixture,
@@ -1651,6 +1717,11 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
 
     base_value = load_base_value(base_positive_fixture, base_pointer)
     mutated_instance = apply_mutation(base_value, mutation)
+    mutated_fixture_instance = apply_fixture_mutation(
+        base_positive_fixture,
+        base_pointer,
+        mutation,
+    )
 
     ok, detail = diagnose_negative(
         schema,
@@ -1659,6 +1730,7 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
         expected_errors,
         schema_path=schema_path,
         base_positive_fixture=base_positive_fixture,
+        full_fixture_instance=mutated_fixture_instance,
     )
     require(
         ok,
