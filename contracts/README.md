@@ -663,11 +663,12 @@ code, and ability index to match its descriptor; every Q37 location and
 entering-investigator identity to match its forced descriptor; and every Q38
 location source, investigator component, direct/continuation message actor,
 and continuation candidate to match the corresponding branch descriptor.
-Twenty-eight isolated mutations reject a non-location Move source, malformed
+Thirty-five isolated mutations reject a non-location Move source, malformed
 or source-less forced abilities, unsupported forced variants promoted as
-native semantics, non-assignment damage labels, swapped assignment token
-kinds, invented assignment authority, wrong movement destinations, actors,
-or card identities, swapped forced card codes or actors, wrong assignment
+native semantics, non-location forced descriptors, missing opaque binding
+ancestors, non-assignment damage labels, swapped assignment token kinds,
+invented assignment authority, wrong movement destinations, actors, or card
+identities, swapped forced card codes or actors, wrong assignment
 investigators, and mismatched forced/assignment location sources. The backend
 alone moves the investigator, resolves each forced ability, and assigns damage
 or horror.

@@ -14679,6 +14679,30 @@
       ]
     },
     {
+      "description": "The exact Gathering location-entry forced ability must retain its LocationSource without constraining unrelated forced abilities.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "schemaBranch": "abilityLabel",
+      "rejectionSchemaBranch": "choiceLabel",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-cellar-entry-forced.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/ability/source/tag",
+        "value": "EnemySource"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "ability",
+            "source",
+            "tag"
+          ],
+          "keyword": "const",
+          "messageContains": "'LocationSource' was expected"
+        }
+      ]
+    },
+    {
       "description": "The Cellar location-entry assignment must remain a damage-token prompt.",
       "schema": "contracts/schemas/basic-choice-question.schema.json",
       "schemaBranch": "gatheringCellarDamageAssignmentLabel",
@@ -15172,6 +15196,28 @@
       ]
     },
     {
+      "description": "The Q36 Cellar move must reject a missing opaque criteria parent instead of skipping its nested destination bindings.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices/9/ability/criteria"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "9",
+            "ability",
+            "criteria"
+          ],
+          "keyword": "gatheringLocationSourceBinding",
+          "messageContains": "must match the authoritative Q36 Cellar location id"
+        }
+      ]
+    },
+    {
       "description": "The Q37 Attic forced prompt must reject a missing repeated location identity.",
       "schema": "contracts/schemas/basic-choice-question.schema.json",
       "basePositiveFixture": "contracts/fixtures/question-gathering-attic-entry-forced.json",
@@ -15262,6 +15308,28 @@
           "path": [],
           "keyword": "required",
           "messageContains": "'entity' is a required property"
+        }
+      ]
+    },
+    {
+      "description": "A forced-ability semantic descriptor must remain bound to a location entity.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "schemaBranch": "choice",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-gathering-attic-entry-forced.json",
+      "basePointer": "/choices/0",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/entity/kind",
+        "value": "asset"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "entity",
+            "kind"
+          ],
+          "keyword": "const",
+          "messageContains": "'location' was expected"
         }
       ]
     },
@@ -15567,7 +15635,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "d27d85ee8aed8440457945967a31f7f30949f6b86d03b542139c49ba657ca24d",
+    "contracts/fixtures/capabilities-locale-catalog.json": "f3637b963fb30530884cd9bb5aa480c4a30d06c41cd0f6da26a8cd00bef5e7f1",
     "contracts/fixtures/capabilities.json": "55e12d321799c54e4ce75a33fb299cf574b7ca05a0790e21b328f1b2a263bf7f",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
@@ -15595,7 +15663,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "7851d9a2ec3602d690607374c8256b6c578622fa0f0ae91b461210c7386ac87f",
+    "contracts/fixtures/locale-catalog-manifest.json": "ee07f6289d91a0405f1a87fa0a406a60ac7dc7be718c4b889b3ff05829be49e0",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -15648,14 +15716,14 @@
     "contracts/fixtures/replay-attestation.json": "03dfb79074162f1b880d8a3b51b22af00757ffbe9699a2199ef97c53ec3fde6a",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "70aa7ee192100e9d6a490d4445b376945bbcf23038a9aa271fff9ed02812184a",
+    "contracts/manifest.json": "c5daff7e1806142c974a539ded3567e55f53845ddcaf480d3d24fce90423d9df",
     "contracts/openapi.yaml": "242bc8c9ea7252ba1937bde275e0de00bf15d883b0fe009ae8406fa8ce54bfd6",
     "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "c6bd728cef4c4ee06de22dacc5b2f145fdce1fc1521ac5a95323371169134648",
+    "contracts/schemas/basic-choice-question.schema.json": "d9b0a1e260592b1e0c7bab34a02be2dae6b8319f0aae6d818728a37a7bcca457",
     "contracts/schemas/capabilities.schema.json": "a9f4424e0a09d76c74e29289c98a53194e5e6690b2f0f33d2efba23720a373dc",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
@@ -15679,7 +15747,7 @@
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
     "contracts/schemas/public-game.schema.json": "0ac449ea7eb5d2d9e84cf2cfb69f4effd767e28b56b892226c0843118a953f52",
-    "contracts/schemas/question-presentation.schema.json": "bc1e13757c2e816be8dacba345b98762bf04ddae1f69758f43b1d83556b26e49",
+    "contracts/schemas/question-presentation.schema.json": "dbcafa4f644345f2386116862d8e6dd8c8183100bc9d3c03a309a7ec052288ec",
     "contracts/schemas/replay-attestation.schema.json": "ce0a95eb11996ed95ddc47e92a2071202e6ff01d8ff9cf0d352dd13e24739194",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6",

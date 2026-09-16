@@ -4116,6 +4116,55 @@
     "abilityLabel": {
       "type": "object",
       "additionalProperties": false,
+      "allOf": [
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "ability"
+                ],
+                "properties": {
+                  "ability": {
+                    "required": [
+                      "cardCode"
+                    ],
+                    "properties": {
+                      "cardCode": {
+                        "const": "c01165"
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "required": [
+                  "ability"
+                ],
+                "properties": {
+                  "ability": {
+                    "required": [
+                      "source"
+                    ],
+                    "properties": {
+                      "source": {
+                        "required": [
+                          "tag"
+                        ],
+                        "properties": {
+                          "tag": {
+                            "const": "TreacherySource"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ],
       "required": [
         "tag",
         "investigatorId",
@@ -4534,9 +4583,20 @@
         {
           "if": {
             "required": [
+              "cardCode",
+              "index",
               "type"
             ],
             "properties": {
+              "cardCode": {
+                "enum": [
+                  "c01113",
+                  "c01114"
+                ]
+              },
+              "index": {
+                "const": 1
+              },
               "type": {
                 "required": [
                   "tag"
@@ -4551,14 +4611,20 @@
           },
           "then": {
             "properties": {
+              "requestor": {
+                "$ref": "#/$defs/locationSource"
+              },
               "source": {
                 "$ref": "#/$defs/locationSource"
               }
-            }
+            },
+            "required": [
+              "requestor"
+            ]
           }
         }
       ],
-      "description": "Explicit engine-owned extension boundary. Stable display identity is modeled; criteria, limits, costs, and future additive fields are preserved data. Governed Fight/Evade/Engage actions require an EnemySource, while Move and the governed location-entry forced abilities require a LocationSource."
+      "description": "Explicit engine-owned extension boundary. Stable display identity is modeled; criteria, limits, costs, and future additive fields are preserved data. Governed Fight/Evade/Engage actions require an EnemySource, Move requires a LocationSource, and the exact c01113/c01114 index-1 Gathering location-entry forced abilities require LocationSource source/requestor values without constraining other forced abilities."
     },
     "abilityTypeDisplay": {
       "if": {

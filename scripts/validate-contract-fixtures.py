@@ -1030,27 +1030,64 @@ def nested_value(value: object, path: tuple[object, ...]) -> object | None:
 
 def nested_binding_value(
     value: object, path: tuple[object, ...]
-) -> tuple[bool, object]:
+) -> tuple[bool, object, tuple[object, ...]]:
     current = value
-    for offset, component in enumerate(path):
-        terminal = offset == len(path) - 1
+    traversed: list[object] = []
+    for component in path:
         if isinstance(component, int):
             if not isinstance(current, list):
-                return False, None
+                return False, None, tuple(traversed)
+            traversed.append(component)
             if not 0 <= component < len(current):
-                return terminal, None
+                return False, None, tuple(traversed)
             current = current[component]
         else:
             if not isinstance(current, dict):
-                return False, None
+                return False, None, tuple(traversed)
+            traversed.append(component)
             if component not in current:
-                return terminal, None
+                return False, None, tuple(traversed)
             current = current[component]
-    return True, current
+    return True, current, tuple(path)
+
+
+def schema_error_covers_binding_failure(
+    schema_errors: tuple[object, ...],
+    schema_error_path_prefix: tuple[str, ...],
+    failure_path: tuple[object, ...],
+) -> bool:
+    full_failure_path = tuple(map(str, failure_path))
+    for error in schema_errors:
+        error_path = schema_error_path_prefix + tuple(
+            map(str, error.absolute_path)
+        )
+        if full_failure_path[: len(error_path)] != error_path:
+            continue
+        if error.validator == "required" and len(error_path) < len(
+            full_failure_path
+        ):
+            required = error.validator_value
+            if isinstance(required, list) and full_failure_path[
+                len(error_path)
+            ] in map(str, required):
+                return True
+        if error.validator in {
+            "type",
+            "minItems",
+            "maxItems",
+            "items",
+            "prefixItems",
+        }:
+            return True
+    return False
 
 
 def gathering_location_source_binding_errors(
-    fixture_path: str, raw_question: object
+    fixture_path: str,
+    raw_question: object,
+    *,
+    schema_errors: tuple[object, ...] = (),
+    schema_error_path_prefix: tuple[str, ...] = (),
 ) -> list[ContractValidationError]:
     bindings = _GATHERING_LOCATION_SOURCE_BINDINGS.get(fixture_path)
     if (
@@ -1061,6 +1098,7 @@ def gathering_location_source_binding_errors(
         return []
 
     errors: list[ContractValidationError] = []
+    reported_missing_paths: set[tuple[str, ...]] = set()
     for presentation_path, choice_index, source_name, source_paths in bindings:
         presentation = load_governed_json(presentation_path)
         expected_location_id = nested_value(
@@ -1073,17 +1111,29 @@ def gathering_location_source_binding_errors(
         )
 
         for source_path in source_paths:
-            path_applies, actual_location_id = nested_binding_value(
+            path_exists, actual_location_id, failure_path = nested_binding_value(
                 raw_question,
                 source_path,
             )
-            if path_applies and (
-                type(actual_location_id) is not type(expected_location_id)
+            if not path_exists and schema_error_covers_binding_failure(
+                schema_errors,
+                schema_error_path_prefix,
+                failure_path,
+            ):
+                continue
+            error_path = source_path if path_exists else failure_path
+            normalized_error_path = tuple(map(str, error_path))
+            if not path_exists and normalized_error_path in reported_missing_paths:
+                continue
+            if (
+                not path_exists
+                or type(actual_location_id) is not type(expected_location_id)
                 or actual_location_id != expected_location_id
             ):
+                reported_missing_paths.add(normalized_error_path)
                 errors.append(
                     ContractValidationError(
-                        [str(component) for component in source_path],
+                        list(normalized_error_path),
                         "gatheringLocationSourceBinding",
                         f"Location source {actual_location_id!r} must match the "
                         f"authoritative {source_name} location id "
@@ -1094,7 +1144,11 @@ def gathering_location_source_binding_errors(
 
 
 def gathering_identity_binding_errors(
-    fixture_path: str, raw_question: object
+    fixture_path: str,
+    raw_question: object,
+    *,
+    schema_errors: tuple[object, ...] = (),
+    schema_error_path_prefix: tuple[str, ...] = (),
 ) -> list[ContractValidationError]:
     bindings = _GATHERING_IDENTITY_BINDINGS.get(fixture_path)
     if (
@@ -1105,6 +1159,7 @@ def gathering_identity_binding_errors(
         return []
 
     errors: list[ContractValidationError] = []
+    reported_missing_paths: set[tuple[str, ...]] = set()
     for presentation_path, presentation_value_path, identity_name, raw_paths in bindings:
         presentation = load_governed_json(presentation_path)
         expected_value = nested_value(presentation, presentation_value_path)
@@ -1113,17 +1168,29 @@ def gathering_identity_binding_errors(
             f"{presentation_path} must expose {identity_name} as a string or integer",
         )
         for raw_path in raw_paths:
-            path_applies, actual_value = nested_binding_value(
+            path_exists, actual_value, failure_path = nested_binding_value(
                 raw_question,
                 raw_path,
             )
-            if path_applies and (
-                type(actual_value) is not type(expected_value)
+            if not path_exists and schema_error_covers_binding_failure(
+                schema_errors,
+                schema_error_path_prefix,
+                failure_path,
+            ):
+                continue
+            error_path = raw_path if path_exists else failure_path
+            normalized_error_path = tuple(map(str, error_path))
+            if not path_exists and normalized_error_path in reported_missing_paths:
+                continue
+            if (
+                not path_exists
+                or type(actual_value) is not type(expected_value)
                 or actual_value != expected_value
             ):
+                reported_missing_paths.add(normalized_error_path)
                 errors.append(
                     ContractValidationError(
-                        [str(component) for component in raw_path],
+                        list(normalized_error_path),
                         "gatheringIdentityBinding",
                         f"{identity_name} {actual_value!r} must match the "
                         f"authoritative presentation value {expected_value!r}",
@@ -1138,6 +1205,8 @@ def contract_fixture_errors(
     instance: object,
     *,
     full_fixture_instance: object | None = None,
+    schema_errors: tuple[object, ...] = (),
+    schema_error_path_prefix: tuple[str, ...] = (),
 ) -> list[ContractValidationError]:
     errors = public_game_question_presentation_errors(instance)
     if schema_path == BASIC_CHOICE_QUESTION_SCHEMA:
@@ -1145,10 +1214,20 @@ def contract_fixture_errors(
             instance if full_fixture_instance is None else full_fixture_instance
         )
         errors.extend(
-            gathering_location_source_binding_errors(fixture_path, binding_instance)
+            gathering_location_source_binding_errors(
+                fixture_path,
+                binding_instance,
+                schema_errors=schema_errors,
+                schema_error_path_prefix=schema_error_path_prefix,
+            )
         )
         errors.extend(
-            gathering_identity_binding_errors(fixture_path, binding_instance)
+            gathering_identity_binding_errors(
+                fixture_path,
+                binding_instance,
+                schema_errors=schema_errors,
+                schema_error_path_prefix=schema_error_path_prefix,
+            )
         )
     if (
         schema_path != QUESTION_PRESENTATION_SCHEMA
@@ -1204,8 +1283,16 @@ for fixture_index, fixture in enumerate(fixtures):
         format_checker=FormatChecker(),
         registry=registry,
     )
-    errors = list(validator.iter_errors(instance))
-    errors.extend(contract_fixture_errors(schema_path, fixture_path, instance))
+    schema_errors = tuple(validator.iter_errors(instance))
+    errors = list(schema_errors)
+    errors.extend(
+        contract_fixture_errors(
+            schema_path,
+            fixture_path,
+            instance,
+            schema_errors=schema_errors,
+        )
+    )
     errors.sort(key=lambda error: tuple(map(str, error.absolute_path)))
 
     if errors:
@@ -1284,6 +1371,17 @@ def _decode_json_pointer_token(raw_token: str, *, pointer: str) -> str:
         "'~' must be immediately followed by '0' or '1'",
     )
     return raw_token.replace("~1", "/").replace("~0", "~")
+
+
+def json_pointer_components(pointer: str) -> tuple[str, ...]:
+    require(
+        pointer == "" or pointer.startswith("/"),
+        f"Invalid JSON Pointer: {pointer!r}",
+    )
+    return tuple(
+        _decode_json_pointer_token(raw_token, pointer=pointer)
+        for raw_token in pointer.split("/")[1:]
+    )
 
 
 def resolve_json_pointer(document, pointer: str):
@@ -1599,6 +1697,7 @@ def diagnose_negative(
     *,
     schema_path: str | None = None,
     base_positive_fixture: str | None = None,
+    base_pointer: str = "",
     full_fixture_instance: object | None = None,
 ):
     """Validate `instance` against `schema` (optionally scoped to one `oneOf`
@@ -1609,7 +1708,8 @@ def diagnose_negative(
     """
     target_schema = extract_branch_schema(schema, branch) if branch is not None else schema
     validator = make_validator(target_schema)
-    errors = list(flatten_errors(validator.iter_errors(instance)))
+    schema_errors = tuple(flatten_errors(validator.iter_errors(instance)))
+    errors = list(schema_errors)
     if schema_path is not None and base_positive_fixture is not None:
         errors.extend(
             contract_fixture_errors(
@@ -1617,6 +1717,8 @@ def diagnose_negative(
                 base_positive_fixture,
                 instance,
                 full_fixture_instance=full_fixture_instance,
+                schema_errors=schema_errors,
+                schema_error_path_prefix=json_pointer_components(base_pointer),
             )
         )
 
@@ -1730,6 +1832,7 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
         expected_errors,
         schema_path=schema_path,
         base_positive_fixture=base_positive_fixture,
+        base_pointer=base_pointer,
         full_fixture_instance=mutated_fixture_instance,
     )
     require(

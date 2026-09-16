@@ -258,7 +258,11 @@
           "then": {
             "properties": {
               "entity": {
-                "$ref": "#/$defs/entity"
+                "properties": {
+                  "kind": {
+                    "const": "location"
+                  }
+                }
               }
             },
             "required": [
