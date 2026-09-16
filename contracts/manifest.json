@@ -15294,6 +15294,223 @@
       ]
     },
     {
+      "description": "The Q36 Cellar move action must remain bound to the projected move semantic.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/9/ability/type/actions/contents",
+        "value": "Investigate"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "9",
+            "ability",
+            "type",
+            "actions",
+            "contents"
+          ],
+          "keyword": "gatheringProjectedAbilityBinding",
+          "messageContains": "Q36 Cellar action"
+        }
+      ]
+    },
+    {
+      "description": "The Q36 Cellar move must remain a basic action so its projected actions do not gain activate.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/9/ability/basic",
+        "value": false
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "9",
+            "ability",
+            "basic"
+          ],
+          "keyword": "gatheringProjectedAbilityBinding",
+          "messageContains": "Q36 Cellar basic-action state"
+        }
+      ]
+    },
+    {
+      "description": "The Q36 Cellar move cost must remain bound to its projected action and other costs.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/9/ability/type/cost/contents/0/contents",
+        "value": 2
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "9",
+            "ability",
+            "type",
+            "cost"
+          ],
+          "keyword": "gatheringProjectedAbilityBinding",
+          "messageContains": "Q36 Cellar cost"
+        }
+      ]
+    },
+    {
+      "description": "The Q36 Cellar move cancellation state must remain bound to its semantic descriptor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/9/ability/canBeCancelled",
+        "value": false
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "9",
+            "ability",
+            "canBeCancelled"
+          ],
+          "keyword": "gatheringProjectedAbilityBinding",
+          "messageContains": "Q36 Cellar cancellation state"
+        }
+      ]
+    },
+    {
+      "description": "The Q36 Cellar move additional costs must remain bound to its semantic descriptor.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "add",
+        "pointer": "/choices/9/ability/additionalCosts/-",
+        "value": {
+          "tag": "ActionCost",
+          "contents": 1
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "9",
+            "ability",
+            "additionalCosts"
+          ],
+          "keyword": "gatheringProjectedAbilityBinding",
+          "messageContains": "Q36 Cellar additional costs"
+        }
+      ]
+    },
+    {
+      "description": "The Q36 Cellar move cannot ignore all costs while retaining its pinned semantic cost.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/9/ability/ignoreAllCosts",
+        "value": true
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "9",
+            "ability",
+            "ignoreAllCosts"
+          ],
+          "keyword": "gatheringProjectedAbilityBinding",
+          "messageContains": "Q36 Cellar ignore-all-costs state"
+        }
+      ]
+    },
+    {
+      "description": "The Q36 Cellar move target cannot override its authoritative location source.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-movement.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/9/ability/target",
+        "value": {
+          "tag": "LocationTarget",
+          "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "9",
+            "ability",
+            "target"
+          ],
+          "keyword": "gatheringProjectedAbilityBinding",
+          "messageContains": "Q36 Cellar target"
+        }
+      ]
+    },
+    {
+      "description": "The Q37 Cellar forced ability type must remain bound to the projected forced semantic.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-cellar-entry-forced.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/type",
+        "value": {
+          "tag": "ActionAbility",
+          "actions": {
+            "tag": "SingleAction",
+            "contents": "Move"
+          },
+          "skillTypes": null,
+          "cost": {
+            "tag": "Free"
+          },
+          "window": {
+            "tag": "Enters",
+            "contents": [
+              "After",
+              {
+                "tag": "You"
+              },
+              {
+                "tag": "LocationWithId",
+                "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+              }
+            ]
+          }
+        }
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "type",
+            "tag"
+          ],
+          "keyword": "gatheringProjectedAbilityBinding",
+          "messageContains": "Q37 Cellar ability type"
+        }
+      ]
+    },
+    {
       "description": "A forced-ability semantic descriptor must retain the entity that identifies its authoritative source.",
       "schema": "contracts/schemas/question-presentation.schema.json",
       "schemaBranch": "choice",
@@ -15635,7 +15852,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "f3637b963fb30530884cd9bb5aa480c4a30d06c41cd0f6da26a8cd00bef5e7f1",
+    "contracts/fixtures/capabilities-locale-catalog.json": "c1fd17948437722f5c4cf2556bbc8fd4711f5356785595dd82439ec71229b832",
     "contracts/fixtures/capabilities.json": "55e12d321799c54e4ce75a33fb299cf574b7ca05a0790e21b328f1b2a263bf7f",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
@@ -15663,7 +15880,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "ee07f6289d91a0405f1a87fa0a406a60ac7dc7be718c4b889b3ff05829be49e0",
+    "contracts/fixtures/locale-catalog-manifest.json": "449f495541086f31b5d59fedf551b6fd6152ee82f8fe77b9394bb50a4455579b",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -15716,7 +15933,7 @@
     "contracts/fixtures/replay-attestation.json": "03dfb79074162f1b880d8a3b51b22af00757ffbe9699a2199ef97c53ec3fde6a",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "c5daff7e1806142c974a539ded3567e55f53845ddcaf480d3d24fce90423d9df",
+    "contracts/manifest.json": "a1afe21316f3739f15275f0d936271dd32733db21bd94f202afad82b3f739c96",
     "contracts/openapi.yaml": "242bc8c9ea7252ba1937bde275e0de00bf15d883b0fe009ae8406fa8ce54bfd6",
     "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",

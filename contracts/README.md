@@ -659,14 +659,18 @@ Contract validation pairs all five new presentations with their raw questions
 for kind, count, and source-index integrity. Six hard-coded exact checks pin
 both Q36 destinations and both Q37/Q38 branches. Raw/presentation binding
 checks require every repeated Q36 movement destination, actor, ability card
-code, and ability index to match its descriptor; every Q37 location and
-entering-investigator identity to match its forced descriptor; and every Q38
-location source, investigator component, direct/continuation message actor,
-and continuation candidate to match the corresponding branch descriptor.
-Thirty-five isolated mutations reject a non-location Move source, malformed
-or source-less forced abilities, unsupported forced variants promoted as
-native semantics, non-location forced descriptors, missing opaque binding
-ancestors, non-assignment damage labels, swapped assignment token kinds,
+code, and ability index to match its descriptor. They also pin every raw
+ability input that determines the Q36/Q37 projected kind, action list,
+cancellation state, entity, and cost, without globally freezing those dynamic
+fields for unrelated game states. Every Q37 location and entering-investigator
+identity must match its forced descriptor; every Q38 location source,
+investigator component, direct/continuation message actor, and continuation
+candidate must match the corresponding branch descriptor. Forty-three
+isolated mutations reject a non-location Move source, malformed or source-less
+forced abilities, unsupported forced variants promoted as native semantics,
+non-location forced descriptors, missing opaque binding ancestors,
+projection-changing ability types, actions, costs, cancellation, targets, or
+cost overrides, non-assignment damage labels, swapped assignment token kinds,
 invented assignment authority, wrong movement destinations, actors, or card
 identities, swapped forced card codes or actors, wrong assignment
 investigators, and mismatched forced/assignment location sources. The backend

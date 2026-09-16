@@ -1014,6 +1014,70 @@ _GATHERING_IDENTITY_BINDINGS = {
 }
 
 
+def gathering_action_projection_input_paths(
+    choice_index: int, label: str
+) -> tuple[tuple[tuple[object, ...], str], ...]:
+    ability_path = ("choices", choice_index, "ability")
+    return (
+        (ability_path + ("type", "tag"), f"{label} ability type"),
+        (
+            ability_path + ("type", "actions", "contents"),
+            f"{label} action",
+        ),
+        (ability_path + ("basic",), f"{label} basic-action state"),
+        (ability_path + ("type", "cost"), f"{label} cost"),
+        (
+            ability_path + ("canBeCancelled",),
+            f"{label} cancellation state",
+        ),
+        (
+            ability_path + ("additionalCosts",),
+            f"{label} additional costs",
+        ),
+        (
+            ability_path + ("ignoreAllCosts",),
+            f"{label} ignore-all-costs state",
+        ),
+        (ability_path + ("target",), f"{label} target"),
+    )
+
+
+def gathering_forced_projection_input_paths(
+    choice_index: int, label: str
+) -> tuple[tuple[tuple[object, ...], str], ...]:
+    ability_path = ("choices", choice_index, "ability")
+    return (
+        (ability_path + ("type", "tag"), f"{label} ability type"),
+        (
+            ability_path + ("canBeCancelled",),
+            f"{label} cancellation state",
+        ),
+        (
+            ability_path + ("additionalCosts",),
+            f"{label} additional costs",
+        ),
+        (
+            ability_path + ("ignoreAllCosts",),
+            f"{label} ignore-all-costs state",
+        ),
+        (ability_path + ("target",), f"{label} target"),
+    )
+
+
+_GATHERING_PROJECTED_ABILITY_INPUT_BINDINGS = {
+    Q36_QUESTION_FIXTURE: (
+        gathering_action_projection_input_paths(9, "Q36 Cellar")
+        + gathering_action_projection_input_paths(10, "Q36 Attic")
+    ),
+    Q37_ATTIC_QUESTION_FIXTURE: gathering_forced_projection_input_paths(
+        0, "Q37 Attic"
+    ),
+    Q37_CELLAR_QUESTION_FIXTURE: gathering_forced_projection_input_paths(
+        0, "Q37 Cellar"
+    ),
+}
+
+
 def nested_value(value: object, path: tuple[object, ...]) -> object | None:
     current = value
     for component in path:
@@ -1082,6 +1146,24 @@ def schema_error_covers_binding_failure(
     return False
 
 
+def schema_error_covers_binding_path(
+    schema_errors: tuple[object, ...],
+    schema_error_path_prefix: tuple[str, ...],
+    binding_path: tuple[object, ...],
+) -> bool:
+    full_binding_path = tuple(map(str, binding_path))
+    for error in schema_errors:
+        error_path = schema_error_path_prefix + tuple(
+            map(str, error.absolute_path)
+        )
+        if (
+            full_binding_path[: len(error_path)] == error_path
+            or error_path[: len(full_binding_path)] == full_binding_path
+        ):
+            return True
+    return False
+
+
 def gathering_location_source_binding_errors(
     fixture_path: str,
     raw_question: object,
@@ -1140,6 +1222,60 @@ def gathering_location_source_binding_errors(
                         f"{expected_location_id!r}",
                     )
                 )
+    return errors
+
+
+def gathering_projected_ability_binding_errors(
+    fixture_path: str,
+    raw_question: object,
+    *,
+    schema_errors: tuple[object, ...] = (),
+    schema_error_path_prefix: tuple[str, ...] = (),
+) -> list[ContractValidationError]:
+    bindings = _GATHERING_PROJECTED_ABILITY_INPUT_BINDINGS.get(fixture_path)
+    if (
+        bindings is None
+        or not isinstance(raw_question, dict)
+        or raw_question_presentation_shape(raw_question)[0] == "unsupported"
+    ):
+        return []
+
+    authoritative_question = load_governed_json(fixture_path)
+    errors: list[ContractValidationError] = []
+    for raw_path, input_name in bindings:
+        expected_exists, expected_value, _ = nested_binding_value(
+            authoritative_question,
+            raw_path,
+        )
+        require(
+            expected_exists,
+            f"{fixture_path} must expose the authoritative {input_name}",
+        )
+        path_exists, actual_value, failure_path = nested_binding_value(
+            raw_question,
+            raw_path,
+        )
+        error_path = raw_path if path_exists else failure_path
+        if schema_error_covers_binding_path(
+            schema_errors,
+            schema_error_path_prefix,
+            error_path,
+        ):
+            continue
+        if (
+            not path_exists
+            or type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            errors.append(
+                ContractValidationError(
+                    list(map(str, error_path)),
+                    "gatheringProjectedAbilityBinding",
+                    f"{input_name} {actual_value!r} must remain equal to "
+                    f"the authoritative raw value {expected_value!r} because "
+                    "it determines the pinned semantic presentation",
+                )
+            )
     return errors
 
 
@@ -1223,6 +1359,14 @@ def contract_fixture_errors(
         )
         errors.extend(
             gathering_identity_binding_errors(
+                fixture_path,
+                binding_instance,
+                schema_errors=schema_errors,
+                schema_error_path_prefix=schema_error_path_prefix,
+            )
+        )
+        errors.extend(
+            gathering_projected_ability_binding_errors(
                 fixture_path,
                 binding_instance,
                 schema_errors=schema_errors,
