@@ -2073,6 +2073,21 @@ spec = describe "Native client contract fixtures" do
       structuralMutations =
         [ ("question kind", ChooseOneAtATime [exactChoice])
         , ("choice count", ChooseOne [exactChoice, exactChoice])
+        , ( "question label wrapper"
+          , QuestionLabel
+              "Draw encounter card"
+              Nothing
+              (ChooseOne [exactChoice])
+          )
+        , ( "pay cost wrapper"
+          , PayCostQuestion Free (ChooseOne [exactChoice])
+          )
+        , ( "source wrapper"
+          , QuestionWithSource
+              GameSource
+              Nothing
+              (ChooseOne [exactChoice])
+          )
         , ( "target"
           , ChooseOne [TargetLabel (InvestigatorTarget iid) [DrawCards iid exactDraw]]
           )
