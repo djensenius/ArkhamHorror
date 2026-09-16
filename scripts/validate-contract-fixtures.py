@@ -147,6 +147,12 @@ Q38_CELLAR_QUESTION_FIXTURE = (
 Q38_CELLAR_PRESENTATION_FIXTURE = (
     "contracts/fixtures/question-presentation-gathering-cellar-damage-assignment.json"
 )
+ENCOUNTER_DRAW_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-encounter-deck-draw.json"
+)
+ENCOUNTER_DRAW_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-encounter-deck-draw.json"
+)
 QUESTION_PRESENTATION_BINDINGS = {
     Q34_PRESENTATION_FIXTURE: Q34_QUESTION_FIXTURE,
     Q35_PRESENTATION_FIXTURE: Q35_QUESTION_FIXTURE,
@@ -155,6 +161,7 @@ QUESTION_PRESENTATION_BINDINGS = {
     Q37_CELLAR_PRESENTATION_FIXTURE: Q37_CELLAR_QUESTION_FIXTURE,
     Q38_ATTIC_PRESENTATION_FIXTURE: Q38_ATTIC_QUESTION_FIXTURE,
     Q38_CELLAR_PRESENTATION_FIXTURE: Q38_CELLAR_QUESTION_FIXTURE,
+    ENCOUNTER_DRAW_PRESENTATION_FIXTURE: ENCOUNTER_DRAW_QUESTION_FIXTURE,
 }
 
 require(
@@ -611,6 +618,11 @@ Q38_CELLAR_DAMAGE_PRESENTATION = {
     "kind": "assignDamage",
     "sourceIndex": 0,
 }
+ENCOUNTER_DRAW_PRESENTATION = {
+    "actorId": "c01001",
+    "kind": "drawEncounterCard",
+    "sourceIndex": 0,
+}
 
 EXACT_PRESENTATION_CHOICES = {
     Q34_PRESENTATION_FIXTURE: (
@@ -679,6 +691,15 @@ EXACT_PRESENTATION_CHOICES = {
             Q38_CELLAR_DAMAGE_PRESENTATION,
             "q38CellarDamageSemantic",
             "Q38 source index 0 must assign damage to investigator c01001",
+        ),
+    ),
+    ENCOUNTER_DRAW_PRESENTATION_FIXTURE: (
+        (
+            0,
+            ENCOUNTER_DRAW_PRESENTATION,
+            "encounterDrawSemantic",
+            "encounter draw source index 0 must draw exactly one encounter card "
+            "for investigator c01001",
         ),
     ),
 }

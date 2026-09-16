@@ -60,6 +60,7 @@ import Arkham.Difficulty (Difficulty (Easy, Standard))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Arkham.Decklist.CardPool (ArkhamBuildCardPool (..))
 import Arkham.Draw.Types (newCardDraw)
+import Arkham.Draw.Types qualified as Draw
 import Arkham.Epic.Types (SharedEventState (..))
 import Arkham.Event.Cards qualified as EventCards
 import Arkham.Game.State (GameState (IsActive, IsChooseDecks, IsOver, IsPending))
@@ -2009,14 +2010,125 @@ spec = describe "Native client contract fixtures" do
 
   it "matches the real mythos encounter-deck draw prompt on both encoder paths" do
     fixture <- loadFixture "question-encounter-deck-draw.json"
+    presentationFixture <- loadFixture "question-presentation-encounter-deck-draw.json"
     Aeson.toJSON fixtureEncounterDrawQuestion `shouldBe` fixture
     viaWireEncoding fixtureEncounterDrawQuestion `shouldBe` fixture
+    let presentation = QuestionPresentation.questionPresentation 41 fixtureEncounterDrawQuestion
+    Aeson.toJSON presentation `shouldBe` presentationFixture
+    viaWireEncoding presentation `shouldBe` presentationFixture
+    presentation
+      `shouldBe` QuestionPresentation.QuestionPresentation
+        41
+        "chooseOne"
+        1
+        [ QuestionPresentation.ChoicePresentation
+            0
+            QuestionPresentation.DrawEncounterCard
+            (Just $ InvestigatorId "01001")
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+        ]
     schema <- loadContractJson "contracts/schemas/basic-choice-question.schema.json"
     lookupValue "title" (lookupValue "encounterDeckDrawLabel" $ lookupValue "$defs" schema)
       `shouldBe` Aeson.String "Draw encounter card"
     gamePhase fixtureEncounterDrawGame `shouldBe` MythosPhase
     gamePhaseStep fixtureEncounterDrawGame
       `shouldBe` Just (MythosPhaseStep EachInvestigatorDrawsEncounterCardStep)
+
+  it "fails closed unless every governed encounter-draw field and wrapper matches" do
+    let
+      iid = InvestigatorId "01001"
+      otherIid = InvestigatorId "01002"
+      exactDraw = newCardDraw GameSource Deck.EncounterDeck 1
+      exactChoice = TargetLabel EncounterDeckTarget [DrawCards iid exactDraw]
+      hasEncounterDraw question =
+        case QuestionPresentation.questionPresentation 41 question of
+          QuestionPresentation.QuestionPresentation _ _ _ choices ->
+            any
+              ( \(QuestionPresentation.ChoicePresentation _ kind _ _ _ _ _) ->
+                  kind == QuestionPresentation.DrawEncounterCard
+              )
+              choices
+      drawMutations :: [(Text, Draw.CardDraw Message)]
+      drawMutations =
+        [ ("source", exactDraw {Draw.cardDrawSource = InvestigatorSource iid})
+        , ("deck", exactDraw {Draw.cardDrawDeck = Deck.InvestigatorDeck iid})
+        , ("amount", exactDraw {Draw.cardDrawAmount = 2})
+        , ("state", exactDraw {Draw.cardDrawState = Draw.InProgress []})
+        , ("target", exactDraw {Draw.cardDrawTarget = Just $ InvestigatorTarget iid})
+        , ("action", exactDraw {Draw.cardDrawAction = True})
+        , ("kind", exactDraw {Draw.cardDrawKind = Draw.StartingHandCardDraw})
+        , ("position", exactDraw {Draw.cardDrawPosition = Draw.DrawFromBottom})
+        , ( "rules"
+          , exactDraw
+              { Draw.cardDrawRules = Set.singleton $ Draw.AfterDrawDiscard 1
+              }
+          )
+        , ("andThen", exactDraw {Draw.cardDrawAndThen = Just $ ChooseEndTurn iid})
+        , ("discard", exactDraw {Draw.cardDrawDiscard = Just AnyCard})
+        ]
+      structuralMutations :: [(Text, Question Message)]
+      structuralMutations =
+        [ ("question kind", ChooseOneAtATime [exactChoice])
+        , ("choice count", ChooseOne [exactChoice, exactChoice])
+        , ( "target"
+          , ChooseOne [TargetLabel (InvestigatorTarget iid) [DrawCards iid exactDraw]]
+          )
+        , ("message count zero", ChooseOne [TargetLabel EncounterDeckTarget []])
+        , ( "message count two"
+          , ChooseOne
+              [ TargetLabel
+                  EncounterDeckTarget
+                  [DrawCards iid exactDraw, DrawCards iid exactDraw]
+              ]
+          )
+        ]
+    hasEncounterDraw (ChooseOne [exactChoice]) `shouldBe` True
+    QuestionPresentation.questionPresentation
+      41
+      (ChooseOne [TargetLabel EncounterDeckTarget [DrawCards otherIid exactDraw]])
+      `shouldBe` QuestionPresentation.QuestionPresentation
+        41
+        "chooseOne"
+        1
+        [ QuestionPresentation.ChoicePresentation
+            0
+            QuestionPresentation.DrawEncounterCard
+            (Just otherIid)
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+        ]
+    map
+      ( \(fieldName, cardDraw) ->
+          ( fieldName
+          , hasEncounterDraw
+              $ ChooseOne [TargetLabel EncounterDeckTarget [DrawCards iid cardDraw]]
+          )
+      )
+      drawMutations
+      `shouldBe` [(fieldName, False) | (fieldName, _) <- drawMutations]
+    map
+      (\(fieldName, question) -> (fieldName, hasEncounterDraw question))
+      structuralMutations
+      `shouldBe` [(fieldName, False) | (fieldName, _) <- structuralMutations]
+    hasEncounterDraw
+      ( ChooseOne
+          [ TargetLabel
+              EncounterDeckTarget
+              [ DrawCards
+                  iid
+                  exactDraw
+                    { Draw.cardDrawAlreadyDrawn =
+                        [fixtureRoundTransitionTreacheryCard]
+                    }
+              ]
+          ]
+      )
+      `shouldBe` False
 
   it "preserves encounter draw source index zero and the exact versioned Answer" do
     let
@@ -3530,7 +3642,7 @@ spec = describe "Native client contract fixtures" do
     locationAfterAdvance `shouldNotBe` locationBefore
     finalVersion `shouldBe` 36
 
-  it "executes both Gathering movement-entry branches through the Q39 action window" do
+  it "executes Gathering Q39 actions through their exact Q42 successor windows" do
     let
       iid = InvestigatorId "01001"
       -- Source indexes are scoped to one question. This fixed-seed board's
@@ -3540,6 +3652,7 @@ spec = describe "Native client contract fixtures" do
         [ ( "Cellar"
           , "01114"
           , 11
+          , 10
           , QuestionPresentation.AssignDamage
           , 2
           , 3
@@ -3547,6 +3660,7 @@ spec = describe "Native client contract fixtures" do
         , ( "Attic"
           , "01113"
           , 9
+          , 10
           , QuestionPresentation.AssignHorror
           , 1
           , 4
@@ -3554,7 +3668,7 @@ spec = describe "Native client contract fixtures" do
         ]
     for_
       branchCases
-      \(branchName, locationCardCode, movementSourceIndex, assignmentKind, finalDamage, finalHorror) ->
+      \(branchName, locationCardCode, movementSourceIndex, q39SourceIndex, assignmentKind, finalDamage, finalHorror) ->
         runAgainstFixtureBoardGame do
           overTest
             ( entitiesL
@@ -3574,6 +3688,7 @@ spec = describe "Native client contract fixtures" do
           q34Version <- answerFixturePlayerQuestion 12
           q35Version <- answerFixturePlayerQuestion 0
           destinationId <- selectJust $ LocationIs locationCardCode
+          hallwayId <- selectJust $ LocationIs "01112"
           q36Game <- getGame
           q36Location <- field InvestigatorLocation iid
           q36Actions <- field InvestigatorRemainingActions iid
@@ -3788,12 +3903,274 @@ spec = describe "Native client contract fixtures" do
                     rawChoices `shouldSatisfy` (not . null)
                     presentationChoices `shouldSatisfy` (not . null)
                     choiceCount `shouldBe` length rawChoices
+                    find
+                      ( \(QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _) ->
+                          sourceIndex == q39SourceIndex
+                      )
+                      presentationChoices
+                      `shouldBe` Just
+                        ( if branchName == "Cellar"
+                            then
+                              QuestionPresentation.ChoicePresentation
+                                q39SourceIndex
+                                QuestionPresentation.Investigate
+                                (Just iid)
+                                (Just $ QuestionPresentation.LocationEntity destinationId)
+                                Nothing
+                                ( Just
+                                    $ QuestionPresentation.AbilityPresentation
+                                      "01114"
+                                      103
+                                      "action"
+                                      ["investigate"]
+                                      True
+                                )
+                                (Just $ QuestionPresentation.ActionPresentationCost 1)
+                            else
+                              QuestionPresentation.ChoicePresentation
+                                q39SourceIndex
+                                QuestionPresentation.Move
+                                (Just iid)
+                                (Just $ QuestionPresentation.LocationEntity hallwayId)
+                                Nothing
+                                ( Just
+                                    $ QuestionPresentation.AbilityPresentation
+                                      "01112"
+                                      104
+                                      "action"
+                                      ["move"]
+                                      True
+                                )
+                                (Just $ QuestionPresentation.ActionPresentationCost 1)
+                        )
                 other ->
                   expectationFailure
                     $ "Expected the version-39 "
                     <> branchName
                     <> " player window and presentation, got "
                     <> show other
+
+          q39AnswerVersion <- answerFixturePlayerQuestion q39SourceIndex
+          q40Game <- getGame
+          liftIO do
+            q39AnswerVersion `shouldBe` 39
+            gameScenarioSteps q40Game `shouldBe` 40
+          case branchName of
+            "Cellar" -> do
+              liftIO do
+                Map.lookup fixturePlayerId (gameQuestion q40Game)
+                  `shouldBe` Just (ChooseOne [StartSkillTestButton iid])
+                Map.lookup
+                  fixturePlayerId
+                  ( QuestionPresentation.questionPresentations
+                      (gameScenarioSteps q40Game)
+                      (gameQuestion q40Game)
+                  )
+                  `shouldBe` Just
+                    ( QuestionPresentation.QuestionPresentation
+                        40
+                        "chooseOne"
+                        1
+                        [ QuestionPresentation.ChoicePresentation
+                            0
+                            QuestionPresentation.StartSkillTest
+                            (Just iid)
+                            Nothing
+                            Nothing
+                            Nothing
+                            Nothing
+                        ]
+                    )
+              q40AnswerVersion <- answerFixturePlayerQuestion 0
+              q41Game <- getGame
+              liftIO do
+                q40AnswerVersion `shouldBe` 40
+                gameScenarioSteps q41Game `shouldBe` 41
+                gamePhase q41Game `shouldBe` InvestigationPhase
+                gamePhaseStep q41Game
+                  `shouldBe` Just (InvestigationPhaseStep InvestigatorTakesActionStep)
+                Map.lookup fixturePlayerId (gameQuestion q41Game)
+                  `shouldBe` Just (ChooseOne [SkillTestApplyResultsButton])
+                Map.lookup
+                  fixturePlayerId
+                  ( QuestionPresentation.questionPresentations
+                      (gameScenarioSteps q41Game)
+                      (gameQuestion q41Game)
+                  )
+                  `shouldBe` Just
+                    ( QuestionPresentation.QuestionPresentation
+                        41
+                        "chooseOne"
+                        1
+                        [ QuestionPresentation.ChoicePresentation
+                            0
+                            QuestionPresentation.ApplySkillTestResults
+                            Nothing
+                            Nothing
+                            Nothing
+                            Nothing
+                            Nothing
+                        ]
+                    )
+              q41AnswerVersion <- answerFixturePlayerQuestion 0
+              q42Game <- getGame
+              q42Actions <- field InvestigatorRemainingActions iid
+              liftIO do
+                q41AnswerVersion `shouldBe` 41
+                gameScenarioSteps q42Game `shouldBe` 42
+                gamePhase q42Game `shouldBe` InvestigationPhase
+                gamePhaseStep q42Game
+                  `shouldBe` Just (InvestigationPhaseStep InvestigatorTakesActionStep)
+                q42Actions `shouldBe` 0
+                case Map.lookup fixturePlayerId (gameQuestion q42Game) of
+                  Just (PlayerWindowChooseOne [EndTurnButton choiceIid messages]) -> do
+                    choiceIid `shouldBe` iid
+                    messages `shouldBe` [ChooseEndTurn iid]
+                  other ->
+                    expectationFailure
+                      $ "Expected Cellar Q42 end-turn choice, got "
+                      <> show other
+                Map.lookup
+                  fixturePlayerId
+                  ( QuestionPresentation.questionPresentations
+                      (gameScenarioSteps q42Game)
+                      (gameQuestion q42Game)
+                  )
+                  `shouldBe` Just
+                    ( QuestionPresentation.QuestionPresentation
+                        42
+                        "playerWindowChooseOne"
+                        1
+                        [ QuestionPresentation.ChoicePresentation
+                            0
+                            QuestionPresentation.EndTurn
+                            (Just iid)
+                            Nothing
+                            Nothing
+                            Nothing
+                            Nothing
+                        ]
+                    )
+            "Attic" -> do
+              liftIO do
+                case Map.lookup fixturePlayerId (gameQuestion q40Game) of
+                  Just (PlayerWindowChooseOne [EndTurnButton choiceIid messages]) -> do
+                    choiceIid `shouldBe` iid
+                    messages `shouldBe` [ChooseEndTurn iid]
+                  other ->
+                    expectationFailure
+                      $ "Expected Attic Q40 end-turn choice, got "
+                      <> show other
+                Map.lookup
+                  fixturePlayerId
+                  ( QuestionPresentation.questionPresentations
+                      (gameScenarioSteps q40Game)
+                      (gameQuestion q40Game)
+                  )
+                  `shouldBe` Just
+                    ( QuestionPresentation.QuestionPresentation
+                        40
+                        "playerWindowChooseOne"
+                        1
+                        [ QuestionPresentation.ChoicePresentation
+                            0
+                            QuestionPresentation.EndTurn
+                            (Just iid)
+                            Nothing
+                            Nothing
+                            Nothing
+                            Nothing
+                        ]
+                    )
+              q40AnswerVersion <- answerFixturePlayerQuestion 0
+              q41Game <- getGame
+              liftIO do
+                q40AnswerVersion `shouldBe` 40
+                gameScenarioSteps q41Game `shouldBe` 41
+                gamePhase q41Game `shouldBe` MythosPhase
+                gamePhaseStep q41Game
+                  `shouldBe` Just (MythosPhaseStep EachInvestigatorDrawsEncounterCardStep)
+                Map.lookup fixturePlayerId (gameQuestion q41Game)
+                  `shouldBe` Just fixtureEncounterDrawQuestion
+                Map.lookup
+                  fixturePlayerId
+                  ( QuestionPresentation.questionPresentations
+                      (gameScenarioSteps q41Game)
+                      (gameQuestion q41Game)
+                  )
+                  `shouldBe` Just
+                    ( QuestionPresentation.QuestionPresentation
+                        41
+                        "chooseOne"
+                        1
+                        [ QuestionPresentation.ChoicePresentation
+                            0
+                            QuestionPresentation.DrawEncounterCard
+                            (Just iid)
+                            Nothing
+                            Nothing
+                            Nothing
+                            Nothing
+                        ]
+                    )
+              q41AnswerVersion <- answerFixturePlayerQuestion 0
+              q42Game <- getGame
+              q42Location <- field InvestigatorLocation iid
+              q42Actions <- field InvestigatorRemainingActions iid
+              liftIO do
+                q41AnswerVersion `shouldBe` 41
+                gameScenarioSteps q42Game `shouldBe` 42
+                gamePhase q42Game `shouldBe` InvestigationPhase
+                gamePhaseStep q42Game
+                  `shouldBe` Just (InvestigationPhaseStep InvestigatorTakesActionStep)
+                q42Location `shouldBe` Just hallwayId
+                q42Actions `shouldBe` 3
+                case
+                    ( Map.lookup fixturePlayerId (gameQuestion q42Game)
+                    , Map.lookup
+                        fixturePlayerId
+                        ( QuestionPresentation.questionPresentations
+                            (gameScenarioSteps q42Game)
+                            (gameQuestion q42Game)
+                        )
+                    )
+                  of
+                    ( Just (PlayerWindowChooseOne rawChoices)
+                      , Just
+                          ( QuestionPresentation.QuestionPresentation
+                              42
+                              "playerWindowChooseOne"
+                              12
+                              presentationChoices
+                            )
+                      ) -> do
+                        length rawChoices `shouldBe` 12
+                        map
+                          ( \(QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _) ->
+                              sourceIndex
+                          )
+                          presentationChoices
+                          `shouldBe` [0 .. 11]
+                        map
+                          ( \(QuestionPresentation.ChoicePresentation _ kind _ _ _ _ _) ->
+                              kind
+                          )
+                          presentationChoices
+                          `shouldBe` [ QuestionPresentation.GainResource
+                                     , QuestionPresentation.DrawCard
+                                     ]
+                            <> replicate 6 QuestionPresentation.ChooseTarget
+                            <> [ QuestionPresentation.EndTurn
+                               , QuestionPresentation.Move
+                               , QuestionPresentation.Investigate
+                               , QuestionPresentation.Move
+                               ]
+                    other ->
+                      expectationFailure
+                        $ "Expected Attic route Q42 player action window, got "
+                        <> show other
+            other ->
+              liftIO $ expectationFailure $ "Unknown Gathering branch " <> other
 
   it "matches every production round-transition prompt on both encoder paths and canonical replay digest" do
     let

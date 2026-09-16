@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.42",
+  "schemaRevision": "0.1.43",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -218,6 +218,10 @@
     {
       "path": "contracts/fixtures/question-encounter-deck-draw.json",
       "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-encounter-deck-draw.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
     },
     {
       "path": "contracts/fixtures/question-read.json",
@@ -15827,6 +15831,68 @@
           "messageContains": "sourceIndex 4 is outside 0..3 for the authoritative raw question"
         }
       ]
+    },
+    {
+      "description": "The encounter-draw presentation actor remains bound to the production DrawCards investigator.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-encounter-deck-draw.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/actorId",
+        "value": "c01002"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0"
+          ],
+          "keyword": "encounterDrawSemantic",
+          "messageContains": "must draw exactly one encounter card for investigator c01001"
+        }
+      ]
+    },
+    {
+      "description": "The encounter-draw descriptor cannot be downgraded to an ordinary player-card draw.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-encounter-deck-draw.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/kind",
+        "value": "drawCard"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0"
+          ],
+          "keyword": "encounterDrawSemantic",
+          "messageContains": "must draw exactly one encounter card for investigator c01001"
+        }
+      ]
+    },
+    {
+      "description": "The governed encounter draw cannot omit its sole semantic descriptor.",
+      "schema": "contracts/schemas/question-presentation.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-presentation-encounter-deck-draw.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "remove",
+        "pointer": "/choices/0"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0"
+          ],
+          "keyword": "encounterDrawSemantic",
+          "messageContains": "must draw exactly one encounter card for investigator c01001"
+        }
+      ]
     }
   ],
   "artifactHashes": {
@@ -15852,8 +15918,8 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "c1fd17948437722f5c4cf2556bbc8fd4711f5356785595dd82439ec71229b832",
-    "contracts/fixtures/capabilities.json": "55e12d321799c54e4ce75a33fb299cf574b7ca05a0790e21b328f1b2a263bf7f",
+    "contracts/fixtures/capabilities-locale-catalog.json": "1b2b78fe1d500f2e598c8eddf1e7ddd9ba25a1a8803a7352218bd38d574504ca",
+    "contracts/fixtures/capabilities.json": "d2178315833db20b7e24aed363f680ed74fb148151bb246c9553e46f37e86e2e",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
     "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
@@ -15880,7 +15946,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "449f495541086f31b5d59fedf551b6fd6152ee82f8fe77b9394bb50a4455579b",
+    "contracts/fixtures/locale-catalog-manifest.json": "434b734e240d848ebc88bc10e4a689985f5467e11b4e64efc5e1254cb526e114",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -15917,6 +15983,7 @@
     "contracts/fixtures/question-player-window-choose-one.json": "1a10e17e87e2e77b728484443934e3147ea14d5cdee077cf236fc5efb8334eaf",
     "contracts/fixtures/question-player-window-enemy-actions.json": "153362eff3254415068fdeb21670099d0b82c8c51a82d1b7b1b188d285f1d06d",
     "contracts/fixtures/question-player-window-engage-action.json": "546a1a8c07b1bf240c61b396c9630d566f68141f10bcf14604c04f2b888f682b",
+    "contracts/fixtures/question-presentation-encounter-deck-draw.json": "a8343bef781598fe6e81098d93e9d0b279f851d4bbf2a6a23ce6852d0f4d1217",
     "contracts/fixtures/question-presentation-gathering-act-advance.json": "232062dc5467843242763a428beaa212e082752a6ae02c1f753165f76e322841",
     "contracts/fixtures/question-presentation-gathering-act-objective.json": "768c77f900c61f6bd0e99514b6b71c38a6c939ce192e9f6d0d43d4ef8c623fc6",
     "contracts/fixtures/question-presentation-gathering-attic-entry-forced.json": "36117fa21a39361bbc06d54bdd76905855d3ab4913f0fd5973611ca74316f0cc",
@@ -15930,10 +15997,10 @@
     "contracts/fixtures/question-roland-defeat-reaction.json": "bd8d242cae7eb93db4ebffc9e80d3fa828304e4fc6cad746d488e7206cd0e50d",
     "contracts/fixtures/question-round-end-forced-ability.json": "d40629f34d5727a2c9bb873feb09931e3f32e004dc80baf375758833c80ac270",
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
-    "contracts/fixtures/replay-attestation.json": "03dfb79074162f1b880d8a3b51b22af00757ffbe9699a2199ef97c53ec3fde6a",
+    "contracts/fixtures/replay-attestation.json": "17d23ab964950e3ac0bf2770218c3f92a6109bb4e9ca078b7fd3389114624bc0",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "a1afe21316f3739f15275f0d936271dd32733db21bd94f202afad82b3f739c96",
+    "contracts/manifest.json": "579ce4d7d205773f971e1efe761097b45cf6ec14c2937ce677aa0e71a0969825",
     "contracts/openapi.yaml": "242bc8c9ea7252ba1937bde275e0de00bf15d883b0fe009ae8406fa8ce54bfd6",
     "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
@@ -15964,7 +16031,7 @@
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
     "contracts/schemas/public-game.schema.json": "0ac449ea7eb5d2d9e84cf2cfb69f4effd767e28b56b892226c0843118a953f52",
-    "contracts/schemas/question-presentation.schema.json": "dbcafa4f644345f2386116862d8e6dd8c8183100bc9d3c03a309a7ec052288ec",
+    "contracts/schemas/question-presentation.schema.json": "4d45330275fccfa8c052ee366746a605d55ffb0c965f51ecfa3c3f4055838de9",
     "contracts/schemas/replay-attestation.schema.json": "ce0a95eb11996ed95ddc47e92a2071202e6ff01d8ff9cf0d352dd13e24739194",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6",
