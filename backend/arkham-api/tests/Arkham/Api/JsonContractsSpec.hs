@@ -2906,6 +2906,55 @@ spec = describe "Native client contract fixtures" do
       "question-gathering-cellar-damage-assignment.json"
       QuestionPresentation.AssignDamage
 
+  it "does not classify non-assignment damage labels as assignment choices" do
+    let
+      iid = InvestigatorId "01001"
+      question = ChooseOne [DamageLabel iid [GameOver]] :: Question Message
+    QuestionPresentation.questionPresentation 38 question
+      `shouldBe` QuestionPresentation.QuestionPresentation
+        38
+        "chooseOne"
+        1
+        []
+
+  it "keeps unsupported forced variants generic instead of overpromising raw support" do
+    let
+      makeSilent = \case
+        AbilityLabel investigatorId ability windows beforeMessages messages ->
+          case abilityType ability of
+            AbilityType.ForcedAbility window ->
+              AbilityLabel
+                investigatorId
+                (ability {abilityType = AbilityType.SilentForcedAbility window})
+                windows
+                beforeMessages
+                messages
+            _ -> error "Expected a ForcedAbility fixture"
+        _ -> error "Expected an AbilityLabel fixture"
+
+    forced <- loadQuestionFixture "question-gathering-attic-entry-forced.json"
+    case forced of
+      WindowChooseOne [choice] ->
+        case
+          QuestionPresentation.questionPresentation
+            37
+            (WindowChooseOne [makeSilent choice])
+          of
+            QuestionPresentation.QuestionPresentation
+              _
+              _
+              _
+              [QuestionPresentation.ChoicePresentation _ kind _ _ _ _ _] ->
+                kind `shouldBe` QuestionPresentation.UseAbility
+            other ->
+              expectationFailure
+                $ "Expected one generic ability descriptor, got "
+                <> show other
+      other ->
+        expectationFailure
+          $ "Expected the Gathering Attic forced prompt, got "
+          <> show other
+
   it "omits source-bound movement semantics when source identity cannot be projected" do
     let
       removeProjectedSource = \case

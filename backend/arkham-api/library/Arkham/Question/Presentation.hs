@@ -320,11 +320,13 @@ presentChoice context sourceIndex = \case
     Just $ actionTargetChoice sourceIndex Engage (EnemyEntity enemyId)
   AbilityLabel investigatorId ability _ _ _ ->
     abilityChoice sourceIndex investigatorId ability
-  ComponentLabel component _ ->
+  ComponentLabel component messages ->
     case component of
-      InvestigatorComponent investigatorId DamageToken ->
+      InvestigatorComponent investigatorId DamageToken
+        | any (assignsDamageTo investigatorId) messages ->
         Just $ targetChoice sourceIndex AssignDamage (InvestigatorEntity investigatorId)
-      InvestigatorComponent investigatorId HorrorToken ->
+      InvestigatorComponent investigatorId HorrorToken
+        | any (assignsHorrorTo investigatorId) messages ->
         Just $ targetChoice sourceIndex AssignHorror (InvestigatorEntity investigatorId)
       InvestigatorComponent investigatorId ResourceToken
         | context == PlayerWindowContext ->
@@ -435,6 +437,22 @@ targetChoiceKind entity messages
     Message.AdvanceAgenda _ -> True
     _ -> False
 
+assignsDamageTo :: InvestigatorId -> Message.Message -> Bool
+assignsDamageTo investigatorId = \case
+  Message.InvestigatorAssignDamage targetId _ _ damage horror ->
+    targetId == investigatorId && damage > 0 && horror == 0
+  Message.InvestigatorDamage targetId _ damage horror ->
+    targetId == investigatorId && damage > 0 && horror == 0
+  _ -> False
+
+assignsHorrorTo :: InvestigatorId -> Message.Message -> Bool
+assignsHorrorTo investigatorId = \case
+  Message.InvestigatorAssignDamage targetId _ _ damage horror ->
+    targetId == investigatorId && damage == 0 && horror > 0
+  Message.InvestigatorDamage targetId _ damage horror ->
+    targetId == investigatorId && damage == 0 && horror > 0
+  _ -> False
+
 actionTargetChoice
   :: Int
   -> ChoicePresentationKind
@@ -513,9 +531,6 @@ isObjectiveAbility = \case
 isForcedAbility :: AbilityType.AbilityType -> Bool
 isForcedAbility = \case
   AbilityType.ForcedAbility {} -> True
-  AbilityType.SilentForcedAbility {} -> True
-  AbilityType.ForcedAbilityWithCost {} -> True
-  AbilityType.ForcedWhen {} -> True
   _ -> False
 
 abilityTypeText :: AbilityType.AbilityType -> Text

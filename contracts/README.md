@@ -657,13 +657,17 @@ the authoritative investigator at unchanged source index `0`.
 
 Contract validation pairs all five new presentations with their raw questions
 for kind, count, and source-index integrity. Six hard-coded exact checks pin
-both Q36 destinations and both Q37/Q38 branches. A raw-source binding check
-also requires every repeated Q37/Q38 location UUID to match its exact Q37
-projected location, preventing the outer assignment source or either nested
-message source from drifting to the other branch. Eighteen isolated
-mutations reject a non-location Move source, malformed or source-less forced
-abilities, swapped assignment token kinds, invented assignment authority,
-wrong movement destinations, swapped forced card codes, wrong assignment
+both Q36 destinations and both Q37/Q38 branches. Raw/presentation binding
+checks require every repeated Q36 movement destination, actor, ability card
+code, and ability index to match its descriptor; every Q37 location and
+entering-investigator identity to match its forced descriptor; and every Q38
+location source, investigator component, direct/continuation message actor,
+and continuation candidate to match the corresponding branch descriptor.
+Twenty-eight isolated mutations reject a non-location Move source, malformed
+or source-less forced abilities, unsupported forced variants promoted as
+native semantics, non-assignment damage labels, swapped assignment token
+kinds, invented assignment authority, wrong movement destinations, actors,
+or card identities, swapped forced card codes or actors, wrong assignment
 investigators, and mismatched forced/assignment location sources. The backend
 alone moves the investigator, resolves each forced ability, and assigns damage
 or horror.

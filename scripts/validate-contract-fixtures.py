@@ -721,26 +721,295 @@ _Q38_LOCATION_SOURCE_PATHS = (
         "contents",
     ),
 )
+
+
+def q36_location_source_paths(choice_index: int) -> tuple[tuple[object, ...], ...]:
+    return (
+        ("choices", choice_index, "ability", "source", "contents"),
+        (
+            "choices",
+            choice_index,
+            "ability",
+            "criteria",
+            "contents",
+            0,
+            "contents",
+            "contents",
+        ),
+        (
+            "choices",
+            choice_index,
+            "ability",
+            "criteria",
+            "contents",
+            1,
+            "contents",
+            "contents",
+            "contents",
+            "contents",
+            1,
+            "contents",
+        ),
+        (
+            "choices",
+            choice_index,
+            "ability",
+            "criteria",
+            "contents",
+            2,
+            "contents",
+            "contents",
+            2,
+            "contents",
+            "contents",
+        ),
+        ("choices", choice_index, "ability", "requestor", "contents"),
+    )
+
+
 _GATHERING_LOCATION_SOURCE_BINDINGS = {
+    Q36_QUESTION_FIXTURE: (
+        (
+            Q36_PRESENTATION_FIXTURE,
+            9,
+            "Q36 Cellar",
+            q36_location_source_paths(9),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            10,
+            "Q36 Attic",
+            q36_location_source_paths(10),
+        ),
+    ),
     Q37_ATTIC_QUESTION_FIXTURE: (
-        Q37_ATTIC_PRESENTATION_FIXTURE,
-        "Q37 Attic",
-        _Q37_LOCATION_SOURCE_PATHS,
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            0,
+            "Q37 Attic",
+            _Q37_LOCATION_SOURCE_PATHS,
+        ),
     ),
     Q37_CELLAR_QUESTION_FIXTURE: (
-        Q37_CELLAR_PRESENTATION_FIXTURE,
-        "Q37 Cellar",
-        _Q37_LOCATION_SOURCE_PATHS,
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            0,
+            "Q37 Cellar",
+            _Q37_LOCATION_SOURCE_PATHS,
+        ),
     ),
     Q38_ATTIC_QUESTION_FIXTURE: (
-        Q37_ATTIC_PRESENTATION_FIXTURE,
-        "Q37 Attic",
-        _Q38_LOCATION_SOURCE_PATHS,
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            0,
+            "Q37 Attic",
+            _Q38_LOCATION_SOURCE_PATHS,
+        ),
     ),
     Q38_CELLAR_QUESTION_FIXTURE: (
-        Q37_CELLAR_PRESENTATION_FIXTURE,
-        "Q37 Cellar",
-        _Q38_LOCATION_SOURCE_PATHS,
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            0,
+            "Q37 Cellar",
+            _Q38_LOCATION_SOURCE_PATHS,
+        ),
+    ),
+}
+
+_GATHERING_IDENTITY_BINDINGS = {
+    Q36_QUESTION_FIXTURE: (
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 9, "actorId"),
+            "Q36 Cellar actor",
+            (
+                ("choices", 9, "investigatorId"),
+                ("choices", 9, "windows", 0, "windowType", "contents"),
+            ),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 9, "ability", "cardCode"),
+            "Q36 Cellar ability card code",
+            (("choices", 9, "ability", "cardCode"),),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 9, "ability", "index"),
+            "Q36 Cellar ability index",
+            (("choices", 9, "ability", "index"),),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 10, "actorId"),
+            "Q36 Attic actor",
+            (
+                ("choices", 10, "investigatorId"),
+                ("choices", 10, "windows", 0, "windowType", "contents"),
+            ),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 10, "ability", "cardCode"),
+            "Q36 Attic ability card code",
+            (("choices", 10, "ability", "cardCode"),),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 10, "ability", "index"),
+            "Q36 Attic ability index",
+            (("choices", 10, "ability", "index"),),
+        ),
+    ),
+    Q37_ATTIC_QUESTION_FIXTURE: (
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            ("choices", 0, "actorId"),
+            "Q37 Attic actor",
+            (
+                ("choices", 0, "investigatorId"),
+                ("choices", 0, "windows", 0, "windowType", "contents", 0),
+            ),
+        ),
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            ("choices", 0, "ability", "cardCode"),
+            "Q37 Attic ability card code",
+            (("choices", 0, "ability", "cardCode"),),
+        ),
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            ("choices", 0, "ability", "index"),
+            "Q37 Attic ability index",
+            (("choices", 0, "ability", "index"),),
+        ),
+    ),
+    Q37_CELLAR_QUESTION_FIXTURE: (
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            ("choices", 0, "actorId"),
+            "Q37 Cellar actor",
+            (
+                ("choices", 0, "investigatorId"),
+                ("choices", 0, "windows", 0, "windowType", "contents", 0),
+            ),
+        ),
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            ("choices", 0, "ability", "cardCode"),
+            "Q37 Cellar ability card code",
+            (("choices", 0, "ability", "cardCode"),),
+        ),
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            ("choices", 0, "ability", "index"),
+            "Q37 Cellar ability index",
+            (("choices", 0, "ability", "index"),),
+        ),
+    ),
+    Q38_ATTIC_QUESTION_FIXTURE: (
+        (
+            Q38_ATTIC_PRESENTATION_FIXTURE,
+            ("choices", 0, "entity", "id"),
+            "Q38 Attic assignment investigator",
+            (
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "component",
+                    "investigatorId",
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    0,
+                    "contents",
+                    "contents",
+                    0,
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    1,
+                    "contents",
+                    "contents",
+                    0,
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    1,
+                    "contents",
+                    "contents",
+                    7,
+                    0,
+                    "contents",
+                ),
+            ),
+        ),
+    ),
+    Q38_CELLAR_QUESTION_FIXTURE: (
+        (
+            Q38_CELLAR_PRESENTATION_FIXTURE,
+            ("choices", 0, "entity", "id"),
+            "Q38 Cellar assignment investigator",
+            (
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "component",
+                    "investigatorId",
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    0,
+                    "contents",
+                    "contents",
+                    0,
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    1,
+                    "contents",
+                    "contents",
+                    0,
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    1,
+                    "contents",
+                    "contents",
+                    6,
+                    0,
+                    "contents",
+                ),
+            ),
+        ),
     ),
 }
 
@@ -762,37 +1031,69 @@ def nested_value(value: object, path: tuple[object, ...]) -> object | None:
 def gathering_location_source_binding_errors(
     fixture_path: str, raw_question: object
 ) -> list[ContractValidationError]:
-    binding = _GATHERING_LOCATION_SOURCE_BINDINGS.get(fixture_path)
-    if binding is None:
+    bindings = _GATHERING_LOCATION_SOURCE_BINDINGS.get(fixture_path)
+    if bindings is None:
         return []
 
-    presentation_path, source_name, source_paths = binding
-    presentation = load_governed_json(presentation_path)
-    expected_location_id = nested_value(
-        presentation,
-        ("choices", 0, "entity", "id"),
-    )
-    require(
-        isinstance(expected_location_id, str),
-        f"{presentation_path} must expose a string location entity id",
-    )
+    errors: list[ContractValidationError] = []
+    for presentation_path, choice_index, source_name, source_paths in bindings:
+        presentation = load_governed_json(presentation_path)
+        expected_location_id = nested_value(
+            presentation,
+            ("choices", choice_index, "entity", "id"),
+        )
+        require(
+            isinstance(expected_location_id, str),
+            f"{presentation_path} must expose a string location entity id",
+        )
+
+        for source_path in source_paths:
+            actual_location_id = nested_value(raw_question, source_path)
+            if (
+                isinstance(actual_location_id, str)
+                and actual_location_id != expected_location_id
+            ):
+                errors.append(
+                    ContractValidationError(
+                        [str(component) for component in source_path],
+                        "gatheringLocationSourceBinding",
+                        f"Location source {actual_location_id!r} must match the "
+                        f"authoritative {source_name} location id "
+                        f"{expected_location_id!r}",
+                    )
+                )
+    return errors
+
+
+def gathering_identity_binding_errors(
+    fixture_path: str, raw_question: object
+) -> list[ContractValidationError]:
+    bindings = _GATHERING_IDENTITY_BINDINGS.get(fixture_path)
+    if bindings is None:
+        return []
 
     errors: list[ContractValidationError] = []
-    for source_path in source_paths:
-        actual_location_id = nested_value(raw_question, source_path)
-        if (
-            isinstance(actual_location_id, str)
-            and actual_location_id != expected_location_id
-        ):
-            errors.append(
-                ContractValidationError(
-                    [str(component) for component in source_path],
-                    "gatheringLocationSourceBinding",
-                    f"Location source {actual_location_id!r} must match the "
-                    f"authoritative {source_name} location id "
-                    f"{expected_location_id!r}",
+    for presentation_path, presentation_value_path, identity_name, raw_paths in bindings:
+        presentation = load_governed_json(presentation_path)
+        expected_value = nested_value(presentation, presentation_value_path)
+        require(
+            isinstance(expected_value, (str, int)),
+            f"{presentation_path} must expose {identity_name} as a string or integer",
+        )
+        for raw_path in raw_paths:
+            actual_value = nested_value(raw_question, raw_path)
+            if (
+                isinstance(actual_value, (str, int))
+                and actual_value != expected_value
+            ):
+                errors.append(
+                    ContractValidationError(
+                        [str(component) for component in raw_path],
+                        "gatheringIdentityBinding",
+                        f"{identity_name} {actual_value!r} must match the "
+                        f"authoritative presentation value {expected_value!r}",
+                    )
                 )
-            )
     return errors
 
 
@@ -803,6 +1104,9 @@ def contract_fixture_errors(
     if schema_path == BASIC_CHOICE_QUESTION_SCHEMA:
         errors.extend(
             gathering_location_source_binding_errors(fixture_path, instance)
+        )
+        errors.extend(
+            gathering_identity_binding_errors(fixture_path, instance)
         )
     if (
         schema_path != QUESTION_PRESENTATION_SCHEMA
