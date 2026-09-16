@@ -1,0 +1,839 @@
+{
+  "tag": "PlayerWindowChooseOne",
+  "choices": [
+    {
+      "tag": "ComponentLabel",
+      "component": {
+        "tag": "InvestigatorComponent",
+        "investigatorId": "c01001",
+        "tokenType": "ResourceToken"
+      },
+      "messages": [
+        {
+          "tag": "TakeResources",
+          "contents": [
+            "c01001",
+            1,
+            {
+              "tag": "ResourceSource",
+              "contents": "c01001"
+            },
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "ComponentLabel",
+      "component": {
+        "tag": "InvestigatorDeckComponent",
+        "investigatorId": "c01001"
+      },
+      "messages": [
+        {
+          "tag": "DrawCards",
+          "contents": [
+            "c01001",
+            {
+              "cardDrawSource": {
+                "tag": "InvestigatorSource",
+                "contents": "c01001"
+              },
+              "cardDrawDeck": {
+                "tag": "InvestigatorDeck",
+                "contents": "c01001"
+              },
+              "cardDrawAmount": 1,
+              "cardDrawState": {
+                "tag": "UnresolvedCardDraw"
+              },
+              "cardDrawTarget": null,
+              "cardDrawAction": true,
+              "cardDrawKind": "StandardCardDraw",
+              "cardDrawPosition": "DrawFromTop",
+              "cardDrawRules": [],
+              "cardDrawAndThen": null,
+              "cardDrawAlreadyDrawn": [],
+              "cardDrawDiscard": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "f971e011-b98d-4583-81b0-d2a378866698"
+      },
+      "messages": [
+        {
+          "tag": "InitiatePlayCardWithWindows",
+          "contents": [
+            "c01001",
+            {
+              "tag": "PlayerCard",
+              "contents": {
+                "cardCode": "c01086",
+                "chained": null,
+                "customizations": [],
+                "errata": null,
+                "facedown": null,
+                "id": "f971e011-b98d-4583-81b0-d2a378866698",
+                "meta": null,
+                "mutated": null,
+                "originalCardCode": "c01086",
+                "owner": "c01001",
+                "tabooList": null
+              }
+            },
+            null,
+            {
+              "tag": "NoPayment"
+            },
+            [
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "DuringTurn",
+                  "contents": "c01001"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "FastPlayerWindow"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "NonFast"
+                },
+                "windowBatchId": null
+              }
+            ],
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "42f70875-1782-4fa6-a034-c16a3406e8f9"
+      },
+      "messages": [
+        {
+          "tag": "InitiatePlayCardWithWindows",
+          "contents": [
+            "c01001",
+            {
+              "tag": "PlayerCard",
+              "contents": {
+                "cardCode": "c01018",
+                "chained": null,
+                "customizations": [],
+                "errata": null,
+                "facedown": null,
+                "id": "42f70875-1782-4fa6-a034-c16a3406e8f9",
+                "meta": null,
+                "mutated": null,
+                "originalCardCode": "c01018",
+                "owner": "c01001",
+                "tabooList": null
+              }
+            },
+            null,
+            {
+              "tag": "NoPayment"
+            },
+            [
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "DuringTurn",
+                  "contents": "c01001"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "FastPlayerWindow"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "NonFast"
+                },
+                "windowBatchId": null
+              }
+            ],
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "001b6b9f-fc30-413d-855c-039ffcba4d15"
+      },
+      "messages": [
+        {
+          "tag": "InitiatePlayCardWithWindows",
+          "contents": [
+            "c01001",
+            {
+              "tag": "PlayerCard",
+              "contents": {
+                "cardCode": "c01016",
+                "chained": null,
+                "customizations": [],
+                "errata": null,
+                "facedown": null,
+                "id": "001b6b9f-fc30-413d-855c-039ffcba4d15",
+                "meta": null,
+                "mutated": null,
+                "originalCardCode": "c01016",
+                "owner": "c01001",
+                "tabooList": null
+              }
+            },
+            null,
+            {
+              "tag": "NoPayment"
+            },
+            [
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "DuringTurn",
+                  "contents": "c01001"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "FastPlayerWindow"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "NonFast"
+                },
+                "windowBatchId": null
+              }
+            ],
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "1b215bc4-4405-41ac-ba8d-75bd2e4dab9a"
+      },
+      "messages": [
+        {
+          "tag": "InitiatePlayCardWithWindows",
+          "contents": [
+            "c01001",
+            {
+              "tag": "PlayerCard",
+              "contents": {
+                "cardCode": "c01020",
+                "chained": null,
+                "customizations": [],
+                "errata": null,
+                "facedown": null,
+                "id": "1b215bc4-4405-41ac-ba8d-75bd2e4dab9a",
+                "meta": null,
+                "mutated": null,
+                "originalCardCode": "c01020",
+                "owner": "c01001",
+                "tabooList": null
+              }
+            },
+            null,
+            {
+              "tag": "NoPayment"
+            },
+            [
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "DuringTurn",
+                  "contents": "c01001"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "FastPlayerWindow"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "NonFast"
+                },
+                "windowBatchId": null
+              }
+            ],
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "d2458ecc-5f9f-4ba7-8b58-1474e70e8806"
+      },
+      "messages": [
+        {
+          "tag": "InitiatePlayCardWithWindows",
+          "contents": [
+            "c01001",
+            {
+              "tag": "PlayerCard",
+              "contents": {
+                "cardCode": "c01088",
+                "chained": null,
+                "customizations": [],
+                "errata": null,
+                "facedown": null,
+                "id": "d2458ecc-5f9f-4ba7-8b58-1474e70e8806",
+                "meta": null,
+                "mutated": null,
+                "originalCardCode": "c01088",
+                "owner": "c01001",
+                "tabooList": null
+              }
+            },
+            null,
+            {
+              "tag": "NoPayment"
+            },
+            [
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "DuringTurn",
+                  "contents": "c01001"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "FastPlayerWindow"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "NonFast"
+                },
+                "windowBatchId": null
+              }
+            ],
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "TargetLabel",
+      "target": {
+        "tag": "CardIdTarget",
+        "contents": "377b1268-96b7-4806-b999-5574020a28f6"
+      },
+      "messages": [
+        {
+          "tag": "InitiatePlayCardWithWindows",
+          "contents": [
+            "c01001",
+            {
+              "tag": "PlayerCard",
+              "contents": {
+                "cardCode": "c01021",
+                "chained": null,
+                "customizations": [],
+                "errata": null,
+                "facedown": null,
+                "id": "377b1268-96b7-4806-b999-5574020a28f6",
+                "meta": null,
+                "mutated": null,
+                "originalCardCode": "c01021",
+                "owner": "c01001",
+                "tabooList": null
+              }
+            },
+            null,
+            {
+              "tag": "NoPayment"
+            },
+            [
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "DuringTurn",
+                  "contents": "c01001"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "FastPlayerWindow"
+                },
+                "windowBatchId": null
+              },
+              {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "NonFast"
+                },
+                "windowBatchId": null
+              }
+            ],
+            true
+          ]
+        }
+      ]
+    },
+    {
+      "tag": "EndTurnButton",
+      "investigatorId": "c01001",
+      "messages": [
+        {
+          "tag": "ChooseEndTurn",
+          "contents": "c01001"
+        }
+      ]
+    },
+    {
+      "tag": "AbilityLabel",
+      "investigatorId": "c01001",
+      "ability": {
+        "source": {
+          "tag": "LocationSource",
+          "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+        },
+        "cardCode": "c01114",
+        "index": 104,
+        "type": {
+          "tag": "ActionAbility",
+          "actions": {
+            "contents": "Move",
+            "tag": "SingleAction"
+          },
+          "skillTypes": null,
+          "cost": {
+            "tag": "Costs",
+            "contents": [
+              {
+                "tag": "ActionCost",
+                "contents": 1
+              },
+              {
+                "tag": "NonBlankedCost",
+                "contents": {
+                  "tag": "CostToEnterUnrevealed",
+                  "contents": {
+                    "tag": "Free"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "limit": {
+          "tag": "NoLimit"
+        },
+        "window": {
+          "tag": "DuringYourAction",
+          "contents": {
+            "tag": "You"
+          }
+        },
+        "metadata": null,
+        "criteria": {
+          "tag": "Criteria",
+          "contents": [
+            {
+              "tag": "CanMoveTo",
+              "contents": {
+                "tag": "LocationWithId",
+                "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+              }
+            },
+            {
+              "tag": "OnLocation",
+              "contents": {
+                "tag": "IncludeEmptySpace",
+                "contents": {
+                  "tag": "IncludeEmptySpace",
+                  "contents": {
+                    "tag": "AccessibleTo",
+                    "contents": [
+                      "ForMovement",
+                      {
+                        "tag": "LocationWithId",
+                        "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "tag": "InvestigatorExists",
+              "contents": {
+                "tag": "InvestigatorMatches",
+                "contents": [
+                  {
+                    "tag": "You"
+                  },
+                  {
+                    "tag": "InvestigatorWithoutModifier",
+                    "contents": {
+                      "tag": "CannotMove"
+                    }
+                  },
+                  {
+                    "tag": "InvestigatorWithoutModifier",
+                    "contents": {
+                      "tag": "CannotEnter",
+                      "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "tooltip": null,
+        "canBeCancelled": true,
+        "displayAs": null,
+        "delayAdditionalCosts": null,
+        "basic": true,
+        "additionalCosts": [],
+        "requestor": {
+          "tag": "LocationSource",
+          "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+        },
+        "triggersSkillTest": false,
+        "wantsSkillTest": null,
+        "target": null,
+        "highlightFromWindow": false,
+        "skipForAll": false,
+        "ignoreAllCosts": false,
+        "fightCriteriaOverride": null,
+        "evadeCriteriaOverride": null
+      },
+      "windows": [
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "DuringTurn",
+            "contents": "c01001"
+          },
+          "windowBatchId": null
+        },
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "FastPlayerWindow"
+          },
+          "windowBatchId": null
+        },
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "NonFast"
+          },
+          "windowBatchId": null
+        }
+      ],
+      "before": [],
+      "messages": []
+    },
+    {
+      "tag": "AbilityLabel",
+      "investigatorId": "c01001",
+      "ability": {
+        "source": {
+          "tag": "LocationSource",
+          "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+        },
+        "cardCode": "c01113",
+        "index": 104,
+        "type": {
+          "tag": "ActionAbility",
+          "actions": {
+            "contents": "Move",
+            "tag": "SingleAction"
+          },
+          "skillTypes": null,
+          "cost": {
+            "tag": "Costs",
+            "contents": [
+              {
+                "tag": "ActionCost",
+                "contents": 1
+              },
+              {
+                "tag": "NonBlankedCost",
+                "contents": {
+                  "tag": "CostToEnterUnrevealed",
+                  "contents": {
+                    "tag": "Free"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "limit": {
+          "tag": "NoLimit"
+        },
+        "window": {
+          "tag": "DuringYourAction",
+          "contents": {
+            "tag": "You"
+          }
+        },
+        "metadata": null,
+        "criteria": {
+          "tag": "Criteria",
+          "contents": [
+            {
+              "tag": "CanMoveTo",
+              "contents": {
+                "tag": "LocationWithId",
+                "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+              }
+            },
+            {
+              "tag": "OnLocation",
+              "contents": {
+                "tag": "IncludeEmptySpace",
+                "contents": {
+                  "tag": "IncludeEmptySpace",
+                  "contents": {
+                    "tag": "AccessibleTo",
+                    "contents": [
+                      "ForMovement",
+                      {
+                        "tag": "LocationWithId",
+                        "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "tag": "InvestigatorExists",
+              "contents": {
+                "tag": "InvestigatorMatches",
+                "contents": [
+                  {
+                    "tag": "You"
+                  },
+                  {
+                    "tag": "InvestigatorWithoutModifier",
+                    "contents": {
+                      "tag": "CannotMove"
+                    }
+                  },
+                  {
+                    "tag": "InvestigatorWithoutModifier",
+                    "contents": {
+                      "tag": "CannotEnter",
+                      "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "tooltip": null,
+        "canBeCancelled": true,
+        "displayAs": null,
+        "delayAdditionalCosts": null,
+        "basic": true,
+        "additionalCosts": [],
+        "requestor": {
+          "tag": "LocationSource",
+          "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+        },
+        "triggersSkillTest": false,
+        "wantsSkillTest": null,
+        "target": null,
+        "highlightFromWindow": false,
+        "skipForAll": false,
+        "ignoreAllCosts": false,
+        "fightCriteriaOverride": null,
+        "evadeCriteriaOverride": null
+      },
+      "windows": [
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "DuringTurn",
+            "contents": "c01001"
+          },
+          "windowBatchId": null
+        },
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "FastPlayerWindow"
+          },
+          "windowBatchId": null
+        },
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "NonFast"
+          },
+          "windowBatchId": null
+        }
+      ],
+      "before": [],
+      "messages": []
+    },
+    {
+      "tag": "AbilityLabel",
+      "investigatorId": "c01001",
+      "ability": {
+        "source": {
+          "tag": "LocationSource",
+          "contents": "fda9afef-4166-4c9f-962e-eed6e8cbee25"
+        },
+        "cardCode": "c01112",
+        "index": 103,
+        "type": {
+          "tag": "ActionAbility",
+          "actions": {
+            "contents": "Investigate",
+            "tag": "SingleAction"
+          },
+          "skillTypes": {
+            "tag": "AbilitySkill",
+            "contents": "SkillIntellect"
+          },
+          "cost": {
+            "tag": "ActionCost",
+            "contents": 1
+          }
+        },
+        "limit": {
+          "tag": "NoLimit"
+        },
+        "window": {
+          "tag": "DuringYourAction",
+          "contents": {
+            "tag": "You"
+          }
+        },
+        "metadata": null,
+        "criteria": {
+          "tag": "Criteria",
+          "contents": [
+            {
+              "tag": "OnLocation",
+              "contents": {
+                "tag": "LocationWithId",
+                "contents": "fda9afef-4166-4c9f-962e-eed6e8cbee25"
+              }
+            },
+            {
+              "tag": "LocationExists",
+              "contents": {
+                "tag": "LocationMatchAll",
+                "contents": [
+                  {
+                    "tag": "LocationWithId",
+                    "contents": "fda9afef-4166-4c9f-962e-eed6e8cbee25"
+                  },
+                  {
+                    "tag": "InvestigatableLocation"
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "tooltip": null,
+        "canBeCancelled": true,
+        "displayAs": null,
+        "delayAdditionalCosts": null,
+        "basic": true,
+        "additionalCosts": [],
+        "requestor": {
+          "tag": "LocationSource",
+          "contents": "fda9afef-4166-4c9f-962e-eed6e8cbee25"
+        },
+        "triggersSkillTest": true,
+        "wantsSkillTest": null,
+        "target": null,
+        "highlightFromWindow": false,
+        "skipForAll": false,
+        "ignoreAllCosts": false,
+        "fightCriteriaOverride": null,
+        "evadeCriteriaOverride": null
+      },
+      "windows": [
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "DuringTurn",
+            "contents": "c01001"
+          },
+          "windowBatchId": null
+        },
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "FastPlayerWindow"
+          },
+          "windowBatchId": null
+        },
+        {
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "NonFast"
+          },
+          "windowBatchId": null
+        }
+      ],
+      "before": [],
+      "messages": []
+    }
+  ]
+}

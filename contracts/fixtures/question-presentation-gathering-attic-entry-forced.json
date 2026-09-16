@@ -1,0 +1,27 @@
+{
+  "choiceCount": 1,
+  "choices": [
+    {
+      "ability": {
+        "actions": [],
+        "canBeCancelled": true,
+        "cardCode": "c01113",
+        "index": 1,
+        "type": "forced"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "kind": "free"
+      },
+      "entity": {
+        "id": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+        "kind": "location"
+      },
+      "kind": "resolveForcedAbility",
+      "sourceIndex": 0
+    }
+  ],
+  "protocolVersion": 1,
+  "questionKind": "windowChooseOne",
+  "questionVersion": 37
+}

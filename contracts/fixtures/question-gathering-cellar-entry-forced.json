@@ -1,0 +1,93 @@
+{
+  "tag": "WindowChooseOne",
+  "choices": [
+    {
+      "tag": "AbilityLabel",
+      "investigatorId": "c01001",
+      "ability": {
+        "source": {
+          "tag": "LocationSource",
+          "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+        },
+        "cardCode": "c01114",
+        "index": 1,
+        "type": {
+          "tag": "ForcedAbility",
+          "window": {
+            "tag": "Enters",
+            "contents": [
+              "After",
+              {
+                "tag": "You"
+              },
+              {
+                "tag": "LocationWithId",
+                "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+              }
+            ]
+          }
+        },
+        "limit": {
+          "tag": "PlayerLimit",
+          "contents": [
+            {
+              "tag": "PerWindow"
+            },
+            1
+          ]
+        },
+        "window": {
+          "tag": "Enters",
+          "contents": [
+            "After",
+            {
+              "tag": "You"
+            },
+            {
+              "tag": "LocationWithId",
+              "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+            }
+          ]
+        },
+        "metadata": null,
+        "criteria": {
+          "tag": "NoRestriction"
+        },
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "tooltip": null,
+        "canBeCancelled": true,
+        "displayAs": null,
+        "delayAdditionalCosts": null,
+        "basic": false,
+        "additionalCosts": [],
+        "requestor": {
+          "tag": "LocationSource",
+          "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+        },
+        "triggersSkillTest": false,
+        "wantsSkillTest": null,
+        "target": null,
+        "highlightFromWindow": false,
+        "skipForAll": false,
+        "ignoreAllCosts": false,
+        "fightCriteriaOverride": null,
+        "evadeCriteriaOverride": null
+      },
+      "windows": [
+        {
+          "windowTiming": "After",
+          "windowType": {
+            "tag": "Entering",
+            "contents": [
+              "c01001",
+              "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+            ]
+          },
+          "windowBatchId": null
+        }
+      ],
+      "before": [],
+      "messages": []
+    }
+  ]
+}

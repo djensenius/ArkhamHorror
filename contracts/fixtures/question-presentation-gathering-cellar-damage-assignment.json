@@ -1,0 +1,16 @@
+{
+  "choiceCount": 1,
+  "choices": [
+    {
+      "entity": {
+        "id": "c01001",
+        "kind": "investigator"
+      },
+      "kind": "assignDamage",
+      "sourceIndex": 0
+    }
+  ],
+  "protocolVersion": 1,
+  "questionKind": "chooseOne",
+  "questionVersion": 38
+}

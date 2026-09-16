@@ -1,0 +1,89 @@
+{
+  "tag": "QuestionWithSource",
+  "source": {
+    "tag": "AbilitySource",
+    "contents": [
+      {
+        "tag": "LocationSource",
+        "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+      },
+      1
+    ]
+  },
+  "tooltip": null,
+  "question": {
+    "tag": "QuestionLabel",
+    "label": "Assign 1 horror",
+    "card": null,
+    "question": {
+      "tag": "ChooseOne",
+      "choices": [
+        {
+          "tag": "ComponentLabel",
+          "component": {
+            "tag": "InvestigatorComponent",
+            "investigatorId": "c01001",
+            "tokenType": "HorrorToken"
+          },
+          "messages": [
+            {
+              "tag": "InvestigatorMessage",
+              "contents": {
+                "tag": "InvestigatorDamage_",
+                "contents": [
+                  "c01001",
+                  {
+                    "tag": "AbilitySource",
+                    "contents": [
+                      {
+                        "tag": "LocationSource",
+                        "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+                      },
+                      1
+                    ]
+                  },
+                  0,
+                  1
+                ]
+              }
+            },
+            {
+              "tag": "InvestigatorMessage",
+              "contents": {
+                "tag": "InvestigatorDoAssignDamage_",
+                "contents": [
+                  "c01001",
+                  {
+                    "tag": "AbilitySource",
+                    "contents": [
+                      {
+                        "tag": "LocationSource",
+                        "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+                      },
+                      1
+                    ]
+                  },
+                  {
+                    "tag": "DamageAny"
+                  },
+                  {
+                    "tag": "AnyAsset"
+                  },
+                  0,
+                  0,
+                  [],
+                  [
+                    {
+                      "tag": "InvestigatorTarget",
+                      "contents": "c01001"
+                    }
+                  ]
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

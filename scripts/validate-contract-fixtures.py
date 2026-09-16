@@ -109,6 +109,7 @@ capabilities_fixtures = [
 # Base.Api.Types.Capabilities.serverCapabilities).
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
 SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v1"
+BASIC_CHOICE_QUESTION_SCHEMA = "contracts/schemas/basic-choice-question.schema.json"
 QUESTION_PRESENTATION_SCHEMA = "contracts/schemas/question-presentation.schema.json"
 Q34_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-act-objective.json"
 Q34_PRESENTATION_FIXTURE = (
@@ -118,9 +119,42 @@ Q35_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-act-advance.json"
 Q35_PRESENTATION_FIXTURE = (
     "contracts/fixtures/question-presentation-gathering-act-advance.json"
 )
+Q36_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-movement.json"
+Q36_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-movement.json"
+)
+Q37_ATTIC_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-gathering-attic-entry-forced.json"
+)
+Q37_ATTIC_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-attic-entry-forced.json"
+)
+Q37_CELLAR_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-gathering-cellar-entry-forced.json"
+)
+Q37_CELLAR_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-cellar-entry-forced.json"
+)
+Q38_ATTIC_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-gathering-attic-horror-assignment.json"
+)
+Q38_ATTIC_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-attic-horror-assignment.json"
+)
+Q38_CELLAR_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-gathering-cellar-damage-assignment.json"
+)
+Q38_CELLAR_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-cellar-damage-assignment.json"
+)
 QUESTION_PRESENTATION_BINDINGS = {
     Q34_PRESENTATION_FIXTURE: Q34_QUESTION_FIXTURE,
     Q35_PRESENTATION_FIXTURE: Q35_QUESTION_FIXTURE,
+    Q36_PRESENTATION_FIXTURE: Q36_QUESTION_FIXTURE,
+    Q37_ATTIC_PRESENTATION_FIXTURE: Q37_ATTIC_QUESTION_FIXTURE,
+    Q37_CELLAR_PRESENTATION_FIXTURE: Q37_CELLAR_QUESTION_FIXTURE,
+    Q38_ATTIC_PRESENTATION_FIXTURE: Q38_ATTIC_QUESTION_FIXTURE,
+    Q38_CELLAR_PRESENTATION_FIXTURE: Q38_CELLAR_QUESTION_FIXTURE,
 }
 
 require(
@@ -485,28 +519,860 @@ Q35_ADVANCE_PRESENTATION = {
     "sourceIndex": 0,
 }
 
+
+def gathering_move_presentation(
+    source_index: int, card_code: str, location_id: str
+) -> dict[str, object]:
+    return {
+        "ability": {
+            "actions": ["move"],
+            "canBeCancelled": True,
+            "cardCode": card_code,
+            "index": 104,
+            "type": "action",
+        },
+        "actorId": "c01001",
+        "cost": {
+            "costs": [
+                {
+                    "amount": 1,
+                    "kind": "action",
+                },
+                {
+                    "kind": "other",
+                },
+            ],
+            "kind": "all",
+        },
+        "entity": {
+            "id": location_id,
+            "kind": "location",
+        },
+        "kind": "move",
+        "sourceIndex": source_index,
+    }
+
+
+def gathering_forced_presentation(
+    card_code: str, location_id: str
+) -> dict[str, object]:
+    return {
+        "ability": {
+            "actions": [],
+            "canBeCancelled": True,
+            "cardCode": card_code,
+            "index": 1,
+            "type": "forced",
+        },
+        "actorId": "c01001",
+        "cost": {
+            "kind": "free",
+        },
+        "entity": {
+            "id": location_id,
+            "kind": "location",
+        },
+        "kind": "resolveForcedAbility",
+        "sourceIndex": 0,
+    }
+
+
+Q36_CELLAR_MOVE_PRESENTATION = gathering_move_presentation(
+    9,
+    "c01114",
+    "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
+)
+Q36_ATTIC_MOVE_PRESENTATION = gathering_move_presentation(
+    10,
+    "c01113",
+    "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+)
+Q37_ATTIC_FORCED_PRESENTATION = gathering_forced_presentation(
+    "c01113",
+    "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+)
+Q37_CELLAR_FORCED_PRESENTATION = gathering_forced_presentation(
+    "c01114",
+    "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
+)
+Q38_ATTIC_HORROR_PRESENTATION = {
+    "entity": {
+        "id": "c01001",
+        "kind": "investigator",
+    },
+    "kind": "assignHorror",
+    "sourceIndex": 0,
+}
+Q38_CELLAR_DAMAGE_PRESENTATION = {
+    "entity": {
+        "id": "c01001",
+        "kind": "investigator",
+    },
+    "kind": "assignDamage",
+    "sourceIndex": 0,
+}
+
 EXACT_PRESENTATION_CHOICES = {
     Q34_PRESENTATION_FIXTURE: (
-        12,
-        Q34_OBJECTIVE_PRESENTATION,
-        "q34ObjectiveSemantic",
-        "Q34 source index 12 must be the exact Gathering act c01108 "
-        "objective semantic with Roland c01001 and the per-player group-clue cost",
+        (
+            12,
+            Q34_OBJECTIVE_PRESENTATION,
+            "q34ObjectiveSemantic",
+            "Q34 source index 12 must be the exact Gathering act c01108 "
+            "objective semantic with Roland c01001 and the per-player group-clue cost",
+        ),
     ),
     Q35_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q35_ADVANCE_PRESENTATION,
+            "q35AdvanceSemantic",
+            "Q35 source index 0 must be the exact Gathering act c01108 "
+            "advancement confirmation semantic",
+        ),
+    ),
+    Q36_PRESENTATION_FIXTURE: (
+        (
+            9,
+            Q36_CELLAR_MOVE_PRESENTATION,
+            "q36CellarMoveSemantic",
+            "Q36 source index 9 must be the exact Gathering Cellar c01114 "
+            "movement semantic",
+        ),
+        (
+            10,
+            Q36_ATTIC_MOVE_PRESENTATION,
+            "q36AtticMoveSemantic",
+            "Q36 source index 10 must be the exact Gathering Attic c01113 "
+            "movement semantic",
+        ),
+    ),
+    Q37_ATTIC_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q37_ATTIC_FORCED_PRESENTATION,
+            "q37AtticForcedSemantic",
+            "Q37 source index 0 must be the exact Gathering Attic c01113 "
+            "forced-ability semantic",
+        ),
+    ),
+    Q37_CELLAR_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q37_CELLAR_FORCED_PRESENTATION,
+            "q37CellarForcedSemantic",
+            "Q37 source index 0 must be the exact Gathering Cellar c01114 "
+            "forced-ability semantic",
+        ),
+    ),
+    Q38_ATTIC_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q38_ATTIC_HORROR_PRESENTATION,
+            "q38AtticHorrorSemantic",
+            "Q38 source index 0 must assign horror to investigator c01001",
+        ),
+    ),
+    Q38_CELLAR_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q38_CELLAR_DAMAGE_PRESENTATION,
+            "q38CellarDamageSemantic",
+            "Q38 source index 0 must assign damage to investigator c01001",
+        ),
+    ),
+}
+
+_Q37_LOCATION_SOURCE_PATHS = (
+    ("choices", 0, "ability", "source", "contents"),
+    ("choices", 0, "ability", "type", "window", "contents", 2, "contents"),
+    ("choices", 0, "ability", "window", "contents", 2, "contents"),
+    ("choices", 0, "ability", "requestor", "contents"),
+    ("choices", 0, "windows", 0, "windowType", "contents", 1),
+)
+_Q38_LOCATION_SOURCE_PATHS = (
+    ("source", "contents", 0, "contents"),
+    (
+        "question",
+        "question",
+        "choices",
         0,
-        Q35_ADVANCE_PRESENTATION,
-        "q35AdvanceSemantic",
-        "Q35 source index 0 must be the exact Gathering act c01108 "
-        "advancement confirmation semantic",
+        "messages",
+        0,
+        "contents",
+        "contents",
+        1,
+        "contents",
+        0,
+        "contents",
+    ),
+    (
+        "question",
+        "question",
+        "choices",
+        0,
+        "messages",
+        1,
+        "contents",
+        "contents",
+        1,
+        "contents",
+        0,
+        "contents",
+    ),
+)
+
+
+def q36_location_source_paths(choice_index: int) -> tuple[tuple[object, ...], ...]:
+    return (
+        ("choices", choice_index, "ability", "source", "contents"),
+        (
+            "choices",
+            choice_index,
+            "ability",
+            "criteria",
+            "contents",
+            0,
+            "contents",
+            "contents",
+        ),
+        (
+            "choices",
+            choice_index,
+            "ability",
+            "criteria",
+            "contents",
+            1,
+            "contents",
+            "contents",
+            "contents",
+            "contents",
+            1,
+            "contents",
+        ),
+        (
+            "choices",
+            choice_index,
+            "ability",
+            "criteria",
+            "contents",
+            2,
+            "contents",
+            "contents",
+            2,
+            "contents",
+            "contents",
+        ),
+        ("choices", choice_index, "ability", "requestor", "contents"),
+    )
+
+
+_GATHERING_LOCATION_SOURCE_BINDINGS = {
+    Q36_QUESTION_FIXTURE: (
+        (
+            Q36_PRESENTATION_FIXTURE,
+            9,
+            "Q36 Cellar",
+            q36_location_source_paths(9),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            10,
+            "Q36 Attic",
+            q36_location_source_paths(10),
+        ),
+    ),
+    Q37_ATTIC_QUESTION_FIXTURE: (
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            0,
+            "Q37 Attic",
+            _Q37_LOCATION_SOURCE_PATHS,
+        ),
+    ),
+    Q37_CELLAR_QUESTION_FIXTURE: (
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            0,
+            "Q37 Cellar",
+            _Q37_LOCATION_SOURCE_PATHS,
+        ),
+    ),
+    Q38_ATTIC_QUESTION_FIXTURE: (
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            0,
+            "Q37 Attic",
+            _Q38_LOCATION_SOURCE_PATHS,
+        ),
+    ),
+    Q38_CELLAR_QUESTION_FIXTURE: (
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            0,
+            "Q37 Cellar",
+            _Q38_LOCATION_SOURCE_PATHS,
+        ),
+    ),
+}
+
+_GATHERING_IDENTITY_BINDINGS = {
+    Q36_QUESTION_FIXTURE: (
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 9, "actorId"),
+            "Q36 Cellar actor",
+            (
+                ("choices", 9, "investigatorId"),
+                ("choices", 9, "windows", 0, "windowType", "contents"),
+            ),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 9, "ability", "cardCode"),
+            "Q36 Cellar ability card code",
+            (("choices", 9, "ability", "cardCode"),),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 9, "ability", "index"),
+            "Q36 Cellar ability index",
+            (("choices", 9, "ability", "index"),),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 10, "actorId"),
+            "Q36 Attic actor",
+            (
+                ("choices", 10, "investigatorId"),
+                ("choices", 10, "windows", 0, "windowType", "contents"),
+            ),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 10, "ability", "cardCode"),
+            "Q36 Attic ability card code",
+            (("choices", 10, "ability", "cardCode"),),
+        ),
+        (
+            Q36_PRESENTATION_FIXTURE,
+            ("choices", 10, "ability", "index"),
+            "Q36 Attic ability index",
+            (("choices", 10, "ability", "index"),),
+        ),
+    ),
+    Q37_ATTIC_QUESTION_FIXTURE: (
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            ("choices", 0, "actorId"),
+            "Q37 Attic actor",
+            (
+                ("choices", 0, "investigatorId"),
+                ("choices", 0, "windows", 0, "windowType", "contents", 0),
+            ),
+        ),
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            ("choices", 0, "ability", "cardCode"),
+            "Q37 Attic ability card code",
+            (("choices", 0, "ability", "cardCode"),),
+        ),
+        (
+            Q37_ATTIC_PRESENTATION_FIXTURE,
+            ("choices", 0, "ability", "index"),
+            "Q37 Attic ability index",
+            (("choices", 0, "ability", "index"),),
+        ),
+    ),
+    Q37_CELLAR_QUESTION_FIXTURE: (
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            ("choices", 0, "actorId"),
+            "Q37 Cellar actor",
+            (
+                ("choices", 0, "investigatorId"),
+                ("choices", 0, "windows", 0, "windowType", "contents", 0),
+            ),
+        ),
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            ("choices", 0, "ability", "cardCode"),
+            "Q37 Cellar ability card code",
+            (("choices", 0, "ability", "cardCode"),),
+        ),
+        (
+            Q37_CELLAR_PRESENTATION_FIXTURE,
+            ("choices", 0, "ability", "index"),
+            "Q37 Cellar ability index",
+            (("choices", 0, "ability", "index"),),
+        ),
+    ),
+    Q38_ATTIC_QUESTION_FIXTURE: (
+        (
+            Q38_ATTIC_PRESENTATION_FIXTURE,
+            ("choices", 0, "entity", "id"),
+            "Q38 Attic assignment investigator",
+            (
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "component",
+                    "investigatorId",
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    0,
+                    "contents",
+                    "contents",
+                    0,
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    1,
+                    "contents",
+                    "contents",
+                    0,
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    1,
+                    "contents",
+                    "contents",
+                    7,
+                    0,
+                    "contents",
+                ),
+            ),
+        ),
+    ),
+    Q38_CELLAR_QUESTION_FIXTURE: (
+        (
+            Q38_CELLAR_PRESENTATION_FIXTURE,
+            ("choices", 0, "entity", "id"),
+            "Q38 Cellar assignment investigator",
+            (
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "component",
+                    "investigatorId",
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    0,
+                    "contents",
+                    "contents",
+                    0,
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    1,
+                    "contents",
+                    "contents",
+                    0,
+                ),
+                (
+                    "question",
+                    "question",
+                    "choices",
+                    0,
+                    "messages",
+                    1,
+                    "contents",
+                    "contents",
+                    6,
+                    0,
+                    "contents",
+                ),
+            ),
+        ),
     ),
 }
 
 
+def gathering_action_projection_input_paths(
+    choice_index: int, label: str
+) -> tuple[tuple[tuple[object, ...], str], ...]:
+    ability_path = ("choices", choice_index, "ability")
+    return (
+        (ability_path + ("type", "tag"), f"{label} ability type"),
+        (
+            ability_path + ("type", "actions", "contents"),
+            f"{label} action",
+        ),
+        (ability_path + ("basic",), f"{label} basic-action state"),
+        (ability_path + ("type", "cost"), f"{label} cost"),
+        (
+            ability_path + ("canBeCancelled",),
+            f"{label} cancellation state",
+        ),
+        (
+            ability_path + ("additionalCosts",),
+            f"{label} additional costs",
+        ),
+        (
+            ability_path + ("ignoreAllCosts",),
+            f"{label} ignore-all-costs state",
+        ),
+        (ability_path + ("target",), f"{label} target"),
+    )
+
+
+def gathering_forced_projection_input_paths(
+    choice_index: int, label: str
+) -> tuple[tuple[tuple[object, ...], str], ...]:
+    ability_path = ("choices", choice_index, "ability")
+    return (
+        (ability_path + ("type", "tag"), f"{label} ability type"),
+        (
+            ability_path + ("canBeCancelled",),
+            f"{label} cancellation state",
+        ),
+        (
+            ability_path + ("additionalCosts",),
+            f"{label} additional costs",
+        ),
+        (
+            ability_path + ("ignoreAllCosts",),
+            f"{label} ignore-all-costs state",
+        ),
+        (ability_path + ("target",), f"{label} target"),
+    )
+
+
+_GATHERING_PROJECTED_ABILITY_INPUT_BINDINGS = {
+    Q36_QUESTION_FIXTURE: (
+        gathering_action_projection_input_paths(9, "Q36 Cellar")
+        + gathering_action_projection_input_paths(10, "Q36 Attic")
+    ),
+    Q37_ATTIC_QUESTION_FIXTURE: gathering_forced_projection_input_paths(
+        0, "Q37 Attic"
+    ),
+    Q37_CELLAR_QUESTION_FIXTURE: gathering_forced_projection_input_paths(
+        0, "Q37 Cellar"
+    ),
+}
+
+
+def nested_value(value: object, path: tuple[object, ...]) -> object | None:
+    current = value
+    for component in path:
+        if isinstance(component, int):
+            if not isinstance(current, list) or not 0 <= component < len(current):
+                return None
+            current = current[component]
+        else:
+            if not isinstance(current, dict) or component not in current:
+                return None
+            current = current[component]
+    return current
+
+
+def nested_binding_value(
+    value: object, path: tuple[object, ...]
+) -> tuple[bool, object, tuple[object, ...]]:
+    current = value
+    traversed: list[object] = []
+    for component in path:
+        if isinstance(component, int):
+            if not isinstance(current, list):
+                return False, None, tuple(traversed)
+            traversed.append(component)
+            if not 0 <= component < len(current):
+                return False, None, tuple(traversed)
+            current = current[component]
+        else:
+            if not isinstance(current, dict):
+                return False, None, tuple(traversed)
+            traversed.append(component)
+            if component not in current:
+                return False, None, tuple(traversed)
+            current = current[component]
+    return True, current, tuple(path)
+
+
+def schema_error_covers_binding_failure(
+    schema_errors: tuple[object, ...],
+    schema_error_path_prefix: tuple[str, ...],
+    failure_path: tuple[object, ...],
+) -> bool:
+    full_failure_path = tuple(map(str, failure_path))
+    for error in schema_errors:
+        error_path = schema_error_path_prefix + tuple(
+            map(str, error.absolute_path)
+        )
+        if full_failure_path[: len(error_path)] != error_path:
+            continue
+        if error.validator == "required" and len(error_path) < len(
+            full_failure_path
+        ):
+            required = error.validator_value
+            if isinstance(required, list) and full_failure_path[
+                len(error_path)
+            ] in map(str, required):
+                return True
+        if error.validator in {
+            "type",
+            "minItems",
+            "maxItems",
+            "items",
+            "prefixItems",
+        }:
+            return True
+    return False
+
+
+def schema_error_covers_binding_path(
+    schema_errors: tuple[object, ...],
+    schema_error_path_prefix: tuple[str, ...],
+    binding_path: tuple[object, ...],
+) -> bool:
+    full_binding_path = tuple(map(str, binding_path))
+    for error in schema_errors:
+        error_path = schema_error_path_prefix + tuple(
+            map(str, error.absolute_path)
+        )
+        if (
+            full_binding_path[: len(error_path)] == error_path
+            or error_path[: len(full_binding_path)] == full_binding_path
+        ):
+            return True
+    return False
+
+
+def gathering_location_source_binding_errors(
+    fixture_path: str,
+    raw_question: object,
+    *,
+    schema_errors: tuple[object, ...] = (),
+    schema_error_path_prefix: tuple[str, ...] = (),
+) -> list[ContractValidationError]:
+    bindings = _GATHERING_LOCATION_SOURCE_BINDINGS.get(fixture_path)
+    if (
+        bindings is None
+        or not isinstance(raw_question, dict)
+        or raw_question_presentation_shape(raw_question)[0] == "unsupported"
+    ):
+        return []
+
+    errors: list[ContractValidationError] = []
+    reported_missing_paths: set[tuple[str, ...]] = set()
+    for presentation_path, choice_index, source_name, source_paths in bindings:
+        presentation = load_governed_json(presentation_path)
+        expected_location_id = nested_value(
+            presentation,
+            ("choices", choice_index, "entity", "id"),
+        )
+        require(
+            isinstance(expected_location_id, str),
+            f"{presentation_path} must expose a string location entity id",
+        )
+
+        for source_path in source_paths:
+            path_exists, actual_location_id, failure_path = nested_binding_value(
+                raw_question,
+                source_path,
+            )
+            if not path_exists and schema_error_covers_binding_failure(
+                schema_errors,
+                schema_error_path_prefix,
+                failure_path,
+            ):
+                continue
+            error_path = source_path if path_exists else failure_path
+            normalized_error_path = tuple(map(str, error_path))
+            if not path_exists and normalized_error_path in reported_missing_paths:
+                continue
+            if (
+                not path_exists
+                or type(actual_location_id) is not type(expected_location_id)
+                or actual_location_id != expected_location_id
+            ):
+                reported_missing_paths.add(normalized_error_path)
+                errors.append(
+                    ContractValidationError(
+                        list(normalized_error_path),
+                        "gatheringLocationSourceBinding",
+                        f"Location source {actual_location_id!r} must match the "
+                        f"authoritative {source_name} location id "
+                        f"{expected_location_id!r}",
+                    )
+                )
+    return errors
+
+
+def gathering_projected_ability_binding_errors(
+    fixture_path: str,
+    raw_question: object,
+    *,
+    schema_errors: tuple[object, ...] = (),
+    schema_error_path_prefix: tuple[str, ...] = (),
+) -> list[ContractValidationError]:
+    bindings = _GATHERING_PROJECTED_ABILITY_INPUT_BINDINGS.get(fixture_path)
+    if (
+        bindings is None
+        or not isinstance(raw_question, dict)
+        or raw_question_presentation_shape(raw_question)[0] == "unsupported"
+    ):
+        return []
+
+    authoritative_question = load_governed_json(fixture_path)
+    errors: list[ContractValidationError] = []
+    for raw_path, input_name in bindings:
+        expected_exists, expected_value, _ = nested_binding_value(
+            authoritative_question,
+            raw_path,
+        )
+        require(
+            expected_exists,
+            f"{fixture_path} must expose the authoritative {input_name}",
+        )
+        path_exists, actual_value, failure_path = nested_binding_value(
+            raw_question,
+            raw_path,
+        )
+        error_path = raw_path if path_exists else failure_path
+        if schema_error_covers_binding_path(
+            schema_errors,
+            schema_error_path_prefix,
+            error_path,
+        ):
+            continue
+        if (
+            not path_exists
+            or type(actual_value) is not type(expected_value)
+            or actual_value != expected_value
+        ):
+            errors.append(
+                ContractValidationError(
+                    list(map(str, error_path)),
+                    "gatheringProjectedAbilityBinding",
+                    f"{input_name} {actual_value!r} must remain equal to "
+                    f"the authoritative raw value {expected_value!r} because "
+                    "it determines the pinned semantic presentation",
+                )
+            )
+    return errors
+
+
+def gathering_identity_binding_errors(
+    fixture_path: str,
+    raw_question: object,
+    *,
+    schema_errors: tuple[object, ...] = (),
+    schema_error_path_prefix: tuple[str, ...] = (),
+) -> list[ContractValidationError]:
+    bindings = _GATHERING_IDENTITY_BINDINGS.get(fixture_path)
+    if (
+        bindings is None
+        or not isinstance(raw_question, dict)
+        or raw_question_presentation_shape(raw_question)[0] == "unsupported"
+    ):
+        return []
+
+    errors: list[ContractValidationError] = []
+    reported_missing_paths: set[tuple[str, ...]] = set()
+    for presentation_path, presentation_value_path, identity_name, raw_paths in bindings:
+        presentation = load_governed_json(presentation_path)
+        expected_value = nested_value(presentation, presentation_value_path)
+        require(
+            isinstance(expected_value, (str, int)),
+            f"{presentation_path} must expose {identity_name} as a string or integer",
+        )
+        for raw_path in raw_paths:
+            path_exists, actual_value, failure_path = nested_binding_value(
+                raw_question,
+                raw_path,
+            )
+            if not path_exists and schema_error_covers_binding_failure(
+                schema_errors,
+                schema_error_path_prefix,
+                failure_path,
+            ):
+                continue
+            error_path = raw_path if path_exists else failure_path
+            normalized_error_path = tuple(map(str, error_path))
+            if not path_exists and normalized_error_path in reported_missing_paths:
+                continue
+            if (
+                not path_exists
+                or type(actual_value) is not type(expected_value)
+                or actual_value != expected_value
+            ):
+                reported_missing_paths.add(normalized_error_path)
+                errors.append(
+                    ContractValidationError(
+                        list(normalized_error_path),
+                        "gatheringIdentityBinding",
+                        f"{identity_name} {actual_value!r} must match the "
+                        f"authoritative presentation value {expected_value!r}",
+                    )
+                )
+    return errors
+
+
 def contract_fixture_errors(
-    schema_path: str, fixture_path: str, instance: object
+    schema_path: str,
+    fixture_path: str,
+    instance: object,
+    *,
+    full_fixture_instance: object | None = None,
+    schema_errors: tuple[object, ...] = (),
+    schema_error_path_prefix: tuple[str, ...] = (),
 ) -> list[ContractValidationError]:
     errors = public_game_question_presentation_errors(instance)
+    if schema_path == BASIC_CHOICE_QUESTION_SCHEMA:
+        binding_instance = (
+            instance if full_fixture_instance is None else full_fixture_instance
+        )
+        errors.extend(
+            gathering_location_source_binding_errors(
+                fixture_path,
+                binding_instance,
+                schema_errors=schema_errors,
+                schema_error_path_prefix=schema_error_path_prefix,
+            )
+        )
+        errors.extend(
+            gathering_identity_binding_errors(
+                fixture_path,
+                binding_instance,
+                schema_errors=schema_errors,
+                schema_error_path_prefix=schema_error_path_prefix,
+            )
+        )
+        errors.extend(
+            gathering_projected_ability_binding_errors(
+                fixture_path,
+                binding_instance,
+                schema_errors=schema_errors,
+                schema_error_path_prefix=schema_error_path_prefix,
+            )
+        )
     if (
         schema_path != QUESTION_PRESENTATION_SCHEMA
         or fixture_path not in QUESTION_PRESENTATION_BINDINGS
@@ -516,28 +1382,32 @@ def contract_fixture_errors(
 
     raw_fixture_path = QUESTION_PRESENTATION_BINDINGS[fixture_path]
     raw_question = load_governed_json(raw_fixture_path)
+    raw_question_kind, _ = raw_question_presentation_shape(raw_question)
     require(
-        isinstance(raw_question, dict) and isinstance(raw_question.get("choices"), list),
-        f"{raw_fixture_path} must be a raw question object with a choices array",
+        raw_question_kind != "unsupported",
+        f"{raw_fixture_path} must contain a supported raw question shape",
     )
     errors.extend(presentation_binding_errors(instance, raw_question))
 
     descriptors = instance.get("choices")
     if isinstance(descriptors, list):
-        exact_index, expected_choice, keyword, message = EXACT_PRESENTATION_CHOICES[
-            fixture_path
-        ]
-        if (
-            len(descriptors) <= exact_index
-            or descriptors[exact_index] != expected_choice
-        ):
-            errors.append(
-                ContractValidationError(
-                    ["choices", str(exact_index)],
-                    keyword,
-                    message,
+        for (
+            exact_index,
+            expected_choice,
+            keyword,
+            message,
+        ) in EXACT_PRESENTATION_CHOICES[fixture_path]:
+            if (
+                len(descriptors) <= exact_index
+                or descriptors[exact_index] != expected_choice
+            ):
+                errors.append(
+                    ContractValidationError(
+                        ["choices", str(exact_index)],
+                        keyword,
+                        message,
+                    )
                 )
-            )
 
     return errors
 
@@ -557,8 +1427,16 @@ for fixture_index, fixture in enumerate(fixtures):
         format_checker=FormatChecker(),
         registry=registry,
     )
-    errors = list(validator.iter_errors(instance))
-    errors.extend(contract_fixture_errors(schema_path, fixture_path, instance))
+    schema_errors = tuple(validator.iter_errors(instance))
+    errors = list(schema_errors)
+    errors.extend(
+        contract_fixture_errors(
+            schema_path,
+            fixture_path,
+            instance,
+            schema_errors=schema_errors,
+        )
+    )
     errors.sort(key=lambda error: tuple(map(str, error.absolute_path)))
 
     if errors:
@@ -637,6 +1515,17 @@ def _decode_json_pointer_token(raw_token: str, *, pointer: str) -> str:
         "'~' must be immediately followed by '0' or '1'",
     )
     return raw_token.replace("~1", "/").replace("~0", "~")
+
+
+def json_pointer_components(pointer: str) -> tuple[str, ...]:
+    require(
+        pointer == "" or pointer.startswith("/"),
+        f"Invalid JSON Pointer: {pointer!r}",
+    )
+    return tuple(
+        _decode_json_pointer_token(raw_token, pointer=pointer)
+        for raw_token in pointer.split("/")[1:]
+    )
 
 
 def resolve_json_pointer(document, pointer: str):
@@ -952,6 +1841,8 @@ def diagnose_negative(
     *,
     schema_path: str | None = None,
     base_positive_fixture: str | None = None,
+    base_pointer: str = "",
+    full_fixture_instance: object | None = None,
 ):
     """Validate `instance` against `schema` (optionally scoped to one `oneOf`
     branch), and return (ok: bool, detail: str) describing whether the
@@ -961,10 +1852,18 @@ def diagnose_negative(
     """
     target_schema = extract_branch_schema(schema, branch) if branch is not None else schema
     validator = make_validator(target_schema)
-    errors = list(flatten_errors(validator.iter_errors(instance)))
+    schema_errors = tuple(flatten_errors(validator.iter_errors(instance)))
+    errors = list(schema_errors)
     if schema_path is not None and base_positive_fixture is not None:
         errors.extend(
-            contract_fixture_errors(schema_path, base_positive_fixture, instance)
+            contract_fixture_errors(
+                schema_path,
+                base_positive_fixture,
+                instance,
+                full_fixture_instance=full_fixture_instance,
+                schema_errors=schema_errors,
+                schema_error_path_prefix=json_pointer_components(base_pointer),
+            )
         )
 
     if not errors:
@@ -1021,6 +1920,24 @@ def load_base_value(base_positive_fixture: str, base_pointer: str):
     return resolve_json_pointer(positive_fixture_cache[base_positive_fixture], base_pointer)
 
 
+def apply_fixture_mutation(
+    base_positive_fixture: str,
+    base_pointer: str,
+    mutation: dict,
+):
+    root_mutation = copy.deepcopy(mutation)
+    mutation_pointer = root_mutation["pointer"]
+    root_mutation["pointer"] = (
+        base_pointer
+        if mutation_pointer == ""
+        else f"{base_pointer}{mutation_pointer}"
+    )
+    return apply_mutation(
+        positive_fixture_cache[base_positive_fixture],
+        root_mutation,
+    )
+
+
 for negative_fixture_index, fixture in enumerate(negative_fixtures):
     require_entry_keys(
         fixture,
@@ -1046,6 +1963,11 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
 
     base_value = load_base_value(base_positive_fixture, base_pointer)
     mutated_instance = apply_mutation(base_value, mutation)
+    mutated_fixture_instance = apply_fixture_mutation(
+        base_positive_fixture,
+        base_pointer,
+        mutation,
+    )
 
     ok, detail = diagnose_negative(
         schema,
@@ -1054,6 +1976,8 @@ for negative_fixture_index, fixture in enumerate(negative_fixtures):
         expected_errors,
         schema_path=schema_path,
         base_positive_fixture=base_positive_fixture,
+        base_pointer=base_pointer,
+        full_fixture_instance=mutated_fixture_instance,
     )
     require(
         ok,

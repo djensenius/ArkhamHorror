@@ -41,7 +41,7 @@ constructor.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.
-- `questions.semantic-presentation.v1` is global at revision `0.1.41`. It
+- `questions.semantic-presentation.v1` is global at revision `0.1.42`. It
   advertises the additive, backend-authored `questionPresentation` projection
   beside the unchanged authoritative raw question. A client uses descriptors
   only to render native controls, validates their protocol/question versions
@@ -590,7 +590,7 @@ ordering, identities, criteria, limits, both declared matchers, the actual
 window, canonical UUID and integer spellings, fixed flags/nulls, empty arrays,
 skip control, and closed-object boundaries.
 
-#### The Gathering act objective, advancement, and semantic presentation
+#### The Gathering act objective, advancement, movement entry, and semantic presentation
 
 Revision `0.1.41` registers
 `question-gathering-act-objective.json`, the authoritative raw question 34
@@ -635,6 +635,47 @@ descriptor executes the cost or advancement; the existing backend answer path
 does. The capability is present in both catalog and no-catalog capability
 responses; only `i18n.locale-catalog.v1` remains conditional on deployment
 configuration.
+
+Revision `0.1.42` extends the same authority boundary through the immediate
+movement-entry sequence. `question-gathering-movement.json` preserves all 12
+raw Q36 choices, while its semantic projection classifies source indices `9`
+and `10` as `move`, bound respectively to the Cellar (`c01114`) and Attic
+(`c01113`) location entities, their action abilities, and their complete
+projected costs. The raw `AbilityLabel` remains authoritative and must use the
+destination `LocationSource`; Apple renders the descriptor and submits that
+same source index without evaluating movement legality or costs.
+
+The Attic and Cellar Q37 fixtures preserve the mandatory entry abilities as
+raw `WindowChooseOne` prompts. Their semantic projections classify source
+index `0` as `resolveForcedAbility`, retain the acting investigator and
+location entity, identify ability index `1` as `forced`, and project a free
+cost. The Q38 `QuestionWithSource` fixtures then preserve the exact
+location-ability source, label, investigator component, direct damage/horror
+message, and continuation candidate arrays. Their projections expose only
+`assignHorror` for the Attic and `assignDamage` for the Cellar, each targeting
+the authoritative investigator at unchanged source index `0`.
+
+Contract validation pairs all five new presentations with their raw questions
+for kind, count, and source-index integrity. Six hard-coded exact checks pin
+both Q36 destinations and both Q37/Q38 branches. Raw/presentation binding
+checks require every repeated Q36 movement destination, actor, ability card
+code, and ability index to match its descriptor. They also pin every raw
+ability input that determines the Q36/Q37 projected kind, action list,
+cancellation state, entity, and cost, without globally freezing those dynamic
+fields for unrelated game states. Every Q37 location and entering-investigator
+identity must match its forced descriptor; every Q38 location source,
+investigator component, direct/continuation message actor, and continuation
+candidate must match the corresponding branch descriptor. Forty-three
+isolated mutations reject a non-location Move source, malformed or source-less
+forced abilities, unsupported forced variants promoted as native semantics,
+non-location forced descriptors, missing opaque binding ancestors,
+projection-changing ability types, actions, costs, cancellation, targets, or
+cost overrides, non-assignment damage labels, swapped assignment token kinds,
+invented assignment authority, wrong movement destinations, actors, or card
+identities, swapped forced card codes or actors, wrong assignment
+investigators, and mismatched forced/assignment location sources. The backend
+alone moves the investigator, resolves each forced ability, and assigns damage
+or horror.
 
 #### Mythos encounter-deck draw
 
