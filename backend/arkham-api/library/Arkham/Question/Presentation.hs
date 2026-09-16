@@ -54,6 +54,8 @@ data ChoicePresentationKind
   = AdvanceAct
   | AdvanceAgenda
   | ApplySkillTestResults
+  | AssignDamage
+  | AssignHorror
   | ChooseTarget
   | DrawCard
   | EndTurn
@@ -63,6 +65,8 @@ data ChoicePresentationKind
   | GainResource
   | Investigate
   | LocalizedLabel
+  | Move
+  | ResolveForcedAbility
   | SkipTriggers
   | StartSkillTest
   | UseAbility
@@ -231,6 +235,8 @@ choiceKindText = \case
   AdvanceAct -> "advanceAct"
   AdvanceAgenda -> "advanceAgenda"
   ApplySkillTestResults -> "applySkillTestResults"
+  AssignDamage -> "assignDamage"
+  AssignHorror -> "assignHorror"
   ChooseTarget -> "chooseTarget"
   DrawCard -> "drawCard"
   EndTurn -> "endTurn"
@@ -240,6 +246,8 @@ choiceKindText = \case
   GainResource -> "gainResource"
   Investigate -> "investigate"
   LocalizedLabel -> "localizedLabel"
+  Move -> "move"
+  ResolveForcedAbility -> "resolveForcedAbility"
   SkipTriggers -> "skipTriggers"
   StartSkillTest -> "startSkillTest"
   UseAbility -> "useAbility"
@@ -311,11 +319,15 @@ presentChoice context sourceIndex = \case
   EngageLabel enemyId _ ->
     Just $ actionTargetChoice sourceIndex Engage (EnemyEntity enemyId)
   AbilityLabel investigatorId ability _ _ _ ->
-    Just $ abilityChoice sourceIndex investigatorId ability
-  ComponentLabel component _
-    | context == PlayerWindowContext ->
-        case component of
-          InvestigatorComponent investigatorId ResourceToken ->
+    abilityChoice sourceIndex investigatorId ability
+  ComponentLabel component _ ->
+    case component of
+      InvestigatorComponent investigatorId DamageToken ->
+        Just $ targetChoice sourceIndex AssignDamage (InvestigatorEntity investigatorId)
+      InvestigatorComponent investigatorId HorrorToken ->
+        Just $ targetChoice sourceIndex AssignHorror (InvestigatorEntity investigatorId)
+      InvestigatorComponent investigatorId ResourceToken
+        | context == PlayerWindowContext ->
             Just
               $ ChoicePresentation
                 sourceIndex
@@ -325,7 +337,8 @@ presentChoice context sourceIndex = \case
                 Nothing
                 Nothing
                 Nothing
-          InvestigatorDeckComponent investigatorId ->
+      InvestigatorDeckComponent investigatorId
+        | context == PlayerWindowContext ->
             Just
               $ ChoicePresentation
                 sourceIndex
@@ -335,7 +348,7 @@ presentChoice context sourceIndex = \case
                 Nothing
                 Nothing
                 Nothing
-          _ -> Nothing
+      _ -> Nothing
   EndTurnButton investigatorId _ ->
     Just
       $ ChoicePresentation
@@ -437,7 +450,7 @@ actionTargetChoice sourceIndex kind entity =
     Nothing
     Nothing
 
-abilityChoice :: Int -> InvestigatorId -> Ability.Ability -> ChoicePresentation
+abilityChoice :: Int -> InvestigatorId -> Ability.Ability -> Maybe ChoicePresentation
 abilityChoice sourceIndex investigatorId ability =
   let
     entity =
@@ -456,15 +469,20 @@ abilityChoice sourceIndex investigatorId ability =
       | Ability.abilityIgnoreAllCosts ability = Cost.Free
       | otherwise =
           abilityCost ability <> mconcat (Ability.abilityAdditionalCosts ability)
-   in
-    ChoicePresentation
-      sourceIndex
-      kind
-      (Just investigatorId)
-      entity
-      Nothing
-      (Just abilityPresentation)
-      (Just $ presentCost totalCost)
+    choice =
+      ChoicePresentation
+        sourceIndex
+        kind
+        (Just investigatorId)
+        entity
+        Nothing
+        (Just abilityPresentation)
+        (Just $ presentCost totalCost)
+   in case (kind, entity) of
+        (Move, Just LocationEntity {}) -> Just choice
+        (Move, _) -> Nothing
+        (ResolveForcedAbility, Nothing) -> Nothing
+        _ -> Just choice
 
 abilityChoiceKind
   :: AbilityType.AbilityType
@@ -477,10 +495,12 @@ abilityChoiceKind abilityType entity actions
         Just (ActEntity _) -> AdvanceAct
         Just (AgendaEntity _) -> AdvanceAgenda
         _ -> UseAbility
+  | isForcedAbility abilityType = ResolveForcedAbility
   | "investigate" `elem` actions = Investigate
   | "fight" `elem` actions = Fight
   | "evade" `elem` actions = Evade
   | "engage" `elem` actions = Engage
+  | "move" `elem` actions = Move
   | otherwise = UseAbility
 
 isObjectiveAbility :: AbilityType.AbilityType -> Bool
@@ -488,6 +508,14 @@ isObjectiveAbility = \case
   AbilityType.Objective _ -> True
   AbilityType.DelayedAbility abilityType -> isObjectiveAbility abilityType
   AbilityType.ForcedWhen _ abilityType -> isObjectiveAbility abilityType
+  _ -> False
+
+isForcedAbility :: AbilityType.AbilityType -> Bool
+isForcedAbility = \case
+  AbilityType.ForcedAbility {} -> True
+  AbilityType.SilentForcedAbility {} -> True
+  AbilityType.ForcedAbilityWithCost {} -> True
+  AbilityType.ForcedWhen {} -> True
   _ -> False
 
 abilityTypeText :: AbilityType.AbilityType -> Text

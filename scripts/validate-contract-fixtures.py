@@ -118,9 +118,42 @@ Q35_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-act-advance.json"
 Q35_PRESENTATION_FIXTURE = (
     "contracts/fixtures/question-presentation-gathering-act-advance.json"
 )
+Q36_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-movement.json"
+Q36_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-movement.json"
+)
+Q37_ATTIC_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-gathering-attic-entry-forced.json"
+)
+Q37_ATTIC_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-attic-entry-forced.json"
+)
+Q37_CELLAR_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-gathering-cellar-entry-forced.json"
+)
+Q37_CELLAR_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-cellar-entry-forced.json"
+)
+Q38_ATTIC_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-gathering-attic-horror-assignment.json"
+)
+Q38_ATTIC_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-attic-horror-assignment.json"
+)
+Q38_CELLAR_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-gathering-cellar-damage-assignment.json"
+)
+Q38_CELLAR_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-gathering-cellar-damage-assignment.json"
+)
 QUESTION_PRESENTATION_BINDINGS = {
     Q34_PRESENTATION_FIXTURE: Q34_QUESTION_FIXTURE,
     Q35_PRESENTATION_FIXTURE: Q35_QUESTION_FIXTURE,
+    Q36_PRESENTATION_FIXTURE: Q36_QUESTION_FIXTURE,
+    Q37_ATTIC_PRESENTATION_FIXTURE: Q37_ATTIC_QUESTION_FIXTURE,
+    Q37_CELLAR_PRESENTATION_FIXTURE: Q37_CELLAR_QUESTION_FIXTURE,
+    Q38_ATTIC_PRESENTATION_FIXTURE: Q38_ATTIC_QUESTION_FIXTURE,
+    Q38_CELLAR_PRESENTATION_FIXTURE: Q38_CELLAR_QUESTION_FIXTURE,
 }
 
 require(
@@ -485,20 +518,167 @@ Q35_ADVANCE_PRESENTATION = {
     "sourceIndex": 0,
 }
 
+
+def gathering_move_presentation(
+    source_index: int, card_code: str, location_id: str
+) -> dict[str, object]:
+    return {
+        "ability": {
+            "actions": ["move"],
+            "canBeCancelled": True,
+            "cardCode": card_code,
+            "index": 104,
+            "type": "action",
+        },
+        "actorId": "c01001",
+        "cost": {
+            "costs": [
+                {
+                    "amount": 1,
+                    "kind": "action",
+                },
+                {
+                    "kind": "other",
+                },
+            ],
+            "kind": "all",
+        },
+        "entity": {
+            "id": location_id,
+            "kind": "location",
+        },
+        "kind": "move",
+        "sourceIndex": source_index,
+    }
+
+
+def gathering_forced_presentation(
+    card_code: str, location_id: str
+) -> dict[str, object]:
+    return {
+        "ability": {
+            "actions": [],
+            "canBeCancelled": True,
+            "cardCode": card_code,
+            "index": 1,
+            "type": "forced",
+        },
+        "actorId": "c01001",
+        "cost": {
+            "kind": "free",
+        },
+        "entity": {
+            "id": location_id,
+            "kind": "location",
+        },
+        "kind": "resolveForcedAbility",
+        "sourceIndex": 0,
+    }
+
+
+Q36_CELLAR_MOVE_PRESENTATION = gathering_move_presentation(
+    9,
+    "c01114",
+    "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
+)
+Q36_ATTIC_MOVE_PRESENTATION = gathering_move_presentation(
+    10,
+    "c01113",
+    "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+)
+Q37_ATTIC_FORCED_PRESENTATION = gathering_forced_presentation(
+    "c01113",
+    "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+)
+Q37_CELLAR_FORCED_PRESENTATION = gathering_forced_presentation(
+    "c01114",
+    "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
+)
+Q38_ATTIC_HORROR_PRESENTATION = {
+    "entity": {
+        "id": "c01001",
+        "kind": "investigator",
+    },
+    "kind": "assignHorror",
+    "sourceIndex": 0,
+}
+Q38_CELLAR_DAMAGE_PRESENTATION = {
+    "entity": {
+        "id": "c01001",
+        "kind": "investigator",
+    },
+    "kind": "assignDamage",
+    "sourceIndex": 0,
+}
+
 EXACT_PRESENTATION_CHOICES = {
     Q34_PRESENTATION_FIXTURE: (
-        12,
-        Q34_OBJECTIVE_PRESENTATION,
-        "q34ObjectiveSemantic",
-        "Q34 source index 12 must be the exact Gathering act c01108 "
-        "objective semantic with Roland c01001 and the per-player group-clue cost",
+        (
+            12,
+            Q34_OBJECTIVE_PRESENTATION,
+            "q34ObjectiveSemantic",
+            "Q34 source index 12 must be the exact Gathering act c01108 "
+            "objective semantic with Roland c01001 and the per-player group-clue cost",
+        ),
     ),
     Q35_PRESENTATION_FIXTURE: (
-        0,
-        Q35_ADVANCE_PRESENTATION,
-        "q35AdvanceSemantic",
-        "Q35 source index 0 must be the exact Gathering act c01108 "
-        "advancement confirmation semantic",
+        (
+            0,
+            Q35_ADVANCE_PRESENTATION,
+            "q35AdvanceSemantic",
+            "Q35 source index 0 must be the exact Gathering act c01108 "
+            "advancement confirmation semantic",
+        ),
+    ),
+    Q36_PRESENTATION_FIXTURE: (
+        (
+            9,
+            Q36_CELLAR_MOVE_PRESENTATION,
+            "q36CellarMoveSemantic",
+            "Q36 source index 9 must be the exact Gathering Cellar c01114 "
+            "movement semantic",
+        ),
+        (
+            10,
+            Q36_ATTIC_MOVE_PRESENTATION,
+            "q36AtticMoveSemantic",
+            "Q36 source index 10 must be the exact Gathering Attic c01113 "
+            "movement semantic",
+        ),
+    ),
+    Q37_ATTIC_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q37_ATTIC_FORCED_PRESENTATION,
+            "q37AtticForcedSemantic",
+            "Q37 source index 0 must be the exact Gathering Attic c01113 "
+            "forced-ability semantic",
+        ),
+    ),
+    Q37_CELLAR_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q37_CELLAR_FORCED_PRESENTATION,
+            "q37CellarForcedSemantic",
+            "Q37 source index 0 must be the exact Gathering Cellar c01114 "
+            "forced-ability semantic",
+        ),
+    ),
+    Q38_ATTIC_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q38_ATTIC_HORROR_PRESENTATION,
+            "q38AtticHorrorSemantic",
+            "Q38 source index 0 must assign horror to investigator c01001",
+        ),
+    ),
+    Q38_CELLAR_PRESENTATION_FIXTURE: (
+        (
+            0,
+            Q38_CELLAR_DAMAGE_PRESENTATION,
+            "q38CellarDamageSemantic",
+            "Q38 source index 0 must assign damage to investigator c01001",
+        ),
     ),
 }
 
@@ -516,28 +696,32 @@ def contract_fixture_errors(
 
     raw_fixture_path = QUESTION_PRESENTATION_BINDINGS[fixture_path]
     raw_question = load_governed_json(raw_fixture_path)
+    raw_question_kind, _ = raw_question_presentation_shape(raw_question)
     require(
-        isinstance(raw_question, dict) and isinstance(raw_question.get("choices"), list),
-        f"{raw_fixture_path} must be a raw question object with a choices array",
+        raw_question_kind != "unsupported",
+        f"{raw_fixture_path} must contain a supported raw question shape",
     )
     errors.extend(presentation_binding_errors(instance, raw_question))
 
     descriptors = instance.get("choices")
     if isinstance(descriptors, list):
-        exact_index, expected_choice, keyword, message = EXACT_PRESENTATION_CHOICES[
-            fixture_path
-        ]
-        if (
-            len(descriptors) <= exact_index
-            or descriptors[exact_index] != expected_choice
-        ):
-            errors.append(
-                ContractValidationError(
-                    ["choices", str(exact_index)],
-                    keyword,
-                    message,
+        for (
+            exact_index,
+            expected_choice,
+            keyword,
+            message,
+        ) in EXACT_PRESENTATION_CHOICES[fixture_path]:
+            if (
+                len(descriptors) <= exact_index
+                or descriptors[exact_index] != expected_choice
+            ):
+                errors.append(
+                    ContractValidationError(
+                        ["choices", str(exact_index)],
+                        keyword,
+                        message,
+                    )
                 )
-            )
 
     return errors
 

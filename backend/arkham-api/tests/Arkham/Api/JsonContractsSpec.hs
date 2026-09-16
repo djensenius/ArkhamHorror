@@ -25,6 +25,7 @@ import Arkham.Ability.Types
   , abilityLimit
   , abilityRequestor
   , abilitySource
+  , abilityTarget
   , abilityType
   , abilityWindow
   )
@@ -136,6 +137,15 @@ import TestImport.New qualified as New
 
 loadFixture :: FilePath -> IO Aeson.Value
 loadFixture fileName = loadContractJson ("contracts/fixtures/" <> fileName)
+
+loadQuestionFixture :: FilePath -> IO (Question Message)
+loadQuestionFixture fileName = do
+  fixture <- loadFixture fileName
+  case Aeson.fromJSON fixture of
+    Aeson.Error err ->
+      expectationFailure ("Could not decode " <> fileName <> ": " <> err)
+        >> error "unreachable"
+    Aeson.Success question -> pure question
 
 {- | Re-decode a value's *actual wire bytes* (@Aeson.encode@, which is
 defined as @encodingToLazyByteString . toEncoding@) back into a 'Value' for
@@ -2781,6 +2791,178 @@ spec = describe "Native client contract fixtures" do
                          )
                      ]
 
+  it "projects the exact Gathering movement-entry sequence with native semantics" do
+    let
+      fixtureCases =
+        [ ( "question-gathering-movement.json"
+          , "question-presentation-gathering-movement.json"
+          , 36
+          , "ccc03aba15081592b2163fac1b61e433b20333486b650e1ed359ac598d2262f8"
+          )
+        , ( "question-gathering-attic-entry-forced.json"
+          , "question-presentation-gathering-attic-entry-forced.json"
+          , 37
+          , "e2bdcb51bb439cf4e0e4b3e143658ef8bdc56607369e4a4a0e9a6209863e0fef"
+          )
+        , ( "question-gathering-cellar-entry-forced.json"
+          , "question-presentation-gathering-cellar-entry-forced.json"
+          , 37
+          , "81226881d2744c27b99dc9e0169dc6da66b50616628d0cfe770fd42411adab7f"
+          )
+        , ( "question-gathering-attic-horror-assignment.json"
+          , "question-presentation-gathering-attic-horror-assignment.json"
+          , 38
+          , "63ef3583c5440bb0eea5cc0c8f05bcf21d633ec5e9508d2f3bd45572a7abb43d"
+          )
+        , ( "question-gathering-cellar-damage-assignment.json"
+          , "question-presentation-gathering-cellar-damage-assignment.json"
+          , 38
+          , "8259de19c744c3b781b434e40b4a78cd5d8a8af0a324aec8c16f009111f9ed2b"
+          )
+        ]
+    for_ fixtureCases \(questionFile, presentationFile, version, expectedDigest) -> do
+      questionFixture <- loadFixture questionFile
+      question <- loadQuestionFixture questionFile
+      presentationFixture <- loadFixture presentationFile
+      Aeson.toJSON question `shouldBe` questionFixture
+      viaWireEncoding question `shouldBe` questionFixture
+      canonicalQuestionSha256 question `shouldBe` expectedDigest
+      let presentation = QuestionPresentation.questionPresentation version question
+      Aeson.toJSON presentation `shouldBe` presentationFixture
+      viaWireEncoding presentation `shouldBe` presentationFixture
+
+    movement <- loadQuestionFixture "question-gathering-movement.json"
+    case QuestionPresentation.questionPresentation 36 movement of
+      QuestionPresentation.QuestionPresentation _ _ _ choices -> do
+        let
+          sourceIndexes =
+            [ sourceIndex
+            | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- choices
+            ]
+          choiceKinds =
+            [ kind
+            | QuestionPresentation.ChoicePresentation _ kind _ _ _ _ _ <- choices
+            ]
+        sourceIndexes `shouldBe` [0 .. 11]
+        drop 9 choiceKinds
+          `shouldBe` [ QuestionPresentation.Move
+                     , QuestionPresentation.Move
+                     , QuestionPresentation.Investigate
+                     ]
+
+    for_
+      [ "question-gathering-attic-entry-forced.json"
+      , "question-gathering-cellar-entry-forced.json"
+      ]
+      \questionFile -> do
+        question <- loadQuestionFixture questionFile
+        case QuestionPresentation.questionPresentation 37 question of
+          QuestionPresentation.QuestionPresentation
+            _
+            _
+            _
+            [ QuestionPresentation.ChoicePresentation
+                0
+                QuestionPresentation.ResolveForcedAbility
+                (Just actorId)
+                (Just (QuestionPresentation.LocationEntity _))
+                Nothing
+                (Just ability)
+                (Just QuestionPresentation.FreePresentationCost)
+              ] -> do
+                actorId `shouldBe` InvestigatorId "01001"
+                ability
+                  `shouldSatisfy` \(QuestionPresentation.AbilityPresentation _ 1 "forced" [] True) ->
+                    True
+          other ->
+            expectationFailure
+              $ "Expected one native Gathering forced-ability descriptor, got "
+              <> show other
+
+    let
+      assertAssignment questionFile expectedKind = do
+        question <- loadQuestionFixture questionFile
+        QuestionPresentation.questionPresentation 38 question
+          `shouldBe` QuestionPresentation.QuestionPresentation
+            38
+            "chooseOne"
+            1
+            [ QuestionPresentation.ChoicePresentation
+                0
+                expectedKind
+                Nothing
+                ( Just
+                    $ QuestionPresentation.InvestigatorEntity
+                    $ InvestigatorId "01001"
+                )
+                Nothing
+                Nothing
+                Nothing
+            ]
+    assertAssignment
+      "question-gathering-attic-horror-assignment.json"
+      QuestionPresentation.AssignHorror
+    assertAssignment
+      "question-gathering-cellar-damage-assignment.json"
+      QuestionPresentation.AssignDamage
+
+  it "omits source-bound movement semantics when source identity cannot be projected" do
+    let
+      removeProjectedSource = \case
+        AbilityLabel investigatorId ability windows beforeMessages messages ->
+          AbilityLabel
+            investigatorId
+            ( ability
+                { abilitySource = GameSource
+                , abilityRequestor = GameSource
+                , abilityTarget = Nothing
+                }
+            )
+            windows
+            beforeMessages
+            messages
+        other -> other
+
+    movement <- loadQuestionFixture "question-gathering-movement.json"
+    case movement of
+      PlayerWindowChooseOne choices -> do
+        let
+          sourceLessMovement =
+            PlayerWindowChooseOne
+              [ if sourceIndex == 9 then removeProjectedSource choice else choice
+              | (sourceIndex, choice) <- zip [0 :: Int ..] choices
+              ]
+        case QuestionPresentation.questionPresentation 36 sourceLessMovement of
+          QuestionPresentation.QuestionPresentation _ _ choiceCount presentations -> do
+            let
+              sourceIndexes =
+                [ sourceIndex
+                | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <-
+                    presentations
+                ]
+            choiceCount `shouldBe` 12
+            sourceIndexes `shouldBe` [0 .. 8] <> [10, 11]
+      other ->
+        expectationFailure
+          $ "Expected the Gathering movement player window, got "
+          <> show other
+
+    forced <- loadQuestionFixture "question-gathering-attic-entry-forced.json"
+    case forced of
+      WindowChooseOne [choice] ->
+        QuestionPresentation.questionPresentation
+          37
+          (WindowChooseOne [removeProjectedSource choice])
+          `shouldBe` QuestionPresentation.QuestionPresentation
+            37
+            "windowChooseOne"
+            1
+            []
+      other ->
+        expectationFailure
+          $ "Expected the Gathering Attic forced prompt, got "
+          <> show other
+
   it "keeps Gathering semantic choices fail-closed without changing raw source indexes" do
     let
       iid = InvestigatorId "01001"
@@ -3129,9 +3311,9 @@ spec = describe "Native client contract fixtures" do
                                  ]
                         <> replicate 6 QuestionPresentation.ChooseTarget
                         <> [ QuestionPresentation.EndTurn
-                           , QuestionPresentation.UseAbility
+                           , QuestionPresentation.Move
                            , QuestionPresentation.Investigate
-                           , QuestionPresentation.UseAbility
+                           , QuestionPresentation.Move
                            ]
               other ->
                 expectationFailure

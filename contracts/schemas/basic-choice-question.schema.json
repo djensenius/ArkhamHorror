@@ -2,13 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, Cover Up's optional clue-replacement reaction, The Gathering's act-objective advancement, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage/Move actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, Cover Up's optional clue-replacement reaction, The Gathering's act-objective advancement and location-entry damage/horror assignment, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
     {
       "$ref": "#/$defs/gatheringActObjectiveQuestion"
     },
     {
       "$ref": "#/$defs/gatheringActAdvanceQuestion"
+    },
+    {
+      "$ref": "#/$defs/gatheringLocationAssignmentQuestion"
     },
     {
       "$ref": "#/$defs/coverUpReactionQuestion"
@@ -208,6 +211,441 @@
             }
           ],
           "items": false
+        }
+      }
+    },
+    "gatheringLocationAssignmentQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "source",
+        "tooltip",
+        "question"
+      ],
+      "properties": {
+        "tag": {
+          "const": "QuestionWithSource"
+        },
+        "source": {
+          "$ref": "#/$defs/gatheringLocationAbilitySource"
+        },
+        "tooltip": {
+          "type": "null"
+        },
+        "question": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/gatheringCellarDamageAssignmentLabel"
+            },
+            {
+              "$ref": "#/$defs/gatheringAtticHorrorAssignmentLabel"
+            }
+          ]
+        }
+      },
+      "description": "The exact Gathering location-entry consequence family. Cellar ability 1 assigns one damage and Attic ability 1 assigns one horror; both retain their authoritative nested messages for server execution."
+    },
+    "gatheringCellarDamageAssignmentLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "label",
+        "card",
+        "question"
+      ],
+      "properties": {
+        "tag": {
+          "const": "QuestionLabel"
+        },
+        "label": {
+          "const": "Assign 1 damage"
+        },
+        "card": {
+          "type": "null"
+        },
+        "question": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "choices"
+          ],
+          "properties": {
+            "tag": {
+              "const": "ChooseOne"
+            },
+            "choices": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/gatheringCellarDamageAssignmentChoice"
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "gatheringAtticHorrorAssignmentLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "label",
+        "card",
+        "question"
+      ],
+      "properties": {
+        "tag": {
+          "const": "QuestionLabel"
+        },
+        "label": {
+          "const": "Assign 1 horror"
+        },
+        "card": {
+          "type": "null"
+        },
+        "question": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "choices"
+          ],
+          "properties": {
+            "tag": {
+              "const": "ChooseOne"
+            },
+            "choices": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/gatheringAtticHorrorAssignmentChoice"
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "gatheringCellarDamageAssignmentChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "component",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ComponentLabel"
+        },
+        "component": {
+          "$ref": "#/$defs/damageAssignmentComponent"
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/gatheringCellarDirectDamageMessage"
+            },
+            {
+              "$ref": "#/$defs/gatheringCellarCompleteDamageMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "gatheringAtticHorrorAssignmentChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "component",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ComponentLabel"
+        },
+        "component": {
+          "$ref": "#/$defs/horrorAssignmentComponent"
+        },
+        "messages": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/gatheringAtticDirectHorrorMessage"
+            },
+            {
+              "$ref": "#/$defs/gatheringAtticCompleteHorrorMessage"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "gatheringCellarDirectDamageMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "InvestigatorDamage_"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/investigatorId"
+                },
+                {
+                  "$ref": "#/$defs/gatheringLocationAbilitySource"
+                },
+                {
+                  "const": 1
+                },
+                {
+                  "const": 0
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "gatheringAtticDirectHorrorMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "InvestigatorDamage_"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/investigatorId"
+                },
+                {
+                  "$ref": "#/$defs/gatheringLocationAbilitySource"
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "const": 1
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "gatheringCellarCompleteDamageMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "InvestigatorDoAssignDamage_"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 8,
+              "maxItems": 8,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/investigatorId"
+                },
+                {
+                  "$ref": "#/$defs/gatheringLocationAbilitySource"
+                },
+                {
+                  "$ref": "#/$defs/damageAny"
+                },
+                {
+                  "$ref": "#/$defs/anyAsset"
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "$ref": "#/$defs/singleInvestigatorTargetCandidates"
+                },
+                {
+                  "const": []
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "gatheringAtticCompleteHorrorMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorMessage"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "InvestigatorDoAssignDamage_"
+            },
+            "contents": {
+              "type": "array",
+              "minItems": 8,
+              "maxItems": 8,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/investigatorId"
+                },
+                {
+                  "$ref": "#/$defs/gatheringLocationAbilitySource"
+                },
+                {
+                  "$ref": "#/$defs/damageAny"
+                },
+                {
+                  "$ref": "#/$defs/anyAsset"
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "const": 0
+                },
+                {
+                  "const": []
+                },
+                {
+                  "$ref": "#/$defs/singleInvestigatorTargetCandidates"
+                }
+              ],
+              "items": false
+            }
+          }
+        }
+      }
+    },
+    "gatheringLocationAbilitySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilitySource"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/locationSource"
+            },
+            {
+              "const": 1
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "locationSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "LocationSource"
+        },
+        "contents": {
+          "$ref": "./uuid.schema.json"
         }
       }
     },
@@ -4059,11 +4497,88 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "required": [
+                  "actions"
+                ],
+                "properties": {
+                  "actions": {
+                    "required": [
+                      "contents"
+                    ],
+                    "properties": {
+                      "contents": {
+                        "const": "Move"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/locationSource"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "required": [
+                  "tag"
+                ],
+                "properties": {
+                  "tag": {
+                    "const": "ForcedAbility"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/locationSource"
+              }
+            }
+          }
         }
       ],
-      "description": "Explicit engine-owned extension boundary. Stable display identity is modeled; criteria, limits, costs, and future additive fields are preserved data. Governed Fight/Evade/Engage actions additionally require the exact EnemySource identity used to keep their native control tied to an authoritative board enemy."
+      "description": "Explicit engine-owned extension boundary. Stable display identity is modeled; criteria, limits, costs, and future additive fields are preserved data. Governed Fight/Evade/Engage actions require an EnemySource, while Move and the governed location-entry forced abilities require a LocationSource."
     },
     "abilityTypeDisplay": {
+      "if": {
+        "required": [
+          "tag"
+        ],
+        "properties": {
+          "tag": {
+            "const": "ForcedAbility"
+          }
+        }
+      },
+      "then": {
+        "$ref": "#/$defs/forcedAbilityTypeDisplay"
+      },
+      "else": {
+        "$ref": "#/$defs/actionAbilityTypeDisplay"
+      }
+    },
+    "actionAbilityTypeDisplay": {
       "type": "object",
       "additionalProperties": true,
       "required": [
@@ -4090,14 +4605,32 @@
                 "Investigate",
                 "Fight",
                 "Evade",
-                "Engage"
+                "Engage",
+                "Move"
               ]
             }
           },
           "description": "The governed basic action label/icon semantic. Additional engine-owned action data remains opaque."
         }
       },
-      "description": "Only the governed CORE Investigate and enemy Fight/Evade/Engage ActionAbility display semantics are supported. Cost, targeting, criteria, and skill fields remain opaque engine-owned data."
+      "description": "Only the governed CORE Investigate/Move and enemy Fight/Evade/Engage ActionAbility display semantics are supported. Cost, targeting, criteria, and skill fields remain opaque engine-owned data."
+    },
+    "forcedAbilityTypeDisplay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "window"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ForcedAbility"
+        },
+        "window": {
+          "$ref": "#/$defs/engineObject"
+        }
+      },
+      "description": "The governed display identity for a mandatory forced ability. Its window remains opaque engine-owned data and is never evaluated by a native client."
     },
     "readQuestion": {
       "type": "object",

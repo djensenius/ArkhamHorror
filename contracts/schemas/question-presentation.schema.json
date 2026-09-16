@@ -61,6 +61,8 @@
             "advanceAct",
             "advanceAgenda",
             "applySkillTestResults",
+            "assignDamage",
+            "assignHorror",
             "chooseTarget",
             "drawCard",
             "endTurn",
@@ -70,6 +72,8 @@
             "gainResource",
             "investigate",
             "localizedLabel",
+            "move",
+            "resolveForcedAbility",
             "skipTriggers",
             "startSkillTest",
             "useAbility"
@@ -153,7 +157,11 @@
           "if": {
             "properties": {
               "kind": {
-                "const": "useAbility"
+                "enum": [
+                  "move",
+                  "resolveForcedAbility",
+                  "useAbility"
+                ]
               }
             },
             "required": [
@@ -161,10 +169,126 @@
             ]
           },
           "then": {
+            "properties": {
+              "actorId": {
+                "type": "string"
+              },
+              "ability": {
+                "$ref": "#/$defs/ability"
+              },
+              "cost": {
+                "$ref": "#/$defs/cost"
+              }
+            },
             "required": [
               "actorId",
               "ability",
               "cost"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "assignDamage",
+                  "assignHorror"
+                ]
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "properties": {
+                  "kind": {
+                    "const": "investigator"
+                  }
+                }
+              }
+            },
+            "required": [
+              "entity"
+            ],
+            "not": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "actorId": {}
+                  },
+                  "required": [
+                    "actorId"
+                  ]
+                },
+                {
+                  "properties": {
+                    "ability": {}
+                  },
+                  "required": [
+                    "ability"
+                  ]
+                },
+                {
+                  "properties": {
+                    "cost": {}
+                  },
+                  "required": [
+                    "cost"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "resolveForcedAbility"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "$ref": "#/$defs/entity"
+              }
+            },
+            "required": [
+              "entity"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "move"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "entity": {
+                "properties": {
+                  "kind": {
+                    "const": "location"
+                  }
+                }
+              }
+            },
+            "required": [
+              "entity"
             ]
           }
         },

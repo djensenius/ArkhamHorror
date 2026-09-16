@@ -1,0 +1,153 @@
+{
+  "choiceCount": 12,
+  "choices": [
+    {
+      "actorId": "c01001",
+      "kind": "gainResource",
+      "sourceIndex": 0
+    },
+    {
+      "actorId": "c01001",
+      "kind": "drawCard",
+      "sourceIndex": 1
+    },
+    {
+      "entity": {
+        "id": "f971e011-b98d-4583-81b0-d2a378866698",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 2
+    },
+    {
+      "entity": {
+        "id": "42f70875-1782-4fa6-a034-c16a3406e8f9",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 3
+    },
+    {
+      "entity": {
+        "id": "001b6b9f-fc30-413d-855c-039ffcba4d15",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 4
+    },
+    {
+      "entity": {
+        "id": "1b215bc4-4405-41ac-ba8d-75bd2e4dab9a",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 5
+    },
+    {
+      "entity": {
+        "id": "d2458ecc-5f9f-4ba7-8b58-1474e70e8806",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 6
+    },
+    {
+      "entity": {
+        "id": "377b1268-96b7-4806-b999-5574020a28f6",
+        "kind": "card"
+      },
+      "kind": "chooseTarget",
+      "sourceIndex": 7
+    },
+    {
+      "actorId": "c01001",
+      "kind": "endTurn",
+      "sourceIndex": 8
+    },
+    {
+      "ability": {
+        "actions": [
+          "move"
+        ],
+        "canBeCancelled": true,
+        "cardCode": "c01114",
+        "index": 104,
+        "type": "action"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "costs": [
+          {
+            "amount": 1,
+            "kind": "action"
+          },
+          {
+            "kind": "other"
+          }
+        ],
+        "kind": "all"
+      },
+      "entity": {
+        "id": "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
+        "kind": "location"
+      },
+      "kind": "move",
+      "sourceIndex": 9
+    },
+    {
+      "ability": {
+        "actions": [
+          "move"
+        ],
+        "canBeCancelled": true,
+        "cardCode": "c01113",
+        "index": 104,
+        "type": "action"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "costs": [
+          {
+            "amount": 1,
+            "kind": "action"
+          },
+          {
+            "kind": "other"
+          }
+        ],
+        "kind": "all"
+      },
+      "entity": {
+        "id": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+        "kind": "location"
+      },
+      "kind": "move",
+      "sourceIndex": 10
+    },
+    {
+      "ability": {
+        "actions": [
+          "investigate"
+        ],
+        "canBeCancelled": true,
+        "cardCode": "c01112",
+        "index": 103,
+        "type": "action"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "amount": 1,
+        "kind": "action"
+      },
+      "entity": {
+        "id": "fda9afef-4166-4c9f-962e-eed6e8cbee25",
+        "kind": "location"
+      },
+      "kind": "investigate",
+      "sourceIndex": 11
+    }
+  ],
+  "protocolVersion": 1,
+  "questionKind": "playerWindowChooseOne",
+  "questionVersion": 36
+}
