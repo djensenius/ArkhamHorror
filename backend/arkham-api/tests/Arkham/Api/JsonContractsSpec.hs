@@ -48,7 +48,7 @@ import Arkham.Projection (field)
 import Arkham.Question.Presentation qualified as QuestionPresentation
 import Arkham.Story (createStory)
 import Arkham.Story.CardDefs.FortuneAndFolly qualified as StoryCardDefs (theStakeout)
-import Arkham.Token (Token (Clue, Resource), setTokens)
+import Arkham.Token (Token (Clue, Damage, Horror, Resource), setTokens)
 import Arkham.Campaign.Option (CampaignOption (..))
 import Arkham.Campaigns.TheDreamEaters.Meta (CampaignPart (TheDreamQuest))
 import Arkham.ClassSymbol (ClassSymbol (Guardian, Rogue, Seeker))
@@ -69,6 +69,7 @@ import Arkham.Homebrew.DarkMatter.CardDefs.Enemies qualified as DarkMatterCards
 import Arkham.Helpers.Message qualified as MessageHelpers (createEnemy)
 import Arkham.Helpers.Scenario (scenarioField)
 import Arkham.Investigator.Cards qualified as InvestigatorCards
+import Arkham.Investigator.Types qualified as Investigator
 import Arkham.Location.Types qualified as Location
 import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
 import Arkham.Matcher
@@ -1335,6 +1336,29 @@ runAgainstFixtureBoardGame action = do
   debugLevelRef <- newIORef 0
   let testApp = TestApp gameRef queueRef genRef Nothing (pure . const ()) debugLevelRef
   runTestApp testApp action
+
+answerFixturePlayerQuestion :: Int -> TestAppT Int
+answerFixturePlayerQuestion sourceIndex = do
+  currentGame <- getGame
+  let
+    questionVersion = gameScenarioSteps currentGame
+    answer =
+      Answer
+        QuestionResponse
+          { qrChoice = sourceIndex
+          , qrPlayerId = Just fixturePlayerId
+          , qrQuestionVersion = Just questionVersion
+          }
+  liftIO (handleAnswerPure currentGame fixturePlayerId answer) >>= \case
+    Unhandled reason ->
+      liftIO
+        $ expectationFailure
+        $ "Fixture player answer at source index "
+        <> show sourceIndex
+        <> " was rejected: "
+        <> Text.unpack reason
+    Handled messages -> pushAndRunAll (ClearUI : messages)
+  pure questionVersion
 
 {- | A second board built by omitting 'EndSetup' (whose handler is what queues
 the real 'BeginRound' message that increments 'ScenarioAttrs.scenarioTurn'
@@ -3456,6 +3480,271 @@ spec = describe "Native client contract fixtures" do
     confirmationVersion `shouldBe` 35
     locationAfterAdvance `shouldNotBe` locationBefore
     finalVersion `shouldBe` 36
+
+  it "executes both Gathering movement-entry branches through the Q39 action window" do
+    let
+      iid = InvestigatorId "01001"
+      -- Source indexes are scoped to one question. This fixed-seed board's
+      -- location UUID order differs from the replay-derived Q36 fixture,
+      -- whose production source indexes remain pinned separately above.
+      branchCases =
+        [ ( "Cellar"
+          , "01114"
+          , 11
+          , QuestionPresentation.AssignDamage
+          , 2
+          , 3
+          )
+        , ( "Attic"
+          , "01113"
+          , 9
+          , QuestionPresentation.AssignHorror
+          , 1
+          , 4
+          )
+        ]
+    for_
+      branchCases
+      \(branchName, locationCardCode, movementSourceIndex, assignmentKind, finalDamage, finalHorror) ->
+        runAgainstFixtureBoardGame do
+          overTest
+            ( entitiesL
+                . investigatorsL
+                . ix iid
+                %~ overAttrs
+                  ( \attrs ->
+                      attrs
+                        { investigatorTokens =
+                            setTokens Damage 1
+                              $ setTokens Horror 3
+                              $ investigatorTokens attrs
+                        }
+                  )
+            )
+          prepareFixtureGatheringActObjective
+          q34Version <- answerFixturePlayerQuestion 12
+          q35Version <- answerFixturePlayerQuestion 0
+          destinationId <- selectJust $ LocationIs locationCardCode
+          q36Game <- getGame
+          q36Location <- field InvestigatorLocation iid
+          q36Actions <- field InvestigatorRemainingActions iid
+          q36Damage <- field Investigator.InvestigatorDamage iid
+          q36Horror <- field InvestigatorHorror iid
+          liftIO do
+            gameScenarioSteps q36Game `shouldBe` 36
+            q36Actions `shouldBe` 2
+            q36Damage `shouldBe` 1
+            q36Horror `shouldBe` 3
+            q36Location `shouldNotBe` Just destinationId
+            case
+                ( Map.lookup fixturePlayerId (gameQuestion q36Game)
+                , Map.lookup
+                    fixturePlayerId
+                    ( QuestionPresentation.questionPresentations
+                        (gameScenarioSteps q36Game)
+                        (gameQuestion q36Game)
+                    )
+                )
+              of
+                ( Just (PlayerWindowChooseOne rawChoices)
+                  , Just
+                      ( QuestionPresentation.QuestionPresentation
+                          36
+                          "playerWindowChooseOne"
+                          12
+                          presentationChoices
+                        )
+                  ) -> do
+                    case drop movementSourceIndex rawChoices of
+                      AbilityLabel choiceIid ability _ beforeMessages messages : _ -> do
+                        choiceIid `shouldBe` iid
+                        abilitySource ability `shouldBe` LocationSource destinationId
+                        abilityCardCode ability `shouldBe` locationCardCode
+                        abilityIndex ability `shouldBe` 104
+                        abilityActions ability `shouldBe` [Action.Move]
+                        beforeMessages `shouldBe` []
+                        messages `shouldBe` []
+                      other ->
+                        expectationFailure
+                          $ "Expected "
+                          <> branchName
+                          <> " movement at source index "
+                          <> show movementSourceIndex
+                          <> ", got "
+                          <> show other
+                    find
+                      ( \(QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _) ->
+                          sourceIndex == movementSourceIndex
+                      )
+                      presentationChoices
+                      `shouldBe` Just
+                        ( QuestionPresentation.ChoicePresentation
+                            movementSourceIndex
+                            QuestionPresentation.Move
+                            (Just iid)
+                            (Just $ QuestionPresentation.LocationEntity destinationId)
+                            Nothing
+                            ( Just
+                                $ QuestionPresentation.AbilityPresentation
+                                  locationCardCode
+                                  104
+                                  "action"
+                                  ["move"]
+                                  True
+                            )
+                            ( Just
+                                $ QuestionPresentation.AllPresentationCosts
+                                  [ QuestionPresentation.ActionPresentationCost 1
+                                  , QuestionPresentation.OtherPresentationCost
+                                  ]
+                            )
+                        )
+                other ->
+                  expectationFailure
+                    $ "Expected the version-36 "
+                    <> branchName
+                    <> " movement question and presentation, got "
+                    <> show other
+
+          q36AnswerVersion <- answerFixturePlayerQuestion movementSourceIndex
+          q37Game <- getGame
+          q37Location <- field InvestigatorLocation iid
+          q37Actions <- field InvestigatorRemainingActions iid
+          q37Damage <- field Investigator.InvestigatorDamage iid
+          q37Horror <- field InvestigatorHorror iid
+          q37Revealed <- field Location.LocationRevealed destinationId
+          liftIO do
+            q37Location `shouldBe` Just destinationId
+            q37Actions `shouldBe` 1
+            q37Damage `shouldBe` 1
+            q37Horror `shouldBe` 3
+            q37Revealed `shouldBe` True
+            case
+                ( Map.lookup fixturePlayerId (gameQuestion q37Game)
+                , Map.lookup
+                    fixturePlayerId
+                    ( QuestionPresentation.questionPresentations
+                        (gameScenarioSteps q37Game)
+                        (gameQuestion q37Game)
+                    )
+                )
+              of
+                ( Just
+                    ( WindowChooseOne
+                        [AbilityLabel choiceIid ability _ beforeMessages messages]
+                      )
+                  , Just presentation
+                  ) -> do
+                    choiceIid `shouldBe` iid
+                    abilitySource ability `shouldBe` LocationSource destinationId
+                    abilityCardCode ability `shouldBe` locationCardCode
+                    abilityIndex ability `shouldBe` 1
+                    abilityActions ability `shouldBe` []
+                    beforeMessages `shouldBe` []
+                    messages `shouldBe` []
+                    presentation
+                      `shouldBe` QuestionPresentation.QuestionPresentation
+                        37
+                        "windowChooseOne"
+                        1
+                        [ QuestionPresentation.ChoicePresentation
+                            0
+                            QuestionPresentation.ResolveForcedAbility
+                            (Just iid)
+                            (Just $ QuestionPresentation.LocationEntity destinationId)
+                            Nothing
+                            ( Just
+                                $ QuestionPresentation.AbilityPresentation
+                                  locationCardCode
+                                  1
+                                  "forced"
+                                  []
+                                  True
+                            )
+                            (Just QuestionPresentation.FreePresentationCost)
+                        ]
+                other ->
+                  expectationFailure
+                    $ "Expected the version-37 "
+                    <> branchName
+                    <> " forced-entry question and presentation, got "
+                    <> show other
+
+          q37AnswerVersion <- answerFixturePlayerQuestion 0
+          q38Game <- getGame
+          q38Location <- field InvestigatorLocation iid
+          q38Actions <- field InvestigatorRemainingActions iid
+          q38Damage <- field Investigator.InvestigatorDamage iid
+          q38Horror <- field InvestigatorHorror iid
+          liftIO do
+            q38Location `shouldBe` Just destinationId
+            q38Actions `shouldBe` 1
+            q38Damage `shouldBe` 1
+            q38Horror `shouldBe` 3
+            Map.lookup
+              fixturePlayerId
+              ( QuestionPresentation.questionPresentations
+                  (gameScenarioSteps q38Game)
+                  (gameQuestion q38Game)
+              )
+              `shouldBe` Just
+                ( QuestionPresentation.QuestionPresentation
+                    38
+                    "chooseOne"
+                    1
+                    [ QuestionPresentation.ChoicePresentation
+                        0
+                        assignmentKind
+                        Nothing
+                        (Just $ QuestionPresentation.InvestigatorEntity iid)
+                        Nothing
+                        Nothing
+                        Nothing
+                    ]
+                )
+
+          q38AnswerVersion <- answerFixturePlayerQuestion 0
+          q39Game <- getGame
+          q39Location <- field InvestigatorLocation iid
+          q39Actions <- field InvestigatorRemainingActions iid
+          q39Damage <- field Investigator.InvestigatorDamage iid
+          q39Horror <- field InvestigatorHorror iid
+          liftIO do
+            [q34Version, q35Version, q36AnswerVersion, q37AnswerVersion, q38AnswerVersion]
+              `shouldBe` [34, 35, 36, 37, 38]
+            gameScenarioSteps q39Game `shouldBe` 39
+            q39Location `shouldBe` Just destinationId
+            q39Actions `shouldBe` 1
+            q39Damage `shouldBe` finalDamage
+            q39Horror `shouldBe` finalHorror
+            case
+                ( Map.lookup fixturePlayerId (gameQuestion q39Game)
+                , Map.lookup
+                    fixturePlayerId
+                    ( QuestionPresentation.questionPresentations
+                        (gameScenarioSteps q39Game)
+                        (gameQuestion q39Game)
+                    )
+                )
+              of
+                ( Just (PlayerWindowChooseOne rawChoices)
+                  , Just
+                      ( QuestionPresentation.QuestionPresentation
+                          39
+                          "playerWindowChooseOne"
+                          choiceCount
+                          presentationChoices
+                        )
+                  ) -> do
+                    rawChoices `shouldSatisfy` (not . null)
+                    presentationChoices `shouldSatisfy` (not . null)
+                    choiceCount `shouldBe` length rawChoices
+                other ->
+                  expectationFailure
+                    $ "Expected the version-39 "
+                    <> branchName
+                    <> " player window and presentation, got "
+                    <> show other
 
   it "matches every production round-transition prompt on both encoder paths and canonical replay digest" do
     let
