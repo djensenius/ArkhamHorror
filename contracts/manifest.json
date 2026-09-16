@@ -14729,6 +14729,164 @@
       ]
     },
     {
+      "description": "The Q37 Cellar forced prompt must keep every raw source bound to the projected Cellar location.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-cellar-entry-forced.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/ability/source/contents",
+        "value": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "ability",
+            "source",
+            "contents"
+          ],
+          "keyword": "gatheringLocationSourceBinding",
+          "messageContains": "must match the authoritative Q37 Cellar location id"
+        }
+      ]
+    },
+    {
+      "description": "The Q37 Attic forced prompt must not carry a Cellar identity in a repeated entry window.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-attic-entry-forced.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/choices/0/windows/0/windowType/contents/1",
+        "value": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "choices",
+            "0",
+            "windows",
+            "0",
+            "windowType",
+            "contents",
+            "1"
+          ],
+          "keyword": "gatheringLocationSourceBinding",
+          "messageContains": "must match the authoritative Q37 Attic location id"
+        }
+      ]
+    },
+    {
+      "description": "The Q38 Cellar assignment outer source must remain bound to the Q37 Cellar location.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-cellar-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/source/contents/0/contents",
+        "value": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "source",
+            "contents",
+            "0",
+            "contents"
+          ],
+          "keyword": "gatheringLocationSourceBinding",
+          "messageContains": "must match the authoritative Q37 Cellar location id"
+        }
+      ]
+    },
+    {
+      "description": "The Q38 Cellar assignment nested continuation source must not be swapped to the Attic.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-cellar-damage-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/1/contents/contents/1/contents/0/contents",
+        "value": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "1",
+            "contents",
+            "contents",
+            "1",
+            "contents",
+            "0",
+            "contents"
+          ],
+          "keyword": "gatheringLocationSourceBinding",
+          "messageContains": "must match the authoritative Q37 Cellar location id"
+        }
+      ]
+    },
+    {
+      "description": "The Q38 Attic assignment outer source must remain bound to the Q37 Attic location.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-attic-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/source/contents/0/contents",
+        "value": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "source",
+            "contents",
+            "0",
+            "contents"
+          ],
+          "keyword": "gatheringLocationSourceBinding",
+          "messageContains": "must match the authoritative Q37 Attic location id"
+        }
+      ]
+    },
+    {
+      "description": "The Q38 Attic assignment nested direct source must not be swapped to the Cellar.",
+      "schema": "contracts/schemas/basic-choice-question.schema.json",
+      "basePositiveFixture": "contracts/fixtures/question-gathering-attic-horror-assignment.json",
+      "basePointer": "",
+      "mutation": {
+        "op": "replace",
+        "pointer": "/question/question/choices/0/messages/0/contents/contents/1/contents/0/contents",
+        "value": "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
+      },
+      "expectedErrors": [
+        {
+          "path": [
+            "question",
+            "question",
+            "choices",
+            "0",
+            "messages",
+            "0",
+            "contents",
+            "contents",
+            "1",
+            "contents",
+            "0",
+            "contents"
+          ],
+          "keyword": "gatheringLocationSourceBinding",
+          "messageContains": "must match the authoritative Q37 Attic location id"
+        }
+      ]
+    },
+    {
       "description": "A forced-ability semantic descriptor must retain the entity that identifies its authoritative source.",
       "schema": "contracts/schemas/question-presentation.schema.json",
       "schemaBranch": "choice",
@@ -15048,7 +15206,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "edc04048f000b9540e21e8e5f7a90622db632858ad33645e702d7fd2011690db",
+    "contracts/fixtures/capabilities-locale-catalog.json": "492497750460f6794712f67adceb82a4afce2bb07bc5a44e949ffe31ce4e4bc3",
     "contracts/fixtures/capabilities.json": "55e12d321799c54e4ce75a33fb299cf574b7ca05a0790e21b328f1b2a263bf7f",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
@@ -15076,7 +15234,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "88da1f4f3a471954d90ee06fd9dfa54b7ea7eae24fb318b86c5ceda766fe5b9c",
+    "contracts/fixtures/locale-catalog-manifest.json": "2e68aa394564aa57de844c647b300fecb7712ccf54928ce5002fe0caa9b01e57",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -15129,7 +15287,7 @@
     "contracts/fixtures/replay-attestation.json": "03dfb79074162f1b880d8a3b51b22af00757ffbe9699a2199ef97c53ec3fde6a",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "ff32858814c95d0891c56809f97afdece2d7256f66a94ea93b019b113d4d9bb3",
+    "contracts/manifest.json": "67b0b482f54d9fca0113f11bafd34c02b36fe8f51d5d1e039952730604d31aa8",
     "contracts/openapi.yaml": "242bc8c9ea7252ba1937bde275e0de00bf15d883b0fe009ae8406fa8ce54bfd6",
     "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
     "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",

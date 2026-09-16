@@ -109,6 +109,7 @@ capabilities_fixtures = [
 # Base.Api.Types.Capabilities.serverCapabilities).
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
 SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v1"
+BASIC_CHOICE_QUESTION_SCHEMA = "contracts/schemas/basic-choice-question.schema.json"
 QUESTION_PRESENTATION_SCHEMA = "contracts/schemas/question-presentation.schema.json"
 Q34_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-act-objective.json"
 Q34_PRESENTATION_FIXTURE = (
@@ -682,11 +683,127 @@ EXACT_PRESENTATION_CHOICES = {
     ),
 }
 
+_Q37_LOCATION_SOURCE_PATHS = (
+    ("choices", 0, "ability", "source", "contents"),
+    ("choices", 0, "ability", "type", "window", "contents", 2, "contents"),
+    ("choices", 0, "ability", "window", "contents", 2, "contents"),
+    ("choices", 0, "ability", "requestor", "contents"),
+    ("choices", 0, "windows", 0, "windowType", "contents", 1),
+)
+_Q38_LOCATION_SOURCE_PATHS = (
+    ("source", "contents", 0, "contents"),
+    (
+        "question",
+        "question",
+        "choices",
+        0,
+        "messages",
+        0,
+        "contents",
+        "contents",
+        1,
+        "contents",
+        0,
+        "contents",
+    ),
+    (
+        "question",
+        "question",
+        "choices",
+        0,
+        "messages",
+        1,
+        "contents",
+        "contents",
+        1,
+        "contents",
+        0,
+        "contents",
+    ),
+)
+_GATHERING_LOCATION_SOURCE_BINDINGS = {
+    Q37_ATTIC_QUESTION_FIXTURE: (
+        Q37_ATTIC_PRESENTATION_FIXTURE,
+        "Q37 Attic",
+        _Q37_LOCATION_SOURCE_PATHS,
+    ),
+    Q37_CELLAR_QUESTION_FIXTURE: (
+        Q37_CELLAR_PRESENTATION_FIXTURE,
+        "Q37 Cellar",
+        _Q37_LOCATION_SOURCE_PATHS,
+    ),
+    Q38_ATTIC_QUESTION_FIXTURE: (
+        Q37_ATTIC_PRESENTATION_FIXTURE,
+        "Q37 Attic",
+        _Q38_LOCATION_SOURCE_PATHS,
+    ),
+    Q38_CELLAR_QUESTION_FIXTURE: (
+        Q37_CELLAR_PRESENTATION_FIXTURE,
+        "Q37 Cellar",
+        _Q38_LOCATION_SOURCE_PATHS,
+    ),
+}
+
+
+def nested_value(value: object, path: tuple[object, ...]) -> object | None:
+    current = value
+    for component in path:
+        if isinstance(component, int):
+            if not isinstance(current, list) or not 0 <= component < len(current):
+                return None
+            current = current[component]
+        else:
+            if not isinstance(current, dict) or component not in current:
+                return None
+            current = current[component]
+    return current
+
+
+def gathering_location_source_binding_errors(
+    fixture_path: str, raw_question: object
+) -> list[ContractValidationError]:
+    binding = _GATHERING_LOCATION_SOURCE_BINDINGS.get(fixture_path)
+    if binding is None:
+        return []
+
+    presentation_path, source_name, source_paths = binding
+    presentation = load_governed_json(presentation_path)
+    expected_location_id = nested_value(
+        presentation,
+        ("choices", 0, "entity", "id"),
+    )
+    require(
+        isinstance(expected_location_id, str),
+        f"{presentation_path} must expose a string location entity id",
+    )
+
+    errors: list[ContractValidationError] = []
+    for source_path in source_paths:
+        actual_location_id = nested_value(raw_question, source_path)
+        if (
+            isinstance(actual_location_id, str)
+            and actual_location_id != expected_location_id
+        ):
+            errors.append(
+                ContractValidationError(
+                    [str(component) for component in source_path],
+                    "gatheringLocationSourceBinding",
+                    f"Location source {actual_location_id!r} must match the "
+                    f"authoritative {source_name} location id "
+                    f"{expected_location_id!r}",
+                )
+            )
+    return errors
+
 
 def contract_fixture_errors(
     schema_path: str, fixture_path: str, instance: object
 ) -> list[ContractValidationError]:
     errors = public_game_question_presentation_errors(instance)
+    if schema_path == BASIC_CHOICE_QUESTION_SCHEMA:
+        errors.extend(
+            gathering_location_source_binding_errors(fixture_path, instance)
+        )
     if (
         schema_path != QUESTION_PRESENTATION_SCHEMA
         or fixture_path not in QUESTION_PRESENTATION_BINDINGS
