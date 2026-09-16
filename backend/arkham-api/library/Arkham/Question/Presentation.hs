@@ -20,6 +20,13 @@ import Arkham.Action qualified as Action
 import Arkham.Card.CardCode (CardCode)
 import Arkham.Card.Id (CardId)
 import Arkham.Cost qualified as Cost
+import Arkham.Deck (DeckSignifier (EncounterDeck))
+import Arkham.Draw.Types
+  ( CardDraw (..)
+  , CardDrawKind (StandardCardDraw)
+  , CardDrawPosition (DrawFromTop)
+  , CardDrawState (UnresolvedCardDraw)
+  )
 import Arkham.GameValue qualified as GameValue
 import Arkham.Id
 import Arkham.Matcher.Location qualified as Location
@@ -58,6 +65,7 @@ data ChoicePresentationKind
   | AssignHorror
   | ChooseTarget
   | DrawCard
+  | DrawEncounterCard
   | EndTurn
   | Engage
   | Evade
@@ -239,6 +247,7 @@ choiceKindText = \case
   AssignHorror -> "assignHorror"
   ChooseTarget -> "chooseTarget"
   DrawCard -> "drawCard"
+  DrawEncounterCard -> "drawEncounterCard"
   EndTurn -> "endTurn"
   Engage -> "engage"
   Evade -> "evade"
@@ -256,13 +265,28 @@ data ChoiceContext = PlayerWindowContext | GeneralChoiceContext
   deriving stock Eq
 
 questionPresentation :: Int -> Question Message.Message -> QuestionPresentation
-questionPresentation version question =
-  let (kind, context, choices) = questionChoices question
-   in QuestionPresentation
+questionPresentation version question
+  | Just investigatorId <- encounterDeckDrawInvestigator question =
+      QuestionPresentation
         version
-        kind
-        (length choices)
-        (mapMaybe (uncurry $ presentChoice context) $ zip [0 ..] choices)
+        "chooseOne"
+        1
+        [ ChoicePresentation
+            0
+            DrawEncounterCard
+            (Just investigatorId)
+            Nothing
+            Nothing
+            Nothing
+            Nothing
+        ]
+  | otherwise =
+      let (kind, context, choices) = questionChoices question
+       in QuestionPresentation
+            version
+            kind
+            (length choices)
+            (mapMaybe (uncurry $ presentChoice context) $ zip [0 ..] choices)
 
 questionPresentations
   :: Int
@@ -423,6 +447,33 @@ targetChoice sourceIndex kind entity =
     Nothing
     Nothing
     Nothing
+
+encounterDeckDrawInvestigator :: Question Message.Message -> Maybe InvestigatorId
+encounterDeckDrawInvestigator
+  ( ChooseOne
+      [ TargetLabel
+          EncounterDeckTarget
+          [ Message.DrawCards
+              investigatorId
+              CardDraw
+                { cardDrawSource = GameSource
+                , cardDrawDeck = EncounterDeck
+                , cardDrawAmount = 1
+                , cardDrawState = UnresolvedCardDraw
+                , cardDrawTarget = Nothing
+                , cardDrawAction = False
+                , cardDrawKind = StandardCardDraw
+                , cardDrawPosition = DrawFromTop
+                , cardDrawRules = rules
+                , cardDrawAndThen = Nothing
+                , cardDrawAlreadyDrawn = []
+                , cardDrawDiscard = Nothing
+                }
+            ]
+        ]
+  )
+    | null rules = Just investigatorId
+encounterDeckDrawInvestigator _ = Nothing
 
 targetChoiceKind :: PresentationEntity -> [Message.Message] -> ChoicePresentationKind
 targetChoiceKind entity messages

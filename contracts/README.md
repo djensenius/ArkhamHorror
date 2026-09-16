@@ -41,7 +41,7 @@ constructor.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.
-- `questions.semantic-presentation.v1` is global at revision `0.1.42`. It
+- `questions.semantic-presentation.v1` is global at revision `0.1.43`. It
   advertises the additive, backend-authored `questionPresentation` projection
   beside the unchanged authoritative raw question. A client uses descriptors
   only to render native controls, validates their protocol/question versions
@@ -689,12 +689,13 @@ and the agenda threshold check to
 Neither the question nor its nested draw is hand-assembled for the golden.
 Both Aeson encoding paths and the authoritative phase/step are tested.
 
-Following the established tag-based semantic choice-label convention, the
-governed `TargetLabel(EncounterDeckTarget)` means **“Draw encounter card”**
-(`encounterDeckDrawLabel.title` in the schema). Clients use this accessible
-action label, not a raw constructor name, and need not inspect messages,
-count cards, or infer mythos rules to present it. This is contract metadata,
-not a new wire `label` property or a runtime behavior change.
+Revision `0.1.43` adds
+`question-presentation-encounter-deck-draw.json`. The backend now emits
+`drawEncounterCard` with the authoritative investigator as `actorId` for this
+exact raw question, so clients no longer infer the semantic action from the
+schema title or inspect nested engine messages. The descriptor remains
+render-only: clients bind it back to the unchanged raw source index `0` and
+submit the originating question version; the backend alone executes the draw.
 
 Only this unmodified one-card draw is governed: `DrawCards.contents` is an
 exact two-element tuple (investigator ID, card draw), `EncounterDeck`,
@@ -707,11 +708,32 @@ states/decks/sources, and modified draws remain unsupported, not guessed.
 Location/card target messages keep their existing opaque contract; their
 branch cannot bypass the encounter-draw checks.
 
+The semantic classifier is equally fail-closed. It requires a root
+`ChooseOne` with exactly one `TargetLabel(EncounterDeckTarget)`, exactly one
+`DrawCards` message, and exact agreement on all twelve card-draw fields.
+Changing the question kind, choice/message cardinality, target, source, deck,
+amount, state, target field, action flag, draw kind, position, rules,
+continuation, already-drawn cards, or discard matcher suppresses
+`drawEncounterCard`. The emitted actor is read from the authoritative message,
+not hard-coded. Contract validation pairs the presentation with the raw
+fixture for question kind, choice count, source-index bounds, and the exact
+descriptor.
+
 The sole choice retains source index **0**. Send the same versioned `Answer`,
 with `choice: 0`, the owning `playerId`, and the originating snapshot's
 `scenarioSteps` as `questionVersion`. Tests dispatch this exact frame through
 the production answer handler and reject stale versions. No new capability
 identifier or answer constructor is introduced; gate support by revision.
+
+A deterministic production-engine test also carries both Gathering movement
+branches past Q39 without constructing successor questions. The Cellar route
+executes investigate at Q39, start-skill-test at Q40, apply-results at Q41,
+and reaches the Q42 end-turn window. The Attic route moves to the Hallway at
+Q39, ends the turn at Q40, reaches this encounter draw at Q41, resolves it
+through the normal answer handler, and reaches the next round's Q42 player
+action window. The fixed-seed source ordering is asserted only within that
+test; runtime clients locate Q39 actions through bound semantic descriptors
+and submit the descriptor's unchanged source index.
 
 #### Enemy-phase regular attack
 

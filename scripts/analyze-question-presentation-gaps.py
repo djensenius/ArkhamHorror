@@ -75,6 +75,7 @@ PRESENTATION_CHOICE_KINDS = {
     "applySkillTestResults",
     "chooseTarget",
     "drawCard",
+    "drawEncounterCard",
     "endTurn",
     "engage",
     "evade",

@@ -65,6 +65,7 @@
             "assignHorror",
             "chooseTarget",
             "drawCard",
+            "drawEncounterCard",
             "endTurn",
             "engage",
             "evade",
@@ -102,6 +103,7 @@
               "kind": {
                 "enum": [
                   "drawCard",
+                  "drawEncounterCard",
                   "endTurn",
                   "gainResource",
                   "skipTriggers",
