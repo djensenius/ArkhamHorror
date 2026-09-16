@@ -471,9 +471,10 @@ actionTargetChoice sourceIndex kind entity =
 abilityChoice :: Int -> InvestigatorId -> Ability.Ability -> Maybe ChoicePresentation
 abilityChoice sourceIndex investigatorId ability =
   let
+    sourceEntity = entityFromSource (Ability.abilitySource ability)
     entity =
       (Ability.abilityTarget ability >>= entityFromTarget)
-        <|> entityFromSource (Ability.abilitySource ability)
+        <|> sourceEntity
     actions = mapMaybe actionText (abilityActions ability)
     kind = abilityChoiceKind (Ability.abilityType ability) entity actions
     abilityPresentation =
@@ -496,10 +497,13 @@ abilityChoice sourceIndex investigatorId ability =
         Nothing
         (Just abilityPresentation)
         (Just $ presentCost totalCost)
-   in case (kind, entity) of
-        (Move, Just LocationEntity {}) -> Just choice
-        (Move, _) -> Nothing
-        (ResolveForcedAbility, Nothing) -> Nothing
+   in case (kind, sourceEntity, entity) of
+        (Move, Just source@LocationEntity {}, Just projected)
+          | source == projected -> Just choice
+        (Move, _, _) -> Nothing
+        (ResolveForcedAbility, Just source, Just projected)
+          | source == projected -> Just choice
+        (ResolveForcedAbility, _, _) -> Nothing
         _ -> Just choice
 
 abilityChoiceKind

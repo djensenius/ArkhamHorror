@@ -2955,16 +2955,18 @@ spec = describe "Native client contract fixtures" do
           $ "Expected the Gathering Attic forced prompt, got "
           <> show other
 
-  it "omits source-bound movement semantics when source identity cannot be projected" do
+  it "omits source-bound semantics when their authoritative source is unavailable" do
     let
+      locationTargetFor = \case
+        LocationSource locationId -> Just $ LocationTarget locationId
+        _ -> error "Expected a LocationSource fixture"
       removeProjectedSource = \case
         AbilityLabel investigatorId ability windows beforeMessages messages ->
           AbilityLabel
             investigatorId
             ( ability
                 { abilitySource = GameSource
-                , abilityRequestor = GameSource
-                , abilityTarget = Nothing
+                , abilityTarget = locationTargetFor $ abilitySource ability
                 }
             )
             windows
@@ -2991,6 +2993,45 @@ spec = describe "Native client contract fixtures" do
                 ]
             choiceCount `shouldBe` 12
             sourceIndexes `shouldBe` [0 .. 8] <> [10, 11]
+
+        case drop 9 choices of
+          AbilityLabel _ cellarAbility _ _ _
+            : AbilityLabel _ atticAbility _ _ _
+            : _ -> do
+            let
+              replaceSource = \case
+                AbilityLabel investigatorId ability windows beforeMessages messages ->
+                  AbilityLabel
+                    investigatorId
+                    ( ability
+                        { abilitySource = abilitySource atticAbility
+                        , abilityTarget =
+                            locationTargetFor $ abilitySource cellarAbility
+                        }
+                    )
+                    windows
+                    beforeMessages
+                    messages
+                otherChoice -> otherChoice
+              mismatchedMovement =
+                PlayerWindowChooseOne
+                  [ if sourceIndex == 9 then replaceSource choice else choice
+                  | (sourceIndex, choice) <- zip [0 :: Int ..] choices
+                  ]
+            case QuestionPresentation.questionPresentation 36 mismatchedMovement of
+              QuestionPresentation.QuestionPresentation _ _ choiceCount presentations -> do
+                let
+                  sourceIndexes =
+                    [ sourceIndex
+                    | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <-
+                        presentations
+                    ]
+                choiceCount `shouldBe` 12
+                sourceIndexes `shouldBe` [0 .. 8] <> [10, 11]
+          otherChoices ->
+            expectationFailure
+              $ "Expected both Gathering movement choices, got "
+              <> show otherChoices
       other ->
         expectationFailure
           $ "Expected the Gathering movement player window, got "
