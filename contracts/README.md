@@ -41,7 +41,7 @@ constructor.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.
-- `questions.semantic-presentation.v1` is global at revision `0.1.42`. It
+- `questions.semantic-presentation.v1` is global at revision `0.1.43`. It
   advertises the additive, backend-authored `questionPresentation` projection
   beside the unchanged authoritative raw question. A client uses descriptors
   only to render native controls, validates their protocol/question versions
