@@ -262,7 +262,10 @@
               "entity": {
                 "properties": {
                   "kind": {
-                    "const": "location"
+                    "enum": [
+                      "location",
+                      "treachery"
+                    ]
                   }
                 }
               }

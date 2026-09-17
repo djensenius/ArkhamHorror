@@ -555,13 +555,18 @@ abilityChoice sourceIndex investigatorId ability =
         (Move, Just LocationEntity {}, _) -> Nothing
         (Move, Nothing, _) -> Nothing
         (Move, Just _, _) -> Just $ choiceFor UseAbility
-        ( ResolveForcedAbility
-          , Just source@LocationEntity {}
-          , Just projected@LocationEntity {}
-          )
-          | source == projected -> Just choice
+        (ResolveForcedAbility, Just source, Just projected)
+          | isSupportedForcedAbilityEntity source
+          , source == projected ->
+              Just choice
         (ResolveForcedAbility, _, _) -> Nothing
         _ -> Just choice
+
+isSupportedForcedAbilityEntity :: PresentationEntity -> Bool
+isSupportedForcedAbilityEntity = \case
+  LocationEntity {} -> True
+  TreacheryEntity {} -> True
+  _ -> False
 
 abilityChoiceKind
   :: AbilityType.AbilityType

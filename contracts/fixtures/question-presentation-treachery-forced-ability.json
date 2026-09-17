@@ -1,0 +1,27 @@
+{
+  "choiceCount": 1,
+  "choices": [
+    {
+      "ability": {
+        "actions": [],
+        "canBeCancelled": true,
+        "cardCode": "c01007",
+        "index": 2,
+        "type": "forced"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "kind": "free"
+      },
+      "entity": {
+        "id": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5",
+        "kind": "treachery"
+      },
+      "kind": "resolveForcedAbility",
+      "sourceIndex": 0
+    }
+  ],
+  "protocolVersion": 1,
+  "questionKind": "windowChooseOne",
+  "questionVersion": 68
+}
