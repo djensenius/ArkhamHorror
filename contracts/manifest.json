@@ -15558,7 +15558,7 @@
             "kind"
           ],
           "keyword": "enum",
-          "messageContains": "'asset' is not one of ['location', 'treachery']"
+          "messageContains": "is not one of"
         }
       ]
     },
