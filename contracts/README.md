@@ -41,7 +41,7 @@ constructor.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.
-- `questions.semantic-presentation.v1` is global at revision `0.1.43`. It
+- `questions.semantic-presentation.v1` is global at revision `0.1.44`. It
   advertises the additive, backend-authored `questionPresentation` projection
   beside the unchanged authoritative raw question. A client uses descriptors
   only to render native controls, validates their protocol/question versions
@@ -520,6 +520,25 @@ The four schema roots are deliberately isolated rather than widening generic
 choice or message unions. Fifty-five single-mutation negatives reject wrong
 tags, source constructors, canonical IDs and codes, windows, localized labels,
 amounts, candidates, message shapes, and additive fields.
+
+Revision `0.1.44` adds
+`question-treachery-forced-ability.json` and
+`question-presentation-treachery-forced-ability.json`, generated from Cover
+Up's end-of-game Q68. The sole descriptor is
+`resolveForcedAbility` at source index `0`, preserving Roland as actor, the
+authoritative treachery UUID, card code `c01007`, ability index `2`, forced
+type, cancellation state, and free cost. The backend now emits this semantic
+only when the projected source and chosen entity are equal and are either a
+location or treachery; missing sources, mismatches, and other entity kinds
+remain omitted. Existing Gathering location-forced behavior is unchanged.
+
+The raw fixture retains Cover Up's exact `TreacherySource` source/requestor,
+null target, empty additional costs, combined game-end/investigator-elimination
+window matcher, and outer end-of-game window. The existing Dissonant Voices
+Q24 fixture remains an independent regression for the same semantic family.
+These descriptors remain render-only: clients submit the unchanged source
+index and question version, while Haskell alone checks and resolves the forced
+ability.
 
 #### Roland Banks post-defeat reaction
 

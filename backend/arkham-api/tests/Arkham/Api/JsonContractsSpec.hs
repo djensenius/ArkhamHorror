@@ -19,7 +19,9 @@ import Arkham.Ability (abilityActions)
 import Arkham.Ability.Limit qualified as AbilityLimit
 import Arkham.Ability.Type qualified as AbilityType
 import Arkham.Ability.Types
-  ( abilityCardCode
+  ( abilityAdditionalCosts
+  , abilityCanBeCancelled
+  , abilityCardCode
   , abilityCriteria
   , abilityIndex
   , abilityLimit
@@ -865,6 +867,27 @@ fixtureCoverUpReactionQuestion =
   fromMaybe
     (error "fixtureCoverUpReactionQuestion: fixture player has no active question")
     (Map.lookup fixturePlayerId $ gameQuestion fixtureCoverUpReactionGame)
+
+fixtureCoverUpForcedGame :: Game
+fixtureCoverUpForcedGame = unsafePerformIO $ runAgainstFixtureBoardGame do
+  let iid = InvestigatorId "01001"
+      q68Seed = 66 -- End-game processing advances twice before exposing Cover Up as Q68.
+  overTest \game ->
+    game
+      { gameQuestion = mempty
+      , gameScenarioSteps = q68Seed
+      }
+  pushAndRunAll
+    [CreateTreacheryAt fixtureCoverUpTreacheryId fixtureCoverUpCard (InThreatArea iid)]
+  New.endGame
+  getGame
+{-# NOINLINE fixtureCoverUpForcedGame #-}
+
+fixtureCoverUpForcedQuestion :: Question Message
+fixtureCoverUpForcedQuestion =
+  fromMaybe
+    (error "fixtureCoverUpForcedQuestion: fixture player has no active question")
+    (Map.lookup fixturePlayerId $ gameQuestion fixtureCoverUpForcedGame)
 
 fixtureGatheringActObjectiveId :: ActId
 fixtureGatheringActObjectiveId = ActId "01108"
@@ -2878,6 +2901,68 @@ spec = describe "Native client contract fixtures" do
           && locationAfter == locationBefore - 1
           && coverUpAfter == coverUpBefore
 
+  it "projects Cover Up's production game-end forced ability with exact treachery semantics" do
+    rawFixture <- loadFixture "question-treachery-forced-ability.json"
+    presentationFixture <-
+      loadFixture "question-presentation-treachery-forced-ability.json"
+    let
+      iid = InvestigatorId "01001"
+      source = TreacherySource fixtureCoverUpTreacheryId
+      questionVersion = gameScenarioSteps fixtureCoverUpForcedGame
+      presentation =
+        QuestionPresentation.questionPresentation
+          questionVersion
+          fixtureCoverUpForcedQuestion
+      expectedPresentation =
+        QuestionPresentation.QuestionPresentation
+          68
+          "windowChooseOne"
+          1
+          [ QuestionPresentation.ChoicePresentation
+              0
+              QuestionPresentation.ResolveForcedAbility
+              (Just iid)
+              (Just $ QuestionPresentation.TreacheryEntity fixtureCoverUpTreacheryId)
+              Nothing
+              ( Just
+                  $ QuestionPresentation.AbilityPresentation
+                    "01007"
+                    2
+                    "forced"
+                    []
+                    True
+              )
+              (Just QuestionPresentation.FreePresentationCost)
+          ]
+    questionVersion `shouldBe` 68
+    Aeson.toJSON fixtureCoverUpForcedQuestion `shouldBe` rawFixture
+    viaWireEncoding fixtureCoverUpForcedQuestion `shouldBe` rawFixture
+    canonicalQuestionSha256 fixtureCoverUpForcedQuestion
+      `shouldBe` "e189afe8ae9039eac7908842e09ad7c26aa23b737f52f9c4af96ef17613f1ac9"
+    presentation `shouldBe` expectedPresentation
+    Aeson.toJSON presentation `shouldBe` presentationFixture
+    viaWireEncoding presentation `shouldBe` presentationFixture
+    case fixtureCoverUpForcedQuestion of
+      WindowChooseOne
+        [AbilityLabel choiceIid ability _ beforeMessages messages] -> do
+          choiceIid `shouldBe` iid
+          abilitySource ability `shouldBe` source
+          abilityRequestor ability `shouldBe` source
+          abilityCardCode ability `shouldBe` "01007"
+          abilityIndex ability `shouldBe` 2
+          abilityType ability `shouldSatisfy` \case
+            AbilityType.ForcedAbility {} -> True
+            _ -> False
+          abilityTarget ability `shouldBe` Nothing
+          abilityAdditionalCosts ability `shouldBe` []
+          abilityCanBeCancelled ability `shouldBe` True
+          beforeMessages `shouldBe` []
+          messages `shouldBe` []
+      other ->
+        expectationFailure
+          $ "Expected Cover Up's production game-end forced prompt, got "
+          <> show other
+
   it "matches the exact production Gathering act objective on both encoder paths and canonical replay digest" do
     fixture <- loadFixture "question-gathering-act-objective.json"
     Aeson.toJSON fixtureGatheringActObjectiveQuestion `shouldBe` fixture
@@ -4265,6 +4350,94 @@ spec = describe "Native client contract fixtures" do
       other ->
         expectationFailure
           $ "Expected the production Dissonant Voices round-end prompt, got "
+          <> show other
+
+  it "projects the exact Dissonant Voices treachery forced-ability descriptor" do
+    let
+      presentation =
+        QuestionPresentation.questionPresentation
+          (gameScenarioSteps fixtureRoundTransition.roundEndForcedGame)
+          fixtureRoundEndForcedQuestion
+      expected =
+        QuestionPresentation.QuestionPresentation
+          24
+          "windowChooseOne"
+          1
+          [ QuestionPresentation.ChoicePresentation
+              0
+              QuestionPresentation.ResolveForcedAbility
+              (Just $ InvestigatorId "01001")
+              ( Just
+                  $ QuestionPresentation.TreacheryEntity
+                    fixtureRoundTransitionTreacheryId
+              )
+              Nothing
+              ( Just
+                  $ QuestionPresentation.AbilityPresentation
+                    "01165"
+                    1
+                    "forced"
+                    []
+                    True
+              )
+              (Just QuestionPresentation.FreePresentationCost)
+          ]
+    presentation `shouldBe` expected
+
+  it "fails closed for treachery forced abilities without an exact supported source match" do
+    let
+      otherTreacheryId = TreacheryId $ UUID.fromWords 0 0 0 909
+      assetId = AssetId $ UUID.fromWords 0 0 0 910
+      replaceAbility update = \case
+        AbilityLabel investigatorId ability windows beforeMessages messages ->
+          AbilityLabel
+            investigatorId
+            (update ability)
+            windows
+            beforeMessages
+            messages
+        _ -> error "Expected an AbilityLabel fixture"
+      assertOmitted choice =
+        QuestionPresentation.questionPresentation 68 (WindowChooseOne [choice])
+          `shouldBe` QuestionPresentation.QuestionPresentation
+            68
+            "windowChooseOne"
+            1
+            []
+    case fixtureCoverUpForcedQuestion of
+      WindowChooseOne [choice] ->
+        for_
+          [ replaceAbility
+              ( \ability ->
+                  ability
+                    { abilityTarget = Just $ TreacheryTarget otherTreacheryId
+                    }
+              )
+              choice
+          , replaceAbility
+              ( \ability ->
+                  ability
+                    { abilitySource = GameSource
+                    , abilityRequestor = GameSource
+                    , abilityTarget =
+                        Just $ TreacheryTarget fixtureRoundTransitionTreacheryId
+                    }
+              )
+              choice
+          , replaceAbility
+              ( \ability ->
+                  ability
+                    { abilitySource = AssetSource assetId
+                    , abilityRequestor = AssetSource assetId
+                    , abilityTarget = Just $ AssetTarget assetId
+                    }
+              )
+              choice
+          ]
+          assertOmitted
+      other ->
+        expectationFailure
+          $ "Expected Cover Up's production game-end forced prompt, got "
           <> show other
 
   it "binds Agenda 1 advancement and both What's Going On consequences exactly" do

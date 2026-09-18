@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/basic-choice-question.schema.json",
   "title": "BasicChoiceQuestion",
-  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage/Move actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, Cover Up's optional clue-replacement reaction, The Gathering's act-objective advancement and location-entry damage/horror assignment, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
+  "description": "The closed native-renderable ChooseOne/ChooseOneAtATime/PlayerWindowChooseOne/WindowChooseOne/Read and isolated wrapped-question slice, including the opening mulligan, basic Investigate/Fight/Evade/Engage/Move actions and skill-test controls, the first post-Engage round transition (Dissonant Voices cleanup, Agenda 1 advancement, What's Going On?! consequences, and agenda-sourced two-horror assignment), Roland Banks's optional post-defeat reaction, Cover Up's optional clue-replacement reaction and game-end forced ability, The Gathering's act-objective advancement and location-entry damage/horror assignment, mythos encounter-deck draw, the exact single-enemy regular-attack ordering prompt, and its exact 1 damage / 1 horror assignment prompt. Unknown top-level questions remain opaque in PublicGame.question; they do not validate here. The choices/readChoices array index is the zero-based Answer.choice.",
   "oneOf": [
     {
       "$ref": "#/$defs/gatheringActObjectiveQuestion"
@@ -15,6 +15,9 @@
     },
     {
       "$ref": "#/$defs/coverUpReactionQuestion"
+    },
+    {
+      "$ref": "#/$defs/coverUpForcedAbilityQuestion"
     },
     {
       "$ref": "#/$defs/rolandDefeatReactionQuestion"
@@ -1561,6 +1564,371 @@
         },
         "investigatorId": {
           "const": "c01001"
+        }
+      }
+    },
+    "coverUpForcedAbilityQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "choices"
+      ],
+      "properties": {
+        "tag": {
+          "const": "WindowChooseOne"
+        },
+        "choices": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/coverUpForcedAbilityLabel"
+            }
+          ],
+          "items": false
+        }
+      },
+      "description": "The exact one-choice end-of-game WindowChooseOne emitted by Cover Up (c01007): source index 0 is its second forced ability for Roland Banks."
+    },
+    "coverUpForcedAbilityLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "ability",
+        "windows",
+        "before",
+        "messages"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AbilityLabel"
+        },
+        "investigatorId": {
+          "const": "c01001"
+        },
+        "ability": {
+          "$ref": "#/$defs/coverUpForcedAbility"
+        },
+        "windows": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/coverUpEndOfGameWindow"
+            }
+          ],
+          "items": false
+        },
+        "before": {
+          "const": []
+        },
+        "messages": {
+          "const": []
+        }
+      }
+    },
+    "coverUpForcedAbility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "additionalCosts",
+        "basic",
+        "canBeCancelled",
+        "cardCode",
+        "criteria",
+        "delayAdditionalCosts",
+        "displayAs",
+        "doesNotProvokeAttacksOfOpportunity",
+        "evadeCriteriaOverride",
+        "fightCriteriaOverride",
+        "highlightFromWindow",
+        "ignoreAllCosts",
+        "index",
+        "limit",
+        "metadata",
+        "requestor",
+        "skipForAll",
+        "source",
+        "target",
+        "tooltip",
+        "triggersSkillTest",
+        "type",
+        "wantsSkillTest",
+        "window"
+      ],
+      "properties": {
+        "additionalCosts": {
+          "const": []
+        },
+        "basic": {
+          "const": false
+        },
+        "canBeCancelled": {
+          "const": true
+        },
+        "cardCode": {
+          "const": "c01007"
+        },
+        "criteria": {
+          "$ref": "#/$defs/coverUpForcedAbilityCriteria"
+        },
+        "delayAdditionalCosts": {
+          "type": "null"
+        },
+        "displayAs": {
+          "type": "null"
+        },
+        "doesNotProvokeAttacksOfOpportunity": {
+          "type": "null"
+        },
+        "evadeCriteriaOverride": {
+          "type": "null"
+        },
+        "fightCriteriaOverride": {
+          "type": "null"
+        },
+        "highlightFromWindow": {
+          "const": false
+        },
+        "ignoreAllCosts": {
+          "const": false
+        },
+        "index": {
+          "const": 2
+        },
+        "limit": {
+          "$ref": "#/$defs/coverUpForcedAbilityLimit"
+        },
+        "metadata": {
+          "type": "null"
+        },
+        "requestor": {
+          "$ref": "#/$defs/coverUpForcedTreacherySource"
+        },
+        "skipForAll": {
+          "const": false
+        },
+        "source": {
+          "$ref": "#/$defs/coverUpForcedTreacherySource"
+        },
+        "target": {
+          "type": "null"
+        },
+        "tooltip": {
+          "type": "null"
+        },
+        "triggersSkillTest": {
+          "const": false
+        },
+        "type": {
+          "$ref": "#/$defs/coverUpForcedAbilityType"
+        },
+        "wantsSkillTest": {
+          "type": "null"
+        },
+        "window": {
+          "$ref": "#/$defs/coverUpForcedAbilityWindowMatcher"
+        }
+      }
+    },
+    "coverUpForcedTreacherySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "TreacherySource"
+        },
+        "contents": {
+          "const": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
+        }
+      }
+    },
+    "coverUpForcedAbilityCriteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "CluesOnThis"
+        },
+        "contents": {
+          "$ref": "#/$defs/coverUpAtLeastOne"
+        }
+      }
+    },
+    "coverUpForcedAbilityLimit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "GroupLimit"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "PerWindow"
+                }
+              }
+            },
+            {
+              "const": 1
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "coverUpForcedAbilityType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "window"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ForcedAbility"
+        },
+        "window": {
+          "$ref": "#/$defs/coverUpForcedAbilityWindowMatcher"
+        }
+      }
+    },
+    "coverUpForcedAbilityWindowMatcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "OrWindowMatcher"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/coverUpGameEndsWhenMatcher"
+            },
+            {
+              "$ref": "#/$defs/coverUpInvestigatorEliminatedWhenMatcher"
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "coverUpGameEndsWhenMatcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "GameEnds"
+        },
+        "contents": {
+          "const": "When"
+        }
+      }
+    },
+    "coverUpInvestigatorEliminatedWhenMatcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "InvestigatorEliminated"
+        },
+        "contents": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "const": "When"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tag",
+                "contents"
+              ],
+              "properties": {
+                "tag": {
+                  "const": "InvestigatorWithId"
+                },
+                "contents": {
+                  "const": "c01001"
+                }
+              }
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "coverUpEndOfGameWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "windowTiming",
+        "windowType",
+        "windowBatchId"
+      ],
+      "properties": {
+        "windowTiming": {
+          "const": "When"
+        },
+        "windowType": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "const": "EndOfGame"
+            }
+          }
+        },
+        "windowBatchId": {
+          "type": "null"
         }
       }
     },

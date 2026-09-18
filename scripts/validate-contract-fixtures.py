@@ -147,6 +147,12 @@ Q38_CELLAR_QUESTION_FIXTURE = (
 Q38_CELLAR_PRESENTATION_FIXTURE = (
     "contracts/fixtures/question-presentation-gathering-cellar-damage-assignment.json"
 )
+TREACHERY_FORCED_QUESTION_FIXTURE = (
+    "contracts/fixtures/question-treachery-forced-ability.json"
+)
+TREACHERY_FORCED_PRESENTATION_FIXTURE = (
+    "contracts/fixtures/question-presentation-treachery-forced-ability.json"
+)
 ENCOUNTER_DRAW_QUESTION_FIXTURE = (
     "contracts/fixtures/question-encounter-deck-draw.json"
 )
@@ -161,6 +167,7 @@ QUESTION_PRESENTATION_BINDINGS = {
     Q37_CELLAR_PRESENTATION_FIXTURE: Q37_CELLAR_QUESTION_FIXTURE,
     Q38_ATTIC_PRESENTATION_FIXTURE: Q38_ATTIC_QUESTION_FIXTURE,
     Q38_CELLAR_PRESENTATION_FIXTURE: Q38_CELLAR_QUESTION_FIXTURE,
+    TREACHERY_FORCED_PRESENTATION_FIXTURE: TREACHERY_FORCED_QUESTION_FIXTURE,
     ENCOUNTER_DRAW_PRESENTATION_FIXTURE: ENCOUNTER_DRAW_QUESTION_FIXTURE,
 }
 
@@ -618,6 +625,25 @@ Q38_CELLAR_DAMAGE_PRESENTATION = {
     "kind": "assignDamage",
     "sourceIndex": 0,
 }
+TREACHERY_FORCED_PRESENTATION = {
+    "ability": {
+        "actions": [],
+        "canBeCancelled": True,
+        "cardCode": "c01007",
+        "index": 2,
+        "type": "forced",
+    },
+    "actorId": "c01001",
+    "cost": {
+        "kind": "free",
+    },
+    "entity": {
+        "id": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5",
+        "kind": "treachery",
+    },
+    "kind": "resolveForcedAbility",
+    "sourceIndex": 0,
+}
 ENCOUNTER_DRAW_PRESENTATION = {
     "actorId": "c01001",
     "kind": "drawEncounterCard",
@@ -691,6 +717,15 @@ EXACT_PRESENTATION_CHOICES = {
             Q38_CELLAR_DAMAGE_PRESENTATION,
             "q38CellarDamageSemantic",
             "Q38 source index 0 must assign damage to investigator c01001",
+        ),
+    ),
+    TREACHERY_FORCED_PRESENTATION_FIXTURE: (
+        (
+            0,
+            TREACHERY_FORCED_PRESENTATION,
+            "treacheryForcedSemantic",
+            "Q68 source index 0 must be the exact Cover Up c01007 "
+            "treachery forced-ability semantic",
         ),
     ),
     ENCOUNTER_DRAW_PRESENTATION_FIXTURE: (
