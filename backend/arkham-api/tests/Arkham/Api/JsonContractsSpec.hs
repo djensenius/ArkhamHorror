@@ -871,10 +871,11 @@ fixtureCoverUpReactionQuestion =
 fixtureCoverUpForcedGame :: Game
 fixtureCoverUpForcedGame = unsafePerformIO $ runAgainstFixtureBoardGame do
   let iid = InvestigatorId "01001"
+      q68Seed = 66 -- End-game processing advances twice before exposing Cover Up as Q68.
   overTest \game ->
     game
       { gameQuestion = mempty
-      , gameScenarioSteps = 66
+      , gameScenarioSteps = q68Seed
       }
   pushAndRunAll
     [CreateTreacheryAt fixtureCoverUpTreacheryId fixtureCoverUpCard (InThreatArea iid)]
