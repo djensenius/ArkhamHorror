@@ -75,7 +75,6 @@ GOVERNED_TREE_PATHS = (
     "uv.lock",
     "Dockerfile",
     ".github/workflows",
-    "offline/scripts/03-build-frontend.sh",
 )
 
 OWNER_SENTINEL = ".locale-catalog-boundary-owner"
@@ -1098,25 +1097,6 @@ def test_workflow_base_authority_wiring() -> int:
         "contracts workflow interpolates an Actions expression into shell source instead of "
         "passing the event base through the quoted BASE_SHA environment value",
     )
-    offline = (ROOT / ".github" / "workflows" / "build-offline.yml").read_text(encoding="utf-8")
-    require(
-        "permissions:\n  contents: read" in offline
-        and "    permissions:\n      contents: write" in offline
-        and "persist-credentials: false" in offline
-        and "softprops/action-gh-release" not in offline
-        and "gh release create" in offline
-        and all(
-            f"@{sha}" in offline
-            for sha in (
-                "11d5960a326750d5838078e36cf38b85af677262",
-                "0057852bfaa89a56745cba8c7296529d2fc39830",
-                "ea165f8d65b6e75b540449e92b4886f43607fa02",
-                "d3f86a106a0bac45b974a628896c90dbdf5c8093",
-            )
-        )
-        and "@v" not in offline,
-        "build-offline.yml does not isolate release write credentials from dependency/build code",
-    )
     locale_catalog = (ROOT / ".github" / "workflows" / "locale-catalog.yml").read_text(
         encoding="utf-8"
     )
@@ -1135,7 +1115,7 @@ def test_workflow_base_authority_wiring() -> int:
         and "stack install --no-terminal --system-ghc" in docker_build_api,
         "docker-build-api.sh does not force both Stack phases to use the image's system GHC",
     )
-    return 4
+    return 3
 
 
 def test_fixture_writer_ownership(scratch: Path, token: str) -> int:
@@ -1411,6 +1391,22 @@ def test_toolchain_roots(scratch: Path, token: str) -> int:
         require(
             system_python.is_file(), "the test host has no system Python for wrong-runtime coverage"
         )
+        wrong_version_root = scratch / f"wrong-version-root-{uuid.uuid4().hex}"
+        wrong_version_root.mkdir()
+        mirror_toolchain(sealed_root, wrong_version_root, {})
+        wrong_version_binary = wrong_version_root / binary_relative
+        wrong_version_binary.unlink()
+        wrong_version_binary.write_text(f"#!/bin/sh\nexec {system_python} \"$@\"\n", encoding="utf-8")
+        wrong_version_binary.chmod(0o755)
+        require_authoritative_failure(
+            "wrong CPython version from the mise-managed interpreter path",
+            tree,
+            [FIXTURE_ENTRY, "--check"],
+            environment=probe_environment({"LOCALE_CATALOG_MISE_ROOT": str(wrong_version_root)}),
+        )
+        checked += 1
+        shutil.rmtree(wrong_version_root)
+
         unsealed = subprocess.run(
             [
                 str(system_python),
@@ -2340,8 +2336,6 @@ GOVERNED_RUN_MARKERS = (
     "generator-launcher.mjs",
     "npm run build",
     "npm run prebuild",
-    "offline/scripts/03-build-frontend.sh",
-    "offline/scripts/05-package.sh",
 )
 FORBIDDEN_TRIGGERS = ("pull_request_target", "workflow_run")
 PUBLISHING_ACTION_PREFIXES = (
@@ -2852,7 +2846,7 @@ jobs:
       - uses: actions/checkout@1111111111111111111111111111111111111111
         with:
           persist-credentials: false
-      - run: bash offline/scripts/03-build-frontend.sh
+      - run: bash scripts/run-locale-catalog-python.sh scripts/generate-locale-catalog.py
 """,
     ),
     "publishing with gh release from a pull request": (
@@ -2986,7 +2980,7 @@ jobs:
       - uses: actions/checkout@1111111111111111111111111111111111111111
         with:
           persist-credentials: false
-      - run: bash offline/scripts/03-build-frontend.sh
+      - run: bash scripts/run-locale-catalog-python.sh scripts/generate-locale-catalog.py
 """,
         },
         True,
@@ -3411,7 +3405,6 @@ PRODUCTION_ROOTS = (
     "frontend/package.json",
     "frontend/scripts",
     "mise.toml",
-    "offline/scripts",
     "scripts",
 )
 # The launcher is the mediator and the digest table is the drift record over
@@ -3433,15 +3426,12 @@ PRODUCTION_TEST_DIRECTORIES = frozenset({"tests", "__tests__"})
 # launcher. A production path that stops appearing here is a discovery gap, so
 # the inventory is checked against this floor rather than only scanned.
 REQUIRED_PRODUCTION_CALLERS: dict[str, str] = {
-    ".github/workflows/build-offline.yml": "offline/scripts",
     ".github/workflows/contracts.yml": "mise run contracts:",
     ".github/workflows/haskell.yml": "mise run locale-catalog:generate",
     ".github/workflows/locale-catalog.yml": "mise run locale-catalog:",
     "Dockerfile": GENERATOR_LAUNCHER_NAME,
     "frontend/package.json": GENERATOR_LAUNCHER_NAME,
     "mise.toml": "scripts/generate-locale-catalog.py",
-    "offline/scripts/03-build-frontend.sh": GENERATOR_LAUNCHER_NAME,
-    "offline/scripts/05-package.sh": GENERATOR_LAUNCHER_NAME,
     "scripts/generate-locale-catalog.py": "generator_launcher_argv",
     "scripts/validate-locale-catalog.py": "generator_launcher_argv",
 }
@@ -5765,13 +5755,11 @@ def test_npm_install_lifecycle_policy() -> int:
         ".github/workflows/locale-catalog.yml",
         ".github/workflows/haskell.yml",
         "Dockerfile",
-        "offline/scripts/03-build-frontend.sh",
     )
     required_counts = {
         ".github/workflows/locale-catalog.yml": 3,
         ".github/workflows/haskell.yml": 1,
         "Dockerfile": 1,
-        "offline/scripts/03-build-frontend.sh": 1,
     }
     require(
         all(
@@ -5956,7 +5944,7 @@ def test_explicit_mise_node_workflow_policy() -> int:
         ".github/workflows/haskell.yml",
     )
     required_counts = {
-        ".github/workflows/locale-catalog.yml": 7,
+        ".github/workflows/locale-catalog.yml": 5,
         ".github/workflows/haskell.yml": 1,
     }
     for command in (

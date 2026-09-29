@@ -8,8 +8,8 @@ narrower and more useful:
 
 * **Centralisation.** Production generation happens in exactly one place. Every
   other production path -- the catalog validator, the serving gate, npm's
-  `prebuild`, the container build, the offline build and packaging -- starts
-  the same `frontend/scripts/locale-catalog/generator-launcher.mjs`.
+  `prebuild`, and the container build -- starts the same
+  `frontend/scripts/locale-catalog/generator-launcher.mjs`.
 * **Drift detection.** The generator directory must contain only declared
   files, and `generator-module-digests.json` must describe it exactly. The
   launcher then binds the module graph at run time with Node's resolve/load
@@ -65,9 +65,9 @@ def generator_launcher_argv(root: Path, entry: str, arguments: list[str]) -> lis
     """The one sanctioned way to start a governed Node entry point.
 
     Every authoritative path -- this generator, the catalog validator, the
-    serving gate, the container build, the offline build and npm's own
-    `prebuild` -- goes through the sealed launcher with the entry module named
-    by file name, never by a direct path to a generator module.
+    serving gate, the container build and npm's own `prebuild` -- goes through
+    the sealed launcher with the entry module named by file name, never by a
+    direct path to a generator module.
     """
     launcher = (root / "frontend" / "scripts" / "locale-catalog" / "generator-launcher.mjs").resolve()
     return [str(launcher), entry, *arguments]

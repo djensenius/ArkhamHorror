@@ -1020,11 +1020,11 @@ def validate_deployment_wiring(manifest: dict) -> None:
     require(f'node = "{node_version}"' in mise, f"mise.toml does not pin Node {node_version}")
     require(
         re.search(
-            rf"FROM node:{re.escape(node_version)}-alpine\s+AS frontend",
+            rf"FROM node:{re.escape(node_version)}-alpine@sha256:[0-9a-f]{{64}} AS frontend",
             (ROOT / "Dockerfile").read_text(encoding="utf-8"),
         )
         is not None,
-        f"the container build does not use the pinned Node {node_version} image",
+        f"the container build does not use an immutable Node {node_version} image",
     )
     require(
         manifest["provenance"].get("node") == node_version
@@ -1064,12 +1064,19 @@ def validate_deployment_wiring(manifest: dict) -> None:
     )
     require(
         re.search(
-            r"^\s*RUN\s+node\s+scripts/locale-catalog/generator-launcher\.mjs\s+verify-dist\.mjs\s+--publish\s*$",
+            r"^\s*RUN\s+.*\bnode\s+scripts/locale-catalog/generator-launcher\.mjs\s+verify-dist\.mjs\s+--publish\s*$",
             dockerfile,
             re.MULTILINE,
         )
         is not None,
         "the container build does not verify and publish the built locale catalog",
+    )
+    require(
+        "ARG GHC=9.14.1" in dockerfile
+        and "ARG STACK=3.7.1" in dockerfile
+        and "ghcup -v install ghc --isolate /usr/local --force ${GHC}" in dockerfile
+        and "ghcup -v install stack --isolate /usr/local/bin --force ${STACK}" in dockerfile,
+        "the Docker build does not pin the backend GHC/Stack toolchain versions",
     )
     ignore = (FRONTEND / ".gitignore").read_text(encoding="utf-8")
     require("public/locale-catalog/" in ignore, "generated catalog output is not git-ignored")

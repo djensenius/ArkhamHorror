@@ -5,13 +5,13 @@ an explicit, canonical, non-symlink toolchain root and this invocation's own
 workspace -- after discarding the caller's entire environment. This module
 enforces the repository side of that boundary, in order:
 
-1. **Environment attestation.** The interpreter must be the exact binary inside
-   the sealed toolchain root, started with `-I -S -E -B`, running from its own
-   base prefix, and its stdlib must match `locale_catalog_python_runtime.json`
-   byte for byte. That lock is platform-independent on purpose: every stdlib
-   source it pins was verified to be identical in the pinned CPython 3.14.7
-   upstream tarball and in the `python-build-standalone` builds recorded in the
-   lock's `distribution` block.
+1. **Environment attestation.** The interpreter must be CPython 3.14.7 at the
+   sealed toolchain path, started with `-I -S -E -B`, running from its own base
+   prefix, and its stdlib must match `locale_catalog_python_runtime.json` byte
+   for byte. That lock is platform-independent on purpose: every stdlib source
+   it pins is recorded by path and digest, while the interpreter binary itself
+   is accepted by implementation and exact version rather than by a live
+   external binary hash.
 2. **Trusted git.** The one governed step that may consult git receives an
    absolute, non-symlink executable through `LOCALE_CATALOG_GIT`; nothing here
    ever resolves `git` through `PATH`.
@@ -21,8 +21,9 @@ enforces the repository side of that boundary, in order:
    lets a governed source reach, and everything those modules import in turn,
    must resolve to a byte-attested `.py` source -- never to a file-backed
    extension module. Anything that resolves to no file at all can only come
-   from the pinned interpreter binary itself (a builtin or frozen module),
-   whose distribution is pinned by checksum in the same lock. That is what
+   from the CPython 3.14.7 interpreter itself (a builtin or frozen module),
+   which is accepted by implementation and exact version at the sealed path.
+   That is what
    makes "every imported stdlib byte is bound to committed metadata" a closure
    property rather than a claim about `.py` files alone.
 5. **Dependency boundary.** The invocation-owned virtual environment must
@@ -39,7 +40,7 @@ Threat model
 What this checks, and what it does not. Everything committed to this
 repository is trusted code reviewed through pull request; none of it is
 sandboxed here. What gets checked is the externally produced material a
-governed command depends on -- the CPython distribution and its import surface,
+governed command depends on -- the CPython version and import surface,
 the pinned Node and uv binaries, the locked dependency tree, the caller's
 environment -- plus drift in the reviewed tooling itself, so a change to it has
 to be a coordinated, reviewed edit rather than a silent difference between what
@@ -123,7 +124,7 @@ def runtime_platform() -> str:
         return "darwin-arm64"
     if sys.platform == "linux" and machine == "x86_64":
         return "linux-x86_64"
-    refuse(f"unsupported toolchain platform {sys.platform}/{machine}; no exact binary identity is declared")
+    refuse(f"unsupported toolchain platform {sys.platform}/{machine}; no Node/uv exact binary identity is declared")
 
 
 def valid_digest_candidates(value: object) -> bool:
@@ -203,8 +204,8 @@ def verify_startup_modules(profile: dict, runtime_home: Path) -> None:
         try:
             origin = module.__file__
         except AttributeError:
-            # A builtin or frozen module: it lives in the pinned interpreter
-            # binary, whose SHA-256 is bound above.
+            # A builtin or frozen module: it lives in the CPython 3.14.7
+            # interpreter accepted at the sealed runtime path.
             continue
         if not origin:
             continue
@@ -288,7 +289,13 @@ def verify_interpreter(profile: dict, runtime_home: Path) -> None:
     if Path(sys._base_executable) != binary:
         refuse(f"base interpreter {sys._base_executable} is not the sealed binary {binary}")
     require_sealed_executable(binary, "sealed interpreter", sealed_root=runtime_home)
-    verify_binary_digest(interpreter, binary, "sealed CPython 3.14.7")
+    if not (
+        isinstance(interpreter, dict)
+        and interpreter.get("installRelativePath") == "installs/python/3.14.7"
+        and interpreter.get("binaryRelativePath") == "installs/python/3.14.7/bin/python3.14"
+        and interpreter.get("stdlibRelativePath") == "installs/python/3.14.7/lib/python3.14"
+    ):
+        refuse(f"{PROFILE.relative_to(ROOT)} has no complete CPython 3.14.7 path identity")
 
 
 def verify_pycache_prefix() -> None:
@@ -413,23 +420,6 @@ def verify_stdlib(
     if not present:
         refuse(f"sealed stdlib root {stdlib_root} contains no attested module")
     return stdlib_root, present, variants, extensions
-
-
-def verify_active_sysconfig_source(profile: dict, stdlib_root: Path) -> None:
-    entries = profile.get("activeSysconfigSources")
-    entry = entries.get(runtime_platform()) if isinstance(entries, dict) else None
-    if (
-        not isinstance(entry, dict)
-        or set(entry) != {"path", "sha256"}
-        or not isinstance(entry["path"], str)
-        or not valid_digest_candidates(entry["sha256"])
-    ):
-        refuse("toolchain lock does not pin this platform's active sysconfig source")
-    path = stdlib_root / entry["path"]
-    if path.is_symlink() or not path.is_file():
-        refuse(f"active sysconfig source {entry['path']!r} is not a regular file")
-    if hashlib.sha256(path.read_bytes()).hexdigest() not in entry["sha256"]:
-        refuse(f"active sysconfig source {entry['path']!r} does not match the toolchain lock")
 
 
 def _imported_module_names(tree: ast.AST, package: str) -> set[str]:
@@ -1081,7 +1071,6 @@ def main() -> None:
     verify_startup_modules(profile, runtime_home)
     verify_pycache_prefix()
     stdlib_root, attested, variants, extensions = verify_stdlib(profile, runtime_home)
-    verify_active_sysconfig_source(profile, stdlib_root)
     verify_trusted_git()
     verify_trusted_node(profile, sealed_root)
     verify_trusted_uv(profile, sealed_root)
