@@ -4,9 +4,7 @@ import Api.Handler.Arkham.Game.Debug (checkpointInvestigatorForPlayerId, checkpo
 import Api.Arkham.Export
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
 import Arkham.CampaignStep qualified as CS
-import Arkham.Card.CardCode (CardCode (..))
 import Arkham.Classes.HasGame (getGame)
-import Arkham.Entities (Entities (..))
 import Arkham.Git (GitSha (..))
 import Arkham.Replay.Checkpoint
 import Arkham.Replay.ImportAuthority
