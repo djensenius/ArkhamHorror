@@ -1809,7 +1809,7 @@ answerConstructor = \case
   AmountsAnswer _ -> "AmountsAnswer"
   StandaloneSettingsAnswer _ -> "StandaloneSettingsAnswer"
   CampaignSettingsAnswer _ -> "CampaignSettingsAnswer"
-  DeckAnswer _ _ -> "DeckAnswer"
+  DeckAnswer _ _ _ -> "DeckAnswer"
   DeckListAnswer _ _ -> "DeckListAnswer"
   PickDestinyAnswer _ -> "PickDestinyAnswer"
   CampaignSpecificAnswer _ _ -> "CampaignSpecificAnswer"
