@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
 
 import { analyzeComposition, findDuplicateKeys } from '../scripts/locale-catalog/inventory.mjs'
 import { nodeRuntime } from '../scripts/locale-catalog/sources.mjs'
@@ -54,6 +55,24 @@ const owned = (text, file) => {
   boxed[OWNER] = file
   return boxed
 }
+const foreignOwned = (text, file) =>
+  vm.runInNewContext(
+    `
+      const boxed = new String(text)
+      boxed[owner] = file
+      boxed
+    `,
+    { file, owner: OWNER, text },
+  )
+
+test('ownership tags from another JavaScript realm are still treated as string leaves', () => {
+  const file = 'src/locales/en/a.json'
+  const composed = { a: { ok: foreignOwned('published', file) } }
+  const files = [{ path: file, tree: { ok: 'published' } }]
+
+  const { findings } = analyzeComposition(composed, files, OWNER)
+  assert.equal(findings.length, 0)
+})
 
 test('a partially overridden contributor is reported with the file that won', () => {
   const first = 'src/locales/en/scenario/first.json'
