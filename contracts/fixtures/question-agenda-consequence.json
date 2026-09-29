@@ -1,47 +1,47 @@
 {
+  "tag": "ChooseOne",
   "choices": [
     {
+      "tag": "Label",
       "label": "$nightOfTheZealot.theGathering.label.whatsGoingOn.horror",
       "messages": [
         {
+          "tag": "InvestigatorMessage",
           "contents": {
+            "tag": "InvestigatorAssignDamage_",
             "contents": [
               "c01001",
               {
-                "contents": "c01105",
-                "tag": "AgendaSource"
+                "tag": "AgendaSource",
+                "contents": "c01105"
               },
               {
                 "tag": "DamageAny"
               },
               0,
               2
-            ],
-            "tag": "InvestigatorAssignDamage_"
-          },
-          "tag": "InvestigatorMessage"
+            ]
+          }
         }
-      ],
-      "tag": "Label"
+      ]
     },
     {
+      "tag": "Label",
       "label": "$nightOfTheZealot.theGathering.label.whatsGoingOn.discard",
       "messages": [
         {
+          "tag": "AllRandomDiscard",
           "contents": [
             {
-              "contents": "c01105",
-              "tag": "AgendaSource"
+              "tag": "AgendaSource",
+              "contents": "c01105"
             },
             {
               "tag": "AnyCard"
             }
-          ],
-          "tag": "AllRandomDiscard"
+          ]
         }
-      ],
-      "tag": "Label"
+      ]
     }
-  ],
-  "tag": "ChooseOne"
+  ]
 }

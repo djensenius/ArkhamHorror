@@ -532,6 +532,7 @@
         "completedActStack": [],
         "completedAgendaStack": [],
         "counts": [],
+        "customChaosBags": {},
         "deckDiscards": [],
         "decks": [],
         "decksLayout": [
@@ -1220,6 +1221,7 @@
     },
     "otherInvestigators": {},
     "killedInvestigators": {},
+    "retiredInvestigators": {},
     "enemies": {},
     "assets": {},
     "acts": {
@@ -1493,7 +1495,9 @@
               "skipForAll": false,
               "ignoreAllCosts": false,
               "fightCriteriaOverride": null,
-              "evadeCriteriaOverride": null
+              "evadeCriteriaOverride": null,
+              "nonBlocking": false,
+              "blocksIn": null
             },
             "windows": [
               {
@@ -1502,21 +1506,24 @@
                   "tag": "DuringTurn",
                   "contents": "c01001"
                 },
-                "windowBatchId": null
+                "windowBatchId": null,
+                "windowConditionTick": null
               },
               {
                 "windowTiming": "When",
                 "windowType": {
                   "tag": "FastPlayerWindow"
                 },
-                "windowBatchId": null
+                "windowBatchId": null,
+                "windowConditionTick": null
               },
               {
                 "windowTiming": "When",
                 "windowType": {
                   "tag": "NonFast"
                 },
-                "windowBatchId": null
+                "windowBatchId": null,
+                "windowConditionTick": null
               }
             ],
             "before": [],

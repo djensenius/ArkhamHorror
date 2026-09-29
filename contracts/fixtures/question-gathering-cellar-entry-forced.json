@@ -71,7 +71,9 @@
         "skipForAll": false,
         "ignoreAllCosts": false,
         "fightCriteriaOverride": null,
-        "evadeCriteriaOverride": null
+        "evadeCriteriaOverride": null,
+        "nonBlocking": false,
+        "blocksIn": null
       },
       "windows": [
         {
@@ -83,7 +85,8 @@
               "a3497b9f-796b-406d-aeb4-9b96fa9f4905"
             ]
           },
-          "windowBatchId": null
+          "windowBatchId": null,
+          "windowConditionTick": null
         }
       ],
       "before": [],

@@ -2192,7 +2192,7 @@ spec = describe "Native client contract fixtures" do
         choices !!? 0 `shouldBe` Just (TargetLabel EncounterDeckTarget [expectedDraw])
       other -> expectationFailure $ "Expected the mythos encounter draw ChooseOne, got " <> show other
     checkAnswer 0 (gameScenarioSteps game) \case
-      Handled messages -> messages `shouldBe` [Run [expectedDraw]]
+      Handled messages -> messages `shouldBe` [Run [ChoseTarget EncounterDeckTarget, expectedDraw]]
       Unhandled reason -> expectationFailure $ "Encounter draw Answer rejected: " <> Text.unpack reason
     checkAnswer 0 (gameScenarioSteps game + 1) \case
       Unhandled reason -> reason `shouldBe` "Stale question"
@@ -2688,7 +2688,7 @@ spec = describe "Native client contract fixtures" do
     Aeson.toJSON fixtureRolandDefeatReactionQuestion `shouldBe` fixture
     viaWireEncoding fixtureRolandDefeatReactionQuestion `shouldBe` fixture
     canonicalQuestionSha256 fixtureRolandDefeatReactionQuestion
-      `shouldBe` "7ff7e00af7be0a2b933ed1a817e7e2a54d3eaa5ae2bdce17f73f7153e59f23a9"
+      `shouldBe` "d237ea70ec79548ed42220c53323ba876aede5a5f0823141a98c128125106302"
 
   it "binds Roland's optional reaction and skip control to their exact source indices" do
     let
@@ -2787,7 +2787,7 @@ spec = describe "Native client contract fixtures" do
     Aeson.toJSON fixtureCoverUpReactionQuestion `shouldBe` fixture
     viaWireEncoding fixtureCoverUpReactionQuestion `shouldBe` fixture
     canonicalQuestionSha256 fixtureCoverUpReactionQuestion
-      `shouldBe` "8857d15cd056ac0e4d8556676dfc5746c5f9addaa2054d0b35c245610dbf71b9"
+      `shouldBe` "847b294d81b9ccfa22266c7d4cbcc5c99754df7ab497d2e5650ff51079af045d"
 
   it "binds Cover Up's optional reaction and skip control to their exact source indices" do
     let
@@ -2938,13 +2938,13 @@ spec = describe "Native client contract fixtures" do
     Aeson.toJSON fixtureCoverUpForcedQuestion `shouldBe` rawFixture
     viaWireEncoding fixtureCoverUpForcedQuestion `shouldBe` rawFixture
     canonicalQuestionSha256 fixtureCoverUpForcedQuestion
-      `shouldBe` "e189afe8ae9039eac7908842e09ad7c26aa23b737f52f9c4af96ef17613f1ac9"
+      `shouldBe` "5dc29802cedb7348a1d9c57d3339ab7feb08aee05956b1b952db34c78174bb44"
     presentation `shouldBe` expectedPresentation
     Aeson.toJSON presentation `shouldBe` presentationFixture
     viaWireEncoding presentation `shouldBe` presentationFixture
     case fixtureCoverUpForcedQuestion of
       WindowChooseOne
-        [AbilityLabel choiceIid ability _ beforeMessages messages] -> do
+        [AbilityLabel choiceIid ability windows beforeMessages messages] -> do
           choiceIid `shouldBe` iid
           abilitySource ability `shouldBe` source
           abilityRequestor ability `shouldBe` source
@@ -2957,7 +2957,7 @@ spec = describe "Native client contract fixtures" do
           abilityAdditionalCosts ability `shouldBe` []
           abilityCanBeCancelled ability `shouldBe` True
           beforeMessages `shouldBe` []
-          messages `shouldBe` []
+          messages `shouldBe` [MoveWithSkillTest (ResolveWindowInitiations iid windows [(ability, windows, [])])]
       other ->
         expectationFailure
           $ "Expected Cover Up's production game-end forced prompt, got "
@@ -2968,7 +2968,7 @@ spec = describe "Native client contract fixtures" do
     Aeson.toJSON fixtureGatheringActObjectiveQuestion `shouldBe` fixture
     viaWireEncoding fixtureGatheringActObjectiveQuestion `shouldBe` fixture
     canonicalQuestionSha256 fixtureGatheringActObjectiveQuestion
-      `shouldBe` "c18ca7e7ab353583d977dcf56434b5703993e415f00d3e5f4ea3125c462692a8"
+      `shouldBe` "d4c750eeffa0f73c4000664f56c399ff241d9ecb591b7624405b738ec680150b"
 
   it "projects every Gathering act-objective choice with exact source alignment and metadata" do
     fixture <- loadFixture "question-presentation-gathering-act-objective.json"
@@ -3033,17 +3033,17 @@ spec = describe "Native client contract fixtures" do
         [ ( "question-gathering-movement.json"
           , "question-presentation-gathering-movement.json"
           , 36
-          , "ccc03aba15081592b2163fac1b61e433b20333486b650e1ed359ac598d2262f8"
+          , "97ac10a983dfb82090dc27ee406611e57186b9c40bc8d02ac64df33e71e9f0ed"
           )
         , ( "question-gathering-attic-entry-forced.json"
           , "question-presentation-gathering-attic-entry-forced.json"
           , 37
-          , "e2bdcb51bb439cf4e0e4b3e143658ef8bdc56607369e4a4a0e9a6209863e0fef"
+          , "6fd4ac416f3e0d2ccbcff05df9339558434c3a6a347cb1720ba3cadd832f2128"
           )
         , ( "question-gathering-cellar-entry-forced.json"
           , "question-presentation-gathering-cellar-entry-forced.json"
           , 37
-          , "81226881d2744c27b99dc9e0169dc6da66b50616628d0cfe770fd42411adab7f"
+          , "21f3cb78ef0d3829effa4489fd4517424e05aff37e1d8756b00ce0e98cd4a393"
           )
         , ( "question-gathering-attic-horror-assignment.json"
           , "question-presentation-gathering-attic-horror-assignment.json"
@@ -3895,7 +3895,7 @@ spec = describe "Native client contract fixtures" do
               of
                 ( Just
                     ( WindowChooseOne
-                        [AbilityLabel choiceIid ability _ beforeMessages messages]
+                        [AbilityLabel choiceIid ability windows beforeMessages messages]
                       )
                   , Just presentation
                   ) -> do
@@ -3905,7 +3905,7 @@ spec = describe "Native client contract fixtures" do
                     abilityIndex ability `shouldBe` 1
                     abilityActions ability `shouldBe` []
                     beforeMessages `shouldBe` []
-                    messages `shouldBe` []
+                    messages `shouldBe` [MoveWithSkillTest (ResolveWindowInitiations iid windows [(ability, windows, [])])]
                     presentation
                       `shouldBe` QuestionPresentation.QuestionPresentation
                         37
@@ -4277,7 +4277,7 @@ spec = describe "Native client contract fixtures" do
       fixtures =
         [ ( "question-round-end-forced-ability.json"
           , fixtureRoundEndForcedQuestion
-          , "e52ee8942cce5602a7ae68a7f8cfd98ad77b7970893ab5216413170bc0b7de44"
+          , "d2a3eed857b8101814655ed0688c3a145b5faf46ea3bed90cfc5125e6e4a565b"
           )
         , ( "question-agenda-advance.json"
           , fixtureAgendaAdvanceQuestion
@@ -4346,7 +4346,7 @@ spec = describe "Native client contract fixtures" do
             abilityWindow ability `shouldBe` RoundEnds Timing.When
             windows `shouldBe` [Window.mkWindow Timing.When Window.AtEndOfRound]
             beforeMessages `shouldBe` []
-            messages `shouldBe` []
+            messages `shouldBe` [MoveWithSkillTest (ResolveWindowInitiations iid windows [(ability, windows, [])])]
       other ->
         expectationFailure
           $ "Expected the production Dissonant Voices round-end prompt, got "

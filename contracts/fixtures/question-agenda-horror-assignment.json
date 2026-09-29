@@ -1,38 +1,49 @@
 {
+  "tag": "QuestionWithSource",
+  "source": {
+    "tag": "AgendaSource",
+    "contents": "c01105"
+  },
+  "tooltip": null,
   "question": {
-    "card": null,
+    "tag": "QuestionLabel",
     "label": "Assign 2 horror",
+    "card": null,
     "question": {
+      "tag": "ChooseOne",
       "choices": [
         {
+          "tag": "ComponentLabel",
           "component": {
-            "investigatorId": "c01001",
             "tag": "InvestigatorComponent",
+            "investigatorId": "c01001",
             "tokenType": "HorrorToken"
           },
           "messages": [
             {
+              "tag": "InvestigatorMessage",
               "contents": {
+                "tag": "InvestigatorDamage_",
                 "contents": [
                   "c01001",
                   {
-                    "contents": "c01105",
-                    "tag": "AgendaSource"
+                    "tag": "AgendaSource",
+                    "contents": "c01105"
                   },
                   0,
                   2
-                ],
-                "tag": "InvestigatorDamage_"
-              },
-              "tag": "InvestigatorMessage"
+                ]
+              }
             },
             {
+              "tag": "InvestigatorMessage",
               "contents": {
+                "tag": "InvestigatorDoAssignDamage_",
                 "contents": [
                   "c01001",
                   {
-                    "contents": "c01105",
-                    "tag": "AgendaSource"
+                    "tag": "AgendaSource",
+                    "contents": "c01105"
                   },
                   {
                     "tag": "DamageAny"
@@ -45,31 +56,20 @@
                   [],
                   [
                     {
-                      "contents": "c01001",
-                      "tag": "InvestigatorTarget"
+                      "tag": "InvestigatorTarget",
+                      "contents": "c01001"
                     },
                     {
-                      "contents": "c01001",
-                      "tag": "InvestigatorTarget"
+                      "tag": "InvestigatorTarget",
+                      "contents": "c01001"
                     }
                   ]
-                ],
-                "tag": "InvestigatorDoAssignDamage_"
-              },
-              "tag": "InvestigatorMessage"
+                ]
+              }
             }
-          ],
-          "tag": "ComponentLabel"
+          ]
         }
-      ],
-      "tag": "ChooseOne"
-    },
-    "tag": "QuestionLabel"
-  },
-  "source": {
-    "contents": "c01105",
-    "tag": "AgendaSource"
-  },
-  "tag": "QuestionWithSource",
-  "tooltip": null
+      ]
+    }
+  }
 }

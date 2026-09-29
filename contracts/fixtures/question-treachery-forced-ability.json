@@ -90,7 +90,9 @@
         "skipForAll": false,
         "ignoreAllCosts": false,
         "fightCriteriaOverride": null,
-        "evadeCriteriaOverride": null
+        "evadeCriteriaOverride": null,
+        "nonBlocking": false,
+        "blocksIn": null
       },
       "windows": [
         {
@@ -98,11 +100,137 @@
           "windowType": {
             "tag": "EndOfGame"
           },
-          "windowBatchId": null
+          "windowBatchId": null,
+          "windowConditionTick": null
         }
       ],
       "before": [],
-      "messages": []
+      "messages": [
+        {
+          "tag": "MoveWithSkillTest",
+          "contents": {
+            "tag": "ResolveWindowInitiations",
+            "contents": [
+              "c01001",
+              [
+                {
+                  "windowTiming": "When",
+                  "windowType": {
+                    "tag": "EndOfGame"
+                  },
+                  "windowBatchId": null,
+                  "windowConditionTick": null
+                }
+              ],
+              [
+                [
+                  {
+                    "source": {
+                      "tag": "TreacherySource",
+                      "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
+                    },
+                    "cardCode": "c01007",
+                    "index": 2,
+                    "type": {
+                      "tag": "ForcedAbility",
+                      "window": {
+                        "tag": "OrWindowMatcher",
+                        "contents": [
+                          {
+                            "tag": "GameEnds",
+                            "contents": "When"
+                          },
+                          {
+                            "tag": "InvestigatorEliminated",
+                            "contents": [
+                              "When",
+                              {
+                                "tag": "InvestigatorWithId",
+                                "contents": "c01001"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "limit": {
+                      "tag": "GroupLimit",
+                      "contents": [
+                        {
+                          "tag": "PerWindow"
+                        },
+                        1
+                      ]
+                    },
+                    "window": {
+                      "tag": "OrWindowMatcher",
+                      "contents": [
+                        {
+                          "tag": "GameEnds",
+                          "contents": "When"
+                        },
+                        {
+                          "tag": "InvestigatorEliminated",
+                          "contents": [
+                            "When",
+                            {
+                              "tag": "InvestigatorWithId",
+                              "contents": "c01001"
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    "metadata": null,
+                    "criteria": {
+                      "tag": "CluesOnThis",
+                      "contents": {
+                        "tag": "GreaterThanOrEqualTo",
+                        "contents": {
+                          "tag": "Static",
+                          "contents": 1
+                        }
+                      }
+                    },
+                    "doesNotProvokeAttacksOfOpportunity": null,
+                    "tooltip": null,
+                    "canBeCancelled": true,
+                    "displayAs": null,
+                    "delayAdditionalCosts": null,
+                    "basic": false,
+                    "additionalCosts": [],
+                    "requestor": {
+                      "tag": "TreacherySource",
+                      "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
+                    },
+                    "triggersSkillTest": false,
+                    "wantsSkillTest": null,
+                    "target": null,
+                    "highlightFromWindow": false,
+                    "skipForAll": false,
+                    "ignoreAllCosts": false,
+                    "fightCriteriaOverride": null,
+                    "evadeCriteriaOverride": null,
+                    "nonBlocking": false,
+                    "blocksIn": null
+                  },
+                  [
+                    {
+                      "windowTiming": "When",
+                      "windowType": {
+                        "tag": "EndOfGame"
+                      },
+                      "windowBatchId": null,
+                      "windowConditionTick": null
+                    }
+                  ],
+                  []
+                ]
+              ]
+            ]
+          }
+        }
+      ]
     }
   ]
 }
