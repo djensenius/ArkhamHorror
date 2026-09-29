@@ -1,7 +1,12 @@
+[settings]
+disable_backends = ["conda"]
+
 [tools]
 node = "26.7.0"
 python = "3.14.7"
 uv = "0.12.6"
+ghc = "9.14.1"
+stack = "3.7.1"
 
 [tasks."replay:harness"]
 description = "Run the backend-owned deterministic replay/checkpoint CLI"
@@ -89,22 +94,6 @@ run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/extract-backend-i18n
 [tasks."locale-catalog:backend-keys-test"]
 description = "Run the backend emitted-key extractor's own tests (synthetic modules plus registry properties)"
 run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/test_extract_backend_i18n_keys.py"
-
-[tasks."locale-catalog:offline-cache-test"]
-description = "Check the offline build's cache key really covers every locale-catalog provenance input"
-run = "bash offline/scripts/test-frontend-cache-hash.sh"
-
-[tasks."locale-catalog:offline-cache-hit-test"]
-description = "Exercise adversarial catalog-subtree verification without frontend/public; rendered frontend output itself is never restored"
-run = "bash offline/scripts/test-frontend-cache-hit.sh"
-
-[tasks."locale-catalog:offline-toolchain-authority-test"]
-description = "Reject corrupted offline download caches, wrong archives, missing platform authorities, substituted binaries, and stale cache keys"
-run = "bash offline/scripts/test-toolchain-authority.sh"
-
-[tasks."locale-catalog:offline-output-authority-test"]
-description = "Reject frontend asset and package library substitutions against invocation-external authority receipts"
-run = "bash offline/scripts/test-frontend-npm-authority.sh && bash offline/scripts/test-frontend-output-authority.sh && bash offline/scripts/test-package-authority.sh && bash offline/scripts/test-package-attestation.sh && bash offline/scripts/test-package-lifecycle.sh && bash offline/scripts/test-receipt-capability-isolation.sh && bash offline/scripts/test-updater-authority.sh && bash offline/scripts/test-docker-toolchain-authority.sh"
 
 [tasks."locale-catalog:serving-cleanup-test"]
 description = "Force post-start nginx failures and prove serving contexts clean their container/process"

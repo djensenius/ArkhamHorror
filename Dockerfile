@@ -1,5 +1,4 @@
 FROM node:26.7.0-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS frontend
-ARG TARGETARCH
 
 # Frontend
 
@@ -11,7 +10,6 @@ RUN mkdir -p /opt/arkham/src/frontend
 
 WORKDIR /opt/arkham/src/frontend
 COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js ./frontend/eslint.config.js ./frontend/package-lock.json /opt/arkham/src/frontend/
-COPY ./offline/toolchain.lock ./offline/scripts/docker-runtime-authority.sh /opt/arkham/toolchain/
 RUN --mount=type=cache,target=/root/.npm npm ci --ignore-scripts --prefer-offline
 COPY ./frontend /opt/arkham/src/frontend
 # The locale-catalog generator (run by npm's prebuild) derives its required-key
@@ -20,18 +18,13 @@ COPY ./frontend /opt/arkham/src/frontend
 COPY ./contracts /opt/arkham/src/contracts
 COPY ./backend/arkham-api/i18n-emitted-keys.json /opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json
 ENV VITE_ASSET_HOST=${ASSET_HOST}
-# Reverify the exact Node executable and complete npm CLI import tree after ci
-# and immediately before each untrusted package-script boundary.
-RUN /opt/arkham/toolchain/docker-runtime-authority.sh node /opt/arkham/toolchain/toolchain.lock "$TARGETARCH" && \
-    env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generator-launcher.mjs generate.mjs
-RUN /opt/arkham/toolchain/docker-runtime-authority.sh node /opt/arkham/toolchain/toolchain.lock "$TARGETARCH" && \
-    /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js run build
+RUN env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generator-launcher.mjs generate.mjs
+RUN /usr/local/bin/node /usr/local/lib/node_modules/npm/bin/npm-cli.js run build
 # The image copies `dist` out of this stage, so the catalog is verified here and
 # republished from the verified buffers: what the next stage copies — and what
 # nginx serves — is exactly what passed, not an intermediate tree that happened
 # to be correct when the build finished.
-RUN /opt/arkham/toolchain/docker-runtime-authority.sh node /opt/arkham/toolchain/toolchain.lock "$TARGETARCH" && \
-    env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --publish
+RUN env -i HOME=/nonexistent PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --publish
 
 FROM ubuntu:22.04@sha256:2edbbc5dc405e9612ba3584ce95480277e3eb374407b5505fe26f17df77c7dbc AS base
 
@@ -74,50 +67,23 @@ ARG STACK=3.7.1
 ARG CACHE_ID="${TARGETARCH}-${GHC}-${CABAL}-${STACK}"
 ENV CACHE_ID=${CACHE_ID}
 
-# The builder has no mutable ghcup metadata path. It fetches the exact GHC,
-# Cabal, and Stack archives named in the reviewed table, verifies each before
-# extraction, and verifies Cabal's installed executable bytes before use.
-COPY ./offline/toolchain.lock ./offline/scripts/docker-toolchain.sh /opt/arkham/toolchain/
-RUN set -eu; \
-    case "$TARGETARCH" in \
-      arm64) \
-        platform="linux-arm64"; \
-        ghc_archive="ghc-${GHC}-aarch64-deb10-linux.tar.xz"; \
-        stack_archive="stack-${STACK}-linux-aarch64.tar.gz"; \
-        cabal_archive="cabal-install-${CABAL}-aarch64-linux-deb10.tar.xz" ;; \
-      amd64) \
-        platform="linux-x86_64"; \
-        ghc_archive="ghc-${GHC}-x86_64-ubuntu20_04-linux.tar.xz"; \
-        stack_archive="stack-${STACK}-linux-x86_64.tar.gz"; \
-        cabal_archive="cabal-install-${CABAL}-x86_64-linux-ubuntu22_04.tar.xz" ;; \
-      *) echo "Unsupported Docker target architecture: $TARGETARCH" >&2; exit 1 ;; \
-    esac; \
-    toolchain="/opt/arkham/toolchain"; \
-    . "${toolchain}/docker-toolchain.sh"; \
-    mkdir -p "${toolchain}/downloads" "${toolchain}/extract"; \
-    fetch_locked_archive "${toolchain}/toolchain.lock" ghc "$platform" "$ghc_archive" \
-      "https://downloads.haskell.org/~ghc/${GHC}/${ghc_archive}" "${toolchain}/downloads/${ghc_archive}"; \
-    fetch_locked_archive "${toolchain}/toolchain.lock" stack "$platform" "$stack_archive" \
-      "https://github.com/commercialhaskell/stack/releases/download/v${STACK}/${stack_archive}" "${toolchain}/downloads/${stack_archive}"; \
-    fetch_locked_archive "${toolchain}/toolchain.lock" cabal "$platform" "$cabal_archive" \
-      "https://downloads.haskell.org/~cabal/cabal-install-${CABAL}/${cabal_archive}" "${toolchain}/downloads/${cabal_archive}"; \
-    tar -xJf "${toolchain}/downloads/${ghc_archive}" -C "${toolchain}/extract"; \
-    ghc_dir="$(find "${toolchain}/extract" -maxdepth 1 -type d -name 'ghc-*' -print -quit)"; \
-    test -n "$ghc_dir"; \
-    cp -a "${ghc_dir}/." /usr/local/; \
-    tar -xzf "${toolchain}/downloads/${stack_archive}" -C "${toolchain}/extract"; \
-    stack_bin="$(find "${toolchain}/extract" -type f -name stack -perm -u+x -print -quit)"; \
-    test -n "$stack_bin"; \
-    install -m 0755 "$stack_bin" /usr/local/bin/stack; \
-    mkdir -p "${toolchain}/extract/cabal"; \
-    tar -xJf "${toolchain}/downloads/${cabal_archive}" -C "${toolchain}/extract/cabal"; \
-    install -m 0755 "${toolchain}/extract/cabal/cabal" /usr/local/bin/cabal; \
-    verify_locked_binary "${toolchain}/toolchain.lock" docker-ghc "$platform" bin/ghc /usr/local/bin/ghc; \
-    verify_locked_binary "${toolchain}/toolchain.lock" docker-stack "$platform" bin/stack /usr/local/bin/stack; \
-    verify_locked_binary "${toolchain}/toolchain.lock" docker-cabal "$platform" bin/cabal /usr/local/bin/cabal; \
-    test "$(ghc --numeric-version)" = "$GHC"; \
-    test "$(cabal --numeric-version)" = "$CABAL"; \
-    test "$(stack --numeric-version)" = "$STACK"
+# install ghcup
+RUN \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+    curl https://downloads.haskell.org/~ghcup/aarch64-linux-ghcup > /usr/bin/ghcup; \
+    else \
+    curl https://downloads.haskell.org/~ghcup/x86_64-linux-ghcup > /usr/bin/ghcup; \
+    fi;
+# Don't combine
+RUN chmod +x /usr/bin/ghcup && \
+    ghcup config set gpg-setting GPGNone
+ENV BOOTSTRAP_HASKELL_NONINTERACTIVE=1
+
+# install GHC, cabal, and Stack
+RUN \
+    ghcup -v install ghc --isolate /usr/local --force ${GHC} && \
+    ghcup -v install cabal --isolate /usr/local/bin --force ${CABAL} && \
+    ghcup -v install stack --isolate /usr/local/bin --force ${STACK}
 
 FROM base AS dependencies
 
@@ -192,7 +158,6 @@ RUN set -eu; \
 # multi-platform manifest digest so the exact nginx runtime tested below is
 # the one shipped, rather than a mutable Ubuntu apt package.
 FROM nginx:1.27.5@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d AS app
-ARG TARGETARCH
 
 # App
 
@@ -216,13 +181,10 @@ COPY ./prod.nginxconf /opt/arkham/src/backend/prod.nginxconf
 COPY ./start.sh /opt/arkham/src/backend/arkham-api/start.sh
 COPY ./web-entrypoint.sh /web-entrypoint.sh
 COPY ./backend/arkham-api/digital-ocean.crt /opt/arkham/src/backend/arkham-api/digital-ocean.crt
-COPY ./offline/toolchain.lock ./offline/scripts/docker-runtime-authority.sh /opt/arkham/toolchain/
-
 ENV LD_LIBRARY_PATH=/opt/arkham/api-runtime-libs
 RUN useradd -ms /bin/bash yesod && \
   chown -R yesod:yesod /opt/arkham /var/log/nginx /var/lib/nginx /var/cache/nginx /run && \
   chmod a+x /opt/arkham/src/backend/arkham-api/start.sh /web-entrypoint.sh && \
-  /opt/arkham/toolchain/docker-runtime-authority.sh nginx /opt/arkham/toolchain/toolchain.lock "$TARGETARCH" && \
   api_dependencies="$(ldd /opt/arkham/bin/arkham-api)" && \
   printf '%s\n' "$api_dependencies" && \
   ! printf '%s\n' "$api_dependencies" | grep -F 'not found'

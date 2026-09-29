@@ -77,8 +77,6 @@ GENERATOR_EXECUTION_SOURCES = (
     ".github/workflows/contracts.yml",
     ".github/workflows/locale-catalog.yml",
     ".github/workflows/haskell.yml",
-    ".github/workflows/build-offline.yml",
-    "offline/scripts/03-build-frontend.sh",
     "scripts/run-locale-catalog-python.sh",
     "scripts/locale-catalog-python-sealed.sh",
     RUNTIME_PROFILE,

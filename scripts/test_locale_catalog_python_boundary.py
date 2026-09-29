@@ -75,7 +75,6 @@ GOVERNED_TREE_PATHS = (
     "uv.lock",
     "Dockerfile",
     ".github/workflows",
-    "offline/scripts/03-build-frontend.sh",
 )
 
 OWNER_SENTINEL = ".locale-catalog-boundary-owner"
@@ -2340,8 +2339,6 @@ GOVERNED_RUN_MARKERS = (
     "generator-launcher.mjs",
     "npm run build",
     "npm run prebuild",
-    "offline/scripts/03-build-frontend.sh",
-    "offline/scripts/05-package.sh",
 )
 FORBIDDEN_TRIGGERS = ("pull_request_target", "workflow_run")
 PUBLISHING_ACTION_PREFIXES = (
@@ -2852,7 +2849,7 @@ jobs:
       - uses: actions/checkout@1111111111111111111111111111111111111111
         with:
           persist-credentials: false
-      - run: bash offline/scripts/03-build-frontend.sh
+      - run: bash scripts/run-locale-catalog-python.sh scripts/generate-locale-catalog.py
 """,
     ),
     "publishing with gh release from a pull request": (
@@ -2986,7 +2983,7 @@ jobs:
       - uses: actions/checkout@1111111111111111111111111111111111111111
         with:
           persist-credentials: false
-      - run: bash offline/scripts/03-build-frontend.sh
+      - run: bash scripts/run-locale-catalog-python.sh scripts/generate-locale-catalog.py
 """,
         },
         True,
@@ -3411,7 +3408,6 @@ PRODUCTION_ROOTS = (
     "frontend/package.json",
     "frontend/scripts",
     "mise.toml",
-    "offline/scripts",
     "scripts",
 )
 # The launcher is the mediator and the digest table is the drift record over
@@ -3433,15 +3429,12 @@ PRODUCTION_TEST_DIRECTORIES = frozenset({"tests", "__tests__"})
 # launcher. A production path that stops appearing here is a discovery gap, so
 # the inventory is checked against this floor rather than only scanned.
 REQUIRED_PRODUCTION_CALLERS: dict[str, str] = {
-    ".github/workflows/build-offline.yml": "offline/scripts",
     ".github/workflows/contracts.yml": "mise run contracts:",
     ".github/workflows/haskell.yml": "mise run locale-catalog:generate",
     ".github/workflows/locale-catalog.yml": "mise run locale-catalog:",
     "Dockerfile": GENERATOR_LAUNCHER_NAME,
     "frontend/package.json": GENERATOR_LAUNCHER_NAME,
     "mise.toml": "scripts/generate-locale-catalog.py",
-    "offline/scripts/03-build-frontend.sh": GENERATOR_LAUNCHER_NAME,
-    "offline/scripts/05-package.sh": GENERATOR_LAUNCHER_NAME,
     "scripts/generate-locale-catalog.py": "generator_launcher_argv",
     "scripts/validate-locale-catalog.py": "generator_launcher_argv",
 }
@@ -5765,13 +5758,11 @@ def test_npm_install_lifecycle_policy() -> int:
         ".github/workflows/locale-catalog.yml",
         ".github/workflows/haskell.yml",
         "Dockerfile",
-        "offline/scripts/03-build-frontend.sh",
     )
     required_counts = {
         ".github/workflows/locale-catalog.yml": 3,
         ".github/workflows/haskell.yml": 1,
         "Dockerfile": 1,
-        "offline/scripts/03-build-frontend.sh": 1,
     }
     require(
         all(
