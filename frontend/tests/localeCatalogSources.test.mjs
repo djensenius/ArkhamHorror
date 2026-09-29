@@ -72,7 +72,8 @@ test('a partially overridden contributor is reported with the file that won', ()
   assert.equal(findings[0].count, 2)
 })
 
-test('short and identical values are attributed to their surviving owner', () => {
+test('short and identical values are still attributed to their real owner', () => {
+  // Value matching cannot tell these apart; ownership tags can.
   const first = 'src/locales/en/a.json'
   const second = 'src/locales/en/b.json'
   const composed = { a: { ok: owned('NO', second) } }
@@ -82,10 +83,12 @@ test('short and identical values are attributed to their surviving owner', () =>
   ]
 
   const { findings } = analyzeComposition(composed, files, OWNER)
-  assert.equal(findings.length, 0)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, first)
+  assert.equal(findings[0].kind, 'no-surviving-content')
 })
 
-test('a contributor whose content never reaches the tree is ignored', () => {
+test('a contributor whose content never reaches the tree is reported', () => {
   const first = 'src/locales/en/scenario/first.json'
   const second = 'src/locales/en/scenario/second.json'
   const composed = { scenario: { intro: owned('from the second file', second) } }
@@ -95,10 +98,13 @@ test('a contributor whose content never reaches the tree is ignored', () => {
   ]
 
   const { findings } = analyzeComposition(composed, files, OWNER)
-  assert.equal(findings.length, 0)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, first)
+  assert.equal(findings[0].kind, 'no-surviving-content')
+  assert.equal(findings[0].count, 2)
 })
 
-test('a file no module imports is ignored by composition loss checks', () => {
+test('a file no module imports is reported as orphaned', () => {
   const used = 'src/locales/en/scenario/used.json'
   const composed = { scenario: { intro: owned('published', used) } }
   const files = [
@@ -107,10 +113,12 @@ test('a file no module imports is ignored by composition loss checks', () => {
   ]
 
   const { findings } = analyzeComposition(composed, files, OWNER)
-  assert.equal(findings.length, 0)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, 'src/locales/en/scenario/orphan.json')
+  assert.equal(findings[0].kind, 'no-surviving-content')
 })
 
-test('a spread that fully overrides another file is ignored', () => {
+test('a spread that fully overrides another file is still reported', () => {
   // `{ ...label, ...other }` at the same mount: `other` wins every leaf.
   const label = 'src/locales/en/label.json'
   const other = 'src/locales/en/other.json'
@@ -121,7 +129,8 @@ test('a spread that fully overrides another file is ignored', () => {
   ]
 
   const { findings } = analyzeComposition(composed, files, OWNER)
-  assert.equal(findings.length, 0)
+  assert.equal(findings.length, 1)
+  assert.equal(findings[0].file, label)
 })
 
 test('a file mounted under two aliases is attributed to both', () => {

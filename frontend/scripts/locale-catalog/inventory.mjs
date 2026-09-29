@@ -142,6 +142,13 @@ export function analyzeComposition(composed, files, ownerKey, moduleKey) {
 
     const owned = ownedByFile.get(path) ?? new Set()
     if (owned.size === 0 && (mountedAt.get(path)?.size ?? 0) === 0) {
+      findings.push({
+        file: path,
+        kind: 'no-surviving-content',
+        detail: 'every key this file declares was overridden, or no module imports it',
+        examples: declared.slice(0, 6),
+        count: declared.length,
+      })
       continue
     }
 
