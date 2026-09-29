@@ -1,8 +1,8 @@
 {
   "canonical.mjs": "4a29e660125e05dcd72d594befd3444dd0abf9473e8e0441920b8663baf22157",
   "generate.mjs": "b06bb9bdaf1304b962bf42f01894120148dce9caa978cdbc6ca2337ba8f17b62",
-  "inventory.mjs": "2a248b85194b8905d5bdffd7caac9dff5a3721438d95c6d632e586b1d7f26dde",
-  "known-gaps.json": "75fa3035de994b200f2fb80b8a88641eb11ae94fc55e2fed6859965ef7eacd63",
+  "inventory.mjs": "ef80e1288558de6df9cb0fd6f2c6055223a3ea1710621d484961eca08b48c6e9",
+  "known-gaps.json": "93575b10c4b939138fd3377fdaa66017d602faceb151c47e111b5b59d8db11fb",
   "normalize.mjs": "47f488929706dd2d6c5ff32e4ecbc18c336602c4a9e7ef3aa0da18efce08c86e",
   "owned-build-dir.mjs": "291651caa27f72f851960f6262ad4d03e7d6480043c3e6e1fdf312d279ca2c58",
   "sources.mjs": "55c227dd4ae9f1f6ace3a5dc56e2d49d1aeffa872d9f310968aac09144f4a6db",
