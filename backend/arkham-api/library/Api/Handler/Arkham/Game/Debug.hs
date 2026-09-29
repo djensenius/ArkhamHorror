@@ -151,7 +151,9 @@ generateFullExportSource gameId = do
   yieldBS ",\"steps\":["
   isFirstRef <- liftIO $ newIORef True
   stepsAcquire <-
-    lift $ runDB $ Persist.selectSourceRes [ArkhamStepArkhamGameId Persist.==. gameId] [Desc ArkhamStepStep]
+    lift
+      $ runDB
+      $ Persist.selectSourceRes [ArkhamStepArkhamGameId Persist.==. gameId] [Desc ArkhamStepStep]
   (_, stepSource) <- allocateAcquire stepsAcquire
   stepSource .| awaitForever \(Entity _ s) -> do
     isFirst <- liftIO $ readIORef isFirstRef

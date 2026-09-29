@@ -3921,7 +3921,7 @@
             "choices"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'TargetLabel', 'target': {'tag': 'EnemyTarget', 'contents': '00000000-0000-0000-0000-000000000386'}, 'messages': [{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}]}, {'tag': 'TargetLabel', 'target': {'tag': 'EnemyTarget', 'contents': '00000000-0000-0000-0000-000000000386'}, 'messages': [{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}]}] is too long"
         }
       ]
     },
@@ -4143,7 +4143,7 @@
             "messages"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}, {'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}] is too long"
         }
       ]
     },
@@ -6216,7 +6216,7 @@
             "choices"
           ],
           "keyword": "minItems",
-          "messageContains": "is too short"
+          "messageContains": "[{'tag': 'ComponentLabel', 'component': {'tag': 'InvestigatorComponent', 'investigatorId': 'c01001', 'tokenType': 'DamageToken'}, 'messages': [{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0]}}, {'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDoAssignDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}], []]}}]}] is too short"
         }
       ]
     },
@@ -6238,7 +6238,7 @@
             "choices"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'ComponentLabel', 'component': {'tag': 'InvestigatorComponent', 'investigatorId': 'c01001', 'tokenType': 'DamageToken'}, 'messages': [{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0]}}, {'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDoAssignDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}], []]}}]}, {'tag': 'ComponentLabel', 'component': {'tag': 'InvestigatorComponent', 'investigatorId': 'c01001', 'tokenType': 'HorrorToken'}, 'messages': [{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 0, 1]}}, {'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDoAssignDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 1, 0, [], [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}]]}}]}, None] is too long"
         },
         {
           "path": [
@@ -6407,7 +6407,7 @@
             "messages"
           ],
           "keyword": "minItems",
-          "messageContains": "is too short"
+          "messageContains": "[{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0]}}] is too short"
         }
       ]
     },
@@ -6429,7 +6429,7 @@
             "messages"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0]}}, {'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDoAssignDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}], []]}}, None] is too long"
         },
         {
           "path": [
@@ -7036,7 +7036,7 @@
             "contents"
           ],
           "keyword": "minItems",
-          "messageContains": "is too short"
+          "messageContains": "['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1] is too short"
         }
       ]
     },
@@ -7059,7 +7059,7 @@
             "contents"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 1, 0, 0] is too long"
         },
         {
           "path": [
@@ -7358,7 +7358,7 @@
             "contents"
           ],
           "keyword": "minItems",
-          "messageContains": "is too short"
+          "messageContains": "['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}]] is too short"
         }
       ]
     },
@@ -7381,7 +7381,7 @@
             "contents"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, {'tag': 'DamageAny'}, {'tag': 'AnyAsset'}, 0, 1, [{'tag': 'InvestigatorTarget', 'contents': 'c01001'}], [], []] is too long"
         },
         {
           "path": [
@@ -7842,7 +7842,7 @@
             "6"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'InvestigatorTarget', 'contents': 'c01001'}, {'tag': 'InvestigatorTarget', 'contents': 'c01001'}] is too long"
         },
         {
           "path": [
@@ -7851,7 +7851,7 @@
             "6"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'InvestigatorTarget', 'contents': 'c01001'}, {'tag': 'InvestigatorTarget', 'contents': 'c01001'}] is too long"
         }
       ]
     },
@@ -8028,7 +8028,7 @@
             "messages"
           ],
           "keyword": "minItems",
-          "messageContains": "is too short"
+          "messageContains": "[{'tag': 'InvestigatorMessage', 'contents': {'tag': 'InvestigatorDamage_', 'contents': ['c01001', {'tag': 'EnemyAttackSource', 'contents': '00000000-0000-0000-0000-000000000388'}, 0, 1]}}] is too short"
         }
       ]
     },
@@ -8323,7 +8323,7 @@
             "7"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'InvestigatorTarget', 'contents': 'c01001'}, {'tag': 'InvestigatorTarget', 'contents': 'c01001'}] is too long"
         },
         {
           "path": [
@@ -8332,7 +8332,7 @@
             "7"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'InvestigatorTarget', 'contents': 'c01001'}, {'tag': 'InvestigatorTarget', 'contents': 'c01001'}] is too long"
         }
       ]
     },
@@ -10572,7 +10572,7 @@
             "7"
           ],
           "keyword": "minItems",
-          "messageContains": "is too short"
+          "messageContains": "[{'contents': 'c01001', 'tag': 'InvestigatorTarget'}] is too short"
         }
       ]
     },
@@ -12329,7 +12329,7 @@
             "choices"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'tag': 'AbilityLabel', 'investigatorId': 'c01001', 'ability': {'source': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'cardCode': 'c01007', 'index': 1, 'type': {'tag': 'ReactionAbility', 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'cost': {'tag': 'Free'}, 'actions': {'contents': [], 'tag': 'AndActions'}}, 'limit': {'tag': 'PlayerLimit', 'contents': [{'tag': 'PerWindow'}, 1]}, 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'metadata': None, 'criteria': {'tag': 'Criteria', 'contents': [{'tag': 'OnSameLocation'}, {'tag': 'CluesOnThis', 'contents': {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}}]}, 'doesNotProvokeAttacksOfOpportunity': None, 'tooltip': None, 'canBeCancelled': True, 'displayAs': None, 'delayAdditionalCosts': None, 'basic': False, 'additionalCosts': [], 'requestor': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'triggersSkillTest': False, 'wantsSkillTest': None, 'target': None, 'highlightFromWindow': False, 'skipForAll': False, 'ignoreAllCosts': False, 'fightCriteriaOverride': None, 'evadeCriteriaOverride': None}, 'windows': [{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}], 'before': [], 'messages': []}, {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}, {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}] is too long"
         }
       ]
     },
@@ -12349,7 +12349,7 @@
             "choices"
           ],
           "keyword": "minItems",
-          "messageContains": "is too short"
+          "messageContains": "[{'tag': 'AbilityLabel', 'investigatorId': 'c01001', 'ability': {'source': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'cardCode': 'c01007', 'index': 1, 'type': {'tag': 'ReactionAbility', 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'cost': {'tag': 'Free'}, 'actions': {'contents': [], 'tag': 'AndActions'}}, 'limit': {'tag': 'PlayerLimit', 'contents': [{'tag': 'PerWindow'}, 1]}, 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'metadata': None, 'criteria': {'tag': 'Criteria', 'contents': [{'tag': 'OnSameLocation'}, {'tag': 'CluesOnThis', 'contents': {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}}]}, 'doesNotProvokeAttacksOfOpportunity': None, 'tooltip': None, 'canBeCancelled': True, 'displayAs': None, 'delayAdditionalCosts': None, 'basic': False, 'additionalCosts': [], 'requestor': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'triggersSkillTest': False, 'wantsSkillTest': None, 'target': None, 'highlightFromWindow': False, 'skipForAll': False, 'ignoreAllCosts': False, 'fightCriteriaOverride': None, 'evadeCriteriaOverride': None}, 'windows': [{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}], 'before': [], 'messages': []}] is too short"
         }
       ]
     },
@@ -14291,7 +14291,7 @@
             "contents"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1, 1] is too long"
         }
       ]
     },
@@ -14316,7 +14316,7 @@
             "contents"
           ],
           "keyword": "minItems",
-          "messageContains": "is too short"
+          "messageContains": "['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}] is too short"
         }
       ]
     },
@@ -14419,7 +14419,7 @@
             "windows"
           ],
           "keyword": "maxItems",
-          "messageContains": "is too long"
+          "messageContains": "[{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}, {'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}] is too long"
         }
       ]
     },
@@ -16031,9 +16031,9 @@
     "contracts/fixtures/replay-attestation.json": "daa61145ae81abbb0c489d922d82629d4d358a59aedb53190bd27d184e699f07",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "bfda6c4a4ce00f0da41a29b1033cd2170800118af43223c586c6aa9e0adced79",
+    "contracts/manifest.json": "4f9d5eac91191ff194bf80293bd067bfd0f2131891d8e6bc2f10820a9cb48481",
     "contracts/openapi.yaml": "62559b4b67807a3a0b8321824a35994883a8fcdbb73d35c7d7c32ee30d3f1c78",
-    "contracts/route-inventory.json": "5c93451444b564d5632eab398cd87ae9ceb965f65e767754938bd1367bb64c82",
+    "contracts/route-inventory.json": "813cc87b9fcd4706af1d34af786e2c01181aeafc2685742bc1902955fae2b0b4",
     "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
