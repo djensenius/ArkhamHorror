@@ -5928,7 +5928,7 @@ def test_explicit_mise_node_workflow_policy() -> int:
         ".github/workflows/haskell.yml",
     )
     required_counts = {
-        ".github/workflows/locale-catalog.yml": 7,
+        ".github/workflows/locale-catalog.yml": 5,
         ".github/workflows/haskell.yml": 1,
     }
     for command in (
