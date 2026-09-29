@@ -503,7 +503,7 @@ postApiV1ArkhamGamesImportR = do
                   maybe
                     (lift $ invalidArgs ["Replay checkpoint investigator was not inserted"])
                     pure
-                    $ lookup selectedInvestigator newPlayerIds
+                    $ snd <$> find ((== selectedInvestigator) . fst) newPlayerIds
                 mapping <-
                   either
                     (lift . invalidArgs . pure)
