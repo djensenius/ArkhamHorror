@@ -17,14 +17,11 @@ import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Arkham.Achievement.Types (Achievement, achievementChecklist, achievementName)
 import Arkham.Asset.Types (Asset, assetController, assetOwner, assetPlacement)
 import Arkham.Campaign.Types (CampaignAttrs)
-import Arkham.Campaigns.TheDreamEaters.Meta qualified as TheDreamEaters
 import Arkham.Card.CardCode (CardCode (..), HasCardCode (toCardCode))
 import Arkham.Card.CustomCard (CustomCard, registerCustomCards)
-import Arkham.ClassSymbol
 import Arkham.Classes.Entity (attr, overAttrs, toAttrs)
 import Arkham.Classes.GameLogger
 import Arkham.Classes.HasQueue
-import Arkham.Difficulty
 import Arkham.Effect.Types (effectTarget)
 import Arkham.Entities (Entities (..), entitiesActs)
 import Arkham.Epic.Types (
@@ -61,7 +58,6 @@ import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement, investigatorPlayerId)
 import Arkham.Location.CardDefs.TheBlobThatAteEverythingELSE qualified as Locations
 import Arkham.Message
-import Arkham.Name
 import Arkham.Phase (Phase)
 import Arkham.Placement (
   Placement (AtLocation, AttachedToInvestigator, InPlayArea, InThreatArea, StillInHand),
