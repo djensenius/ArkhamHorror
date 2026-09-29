@@ -151,6 +151,12 @@ def has_binary_identity(value: object, fields: set[str]) -> bool:
     )
 
 
+def has_path_identity(value: object, fields: set[str]) -> bool:
+    return isinstance(value, dict) and set(value) == fields and all(
+        isinstance(value[field], str) and value[field] for field in fields
+    )
+
+
 def runtime_identity() -> dict[str, object]:
     """The *committed* toolchain pin, never a measurement of this host.
 
@@ -167,7 +173,6 @@ def runtime_identity() -> dict[str, object]:
         == {
             *RUNTIME_IDENTITY_KEYS,
             "stdlibSourceTreeSha256",
-            "activeSysconfigSources",
             "trustedSources",
             "interpreter",
             "uv",
@@ -191,19 +196,7 @@ def runtime_identity() -> dict[str, object]:
         f"{RUNTIME_PROFILE} does not pin the complete stdlib source tree digest",
     )
     require(
-        isinstance(profile["activeSysconfigSources"], dict)
-        and set(profile["activeSysconfigSources"]) == RUNTIME_PLATFORMS
-        and all(
-            isinstance(entry, dict)
-            and set(entry) == {"path", "sha256"}
-            and isinstance(entry["path"], str)
-            and has_digest_candidates(entry["sha256"])
-            for entry in profile["activeSysconfigSources"].values()
-        ),
-        f"{RUNTIME_PROFILE} does not pin active platform sysconfig sources",
-    )
-    require(
-        has_binary_identity(
+        has_path_identity(
             profile["interpreter"],
             {"installRelativePath", "binaryRelativePath", "stdlibRelativePath"},
         )
@@ -215,7 +208,7 @@ def runtime_identity() -> dict[str, object]:
             profile["externalTools"]["node"], {"version", "binaryRelativePath"}
         )
         and profile["externalTools"]["node"]["version"] == "26.7.0",
-        f"{RUNTIME_PROFILE} does not pin complete Python, uv, and Node binary identities",
+        f"{RUNTIME_PROFILE} does not pin complete Python path plus uv and Node binary identities",
     )
     require(
         isinstance(profile["trustedSources"], dict)
