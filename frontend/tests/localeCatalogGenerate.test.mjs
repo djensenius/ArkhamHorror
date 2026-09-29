@@ -26,6 +26,15 @@ import { sha256Hex } from '../scripts/locale-catalog/canonical.mjs'
 const REPO_ROOT = resolve('..')
 const SCRATCH = resolve('node_modules', '.locale-catalog-test')
 
+function canonicalLocaleTag(locale) {
+  const [primary, ...subtags] = locale.split('-')
+  return [primary.toLowerCase(), ...subtags.map((subtag) => {
+    if (/^[A-Za-z]{4}$/.test(subtag)) return `${subtag[0].toUpperCase()}${subtag.slice(1).toLowerCase()}`
+    if (/^[A-Za-z]{2}$/.test(subtag)) return subtag.toUpperCase()
+    return subtag.toLowerCase()
+  })].join('-')
+}
+
 const NODE_TYPES = new Set([
   'text',
   'var',
@@ -97,7 +106,7 @@ test('a repeated build is byte-for-byte identical', async () => {
 test('every supported UI locale is published with an explicit fallback', () => {
   const language = readFileSync(resolve('src/locales/language.ts'), 'utf8')
   const declared = [...language.matchAll(/'([a-z-]+)'/g)]
-    .map((match) => match[1])
+    .map((match) => canonicalLocaleTag(match[1]))
     .filter((locale, index, all) => all.indexOf(locale) === index)
 
   const published = built.manifest.locales.map((entry) => entry.locale)
@@ -113,7 +122,7 @@ test('every supported UI locale is published with an explicit fallback', () => {
     assert.equal(resolution.get(tag), 'zh', `${tag} resolves to zh`)
   }
   for (const tag of ['zh-CN', 'zh-Hans']) {
-    assert.equal(resolution.get(tag), 'zh-cn', `${tag} resolves to zh-cn`)
+    assert.equal(resolution.get(tag), 'zh-CN', `${tag} resolves to zh-CN`)
   }
   assert.equal(resolution.get('fr-CA'), 'fr')
   assert.equal(resolution.get('ru'), 'en', 'an unsupported language falls back to the default locale')
