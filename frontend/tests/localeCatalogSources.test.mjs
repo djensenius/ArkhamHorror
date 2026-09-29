@@ -247,6 +247,19 @@ test('production builds consume a previously attested catalog', () => {
 
   const dockerfile = readFileSync(join(REPO_ROOT, 'Dockerfile'), 'utf8')
   assert.match(dockerfile, /^FROM node:26\.7\.0-alpine@sha256:[0-9a-f]{64} AS frontend/m)
+  // Every governed generation path -- here, npm's prebuild, the offline build
+  // and the mise task -- starts through the sealed Node launcher, which
+  // enforces the module graph with Node resolve/load hooks. A direct
+  // `node .../generate.mjs` would run the same generator unenforced.
+  assert.match(
+    dockerfile,
+    /env -i HOME=\/nonexistent .*\/usr\/local\/bin\/node scripts\/locale-catalog\/generator-launcher\.mjs generate\.mjs/,
+  )
+  assert.match(dockerfile, /npm ci --ignore-scripts/)
+  assert.match(
+    dockerfile,
+    /\/usr\/local\/bin\/node \/usr\/local\/lib\/node_modules\/npm\/bin\/npm-cli\.js run build/,
+  )
   assert.match(dockerfile, /COPY \.\/contracts \/opt\/arkham\/src\/contracts/)
   assert.match(
     dockerfile,
@@ -260,4 +273,7 @@ test('production builds consume a previously attested catalog', () => {
     dockerfile,
     /RUN .*\bnode scripts\/locale-catalog\/generator-launcher\.mjs verify-dist\.mjs --publish/,
   )
+  assert.match(dockerfile, /COPY --from=mcp \/opt\/arkham\/mcp \/opt\/arkham\/mcp/)
+  const appStage = dockerfile.slice(dockerfile.indexOf('FROM nginx:1.27.5@sha256:'))
+  assert.match(appStage, /apt-get install .*--no-install-recommends python3/)
 })

@@ -208,6 +208,10 @@ FROM nginx:1.27.5@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d
 ENV LC_ALL=C.UTF-8
 LABEL org.opencontainers.image.nginx-runtime-reference="nginx:1.27.5@sha256:6784fb0834aa7dbbe12e3d7471e69c290df3e6ba810dc38b34ae33d3c1c05f7d"
 
+RUN apt-get update && \
+  apt-get install -y --assume-yes --no-install-recommends python3 && \
+  rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p \
   /opt/arkham/bin \
   /opt/arkham/src/backend/arkham-api \
