@@ -229,4 +229,16 @@ test('production builds consume a previously attested catalog', () => {
   const dockerfile = readFileSync(join(REPO_ROOT, 'Dockerfile'), 'utf8')
   assert.match(dockerfile, /^FROM node:26\.7\.0-alpine AS frontend/m)
   assert.match(dockerfile, /COPY \.\/contracts \/opt\/arkham\/src\/contracts/)
+  assert.match(
+    dockerfile,
+    /COPY \.\/backend\/arkham-api\/i18n-emitted-keys\.json \/opt\/arkham\/src\/backend\/arkham-api\/i18n-emitted-keys\.json/,
+  )
+  assert.match(
+    dockerfile,
+    /COPY \.\/backend\/devel-store-lock\/package\.yaml \/opt\/arkham\/src\/backend\/devel-store-lock\/package\.yaml/,
+  )
+  assert.match(
+    dockerfile,
+    /RUN node scripts\/locale-catalog\/generator-launcher\.mjs verify-dist\.mjs --publish/,
+  )
 })

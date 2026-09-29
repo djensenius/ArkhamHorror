@@ -1033,14 +1033,43 @@ def validate_deployment_wiring(manifest: dict) -> None:
     )
 
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    def docker_copies(source: str, destination: str) -> bool:
+        return (
+            re.search(
+                rf"^\s*COPY\s+\.?/?{re.escape(source)}\s+{re.escape(destination)}\s*$",
+                dockerfile,
+                re.MULTILINE,
+            )
+            is not None
+        )
+
+    require(
+        docker_copies("contracts", "/opt/arkham/src/contracts"),
+        "the container build does not provide the contract fixtures the generator requires",
+    )
+    require(
+        docker_copies(
+            "backend/arkham-api/i18n-emitted-keys.json",
+            "/opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json",
+        ),
+        "the container build does not provide the backend emitted-key registry the generator requires",
+    )
+    require(
+        docker_copies(
+            "backend/devel-store-lock/package.yaml",
+            "/opt/arkham/src/backend/devel-store-lock/package.yaml",
+        ),
+        "the container dependency build does not provide devel-store-lock/package.yaml from stack.yaml",
+    )
     require(
         re.search(
-            r"^\s*COPY\s+\.?/?contracts\s+/opt/arkham/src/contracts\s*$",
+            r"^\s*RUN\s+node\s+scripts/locale-catalog/generator-launcher\.mjs\s+verify-dist\.mjs\s+--publish\s*$",
             dockerfile,
             re.MULTILINE,
         )
         is not None,
-        "the container build does not provide the contract fixtures the generator requires",
+        "the container build does not verify and publish the built locale catalog",
     )
     ignore = (FRONTEND / ".gitignore").read_text(encoding="utf-8")
     require("public/locale-catalog/" in ignore, "generated catalog output is not git-ignored")

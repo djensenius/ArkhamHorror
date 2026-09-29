@@ -9,16 +9,20 @@ ARG ASSET_HOST=""
 # cookie; empty for self-hosting, where the cookie stays on the host serving it
 ARG AUTH_COOKIE_DOMAIN=""
 
-RUN mkdir -p /opt/arkham/src/frontend
+RUN mkdir -p \
+  /opt/arkham/src/backend/arkham-api \
+  /opt/arkham/src/frontend
 
 WORKDIR /opt/arkham/src/frontend
 COPY ./frontend/package.json ./frontend/tsconfig.json ./frontend/vite.config.js ./frontend/eslint.config.js ./frontend/package-lock.json /opt/arkham/src/frontend/
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY ./contracts /opt/arkham/src/contracts
+COPY ./backend/arkham-api/i18n-emitted-keys.json /opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json
 COPY ./frontend /opt/arkham/src/frontend
 ENV VITE_ASSET_HOST=${ASSET_HOST}
 ENV VITE_AUTH_COOKIE_DOMAIN=${AUTH_COOKIE_DOMAIN}
 RUN npm run build
+RUN node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs --publish
 
 # Third edition frontend, served from 3ed.arkhamhorror.app (see prod.nginxconf)
 FROM node:26.7.0-alpine AS frontend-3ed
@@ -103,7 +107,8 @@ RUN mkdir -p \
   /opt/arkham/bin \
   /opt/arkham/src/backend/arkham-api \
   /opt/arkham/src/backend/validate \
-  /opt/arkham/src/backend/cards-discover
+  /opt/arkham/src/backend/cards-discover \
+  /opt/arkham/src/backend/devel-store-lock
 
 WORKDIR /opt/arkham/src/backend
 COPY ./backend/stack.yaml ./backend/stack.yaml.lock /opt/arkham/src/backend/
@@ -111,6 +116,7 @@ COPY ./backend/arkham-api/package.yaml /opt/arkham/src/backend/arkham-api/packag
 COPY ./backend/validate/package.yaml /opt/arkham/src/backend/validate/package.yaml
 COPY ./backend/cards-discover/package.yaml /opt/arkham/src/backend/cards-discover/package.yaml
 COPY ./backend/ah3e/package.yaml /opt/arkham/src/backend/ah3e/package.yaml
+COPY ./backend/devel-store-lock/package.yaml /opt/arkham/src/backend/devel-store-lock/package.yaml
 RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-work-shared-${CACHE_ID},target=/opt/arkham/src/backend/.stack-work \
     stack build --system-ghc --dependencies-only --no-terminal --ghc-options '-fno-write-ide-info -j4 +RTS -A128m -n2m -RTS'
