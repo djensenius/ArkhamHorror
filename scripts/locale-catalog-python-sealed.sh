@@ -227,7 +227,10 @@ fi
 # every other platform is rejected rather than approximated.
 case "$("${UNAME}" -s):$("${UNAME}" -m)" in
   Darwin:arm64)
-    readonly PYTHON_DIGESTS=("1ba16b38d45f006e449bb51a923dae83f3c384611bcd4ee428afd044b7ed4c95")
+    readonly PYTHON_DIGESTS=(
+      "1ba16b38d45f006e449bb51a923dae83f3c384611bcd4ee428afd044b7ed4c95" \
+      "e925fab5e8f595817ff36ff28e214b91520c040d5b7d47249b0199bc5f68015e"
+    )
     require_digest "${PYTHON}" "sealed CPython 3.14.7" "${PYTHON_DIGESTS[@]}"
     require_digest "${NODE}" "sealed Node 26.7.0" \
       "a9bd0630891c2dcdee70de88270fee2cc0c4a9e76495039dd3b4f91c5e6b71df"
@@ -235,7 +238,8 @@ case "$("${UNAME}" -s):$("${UNAME}" -m)" in
       "e8929237934c8679686428f5a7736c7ae7a5fe7a33b0504d1b03446cdbc43c94"
     readonly SYSCONFIG_SOURCE="_sysconfigdata__darwin_darwin.py"
     require_digest "${STDLIB}/${SYSCONFIG_SOURCE}" "active CPython sysconfig source" \
-      "3f4f3d7287fe28096c5b80f9b92fe561b69b5f50a16e4bf075165c96d7892981"
+      "3f4f3d7287fe28096c5b80f9b92fe561b69b5f50a16e4bf075165c96d7892981" \
+      "9cfb344b071fa5eee0c14961a94acb139774b32d0fc9c9ff8be7410da0b0cc33"
     ;;
   Linux:x86_64)
     readonly PYTHON_DIGESTS=(
