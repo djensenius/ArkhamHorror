@@ -1804,6 +1804,7 @@ clientAnswerFixtures =
 answerConstructor :: Answer -> Text
 answerConstructor = \case
   Answer _ -> "Answer"
+  OrderedAnswer _ -> "OrderedAnswer"
   Raw _ -> "Raw"
   PaymentAmountsAnswer _ -> "PaymentAmountsAnswer"
   AmountsAnswer _ -> "AmountsAnswer"
@@ -1816,6 +1817,10 @@ answerConstructor = \case
   ScenarioSpecificAnswer _ _ -> "ScenarioSpecificAnswer"
   ExchangeAmountsAnswer _ _ _ _ _ -> "ExchangeAmountsAnswer"
   CampaignStepAnswer _ -> "CampaignStepAnswer"
+  RetireInvestigatorAnswer _ -> "RetireInvestigatorAnswer"
+  RejoinInvestigatorAnswer _ -> "RejoinInvestigatorAnswer"
+  ApplyOverlayAnswer _ _ -> "ApplyOverlayAnswer"
+  JoinCampaignAnswer -> "JoinCampaignAnswer"
 
 spec :: Spec
 spec = describe "Native client contract fixtures" do
