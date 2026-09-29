@@ -246,7 +246,7 @@ test('production builds consume a previously attested catalog', () => {
   assert.match(workflow, /mise run locale-catalog:generate/)
 
   const dockerfile = readFileSync(join(REPO_ROOT, 'Dockerfile'), 'utf8')
-  assert.match(dockerfile, /^FROM node:26\.7\.0-alpine AS frontend/m)
+  assert.match(dockerfile, /^FROM node:26\.7\.0-alpine@sha256:[0-9a-f]{64} AS frontend/m)
   assert.match(dockerfile, /COPY \.\/contracts \/opt\/arkham\/src\/contracts/)
   assert.match(
     dockerfile,
@@ -258,6 +258,6 @@ test('production builds consume a previously attested catalog', () => {
   )
   assert.match(
     dockerfile,
-    /RUN node scripts\/locale-catalog\/generator-launcher\.mjs verify-dist\.mjs --publish/,
+    /RUN .*\bnode scripts\/locale-catalog\/generator-launcher\.mjs verify-dist\.mjs --publish/,
   )
 })
