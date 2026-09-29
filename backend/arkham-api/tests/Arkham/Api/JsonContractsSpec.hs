@@ -4771,12 +4771,13 @@ spec = describe "Native client contract fixtures" do
       loadFixtureField "account.json" "userSettings"
         :: IO UserSettings
 
-    settings.betaSetting `shouldBe` True
+    settings.betaSetting `shouldBe` Just True
+    settings.phaseTransitionNotificationsSetting `shouldBe` Just False
 
   it "matches the real settings response encoder" do
     fixture <- loadFixtureField "account.json" "settingsUser"
 
-    Aeson.toJSON (SettingsUser "Investigator" "investigator@example.com" True)
+    Aeson.toJSON (SettingsUser "Investigator" "investigator@example.com" True False)
       `shouldBe` fixture
 
   it "matches the real notification-list encoder" do

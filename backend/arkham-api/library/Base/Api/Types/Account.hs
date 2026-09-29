@@ -24,17 +24,23 @@ instance FromJSON PasswordResetUpdate where
   parseJSON = withObject "PasswordResetUpdate" \o ->
     PasswordResetUpdate <$> o .: "password"
 
-newtype UserSettings = UserSettings {betaSetting :: Bool}
+data UserSettings = UserSettings
+  { betaSetting :: Maybe Bool
+  , phaseTransitionNotificationsSetting :: Maybe Bool
+  }
   deriving stock (Eq, Show)
 
 instance FromJSON UserSettings where
   parseJSON = withObject "UserSettings" \o ->
-    UserSettings <$> o .: "beta"
+    UserSettings
+      <$> o .:? "beta"
+      <*> o .:? "phaseTransitionNotifications"
 
 data SettingsUser = SettingsUser
   { username :: Text
   , email :: Text
   , beta :: Bool
+  , phaseTransitionNotifications :: Bool
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass ToJSON
