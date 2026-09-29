@@ -30,6 +30,7 @@ jobs:
         with:
           version: 2026.8.14
           cache: true
+          install_args: "node python uv"
       # `mise` itself is resolved through PATH by the action that just
       # installed it, and a restored cache can put executables on that PATH.
       # Assert the exact pinned version and a plausible install location before
@@ -73,6 +74,7 @@ jobs:
         with:
           version: 2026.8.14
           cache: true
+          install_args: "node python uv"
       # `mise` itself is resolved through PATH by the action that just
       # installed it, and a restored cache can put executables on that PATH.
       # Assert the exact pinned version and a plausible install location before
@@ -118,6 +120,7 @@ jobs:
         with:
           version: 2026.8.14
           cache: true
+          install_args: "node python uv"
       # `mise` itself is resolved through PATH by the action that just
       # installed it, and a restored cache can put executables on that PATH.
       # Assert the exact pinned version and a plausible install location before

@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 
-"""Exercise exact production and offline nginx artifacts over live HTTP.
+"""Exercise the exact production nginx artifact over live HTTP.
 
 This is intentionally not a configuration renderer. Production checks run the
 provided final Docker image without mounts, so nginx, prod.nginxconf, and the
-static catalog are precisely the bytes that image ships. Offline checks run
-the supplied package's launcher action, which verifies its provenance, runs
-`nginx -t`, and then starts that package's nginx binary with its bundled
-libraries and generated configuration.
+static catalog are precisely the bytes that image ships.
 
-At least one explicit artifact is required:
+An explicit artifact is required:
 
   validate-catalog-serving.py --production-image arkham-production:test
-  validate-catalog-serving.py --offline-package offline/_dist/ArkhamHorror-... \
-      --offline-authority-fd 9
 """
 
 from __future__ import annotations
@@ -23,9 +18,9 @@ import hashlib
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -43,109 +38,13 @@ PORT = None
 IMMUTABLE = "public, max-age=31536000, immutable"
 REVALIDATE = "public, max-age=0, must-revalidate"
 NO_STORE = "no-store"
-AUTHORITY_CAPABILITY_ENV = (
-    "ARKHAM_TOOLCHAIN_RECEIPT_FILE",
-    "ARKHAM_TOOLCHAIN_RECEIPT_TOKEN",
-    "GITHUB_ENV",
-)
+SERVING_IMAGE_LOCK = ROOT / "scripts" / "locale_catalog_serving_images.lock"
 
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise SystemExit(f"locale-catalog serving: {message}")
 
-
-def discard_authority_capabilities() -> None:
-    """Never let a spawned package process inherit CI receipt capabilities."""
-
-    for variable in AUTHORITY_CAPABILITY_ENV:
-        os.environ.pop(variable, None)
-
-
-def consume_offline_authority_frame(descriptor: int | None) -> tuple[Path | None, str | None]:
-    if descriptor is None:
-        return None, None
-    require(3 <= descriptor <= 1024, "--offline-authority-fd must name a non-standard descriptor")
-    try:
-        with os.fdopen(descriptor, "rb", closefd=True) as source:
-            frame = source.read(8193)
-    except OSError as error:
-        require(False, f"could not read offline authority descriptor: {error}")
-    require(len(frame) <= 8192, "offline authority frame is too large")
-    fields = frame.split(b"\n")
-    require(
-        len(fields) == 3 and fields[-1] == b"",
-        "offline authority frame must contain exactly two newline-terminated fields",
-    )
-    authority_bytes, token_bytes, _ = fields
-    require(
-        authority_bytes
-        and b"\0" not in authority_bytes
-        and b"\r" not in authority_bytes,
-        "offline authority frame contains an unsafe path",
-    )
-    try:
-        authority = Path(authority_bytes.decode("utf-8")).resolve()
-        token = token_bytes.decode("ascii")
-    except (UnicodeDecodeError, OSError) as error:
-        require(False, f"offline authority frame is invalid: {error}")
-    require(valid_sha256(token), "offline authority frame contains an invalid token")
-    return authority, token
-
-
-def verify_consumed_authority_isolation() -> None:
-    payload = r"""
-import os
-import re
-import sys
-
-if any("TOOLCHAIN_RECEIPT" in key or key == "GITHUB_ENV" for key in os.environ):
-    raise SystemExit(91)
-parent = os.getppid()
-proc = f"/proc/{parent}"
-if os.path.isdir(proc):
-    with open(f"{proc}/cmdline", "rb") as source:
-        arguments = source.read().split(b"\0")
-    if any(
-        b"receipt.tsv" in argument
-        or re.fullmatch(rb"[0-9a-f]{64}", argument) is not None
-        for argument in arguments
-    ):
-        raise SystemExit(92)
-    with open(f"{proc}/environ", "rb") as source:
-        environment = source.read().split(b"\0")
-    if any(
-        entry.startswith(
-            (
-                b"ARKHAM_TOOLCHAIN_RECEIPT_FILE=",
-                b"ARKHAM_TOOLCHAIN_RECEIPT_TOKEN=",
-                b"GITHUB_ENV=",
-            )
-        )
-        for entry in environment
-    ):
-        raise SystemExit(93)
-    for descriptor in os.listdir(f"{proc}/fd"):
-        try:
-            target = os.readlink(f"{proc}/fd/{descriptor}")
-        except OSError:
-            continue
-        if "receipt.tsv" in target:
-            raise SystemExit(94)
-sys.exit(0)
-"""
-    result = subprocess.run(
-        ["/usr/bin/python3", "-c", payload],
-        check=False,
-        env={},
-        capture_output=True,
-        text=True,
-    )
-    require(
-        result.returncode == 0,
-        "a serving-gate child recovered the consumed authority capability "
-        f"(exit {result.returncode}): {result.stdout}{result.stderr}",
-    )
 
 
 def run(command: list[str], *, capture_output: bool = True, **kwargs) -> subprocess.CompletedProcess:
@@ -182,8 +81,6 @@ def tool(name: str) -> str:
 
 def parse_args():
     production_image = None
-    offline_package = None
-    offline_authority_fd = None
     self_test = False
     arguments = iter(sys.argv[1:])
     for argument in arguments:
@@ -193,48 +90,21 @@ def parse_args():
                 production_image = next(arguments)
             except StopIteration:
                 require(False, "--production-image requires an image name")
-        elif argument == "--offline-package":
-            require(offline_package is None, "--offline-package was supplied more than once")
-            try:
-                offline_package = Path(next(arguments)).resolve()
-            except StopIteration:
-                require(False, "--offline-package requires a package path")
-        elif argument == "--offline-authority-fd":
-            require(offline_authority_fd is None, "--offline-authority-fd was supplied more than once")
-            try:
-                offline_authority_fd = int(next(arguments), 10)
-            except (StopIteration, ValueError):
-                require(False, "--offline-authority-fd requires a decimal descriptor")
         elif argument == "--self-test":
             require(not self_test, "--self-test was supplied more than once")
             self_test = True
         else:
             require(False, f"unknown argument: {argument}")
     if self_test:
-        require(
-            production_image is None
-            and offline_package is None
-            and (offline_authority_fd is None or offline_authority_fd >= 3),
-            "--self-test cannot be combined with artifact arguments",
-        )
-        return None, None, offline_authority_fd, True
-    require(
-        production_image is not None or offline_package is not None,
-        "provide --production-image and/or --offline-package; surrogate nginx configs are not accepted",
-    )
-    require(
-        (offline_package is None) == (offline_authority_fd is None),
-        "--offline-package requires --offline-authority-fd",
-    )
-    return production_image, offline_package, offline_authority_fd, False
-
+        require(production_image is None, "--self-test cannot be combined with artifact arguments")
+        return None, True
+    require(production_image is not None, "provide --production-image; surrogate nginx configs are not accepted")
+    return production_image, False
 
 def create_owned_work() -> tuple[Path, str]:
-    parent = ROOT / "offline" / "_tmp"
-    parent.mkdir(parents=True, exist_ok=True)
     token = uuid.uuid4().hex
-    work = parent / f"catalog-serving-{token}"
-    work.mkdir(mode=0o700)
+    work = Path(tempfile.mkdtemp(prefix=f"arkham-catalog-serving-{token}-"))
+    work.chmod(0o700)
     (work / "owner").write_text(token, encoding="ascii")
     return work, token
 
@@ -297,9 +167,8 @@ def verify_production_runtime_authority(docker: str, image: str) -> None:
     require(separator == "\t", "production image does not expose nginx runtime authority metadata")
     platform = {"amd64": "linux-x86_64", "arm64": "linux-arm64"}.get(architecture)
     require(platform is not None, f"production image has unsupported architecture for nginx authority: {architecture}")
-    lock = ROOT / "offline" / "toolchain.lock"
-    index = locked_record(lock, "image", "nginx-runtime", "multiarch", "nginx:1.27.5")
-    platform_manifest = locked_record(lock, "image", "nginx-runtime", platform, "nginx:1.27.5")
+    index = locked_record(SERVING_IMAGE_LOCK, "image", "nginx-runtime", "multiarch", "nginx:1.27.5")
+    platform_manifest = locked_record(SERVING_IMAGE_LOCK, "image", "nginx-runtime", platform, "nginx:1.27.5")
     require(index[4] == "exact" and valid_sha256(index[5]), "nginx runtime index authority is malformed")
     require(
         platform_manifest[4] == "exact" and valid_sha256(platform_manifest[5]),
@@ -347,7 +216,7 @@ def verify_production_loaded_closure(docker: str, container: str, architecture: 
     platform = {"amd64": "linux-x86_64", "arm64": "linux-arm64"}.get(architecture)
     require(platform is not None, f"production image has unsupported architecture for nginx authority: {architecture}")
     expected = locked_record(
-        ROOT / "offline" / "toolchain.lock",
+        SERVING_IMAGE_LOCK,
         "image",
         "nginx-runtime-closure",
         platform,
@@ -527,19 +396,8 @@ class ProductionImageNginx:
         return False
 
 
-def provenance_value(path: Path, key: str) -> str:
-    require(path.is_file() and not path.is_symlink(), f"offline nginx provenance is missing or unsafe: {path}")
-    matches = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        name, separator, value = line.partition("=")
-        if separator and name == key:
-            matches.append(value)
-    require(len(matches) == 1 and matches[0] != "", f"offline nginx provenance has no unique {key} value")
-    return matches[0]
-
-
 def locked_record(lock: Path, record_type: str, component: str, platform: str, artifact: str) -> list[str]:
-    require(lock.is_file() and not lock.is_symlink(), f"toolchain authority is missing or unsafe: {lock}")
+    require(lock.is_file() and not lock.is_symlink(), f"serving image authority is missing or unsafe: {lock}")
     matches = []
     for line in lock.read_text(encoding="utf-8").splitlines():
         if not line or line.startswith("#"):
@@ -549,435 +407,13 @@ def locked_record(lock: Path, record_type: str, component: str, platform: str, a
             matches.append(fields)
     require(
         len(matches) == 1,
-        f"toolchain authority has no unique {record_type} row for {component}/{platform}/{artifact}",
+        f"serving image authority has no unique {record_type} row for {component}/{platform}/{artifact}",
     )
     return matches[0]
 
 
 def valid_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
-
-
-PACKAGE_NGINX_CLOSURE_PATHS = (
-    "bin/nginx",
-    "lib",
-    "pgsql/lib",
-    "start.sh",
-    "config/mime.types",
-    "config/toolchain.lock",
-    "config/toolchain-provenance.env",
-)
-
-
-def closure_records(root: Path, selected: tuple[str, ...]) -> list[str]:
-    require(root.is_dir() and not root.is_symlink(), f"authority root is missing or unsafe: {root}")
-    root = root.resolve()
-    records: dict[str, str] = {}
-
-    def collect(path: Path, relative: str) -> None:
-        if relative in records:
-            return
-        mode = path.lstat().st_mode
-        if stat.S_ISLNK(mode):
-            try:
-                resolved = path.resolve(strict=True)
-            except (OSError, RuntimeError) as error:
-                require(False, f"authority closure has an unsafe symlink {path}: {error}")
-            require(path_inside(resolved, root), f"authority closure symlink escapes its root: {path}")
-            records[relative] = f"link\t{relative}\t{path.readlink()}"
-            collect(resolved, resolved.relative_to(root).as_posix())
-            return
-        if stat.S_ISREG(mode):
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            permissions = format(stat.S_IMODE(mode), "o")
-            records[relative] = f"file\t{relative}\t{permissions}\t{digest}"
-            return
-        if stat.S_ISDIR(mode):
-            permissions = format(stat.S_IMODE(mode), "o")
-            records[relative] = f"dir\t{relative}\t{permissions}"
-            for child in sorted(path.iterdir(), key=lambda item: item.name):
-                child_relative = f"{relative}/{child.name}" if relative else child.name
-                collect(child, child_relative)
-            return
-        require(False, f"authority closure contains an unsupported file type: {path}")
-
-    for relative in selected:
-        require(
-            relative
-            and not relative.startswith("/")
-            and ".." not in relative.split("/")
-            and "." not in relative.split("/"),
-            f"unsafe authority closure path: {relative}",
-        )
-        path = root / relative
-        require(path.exists() or path.is_symlink(), f"required authority closure path is missing: {path}")
-        collect(path, relative)
-    return [record for _, record in sorted(records.items())]
-
-
-def closure_digest(root: Path, selected: tuple[str, ...]) -> str:
-    records = closure_records(root, selected)
-    require(records, f"authority closure is empty: {root}")
-    return hashlib.sha256(("\n".join(records) + "\n").encode("utf-8")).hexdigest()
-
-
-def frontend_closure_digest(root: Path) -> str:
-    """The shipped document root must contain only ordinary directories/files.
-    Symlinks could redirect a static server after the package is attested."""
-
-    require(root.is_dir() and not root.is_symlink(), f"frontend root is missing or unsafe: {root}")
-    records: list[tuple[str, str]] = []
-
-    def collect(path: Path, relative: str) -> None:
-        mode = path.lstat().st_mode
-        if stat.S_ISLNK(mode):
-            require(False, f"shipped frontend contains a forbidden symlink: {relative}")
-        if stat.S_ISREG(mode):
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            permissions = format(stat.S_IMODE(mode), "o")
-            records.append((relative, f"file\t{relative}\t{permissions}\t{digest}"))
-            return
-        if stat.S_ISDIR(mode):
-            permissions = format(stat.S_IMODE(mode), "o")
-            records.append((relative, f"dir\t{relative}\t{permissions}"))
-            for child in sorted(path.iterdir(), key=lambda item: item.name):
-                child_relative = f"{relative}/{child.name}" if relative else child.name
-                collect(child, child_relative)
-            return
-        require(False, f"shipped frontend contains an unsupported file type: {relative}")
-
-    for child in sorted(root.iterdir(), key=lambda item: item.name):
-        collect(child, child.name)
-    require(records, f"frontend root is empty: {root}")
-    return hashlib.sha256(
-        ("\n".join(record for _, record in sorted(records)) + "\n").encode("utf-8")
-    ).hexdigest()
-
-
-def authority_record(authority: Path, token: str, component: str) -> tuple[str, str, str]:
-    require(
-        authority.is_file() and not authority.is_symlink(),
-        f"external release authority is missing or unsafe: {authority}",
-    )
-    token_digest_matches: list[str] = []
-    schema_matches: list[str] = []
-    record_matches: list[list[str]] = []
-    for line in authority.read_text(encoding="utf-8").splitlines():
-        fields = line.split("\t")
-        if fields[:1] == ["token_sha256"] and len(fields) == 2:
-            token_digest_matches.append(fields[1])
-        elif fields[:1] == ["schema"] and len(fields) == 2:
-            schema_matches.append(fields[1])
-        elif fields[:2] == ["record", component] and len(fields) == 6:
-            record_matches.append(fields)
-    require(schema_matches == ["2"], "external release authority has an unsupported schema")
-    require(
-        token_digest_matches == [hashlib.sha256(token.encode("ascii")).hexdigest()],
-        "external release authority token does not match this invocation",
-    )
-    require(len(record_matches) == 1, f"external release authority has no unique {component} record")
-    _, _, lock_sha256, identity, closure_sha256, authenticator = record_matches[0]
-    require(
-        valid_sha256(lock_sha256)
-        and valid_sha256(identity)
-        and valid_sha256(closure_sha256)
-        and valid_sha256(authenticator),
-        f"external release authority has malformed {component} digests",
-    )
-    expected_authenticator = hashlib.sha256(
-        f"record\t{component}\t{lock_sha256}\t{identity}\t{closure_sha256}\t{token}".encode("ascii")
-    ).hexdigest()
-    require(
-        authenticator == expected_authenticator,
-        f"external release authority has an unauthenticated {component} record",
-    )
-    return lock_sha256, identity, closure_sha256
-
-
-def path_inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return False
-    return True
-
-
-def package_library(game: Path, name: str) -> Path:
-    candidates = [game / "lib" / name, game / "pgsql" / "lib" / name]
-    present = [candidate for candidate in candidates if candidate.exists() or candidate.is_symlink()]
-    require(len(present) == 1, f"nginx dependency {name!r} is not uniquely bundled in the package")
-    require(
-        present[0].is_file() or present[0].is_symlink(),
-        f"nginx dependency {name!r} is not a regular bundled library",
-    )
-    require(path_inside(present[0], game), f"nginx dependency {name!r} escapes the package")
-    return present[0]
-
-
-def verify_macos_nginx_closure(game: Path) -> None:
-    otool = Path("/usr/bin/otool")
-    require(otool.is_file() and otool.stat().st_mode & 0o111, "macOS otool is required for package closure validation")
-    queue = [game / "bin" / "nginx"]
-    seen: set[Path] = set()
-    while queue:
-        binary = queue.pop()
-        resolved_binary = binary.resolve()
-        if resolved_binary in seen:
-            continue
-        seen.add(resolved_binary)
-        result = run([str(otool), "-L", str(binary)])
-        require(result.returncode == 0, f"could not inspect packaged dependency closure: {binary}\n{result.stderr}")
-        for line in result.stdout.splitlines()[1:]:
-            dependency = line.strip().split(" (", 1)[0]
-            if dependency.startswith(("/usr/lib/", "/System/Library/")):
-                continue
-            if dependency.startswith("@rpath/"):
-                child = package_library(game, Path(dependency).name)
-            elif dependency.startswith("@loader_path/"):
-                child = (binary.parent / dependency.removeprefix("@loader_path/")).resolve()
-                require(path_inside(child, game), f"nginx loader-path dependency escapes the package: {dependency}")
-            elif dependency.startswith("@executable_path/"):
-                child = (game / "bin" / dependency.removeprefix("@executable_path/")).resolve()
-                require(path_inside(child, game), f"nginx executable-path dependency escapes the package: {dependency}")
-            elif dependency.startswith("/"):
-                child = Path(dependency)
-                require(path_inside(child, game), f"nginx has a non-allowlisted host dependency: {dependency}")
-            else:
-                require(False, f"nginx has an unsupported dependency reference: {dependency}")
-            require(child.is_file(), f"nginx bundled dependency is missing: {child}")
-            queue.append(child)
-
-
-def verify_linux_nginx_closure(game: Path) -> None:
-    readelf = Path("/usr/bin/readelf")
-    if not readelf.is_file():
-        readelf = Path("/bin/readelf")
-    require(readelf.is_file() and readelf.stat().st_mode & 0o111, "readelf is required for package closure validation")
-    system_libraries = {
-        "linux-vdso.so.1",
-        "libc.so.6",
-        "libm.so.6",
-        "libdl.so.2",
-        "libpthread.so.0",
-        "librt.so.1",
-        "ld-linux-aarch64.so.1",
-        "ld-linux-x86-64.so.2",
-    }
-    queue = [game / "bin" / "nginx"]
-    seen: set[Path] = set()
-    while queue:
-        binary = queue.pop()
-        resolved_binary = binary.resolve()
-        if resolved_binary in seen:
-            continue
-        seen.add(resolved_binary)
-        result = run([str(readelf), "-d", str(binary)])
-        require(result.returncode == 0, f"could not inspect packaged dependency closure: {binary}\n{result.stderr}")
-        for line in result.stdout.splitlines():
-            marker = "Shared library: ["
-            if marker not in line:
-                continue
-            soname = line.split(marker, 1)[1].split("]", 1)[0]
-            if soname in system_libraries:
-                continue
-            queue.append(package_library(game, soname))
-
-
-def verify_packaged_nginx_closure(game: Path, platform: str) -> None:
-    if platform.startswith("macos-"):
-        verify_macos_nginx_closure(game)
-    elif platform.startswith("linux-"):
-        verify_linux_nginx_closure(game)
-    else:
-        require(False, f"unsupported packaged nginx platform: {platform}")
-
-
-def verify_offline_provenance(package: Path, authority: Path, token: str) -> Path:
-    game = package / "game"
-    nginx_binary = game / "bin" / "nginx"
-    provenance = game / "config" / "toolchain-provenance.env"
-    packaged_lock = game / "config" / "toolchain.lock"
-    repository_lock = ROOT / "offline" / "toolchain.lock"
-
-    require(
-        nginx_binary.is_file() and not nginx_binary.is_symlink() and nginx_binary.stat().st_mode & 0o111,
-        f"offline package nginx is missing or unsafe: {nginx_binary}",
-    )
-    try:
-        authority.relative_to(package)
-    except ValueError:
-        pass
-    else:
-        require(False, "external release authority must not reside inside the package")
-    require(provenance_value(provenance, "schema") == "1", "offline nginx provenance uses an unsupported schema")
-    platform = provenance_value(provenance, "platform")
-    source_archive = provenance_value(provenance, "nginx_source_archive")
-    source_sha256 = provenance_value(provenance, "nginx_source_sha256")
-    build_identity = provenance_value(provenance, "nginx_build_identity")
-    binary_sha256 = provenance_value(provenance, "nginx_binary_sha256")
-    runtime_closure_sha256 = provenance_value(provenance, "nginx_runtime_closure_sha256")
-    version = provenance_value(provenance, "nginx_version")
-    required_option = provenance_value(provenance, "nginx_required_configure_option")
-
-    for label, value in (
-        ("nginx source SHA-256", source_sha256),
-        ("nginx build identity", build_identity),
-        ("nginx binary SHA-256", binary_sha256),
-        ("nginx runtime closure SHA-256", runtime_closure_sha256),
-        ("toolchain lock SHA-256", provenance_value(provenance, "toolchain_lock_sha256")),
-    ):
-        require(valid_sha256(value), f"offline provenance has an invalid {label}")
-
-    require(
-        packaged_lock.is_file() and not packaged_lock.is_symlink(),
-        f"offline package toolchain authority is missing or unsafe: {packaged_lock}",
-    )
-    require(
-        hashlib.sha256(packaged_lock.read_bytes()).hexdigest() == provenance_value(provenance, "toolchain_lock_sha256"),
-        "offline package provenance is not bound to its shipped toolchain authority",
-    )
-    require(
-        repository_lock.is_file()
-        and not repository_lock.is_symlink()
-        and packaged_lock.read_bytes() == repository_lock.read_bytes(),
-        "offline package toolchain authority differs from the committed release authority",
-    )
-    archive = locked_record(packaged_lock, "archive", "nginx", platform, source_archive)
-    binary = locked_record(packaged_lock, "binary", "nginx", platform, "bin/nginx")
-    require(archive[4] == "exact" and archive[5] == source_sha256, "offline nginx source digest differs from the lock")
-    require(binary[4] == "derived" and binary[5] == build_identity, "offline nginx build identity differs from the lock")
-    require(binary[6] == "native-build-v2-gzip-static", "offline nginx uses an unrecognized build recipe")
-    require(version == "1.26.2", f"offline nginx provenance names an unexpected version: {version}")
-    require(
-        required_option == "--with-http_gzip_static_module",
-        "offline nginx provenance does not require gzip_static",
-    )
-    require(
-        hashlib.sha256(nginx_binary.read_bytes()).hexdigest() == binary_sha256,
-        "offline nginx executable digest differs from its package provenance",
-    )
-    authority_lock, authority_identity, authority_closure = authority_record(authority, token, "offline-nginx")
-    require(
-        authority_lock == hashlib.sha256(packaged_lock.read_bytes()).hexdigest()
-        and authority_identity == build_identity
-        and authority_closure == closure_digest(game, PACKAGE_NGINX_CLOSURE_PATHS),
-        "offline nginx executable/provenance/library closure differs from the external release authority",
-    )
-    frontend_lock, _frontend_identity, frontend_closure = authority_record(
-        authority, token, "offline-frontend"
-    )
-    require(
-        frontend_lock == hashlib.sha256(packaged_lock.read_bytes()).hexdigest()
-        and frontend_closure == frontend_closure_digest(game / "frontend" / "dist"),
-        "final packaged frontend tree differs from its external authority",
-    )
-    verify_packaged_nginx_closure(game, platform)
-    return game
-
-
-class OfflinePackageNginx:
-    """Runs the package launcher, not a mounted host/container substitute."""
-
-    def __init__(
-        self,
-        package: Path,
-        authority: Path,
-        token: str,
-        work: Path,
-        process_factory=None,
-    ):
-        self.package = package
-        self.authority = authority
-        self.token = token
-        self.work = work
-        self.game = verify_offline_provenance(package, authority, token)
-        self.start_script = self.game / "start.sh"
-        self.process_factory = (
-            process_factory if process_factory is not None else subprocess.Popen
-        )
-        self.process = None
-
-    def command(self, action: str) -> list[str]:
-        home = self.work / "offline-package-home"
-        home.mkdir(exist_ok=True)
-        return [
-            "/usr/bin/env",
-            "-i",
-            f"HOME={home}",
-            "PATH=/usr/bin:/bin",
-            f"ARKHAM_PORT={PORT}",
-            "ARKHAM_API_PORT=39001",
-            "ARKHAM_PG_PORT=39002",
-            tool("bash"),
-            str(self.start_script),
-            action,
-        ]
-
-    def diagnostics(self) -> str:
-        if self.process is None:
-            return "offline package launcher did not start"
-        if self.process.poll() is None:
-            return "offline package launcher is still running but did not answer HTTP"
-        stdout, stderr = self.process.communicate()
-        return f"{stdout}{stderr}"
-
-    def __enter__(self):
-        try:
-            require(
-                self.start_script.is_file() and not self.start_script.is_symlink(),
-                f"offline package launcher is missing or unsafe: {self.start_script}",
-            )
-            config_test = run(self.command("--validate-nginx-config"), cwd=self.game)
-            require(
-                config_test.returncode == 0,
-                "offline package's actual nginx/config/bundled-library validation failed:\n"
-                f"{config_test.stdout}{config_test.stderr}",
-            )
-            self.process = self.process_factory(
-                self.command("--serve-nginx-for-validation"),
-                cwd=self.game,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            wait_for_server("offline package", self.diagnostics)
-            return self
-        except BaseException:
-            self.__exit__(None, None, None)
-            raise
-
-    def __exit__(self, *_):
-        if self.process is not None:
-            if self.process.poll() is None:
-                self.process.terminate()
-                try:
-                    self.process.communicate(timeout=10)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.communicate(timeout=10)
-            else:
-                self.process.communicate()
-            self.process = None
-        cleanup_offline_validation_artifacts(self.game)
-        return False
-
-
-def cleanup_offline_validation_artifacts(game: Path) -> None:
-    """Remove only files generated by the serving gate, never shipped payloads."""
-    for path in (
-        game / "config" / "nginx.conf",
-        game / "data" / "nginx.pid",
-        game / "data" / "access.log",
-        game / "data" / "error.log",
-        game / "data" / "nginx_temp",
-    ):
-        if path.is_symlink():
-            require(False, f"offline serving created an unsafe validation artifact: {path}")
-        if path.is_dir():
-            shutil.rmtree(path)
-        elif path.exists():
-            require(path.is_file(), f"offline serving created an unsupported validation artifact: {path}")
-            path.unlink()
 
 
 def manifest_from_static_root(static_root: Path) -> dict:
@@ -1164,14 +600,13 @@ def run_cleanup_self_tests() -> None:
 
     global run, tool, verify_production_runtime_authority, verify_production_loaded_closure
     global verify_production_api_startup
-    global production_runtime_closure_digest, verify_offline_provenance, wait_for_server, PORT
+    global production_runtime_closure_digest, wait_for_server, PORT
     original_run = run
     original_tool = tool
     original_production_authority = verify_production_runtime_authority
     original_production_closure_authority = verify_production_loaded_closure
     original_production_api_startup = verify_production_api_startup
     original_production_closure_digest = production_runtime_closure_digest
-    original_offline_provenance = verify_offline_provenance
     original_wait = wait_for_server
     original_port = PORT
     work, token = create_owned_work()
@@ -1191,35 +626,8 @@ def run_cleanup_self_tests() -> None:
     def forced_readiness_failure(*_) -> None:
         raise SystemExit("forced readiness failure")
 
-    class FakePopen:
-        instances: list["FakePopen"] = []
-
-        def __init__(self, *_args, **_kwargs):
-            self.terminated = False
-            self.killed = False
-            FakePopen.instances.append(self)
-
-        def poll(self):
-            return None
-
-        def terminate(self):
-            self.terminated = True
-
-        def kill(self):
-            self.killed = True
-
-        def communicate(self, **_kwargs):
-            return "", ""
-
     try:
         PORT = 39991
-        os.environ["ARKHAM_TOOLCHAIN_RECEIPT_FILE"] = str(work / "receipt.tsv")
-        os.environ["ARKHAM_TOOLCHAIN_RECEIPT_TOKEN"] = "a" * 64
-        discard_authority_capabilities()
-        require(
-            all(variable not in os.environ for variable in AUTHORITY_CAPABILITY_ENV),
-            "serving validator retained an authority capability in its child environment",
-        )
         run = fake_run
         tool = fake_tool
         verify_production_runtime_authority = lambda *_: None
@@ -1242,8 +650,12 @@ def run_cleanup_self_tests() -> None:
         try:
             verify_production_loaded_closure = original_production_closure_authority
             verify_production_loaded_closure("docker", "container", "amd64")
-        except SystemExit:
-            pass
+        except SystemExit as error:
+            require(
+                "production nginx executable or recursive loaded-library closure differs from committed authority"
+                in str(error),
+                f"production closure substitution self-test failed for the wrong reason: {error}",
+            )
         else:
             require(False, "production nginx executable/library substitution was accepted")
         verify_production_loaded_closure = lambda *_: None
@@ -1288,56 +700,6 @@ def run_cleanup_self_tests() -> None:
         verify_production_api_startup = lambda *_: None
         wait_for_server = forced_readiness_failure
 
-        game = work / "offline-game"
-        game.mkdir()
-        (game / "config").mkdir()
-        (game / "data" / "nginx_temp").mkdir(parents=True)
-        for artifact in ("nginx.conf",):
-            (game / "config" / artifact).write_text("validation artifact\n", encoding="utf-8")
-        for artifact in ("nginx.pid", "access.log", "error.log"):
-            (game / "data" / artifact).write_text("validation artifact\n", encoding="utf-8")
-        (game / "start.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-        package = work / "offline-package"
-        package.mkdir()
-        authority = work / "external-receipt.tsv"
-        authority.write_text("schema\t1\n", encoding="utf-8")
-        verify_offline_provenance = lambda *_: game
-        run = lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, "", "")
-        offline = OfflinePackageNginx(
-            package,
-            authority,
-            "a" * 64,
-            work,
-            process_factory=FakePopen,
-        )
-        require(
-            all("TOOLCHAIN_RECEIPT" not in value for value in offline.command("--validate-nginx-config")),
-            "offline package command exposes an authority capability",
-        )
-        try:
-            with offline:
-                pass
-        except SystemExit:
-            pass
-        else:
-            require(False, "cleanup self-test did not force offline readiness failure")
-        require(
-            len(FakePopen.instances) == 1 and FakePopen.instances[0].terminated,
-            "offline readiness failure leaked its nginx process",
-        )
-        require(
-            not any(
-                path.exists() or path.is_symlink()
-                for path in (
-                    game / "config" / "nginx.conf",
-                    game / "data" / "nginx.pid",
-                    game / "data" / "access.log",
-                    game / "data" / "error.log",
-                    game / "data" / "nginx_temp",
-                )
-            ),
-            "offline serving validation left mutable package artifacts behind",
-        )
     finally:
         run = original_run
         tool = original_tool
@@ -1345,7 +707,6 @@ def run_cleanup_self_tests() -> None:
         verify_production_loaded_closure = original_production_closure_authority
         verify_production_api_startup = original_production_api_startup
         production_runtime_closure_digest = original_production_closure_digest
-        verify_offline_provenance = original_offline_provenance
         wait_for_server = original_wait
         PORT = original_port
         release_owned_work(work, token)
@@ -1353,45 +714,27 @@ def run_cleanup_self_tests() -> None:
 
 def main() -> None:
     global PORT
-    production_image, offline_package, offline_authority_fd, self_test = parse_args()
-    offline_authority, offline_authority_token = consume_offline_authority_frame(
-        offline_authority_fd
-    )
-    discard_authority_capabilities()
+    production_image, self_test = parse_args()
     if self_test:
-        if offline_authority is not None:
-            verify_consumed_authority_isolation()
         run_cleanup_self_tests()
         print("locale-catalog serving: context-manager cleanup self-tests passed")
         return
     work, token = create_owned_work()
     PORT = 39000 + (int(token[:8], 16) % 1000)
-    checked: list[str] = []
     try:
-        if production_image is not None:
-            with ProductionImageNginx(production_image, work, token) as production:
-                production_static_root = production.copy_catalog()
-                check_status_matrix(
-                    manifest_from_static_root(production_static_root),
-                    "production",
-                    production_static_root,
-                )
-            checked.append("final production image")
-        if offline_package is not None:
-            require(offline_authority is not None and offline_authority_token is not None, "offline authority arguments are missing")
-            with OfflinePackageNginx(offline_package, offline_authority, offline_authority_token, work):
-                check_status_matrix(
-                    manifest_from_static_root(offline_package / "game" / "frontend" / "dist"),
-                    "offline package",
-                    offline_package / "game" / "frontend" / "dist",
-                )
-            checked.append("offline packaged nginx")
+        with ProductionImageNginx(production_image, work, token) as production:
+            production_static_root = production.copy_catalog()
+            check_status_matrix(
+                manifest_from_static_root(production_static_root),
+                "production",
+                production_static_root,
+            )
     finally:
         release_owned_work(work, token)
         PORT = None
     print(
         "locale-catalog serving: live HTTP/status/cache/MIME/gzip/brotli matrix verified against "
-        + " and ".join(checked)
+        "final production image"
     )
 
 
