@@ -5,13 +5,13 @@ an explicit, canonical, non-symlink toolchain root and this invocation's own
 workspace -- after discarding the caller's entire environment. This module
 enforces the repository side of that boundary, in order:
 
-1. **Environment attestation.** The interpreter must be the exact binary inside
-   the sealed toolchain root, started with `-I -S -E -B`, running from its own
-   base prefix, and its stdlib must match `locale_catalog_python_runtime.json`
-   byte for byte. That lock is platform-independent on purpose: every stdlib
-   source it pins was verified to be identical in the pinned CPython 3.14.7
-   upstream tarball and in the `python-build-standalone` builds recorded in the
-   lock's `distribution` block.
+1. **Environment attestation.** The interpreter must be CPython 3.14.7 at the
+   sealed toolchain path, started with `-I -S -E -B`, running from its own base
+   prefix, and its stdlib must match `locale_catalog_python_runtime.json` byte
+   for byte. That lock is platform-independent on purpose: every stdlib source
+   it pins is recorded by path and digest, while the interpreter binary itself
+   is accepted by implementation and exact version rather than by a live
+   external binary hash.
 2. **Trusted git.** The one governed step that may consult git receives an
    absolute, non-symlink executable through `LOCALE_CATALOG_GIT`; nothing here
    ever resolves `git` through `PATH`.
@@ -21,8 +21,9 @@ enforces the repository side of that boundary, in order:
    lets a governed source reach, and everything those modules import in turn,
    must resolve to a byte-attested `.py` source -- never to a file-backed
    extension module. Anything that resolves to no file at all can only come
-   from the pinned interpreter binary itself (a builtin or frozen module),
-   whose distribution is pinned by checksum in the same lock. That is what
+   from the CPython 3.14.7 interpreter itself (a builtin or frozen module),
+   which is accepted by implementation and exact version at the sealed path.
+   That is what
    makes "every imported stdlib byte is bound to committed metadata" a closure
    property rather than a claim about `.py` files alone.
 5. **Dependency boundary.** The invocation-owned virtual environment must
@@ -39,7 +40,7 @@ Threat model
 What this checks, and what it does not. Everything committed to this
 repository is trusted code reviewed through pull request; none of it is
 sandboxed here. What gets checked is the externally produced material a
-governed command depends on -- the CPython distribution and its import surface,
+governed command depends on -- the CPython version and import surface,
 the pinned Node and uv binaries, the locked dependency tree, the caller's
 environment -- plus drift in the reviewed tooling itself, so a change to it has
 to be a coordinated, reviewed edit rather than a silent difference between what
@@ -203,8 +204,8 @@ def verify_startup_modules(profile: dict, runtime_home: Path) -> None:
         try:
             origin = module.__file__
         except AttributeError:
-            # A builtin or frozen module: it lives in the pinned interpreter
-            # binary, whose SHA-256 is bound above.
+            # A builtin or frozen module: it lives in the CPython 3.14.7
+            # interpreter accepted at the sealed runtime path.
             continue
         if not origin:
             continue

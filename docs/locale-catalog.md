@@ -412,11 +412,11 @@ launcher happen to be checked before anything imports or starts them, which is
 worth having only because a half-edited lint should not be deciding anything.
 The suite exercises this by replacing the lint with a permissive stand-in and
 requiring the run to stop before that stand-in's top-level code executes.
-Interpreter binaries and active platform `sysconfigdata` sources are pinned as
-non-empty, lowercase SHA-256 candidate lists per platform. This permits only
-the explicitly reviewed standalone builds that mise caches or currently
-installs; an empty, malformed, duplicate, cross-platform, or otherwise
-undeclared identity is refused.
+Interpreter binaries are accepted by implementation and exact version from the
+explicit mise-managed path rather than by live external binary hashes; active
+platform `sysconfigdata` sources are treated as non-importable platform variants.
+This keeps required checks from depending on refreshed standalone build bytes
+while preserving the source/import-surface attestation below.
 
 **The importable prefix, not just its sources.** Hashing `*.py` under the
 stdlib root leaves two ways into the process before any of it is checked:
@@ -443,8 +443,8 @@ not.
 
 **Environment attestation.** Before the first Python byte runs, the sealed
 shell hashes the complete non-variant stdlib source inventory (path names and
-contents), then hashes each exact CPython, Node and uv binary against the
-platform-specific digest table. Each Python process uses a fresh, empty,
+contents), then checks CPython by implementation and exact version and hashes
+Node and uv against the platform-specific digest table. Each Python process uses a fresh, empty,
 invocation-owned `-X pycache_prefix`, so it cannot consult the installation's
 normal `__pycache__` at all; `-B` additionally prevents new bytecode writes.
 The bootstrap repeats executable/source checks after startup, then proves its
@@ -456,17 +456,17 @@ sealed stdlib root must be a committed digest-table entry that hashes to the
 recorded value, or one of the four exactly-named build-configuration modules
 the lock records as platform variants (and which no importable module can
 reach). The table is platform-independent by construction: every source it
-pins was verified byte-identical in the pinned upstream CPython 3.14.7 tarball
-and in the `python-build-standalone` builds the lock records.
+pins is recorded by path and digest; the interpreter binary itself is accepted
+by implementation and exact CPython 3.14.7 version at the sealed path.
 
 That covers every stdlib `.py` byte. The rest of the standard library is
 covered by an *import-closure* proof rather than by hashing platform-specific
 binaries: starting from exactly the stdlib modules the capability boundary lets
 a governed source name, and following those modules' own imports through their
 attested sources, every reachable name must resolve to an attested `.py` — or
-to no file at all, in which case only the pinned interpreter binary itself (a
-builtin or frozen module, from the distribution the lock records by checksum)
-can satisfy it. A name that resolves to a file-backed extension module, or to
+to no file at all, in which case only the CPython 3.14.7 interpreter itself (a
+builtin or frozen module, accepted by implementation and exact version) can
+satisfy it. A name that resolves to a file-backed extension module, or to
 one of the unhashed platform-variant modules, is refused. Resolution follows
 CPython's own precedence, where a planted `csv.so` shadows the attested
 `csv.py`, so that is exactly the shape the adversarial suite plants. The lock

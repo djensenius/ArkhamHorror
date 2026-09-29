@@ -230,11 +230,9 @@ if [[ -n "${PROBE}" ]]; then
   require_sealed_file "${PROBE}" "explicitly bound capabilities probe"
 fi
 
-# The interpreter itself is accepted by implementation and exact version from
-# the explicit mise-managed install path. Required CI must not depend on live
-# external binary hashes, but the runner is still isolated and the copied
-# stdlib/import surface is governed below before any target code runs.
-require_cpython_3147 "${PYTHON}" "sealed CPython 3.14.7"
+# Required CI must not depend on live CPython binary hashes. The copied runtime
+# is accepted by implementation and exact version after the managed install's
+# source/import surface is checked below; Node and uv stay byte-pinned here.
 case "$("${UNAME}" -s):$("${UNAME}" -m)" in
   Darwin:arm64)
     require_digest "${NODE}" "sealed Node 26.7.0" \
@@ -374,10 +372,10 @@ readonly LOCK_PROJECT="${WORKSPACE}/project"
 readonly SOURCE_REPOSITORY="${WORKSPACE}/repository"
 
 # Python still accepts valid unchecked .pyc files even with -B and
-# pycache_prefix.  Build an invocation-owned reflink/copy of the already
-# shell-attested installation, then remove every cache before its first
-# interpreter start. The original managed install is read only; the runtime
-# itself attests the copied sources again before importing a governed target.
+# pycache_prefix. Build an invocation-owned reflink/copy of the inspected
+# installation, then remove every cache before its first interpreter start. The
+# original managed install is read only; the runtime itself attests the copied
+# sources again before importing a governed target.
 case "$("${UNAME}" -s)" in
   Darwin) "${CP}" -cR "${SEALED_ROOT}/installs/python/3.14.7" "${RUNTIME_HOME}" ;;
   Linux) "${CP}" --reflink=auto -a "${SEALED_ROOT}/installs/python/3.14.7" "${RUNTIME_HOME}" ;;

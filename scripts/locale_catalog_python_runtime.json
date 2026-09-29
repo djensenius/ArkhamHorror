@@ -6,9 +6,9 @@
   "stdlibSourceTreeSha256": "c618cf3f74e4625201ed9d508f280b256235370e949172500c02d2da662d53e5",
   "trustedSources": {
     "frontend/scripts/locale-catalog/generator-launcher.mjs": "d7dd6e8fa3fb55504213bc349b9a345c48bdc03079b37d5db8534176ee233d5a",
-    "scripts/locale-catalog-python-sealed.sh": "5f3d69dc9d405e6a658d7a020d19882f34de03367407fc59bad49626fbc54b2f",
+    "scripts/locale-catalog-python-sealed.sh": "956ab7faa84b3dd72fa33bf926b2bd186d270726be52b697b3a301b8519f646b",
     "scripts/locale_catalog_python_boundary.py": "4c7b8bf496de26e8b53905999f99525560971948cdc3a708aae54f1afed28777",
-    "scripts/locale_catalog_runtime.py": "1181482cf068b2640a6b661eec5cb4c6988c7b1d9bbc1f3cf9210550750fd86a",
+    "scripts/locale_catalog_runtime.py": "36f7846071317436c494725103cae61286992ac8f6ad5dd3b997febfaf56b51e",
     "scripts/run-locale-catalog-python.sh": "5969b9f967f037bdd1df394ad99c2794315c7874e226bcebdccd2636f05b749c"
   },
   "interpreter": {
@@ -46,29 +46,7 @@
     "upstream": {
       "url": "https://www.python.org/ftp/python/3.14.7/Python-3.14.7.tgz",
       "sha256": "62859805f6fdf25e2bcbf3fa3217801e1996887ca33e6a2af80674bdfa2dbe07"
-    },
-    "builds": [
-      {
-        "platform": "x86_64-unknown-linux-gnu",
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260805/cpython-3.14.7+20260805-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-        "sha256": "a3a4e4b81b138960c7c546694df8a77578c0b6aa46d47e96f49b9e10e8f860c9"
-      },
-      {
-        "platform": "x86_64-unknown-linux-gnu",
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.14.7+20260807-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-        "sha256": "a2478d654ed51d443bae21ec20ad927f116b4f5aae4094ab74918a6aa38f0575"
-      },
-      {
-        "platform": "x86_64-unknown-linux-gnu",
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260901/cpython-3.14.7+20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
-        "sha256": "3959f92825141e04adf44982d3a83ee57af0877e893b0796e04c1468749d9b04"
-      },
-      {
-        "platform": "aarch64-apple-darwin",
-        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260807/cpython-3.14.7+20260807-aarch64-apple-darwin-install_only_stripped.tar.gz",
-        "sha256": "532645be202d3df8510ab318ca5faed92060a694c8327144e14fa81f31af0f6d"
-      }
-    ]
+    }
   },
   "platformVariantModules": [
     "_sysconfigdata__darwin_darwin.py",
