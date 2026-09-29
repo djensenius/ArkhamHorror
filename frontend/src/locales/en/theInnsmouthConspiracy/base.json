@@ -101,12 +101,13 @@
     "guardianDispatched": "<p>You study the trophy you found in the sacrificial pit in which you awoke several days ago—part of what was once the creature that you fought in Devil Reef. It wasn’t the same kind of creature as the “Deep Ones” that the Esoteric Order of Dagon worships, but you cannot help ruminating over the similarities between them. You recall that fish never cease growing as they age, and wonder if the same may be true for Deep Ones. Perhaps it was an ancient breed of Deep One—something so old, it grew enormous and twisted beyond imagination. If so, what was it doing in Devil Reef? Was it guarding Y’ha-nthlei? And if so, what does that bode for you? You decide to take the trophy with you, hoping it is important enough to aid in your mission…</p>",
     "rightfulKeeper": "<p>You understand now the purpose of the relic you found in Devil Reef. It isn’t just an object of power. It is a badge—an heirloom of sorts, worn by the one who stands guard over the gateway to the Deep Ones’ city. You defeated the one groomed to be its next protector. Now the relic recognizes you as its rightful heir. Perhaps with this, you will be able to gain entrance into Y’ha-nthlei…</p>",
     "label": {
+      "keepElinaHarper": "Will Elina Harper accompany you into Y’ha-nthlei?",
       "addElinaHarper": "Add Elina Harper to your deck",
       "doNotAddElinaHarper": "Do not add Elina Harper to your deck"
     }
   },
   "epilogue": {
-    "epilogue1": {
+    "epilogue1":  {
       "title": "Epilogue",
       "body": "<p><b>Epilogue 1:</b> The drive home to Arkham is quiet. After everything you have been through, you would have thought the quiet to be a peaceful repreive…but you are alone with your thoughts—thoughts of Innsmouth, of Deep Ones, of enormous monsters dwelling in the depths beneath the waves. You find yourself checking your rearview mirror regularly, waiting to spot the headlights of pursuers who want you dead; the glowing, unblinking eyes of an aquatic horror in your back seat; or perhaps even the cold, dead glare of Thomas Dawson, mutated nearly beyond recognition. But you see nothing. Just an empty road.</p><p>You sigh and run through the events of the past few weeks once more. You believe you have a complete picture of what occurred, and yet you still feel like there is something missing. Another gap in your memories…</p>"
     },

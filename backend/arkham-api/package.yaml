@@ -63,6 +63,7 @@ library:
     - aeson
     - aeson-casing
     - aeson-diff
+    - ah3e
     - amazonka
     - amazonka-core
     - amazonka-s3
@@ -71,6 +72,7 @@ library:
     - annotated-exception
     - async
     - base16-bytestring
+    - base64-bytestring
     - bugsnag
     - bugsnag-hs
     - bugsnag-yesod

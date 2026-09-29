@@ -69,9 +69,14 @@ import Data.Map.Strict qualified as Map
 asEnemyId :: EnemyLocationAttrs -> EnemyId
 asEnemyId = enemyLocationAsEnemyId . EnemyLocationId . toId
 
+{- | A fight/evade rider sets a target, which the behaviors wrap as
+@ProxyTarget (EnemyTarget eid) (AssetTarget ...)@. Look past it like
+'Arkham.Helpers.Enemy.isActionTarget' does, or nothing below fires (#5789).
+-}
 isEnemyTarget :: EnemyLocationAttrs -> Target -> Bool
-isEnemyTarget a target =
-  isTarget (EnemyId $ coerce $ unLocationId a.id) target || isTarget a target
+isEnemyTarget a target = isTarget (EnemyId $ coerce $ unLocationId a.id) t || isTarget a t
+ where
+  t = toProxyTarget target
 
 instance HasModifiersFor EnemyLocationAttrs where
   getModifiersFor a = do
@@ -163,9 +168,24 @@ instance RunMessage EnemyLocationAttrs where
       resolveDiscoverCluesAt a.id iid d
       pure a
     PassedSkillTest iid (Just Action.Fight) source (Initiator target) _ n | isEnemyTarget a target -> do
-      Fight.pushSuccessfulAttack iid source (asEnemyId a) n
+      pushAll
+        [ UpdateHistory iid (HistoryItem HistorySuccessfulAttacks 1)
+        , Successful (Action.Fight, toProxyTarget target) iid source (toActionTarget target) n
+        ]
+      pure a
+    -- Only deal standard damage when the attack resolves against the enemy-location
+    -- itself. A rider is the action target and deals the damage its own way, which is
+    -- how Arkham.Enemy.Runner suppresses the standard damage for real enemies.
+    Successful (Action.Fight, _) iid source target _ | isEnemyTarget a target -> do
+      push $ InvestigatorDamageEnemy iid (asEnemyId a) source
       pure a
     PassedSkillTest iid (Just Action.Evade) source (Initiator target) _ n | isEnemyTarget a target -> do
+      pushAll
+        [ UpdateHistory iid (HistoryItem HistorySuccessfulEvasions 1)
+        , Successful (Action.Evade, toProxyTarget target) iid source (toActionTarget target) n
+        ]
+      pure a
+    Successful (Action.Evade, _) iid source target n | isEnemyTarget a target -> do
       Evade.pushSuccessfulEvade iid source (asEnemyId a) n
       pure a
     FailedSkillTest iid (Just Action.Fight) _ (Initiator target) _ _ | isEnemyTarget a target -> do
@@ -182,7 +202,13 @@ instance RunMessage EnemyLocationAttrs where
         $ EnemyAttack
         $ (enemyAttack (asEnemyId a) a iid) {attackType = RetaliateAttack}
       pure a
-    EnemyEvaded _ eid | eid == asEnemyId a -> pure $ a & exhaustedL .~ True
+    -- Mirror the enemy runner: without the would-batch and the when/after
+    -- EnemyEvaded windows, "after you evade an enemy" reactions (Rita Young,
+    -- Dirty Fighting) never see an enemy-location.
+    EnemyEvaded iid eid | eid == asEnemyId a -> do
+      Evade.pushEvadedWindows iid eid msg
+      pure a
+    Do (EnemyEvaded _ eid) | eid == asEnemyId a -> pure $ a & exhaustedL .~ True
     Exhaust ea | isEnemyTarget a ea.target -> pure $ a & exhaustedL .~ True
     ReadyExhausted | not a.defeated -> do
       when a.exhausted $ push $ Ready (toTarget a)
@@ -239,7 +265,9 @@ instance RunMessage EnemyLocationAttrs where
             SingleAttackTarget (InvestigatorTarget iid') -> [iid']
             MassiveAttackTargets ts -> [iid' | InvestigatorTarget iid' <- ts]
             _ -> []
-      pushAll [dmgMsg iid' | not details.cancelled, iid' <- targets]
+      pushAll
+        $ [m | not details.cancelled, m <- details.damageReplacement]
+        <> [dmgMsg iid' | not details.cancelled, iid' <- targets]
       pure a
     ForTarget target (CancelEachNext mCardId source [AttackMessage]) | isEnemyTarget a target -> do
       Lifted.checkWhen $ Window.CancelledOrIgnoredCardOrGameEffect source mCardId
@@ -266,7 +294,9 @@ instance RunMessage EnemyLocationAttrs where
       when (modifiedAmount > 0) do
         Damage.fireDamageWindows source (toTarget (asEnemyId a)) damageEffect modifiedAmount do
           push $ Msg.Damaged (EnemyTarget eid) da {damageAssignmentAmount = modifiedAmount}
-        push $ CheckDefeated source (toTarget a)
+          -- inside the body so the defeat resolves before the after-windows, like the
+          -- enemy runner's Damaged handler does, #5682
+          push $ CheckDefeated source (toTarget a)
       pure $ a & baseL . tokensL %~ addTokens Damage modifiedAmount
     HealDamage (EnemyTarget eid) source n | eid == asEnemyId a -> do
       let healAmount = min n (enemyLocationDamage a)

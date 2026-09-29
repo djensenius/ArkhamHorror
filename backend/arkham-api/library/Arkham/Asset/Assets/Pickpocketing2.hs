@@ -33,10 +33,10 @@ instance RunMessage Pickpocketing2 where
       resourceOk <- can.gain.resources iid
       if fromMaybe False doBoth
         then chooseOneAtATimeM iid $ withI18n $ countVar 1 do
-          when drawOk $ labeled' "drawCards" $ drawCards iid (attrs.ability 1) 1
-          when resourceOk $ labeled' "gainResources" $ gainResources iid (attrs.ability 1) 1
+          when drawOk $ labeled "drawCards" $ drawCards iid (attrs.ability 1) 1
+          when resourceOk $ labeled "gainResources" $ gainResources iid (attrs.ability 1) 1
         else chooseOneM iid $ withI18n $ countVar 1 do
-          labeledValidate' drawOk "drawCards" $ drawCards iid (attrs.ability 1) 1
-          labeledValidate' resourceOk "gainResources" $ gainResources iid (attrs.ability 1) 1
+          labeledValidate drawOk "drawCards" $ drawCards iid (attrs.ability 1) 1
+          labeledValidate resourceOk "gainResources" $ gainResources iid (attrs.ability 1) 1
       pure a
     _ -> Pickpocketing2 <$> liftRunMessage msg attrs

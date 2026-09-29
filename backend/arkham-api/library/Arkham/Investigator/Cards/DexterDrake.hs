@@ -4,7 +4,7 @@ import Arkham.Ability
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Card
 import Arkham.Effect.Import
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Modifiers
 import Arkham.I18n
 import Arkham.Investigator.Cards qualified as Cards
@@ -73,7 +73,7 @@ instance RunMessage DexterDrake where
       assets <- select $ AssetWithPlacement (InPlayArea iid) <> AssetCanLeavePlayByNormalMeans
       when (notNull assets) do
         chooseOneM iid do
-          cardI18n (scope "dexterDrake" $ labeled' "skip") nothing
+          cardI18n (scope "dexterDrake" $ labeled "skip") nothing
           targets assets \asset -> do
             push $ ReturnToHand iid (toTarget asset)
             drawCardsIfCan iid attrs 1

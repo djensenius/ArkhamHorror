@@ -27,7 +27,12 @@ dagonDeepInSlumberIntoTheMaelstrom = enemyWith
   $ \a -> a {enemyFight = Nothing, enemyHealth = Nothing, enemyEvade = Nothing}
 
 instance HasModifiersFor DagonDeepInSlumberIntoTheMaelstrom where
-  getModifiersFor (DagonDeepInSlumberIntoTheMaelstrom a) = modifySelf a [Omnipotent]
+  getModifiersFor (DagonDeepInSlumberIntoTheMaelstrom a) =
+    -- "He cannot attack or engage, and is immune to investigator actions and
+    -- player card effects." The sanctum locations still evade (and so exhaust)
+    -- him: EnemyEvaded does not consult CannotBeEvaded, and they are encounter
+    -- sources, so CannotBeExhaustedBy SourceIsPlayerCard does not bite either.
+    modifySelf a (CannotAttack : immuneToAction <> immuneToPlayerEffect)
 
 instance HasAbilities DagonDeepInSlumberIntoTheMaelstrom where
   getAbilities (DagonDeepInSlumberIntoTheMaelstrom a) =
@@ -35,7 +40,7 @@ instance HasAbilities DagonDeepInSlumberIntoTheMaelstrom where
         a
         1
         ( exists (InvestigatorAt $ locationIs Locations.lairOfDagon)
-            <> thisExists a (IncludeOmnipotent ReadyEnemy)
+            <> thisExists a ReadyEnemy
         )
         $ forced
         $ RoundEnds #when
@@ -44,7 +49,6 @@ instance HasAbilities DagonDeepInSlumberIntoTheMaelstrom where
 
 instance RunMessage DagonDeepInSlumberIntoTheMaelstrom where
   runMessage msg e@(DagonDeepInSlumberIntoTheMaelstrom attrs) = runQueueT $ case msg of
-    EnemyCheckEngagement eid | eid == attrs.id -> pure e
     Flip _ _ (isTarget attrs -> True) -> do
       awakened <- genCard Cards.dagonAwakenedAndEnragedIntoTheMaelstrom
       push $ ReplaceEnemy attrs.id awakened Swap
@@ -59,9 +63,9 @@ instance RunMessage DagonDeepInSlumberIntoTheMaelstrom where
     PassedThisSkillTest iid (isAbilitySource attrs 2 -> True) -> do
       chooseOrRunOneM iid $ scenarioI18n $ scope "dagonDeepInSlumber" do
         when attrs.ready do
-          labeled' "exhaustDagon" $ exhaustThis attrs
+          labeled "exhaustDagon" $ exhaustThis attrs
         when (attrs.doom > 0) do
-          labeled' "removeDoomFromDagon" $ removeDoom (attrs.ability 2) attrs 1
+          labeled "removeDoomFromDagon" $ removeDoom (attrs.ability 2) attrs 1
       pure e
     FailedThisSkillTestBy _iid (isAbilitySource attrs 2 -> True) n | n >= 3 -> do
       placeDoom (attrs.ability 2) attrs 1

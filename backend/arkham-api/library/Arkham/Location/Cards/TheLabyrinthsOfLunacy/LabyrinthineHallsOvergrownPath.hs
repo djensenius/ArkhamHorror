@@ -31,12 +31,12 @@ instance RunMessage LabyrinthineHallsOvergrownPath where
         investigators <- select $ affectsOthersKnown iid $ NotInvestigator (InvestigatorWithId iid)
         for_ (nonEmpty investigators) \others ->
           chooseOrRunOneM iid $ scope "labyrinthineHalls" do
-            questionLabeled' "chooseAdditionalActions"
+            questionLabeled "chooseAdditionalActions"
             targets (toList others) \iid' ->
               nextTurnModifier
-                iid'
-                (attrs.ability 1)
-                iid'
-                (AdditionalActions "Labyrinthine Halls" (toSource attrs) 2)
+                 iid'
+                 (attrs.ability 1)
+                 iid'
+                (AdditionalActions (ikey' "additionalActions") (toSource attrs) 2)
       pure l
     _ -> LabyrinthineHallsOvergrownPath <$> liftRunMessage msg attrs

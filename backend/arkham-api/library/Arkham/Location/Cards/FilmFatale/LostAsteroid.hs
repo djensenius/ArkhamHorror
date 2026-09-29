@@ -1,7 +1,7 @@
 module Arkham.Location.Cards.FilmFatale.LostAsteroid (lostAsteroid) where
 
 import Arkham.Ability
-import {-# SOURCE #-} Arkham.GameEnv (getPhase)
+import Arkham.GameEnv (getPhase)
 import Arkham.Helpers.Cost
 import Arkham.Helpers.Modifiers (ModifierType (..), modifySelect)
 import Arkham.I18n
@@ -43,8 +43,8 @@ instance RunMessage LostAsteroid where
       resources <- getSpendableResources iid
       when (resources >= 4) do
         chooseOneM iid do
-          withI18n labeled' "skip" nothing
-          scenarioI18n $ labeled' "lostAsteroid.pay" do
+          withI18n labeled "skip" nothing
+          scenarioI18n $ labeled "lostAsteroid.pay" do
             spendResources iid 4
             skillTestModifier sid (attrs.ability 1) sid SkillTestAutomaticallySucceeds
       beginSkillTest sid iid (attrs.ability 1) iid #agility (Fixed 4)

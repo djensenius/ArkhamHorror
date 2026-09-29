@@ -25,9 +25,9 @@ instance RunMessage HeavyRain where
     DoStep n msg'@(FailedThisSkillTestBy iid (isSource attrs -> True) _) | n > 0 -> do
       canPlaceClues <- canPlaceCluesOnYourLocation iid
       chooseOneM iid $ withI18n do
-        countVar 1 $ labeled' "takeHorror" $ assignHorror iid attrs 1
+        countVar 1 $ labeled "takeHorror" $ assignHorror iid attrs 1
         countVar 1
-          $ labeledValidate' canPlaceClues "placeCluesOnYourLocation"
+          $ labeledValidate canPlaceClues "placeCluesOnYourLocation"
           $ placeCluesOnLocation iid attrs 1
       doStep (n - 1) msg'
       pure t

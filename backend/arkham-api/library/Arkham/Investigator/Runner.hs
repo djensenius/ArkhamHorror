@@ -47,13 +47,22 @@ import Arkham.DefeatedBy
 import Arkham.Discover
 import Arkham.Draw.Types
 import Arkham.Enemy.Types qualified as Field
+import Arkham.Evade qualified as Evade
 import Arkham.Event.Types (Field (..))
 import Arkham.Fight.Types
 import {-# SOURCE #-} Arkham.Game (asIfTurn, withoutCanModifiers)
 import Arkham.Game.Settings (settingsStrictAsIfAt)
-import {-# SOURCE #-} Arkham.GameEnv
+import {-# SOURCE #-} Arkham.Game.Utils (sourceCanClaimUseAbility)
+import Arkham.GameEnv
 import Arkham.Helpers
-import Arkham.Helpers.Ability (getAbilityLimit, getCanAffordUseWith, isForcedAbility)
+import Arkham.Helpers.Ability (
+  abilityRidesAlong,
+  abilityWindowFor,
+  getAbilityLimit,
+  getCanAffordAbility,
+  getCanAffordUseWith,
+  isForcedAbility,
+ )
 import Arkham.Helpers.Action (getActions)
 import Arkham.Helpers.Campaign (getCampaignStoryCards)
 import Arkham.Helpers.Card (cardIsFast', getModifiedCardCost)
@@ -62,6 +71,7 @@ import Arkham.Helpers.Cost (getAdditionalActionCosts, getCanAffordCost)
 import Arkham.Helpers.Criteria (passesCriteria)
 import Arkham.Helpers.Customization
 import Arkham.Helpers.Discover
+import Arkham.Helpers.Enemy (expandCompositeEnemies, getInteractAsOneOf)
 import Arkham.Helpers.Game (withAlteredGame)
 import Arkham.Helpers.Location (getCanMoveTo, isDiscoveringLastClue, withLocationOf)
 import Arkham.Helpers.Log (hasCampaignOption)
@@ -72,6 +82,7 @@ import Arkham.Helpers.Playable (
   getOtherPlayersPlayableCards,
   getPlayableDiscards,
  )
+import Arkham.Helpers.Ref (sourceToMaybeCard)
 import Arkham.Helpers.SkillTest
 import Arkham.Helpers.Slot (
   canPutIntoSlot,
@@ -122,6 +133,7 @@ import Arkham.Matcher (
   locationWithInvestigator,
   oneOf,
   orConnected,
+  windowIsSingleEvent,
   pattern AssetWithAnyClues,
  )
 import Arkham.Message qualified as Msg
@@ -136,7 +148,6 @@ import Arkham.Movement
 import Arkham.Phase
 import Arkham.Placement
 import Arkham.PlayerCard qualified as PlayerCard
-import Arkham.Plural
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.ScenarioLogKey
@@ -149,7 +160,14 @@ import Arkham.Token qualified as Token
 import Arkham.Treachery.CardDefs.TheCircleUndone.UnspeakableFate qualified as Treacheries
 import Arkham.Treachery.CardDefs.TheDreamEaters.DarkSideOfTheMoon qualified as DarkSideOfTheMoon
 import Arkham.Treachery.CardDefs.TheDreamEaters.PointOfNoReturn qualified as PointOfNoReturn
-import Arkham.Window (Window (..), mkAfter, mkWhen, mkWindow, primaryWindowTarget)
+import Arkham.Window (
+  Window (..),
+  mkAfter,
+  mkWhen,
+  mkWindow,
+  primaryWindowTarget,
+  windowEventGroups,
+ )
 import Arkham.Window qualified as Window
 import Arkham.Zone qualified as Zone
 import Control.Lens (each, non, sumOf)
@@ -377,25 +395,137 @@ getWindowSkippable attrs ws (windowType -> Window.WouldPayCardCost iid _ _ card@
     ]
 getWindowSkippable _ _ _ = pure True
 
+{- | Abilities the investigator has silenced from the hidden-cards stack. Only
+non-forced triggers are dropped -- a forced ability on a silenced card still
+fires, since the game would be wrong without it.
+-}
+dropSilencedAbilities :: HasGame m => InvestigatorAttrs -> [Ability] -> m [Ability]
+dropSilencedAbilities attrs abilities
+  | null silenced = pure abilities
+  | otherwise = flip filterM abilities \ability ->
+      isForcedAbility attrs.id ability >>= \case
+        True -> pure True
+        False ->
+          maybe True ((`notMember` silenced) . toCardCode)
+            <$> sourceToMaybeCard ability.source
+ where
+  silenced = silencedCardCodes attrs.settings
+
+{- | One round of a materialised forced-initiation queue.
+
+ONE button per ability, no matter how many of its initiations remain: the button fires
+'UseAbility' with every pending window, and 'handleDoUseAbility' inserts the
+choose-target step before resolving the chosen one. Each button's follow-up carries the
+whole set as DATA ('ResolveWindowInitiations'); the next round refilters it against the
+recorded uses, so nothing is nested (pre-built follow-up asks encode every permutation
+of the set -- a six-enemy Storm of Spirits made a 6MB question that timed the server
+out) and the set still survives its sources leaving play. #5743
+-}
+initiationsAsk
+  :: PlayerId -> InvestigatorId -> [Window] -> [(Ability, [Window], [Message])] -> Message
+initiationsAsk player iid windows pending =
+  asWindowChoose windows
+    $ chooseOne
+      player
+      -- the continuation rides MoveWithSkillTest so the chosen initiation resolves in
+      -- FULL -- nested skill test included -- before the next round is offered
+      [ AbilityLabel
+          iid
+          (aimed ability ws)
+          ws
+          []
+          [MoveWithSkillTest (ResolveWindowInitiations iid windows pending)]
+      | ability <- nub [ability | (ability, _, _) <- pending]
+      , let ws = concat [ws' | (ability', ws', _) <- pending, ability' == ability]
+      ]
+ where
+  aimed ability ws
+    | isNothing (abilityTarget ability)
+    , singleEvent ws || abilityHighlightFromWindow ability
+    , Just target <- listToMaybe ws >>= primaryWindowTarget . windowType =
+        withHighlight target ability
+    | otherwise = ability
+  -- one timing point, not one window: an attack's damage and horror halves are the same
+  -- point, so the button still aims at their shared target (#5785)
+  singleEvent ws = case windowEventGroups ws of
+    [_] -> True
+    _ -> False
+
+{- | Whether an initiation can still be offered, at its own windows.
+
+Two places decide this and they must agree: 'runWindow' derives the set with it, and
+'ResolveWindowInitiations' re-filters the materialised set with it every round. If the
+deriving side is laxer, the filter empties a set 'runWindow' will just rebuild, and the
+@Do (CheckWindows ws)@ that follows re-checks the same window forever. #5764
+-}
+initiationIsLive :: HasGame m => InvestigatorId -> Ability -> [Window] -> m Bool
+initiationIsLive iid ability ws =
+  andM [sourceCanClaimUseAbility ability.source, getCanAffordAbility iid ability ws]
+
 runWindow
   :: (HasGame m, HasQueue Message m)
   => InvestigatorAttrs -> [Window] -> [Ability] -> [Card] -> m ()
-runWindow attrs windows actions playableCards = do
+runWindow attrs windows allActions playableCards = do
   let iid = toId attrs
+  actions <- dropSilencedAbilities attrs allActions
   unless (null playableCards && null actions) $ do
     anyForced <- anyM (isForcedAbility iid) actions
     player <- getPlayer iid
+    -- One check can carry several simultaneous timing points -- `simultaneously` merges one
+    -- DealtDamage window per enemy for Storm of Spirits -- and an ability initiates once per
+    -- point (Ritual Candles ruling), the player choosing the order. So split an ability into
+    -- one initiation per matching *point* instead of handing it the whole list: every
+    -- `[Window] -> a` helper reads only the head, and one use would otherwise consume the
+    -- rest through the PerWindow limit, which counts against `usedAbilityWindows`. #5743
+    -- The points are `windowEventGroups`, not the raw windows: an attack's damage and
+    -- horror halves are one point, so Spectral Shield sees both and fires once. #5785
+    let
+      highlightedFor ability window =
+        if abilityHighlightFromWindow ability && isNothing (abilityTarget ability)
+          then maybe ability (`withHighlight` ability) (primaryWindowTarget $ windowType window)
+          else ability
+      -- `abilityWindowFor`, not the raw matcher: `getActions` admitted this ability
+      -- against a `ThisLocation` resolved to its (proxied) source location, and a bare
+      -- `ThisLocation` matches nothing -- leaving every initiation empty and this window
+      -- re-checked forever. #5764
+      initiationsFor ability@Ability {..} = do
+        let abWindow = abilityWindowFor ability
+        matching <- filterM (\w -> windowMatches iid abilitySource w abWindow) windows
+        if windowIsSingleEvent abWindow
+          then
+            -- one initiation over the whole batch, so it is live or it is not
+            if null matching
+              then pure []
+              else do
+                live <- initiationIsLive iid ability matching
+                pure [(ability, matching) | live]
+          else do
+            -- drop the points already resolved: each use is recorded against its own windows
+            unconsumed <- filterM (initiationIsLive iid ability) (windowEventGroups matching)
+            pure $ map (ability,) unconsumed
     if anyForced
       then do
-        let
-          (isSilent, normal) = partition isSilentForcedAbility actions
-          toForcedAbilities = map (flip (UseAbility iid) windows)
-          toUseAbilities = map ((\f -> f windows [] []) . AbilityLabel iid)
-        -- Silent forced abilities should trigger automatically
+        -- Non-blocking reactions stay out of the materialised set entirely: it is worked
+        -- through until empty with no skip button, which would make them mandatory. In a
+        -- forced window they are simply not offered. #5784
+        considered <- filterM (fmap not . abilityRidesAlong iid windows) actions
+        let (isSilent, normal) = partition isSilentForcedAbility considered
+        silentInitiations <- concatMapM initiationsFor isSilent
+        normalInitiations <- concatMapM initiationsFor normal
+        -- Every initiation is made when the window opens, so the set is materialised and
+        -- worked through one round at a time -- re-deriving it per ask would lose
+        -- initiations whose source left play while an earlier one resolved (Caught in
+        -- the Crossfire discards itself on its first test). Silent forced abilities
+        -- trigger automatically.
         pushAll
-          $ toForcedAbilities isSilent
-          <> [asWindowChoose windows $ chooseOne player (toUseAbilities normal) | notNull normal]
-          <> [Do (CheckWindows windows) | null normal] -- if we have no normal windows the forced silent will not retrigger
+          $ map (uncurry $ UseAbility iid) silentInitiations
+          <> [ ResolveWindowInitiations iid windows [(ability, ws, []) | (ability, ws) <- normalInitiations]
+             | notNull normalInitiations
+             ]
+          -- if we have no normal windows the forced silent will not retrigger. Gated on
+          -- the silent set: with both empty nothing was pushed, so re-checking the same
+          -- window cannot make progress and just spins the runner. #5764
+          <> [Do (CheckWindows windows) | null normalInitiations, notNull silentInitiations]
       else do
         let globalSkip = attrs.settings.globalSettings.ignoreUnrelatedSkillTestTriggers
         let
@@ -409,10 +539,18 @@ runWindow attrs windows actions playableCards = do
                     Nothing -> pure $ not $ globalSkip && isFastAbility ab
                     Just matcher -> skillTestMatches iid GameSource st matcher
         actions' <- filterM applySettingsFilter actions
+        -- NOT split per window, unlike the forced branch: a triggered ability worded
+        -- "one or more" (Bandages) is one reaction covering the whole batch, so it keeps
+        -- every matching window and is offered once.
         actionsWithMatchingWindows <-
           for actions' $ \ability@Ability {..} ->
-            (ability,) <$> filterM (\w -> windowMatches iid abilitySource w abilityWindow) windows
+            (ability,)
+              <$> filterM (\w -> windowMatches iid abilitySource w (abilityWindowFor ability)) windows
         skippable <- getAllAbilitiesSkippable attrs windows
+        -- A non-blocking reaction is offered here like any other, including when it is the
+        -- only thing on offer. Whether that ask actually reaches a player is decided in the
+        -- `WindowAsk` handler, once every seat's ask for these windows is in hand -- this
+        -- seat cannot see on its own whether another seat is stopping the window. #5784
         unless (null playableCards && null actionsWithMatchingWindows) do
           push
             $ asWindowChoose windows
@@ -420,17 +558,9 @@ runWindow attrs windows actions playableCards = do
             $ [ targetLabel c [InitiatePlayCardWithWindows iid c Nothing NoPayment windows True]
               | c <- playableCards
               ]
-            <> map
-              ( \(ability, windows') ->
-                  let ability' =
-                        if abilityHighlightFromWindow ability && isNothing (abilityTarget ability)
-                          then case listToMaybe windows' >>= primaryWindowTarget . windowType of
-                            Just target -> withHighlight target ability
-                            Nothing -> ability
-                          else ability
-                   in AbilityLabel iid ability' windows' [] []
-              )
-              actionsWithMatchingWindows
+            <> [ AbilityLabel iid (maybe ability (highlightedFor ability) (listToMaybe ws)) ws [] []
+               | (ability, ws) <- actionsWithMatchingWindows
+               ]
             <> [SkipTriggersButton iid | skippable]
 
 {- | TEMPORARY profiling instrumentation. 'Arkham.Metrics.withMetric' needs
@@ -470,8 +600,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     pure $ a & sealedChaosTokensL %~ filter (/= token)
   UnsealChaosToken token -> do
     when (token `elem` investigatorSealedChaosTokens) do
-      Lifted.checkWhen (Window.ChaosTokenReleased a.id token)
-      Lifted.checkAfter (Window.ChaosTokenReleased a.id token)
+      Lifted.checkWhen (Window.ChaosTokenReleased (toTarget a.id) token)
+      Lifted.checkAfter (Window.ChaosTokenReleased (toTarget a.id) token)
     pure $ a & sealedChaosTokensL %~ filter (/= token)
   ReturnChaosTokensToPool tokens -> pure $ a & sealedChaosTokensL %~ filter (`notElem` tokens)
   RemoveAllChaosTokens face -> do
@@ -488,6 +618,16 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     pure attrs'
   UpdateCardSetting iid cCode s | iid == a.id -> do
     pure $ a & settingsL %~ updateCardSetting cCode s
+  SetCardOption iid cCode k v | iid == a.id -> do
+    pure $ a & settingsL %~ setCardOption cCode k v
+  SetCardSilenced iid cCode v | iid == a.id -> do
+    let attrs' = a & settingsL %~ setCardSilenced cCode v
+    -- Same reasoning as UpdateGlobalSetting: silencing a card while its window
+    -- is the open question should drop the prompt now, not next window.
+    currentWindows <- concat <$> getWindowStack
+    when (any (\w -> Window.windowType w == Window.FastPlayerWindow) currentWindows) do
+      push $ Do (CheckWindows currentWindows)
+    pure attrs'
   EndOfGame _ -> do
     -- Transfiguration (and Hank Samson's resolute flip) last "until the end
     -- of the game", so the form must revert before interludes check traits
@@ -509,12 +649,18 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     -- only re-arm records whose window is still open, otherwise a record from a
     -- closed window at the same depth is marked used again and blocks its ability
     currentWindows <- concat <$> getWindowStack
+    -- an initiation deferred past a nested skill test resolves after this close, and the
+    -- Do (CheckWindows ws) it pushes re-derives from scratch -- so a record whose window
+    -- the queue still owes a check must outlive the close or its Forced ability is
+    -- offered a second time (#5772). `lift`: this runs inside runQueueT.
+    pendingChecks <- lift queuedWindowChecks
+    let stillChecking UsedAbility {..} = any (`elem` pendingChecks) usedAbilityWindows
     let
-      filterAbility UsedAbility {..} = do
+      filterAbility u@UsedAbility {..} = do
         getAbilityLimit (toId a) usedAbility <&> \case
           NoLimit -> False
-          PlayerLimit PerWindow _ -> depth >= usedDepth
-          GroupLimit PerWindow _ -> depth >= usedDepth
+          PlayerLimit PerWindow _ -> depth >= usedDepth || stillChecking u
+          GroupLimit PerWindow _ -> depth >= usedDepth || stillChecking u
           _ -> True
 
     usedAbilities <-
@@ -567,10 +713,13 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     -- card that would otherwise start in play in the deck instead.
     setupModifiers <- getModifiers a
     let cannotPutIntoPlay c = any (\case CannotPutIntoPlay m -> cardMatch c m; _ -> False) setupModifiers
+    -- The defs are a snapshot persisted with the save, so they go stale as soon as the
+    -- card's definition changes; re-look them up and match on card code (#5611).
+    let startsWithDefs = map (\def -> fromMaybe def (lookupCardDef def)) investigatorStartsWith
     (startsWithMsgs, deck') <-
       foldM
         ( \(msgs, currentDeck) cardDef -> do
-            let (before, after) = break ((== cardDef) . toCardDef) (unDeck currentDeck)
+            let (before, after) = break ((== toCardCode cardDef) . toCardCode) (unDeck currentDeck)
             case after of
               (card : rest)
                 | cannotPutIntoPlay (toCard card) -> pure (msgs, currentDeck)
@@ -608,7 +757,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
               _ -> pure (msgs, currentDeck)
         )
         ([], Deck shuffled)
-        investigatorStartsWith
+        startsWithDefs
     let (permanentCards, deck'') =
           partition (\c -> cdPermanent (toCardDef c) && not (cannotPutIntoPlay (toCard c))) (unDeck deck')
 
@@ -648,6 +797,18 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
           cs <- replicateM n (genCard def)
           traverse (Arkham.Card.setTaboo investigatorTaboo <=< setOwner iid) cs
 
+    -- A card that always starts the game on its front side can have been
+    -- persisted flipped (the flip is synced to the campaign's story cards), so
+    -- put its other side into play instead.
+    startingInPlayCards <- for (map PlayerCard permanentCards <> encounterPermanentCards) \card -> do
+      let def = toCardDef card
+      case cdOtherSide def of
+        Just otherSide | startsOnOtherSideTag `elem` cdTags def -> do
+          let card' = lookupCard otherSide (toCardId card)
+          push $ ReplaceCard (toCardId card') card'
+          pure card'
+        _ -> pure card
+
     pushAll
       $ startsWithMsgs
       <> [ PutCardIntoPlay
@@ -656,7 +817,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
              Nothing
              NoPayment
              (Window.defaultWindows investigatorId)
-         | card <- map PlayerCard permanentCards <> encounterPermanentCards
+         | card <- startingInPlayCards
          ]
       <> [TakeStartingResources investigatorId]
     pure $ a & (deckL .~ Deck deck''') & bondedCardsL .~ bondedCards
@@ -809,9 +970,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       pushAll [windowMsg, InvestigatorIsDefeated source iid]
     pure a
   InvestigatorIsDefeated source iid | iid == investigatorId -> handleInvestigatorIsDefeated a source iid
-  Msg.InvestigatorNoLongerDefeated iid
-    | iid == investigatorId ->
-        pure $ a & defeatedL .~ False & endedTurnL .~ False
+  Msg.InvestigatorNoLongerDefeated iid | iid == investigatorId -> do
+    pure $ a & defeatedL .~ False & endedTurnL .~ False & eliminatedL .~ False
   Msg.InvestigatorResigned iid | iid == investigatorId -> do
     pushAll [InvestigatorWhenEliminated (toSource a) iid (Just $ Do msg)]
     pure $ a & endedTurnL .~ True
@@ -946,6 +1106,11 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     modifiers <- getModifiers a
     let source = choose.source
     let enemyMatcher = choose.matcher
+    -- "When interacting with Cthulhu, choose one of the cards on the Cthulhu Board":
+    -- a fight aimed at a composite enemy is a fight aimed at its member cards. Only the
+    -- candidate select uses this; 'includeAsIfEnemy' below still reads the card's own
+    -- matcher, since the expansion is not the card narrowing or widening its targets.
+    expandedMatcher <- expandCompositeEnemies enemyMatcher
     let
       isOverride = \case
         EnemyFightActionCriteria override -> Just override
@@ -970,7 +1135,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         $ select
         $ foldr
           applyMatcherModifiers
-          (canFightMatcher <> enemyMatcher <> mustChooseMatchers)
+          (canFightMatcher <> expandedMatcher <> mustChooseMatchers)
           (modifiers <> smods)
 
     canMoveToConnected <- case source.asset of
@@ -979,11 +1144,12 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     -- Targets that are merely attackable "as if an enemy" (Mist-Pylons, Key Loci) are not
     -- real enemies. Only offer them when the fight is unrestricted; a fight narrowed by
     -- the card's matcher (e.g. Toe to Toe's @EnemyCanAttack You@) must not include them.
-    -- The Runic Axe (Inscription of the Hunt) fight uses a CanFightEnemyWithOverride
-    -- matcher, which coveredByAnyInPlayEnemy treats as "restricted". That override widens
-    -- the fight rather than narrowing it, so it must still offer as-if-enemy targets
-    -- (Mist-Pylons, Key Loci). canMoveToConnected is exactly this Hunt-source case.
-    let includeAsIfEnemy = coveredByAnyInPlayEnemy enemyMatcher || canMoveToConnected
+    -- fightOffersAsIfEnemyTargets looks through a CanFightEnemyWithOverride, since such a
+    -- matcher replaces the standard fight criteria rather than narrowing the enemy set --
+    -- that is how Longbow (3) and British Bull Dog (2) spell "ignore Aloof". Runic Axe's
+    -- Hunt override is the same shape, but canMoveToConnected is still needed for it: it
+    -- also widens where we look for as-if-enemy targets.
+    let includeAsIfEnemy = fightOffersAsIfEnemyTargets enemyMatcher || canMoveToConnected
     let asIfEnemyLocations =
           if canMoveToConnected
             then orConnected ForMovement (locationWithInvestigator investigatorId)
@@ -1008,7 +1174,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
             $ asIfTurn investigatorId
             $ select
             $ AssetWithModifier CanBeAttackedAsIfEnemy
-            <> at_ (locationWithInvestigator investigatorId)
+            <> at_ asIfEnemyLocations
         else pure []
     player <- getPlayer investigatorId
     let choices = enemyIds <> map coerce locationIds <> map coerce concealed <> map coerce assetIds
@@ -1079,8 +1245,13 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
            ]
     pure a
   FightEnemy eid choose | choose.investigator == investigatorId && not choose.isAction -> do
-    handleSkillTestNesting_ choose.skillTest msg do
-      push (AttackEnemy eid choose)
+    -- A card that fights a named enemy ("this attack targets the attacking enemy") can
+    -- name a composite one; hand the choice of member card back to the player rather
+    -- than attacking the card that only stands for the group.
+    getInteractAsOneOf eid >>= \case
+      Just members -> push $ toMessage choose {chooseFightEnemyMatcher = members}
+      Nothing -> handleSkillTestNesting_ choose.skillTest msg do
+        push (AttackEnemy eid choose)
     pure a
   FailedAttackEnemy iid eid | iid == investigatorId -> do
     doesNotDamageOtherInvestigators <- hasModifier a DoesNotDamageOtherInvestigator
@@ -1101,6 +1272,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     let enemyMatcher = choose.matcher
     let isAction = choose.isAction
     let payCost = choose.payCost
+    -- Mirrors the fight side: evading a composite enemy is evading one of its members.
+    expandedMatcher <- expandCompositeEnemies enemyMatcher
     let
       isOverride = \case
         EnemyEvadeActionCriteria override -> Just override
@@ -1121,7 +1294,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       select
         $ foldr
           applyMatcherModifiers
-          (canEvadeMatcher <> enemyMatcher <> mustChooseMatchers)
+          (canEvadeMatcher <> expandedMatcher <> mustChooseMatchers)
           modifiers
     player <- getPlayer a.id
     -- A mini-card is not an enemy, so it can only satisfy an unqualified evade
@@ -1216,9 +1389,15 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         ]
     pure a
   EvadeEnemy sid iid eid source mTarget skillType False | iid == investigatorId -> do
-    handleSkillTestNesting_ sid msg do
-      attemptWindow <- checkWindows [mkWhen $ Window.AttemptToEvadeEnemy sid iid eid]
-      pushAll [attemptWindow, TryEvadeEnemy sid iid eid source mTarget skillType, AfterEvadeEnemy iid eid]
+    -- Mirrors the fight side: an evade named at a composite enemy becomes a choice of
+    -- which member card to evade.
+    getInteractAsOneOf eid >>= \case
+      Just members -> do
+        choose <- Evade.mkChooseEvadeMatch sid iid source members
+        push $ toMessage $ maybe id setTarget mTarget $ Evade.withSkillType skillType choose
+      Nothing -> handleSkillTestNesting_ sid msg do
+        attemptWindow <- checkWindows [mkWhen $ Window.AttemptToEvadeEnemy sid iid eid]
+        pushAll [attemptWindow, TryEvadeEnemy sid iid eid source mTarget skillType, AfterEvadeEnemy iid eid]
     pure a
   MoveAction iid lid cost True | iid == investigatorId -> handleMoveAction a iid lid cost
   MoveAction iid lid _cost False | iid == investigatorId -> handleMoveActionV2 a iid lid
@@ -1389,7 +1568,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
                  ]
               <> wrapWindows [locationWindowsAfter]
               <> d.discoverThen
-            send $ format a <> " discovered " <> pluralize clueCount "clue"
+            -- send $ format a <> " discovered " <> pluralize clueCount "clue"
+            send $ format a <> " discovered clue(s)"
 
         -- Investigating and automatically discovering a clue are two separate exposure triggers.
         -- The investigation one is offered up front at ST.7 (see 'withExposeInsteadOfInvestigating'
@@ -1446,7 +1626,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         RemoveChosenCardFromGame -> [RemovePlayerCardFromGame True choice]
 
     pushAll
-      $ chosenCardMsgs
+      $ [ReplaceCard (toCardId card) (PlayerCard choiceAsCard)]
+      <> chosenCardMsgs
       <> msgs
       <> [InitiatePlayCardWithWindows iid (PlayerCard choiceAsCard) Nothing payment windows' asAction]
     pure $ a & handL %~ (PlayerCard choiceAsCard :) . filter (/= card)
@@ -1576,7 +1757,9 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
         for slots \slot -> do
           case slotItems slot of
             [] -> pure slot
-            assets -> do
+            occupants -> do
+              -- A dangling AssetId must not turn a slot read into MissingEntity (#5593)
+              (assets, missing) <- partitionM (fmap isJust . fieldMay AssetCardId) occupants
               ignored <-
                 assets & filterM \aid -> do
                   cardId <- field AssetCardId aid
@@ -1594,7 +1777,11 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
                   let lessSlots = if seenCount == slotCount then 1 else 0
                   when (lessSlots == 0) $ modify (aid :)
                   pure $ replicate lessSlots aid
-              pure $ foldr removeIfMatchesOnce (foldr removeIfMatches slot ignored) (concat assetsToRemove)
+              pure
+                $ foldr
+                  removeIfMatches
+                  (foldr removeIfMatchesOnce (foldr removeIfMatches slot ignored) (concat assetsToRemove))
+                  missing
       pure (slotType, slots')
     push $ RefillSlots iid xs
     pure $ a & slotsL .~ mapFromList updatedSlots
@@ -1684,11 +1871,11 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
           | damage' == 0 && horror' > 0 ->
               push $ DoStep 1 $ Msg.InvestigatorDamage iid source damage' (horror' - 1)
           | otherwise -> Choose.chooseOneM iid $ withI18n $ countVar 1 do
-              Choose.labeled' "cancelDamage"
+              Choose.labeled "cancelDamage"
                 $ push
                 $ DoStep 1
                 $ Msg.InvestigatorDamage iid source (damage' - 1) horror'
-              Choose.labeled' "cancelHorror"
+              Choose.labeled "cancelHorror"
                 $ push
                 $ DoStep 1
                 $ Msg.InvestigatorDamage iid source damage' (horror' - 1)
@@ -1835,9 +2022,17 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     push $ RefillSlots a.id []
     pure $ a & slotsL . ix slotType %~ deleteFirstMatch (isSource source . slotSource)
   RefillSlots iid xs | iid == investigatorId && not investigatorEliminated -> do
+    -- An asset can be controlled by an investigator while its card sits on a location
+    -- (Summoned Servitor). It still fills that investigator's slots, so it has to be part of
+    -- the requirements -- otherwise the refill empties every slot and never gives this one
+    -- back (#5660).
+    atLocation <-
+      select (AssetControlledBy (InvestigatorWithId iid))
+        >>= filterM (fieldMap AssetPlacement (isJust . preview _AtLocation))
     assetIds <-
-      select
-        $ oneOf [AssetInPlayAreaOf (InvestigatorWithId iid), AssetInThreatAreaOf (InvestigatorWithId iid)]
+      (<> atLocation)
+        <$> select
+          (oneOf [AssetInPlayAreaOf (InvestigatorWithId iid), AssetInThreatAreaOf (InvestigatorWithId iid)])
     mods <- getModifiers a
     requirements <- concatForM assetIds \assetId -> do
       assetCard <- field AssetCard assetId
@@ -2314,6 +2509,30 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     pure $ a & skippedWindowL .~ False
   SkippedWindow iid | iid == investigatorId -> do
     pure $ a & skippedWindowL .~ True
+  ResolveWindowInitiations iid windows pending | iid == investigatorId -> do
+    player <- getPlayer iid
+    -- every use was recorded against its own windows, so the consumed initiations drop
+    -- out here rather than being book-kept through the buttons. An initiation whose
+    -- source can no longer claim UseAbility is dropped too: nothing would push
+    -- Do (UseAbility ...), so neither the recorded use nor releaseInitiationEffects
+    -- could ever consume it and the same button would be re-offered forever (#5761).
+    -- 'initiationIsLive' is the same predicate 'runWindow' derives the set with, so an
+    -- emptied set cannot be rebuilt by the Do (CheckWindows ws) below. #5764
+    remaining <- flip filterM pending \(ability, ws, _) -> initiationIsLive iid ability ws
+    if null remaining
+      then push $ Do (CheckWindows windows) -- anything newly available still gets a look
+      else do
+        -- capture every initiation's pending effects out of the queue (first round), so
+        -- no held effect can resolve before its own initiation has; each one is given
+        -- back by releaseInitiationEffects when its initiation is used
+        remaining' <- for remaining \entry@(ability, ws, effects) ->
+          if null effects
+            then
+              (ability,ws,)
+                <$> lift (popMessagesMatchingNested \queued -> any (`Helpers.pendingWindowEffect` queued) ws)
+            else pure entry
+        push $ initiationsAsk player iid windows remaining'
+    pure a
   Do (CheckWindows windows)
     | not investigatorSkippedWindow
         && (not (investigatorDefeated || investigatorResigned) || Window.hasEliminatedWindow windows) -> do
@@ -2569,7 +2788,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
 
       when (searchType == Searching) $ do
         pushBatch batchId
-          $ CheckWindows [Window #when (Window.AmongSearchedCards batchId iid) (Just batchId)]
+          $ CheckWindows [Window #when (Window.AmongSearchedCards batchId iid) (Just batchId) Nothing]
 
       pushBatch batchId $ ResolveSearch (toTarget investigatorId)
       pushBatch batchId $ EndSearch investigatorId source target cardSources
@@ -2769,7 +2988,27 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   UseCardAbility iid (isSource a -> True) 501 _ _ -> handleUseCardAbilityV2 a iid
   UseCardAbility iid (isSource a -> True) 502 _ _ -> handleUseCardAbilityV3 a iid
   UseAbility _ ab _ | isSource a ab.source || isProxySource a ab.source -> handleUseAbility a ab msg
-  Do (UseAbility iid ability windows) | iid == investigatorId -> handleDoUseAbility a iid ability windows
+  Do (UseAbility iid ability windows) | iid == investigatorId -> do
+    isForced <- isForcedAbility iid ability
+    -- the initiations this button covers are the window *groups* `runWindow` derived, not
+    -- the raw windows: an attack's damage and horror halves are one point, and asking
+    -- which of them to resolve offered two identical target buttons (#5785)
+    let groups = windowEventGroups windows
+    case traverse (primaryWindowTarget . windowType <=< listToMaybe) groups of
+      Just targets
+        | isForced
+        , not (windowIsSingleEvent $ abilityWindow ability)
+        , notNull (drop 1 groups) -> do
+            -- one button covers every remaining initiation of this ability; the player
+            -- picks which point's target this use resolves against, and the ability is
+            -- then called directly with just that point's windows. #5743
+            player <- getPlayer iid
+            push
+              $ chooseOne
+                player
+                [targetLabel target [Do (UseAbility iid ability g)] | (g, target) <- zip groups targets]
+            pure a
+      _ -> handleDoUseAbility a iid ability windows
   DoNotCountUseTowardsAbilityLimit iid ability | iid == investigatorId -> handleDoNotCountUseTowardsAbilityLimit a iid ability
   SkillTestEnds {} -> do
     pure

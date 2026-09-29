@@ -4,6 +4,7 @@ import { Dropdown } from 'floating-vue'
 import { BugAntIcon } from '@heroicons/vue/20/solid'
 import { useI18n } from 'vue-i18n'
 import { handleEmbeddedI18n } from '@/arkham/i18n'
+import { CARD_FLIGHT_ATTR, useCardFlight } from '@/arkham/cardFlight'
 import { useDebug } from '@/arkham/debug'
 import { Game } from '@/arkham/types/Game'
 import { keyToId } from '@/arkham/types/Key'
@@ -14,6 +15,7 @@ import { useGameChoices, useStickyChoicesSource, useGameChoicesTooltip } from '@
 import { useCardFlip } from '@/arkham/composables/useCardFlip'
 import { AbilityLabel, AbilityMessage, Message, MessageType } from '@/arkham/types/Message'
 import AbilitiesMenu from '@/arkham/components/AbilitiesMenu.vue'
+import MissingCardBadge from '@/arkham/components/MissingCardBadge.vue';
 import DebugEnemy from '@/arkham/components/debug/Enemy.vue'
 import PoolItem from '@/arkham/components/PoolItem.vue'
 import TokenPool from '@/arkham/components/TokenPool.vue'
@@ -23,6 +25,7 @@ import Asset from '@/arkham/components/Asset.vue'
 import Event from '@/arkham/components/Event.vue'
 import Skill from '@/arkham/components/Skill.vue'
 import SealedChaosTokens from '@/arkham/components/SealedChaosTokens.vue'
+import { enemyTarget, cardDropHandlers } from '@/arkham/debugCardDrop'
 import Story from '@/arkham/components/Story.vue'
 import ScarletKey from '@/arkham/components/ScarletKey.vue';
 import * as Arkham from '@/arkham/types/Enemy'
@@ -40,8 +43,12 @@ const props = withDefaults(defineProps<{
   sourceHighlighted?: boolean
 }>(), { atLocation: false, attached: false, sourceHighlighted: false })
 
+// Where a revealed enemy lands when the revelation overlay hands it over.
+const cardFlightStyle = useCardFlight(() => props.enemy.cardId)
+
 const emits = defineEmits<{
   choose: [value: number]
+  'abilities-hover': [value: boolean]
 }>()
 
 
@@ -202,6 +209,9 @@ const isExhausted = computed(() => props.enemy.exhausted)
 const keys = computed(() => props.enemy.keys)
 
 const debug = useDebug()
+// Debug: a chaos token dragged from the bag seals here; a token from the debug
+// token panel is placed here.
+const cardDrop = cardDropHandlers(props.game.id, () => enemyTarget(props.enemy.id))
 
 const enemyDamage = computed(() => (props.enemy.tokens[TokenType.Damage] || 0) + props.enemy.assignedDamage)
 const enemyTokens = computed(() => {
@@ -360,16 +370,25 @@ function onDrop(event: DragEvent) {
 </script>
 
 <template>
-  <div class="enemy--outer" :class="{showAbilities, oversized}">
+  <div class="enemy--outer" :class="{showAbilities, oversized}" v-bind="cardDrop">
     <div class="enemy">
       <Story v-if="enemyStory && !flipping" :story="enemyStory" :game="game" :playerId="playerId" @choose="choose"/>
       <template v-else>
-        <div class="card-frame" ref="frame">
+        <!-- The flight lands on the card frame, not the root: Location.vue and
+             Player.vue already put `enemy-<id>` on the root for board movement,
+             and one element can only carry one view-transition-name. -->
+        <div
+          class="card-frame"
+          ref="frame"
+          :[CARD_FLIGHT_ATTR]="enemy.cardId"
+          :style="cardFlightStyle"
+        >
           <div
             class="card-wrapper"
             :class="{ exhausted: isExhausted, 'enemy--objective': hasObjective, 'objective-ring': hasObjective }"
             :style="{ '--ui-rotation': `${uiRotation}deg` }"
           >
+            <MissingCardBadge :card-code="enemy.cardCode" />
             <font-awesome-icon v-if="hasSpiritAura" :icon="['fas', 'ghost']" class="spirit-icon" />
             <span class="important" v-if="important">
               <font-awesome-icon :icon="['fa', 'circle-exclamation']" />
@@ -440,6 +459,7 @@ function onDrop(event: DragEvent) {
             :game="game"
             :host-has-swarm="swarmEnemies.length > 0"
             @choose="chooseAbility"
+            @hover="(value) => emits('abilities-hover', value)"
             />
         </div>
 
@@ -506,7 +526,7 @@ function onDrop(event: DragEvent) {
       />
 
       <template v-if="debug.active">
-        <button @click="debugging = true">{{ $t('enemy.debug') }}</button>
+        <button class="debug-open" @click="debugging = true">{{ $t('enemy.debug') }}</button>
       </template>
     </div>
 

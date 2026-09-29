@@ -50,7 +50,7 @@ import Arkham.Evade qualified as Evade
 import Arkham.Exhaust qualified as Exhaust
 import Arkham.Fight
 import Arkham.Fight qualified as Fight
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Act
 import Arkham.Helpers.Agenda
@@ -275,6 +275,15 @@ removeLocation (asId -> lid) = do
         maybe (pushAll $ resolve (RemoveLocation lid)) (\_ -> addToVictory_ lid)
           =<< field LocationVictory lid
       else pushAll $ resolve (RemoveLocation lid)
+
+{- | 'removeLocation' without its victory-display diversion. A Victory X location that is being
+shuffled back into a deck has not been overcome, so it must not score.
+-}
+removeLocationWithoutVictory
+  :: (ReverseQueue m, AsId location, IdOf location ~ LocationId) => location -> m ()
+removeLocationWithoutVictory (asId -> lid) =
+  whenM (matches lid $ IncludeEmptySpace $ not_ LocationBeingRemoved)
+    $ pushAll (resolve (RemoveLocation lid))
 
 {- | Announce that a location has left play, and queue the deletion of the
 location entity *behind* the announcement.

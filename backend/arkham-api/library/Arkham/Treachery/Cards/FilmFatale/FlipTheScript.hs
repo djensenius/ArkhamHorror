@@ -27,9 +27,9 @@ instance RunMessage FlipTheScript where
     DoStep n msg'@(PassedThisSkillTest iid (isSource attrs -> True)) | n > 0 -> do
       canPlaceClues <- canPlaceCluesOnYourLocation iid
       chooseOrRunOneM iid $ withI18n do
-        countVar 1 $ labeled' "takeHorror" $ assignHorror iid attrs 1
+        countVar 1 $ labeled "takeHorror" $ assignHorror iid attrs 1
         countVar 1
-          $ labeledValidate' canPlaceClues "placeCluesOnYourLocation"
+          $ labeledValidate canPlaceClues "placeCluesOnYourLocation"
           $ placeCluesOnLocation iid attrs 1
       doStep (n - 1) msg'
       pure t

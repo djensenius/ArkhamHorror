@@ -57,6 +57,7 @@ packages:
   - devel-store-lock
   - arkham-api
   - validate
+  - ah3e
 
 allow-newer: true
 

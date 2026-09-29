@@ -6,16 +6,18 @@ import Toast from "vue-toastification";
 import { createVfm } from 'vue-final-modal'
 import App from './App.vue'
 import router from './router'
+import api from '@/api'
+import { useUserStore } from '@/stores/user'
 import { FontAwesomeIcon } from "@fortawesome/vue-fontawesome";
 import { library } from "@fortawesome/fontawesome-svg-core";
 import { faExpeditedssl } from "@fortawesome/free-brands-svg-icons";
-import { faBan, faCircleExclamation, faGhost, faLocationDot, faSearch, faList, faImage, faAngleDown, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy } from '@fortawesome/free-solid-svg-icons'
+import { faGear, faLayerGroup, faBan, faCircleExclamation, faGhost, faLocationDot, faSearch, faList, faImage, faAngleDown, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp } from '@fortawesome/free-solid-svg-icons'
 import * as VueI18n from 'vue-i18n'
 import { loadLocaleMessages, normalizeLocale } from '@/locales/messages'
 import { preferredLanguage } from '@/locales/language'
 import mitt from 'mitt';
 
-library.add(faBan, faLocationDot, faCircleExclamation, faGhost, faSearch, faList, faImage, faAngleDown, faExpeditedssl, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy)
+library.add(faBan, faLocationDot, faCircleExclamation, faGhost, faSearch, faList, faImage, faAngleDown, faExpeditedssl, faUndo, faTrash, faEye, faCopy, faExternalLink, faRefresh, faBook, faChevronRight, faBars, faTimes, faShieldHeart, faWrench, faPaperclip, faArrowLeft, faArrowUp, faStore, faTriangleExclamation, faShuffle, faTrophy, faGear, faLayerGroup, faDownload, faUpload, faCheckDouble, faFlask, faBug, faPen, faThumbsUp)
 
 async function bootstrap() {
   const language = localStorage.getItem('language')
@@ -56,6 +58,12 @@ async function bootstrap() {
         'chaos-bag-stats-popover': {
           $extend: 'dropdown',
         },
+        /* Used in four places and never registered. The others survive only by
+         * passing every option explicitly; anything that leaned on the theme for
+         * a default -- its triggers, say -- read undefined and threw. */
+        'cards-under-popover': {
+          $extend: 'dropdown',
+        },
       },
     }).
     use(Toast, {}).
@@ -64,6 +72,23 @@ async function bootstrap() {
     component("font-awesome-icon", FontAwesomeIcon)
 
   app.config.globalProperties.emitter = emitter
+
+  /* A token the server no longer accepts (an expired session, or a rotated
+   * signing secret) fails every call the same way, so it is handled once here
+   * rather than in each caller: drop the dead token and send the player to sign
+   * in, carrying the route they were on so signing in puts them back in their
+   * game. */
+  api.interceptors.response.use(undefined, (error) => {
+    const path = window.location.hash.replace(/^#/, '') || '/'
+    const onAuthPage = path.startsWith('/sign-in') || path.startsWith('/sign-up')
+    if (error.response?.status === 401 && !onAuthPage) {
+      const store = useUserStore()
+      store.logout()
+      store.sessionExpired = true
+      void router.push({ path: '/sign-in', query: { nextUrl: path } })
+    }
+    return Promise.reject(error)
+  })
 
   app.mount('#app')
 }

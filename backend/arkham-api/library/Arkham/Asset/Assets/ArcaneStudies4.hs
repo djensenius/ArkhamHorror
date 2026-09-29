@@ -19,9 +19,9 @@ arcaneStudies4 = asset ArcaneStudies4 Cards.arcaneStudies4
 instance HasAbilities ArcaneStudies4 where
   getAbilities (ArcaneStudies4 a) =
     [ wantsSkillTest (YourSkillTest $ mapOneOf SkillTestWants [#willpower, #intellect])
-        $ controlledAbility a 1 (DuringSkillTest AnySkillTest)
+        $ controlled a 1 (DuringSkillTest AnySkillTest)
         $ FastAbility
-        $ OrCost [ResourceCost 1, assetUseCost a #resource 1]
+        $ resourceOrUseCost a 1
     ]
 
 instance RunMessage ArcaneStudies4 where
@@ -30,9 +30,9 @@ instance RunMessage ArcaneStudies4 where
     UseThisAbility iid (isSource attrs -> True) 1 -> do
       withSkillTest \sid -> do
         chooseOneM iid do
-          (withI18n $ skillVar #willpower $ labeled' "chooseSkill")
+          (withI18n $ skillVar #willpower $ labeled "chooseSkill")
             $ skillTestModifier sid (attrs.ability 1) iid (SkillModifier #willpower 1)
-          (withI18n $ skillVar #intellect $ labeled' "chooseSkill")
+          (withI18n $ skillVar #intellect $ labeled "chooseSkill")
             $ skillTestModifier sid (attrs.ability 1) iid (SkillModifier #intellect 1)
       pure a
     _ -> ArcaneStudies4 <$> liftRunMessage msg attrs

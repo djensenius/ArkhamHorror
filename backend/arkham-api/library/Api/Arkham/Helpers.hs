@@ -12,6 +12,7 @@ import Arkham.Epic.Types (EpicEnv, HasMaybeEpic (..), SharedEventState)
 import Arkham.Game
 import Arkham.Id
 import Arkham.Message
+import Arkham.Phase qualified as Phase
 import Arkham.Queue
 import Arkham.Random
 import Control.Concurrent (threadDelay)
@@ -80,12 +81,19 @@ toPublicGame (Entity gId ArkhamGame {..}) gameLog =
 
 data ApiResponse
   = GameUpdate (PublicGame ArkhamGameId)
+  | PhaseChanged Phase.Phase
   | GameMessage Text
   | GameError Text
   | GameUI Text
   | GameAudio Text
   | GameCard {title :: Text, card :: Aeson.Value}
   | GameCardOnly {player :: PlayerId, title :: Text, card :: Aeson.Value}
+  | {- | One investigator drew cards from their own deck. Carries the whole draw
+    rather than one message per card, so a six-card draw is one thing to look at
+    instead of six. Whether it is shown at all, and how, is the receiving
+    client's business -- it is a display preference, not game state.
+    -}
+    GameDrewCards {player :: PlayerId, title :: Text, cards :: Aeson.Value, kind :: Text}
   | GameTarot Aeson.Value
   | GameShowDiscard InvestigatorId
   | GameShowUnder InvestigatorId
@@ -94,6 +102,10 @@ data ApiResponse
     -}
     GameAchievement Text
   | GamePlayabilityInfo {cardId :: CardId, cardCode :: Text, checks :: [(Text, Maybe Text)]}
+  | {- | A custom card's JSON could not be used. Sent to the table rather than
+    swallowed, with the fragment at fault, so its author can go and fix it.
+    -}
+    GameCustomCardIssue {cardCode :: Text, detail :: Text, payload :: Aeson.Value}
   | -- Epic Multiplayer: the event's shared state, pushed to a group's own stream
     -- so the shared panel renders from a single source (the group websocket).
     SharedStateUpdate SharedEventState

@@ -271,6 +271,9 @@ instance FromJSON (SomeField Investigator) where
     "InvestigatorBeganRoundAt" -> pure $ SomeField InvestigatorBeganRoundAt
     "InvestigatorPreviousLocation" -> pure $ SomeField InvestigatorPreviousLocation
     "InvestigatorSupplies" -> pure $ SomeField InvestigatorSupplies
+    "InvestigatorCluesInPool" -> pure $ SomeField InvestigatorCluesInPool
+    "InvestigatorSearch" -> pure $ SomeField InvestigatorSearch
+    "InvestigatorSideDeck" -> pure $ SomeField InvestigatorSideDeck
     _ -> error "Unknown Field Investigator"
 
 data InvestigatorForm
@@ -426,10 +429,12 @@ instance Entity InvestigatorAttrs where
   overAttrs f = f
 
 instance HasCardDef InvestigatorAttrs where
-  toCardDef e = case lookup (investigatorCardCode e) (allInvestigatorCards <> allEncounterInvestigatorCards) of
-    Just def -> def
-    Nothing ->
-      error $ "missing card def for enemy " <> show (investigatorCardCode e)
+  toCardDef e =
+    case lookup (investigatorCardCode e) (allInvestigatorCards <> allEncounterInvestigatorCards)
+      <|> lookupCustomCardDef (investigatorCardCode e) of
+      Just def -> def
+      Nothing ->
+        error $ "missing card def for investigator " <> show (investigatorCardCode e)
 
 instance Named InvestigatorAttrs where
   toName = investigatorName

@@ -28,7 +28,7 @@ import Arkham.ChaosToken
 import Arkham.Classes
 import Arkham.Deck qualified as Deck
 import Arkham.Enemy.Types (Field (..))
-import {-# SOURCE #-} Arkham.GameEnv (getCard)
+import Arkham.GameEnv (getCard)
 import Arkham.Helpers.Calculation (calculate)
 import Arkham.Helpers.Customization
 import Arkham.Helpers.Modifiers
@@ -367,6 +367,8 @@ runEventMessage msg a@EventAttrs {..} = runQueueT $ case msg of
       _ -> pure a
   UpdateEventMeta eid value | eid == eventId -> do
     pure $ a & metaL .~ value
+  UpdateEventTarget eid mtarget | eid == eventId -> do
+    pure $ a {eventTarget = mtarget}
   BeforePlayEvent _ eid acId | eid == eventId -> do
     -- Default: no pre-play questions; resume the cost pipeline immediately
     push $ CreatedCost acId

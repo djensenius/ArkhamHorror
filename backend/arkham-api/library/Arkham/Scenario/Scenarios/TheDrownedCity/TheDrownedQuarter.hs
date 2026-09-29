@@ -7,7 +7,6 @@ import Arkham.Campaigns.TheDrownedCity.CampaignSteps (pattern TheApiary, pattern
 import Arkham.Campaigns.TheDrownedCity.Import
 import Arkham.Campaigns.TheDrownedCity.Key qualified as Key
 import Arkham.Campaigns.TheInnsmouthConspiracy.Helpers (getFloodLevelFor)
-import Arkham.Card
 import Arkham.ChaosToken
 import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.TheDrownedCity.TheDrownedQuarter qualified as Enemies
@@ -23,7 +22,6 @@ import Arkham.Location.Grid (Pos (..))
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
-import Arkham.Placement
 import Arkham.Projection
 import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
@@ -54,8 +52,8 @@ instance RunMessage TheDrownedQuarter where
   runMessage msg s@(TheDrownedQuarter attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> scope "intro" do
       headedWest <- getHasRecord TheExpeditionHeadedWest
-      storyWithContinue' do
-        setTitle "title"
+      storyWithContinue do
+        h "title"
         p "drownedQuarter1"
         p.basic "checkCampaignLog"
         ul do
@@ -75,7 +73,7 @@ instance RunMessage TheDrownedQuarter where
         hasPhysical <- fieldP InvestigatorPhysicalTrauma (> 0) iid
         hasMental <- fieldP InvestigatorMentalTrauma (> 0) iid
         canErase <- canEraseProgress iid Key.NoPlaceLikeHome
-        storyWithChooseOneM'
+        storyWithChooseOneM
           ( compose.green do
               h3 "noPlaceLikeHome.title"
               p "noPlaceLikeHome.instructions"
@@ -87,21 +85,21 @@ instance RunMessage TheDrownedQuarter where
                 li "noPlaceLikeHome.onMyOwn"
           )
           do
-            labeledValidate' canErase "noPlaceLikeHome.trustHim" do
+            labeledValidate canErase "noPlaceLikeHome.trustHim" do
               -- "Heal 1 mental or 1 physical trauma"; only offer what they have.
               when (hasPhysical || hasMental) do
                 chooseOneM iid do
-                  questionLabeled' "noPlaceLikeHome.healTraumaQuestion"
+                  questionLabeled "noPlaceLikeHome.healTraumaQuestion"
                   when hasPhysical
-                    $ labeled' "noPlaceLikeHome.healPhysicalTrauma"
+                    $ labeled "noPlaceLikeHome.healPhysicalTrauma"
                     $ push
                     $ HealTrauma iid 1 0
                   when hasMental
-                    $ labeled' "noPlaceLikeHome.healMentalTrauma"
+                    $ labeled "noPlaceLikeHome.healMentalTrauma"
                     $ push
                     $ HealTrauma iid 0 1
               decrementRecordCountForInvestigator iid Key.NoPlaceLikeHome 1
-            labeled' "noPlaceLikeHome.onMyOwn" do
+            labeled "noPlaceLikeHome.onMyOwn" do
               incrementRecordCountForInvestigator iid Key.NoPlaceLikeHome 2
               sufferMentalTrauma iid 1
               -- "The next scenario" is this one: the story is read in the intro,
@@ -189,22 +187,21 @@ instance RunMessage TheDrownedQuarter where
         lead <- getLead
         n <- getPlayerCount
         chooseNM lead n do
-          questionLabeled' "chooseFloodedSeaFloor"
+          questionLabeled "chooseFloodedSeaFloor"
           targets seaFloorIds increaseFloodLevel
 
       eachInvestigator (`forInvestigator` Setup)
     ForInvestigator iid Setup -> do
       artifacts <- getAvailableArtifacts
+      items <- getAvailableExpeditionItems
       chooseOneM iid do
-        questionLabeled' "chooseExpeditionAssetQuestion"
-        labeled' "noExpeditionAsset" nothing
-        for_ (artifacts <> expeditionItems) \asset ->
+        questionLabeled "chooseExpeditionAssetQuestion"
+        labeled "noExpeditionAsset" nothing
+        for_ (artifacts <> items) \asset ->
           cardLabeled asset.cardCode $ handleTarget iid attrs (CardCodeTarget asset.cardCode)
       pure s
     HandleTargetChoice iid (isSource attrs -> True) (CardCodeTarget cardCode) -> do
-      for_ (lookupCardDef cardCode) \def -> do
-        card <- EncounterCard <$> genEncounterCard def
-        createAssetAt_ card (InPlayArea iid)
+      grantExpeditionAsset iid cardCode
       pure s
     ResolveChaosToken _ Cultist iid | isHardExpert attrs -> do
       whenM ((/= Unflooded) <$> getFloodLevelFor iid) $ assignDamage iid Cultist 1

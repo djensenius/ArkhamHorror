@@ -7,9 +7,9 @@ import Arkham.Difficulty
 import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.TheInnsmouthConspiracy.ThePitOfDespair qualified as Enemies
 import Arkham.Exception
+import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Location
 import Arkham.Helpers.Scenario
-import Arkham.I18n
 import Arkham.Investigator.Projection ()
 import Arkham.Key
 import Arkham.Location.CardDefs.TheInnsmouthConspiracy.FloodedCaverns qualified as Locations
@@ -50,7 +50,7 @@ instance HasChaosTokenValue ThePitOfDespair where
 instance RunMessage ThePitOfDespair where
   runMessage msg s@(ThePitOfDespair attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> do
-      story $ i18nWithTitle "intro"
+      story $ i18nWithHeading "intro"
       pure s
     StandaloneSetup -> do
       {- FOURMOLU_DISABLE -}
@@ -62,6 +62,21 @@ instance RunMessage ThePitOfDespair where
       {- FOURMOLU_ENABLE -}
       pure s
     Setup -> runScenarioSetup ThePitOfDespair attrs do
+      setup $ ul do
+        li "gatherSets"
+        li.nested "placeKeys" do
+          li "faceupKeys"
+          li "facedownKeys"
+          li "removeKeys"
+        li.nested "placeLocations" do
+          li "startAt"
+        li "setAsideLocations"
+        li "tidalTunnels"
+        li "setAsideTidalTunnels"
+        li "setAsideCards"
+        li "floodTokens"
+        unscoped $ li "shuffleRemainder"
+
       gather Set.ThePitOfDespair
       gather Set.CreaturesOfTheDeep
       gather Set.FloodedCaverns

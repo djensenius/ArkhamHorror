@@ -8,6 +8,7 @@ import {-# SOURCE #-} Arkham.Ability.Types
 import Arkham.ActiveCost.Base
 import Arkham.Campaign.Types (Campaign)
 import {-# SOURCE #-} Arkham.Card (Card, CardCode, CardId)
+import Arkham.Card.CustomCard (CustomCard)
 import Arkham.ChaosToken.Types
 import {-# SOURCE #-} Arkham.Entities
 import Arkham.Game.Settings
@@ -15,6 +16,7 @@ import Arkham.Game.State
 import Arkham.Git (GitSha)
 import Arkham.History
 import Arkham.Id
+import {-# SOURCE #-} Arkham.Investigator.Types (Investigator)
 import Arkham.Message
 import Arkham.Modifier
 import Arkham.Phase
@@ -82,6 +84,9 @@ data Game = Game
   while a leave-play window is open. See 'inLeavePlayWindow'.
   -}
   , gamePlayers :: [PlayerId]
+  , -- Investigators set aside when their player left the campaign, kept whole so a
+    -- returning player resumes with the xp and trauma the campaign log recorded
+    gameRetiredInvestigators :: Map InvestigatorId Investigator
   , gameModifiers :: Map Target [Modifier]
   , gameEncounterDiscardEntities :: Entities
   , gameInHandEntities :: Map InvestigatorId Entities
@@ -140,6 +145,13 @@ data Game = Game
     gameActionSnapshot :: Transient Game
   , gameInAction :: Bool
   , gameCards :: Map CardId Card
+  , gameCustomCards :: Map CardCode CustomCard
+  {- ^ Cards invented at runtime from the debug menu. The engine's def and
+  builder maps are compile-time, so these are the authority for any card code
+  carrying the custom prefix; deserializing a game re-registers them into
+  "Arkham.Card.CustomCard"'s process-global registry before its entities are
+  parsed.
+  -}
   , gameCardUses :: Map CardCode [InvestigatorId]
   , -- handling costs
     gameActiveCost :: Map ActiveCostId ActiveCost

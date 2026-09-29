@@ -26,10 +26,10 @@ instance RunMessage StolenLight where
       farthestLocations <- select $ FarthestLocationFromAll EmptyLocation
 
       chooseOneM iid $ scenarioI18n do
-        unscoped $ countVar 1 $ labeled' "placeAgendaDoomCanAdvance" $ placeDoomOnAgendaAndCheckAdvance 1
+        unscoped $ countVar 1 $ labeled "placeAgendaDoomCanAdvance" $ placeDoomOnAgendaAndCheckAdvance 1
         for_ mLantern \lantern -> do
           lit <- matches lantern $ AssetWithTrait Lit
-          labeledValidate' (lit || maybe False (`notElem` farthestLocations) mLoc) "stolenLight.lantern" do
+          labeledValidate (lit || maybe False (`notElem` farthestLocations) mLoc) "stolenLight.lantern" do
             when lit $ flipOverBy iid attrs lantern
             chooseTargetM iid farthestLocations $ place lantern . AtLocation
       pure t

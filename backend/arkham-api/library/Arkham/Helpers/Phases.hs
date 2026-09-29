@@ -1,7 +1,7 @@
 module Arkham.Helpers.Phases where
 
 import Arkham.Classes.HasQueue
-import {-# SOURCE #-} Arkham.GameEnv (getPhase)
+import Arkham.GameEnv (getPhase)
 import Arkham.Helpers.Window (checkWindows)
 import Arkham.Message (Message)
 import Arkham.Message qualified as Msg
@@ -28,7 +28,7 @@ runEnemyPhase endMsg = do
     [ phaseStep EnemyPhaseBeginsStep [phaseBeginsWindow]
     , phaseStep HunterEnemiesMoveStep [Msg.HuntersMove, afterHuntersMoveWindow, Msg.PredatorsAttack]
     , phaseStep ResolveAttacksWindow [fastWindow, enemiesAttackWindow]
-    , phaseStep ResolveAttacksStep [Msg.EnemiesAttack]
+    , phaseStep ResolveAttacksStep [Msg.EnemiesAttack, Msg.RelentlessEnemiesAttack]
     , phaseStep AfterResolveAttacksWindow [fastWindow]
     , phaseStep EnemyPhaseEndsStep [endMsg]
     ]

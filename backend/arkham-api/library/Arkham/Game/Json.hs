@@ -2,6 +2,7 @@
 
 module Arkham.Game.Json where
 
+import Arkham.Card.CustomCard (registerCustomCardsPure)
 import Arkham.Game.Base
 import Arkham.Game.Settings (defaultSettings)
 import Arkham.Prelude
@@ -40,6 +41,7 @@ instance ToJSON Game where
       , "gameActionRemovedEntities" .= gameActionRemovedEntities g
       , "gameTombstones" .= gameTombstones g
       , "gamePlayers" .= gamePlayers g
+      , "gameRetiredInvestigators" .= gameRetiredInvestigators g
       , "gameModifiers" .= gameModifiers g
       , "gameEncounterDiscardEntities" .= gameEncounterDiscardEntities g
       , "gameInHandEntities" .= gameInHandEntities g
@@ -75,6 +77,7 @@ instance ToJSON Game where
       , "gameActionDiff" .= gameActionDiff g
       , "gameInAction" .= gameInAction g
       , "gameCards" .= gameCards g
+      , "gameCustomCards" .= gameCustomCards g
       , "gameCardUses" .= gameCardUses g
       , "gameActiveCost" .= gameActiveCost g
       , "gameGitRevision" .= gameGitRevision g
@@ -110,6 +113,7 @@ instance ToJSON Game where
       <> ("gameActionRemovedEntities" .= gameActionRemovedEntities g)
       <> ("gameTombstones" .= gameTombstones g)
       <> ("gamePlayers" .= gamePlayers g)
+      <> ("gameRetiredInvestigators" .= gameRetiredInvestigators g)
       <> ("gameModifiers" .= gameModifiers g)
       <> ("gameEncounterDiscardEntities" .= gameEncounterDiscardEntities g)
       <> ("gameInHandEntities" .= gameInHandEntities g)
@@ -145,6 +149,7 @@ instance ToJSON Game where
       <> ("gameActionDiff" .= gameActionDiff g)
       <> ("gameInAction" .= gameInAction g)
       <> ("gameCards" .= gameCards g)
+      <> ("gameCustomCards" .= gameCustomCards g)
       <> ("gameCardUses" .= gameCardUses g)
       <> ("gameActiveCost" .= gameActiveCost g)
       <> ("gameGitRevision" .= gameGitRevision g)
@@ -176,10 +181,17 @@ instance FromJSON Game where
     gameDepthLock <- o .: "gameDepthLock"
     gameIgnoreCanModifiers <- o .: "gameIgnoreCanModifiers"
     gameMode <- o .: "gameMode"
+    -- Must be parsed and registered before any entity: the entity parsers
+    -- dispatch on card code through the compile-time builder maps, and a custom
+    -- card is only resolvable once its def is in the registry.
+    gameCustomCards <- o .:? "gameCustomCards" .!= mempty
+    () <- pure $! registerCustomCardsPure gameCustomCards
     gameEntities <- o .: "gameEntities"
     gameActionRemovedEntities <- o .: "gameActionRemovedEntities"
     gameTombstones <- o .:? "gameTombstones" .!= mempty
     gamePlayers <- o .: "gamePlayers"
+    -- Games persisted before retiring existed have nobody set aside.
+    gameRetiredInvestigators <- o .:? "gameRetiredInvestigators" .!= mempty
     gameModifiers <- o .: "gameModifiers"
     gameEncounterDiscardEntities <- o .: "gameEncounterDiscardEntities"
     gameInHandEntities <- o .: "gameInHandEntities"

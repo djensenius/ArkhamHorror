@@ -22,7 +22,7 @@ instance HasAbilities GeothermalVent where
   getAbilities (GeothermalVent a) =
     extendRevealed1 a
       $ skillTestAbility
-      $ restricted a 1 (youExist (InvestigatorWithDormantSeal SealD)) actionAbility
+      $ restricted a 1 (Here <> youExist (InvestigatorWithDormantSeal SealD)) actionAbility
 
 instance RunMessage GeothermalVent where
   runMessage msg l@(GeothermalVent attrs) = runQueueT $ case msg of
@@ -35,11 +35,11 @@ instance RunMessage GeothermalVent where
       iids <- select $ investigatorAt attrs
       totalClues <- getSpendableClueCount iids
       chooseOneM iid $ withI18n $ countVar targetAmount do
-        labeledValidate' (totalClues >= targetAmount) "spendCluesToActivate" do
+        labeledValidate (totalClues >= targetAmount) "spendCluesToActivate" do
           push $ SpendClues targetAmount iids
           activateSeal SealD
           removeChaosToken #frost
-        labeled' "doNotSpendClues" nothing
+        labeled "doNotSpendClues" nothing
 
       pure l
     _ -> GeothermalVent <$> liftRunMessage msg attrs

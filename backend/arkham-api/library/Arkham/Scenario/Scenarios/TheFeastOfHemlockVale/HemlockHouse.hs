@@ -74,7 +74,7 @@ instance RunMessage HemlockHouse where
       time <- getCampaignTime
       let isNight = time == Night
       flavor do
-        setTitle "title"
+        h "title"
         p.basic "body"
         ul $ li.nested.validate isNight "nightSkip" do
           li.validate (not isNight && day == Day1) "day1"
@@ -378,7 +378,8 @@ instance RunMessage HemlockHouse where
                       1
                       (OnSameLocation <> you (ControlsAsset (assetIs Assets.littleSylvie)))
                       parleyAction_
-            Day2 ->
+            Day2 -> do
+              codexFinished 4
               if sameLoc
                 then scenarioSpecific "codex" (iid, source, Sigma)
                 else do
@@ -438,11 +439,11 @@ instance RunMessage HemlockHouse where
               hr
               p.validate day3 "day3"
           case day of
-            Day2 ->
+            Day2 -> do
+              codexFinished 7
               if sameLoc
                 then scenarioSpecific "codex" (iid, source, Sigma)
                 else do
-                  codexFinished 7
                   takeControlOfAsset iid judith
                   createAbilityEffect EffectGameWindow
                     $ skillTestAbility
@@ -458,6 +459,7 @@ instance RunMessage HemlockHouse where
                       )
                       (parleyAction $ ResourceCost 2)
             Day3 -> do
+              codexFinished 7
               takeControlOfAsset iid judith
               remember JudithIsRemodeling
             _ -> pure ()
@@ -482,8 +484,8 @@ instance RunMessage HemlockHouse where
         Sigma -> do
           entry "argument1"
           chooseOneM iid do
-            labeled' "judithRight" $ scenarioSpecific "codex" (iid, source, SigmaJudithRight)
-            labeled' "williamRight" $ scenarioSpecific "codex" (iid, source, SigmaWilliamRight)
+            labeled "judithRight" $ scenarioSpecific "codex" (iid, source, SigmaJudithRight)
+            labeled "williamRight" $ scenarioSpecific "codex" (iid, source, SigmaWilliamRight)
         SigmaJudithRight -> do
           entry "argument2"
           william <- selectJust $ assetIs Assets.williamHemlockAspiringPoet

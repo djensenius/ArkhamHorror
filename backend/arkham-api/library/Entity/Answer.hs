@@ -4,6 +4,7 @@ module Entity.Answer where
 
 import Import.NoFoundation hiding (get)
 
+import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
 import Arkham.Campaign.Option
 import Arkham.CampaignLog
 import Arkham.CampaignLogKey
@@ -15,6 +16,7 @@ import Arkham.Campaigns.TheInnsmouthConspiracy.Memory
 import Arkham.Card
 import Arkham.Classes.Entity
 import Arkham.Cost
+import Arkham.Custom.Overlay (DeckOverlay, applyOverlay, decklistCustomCards)
 import Arkham.Decklist
 import Arkham.Entities
 import Arkham.Game
@@ -27,21 +29,32 @@ import Arkham.Token
 import Arkham.Window qualified as Window
 import Control.Exception (evaluate, try)
 import Data.Aeson
+import Data.Aeson.Types qualified as Aeson
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.These
+import Data.Time.Clock (getCurrentTime)
 import Data.UUID (UUID)
+import Database.Persist qualified as P
 import Foundation
 import Json
 
 data Answer
   = Answer QuestionResponse
+  | {- | One answer that resolves a whole @ChooseOneAtATime@ in the order the
+    player arranged it, rather than one card per round trip. Every choice is
+    named exactly once, so the sequence runs in a single queue pass and lands as
+    a single step: one undo takes the whole placement back. Answered card by
+    card it left a step per card, and undoing into the middle of a placement
+    stranded the rest of it.
+    -}
+    OrderedAnswer OrderedResponse
   | Raw Message
   | PaymentAmountsAnswer PaymentAmountsResponse
   | AmountsAnswer AmountsResponse
   | StandaloneSettingsAnswer [StandaloneSetting]
   | CampaignSettingsAnswer CampaignSettings
-  | DeckAnswer {deckId :: ArkhamDeckId, playerId :: PlayerId}
+  | DeckAnswer {deckId :: ArkhamDeckId, playerId :: PlayerId, overlay :: Maybe DeckOverlay}
   | DeckListAnswer {deckList :: ArkhamDBDecklist, playerId :: PlayerId}
   | PickDestinyAnswer [DestinyDrawing]
   | CampaignSpecificAnswer Text Value
@@ -54,6 +67,15 @@ data Answer
       , amount :: Int
       }
   | CampaignStepAnswer CS.CampaignStep
+  | -- Between-scenario roster changes, all answered from the continuation screen.
+    RetireInvestigatorAnswer {investigatorId :: InvestigatorId}
+  | RejoinInvestigatorAnswer {investigatorId :: InvestigatorId}
+  | {- | Lay your own cards over an investigator's deck for the rest of the
+    campaign. Answered from the same screen, and like the roster changes it
+    leaves the continuation question standing to be answered after.
+    -}
+    ApplyOverlayAnswer {investigatorId :: InvestigatorId, overlay :: Maybe DeckOverlay}
+  | JoinCampaignAnswer
   deriving stock (Show, Generic)
   deriving anyclass FromJSON
 
@@ -61,6 +83,14 @@ data QuestionResponse = QuestionResponse
   { qrChoice :: Int
   , qrPlayerId :: Maybe PlayerId
   , qrQuestionVersion :: Maybe Int
+  }
+  deriving stock (Show, Generic)
+
+data OrderedResponse = OrderedResponse
+  { orChoices :: [Int]
+  -- ^ Indices into the question as it was asked, in the order to resolve them.
+  , orPlayerId :: Maybe PlayerId
+  , orQuestionVersion :: Maybe Int
   }
   deriving stock (Show, Generic)
 
@@ -92,6 +122,13 @@ instance FromJSON QuestionResponse where
     qrPlayerId <- o .:? "playerId"
     qrQuestionVersion <- o .:? "questionVersion"
     pure QuestionResponse {..}
+
+instance FromJSON OrderedResponse where
+  parseJSON = withObject "OrderedResponse" \o -> do
+    orChoices <- o .: "choices"
+    orPlayerId <- o .:? "playerId"
+    orQuestionVersion <- o .:? "questionVersion"
+    pure OrderedResponse {..}
 
 instance FromJSON PaymentAmountsResponse where
   parseJSON = withObject "PaymentAmountsResponse" \o -> do
@@ -289,6 +326,7 @@ makeCampaignLog settings =
 answerPlayer :: Answer -> Maybe PlayerId
 answerPlayer = \case
   Answer response -> qrPlayerId response
+  OrderedAnswer response -> orPlayerId response
   Raw _ -> Nothing
   AmountsAnswer response -> arPlayerId response
   PaymentAmountsAnswer response -> parPlayerId response
@@ -296,11 +334,15 @@ answerPlayer = \case
   CampaignSettingsAnswer _ -> Nothing
   CampaignSpecificAnswer {} -> Nothing
   ScenarioSpecificAnswer {} -> Nothing
-  DeckAnswer _ pid -> Just pid
+  DeckAnswer _ pid _ -> Just pid
   DeckListAnswer _ pid -> Just pid
   PickDestinyAnswer _ -> Nothing
   ExchangeAmountsAnswer {} -> Nothing
   CampaignStepAnswer _ -> Nothing
+  ApplyOverlayAnswer {} -> Nothing
+  RetireInvestigatorAnswer _ -> Nothing
+  RejoinInvestigatorAnswer _ -> Nothing
+  JoinCampaignAnswer -> Nothing
 
 playerInvestigator :: Entities -> PlayerId -> InvestigatorId
 playerInvestigator Entities {..} pid = case find ((== pid) . attr investigatorPlayerId) (toList entitiesInvestigators) of
@@ -314,6 +356,52 @@ handled = pure . Handled
 
 unhandled :: Applicative m => Text -> m Reply
 unhandled = pure . Unhandled
+
+-- | A scenario is played by one to four investigators.
+maxInvestigators :: Int
+maxInvestigators = 4
+
+unwrapQuestion :: Question Message -> Question Message
+unwrapQuestion = \case
+  QuestionLabel _ _ q -> unwrapQuestion q
+  PayCostQuestion _ q -> unwrapQuestion q
+  QuestionWithSource _ _ q -> unwrapQuestion q
+  q -> q
+
+{- | Is the table sitting on the /campaign's/ continuation screen?
+
+A scenario can raise a continuation of its own mid-scenario (Fortune and Folly's
+checkpoint), which looks identical from the question alone. Players only join or
+leave between scenarios, so those answers must not be accepted there.
+-}
+atCampaignContinuation :: Game -> Bool
+atCampaignContinuation g = case gameMode g of
+  That _ -> False
+  This c -> isContinuation c.step
+  These c s -> case s.step of
+    Just (CS.ContinueCampaignStep {}) -> False
+    Just (CS.ScenarioStepWithOptions {}) -> False
+    _ -> isContinuation c.step
+ where
+  isContinuation = \case
+    CS.ContinueCampaignStep {} -> True
+    CS.StandaloneScenarioStep _ (CS.ContinueCampaignStep {}) -> True
+    _ -> False
+
+isContinueCampaignAsk :: Game -> PlayerId -> Bool
+isContinueCampaignAsk g pid = case unwrapQuestion <$> Map.lookup pid (gameQuestion g) of
+  Just ContinueCampaign -> True
+  _ -> False
+
+{- | Why this seat may not play @iid@, if it may not.
+
+Only a seat joining mid-campaign is restricted: the rules let a new player pick
+only an investigator nobody has used during this campaign.
+-}
+joinDeckRejection :: Game -> PlayerId -> InvestigatorId -> Maybe Text
+joinDeckRejection g pid iid = case unwrapQuestion <$> Map.lookup pid (gameQuestion g) of
+  Just (ChooseJoinDeck used) | iid `elem` used -> Just "That investigator has already played in this campaign"
+  _ -> Nothing
 
 {- | The messages that start this seat's deck-setup sub-flow.
 
@@ -349,18 +437,98 @@ reAskOthers game playerId
           retain = if gameRetainedQuestion game then Retain else id
        in [retain (AskMap question') | not (Map.null question')]
 
+{- | Put a user's built cards into the registry so a decklist naming them
+resolves. See "Api.Handler.Arkham.CustomCards".
+-}
+registerDeckOwnerCustomCards :: UserId -> DB ()
+registerDeckOwnerCustomCards userId = do
+  rows <- selectList [ArkhamCustomCardUserId ==. userId] []
+  registerCustomCards $ Map.fromList do
+    Entity _ row <- rows
+    def <- maybeToList $ Aeson.parseMaybe parseJSON (arkhamCustomCardDef row)
+    pure (cdCardCode def, CustomCard def (arkhamCustomCardArt row))
+
 handleAnswer :: Game -> PlayerId -> Answer -> DB Reply
 handleAnswer game playerId = \case
-  DeckAnswer deckId _ -> do
+  DeckAnswer deckId _ mOverlay -> do
     deck <- get404 deckId
-    let investigatorId = investigator_code $ arkhamDeckList deck
-    update (coerce playerId) [ArkhamPlayerInvestigatorId =. coerce investigatorId]
-    handled $ deckChosen game playerId (arkhamDeckList deck)
+    -- The deck may be laid over with cards only its owner has, so their library
+    -- has to be resolvable before the list is read.
+    registerDeckOwnerCustomCards (arkhamDeckUserId deck)
+    -- An overlay chosen here is for this game only; the deck's own overlay is
+    -- the one that sticks.
+    reply <-
+      loadChosenDeck game playerId
+        $ maybe id applyOverlay mOverlay (arkhamDeckPlayList deck)
+    -- Only a deck that was actually seated counts as used; a rejected mid-campaign
+    -- join must not reorder the decks page.
+    case reply of
+      Handled _ -> touchDeck deckId
+      Unhandled _ -> pure ()
+    pure reply
+  ApplyOverlayAnswer iid mOverlay
+    | not (isContinueCampaignAsk game playerId) -> unhandled "Wrong question type"
+    | not (atCampaignContinuation game) ->
+        unhandled "A deck can only be laid over between scenarios"
+    | iid `Map.notMember` entitiesInvestigators (gameEntities game) -> unhandled "Unknown investigator"
+    | otherwise -> case mOverlay of
+        Nothing -> handled []
+        Just o -> do
+          -- The overlay names cards only its owner has built.
+          P.get (coerce playerId) >>= \case
+            Just seat -> registerDeckOwnerCustomCards (arkhamPlayerUserId seat)
+            Nothing -> pure ()
+          handled [ApplyDeckOverlay iid o]
   DeckListAnswer dl _ -> do
-    let investigatorId = investigator_code dl
-    update (coerce playerId) [ArkhamPlayerInvestigatorId =. coerce investigatorId]
-    handled $ deckChosen game playerId dl
+    -- 'DB' is rank-1 polymorphic, so the registration has to be applied here
+    -- rather than passed as a function.
+    P.get (coerce playerId) >>= \case
+      Just seat -> registerDeckOwnerCustomCards (arkhamPlayerUserId seat)
+      Nothing -> pure ()
+    loadChosenDeck game playerId dl
+  JoinCampaignAnswer
+    | not (isContinueCampaignAsk game playerId) -> unhandled "Wrong question type"
+    | not (atCampaignContinuation game) -> unhandled "Players can only join between scenarios"
+    | Map.size (entitiesInvestigators (gameEntities game)) >= maxInvestigators ->
+        unhandled "A campaign is played by at most four investigators"
+    | otherwise ->
+        P.get (coerce playerId) >>= \case
+          Nothing -> unhandled "Unknown player"
+          Just seat -> do
+            let gameId = arkhamPlayerArkhamGameId seat
+            variant <- fmap arkhamGameMultiplayerVariant <$> P.get gameId
+            seats <- P.count [ArkhamPlayerArkhamGameId P.==. gameId]
+            -- Solo runs every seat off one user, so it can always take another. A
+            -- one-seat WithFriends game becomes multihanded solo when its player
+            -- adds a second hand ('updateGame' persists the switch); with more seats
+            -- each belongs to its own user (UniquePlayer userId gameId), so only the
+            -- invite link can add one.
+            if variant == Just Solo || seats == 1
+              then do
+                pid <- insert $ ArkhamPlayer (arkhamPlayerUserId seat) gameId "00000"
+                handled [JoinCampaign (PlayerId $ coerce pid)]
+              else unhandled "A new player joins this game with its invite link"
   other -> liftIO $ handleAnswerPure game playerId other
+
+{- | Mark a deck as just taken into a game. This is the only record of a deck
+being used -- nothing else links a game back to the 'ArkhamDeck' row it was
+seated from -- and it is what the decks page orders by.
+-}
+touchDeck :: ArkhamDeckId -> DB ()
+touchDeck deckId = do
+  now <- liftIO getCurrentTime
+  update deckId [ArkhamDeckLastUsedAt =. Just now]
+
+-- | Seat @playerId@'s chosen deck, unless a mid-campaign join may not play it.
+loadChosenDeck :: Game -> PlayerId -> ArkhamDBDecklist -> DB Reply
+loadChosenDeck game playerId dl = case joinDeckRejection game playerId dl.investigator of
+  Just reason -> unhandled reason
+  Nothing -> do
+    update (coerce playerId) [ArkhamPlayerInvestigatorId =. coerce (investigator_code dl)]
+    -- Record the deck's custom cards on the game itself; the process registry
+    -- they resolved against is rebuilt from the game, and other clients read
+    -- their art and defs from there.
+    handled $ map DebugRegisterCustomCard (decklistCustomCards dl) <> deckChosen game playerId dl
 
 {- | Like 'handleAnswer' but with no DB access. Returns 'Unhandled' for
 'DeckAnswer' / 'DeckListAnswer', which require updating an 'ArkhamPlayer'
@@ -370,6 +538,23 @@ handleAnswerPure :: Game -> PlayerId -> Answer -> IO Reply
 handleAnswerPure game@Game {..} playerId = \case
   DeckAnswer {} -> unhandled "DeckAnswer requires database access"
   DeckListAnswer {} -> unhandled "DeckListAnswer requires database access"
+  JoinCampaignAnswer -> unhandled "JoinCampaignAnswer requires database access"
+  RetireInvestigatorAnswer iid
+    | not (isContinueCampaignAsk game playerId) -> unhandled "Wrong question type"
+    | not (atCampaignContinuation game) -> unhandled "Investigators can only leave between scenarios"
+    | iid `Map.notMember` entitiesInvestigators gameEntities -> unhandled "Unknown investigator"
+    | Map.size (entitiesInvestigators gameEntities) <= 1 ->
+        unhandled "The last investigator cannot leave"
+    | otherwise -> handled [LeaveCampaign iid]
+  ApplyOverlayAnswer {} -> unhandled "ApplyOverlayAnswer requires database access"
+  RejoinInvestigatorAnswer iid
+    | not (isContinueCampaignAsk game playerId) -> unhandled "Wrong question type"
+    | not (atCampaignContinuation game) -> unhandled "Investigators can only rejoin between scenarios"
+    | Map.size (entitiesInvestigators gameEntities) >= maxInvestigators ->
+        unhandled "A campaign is played by at most four investigators"
+    | iid `Map.notMember` gameRetiredInvestigators ->
+        unhandled "That investigator has not left the campaign"
+    | otherwise -> handled [UnretireInvestigator iid]
   StandaloneSettingsAnswer settings' -> do
     let standaloneCampaignLog = makeStandaloneCampaignLog settings'
     handled [SetCampaignLog standaloneCampaignLog]
@@ -486,6 +671,7 @@ handleAnswerPure game@Game {..} playerId = \case
         -- skip the stale AskMap so it doesn't clobber the regenerated one.
         UpdateGlobalSetting {} | inFastWindow -> handled [message]
         UpdateCardSetting {} | inFastWindow -> handled [message]
+        SetCardSilenced {} | inFastWindow -> handled [message]
         SetAsIfRuling {} | inFastWindow -> handled [message]
         _ -> handled [message, AskMap gameQuestion]
       else handled [message]
@@ -526,26 +712,60 @@ handleAnswerPure game@Game {..} playerId = \case
                   -- stale about re-parking them -- dropping them just destroys the
                   -- messages (#4787). Every seat survives, this one included if it
                   -- still has choices left.
-                  let retained = gameRetainedQuestion
-                      others
-                        | isJust (barrierSeat playerId game) = mempty
-                        | retained = Map.delete playerId gameQuestion
-                        | otherwise = Map.filter isDeckQuestion $ Map.delete playerId gameQuestion
-                  if retained
-                    then do
-                      -- Fold this seat's own re-ask into the same map. Emitting it as a
-                      -- separate `Ask` would park it ahead of the other seats, serialising
-                      -- a question whose whole point is that the table resolves it in an
-                      -- order of its choosing.
-                      let (ran, reask) = case reverse msgs of
-                            (Ask pid reasked : rest) | pid == playerId -> (reverse rest, Just reasked)
-                            _ -> (msgs, Nothing)
-                          question' = maybe others (\reasked -> Map.insert playerId reasked others) reask
-                      handled $ ran <> [Retain (AskMap question') | not (Map.null question')]
-                    else handled $ msgs <> [AskMap others | not (Map.null others)]
+                  finish msgs
+          )
+          $ Map.lookup playerId gameQuestion
+  OrderedAnswer response ->
+    case orQuestionVersion response of
+      Just v | v /= gameScenarioSteps -> unhandled "Stale question"
+      _ ->
+        maybe
+          (unhandled "Player not being asked")
+          ( \q -> case resolveOrdered q (orChoices response) of
+              Nothing -> unhandled "Wrong question type"
+              Just msgs -> finish msgs
           )
           $ Map.lookup playerId gameQuestion
  where
+  finish msgs = do
+    let retained = gameRetainedQuestion
+        others
+          | isJust (barrierSeat playerId game) = mempty
+          | retained = Map.delete playerId gameQuestion
+          | otherwise = Map.filter isDeckQuestion $ Map.delete playerId gameQuestion
+    if retained
+      then do
+        -- Fold this seat's own re-ask into the same map. Emitting it as a
+        -- separate `Ask` would park it ahead of the other seats, serialising
+        -- a question whose whole point is that the table resolves it in an
+        -- order of its choosing.
+        let (ran, reask) = case reverse msgs of
+              (Ask pid reasked : rest) | pid == playerId -> (reverse rest, Just reasked)
+              _ -> (msgs, Nothing)
+            question' = maybe others (\reasked -> Map.insert playerId reasked others) reask
+        handled $ ran <> [Retain (AskMap question') | not (Map.null question')]
+      else handled $ msgs <> [AskMap others | not (Map.null others)]
+
+  -- \| Every choice of a one-at-a-time question, run in the order given. The
+  --  order must name each choice exactly once: a partial order would leave choices
+  --  needing a re-ask, and this exists precisely so that no re-ask happens and the
+  --  whole placement is one step. Anything else is rejected rather than half
+  --  resolved. `ChooseOneAtATimeWithAuto`'s auto option already resolves them all
+  --  in one answer this way; this only adds the player's ordering.
+  --
+  resolveOrdered :: Question Message -> [Int] -> Maybe [Message]
+  resolveOrdered q order = case q of
+    QuestionLabel _ _ q' -> resolveOrdered q' order
+    PayCostQuestion _ q' -> resolveOrdered q' order
+    QuestionWithSource _ _ q' -> resolveOrdered q' order
+    ChooseOneAtATime msgs -> pick msgs
+    ChooseOneAtATimeWithAuto _ msgs -> pick msgs
+    _ -> Nothing
+   where
+    pick msgs
+      | sort order == [0 .. length msgs - 1] = traverse (fmap uiToRun . (msgs !!?)) order
+      | otherwise = Nothing
+
   -- Seats the queue rebuilds on its own: PlayerWindow re-pushes itself, and a
   -- WindowChooseOne is followed by the Do (CheckWindows ws) that WindowAsk
   -- queues behind it. Re-parking either hands back a stale question (#5160).

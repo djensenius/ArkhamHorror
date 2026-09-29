@@ -4,10 +4,11 @@ import Arkham.Card
 import Arkham.ChaosBag.RevealStrategy
 import Arkham.ChaosToken
 import Arkham.Distance
-import {-# SOURCE #-} Arkham.GameEnv (getDistance)
+import Arkham.GameEnv (getDistance)
 import Arkham.Helpers.Investigator (getMaybeLocation)
 import Arkham.Helpers.Modifiers
 import Arkham.Helpers.Query (getInvestigators, getLead, getPlayerCount)
+import Arkham.I18n
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Scenarios.TheDreamEaters.WakingNightmare.Helpers
@@ -46,10 +47,8 @@ instance RunMessage TheInfestationBegins where
     SendMessage (isTarget attrs -> True) (RequestChaosTokens _ _ (Reveal 1) _) -> do
       let bag = infestationBag attrs
       lead <- getLead
-      (tokens, rest) <- splitAt 1 <$> shuffleM (infestationTokens bag)
-      let token = fromJustNote "invalid infestation token" $ headMay tokens
-      let bag' = bag {infestationTokens = rest, infestationCurrentToken = Just token}
-      focusChaosTokens [asChaosToken token] \unfocus -> do
+      (drawn, bag') <- drawBagToken (.face) bag
+      for_ drawn \token -> focusChaosTokens [asChaosToken token] \unfocus -> do
         checkWhen $ Window.RevealChaosToken lead $ asChaosToken token
         checkWhen
           $ Window.ScenarioEvent
@@ -64,13 +63,12 @@ instance RunMessage TheInfestationBegins where
         $ attrs {storyMeta = toJSON bag'}
     SendMessage (isTarget attrs -> True) (ResolveChaosToken {}) | Just token <- attrs.infestationBag.currentToken -> do
       let tokenFace = token.face
-      send $ format (asChaosToken token) <> " drawn during Infestation Test"
+      send
+        $ scenarioI18n
+        $ withVar "token" (String $ format $ asChaosToken token)
+        $ ikey' "message.infestationTokenDrawn"
       mods <- getModifiers attrs
-      let bag =
-            attrs.infestationBag
-              { infestationCurrentToken = Nothing
-              , infestationSetAside = attrs.infestationBag.setAside <> [token]
-              }
+      let bag = setAsideBagToken attrs.infestationBag
       let
         enabled = \case
           MetaModifier (Object o) -> o !? "treatTabletAsSkill" == Just (Bool True)
@@ -97,7 +95,7 @@ instance RunMessage TheInfestationBegins where
 
       leadChooseOneM $ labeledI "continue" nothing
 
-      if count ((== Cultist) . infestationTokenFace) (infestationSetAside bag) == 2
+      if count ((== Cultist) . bagTokenFace) (bagSetAside bag) == 2
         then do
           bag' <- initInfestationBag
           pure
@@ -121,14 +119,10 @@ instance RunMessage TheInfestationBegins where
     SendMessage (isTarget attrs -> True) (AddChaosToken face) -> do
       let bag = infestationBag attrs
       tokenId <- getRandom
-      let bag' = bag {infestationTokens = InfestationToken tokenId face : bag.tokens}
+      let bag' = bag {bagTokens = BagToken tokenId face : bag.tokens}
       pure $ TheInfestationBegins $ attrs {storyMeta = toJSON bag'}
     SendMessage (isTarget attrs -> True) (ChaosTokenCanceled {}) -> do
       let bag = infestationBag attrs
-      let bag' =
-            bag
-              { infestationTokens = bag.tokens <> maybeToList bag.currentToken
-              , infestationCurrentToken = Nothing
-              }
+      let bag' = returnBagToken bag
       pure $ TheInfestationBegins $ attrs {storyMeta = toJSON bag'}
     _ -> TheInfestationBegins <$> liftRunMessage msg attrs

@@ -85,12 +85,16 @@ formatClientMessage = \case
   ClientError t -> "error " <> T.unpack t
   ClientCard t v -> "card " <> T.unpack t <> " " <> briefValue v
   ClientCardOnly pid t v -> "cardOnly[" <> show pid <> "] " <> T.unpack t <> " " <> briefValue v
+  ClientDrewCards pid t v k ->
+    "drewCards[" <> show pid <> "/" <> T.unpack k <> "] " <> T.unpack t <> " " <> briefValue v
   ClientTarot v -> "tarot " <> briefValue v
   ClientShowDiscard iid -> "showDiscard " <> show iid
   ClientShowUnder iid -> "showUnder " <> show iid
   ClientUI t -> "ui " <> T.unpack t
   ClientAudio t -> "audio " <> T.unpack t
   ClientPlayabilityReport _ t _ -> "playabilityReport " <> T.unpack t
+  ClientCustomCardIssue cc detail payload ->
+    "customCardIssue " <> T.unpack cc <> " " <> T.unpack detail <> " " <> briefValue payload
  where
   briefValue v = let s = BL8.unpack (encode v) in if length s > 200 then take 200 s <> "..." else s
 

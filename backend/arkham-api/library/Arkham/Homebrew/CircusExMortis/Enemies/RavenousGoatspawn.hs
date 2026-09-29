@@ -2,22 +2,16 @@ module Arkham.Homebrew.CircusExMortis.Enemies.RavenousGoatspawn (ravenousGoatspa
 
 import Arkham.Ability
 import Arkham.Enemy.Import.Lifted hiding (EnemyAttacks)
-import Arkham.Helpers.Modifiers (ModifierType (..), modifySelf)
 import Arkham.Homebrew.CircusExMortis.CardDefs.Enemies qualified as Cards
 import Arkham.Homebrew.CircusExMortis.Helpers
-import Arkham.Keyword qualified as Keyword
 import Arkham.Matcher
 
 newtype RavenousGoatspawn = RavenousGoatspawn EnemyAttrs
-  deriving anyclass IsEnemy
+  deriving anyclass (IsEnemy, HasModifiersFor)
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 ravenousGoatspawn :: EnemyCard RavenousGoatspawn
 ravenousGoatspawn = enemy RavenousGoatspawn Cards.ravenousGoatspawn
-
-instance HasModifiersFor RavenousGoatspawn where
-  getModifiersFor (RavenousGoatspawn a) =
-    modifySelf a [AddKeyword Keyword.Massive, AddKeyword Keyword.Retaliate, AddKeyword Keyword.Alert]
 
 instance HasAbilities RavenousGoatspawn where
   getAbilities (RavenousGoatspawn a) =
@@ -28,7 +22,9 @@ instance HasAbilities RavenousGoatspawn where
           $ EnemyAttacks #after (You <> hasSealedMoonToken) AnyEnemyAttack (be a)
       , mkAbility a 2
           $ triggered
-            (EnemyTakeDamage #after AnyDamageEffect (be a) (atLeast 1) AnySource)
+            ( EnemyTakeDamage #after AnyDamageEffect (be a) (atLeast 1)
+                $ NotSource (SourceIsAbility $ AbilityIs (toSource a) 2)
+            )
             (GroupClueCostRange (1, 3) Anywhere)
       ]
 

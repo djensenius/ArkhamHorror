@@ -9,6 +9,7 @@ import Arkham.Card
 import Arkham.Direction
 import Arkham.EncounterSet qualified as Set
 import Arkham.Exception
+import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Query (getLead, getPlayerCount)
 import Arkham.I18n
 import Arkham.Investigator.Types (Field (..))
@@ -69,16 +70,42 @@ instance RunMessage HorrorInHighGear where
       setChaosTokens chaosTokens
       pure s
     PreScenarioSetup -> do
-      story $ i18nWithTitle "intro"
+      story $ i18nWithHeading "intro"
       pure s
     Setup -> runScenarioSetup HorrorInHighGear attrs do
+      theTerrorOfDevilReefIsDead <- getHasRecord TheTerrorOfDevilReefIsDead
+      playerCount <- getPlayerCount
+
+      setup $ ul do
+        li "gatherSets"
+        li.nested "roadDeck" do
+          li "findRoadLocations"
+          li "bottomThree"
+          li "remainingOnTop"
+          li "unrevealedSide"
+        li "putRoadIntoPlay"
+        li.nested "chooseVehicles" do
+          li "vehiclesBeginAtFront"
+          li "runningSide"
+          li "beginInVehicle"
+          li "triggerRoad"
+        li.nested "chooseDrivers" do
+          li "driverNote"
+        li.nested "playerCount" do
+          li.validate (playerCount == 1) "onePlayer"
+          li.validate (playerCount `elem` [2, 3]) "twoOrThreePlayers"
+          li.validate (playerCount == 4) "fourPlayers"
+        li.nested "checkCampaignLog" do
+          li.validate theTerrorOfDevilReefIsDead "theChaseIsOnV2"
+          li.validate (not theTerrorOfDevilReefIsDead) "theChaseIsOnV1"
+        unscoped $ li "shuffleRemainder"
+
       gather Set.HorrorInHighGear
       gather Set.FogOverInnsmouth
       gather Set.Malfunction
       gather Set.ShatteredMemories
       gather Set.AncientEvils
 
-      theTerrorOfDevilReefIsDead <- getHasRecord TheTerrorOfDevilReefIsDead
       let agenda1 = if theTerrorOfDevilReefIsDead then Agendas.theChaseIsOnV2 else Agendas.theChaseIsOnV1
 
       setAgendaDeck [agenda1, Agendas.hotPursuit]
@@ -123,7 +150,7 @@ instance RunMessage HorrorInHighGear where
       addExtraDeck RoadDeck roadDeck
 
       lead <- getLead
-      getPlayerCount >>= \case
+      case playerCount of
         2 -> findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
         3 -> findRandomEncounterCard lead ScenarioTarget (#enemy <> CardWithTrait Vehicle)
         4 -> do
@@ -136,7 +163,7 @@ instance RunMessage HorrorInHighGear where
         pure $ passengers < 2
 
       chooseOrRunOneM iid do
-        questionLabeled' "whichVehicle"
+        questionLabeled "whichVehicle"
         targets vehicles $ push . PlaceInvestigator iid . InVehicle
       pure s
     DoStep 2 Setup -> do
@@ -148,7 +175,7 @@ instance RunMessage HorrorInHighGear where
             name <- field AssetName vehicle
             lead <- getLead
             chooseOrRunOneM lead do
-              withI18n $ keyVar "name" (toTitle name) $ questionLabeled' "whoWillDrive"
+              withI18n $ keyVar "name" (toTitle name) $ questionLabeled "whoWillDrive"
               targets passengers $ push . SetDriver vehicle
 
       pure s
@@ -157,7 +184,7 @@ instance RunMessage HorrorInHighGear where
         locations <- getRear
         lead <- getLead
         chooseOrRunOneM lead do
-          questionLabeled' "whereWillEnemySpawn"
+          questionLabeled "whereWillEnemySpawn"
           targets locations $ createEnemyAt_ card
       pure s
     FailedSkillTest _iid _ _ (ChaosTokenTarget token) _ n -> do

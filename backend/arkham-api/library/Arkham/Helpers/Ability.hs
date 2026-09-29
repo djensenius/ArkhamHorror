@@ -4,6 +4,7 @@ import Arkham.Ability
 import Arkham.Action (Action)
 import Arkham.Action qualified as Action
 import Arkham.Actions
+import Arkham.ActiveCost.Base (ActiveCostTarget (ForAbility), activeCostTarget)
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Field (..))
 import Arkham.Campaign.Types (Field (..))
@@ -12,7 +13,7 @@ import Arkham.Classes.Query
 import Arkham.Customization
 import Arkham.ForMovement
 import Arkham.Game.Settings
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import {-# SOURCE #-} Arkham.Helpers.Cost (getAdditionalActionCost, getCanAffordCost)
 import {-# SOURCE #-} Arkham.Helpers.Criteria (passesCriteria)
 import Arkham.Helpers.Location (getLocationOf)
@@ -37,6 +38,39 @@ import Arkham.Window qualified as Window
 getAbility :: HasGame m => AbilityRef -> m (Maybe Ability)
 getAbility ref = selectOne (Matcher.AbilityIs ref.source ref.index)
 
+{- | An ability's window matcher with `ThisLocation` resolved against its source.
+
+`getActionsWith` expands a `LocationMatcherSource` proxy into one source per matching
+location but leaves the ability's own window untouched, and a bare `ThisLocation`
+selects nothing. So anything re-matching that window outside `getActions` must resolve
+it first or the ability is admitted and then silently fails to match. #5764
+-}
+abilityWindowFor :: Ability -> Matcher.WindowMatcher
+abilityWindowFor ability = case ability.source.location of
+  Nothing -> ability.window
+  Just lid -> Matcher.replaceThisLocation lid ability.window
+
+{- | Whether this ability only rides along in these windows -- non-blocking, and not in one
+of the windows it is declared to block in. Such an ask is dropped unless some seat is
+stopping the window anyway; see the @WindowAsk@ handler in "Arkham.Game.Runner".
+-}
+abilityRidesAlong :: HasGame m => InvestigatorId -> [Window] -> Ability -> m Bool
+abilityRidesAlong iid ws ability
+  | not ability.nonBlocking = pure False
+  | otherwise = case ability.blocksIn of
+      Nothing -> pure True
+      Just m -> not <$> anyM (\w -> windowMatches iid (toSource ability) w m) ws
+
+{- | Whether this ability's own cost payment is still in flight, keyed by 'abilityRef' so
+a sibling ability on the same card does not block it.
+-}
+abilityCostIsInFlight :: HasGame m => Ability -> m Bool
+abilityCostIsInFlight ability = any isThisAbility <$> getActiveCosts
+ where
+  isThisAbility ac = case activeCostTarget ac of
+    ForAbility a -> a.ref == ability.ref
+    _ -> False
+
 getCanPerformAbility
   :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> m Bool
 getCanPerformAbility !iid !ws !ability = do
@@ -52,9 +86,7 @@ getCanPerformAbility !iid !ws !ability = do
     setCriteria = \case
       SetAbilityCriteria (CriteriaOverride c) -> const c
       _ -> id
-    abWindow = case ability.source.location of
-      Nothing -> ability.window
-      Just lid -> Matcher.replaceThisLocation lid ability.window
+    abWindow = abilityWindowFor ability
 
   runValidT do
     when ability.skipForAll do
@@ -64,9 +96,21 @@ getCanPerformAbility !iid !ws !ability = do
     -- abilities for any given check; meetsActionRestrictions (~2ms) and
     -- passesCriteria (~15ms) are 90×–700× more expensive per call, so we
     -- only evaluate them on the survivors.
-    liftGuardM $ anyM (\window -> windowMatches iid (toSource ability) window abWindow) ws
+    matching <- lift $ filterM (\window -> windowMatches iid (toSource ability) window abWindow) ws
+    guard $ notNull matching
     liftGuardM $ not <$> preventedByInvestigatorModifiers iid ability
-    liftGuardM $ getCanAffordAbility iid ability ws
+    -- An ability whose own cost is still being paid must not be offered again. A cost is
+    -- not applied where it is declared: `ExhaustCost` only pushes `Exhaust`, so the
+    -- CheckWindows the cost pipeline opens before it still see a ready asset. An ability
+    -- whose window holds for the whole turn (Safeguard (2)'s "during another
+    -- investigator's turn") matches those windows and triggers off its own payment.
+    -- `PayCostFinished` always clears the entry, so this cannot strand an ability. #5784
+    liftGuardM $ not <$> abilityCostIsInFlight ability
+    -- An ability initiates once per matching window, so it stays available while ANY of
+    -- them is unconsumed. Asking about the whole list instead would let the first use --
+    -- recorded against its own window -- exhaust a PerWindow limit that `countInWs` then
+    -- reads across every window in the batch, hiding the rest. #5743
+    liftGuardM $ anyM (\window -> getCanAffordAbility iid ability [window]) matching
     liftGuardM $ meetsActionRestrictions iid ws ability
     liftGuardM do
       -- When the active investigator is already iid (e.g. inside a cached
@@ -264,6 +308,7 @@ canDoAction' iid ab@Ability {abilitySource, abilityIndex, abilityCardCode} = \ca
     ActSource _ -> pure True
     AgendaSource _ -> pure True
     StorySource _ -> pure True
+    TreacherySource _ -> pure True
     IndexedSource _ (AssetSource _) -> pure True
     IndexedSource _ (LocationSource _) -> pure True
     ProxySource (AssetSource _) _ -> pure True
@@ -318,7 +363,7 @@ getCanAffordAbilityCost iid a@Ability {..} ws = do
       then do
         case abilityMetadata of
           Just (InvestigateTargets matcher) -> do
-            ls <- select (matcher <> Matcher.InvestigatableLocation)
+            ls <- select matcher
             costs <- for ls $ \lid -> do
               -- These costs may be delayed until after choosing the target,
               -- but affordability still depends on at least one target being

@@ -13,7 +13,7 @@ import Arkham.Card
 import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.ReturnToTheCircleUndone.ReturnToTheWagesOfSin qualified as Enemies
 import Arkham.Enemy.CardDefs.TheCircleUndone.TheWagesOfSin qualified as Enemies
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Act
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Modifiers hiding (roundModifiers)
@@ -147,7 +147,7 @@ setupTheWagesOfSin _attrs = do
 instance RunMessage TheWagesOfSin where
   runMessage msg s@(TheWagesOfSin attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> scope "intro" do
-      flavor $ setTitle "title" >> p "body"
+      flavor $ h "title" >> p "body"
       pure s
     StandaloneSetup -> do
       setChaosTokens standaloneChaosTokens

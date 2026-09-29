@@ -17,7 +17,8 @@ import Arkham.Criteria qualified as Criteria
 import Arkham.Damage
 import Arkham.Discover (IsInvestigate (..))
 import {-# SOURCE #-} Arkham.Game.Base
-import {-# SOURCE #-} Arkham.GameEnv
+import {-# SOURCE #-} Arkham.Game.Utils (withInvestigatorEdit)
+import Arkham.GameEnv
 import Arkham.GameValue
 import Arkham.Helpers
 import {-# SOURCE #-} Arkham.Helpers.Calculation (calculate)
@@ -73,6 +74,12 @@ getSkillValue st iid = do
          in (+ flat) . sum <$> sequence [calculate calc | CalculatedSkillModifier st' calc <- mods, st' == st]
       else pure 0
   pure $ fromMaybe (x + base) $ minimumMay [n | SetSkillValue st' n <- mods, st' == st]
+
+getHighestSkillValues :: HasGame m => InvestigatorId -> m (Int, [SkillType])
+getHighestSkillValues iid = do
+  skills <- forToSnd (#willpower :| [#intellect, #combat, #agility]) (`getSkillValue` iid)
+  let highest = maximum (toMinList $ snd <$> skills)
+  pure (highest, [sk | (sk, v) <- toList skills, v == highest])
 
 skillValueFor
   :: forall m
@@ -694,12 +701,12 @@ healAdditional (toSource -> source) dType ws' additional = do
   -- the additional healing directly without opening another healing window.
   let
     updateHealed = \case
-      Window timing (Healed dType' t s n) mBatchId
-        | dType == dType' ->
-            Window timing (Healed dType' t s (n + additional)) mBatchId
+      w@(windowType -> Healed dType' t s n)
+        | dType == dType' -> w {windowType = Healed dType' t s (n + additional)}
       other -> other
     getHealed = \case
-      Window timing (Healed dType' t s _) _ | dType == dType' -> Just (timing, t, s)
+      Window {windowTiming = timing, windowType = Healed dType' t s _}
+        | dType == dType' -> Just (timing, t, s)
       _ -> Nothing
     (healedTiming, healedTarget, healedSource) =
       fromJustNote "wrong call" $ getFirst $ foldMap (First . getHealed) ws'
@@ -803,6 +810,7 @@ getAsIfInHandEffectCards iid = do
   modifiers & mapMaybeM \case
     AsIfInHand c -> pure $ Just c
     AsIfInHandFor _ c -> Just <$> getCard c
+    AsIfInHandForEffects c -> Just <$> getCard c
     CanCommitToSkillTestsAsIfInHand c | isSkillTest -> pure $ Just c
     _ -> pure Nothing
 

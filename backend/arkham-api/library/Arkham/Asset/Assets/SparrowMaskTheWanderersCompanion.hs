@@ -7,7 +7,7 @@ import Arkham.Ability
 import Arkham.Asset.Cards qualified as Cards
 import Arkham.Asset.Import.Lifted
 import Arkham.Asset.Uses
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.SkillTest (withSkillTest)
 import Arkham.Helpers.Window (windowMatches)
 import Arkham.I18n
@@ -36,9 +36,9 @@ instance RunMessage SparrowMaskTheWanderersCompanion where
     UseThisAbility iid (isSource attrs -> True) 1 -> do
       withSkillTest \sid -> do
         chooseOneM iid $ withI18n do
-          countVar 2 $ skillVar #willpower $ labeled' "getPlus" do
+          countVar 2 $ skillVar #willpower $ labeled "getPlus" do
             skillTestModifier sid (attrs.ability 1) iid (SkillModifier #willpower 2)
-          countVar 2 $ skillVar #agility $ labeled' "getPlus" do
+          countVar 2 $ skillVar #agility $ labeled "getPlus" do
             skillTestModifier sid (attrs.ability 1) iid (SkillModifier #agility 2)
       pure a
     Do (CheckWindows ws) -> do

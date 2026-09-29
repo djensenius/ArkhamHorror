@@ -18,7 +18,9 @@ discOfItzamna = asset DiscOfItzamna Cards.discOfItzamna
 
 instance HasAbilities DiscOfItzamna where
   getAbilities (DiscOfItzamna a) =
-    [controlled_ a 1 $ triggered (EnemySpawns #when YourLocation NonEliteEnemy) (discardCost a)]
+    [ controlled_ a 1
+        $ triggered (EnemySpawns #when (PlacementAt YourLocation) NonEliteEnemy) (discardCost a)
+    ]
 
 instance RunMessage DiscOfItzamna where
   runMessage msg a@(DiscOfItzamna attrs) = runQueueT $ case msg of
@@ -27,9 +29,9 @@ instance RunMessage DiscOfItzamna where
       canEvade <- eid <=~> EnemyCanBeEvadedBy (attrs.ability 1)
       card <- fetchCard eid
       chooseOrRunOneM iid $ withI18n do
-        cardNameVar card $ labeledValidate' canEvade "automaticallyEvade" $ automaticallyEvadeEnemy iid eid
+        cardNameVar card $ labeledValidate canEvade "automaticallyEvade" $ automaticallyEvadeEnemy iid eid
         countVar 2
-          $ labeledValidate' canDamage "dealDamage"
+          $ labeledValidate canDamage "dealDamage"
           $ nonAttackEnemyDamage (Just iid) (attrs.ability 1) 2 eid
       pure a
     _ -> DiscOfItzamna <$> liftRunMessage msg attrs

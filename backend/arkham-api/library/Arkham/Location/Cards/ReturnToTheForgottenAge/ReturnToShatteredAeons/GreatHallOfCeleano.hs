@@ -29,16 +29,16 @@ instance RunMessage GreatHallOfCeleano where
       investigators <- getInvestigators
       chooseOneM iid do
         for_ investigators \iid' -> do
-          deckLabeled iid' $ lookAt iid (attrs.ability 1) iid' [fromTopOfDeck 1] #any (defer attrs IsNotDraw)
+          deckLabeled iid' $ lookAt iid (attrs.ability 1) iid' [peekTopOfDeck 1] #any (defer attrs IsNotDraw)
         targeting EncounterDeckTarget
-          $ lookAt iid (attrs.ability 1) EncounterDeckTarget [fromTopOfDeck 1] #any (defer attrs IsNotDraw)
+          $ lookAt iid (attrs.ability 1) EncounterDeckTarget [peekTopOfDeck 1] #any (defer attrs IsNotDraw)
         targeting ExplorationDeck
-          $ lookAt iid (attrs.ability 1) ExplorationDeck [fromTopOfDeck 1] #any (defer attrs IsNotDraw)
+          $ lookAt iid (attrs.ability 1) ExplorationDeck [peekTopOfDeck 1] #any (defer attrs IsNotDraw)
 
       pure l
     SearchFound iid (isTarget attrs -> True) _ cards -> do
       chooseOneM iid $ withI18n do
-        labeled' "discard" $ for_ cards (discardCard iid (attrs.ability 1))
-        labeled' "continue" nothing
+        labeled "discard" $ for_ cards (discardCard iid (attrs.ability 1))
+        labeled "continue" nothing
       pure l
     _ -> GreatHallOfCeleano <$> liftRunMessage msg attrs

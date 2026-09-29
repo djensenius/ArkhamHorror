@@ -10,7 +10,7 @@ import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.LaidToRest qualified as Enemies
 import Arkham.Enemy.CardDefs.Standalone qualified as Enemies
 import Arkham.Enemy.CardDefs.TheCircleUndone.TheWagesOfSin qualified as Enemies
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Campaign (getCampaignStoryCards, matchingCardsAlreadyInDeck)
 import Arkham.Helpers.Card (ConvertToCard (..), getVictoryPoints)
 import Arkham.Helpers.FlavorText
@@ -318,14 +318,14 @@ instance RunMessage LaidToRest where
           for_ mJim \jim -> do
             hasTrumpet <- hasCampaignCard jim Assets.jimsTrumpet
             hasAdvancedRhapsody <- hasCampaignCard jim Treacheries.finalRhapsodyAdvanced
-            scenarioI18n $ chooseOneM jim do
-              when hasTrumpet $ labeled' "upgradeJimsTrumpet" do
+            scenarioI18n $ scope "label" $ chooseOneM jim do
+              when hasTrumpet $ labeled "upgradeJimsTrumpet" do
                 removeCampaignCardFromDeck jim Assets.jimsTrumpet
                 addCampaignCardToDeck jim DoNotShuffleIn Assets.jimsTrumpetAdvanced
-              when hasAdvancedRhapsody $ labeled' "downgradeFinalRhapsody" do
+              when hasAdvancedRhapsody $ labeled "downgradeFinalRhapsody" do
                 removeCampaignCardFromDeck jim Treacheries.finalRhapsodyAdvanced
                 addCampaignCardToDeck jim DoNotShuffleIn Treacheries.finalRhapsody
-              labeled' "doNotSwap" nothing
+              labeled "doNotSwap" nothing
           endOfScenario
         Resolution 2 -> do
           (jimXp, otherXp) <- gainLaidToRestXp attrs
@@ -335,11 +335,11 @@ instance RunMessage LaidToRest where
             hasRhapsody <- hasCampaignCard jim Treacheries.finalRhapsody
             hasAdvancedTrumpet <- hasCampaignCard jim Assets.jimsTrumpetAdvanced
             when (hasRhapsody || hasAdvancedTrumpet) do
-              scenarioI18n $ chooseOrRunOneM jim do
-                when hasRhapsody $ labeled' "upgradeFinalRhapsody" do
+              scenarioI18n $ scope "label" $ chooseOrRunOneM jim do
+                when hasRhapsody $ labeled "upgradeFinalRhapsody" do
                   removeCampaignCardFromDeck jim Treacheries.finalRhapsody
                   addCampaignCardToDeck jim DoNotShuffleIn Treacheries.finalRhapsodyAdvanced
-                when hasAdvancedTrumpet $ labeled' "downgradeJimsTrumpet" do
+                when hasAdvancedTrumpet $ labeled "downgradeJimsTrumpet" do
                   removeCampaignCardFromDeck jim Assets.jimsTrumpetAdvanced
                   addCampaignCardToDeck jim DoNotShuffleIn Assets.jimsTrumpet
           endOfScenario

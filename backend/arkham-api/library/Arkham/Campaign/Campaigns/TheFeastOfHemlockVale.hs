@@ -85,8 +85,8 @@ instance RunMessage TheFeastOfHemlockVale where
           flavor $ setTitle "title" >> p "body"
           eachInvestigator \iid -> do
             investigatorStoryWithChooseOneM' iid (setTitle "title" >> p "mealChoice") do
-              labeled' "keepEating" $ recordForInvestigator iid FinishedTheirMeal
-              labeled' "dontEatAnymore" nothing
+              labeled "keepEating" $ recordForInvestigator iid FinishedTheirMeal
+              labeled "dontEatAnymore" nothing
         n <- getPlayerCount
         eachInvestigator (`forInvestigator` msg)
         when (n == 1) $ eachInvestigator (`forInvestigator` msg)
@@ -97,14 +97,14 @@ instance RunMessage TheFeastOfHemlockVale where
       DoStep 1 (CampaignStep (CampaignSpecificStep "preludeTheFirstEvening" Nothing)) -> do
         scope "prelude.theFirstEvening" do
           resolutionFlavorWithChooseOne (setTitle "resolution1.title" >> p "resolution1.body") do
-            labeled' "searchForBertie" $ setNextCampaignStep TheTwistedHollow
-            labeled' "gatherMoreInformation" do
+            labeled "searchForBertie" $ setNextCampaignStep TheTwistedHollow
+            labeled "gatherMoreInformation" do
               addChaosToken #tablet
               addChaosToken #elderthing
               areas <- getAreasSurveyed
               let survey k = unless (k `elem` areas)
               leadChooseOneM do
-                questionLabeled' "survey"
+                questionLabeled "survey"
                 survey NorthPointMine do
                   scenarioLabeled' "writtenInRock" "10501-night1" $ campaignStepEdit_ WrittenInRock noUpgrade
                 survey HemlockHarbor do
@@ -122,7 +122,7 @@ instance RunMessage TheFeastOfHemlockVale where
           n <- getPlayerCount
           let meta = toResultDefault initMeta attrs.meta
           let option k =
-                labeledValidate' (k `notElem` meta.chosenCodexEntries) k
+                labeledValidate (k `notElem` meta.chosenCodexEntries) k
                   $ forInvestigator iid
                   $ CampaignStep (CampaignSpecificStep "preludeTheFirstEvening" (Just k))
           investigatorStoryWithChooseOneM' iid (setTitle "title" >> p "codexChoice") do
@@ -131,7 +131,7 @@ instance RunMessage TheFeastOfHemlockVale where
             option "sigma"
             option "omega"
             option "gamma"
-            labeledValidate'
+            labeledValidate
               ("pi" `notElem` meta.chosenCodexEntries && (n > 1 || notNull meta.chosenCodexEntries))
               "pi"
               $ forInvestigator iid
@@ -142,38 +142,38 @@ instance RunMessage TheFeastOfHemlockVale where
           case entry of
             "theta" -> do
               investigatorStoryWithChooseOneM' iid (setTitle "title" >> p "theHemlockLegacy1") do
-                labeled' "whoAreTheAtwoods" do
+                labeled "whoAreTheAtwoods" do
                   incrementRecordCount MotherRachelRelationshipLevel 1
                   interludeXpAll (toBonus "bonus" 1)
                   flavor $ setTitle "title" >> p "theHemlockLegacy2"
-                labeled' "whoAreTheChildrenOfTheStars" do
+                labeled "whoAreTheChildrenOfTheStars" do
                   incrementRecordCount MotherRachelRelationshipLevel 1
                   interludeXpAll (toBonus "bonus" 1)
                   flavor $ setTitle "title" >> p "theHemlockLegacy3"
-                labeled' "whoAreTheHemlocks" do
+                labeled "whoAreTheHemlocks" do
                   incrementRecordCount WilliamHemlockRelationshipLevel 1
                   interludeXpAll (toBonus "bonus" 1)
                   record WilliamSharedHisLegacy
                   flavor $ setTitle "title" >> p "theHemlockLegacy4"
             "delta" -> do
               investigatorStoryWithChooseOneM' iid (setTitle "title" >> p "bestFriends1") do
-                labeled' "jazzIsDelightful" do
+                labeled "jazzIsDelightful" do
                   incrementRecordCount RiverHawthorneRelationshipLevel 1
                   interludeXpAll (toBonus "bonus" 1)
                   flavor $ setTitle "title" >> p "bestFriends2"
-                labeled' "jazzIsHell" do
+                labeled "jazzIsHell" do
                   incrementRecordCount JudithParkRelationshipLevel 1
                   interludeXpAll (toBonus "bonus" 1)
                   flavor $ setTitle "title" >> p "bestFriends3"
             "sigma" -> do
               searched <- getHasRecord LeahSearchedThePearlRuins
               investigatorStoryWithChooseOneM' iid (setTitle "title" >> p "oldBlood1") do
-                labeled' "gideon" do
+                labeled "gideon" do
                   incrementRecordCount GideonMizrahRelationshipLevel 1
                   record GideonToldTheStoryOfCaptainHemlock
                   interludeXpAll (toBonus "bonus" 1)
                   flavor $ setTitle "title" >> p "oldBlood2"
-                labeled' "leah" do
+                labeled "leah" do
                   incrementRecordCount LeahAtwoodRelationshipLevel 1
                   interludeXpAll (toBonus "bonus" 1)
                   flavor $ setTitle "title" >> p "oldBlood3"
@@ -254,15 +254,15 @@ instance RunMessage TheFeastOfHemlockVale where
               flavor $ setTitle "resolution5.title" >> p "resolution5.body"
               record BertieHadAnEpiphany
           resolutionFlavorWithChooseOne (setTitle "resolution6.title" >> p "resolution6.body") do
-            labeled' "followDrMarquez" $ setNextCampaignStep TheLongestNight
-            labeled' "gatherMoreInformation" do
+            labeled "followDrMarquez" $ setNextCampaignStep TheLongestNight
+            labeled "gatherMoreInformation" do
               addChaosToken Skull
               addChaosToken #cultist
               addChaosToken ElderThing
               areas <- getAreasSurveyed
               let survey k = unless (k `elem` areas)
               leadChooseOneM do
-                questionLabeled' "survey"
+                questionLabeled "survey"
                 survey NorthPointMine do
                   scenarioLabeled' "writtenInRock" "10501-night2" $ campaignStepEdit_ WrittenInRock noUpgrade
                 survey HemlockHarbor do
@@ -280,11 +280,11 @@ instance RunMessage TheFeastOfHemlockVale where
           let meta = toResultDefault initMeta attrs.meta
           crossedOut <- getCrossedOutResidents
           let residentOption r k =
-                labeledValidate' (r `notElem` crossedOut && k `notElem` meta.chosenCodexEntries) k
+                labeledValidate (r `notElem` crossedOut && k `notElem` meta.chosenCodexEntries) k
                   $ forInvestigator iid
                   $ CampaignStep (CampaignSpecificStep "preludeTheSecondEvening" (Just k))
           let option k =
-                labeledValidate' (k `notElem` meta.chosenCodexEntries) k
+                labeledValidate (k `notElem` meta.chosenCodexEntries) k
                   $ forInvestigator iid
                   $ CampaignStep (CampaignSpecificStep "preludeTheSecondEvening" (Just k))
           investigatorStoryWithChooseOneM' iid (setTitle "title" >> p "codexChoice") do
@@ -470,19 +470,19 @@ instance RunMessage TheFeastOfHemlockVale where
         let theo = theoLevel >= 5 && not theoCrossedOut && "theo" `notElem` meta.chosenCodexEntries
         when (atwoods || hemlocks || judith || theo) do
           leadChooseOneM do
-            labeledValidate' atwoods "atwoods"
+            labeledValidate atwoods "atwoods"
               $ push
               $ CampaignStep
               $ CampaignSpecificStep "epilogueCodex" (Just "atwoods")
-            labeledValidate' hemlocks "hemlocks"
+            labeledValidate hemlocks "hemlocks"
               $ push
               $ CampaignStep
               $ CampaignSpecificStep "epilogueCodex" (Just "hemlocks")
-            labeledValidate' judith "judith"
+            labeledValidate judith "judith"
               $ push
               $ CampaignStep
               $ CampaignSpecificStep "epilogueCodex" (Just "judith")
-            labeledValidate' theo "theo"
+            labeledValidate theo "theo"
               $ push
               $ CampaignStep
               $ CampaignSpecificStep "epilogueCodex" (Just "theo")

@@ -36,7 +36,7 @@ instance HasAbilities DangerousRide where
 instance HasModifiersFor DangerousRide where
   getModifiersFor (DangerousRide a) = do
     modifySelect a (LocationWithAsset StoryAsset) [CannotBeSlidOrSwapped]
-    modifySelect a (AnyEnemy) [AddKeyword Keyword.Hunter, ResolveHunterTwice]
+    modifySelect a AnyEnemy [AddKeyword Keyword.Hunter, ResolveHunterTwice]
     modifySelectMapM a Anywhere \loc -> do
       connections <- runDefaultMaybeT [] do
         pos <- MaybeT $ field LocationPosition loc
@@ -58,8 +58,8 @@ instance RunMessage DangerousRide where
     AdvanceAgenda (isSide B attrs -> True) -> do
       eachInvestigator \iid -> do
         chooseOneM iid $ withI18n $ countVar 1 do
-          labeled' "sufferPhysicalTrauma" $ sufferPhysicalTrauma iid 1
-          labeled' "sufferMentalTrauma" $ sufferMentalTrauma iid 1
+          labeled "sufferPhysicalTrauma" $ sufferPhysicalTrauma iid 1
+          labeled "sufferMentalTrauma" $ sufferMentalTrauma iid 1
         investigatorDefeated attrs iid
       pure a
     _ -> DangerousRide <$> liftRunMessage msg attrs

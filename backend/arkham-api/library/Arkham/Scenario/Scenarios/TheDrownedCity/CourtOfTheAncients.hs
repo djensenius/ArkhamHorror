@@ -10,7 +10,6 @@ import Arkham.Campaigns.TheDrownedCity.CampaignSteps (
  )
 import Arkham.Campaigns.TheDrownedCity.Import
 import Arkham.Campaigns.TheDrownedCity.Key qualified as Key
-import Arkham.Card
 import Arkham.ChaosToken
 import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.TheDrownedCity.CourtOfTheAncients qualified as Enemies
@@ -24,7 +23,6 @@ import Arkham.Location.Grid (Pos (..))
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
-import Arkham.Placement
 import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
 import Arkham.Scenarios.TheDrownedCity.CourtOfTheAncients.Helpers
@@ -58,8 +56,8 @@ instance RunMessage CourtOfTheAncients where
   runMessage msg s@(CourtOfTheAncients attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> scope "intro" do
       headedWest <- getHasRecord TheExpeditionHeadedWest
-      storyWithContinue' do
-        setTitle "title"
+      storyWithContinue do
+        h "title"
         p.basic "checkCampaignLog"
         ul do
           li.validate headedWest "headedWest"
@@ -88,7 +86,7 @@ instance RunMessage CourtOfTheAncients where
 
       for_ withPlumbTheDepths \iid -> do
         canErase <- canEraseProgress iid Key.PlumbTheDepths
-        storyWithChooseOneM'
+        storyWithChooseOneM
           ( compose.green do
               h3 "plumbTheDepths.title"
               p "plumbTheDepths.instructions"
@@ -107,10 +105,10 @@ instance RunMessage CourtOfTheAncients where
             -- nextSetupModifier, which stays inert while its own scenario is
             -- current and would silently do nothing. Both outcomes affect every
             -- investigator, not just the one holding the Task.
-            labeledValidate' canErase "plumbTheDepths.lookAway" do
+            labeledValidate canErase "plumbTheDepths.lookAway" do
               decrementRecordCountForInvestigator iid Key.PlumbTheDepths 1
               for_ investigators \iid' -> setupModifier attrs iid' (StartingClues 1)
-            labeled' "plumbTheDepths.seekTheTruth" do
+            labeled "plumbTheDepths.seekTheTruth" do
               incrementRecordCountForInvestigator iid Key.PlumbTheDepths 2
               sufferMentalTrauma iid 1
               for_ investigators \iid' -> setupModifier attrs iid' (StartingHand (-1))
@@ -233,16 +231,15 @@ instance RunMessage CourtOfTheAncients where
       eachInvestigator (`forInvestigator` Setup)
     ForInvestigator iid Setup -> do
       artifacts <- getAvailableArtifacts
+      items <- getAvailableExpeditionItems
       chooseOneM iid do
-        questionLabeled' "chooseExpeditionAssetQuestion"
-        labeled' "noExpeditionAsset" nothing
-        for_ (artifacts <> expeditionItems) \asset ->
+        questionLabeled "chooseExpeditionAssetQuestion"
+        labeled "noExpeditionAsset" nothing
+        for_ (artifacts <> items) \asset ->
           cardLabeled asset.cardCode $ handleTarget iid attrs (CardCodeTarget asset.cardCode)
       pure s
     HandleTargetChoice iid (isSource attrs -> True) (CardCodeTarget cardCode) -> do
-      for_ (lookupCardDef cardCode) \def -> do
-        card <- EncounterCard <$> genEncounterCard def
-        createAssetAt_ card (InPlayArea iid)
+      grantExpeditionAsset iid cardCode
       pure s
     ResolveChaosToken _ Tablet iid -> do
       whenAny (locationWithInvestigator iid <> FloodedLocation) $ drawAnotherChaosToken iid

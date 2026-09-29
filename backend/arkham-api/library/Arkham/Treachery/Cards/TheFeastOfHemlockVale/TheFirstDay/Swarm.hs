@@ -25,8 +25,8 @@ instance RunMessage Swarm where
     DoStep n msg'@(FailedThisSkillTest iid (isSource attrs -> True)) | n > 0 -> do
       resourceOk <- (> 0) <$> iid.resources
       chooseOrRunOneM iid $ withI18n do
-        countVar 1 $ labeledValidate' resourceOk "loseResources" $ loseResources iid attrs 1
-        countVar 1 $ labeled' "takeDamage" $ assignDamage iid attrs 1
+        countVar 1 $ labeledValidate resourceOk "loseResources" $ loseResources iid attrs 1
+        countVar 1 $ labeled "takeDamage" $ assignDamage iid attrs 1
       doStep (n - 1) msg'
       pure t
     _ -> Swarm <$> liftRunMessage msg attrs

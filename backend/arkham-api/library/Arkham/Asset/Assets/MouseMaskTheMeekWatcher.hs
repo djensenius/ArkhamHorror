@@ -4,7 +4,7 @@ import Arkham.Ability
 import Arkham.Asset.Cards qualified as Cards
 import Arkham.Asset.Import.Lifted hiding (RevealLocation)
 import Arkham.Asset.Uses
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.SkillTest (withSkillTest)
 import Arkham.Helpers.Window (windowMatches)
 import Arkham.I18n
@@ -33,9 +33,9 @@ instance RunMessage MouseMaskTheMeekWatcher where
     UseThisAbility iid (isSource attrs -> True) 1 -> do
       withSkillTest \sid -> do
         chooseOneM iid do
-          (withI18n $ countVar 2 $ skillVar #willpower $ labeled' "getPlus")
+          (withI18n $ countVar 2 $ skillVar #willpower $ labeled "getPlus")
             $ skillTestModifier sid (attrs.ability 1) iid (SkillModifier #willpower 2)
-          (withI18n $ countVar 2 $ skillVar #intellect $ labeled' "getPlus")
+          (withI18n $ countVar 2 $ skillVar #intellect $ labeled "getPlus")
             $ skillTestModifier sid (attrs.ability 1) iid (SkillModifier #intellect 2)
       pure a
     Do (CheckWindows ws) -> do

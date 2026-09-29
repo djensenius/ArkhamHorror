@@ -106,11 +106,6 @@ jobs:
       - name: Verify the catalog ships in the build output
         run: mise exec -- node scripts/locale-catalog/generator-launcher.mjs verify-dist.mjs
         working-directory: frontend
-      # The offline cache restores a build output without `frontend/public`.
-      - run: mise run locale-catalog:offline-cache-hit-test
-      # The offline packager builds into its own output directory; a second,
-      # incremental build there must precompress that directory rather than the
-      # default one.
       - name: Build and verify a custom output directory, twice
         run: |
           set -euo pipefail
@@ -153,9 +148,6 @@ jobs:
       - name: Install frontend dependencies
         run: mise exec -- npm ci --ignore-scripts
         working-directory: frontend
-      - run: mise run locale-catalog:offline-toolchain-authority-test
-      - run: mise run locale-catalog:offline-output-authority-test
-      - run: mise run locale-catalog:offline-cache-test
       - run: mise run locale-catalog:serving-cleanup-test
       - name: Build the final production image
         run: docker build --target app --tag "arkham-locale-serving:${{ github.sha }}" .

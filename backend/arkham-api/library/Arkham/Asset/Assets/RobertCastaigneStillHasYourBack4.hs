@@ -3,7 +3,7 @@ module Arkham.Asset.Assets.RobertCastaigneStillHasYourBack4 (robertCastaigneStil
 import Arkham.Ability
 import Arkham.Asset.Cards qualified as Cards
 import Arkham.Asset.Import.Lifted
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Ability (getCanPerformAbility)
 import Arkham.Helpers.Modifiers (ModifierType (..), controllerGets)
 import Arkham.Helpers.Playable (getIsPlayable)
@@ -62,10 +62,10 @@ instance RunMessage RobertCastaigneStillHasYourBack4 where
         canPlay <- getIsPlayable iid (attrs.ability 1) (UnpaidCost NoAction) (defaultWindows iid) card
         chooseOneM iid do
           labeledI "doNothing" nothing
-          (cardI18n $ labeled' "robertCastaigneStillHasYourBack4.discardTheRevealedAssetToDraw1Card") do
+          (cardI18n $ labeled "robertCastaigneStillHasYourBack4.discardTheRevealedAssetToDraw1Card") do
             discardCard iid (attrs.ability 1) card
             drawCards iid (attrs.ability 1) 1
           when canPlay do
-            (cardI18n $ labeled' "robertCastaigneStillHasYourBack4.playCardPayingCost") $ playCardPayingCost iid card
+            (cardI18n $ labeled "robertCastaigneStillHasYourBack4.playCardPayingCost") $ playCardPayingCost iid card
       pure a
     _ -> RobertCastaigneStillHasYourBack4 <$> liftRunMessage msg attrs

@@ -20,8 +20,10 @@ export type FlavorTextModifier
   | 'InterludeEntry'
   | 'CodexEntry'
   | 'HauntedEntry'
+  | 'TokenRevealEntry'
+  | 'ByDifficultyEntry'
 
-export type ImageModifier = 'RemoveImage' | 'SelectImage'
+export type ImageModifier = 'RemoveImage' | 'SelectImage' | 'SmallImage'
 
 export interface ListItemEntry {
   entry: FlavorTextEntry;
@@ -29,7 +31,7 @@ export interface ListItemEntry {
 }
 
 export type FlavorTextEntry
-  = { tag: 'BasicEntry', text : string}
+  = { tag: 'BasicEntry', text: string }
   | { tag: 'I18nEntry', key: string, variables: Record<string, any> }
   | { tag: 'HeaderEntry', level: number, key: string }
   | { tag: 'InvalidEntry', text: string }
@@ -52,6 +54,7 @@ export type FlavorText = {
 export const imageModifierDecoder = JsonDecoder.oneOf<ImageModifier>([
   JsonDecoder.literal('RemoveImage'),
   JsonDecoder.literal('SelectImage'),
+  JsonDecoder.literal('SmallImage'),
 ], 'ImageModifier');
 
 export const flavorTextModifierDecoder = JsonDecoder.oneOf<FlavorTextModifier>([
@@ -71,6 +74,8 @@ export const flavorTextModifierDecoder = JsonDecoder.oneOf<FlavorTextModifier>([
   JsonDecoder.literal('ValidEntry'),
   JsonDecoder.literal('CodexEntry'),
   JsonDecoder.literal('HauntedEntry'),
+  JsonDecoder.literal('TokenRevealEntry'),
+  JsonDecoder.literal('ByDifficultyEntry'),
 ], 'FlavorTextModifier');
 
 export const listItemEntryDecoder: JsonDecoder.Decoder<ListItemEntry> = JsonDecoder.object<ListItemEntry>(
@@ -83,8 +88,8 @@ export const listItemEntryDecoder: JsonDecoder.Decoder<ListItemEntry> = JsonDeco
 
 export const flavorTextEntryDecoder: JsonDecoder.Decoder<FlavorTextEntry> = JsonDecoder.oneOf<FlavorTextEntry>([
   JsonDecoder.object({ tag: JsonDecoder.literal('BasicEntry'), text: JsonDecoder.string() }, 'BasicEntry'),
-  JsonDecoder.object({ tag: JsonDecoder.literal('I18nEntry'), key: JsonDecoder.string(), variables: JsonDecoder.succeed()}, 'I18nEntry'),
-  JsonDecoder.object({ tag: JsonDecoder.literal('HeaderEntry'), level: JsonDecoder.number(), key: JsonDecoder.string()}, 'HeaderEntry'),
+  JsonDecoder.object({ tag: JsonDecoder.literal('I18nEntry'), key: JsonDecoder.string(), variables: JsonDecoder.succeed() }, 'I18nEntry'),
+  JsonDecoder.object({ tag: JsonDecoder.literal('HeaderEntry'), level: JsonDecoder.number(), key: JsonDecoder.string() }, 'HeaderEntry'),
   JsonDecoder.object({ tag: JsonDecoder.literal('InvalidEntry'), text: JsonDecoder.string() }, 'InvalidEntry'),
   JsonDecoder.object({ tag: JsonDecoder.literal('ValidEntry'), text: JsonDecoder.string() }, 'ValidEntry'),
   JsonDecoder.object({ tag: JsonDecoder.literal('ModifyEntry'), modifiers: JsonDecoder.array(flavorTextModifierDecoder, 'FlavorTextModifier[]'), entry: JsonDecoder.lazy(() => flavorTextEntryDecoder) }, 'ModifyEntry'),
@@ -92,10 +97,10 @@ export const flavorTextEntryDecoder: JsonDecoder.Decoder<FlavorTextEntry> = Json
   JsonDecoder.object({ tag: JsonDecoder.literal('ColumnEntry'), entries: JsonDecoder.lazy(() => JsonDecoder.array(flavorTextEntryDecoder, 'FlavorTextEntry[]')) }, 'CompositeEntry'),
   JsonDecoder.object({ tag: JsonDecoder.literal('ListEntry'), list: JsonDecoder.array(listItemEntryDecoder, 'ListItemEntry[]') }, 'ListEntry'),
   JsonDecoder.object({ tag: JsonDecoder.literal('CardEntry'), cardCode: JsonDecoder.string(), imageModifiers: JsonDecoder.array(imageModifierDecoder, 'ImageModifiers[]') }, 'CardEntry'),
-  JsonDecoder.object({ tag: JsonDecoder.literal('TarotEntry'), tarot: tarotCardArcanaDecoder}, 'TarotEntry'),
-  JsonDecoder.object({ tag: JsonDecoder.literal('ChaosTokenEntry'), chaosTokenFace: tokenFaceDecoder}, 'ChaosTokenEntry'),
-  JsonDecoder.object({ tag: JsonDecoder.literal('ChaosTokenMorphEntry'), morphFrom: tokenFaceDecoder, morphTo: tokenFaceDecoder}, 'ChaosTokenMorphEntry'),
-  JsonDecoder.object({ tag: JsonDecoder.literal('EntrySplit')}, 'EntrySplit'),
+  JsonDecoder.object({ tag: JsonDecoder.literal('TarotEntry'), tarot: tarotCardArcanaDecoder }, 'TarotEntry'),
+  JsonDecoder.object({ tag: JsonDecoder.literal('ChaosTokenEntry'), chaosTokenFace: tokenFaceDecoder }, 'ChaosTokenEntry'),
+  JsonDecoder.object({ tag: JsonDecoder.literal('ChaosTokenMorphEntry'), morphFrom: tokenFaceDecoder, morphTo: tokenFaceDecoder }, 'ChaosTokenMorphEntry'),
+  JsonDecoder.object({ tag: JsonDecoder.literal('EntrySplit') }, 'EntrySplit'),
 ], 'FlavorTextEntry');
 
 

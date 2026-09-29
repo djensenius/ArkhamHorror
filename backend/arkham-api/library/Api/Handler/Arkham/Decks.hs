@@ -8,17 +8,21 @@ module Api.Handler.Arkham.Decks (
   putApiV1ArkhamGameDecksR,
   postApiV1ArkhamSyncDeckR,
   requireGameDecksAccess,
+  putApiV1ArkhamDeckOverlayR,
+  deleteApiV1ArkhamDeckOverlayR,
 ) where
 
 import Import hiding (delete, on, update, (=.), (==.))
+import Import qualified as P
 
-import Api.Arkham.Deck (deckFromCreateRequest)
 import Api.Arkham.Helpers
-import Api.Arkham.Types.Deck
+import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Card.CardCode
+import Arkham.Card.CustomCard (arkhamBuildCustomCardCode, isArkhamBuildCardId, lookupCustomCardDef)
 import Arkham.Classes.Entity (attr)
 import Arkham.Classes.HasQueue
+import Arkham.Custom.Overlay (DeckOverlay)
 import Arkham.Decklist
 import Arkham.Game
 import Arkham.Game.Diff
@@ -54,25 +58,67 @@ import Network.HTTP.Types
 import Network.HTTP.Types.Status qualified as Status
 import UnliftIO.Exception (try)
 
--- | Delegates to 'Api.Handler.Arkham.Games.Shared.requireGameAccess'.
--- Preserved for callers and tests already targeting this name.
-requireGameDecksAccess :: Monad m => Bool -> m Bool -> m () -> m ()
-requireGameDecksAccess = requireGameAccess
-
 getApiV1ArkhamDecksR :: Handler [Entity ArkhamDeck]
 getApiV1ArkhamDecksR = do
   userId <- getRequestUserId
+  -- A deck's play list is computed as it is served, and an overlay's custom
+  -- investigator has to be resolvable for its signatures to come with it.
+  registerUserCustomCards userId
   runDB $ select do
     decks <- from $ table @ArkhamDeck
     where_ $ decks.userId ==. val userId
     pure decks
 
-toDeckErrors :: ArkhamDBDecklist -> [DeckValidationError]
+-- | Delegates to 'Api.Handler.Arkham.Games.Shared.requireGameAccess'.
+-- Preserved for callers and tests already targeting this name.
+requireGameDecksAccess :: Monad m => Bool -> m Bool -> m () -> m ()
+requireGameDecksAccess = requireGameAccess
+
+data CreateDeckPost = CreateDeckPost
+  { deckId :: Text
+  , deckName :: Text
+  , deckUrl :: Maybe Text
+  , deckList :: ArkhamDBDecklist
+  , deckOverlay :: Maybe DeckOverlay
+  }
+  deriving stock (Show, Generic)
+  deriving anyclass FromJSON
+
+newtype ValidateDeckPost = ValidateDeckPost
+  { validateDeckList :: ArkhamDBDecklist
+  }
+  deriving stock (Show, Generic)
+  deriving anyclass FromJSON
+
+newtype FetchDeckPost = FetchDeckPost
+  { fetchDeckUrl :: Text
+  }
+  deriving stock (Show, Generic)
+
+instance FromJSON FetchDeckPost where
+  parseJSON = genericParseJSON $ aesonOptions $ Just "fetchDeck"
+
+data UpgradeDeckPost = UpgradeDeckPost
+  { udpInvestigatorId :: InvestigatorId
+  , udpDeckUrl :: Maybe Text
+  , udpDeckList :: Maybe ArkhamDBDecklist
+  }
+  deriving stock (Show, Generic)
+
+instance FromJSON UpgradeDeckPost where
+  parseJSON = genericParseJSON $ aesonOptions $ Just "udp"
+
+newtype DeckError = UnimplementedCard CardCode
+  deriving stock (Show, Eq, Generic)
+
+instance ToJSON DeckError where
+  toJSON = genericToJSON $ defaultOptions {tagSingleConstructors = True}
+
+toDeckErrors :: ArkhamDBDecklist -> [DeckError]
 toDeckErrors decklist = flip mapMaybe cardCodes \cardCode ->
-  maybe
-    (Just $ UnimplementedCard cardCode)
-    (const Nothing)
-    (Map.lookup cardCode allPlayerCards)
+  if isJust (Map.lookup cardCode allPlayerCards) || isJust (lookupCustomCardDef cardCode)
+    then Nothing
+    else Just $ UnimplementedCard cardCode
  where
   cardCodes = Map.keys $ slots decklist
 
@@ -80,8 +126,11 @@ postApiV1ArkhamDecksR :: Handler (Entity ArkhamDeck)
 postApiV1ArkhamDecksR = do
   userId <- getRequestUserId
   postData <- requireCheckJsonBody
-  let deck = deckFromCreateRequest userId postData
-  case toDeckErrors (arkhamDeckList deck) of
+  -- The overlay may name cards only this user has, so the library has to be
+  -- resolvable before the list is checked or stored.
+  registerUserCustomCards userId
+  let deck = (fromPostData userId postData) {arkhamDeckOverlay = deckOverlay postData}
+  case toDeckErrors (arkhamDeckPlayList deck) of
     [] -> runDB $ insertEntity deck
     err -> sendStatusJSON status400 err
 
@@ -96,10 +145,10 @@ postApiV1ArkhamDecksValidateR = do
 postApiV1ArkhamDecksFetchR :: Handler ArkhamDBDecklist
 postApiV1ArkhamDecksFetchR = do
   _ <- getRequestUserId
-  FetchDeckRequest {..} <- requireCheckJsonBody
+  FetchDeckPost {..} <- requireCheckJsonBody
   getDeckList fetchDeckUrl >>= \case
     Right decklist -> pure decklist
-    Left err -> sendStatusJSON Status.status400 (DeckOperationError $ T.pack err)
+    Left err -> sendStatusJSON Status.status400 (JSONError $ T.pack err)
 
 {- | Load an upgraded (or replacement) deck into a running campaign.
 
@@ -128,7 +177,7 @@ putApiV1ArkhamGameDecksR gameId = do
   outcome <- runDB $ atomicallyWithGame gameId \gameEntity@ArkhamGame {..} -> do
     mLastStep <- getBy (UniqueStep gameId arkhamGameStep)
     let Game {..} = arkhamGameCurrentData
-    let investigatorId = postData.udpInvestigatorId
+    let investigatorId = udpInvestigatorId postData
     let currentQueue = maybe [] (choiceMessages . arkhamStepChoice . entityVal) mLastStep
 
     -- A stale client (this campaign swaps which investigators exist between scenarios)
@@ -210,7 +259,7 @@ putApiV1ArkhamGameDecksR gameId = do
                       for_ (attr investigatorDeckUrl investigatorEntity) \oldDeckUrl ->
                         update \d -> do
                           set d
-                            $ [ArkhamDeckList =. val decklist]
+                            $ [ArkhamDeckList =. val decklist, ArkhamDeckLastUsedAt =. val (Just now)]
                             <> [ArkhamDeckUrl =. val decklist.url | isJust decklist.url]
                           where_ $ d.userId ==. val userId
                           where_ $ d.url ==. val (Just oldDeckUrl)
@@ -218,14 +267,14 @@ putApiV1ArkhamGameDecksR gameId = do
                   pure $ Right g'
 
   case outcome of
-    Left (status, message) -> sendStatusJSON status (DeckOperationError message)
+    Left (status, message) -> sendStatusJSON status (JSONError message)
     Right ArkhamGame {..} ->
       publishToRoom gameId
         $ GameUpdate
         $ PublicGame gameId arkhamGameName mempty arkhamGameCurrentData
  where
   deckError :: Text -> Handler a
-  deckError = sendStatusJSON Status.status400 . DeckOperationError
+  deckError = sendStatusJSON Status.status400 . JSONError
 
   -- True when the decklist upgrades the SAME investigator (an alternate art of them counts)
   -- rather than replacing them with a different one.
@@ -239,10 +288,10 @@ putApiV1ArkhamGameDecksR gameId = do
         (Map.lookup (toCardCode decklist.investigator) allInvestigatorCards)
 
   resolveDecklist :: UpgradeDeckPost -> Handler (Maybe ArkhamDBDecklist)
-  resolveDecklist postData = case postData.udpDeckList of
+  resolveDecklist postData = case udpDeckList postData of
     Just decklist -> Just <$> validateDecklist decklist
     -- Neither a decklist nor a url: "continue without upgrading".
-    Nothing -> for postData.udpDeckUrl \url ->
+    Nothing -> for (udpDeckUrl postData) \url ->
       -- getDeckList's http call throws on a non-2xx response rather than returning Left.
       try @_ @SomeException (getDeckList url) >>= \case
         Right (Right decklist) -> validateDecklist decklist
@@ -256,6 +305,18 @@ putApiV1ArkhamGameDecksR gameId = do
       deckError
         $ "This deck contains cards that are not implemented yet: "
         <> T.intercalate ", " [tshow cCode | UnimplementedCard cCode <- errs]
+
+fromPostData :: UserId -> CreateDeckPost -> ArkhamDeck
+fromPostData userId CreateDeckPost {..} = do
+  ArkhamDeck
+    { arkhamDeckUserId = userId
+    , arkhamDeckUrl = deckUrl
+    , arkhamDeckInvestigatorName = tshow $ investigator_name deckList
+    , arkhamDeckName = deckName
+    , arkhamDeckList = deckList
+    , arkhamDeckOverlay = Nothing
+    , arkhamDeckLastUsedAt = Nothing
+    }
 
 arkhamBuildDecklistUrl :: Text -> Maybe Text
 arkhamBuildDecklistUrl url = do
@@ -279,18 +340,64 @@ decodeDeckList bytes = case eitherDecode bytes of
     decklists <- eitherDecode bytes
     maybe (Left "No decklist found") Right (listToMaybe decklists)
 
+{- | Rewrite the arkham.build card ids in a decklist to the codes an import of
+that pack gave those cards.
+
+arkham.build names a custom card by its own bare id; nothing here will try a
+custom-card lookup unless the code carries the custom prefix, so a deck naming
+those cards reads as a deck of cards that do not exist -- 'UnimplementedCard' --
+even with the pack imported and sitting in the library.
+
+Applied where a decklist is read off the wire rather than only in the client,
+because the client is not the only thing that reads one: syncing a deck fetches
+it here and writes it straight to the row, which without this puts the untranslated
+ids back over the translated ones. A decklist of printed cards comes through
+untouched, and a translated one translates to itself.
+-}
+normalizeArkhamBuildDeckCodes :: ArkhamDBDecklist -> ArkhamDBDecklist
+normalizeArkhamBuildDeckCodes decklist =
+  decklist
+    { slots = Map.mapKeys translateCardCode (slots decklist)
+    , sideSlots = Map.mapKeys translateCardCode (sideSlots decklist)
+    , investigator_code =
+        InvestigatorId $ translateCardCode $ unInvestigatorId $ investigator_code decklist
+    , meta = translateMeta <$> meta decklist
+    }
+ where
+  translateCardCode cc@(CardCode t)
+    | isArkhamBuildCardId t = arkhamBuildCustomCardCode t
+    | otherwise = cc
+
+  -- The alternate front an investigator was built with is named inside `meta`,
+  -- which rides along as its own blob of json. Left exactly as it arrived unless
+  -- there is something in it to rewrite.
+  translateMeta raw = fromMaybe raw do
+    -- Qualified: esqueleto has a `Value` of its own, and this module imports both.
+    m <- decode @(Map Text Json.Value) (BSL.fromStrict $ encodeUtf8 raw)
+    Json.String front <- Map.lookup "alternate_front" m
+    guard $ isArkhamBuildCardId front
+    let code = Json.String $ unCardCode $ arkhamBuildCustomCardCode front
+    pure $ decodeUtf8 $ BSL.toStrict $ encode $ Map.insert "alternate_front" code m
+
 getDeckList :: MonadIO m => Text -> m (Either String ArkhamDBDecklist)
 getDeckList url = liftIO case arkhamBuildDecklistUrl url of
   Just fetchUrl -> do
     request <- parseRequest $ T.unpack fetchUrl
     manager <- newManager tlsManagerSettings
     let request' = request {requestHeaders = ("X-Client-Id", "arkham-horror") : requestHeaders request}
-    second (\d -> d {url = Nothing}) . decodeDeckList . responseBody <$> httpLbs request' manager
-  Nothing -> second (\d -> d {url = Just url}) . decodeDeckList <$> simpleHttp (T.unpack url)
+    second (\d -> (normalizeArkhamBuildDeckCodes d) {url = Nothing})
+      . decodeDeckList
+      . responseBody
+      <$> httpLbs request' manager
+  Nothing ->
+    second (\d -> (normalizeArkhamBuildDeckCodes d) {url = Just url})
+      . decodeDeckList
+      <$> simpleHttp (T.unpack url)
 
 getApiV1ArkhamDeckR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
 getApiV1ArkhamDeckR deckId = do
   userId <- getRequestUserId
+  registerUserCustomCards userId
   mDeck <- runDB $ selectOne do
     decks <- from $ table @ArkhamDeck
     where_ $ decks.id ==. val deckId
@@ -306,6 +413,10 @@ deleteApiV1ArkhamDeckR deckId = do
     where_ $ decks.id ==. val deckId
     where_ $ decks.userId ==. val userId
 
+newtype JSONError = JSONError {errorMsg :: Text}
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
 postApiV1ArkhamSyncDeckR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
 postApiV1ArkhamSyncDeckR deckId = do
   userId <- getRequestUserId
@@ -313,7 +424,7 @@ postApiV1ArkhamSyncDeckR deckId = do
   unless (arkhamDeckUserId deck == userId) do
     sendStatusJSON
       Status.status400
-      (DeckOperationError "Deck does not belong to this user")
+      (JSONError "Deck does not belong to this user")
   edecklist <- maybe (pure $ Left "no deck url") getDeckList (arkhamDeckUrl deck)
   case edecklist of
     Right decklist -> do
@@ -321,4 +432,35 @@ postApiV1ArkhamSyncDeckR deckId = do
         set d [ArkhamDeckList =. val decklist]
         where_ $ d.id ==. val deckId
       pure $ Entity deckId $ deck {arkhamDeckList = decklist}
-    Left _ -> sendStatusJSON Status.status400 (DeckOperationError "Could not sync deck")
+    Left _ -> sendStatusJSON Status.status400 (JSONError "Could not sync deck")
+
+ownedDeck :: ArkhamDeckId -> Handler ArkhamDeck
+ownedDeck deckId = do
+  userId <- getRequestUserId
+  deck <- runDB $ get404 deckId
+  unless (arkhamDeckUserId deck == userId)
+    $ sendStatusJSON Status.status400 (JSONError "Deck does not belong to this user")
+  pure deck
+
+{- | Lay an overlay over a deck, or take it off again.
+
+The deck's own list is untouched either way, so removing the overlay leaves the
+deck exactly as it was and a later sync from ArkhamDB keeps the overlay.
+-}
+putApiV1ArkhamDeckOverlayR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
+putApiV1ArkhamDeckOverlayR deckId = do
+  deck <- ownedDeck deckId
+  overlay <- requireCheckJsonBody
+  registerUserCustomCards (arkhamDeckUserId deck)
+  let overlaid = deck {arkhamDeckOverlay = Just overlay}
+  case toDeckErrors (arkhamDeckPlayList overlaid) of
+    [] -> do
+      runDB $ P.update deckId [ArkhamDeckOverlay P.=. Just overlay]
+      pure $ Entity deckId overlaid
+    err -> sendStatusJSON Status.status400 err
+
+deleteApiV1ArkhamDeckOverlayR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
+deleteApiV1ArkhamDeckOverlayR deckId = do
+  deck <- ownedDeck deckId
+  runDB $ P.update deckId [ArkhamDeckOverlay P.=. Nothing]
+  pure $ Entity deckId $ deck {arkhamDeckOverlay = Nothing}

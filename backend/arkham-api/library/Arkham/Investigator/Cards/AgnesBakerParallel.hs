@@ -3,7 +3,7 @@ module Arkham.Investigator.Cards.AgnesBakerParallel (agnesBakerParallel) where
 import Arkham.ActiveCost.Base
 import Arkham.Card
 import Arkham.Cost
-import {-# SOURCE #-} Arkham.GameEnv (findAllCards, getActiveCosts)
+import Arkham.GameEnv (findAllCards, getActiveCosts)
 import Arkham.Helpers.Investigator (canHaveDamageHealed)
 import Arkham.Helpers.Modifiers (ModifierType (..), modifyEachMaybe, modifySelf)
 import Arkham.I18n
@@ -65,7 +65,7 @@ instance RunMessage AgnesBakerParallel where
           go (c : rest) = case c.target of
             ForCard _ card -> do
               chooseOneM iid do
-                cardI18n (scope "agnesBakerParallel" $ labeled' "shuffle") do
+                cardI18n (scope "agnesBakerParallel" $ labeled "shuffle") do
                   cardResolutionModifier card attrs card (SetAfterPlay ShuffleThisBackIntoDeck)
                 labeledI "resolveNormally" nothing
             _ -> go rest

@@ -6,7 +6,7 @@ import Arkham.Deck qualified as Deck
 import Arkham.Effect.Import
 import Arkham.Event.Cards qualified as Cards
 import Arkham.Event.Import.Lifted
-import {-# SOURCE #-} Arkham.GameEnv (getCard)
+import Arkham.GameEnv (getCard)
 import Arkham.Helpers (unDeck)
 import Arkham.Helpers.Modifiers (ModifierType (..), modifiedWhen_, modified_)
 import Arkham.Helpers.Query (allInvestigators, getLead)
@@ -83,7 +83,7 @@ instance RunMessage BlackMarket2Effect where
               lead <- getLead
               focusCard card do
                 chooseOrRunOneM lead do
-                  cardI18n $ scope "blackMarket" $ questionLabeled' "missingOwner"
+                  cardI18n $ scope "blackMarket" $ questionLabeled "missingOwner"
                   targets investigators \iid -> do
                     push $ ForTarget (toTarget attrs) (ForInvestigator iid (ForTarget (toTarget cardId) (Begin phase)))
             Just owner -> do

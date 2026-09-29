@@ -52,18 +52,18 @@ instance RunMessage TzuSanNiangOutForBlood where
       removeTokens (attrs.ability 1) theShadeReaper #charge x
       if
         | x == 1 -> chooseOneM iid $ withI18n $ countVar 1 do
-            labeled' "takeDamage" $ assignDamage iid (attrs.ability 1) 1
-            labeled' "takeHorror" $ assignHorror iid (attrs.ability 1) 1
+            labeled "takeDamage" $ assignDamage iid (attrs.ability 1) 1
+            labeled "takeHorror" $ assignHorror iid (attrs.ability 1) 1
         | even x -> assignDamageAndHorror iid (attrs.ability 1) half half
         | otherwise -> do
             -- Both choices assign damage *and* horror, so both numbers are in
             -- the label and both are supplied.
             chooseOneM iid $ withI18n do
               numberVar "damage" (half + 1) $ numberVar "horror" half
-                $ labeled' "takeDamageAndHorror"
+                $ labeled "takeDamageAndHorror"
                 $ assignDamageAndHorror iid (attrs.ability 1) (half + 1) half
               numberVar "horror" (half + 1) $ numberVar "damage" half
-                $ labeled' "takeHorrorAndDamage"
+                $ labeled "takeHorrorAndDamage"
                 $ assignDamageAndHorror iid (attrs.ability 1) half (half + 1)
       pure e
     _ -> TzuSanNiangOutForBlood <$> liftRunMessage msg attrs

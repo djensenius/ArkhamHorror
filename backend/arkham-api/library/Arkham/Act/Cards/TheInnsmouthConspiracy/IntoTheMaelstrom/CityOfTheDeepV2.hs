@@ -21,13 +21,14 @@ instance HasAbilities CityOfTheDeepV2 where
   getAbilities (CityOfTheDeepV2 a) =
     extend
       a
-      [ restricted
-          a
-          1
-          ( exists (LocationWithoutClues <> locationIs Locations.lairOfDagon)
-              <> exists (LocationWithoutClues <> locationIs Locations.lairOfHydra)
-              <> exists (LocationWithoutClues <> locationIs Locations.vaultOfRiches <> LocationWithKey PurpleKey)
-          )
+      [ onlyOnce
+          $ restricted
+            a
+            1
+            ( exists (LocationWithoutClues <> locationIs Locations.lairOfDagon)
+                <> exists (LocationWithoutClues <> locationIs Locations.lairOfHydra)
+                <> exists (LocationWithoutClues <> locationIs Locations.vaultOfRiches <> LocationWithKey PurpleKey)
+            )
           $ Objective
           $ forced AnyWindow
       ]
@@ -41,8 +42,8 @@ instance RunMessage CityOfTheDeepV2 where
         then do
           lead <- getLead
           chooseOneM lead $ scenarioI18n $ scope "cityOfTheDeep" do
-            labeled' "continuePlaying" nothing
-            labeled' "proceedToR1" $ push R1
+            labeled "continuePlaying" nothing
+            labeled "proceedToR1" $ push R1
         else push R1
       pure a
     UseThisAbility _iid (isSource attrs -> True) 1 -> do
