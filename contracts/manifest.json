@@ -3921,7 +3921,7 @@
             "choices"
           ],
           "keyword": "maxItems",
-          "messageContains": "[{'tag': 'TargetLabel', 'target': {'tag': 'EnemyTarget', 'contents': '00000000-0000-0000-0000-000000000386'}, 'messages': [{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}]}, {'tag': 'TargetLabel', 'target': {'tag': 'EnemyTarget', 'contents': '00000000-0000-0000-0000-000000000386'}, 'messages': [{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}]}] is too long"
+          "messageContains": "attackDamageReplacement"
         }
       ]
     },
@@ -4143,7 +4143,7 @@
             "messages"
           ],
           "keyword": "maxItems",
-          "messageContains": "[{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}, {'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}] is too long"
+          "messageContains": "attackDamageReplacement"
         }
       ]
     },
@@ -4785,7 +4785,7 @@
         {
           "path": [],
           "keyword": "required",
-          "messageContains": "'attackCancelled' is a required property"
+          "messageContains": "attackCancelled"
         }
       ]
     },
@@ -10572,7 +10572,7 @@
             "7"
           ],
           "keyword": "minItems",
-          "messageContains": "[{'contents': 'c01001', 'tag': 'InvestigatorTarget'}] is too short"
+          "messageContains": "InvestigatorTarget"
         }
       ]
     },
@@ -12329,7 +12329,7 @@
             "choices"
           ],
           "keyword": "maxItems",
-          "messageContains": "[{'tag': 'AbilityLabel', 'investigatorId': 'c01001', 'ability': {'source': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'cardCode': 'c01007', 'index': 1, 'type': {'tag': 'ReactionAbility', 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'cost': {'tag': 'Free'}, 'actions': {'contents': [], 'tag': 'AndActions'}}, 'limit': {'tag': 'PlayerLimit', 'contents': [{'tag': 'PerWindow'}, 1]}, 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'metadata': None, 'criteria': {'tag': 'Criteria', 'contents': [{'tag': 'OnSameLocation'}, {'tag': 'CluesOnThis', 'contents': {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}}]}, 'doesNotProvokeAttacksOfOpportunity': None, 'tooltip': None, 'canBeCancelled': True, 'displayAs': None, 'delayAdditionalCosts': None, 'basic': False, 'additionalCosts': [], 'requestor': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'triggersSkillTest': False, 'wantsSkillTest': None, 'target': None, 'highlightFromWindow': False, 'skipForAll': False, 'ignoreAllCosts': False, 'fightCriteriaOverride': None, 'evadeCriteriaOverride': None}, 'windows': [{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}], 'before': [], 'messages': []}, {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}, {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}] is too long"
+          "messageContains": "highlightFromWindow"
         }
       ]
     },
@@ -12349,7 +12349,7 @@
             "choices"
           ],
           "keyword": "minItems",
-          "messageContains": "[{'tag': 'AbilityLabel', 'investigatorId': 'c01001', 'ability': {'source': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'cardCode': 'c01007', 'index': 1, 'type': {'tag': 'ReactionAbility', 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'cost': {'tag': 'Free'}, 'actions': {'contents': [], 'tag': 'AndActions'}}, 'limit': {'tag': 'PlayerLimit', 'contents': [{'tag': 'PerWindow'}, 1]}, 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'metadata': None, 'criteria': {'tag': 'Criteria', 'contents': [{'tag': 'OnSameLocation'}, {'tag': 'CluesOnThis', 'contents': {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}}]}, 'doesNotProvokeAttacksOfOpportunity': None, 'tooltip': None, 'canBeCancelled': True, 'displayAs': None, 'delayAdditionalCosts': None, 'basic': False, 'additionalCosts': [], 'requestor': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'triggersSkillTest': False, 'wantsSkillTest': None, 'target': None, 'highlightFromWindow': False, 'skipForAll': False, 'ignoreAllCosts': False, 'fightCriteriaOverride': None, 'evadeCriteriaOverride': None}, 'windows': [{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}], 'before': [], 'messages': []}] is too short"
+          "messageContains": "highlightFromWindow"
         }
       ]
     },
@@ -14410,7 +14410,7 @@
             "windows"
           ],
           "keyword": "items",
-          "messageContains": "Expected at most 1 item but found 1 extra: {'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}"
+          "messageContains": "Expected at most 1 item"
         },
         {
           "path": [
@@ -14419,7 +14419,7 @@
             "windows"
           ],
           "keyword": "maxItems",
-          "messageContains": "[{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}, {'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}] is too long"
+          "messageContains": "windowConditionTick"
         }
       ]
     },
@@ -15947,7 +15947,7 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "5ebe72b7685e11bca709ca6633d4f1b8856896b874d0b1b94b9edb230d133519",
+    "contracts/fixtures/capabilities-locale-catalog.json": "43d78555904a6d2d51333caca143047787cb3af1c66dfe4dfb519c0dd292ef6e",
     "contracts/fixtures/capabilities.json": "2149dca3c1f1da1eb40bb637460247a480001f4f1af29ae1fbd41543cb424687",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "481f42cbac1fcb208cdb1b626a3cc6951c35531383e7439dc3c0d7c02a9044ac",
@@ -15975,7 +15975,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "f357e805e4e7819994be72ecb4e187ab0f33f34f2d8f1370366d3f517b744a10",
+    "contracts/fixtures/locale-catalog-manifest.json": "f241646bab936b1deebeaa86118c5a1dd1159c46790bd2fb8726d84859b2462e",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -16031,9 +16031,9 @@
     "contracts/fixtures/replay-attestation.json": "daa61145ae81abbb0c489d922d82629d4d358a59aedb53190bd27d184e699f07",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "4f9d5eac91191ff194bf80293bd067bfd0f2131891d8e6bc2f10820a9cb48481",
+    "contracts/manifest.json": "d8f849e581d96f818d9d62db7f24cef6f5764a1dcc21b8736ea739995ff1ce24",
     "contracts/openapi.yaml": "62559b4b67807a3a0b8321824a35994883a8fcdbb73d35c7d7c32ee30d3f1c78",
-    "contracts/route-inventory.json": "813cc87b9fcd4706af1d34af786e2c01181aeafc2685742bc1902955fae2b0b4",
+    "contracts/route-inventory.json": "090194fadafe52c853917f0367bce267a70aa99d41bed4fbd958b45b26730f92",
     "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",

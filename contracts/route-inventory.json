@@ -80,7 +80,7 @@
       "resource": "ApiV1ApiKeysR",
       "surface": "account",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -88,7 +88,7 @@
       "resource": "ApiV1ApiKeysR",
       "surface": "account",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -96,7 +96,7 @@
       "resource": "ApiV1ApiKeySelfR",
       "surface": "account",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "DELETE",
@@ -104,7 +104,7 @@
       "resource": "ApiV1ApiKeyR",
       "surface": "account",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -136,7 +136,7 @@
       "resource": "ApiV1ThirdEditionCatalogR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -144,7 +144,7 @@
       "resource": "ApiV1ThirdEditionTablesR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -152,7 +152,7 @@
       "resource": "ApiV1ThirdEditionTablesR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -160,7 +160,7 @@
       "resource": "ApiV1ThirdEditionTableR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "DELETE",
@@ -168,7 +168,7 @@
       "resource": "ApiV1ThirdEditionTableR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -176,7 +176,7 @@
       "resource": "ApiV1ThirdEditionJoinR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -184,7 +184,7 @@
       "resource": "ApiV1ThirdEditionLeaveR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -192,7 +192,7 @@
       "resource": "ApiV1ThirdEditionStartR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -200,7 +200,7 @@
       "resource": "ApiV1ThirdEditionAnswerR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -208,7 +208,7 @@
       "resource": "ApiV1ThirdEditionDebugR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -216,7 +216,7 @@
       "resource": "ApiV1ThirdEditionUndoR",
       "surface": "games",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -248,7 +248,7 @@
       "resource": "ApiV1ArkhamCustomCardsR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -256,7 +256,7 @@
       "resource": "ApiV1ArkhamCustomCardsR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -264,7 +264,7 @@
       "resource": "ApiV1ArkhamCustomCardsArtR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "DELETE",
@@ -272,7 +272,7 @@
       "resource": "ApiV1ArkhamCustomCardR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -280,7 +280,7 @@
       "resource": "ApiV1ArkhamCustomCardSetsR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -288,7 +288,7 @@
       "resource": "ApiV1ArkhamCustomCardSetsR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -296,7 +296,7 @@
       "resource": "ApiV1ArkhamCustomCardSetsImportR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "PUT",
@@ -304,7 +304,7 @@
       "resource": "ApiV1ArkhamCustomCardSetR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "DELETE",
@@ -312,7 +312,7 @@
       "resource": "ApiV1ArkhamCustomCardSetR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -320,7 +320,7 @@
       "resource": "ApiV1ArkhamCustomCardSetPublishR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -328,7 +328,7 @@
       "resource": "ApiV1ArkhamCustomCardSetSyncR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -336,7 +336,7 @@
       "resource": "ApiV1ArkhamPublishedCardSetsR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -344,7 +344,7 @@
       "resource": "ApiV1ArkhamPublishedCardSetR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "DELETE",
@@ -352,7 +352,7 @@
       "resource": "ApiV1ArkhamPublishedCardSetR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -360,7 +360,7 @@
       "resource": "ApiV1ArkhamPublishedCardSetSubscribeR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "POST",
@@ -368,7 +368,7 @@
       "resource": "ApiV1ArkhamPublishedCardSetLikeR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "DELETE",
@@ -376,7 +376,7 @@
       "resource": "ApiV1ArkhamPublishedCardSetLikeR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -464,7 +464,7 @@
       "resource": "ApiV1ArkhamDeckOverlayR",
       "surface": "decks",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "DELETE",
@@ -472,7 +472,7 @@
       "resource": "ApiV1ArkhamDeckOverlayR",
       "surface": "decks",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
@@ -744,7 +744,7 @@
       "resource": "ApiV1ArkhamGameCustomCardsR",
       "surface": "catalog",
       "scope": "native-client",
-      "coverage": "excluded"
+      "coverage": "required"
     },
     {
       "method": "GET",
