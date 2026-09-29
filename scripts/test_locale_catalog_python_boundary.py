@@ -1391,6 +1391,22 @@ def test_toolchain_roots(scratch: Path, token: str) -> int:
         require(
             system_python.is_file(), "the test host has no system Python for wrong-runtime coverage"
         )
+        wrong_version_root = scratch / f"wrong-version-root-{uuid.uuid4().hex}"
+        wrong_version_root.mkdir()
+        mirror_toolchain(sealed_root, wrong_version_root, {})
+        wrong_version_binary = wrong_version_root / binary_relative
+        wrong_version_binary.unlink()
+        wrong_version_binary.write_text(f"#!/bin/sh\nexec {system_python} \"$@\"\n", encoding="utf-8")
+        wrong_version_binary.chmod(0o755)
+        require_authoritative_failure(
+            "wrong CPython version from the mise-managed interpreter path",
+            tree,
+            [FIXTURE_ENTRY, "--check"],
+            environment=probe_environment({"LOCALE_CATALOG_MISE_ROOT": str(wrong_version_root)}),
+        )
+        checked += 1
+        shutil.rmtree(wrong_version_root)
+
         unsealed = subprocess.run(
             [
                 str(system_python),

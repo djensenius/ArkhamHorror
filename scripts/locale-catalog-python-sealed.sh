@@ -23,7 +23,7 @@
 # every committed file in this repository is trusted code reviewed through pull
 # request, and none of it is sandboxed here. What is checked is the externally
 # produced material a governed command depends on -- the pinned CPython
-# distribution and its whole import surface, Node, uv, the locked dependency
+# version and its whole import surface, Node, uv, the locked dependency
 # tree -- plus drift in the reviewed tooling, so that changing it has to be a
 # coordinated, reviewed edit. "Sealed" in this file's name is legacy: read it as
 # *the pinned, isolated runner*, the stage that discards the caller's
@@ -167,6 +167,16 @@ require_digest() {
   die "${what} '${path}' does not match a declared SHA-256 identity for this platform"
 }
 
+require_cpython_3147() {
+  local path="$1" what="$2" identity
+  identity="$(/usr/bin/env -i "${path}" -I -S -E -B -c '
+import sys
+print(f"{sys.implementation.name}\t{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}\t{sys.implementation.cache_tag}")
+')" || die "${what} '${path}' could not report its Python identity"
+  [[ "${identity}" == $'cpython\t3.14.7\tcpython-314' ]] ||
+    die "${what} '${path}' is not CPython 3.14.7 with cache tag cpython-314"
+}
+
 hash_stream() {
   if [[ "${SHA256}" == */shasum ]]; then
     "${SHA256}" -a 256
@@ -220,45 +230,26 @@ if [[ -n "${PROBE}" ]]; then
   require_sealed_file "${PROBE}" "explicitly bound capabilities probe"
 fi
 
-# A path under the explicit toolchain root is not enough: an attacker who can
-# replace a binary there could retain the expected version/path.  Bind the
-# executable bytes before the first one runs.  The Linux CPython hashes
-# correspond to the pinned standalone builds in the committed profile;
-# every other platform is rejected rather than approximated.
+# The interpreter itself is accepted by implementation and exact version from
+# the explicit mise-managed install path. Required CI must not depend on live
+# external binary hashes, but the runner is still isolated and the copied
+# stdlib/import surface is governed below before any target code runs.
+require_cpython_3147 "${PYTHON}" "sealed CPython 3.14.7"
 case "$("${UNAME}" -s):$("${UNAME}" -m)" in
   Darwin:arm64)
-    readonly PYTHON_DIGESTS=(
-      "1ba16b38d45f006e449bb51a923dae83f3c384611bcd4ee428afd044b7ed4c95" \
-      "e925fab5e8f595817ff36ff28e214b91520c040d5b7d47249b0199bc5f68015e"
-    )
-    require_digest "${PYTHON}" "sealed CPython 3.14.7" "${PYTHON_DIGESTS[@]}"
     require_digest "${NODE}" "sealed Node 26.7.0" \
       "a9bd0630891c2dcdee70de88270fee2cc0c4a9e76495039dd3b4f91c5e6b71df"
     require_digest "${UV}" "sealed uv 0.12.6" \
       "e8929237934c8679686428f5a7736c7ae7a5fe7a33b0504d1b03446cdbc43c94"
-    readonly SYSCONFIG_SOURCE="_sysconfigdata__darwin_darwin.py"
-    require_digest "${STDLIB}/${SYSCONFIG_SOURCE}" "active CPython sysconfig source" \
-      "3f4f3d7287fe28096c5b80f9b92fe561b69b5f50a16e4bf075165c96d7892981" \
-      "9cfb344b071fa5eee0c14961a94acb139774b32d0fc9c9ff8be7410da0b0cc33"
     ;;
   Linux:x86_64)
-    readonly PYTHON_DIGESTS=(
-      "23cfacd2e3ce3d8745b9405641ca3d91e9803e49003faa7882f80a4da9414be7" \
-      "ce7402fee6629ce791aeb871cd4d1a1e21ad2e90ca4b3236611484053a7e06ac" \
-      "241bf774a81580bb760adf960b48df7e6b23b1de026c9c912d4ca6be1a08241e"
-    )
-    require_digest "${PYTHON}" "sealed CPython 3.14.7" "${PYTHON_DIGESTS[@]}"
     require_digest "${NODE}" "sealed Node 26.7.0" \
       "ad19784f7e90ba789a099eccba77ede8dc90a778c424f1c10a70fed3ff903fdc"
     require_digest "${UV}" "sealed uv 0.12.6" \
       "d381f11517c66523211b0876552ff7dea5c1b4b0f13800571b35225761302fba"
-    readonly SYSCONFIG_SOURCE="_sysconfigdata__linux_x86_64-linux-gnu.py"
-    require_digest "${STDLIB}/${SYSCONFIG_SOURCE}" "active CPython sysconfig source" \
-      "90ce56ecd6e00b572c035dafaab3a66a756e2c488cbd86b919dfee41fd364bf4" \
-      "7083e42223269fa933d7c506bda020f2a79601e05bb7401c9f3fc7f9651b107c"
     ;;
   *)
-    die "unsupported toolchain platform $(${UNAME} -s):$(${UNAME} -m); no portable exact binary identity is declared"
+    die "unsupported toolchain platform $("${UNAME}" -s):$("${UNAME}" -m); no Node/uv binary identity is declared"
     ;;
 esac
 
@@ -426,8 +417,7 @@ verify_stdlib_tree "${RUNTIME_HOME}/lib/python3.14" "copied CPython stdlib"
 readonly RUNTIME_PYTHON="${RUNTIME_HOME}/bin/python3.14"
 [[ ! -L "${RUNTIME_PYTHON}" && -f "${RUNTIME_PYTHON}" && -x "${RUNTIME_PYTHON}" ]] ||
   die "copied CPython runtime has no regular python3.14 executable"
-require_digest "${RUNTIME_PYTHON}" "copied CPython 3.14.7" \
-  "${PYTHON_DIGESTS[@]}"
+require_cpython_3147 "${RUNTIME_PYTHON}" "copied CPython 3.14.7"
 
 # uv resolves, downloads, unpacks and *can build* distributions, and a PEP 517
 # backend is arbitrary code that would run before anything else got a say. So

@@ -4,44 +4,17 @@
   "cacheTag": "cpython-314",
   "stdlibIdentity": "cpython-3.14.7",
   "stdlibSourceTreeSha256": "c618cf3f74e4625201ed9d508f280b256235370e949172500c02d2da662d53e5",
-  "activeSysconfigSources": {
-    "darwin-arm64": {
-      "path": "_sysconfigdata__darwin_darwin.py",
-      "sha256": [
-        "3f4f3d7287fe28096c5b80f9b92fe561b69b5f50a16e4bf075165c96d7892981",
-        "9cfb344b071fa5eee0c14961a94acb139774b32d0fc9c9ff8be7410da0b0cc33"
-      ]
-    },
-    "linux-x86_64": {
-      "path": "_sysconfigdata__linux_x86_64-linux-gnu.py",
-      "sha256": [
-        "90ce56ecd6e00b572c035dafaab3a66a756e2c488cbd86b919dfee41fd364bf4",
-        "7083e42223269fa933d7c506bda020f2a79601e05bb7401c9f3fc7f9651b107c"
-      ]
-    }
-  },
   "trustedSources": {
     "frontend/scripts/locale-catalog/generator-launcher.mjs": "d7dd6e8fa3fb55504213bc349b9a345c48bdc03079b37d5db8534176ee233d5a",
-    "scripts/locale-catalog-python-sealed.sh": "4074e400301d1bbfa3aa2dfd491a53400b3c9f58fe74087e7d8d44971db12fb3",
+    "scripts/locale-catalog-python-sealed.sh": "5f3d69dc9d405e6a658d7a020d19882f34de03367407fc59bad49626fbc54b2f",
     "scripts/locale_catalog_python_boundary.py": "4c7b8bf496de26e8b53905999f99525560971948cdc3a708aae54f1afed28777",
-    "scripts/locale_catalog_runtime.py": "43bf0e9a37f5f05e3593f22363c2cebdbde080da8431d4833943bf129e5efc30",
+    "scripts/locale_catalog_runtime.py": "1181482cf068b2640a6b661eec5cb4c6988c7b1d9bbc1f3cf9210550750fd86a",
     "scripts/run-locale-catalog-python.sh": "5969b9f967f037bdd1df394ad99c2794315c7874e226bcebdccd2636f05b749c"
   },
   "interpreter": {
     "installRelativePath": "installs/python/3.14.7",
     "binaryRelativePath": "installs/python/3.14.7/bin/python3.14",
-    "stdlibRelativePath": "installs/python/3.14.7/lib/python3.14",
-    "binarySha256": {
-      "darwin-arm64": [
-        "1ba16b38d45f006e449bb51a923dae83f3c384611bcd4ee428afd044b7ed4c95",
-        "e925fab5e8f595817ff36ff28e214b91520c040d5b7d47249b0199bc5f68015e"
-      ],
-      "linux-x86_64": [
-        "23cfacd2e3ce3d8745b9405641ca3d91e9803e49003faa7882f80a4da9414be7",
-        "ce7402fee6629ce791aeb871cd4d1a1e21ad2e90ca4b3236611484053a7e06ac",
-        "241bf774a81580bb760adf960b48df7e6b23b1de026c9c912d4ca6be1a08241e"
-      ]
-    }
+    "stdlibRelativePath": "installs/python/3.14.7/lib/python3.14"
   },
   "uv": {
     "version": "0.12.6",

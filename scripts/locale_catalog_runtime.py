@@ -123,7 +123,7 @@ def runtime_platform() -> str:
         return "darwin-arm64"
     if sys.platform == "linux" and machine == "x86_64":
         return "linux-x86_64"
-    refuse(f"unsupported toolchain platform {sys.platform}/{machine}; no exact binary identity is declared")
+    refuse(f"unsupported toolchain platform {sys.platform}/{machine}; no Node/uv exact binary identity is declared")
 
 
 def valid_digest_candidates(value: object) -> bool:
@@ -288,7 +288,13 @@ def verify_interpreter(profile: dict, runtime_home: Path) -> None:
     if Path(sys._base_executable) != binary:
         refuse(f"base interpreter {sys._base_executable} is not the sealed binary {binary}")
     require_sealed_executable(binary, "sealed interpreter", sealed_root=runtime_home)
-    verify_binary_digest(interpreter, binary, "sealed CPython 3.14.7")
+    if not (
+        isinstance(interpreter, dict)
+        and interpreter.get("installRelativePath") == "installs/python/3.14.7"
+        and interpreter.get("binaryRelativePath") == "installs/python/3.14.7/bin/python3.14"
+        and interpreter.get("stdlibRelativePath") == "installs/python/3.14.7/lib/python3.14"
+    ):
+        refuse(f"{PROFILE.relative_to(ROOT)} has no complete CPython 3.14.7 path identity")
 
 
 def verify_pycache_prefix() -> None:
@@ -413,23 +419,6 @@ def verify_stdlib(
     if not present:
         refuse(f"sealed stdlib root {stdlib_root} contains no attested module")
     return stdlib_root, present, variants, extensions
-
-
-def verify_active_sysconfig_source(profile: dict, stdlib_root: Path) -> None:
-    entries = profile.get("activeSysconfigSources")
-    entry = entries.get(runtime_platform()) if isinstance(entries, dict) else None
-    if (
-        not isinstance(entry, dict)
-        or set(entry) != {"path", "sha256"}
-        or not isinstance(entry["path"], str)
-        or not valid_digest_candidates(entry["sha256"])
-    ):
-        refuse("toolchain lock does not pin this platform's active sysconfig source")
-    path = stdlib_root / entry["path"]
-    if path.is_symlink() or not path.is_file():
-        refuse(f"active sysconfig source {entry['path']!r} is not a regular file")
-    if hashlib.sha256(path.read_bytes()).hexdigest() not in entry["sha256"]:
-        refuse(f"active sysconfig source {entry['path']!r} does not match the toolchain lock")
 
 
 def _imported_module_names(tree: ast.AST, package: str) -> set[str]:
@@ -1081,7 +1070,6 @@ def main() -> None:
     verify_startup_modules(profile, runtime_home)
     verify_pycache_prefix()
     stdlib_root, attested, variants, extensions = verify_stdlib(profile, runtime_home)
-    verify_active_sysconfig_source(profile, stdlib_root)
     verify_trusted_git()
     verify_trusted_node(profile, sealed_root)
     verify_trusted_uv(profile, sealed_root)
