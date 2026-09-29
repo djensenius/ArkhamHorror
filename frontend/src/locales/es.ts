@@ -6,4 +6,4 @@ import theDunwichLegacy from '@/locales/es/theDunwichLegacy'
 import thePathToCarcosa from '@/locales/es/thePathToCarcosa'
 import theFeastOfHemlockVale from '@/locales/en/theFeastOfHemlockVale'
 
-export default {...base, ...label, ...gameBoard, nightOfTheZealot, theDunwichLegacy, thePathToCarcosa, theFeastOfHemlockVale}
+export default {...base, label, ...gameBoard, nightOfTheZealot, theDunwichLegacy, thePathToCarcosa, theFeastOfHemlockVale}

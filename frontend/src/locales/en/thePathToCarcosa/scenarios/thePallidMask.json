@@ -24,13 +24,10 @@
     }
   },
   "label": {
-    "chooseWhoReadsActII": "Choose who will read Act II of The King in Yellow",
-    "doneChoosingWhoReadsActII": "Done choosing who will read Act II",
     "above": "Place Above",
     "below": "Place Below",
     "right": "Place to the Right",
-    "left": "Place to the Left",
-    "doneReadingActII": "Done having investigators read Act II"
+    "left": "Place to the Left"
   },
   "remembered": {
     "youOpenedASecretPassageway": "You opened a secret passageway."
@@ -76,6 +73,10 @@
     },
     "xp": {
       "bonus": "Gains insight into the machinations of the Tattered King."
+    },
+    "label": {
+      "chooseWhoReadsActII": "Choose who will read Act II of The King in Yellow",
+      "doneReadingActII": "Done having investigators read Act II"
     }
   }
 }
