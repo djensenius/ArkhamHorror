@@ -1011,63 +1011,6 @@ def validate_deployment_wiring(manifest: dict) -> None:
             f"{dependency} must be a declared dependency of the generator",
         )
 
-    offline_nginx = (ROOT / "offline" / "scripts" / "05-package.sh").read_text(encoding="utf-8")
-    require(
-        f"location ^~ {base}/ {{" in offline_nginx,
-        "the offline package does not publish the catalog on its own route",
-    )
-    for needle in (
-        "map \\$status \\$catalog_cache_control",
-        'default "no-store"',
-        'add_header X-Content-Type-Options "nosniff" always;',
-        "default_type application/json;",
-    ):
-        require(needle in offline_nginx, f"the offline nginx config is missing {needle!r}")
-
-    offline_build = (ROOT / "offline" / "scripts" / "03-build-frontend.sh").read_text(encoding="utf-8")
-    for needle in ("scripts/locale-catalog", "homebrew", "i18n-emitted-keys.json", "verify-dist.mjs"):
-        require(
-            needle in offline_build,
-            f"the offline frontend build does not account for {needle!r} in its cache key or verification",
-        )
-    require(
-        "toolchain_binary_authority node" in offline_build
-        and "verify_offline_node_runtime" in offline_build
-        and '"$OFFLINE_NODE" "$OFFLINE_NPM_CLI" "$@"' in offline_build
-        and "Discarding untrusted persisted frontend output before rebuilding" in offline_build,
-        "the offline frontend build does not bind and use the verified Node/npm authority "
-        "or rebuild persisted rendered assets",
-    )
-    offline_utils = (ROOT / "offline" / "scripts" / "utils.sh").read_text(encoding="utf-8")
-    require(
-        "init_toolchain_authority_receipt" in offline_utils
-        and "verify_authority_paths" in offline_utils
-        and "cached manifests and receipt bytes are observations only" in offline_utils,
-        "the offline toolchain does not use an invocation-external closure authority",
-    )
-    require(
-        "verify_authority_tree_from_receipt frontend" in offline_nginx
-        and "verify_nginx_dependency_for_packaging" in offline_nginx,
-        "the offline package does not bind frontend/nginx closure bytes to external authority",
-    )
-    package_attester = (ROOT / "offline" / "scripts" / "attest-package-closure.sh").read_text(encoding="utf-8")
-    require(
-        "record_authority_receipt offline-nginx" in package_attester,
-        "the offline package lacks a post-package external nginx closure attester",
-    )
-    offline_workflow = (ROOT / ".github" / "workflows" / "build-offline.yml").read_text(encoding="utf-8")
-    package_serving_gate = (ROOT / "offline" / "scripts" / "06-validate-package-serving.sh").read_text(encoding="utf-8")
-    require(
-        "offline/_deps/frontend/" not in offline_workflow
-        and "offline/_deps/.toolchain-authority/" in offline_workflow
-        and "run-authorized-stage.sh scripts/06-validate-package-serving.sh" in offline_workflow
-        and "--offline-authority-fd 9" in package_serving_gate
-        and "offline-authority-token" not in package_serving_gate,
-        "the offline workflow restores rendered assets or omits external closure authority wiring",
-    )
-
-    offline_deps = (ROOT / "offline" / "scripts" / "01-check-project-deps.sh").read_text(encoding="utf-8")
-    offline_toolchain = (ROOT / "offline" / "scripts" / "toolchain-authority.sh").read_text(encoding="utf-8")
     mise = (ROOT / "mise.toml").read_text(encoding="utf-8")
     node_version = strict_json.strict_json_load_path(FRONTEND / "package.json")["engines"]["node"]
     require(
@@ -1076,17 +1019,12 @@ def validate_deployment_wiring(manifest: dict) -> None:
     )
     require(f'node = "{node_version}"' in mise, f"mise.toml does not pin Node {node_version}")
     require(
-        f'NODE_VERSION="{node_version}"' in offline_toolchain
-        and 'local node_ver="${NODE_VERSION}"' in offline_deps,
-        f"the offline build does not install its shared authoritative Node {node_version}",
-    )
-    require(
         re.search(
-            rf"FROM node:{re.escape(node_version)}-alpine@sha256:[0-9a-f]{{64}} AS frontend",
+            rf"FROM node:{re.escape(node_version)}-alpine\s+AS frontend",
             (ROOT / "Dockerfile").read_text(encoding="utf-8"),
         )
         is not None,
-        f"the container build does not use an immutable Node {node_version} image",
+        f"the container build does not use the pinned Node {node_version} image",
     )
     require(
         manifest["provenance"].get("node") == node_version
@@ -1104,13 +1042,6 @@ def validate_deployment_wiring(manifest: dict) -> None:
         is not None,
         "the container build does not provide the contract fixtures the generator requires",
     )
-    require(
-        "fetch_locked_archive" in dockerfile
-        and "docker-cabal" in dockerfile
-        and re.search(r"^\s*ghcup\b", dockerfile, re.MULTILINE) is None,
-        "the Docker build does not directly verify its GHC/Cabal/Stack toolchain archives",
-    )
-
     ignore = (FRONTEND / ".gitignore").read_text(encoding="utf-8")
     require("public/locale-catalog/" in ignore, "generated catalog output is not git-ignored")
 

@@ -1,8 +1,32 @@
 {
   "heading": "Escenario IV",
   "label": {
+    "remembered": {
+      "setAFireInTheKitchen": "Prendisteis fuego en la cocina",
+      "incitedAFightAmongstThePatients": "Incitasteis una pelea entre los pacientes",
+      "distractedTheGuards": "Distrajisteis a los guardias",
+      "releasedADangerousPatient": "Liberasteis a un paciente peligroso",
+      "knowTheGuardsPatrols": "Conocéis las patrullas de los guardias",
+      "recalledTheWayOut": "Recordasteis la salida",
+      "youTookTheKeysByForce": "Os hicisteis con las llaves por la fuerza"
+    },
+    "cloudedMemory": {
+      "forget": "Olvida algo que un investigador haya “recordado” por una capacidad de un Lugar. (Ya no es cierto.)",
+      "chooseForget": "Olvida algo que un investigador haya “recordado” por una capacidad de un Lugar. (Ya no es cierto.)",
+      "horror": "Recibe 1 horror y Memoria nublada obtiene oleada."
+    },
     "placeMonsterUnderActDeck": "Elige al azar un Enemigo de entre los Enemigos Monstruo puestos aparte y colócalo bajo el mazo de Acto sin mirarlo",
-    "automaticFail": "Esta prueba fracasa automáticamente"
+    "thisTestAutomaticallyFails": "Esta prueba fracasa automáticamente",
+    "infirmary": {
+      "healDamage": "Cura 1 daño y recibe 1 horror directo",
+      "healHorror": "Cura 1 horror y recibe 1 daño directo"
+    },
+    "wallsClosingIn": {
+      "chooseEnemy": "Elige al azar 1 Enemigo de entre los Enemigos Monstruo puestos aparte y colócalo bajo el mazo de Acto sin mirarlo"
+    },
+    "arkhamAsylum": {
+      "youKnockHerOverAndGrabTheKeys": "La derribas y te haces con las llaves"
+    }
   },
   "tokens": {
     "easyStandard": {
@@ -55,34 +79,6 @@
   "tooltips": {
     "noAsylum": {
       "resign": "¡Por fin, una salida!"
-    }
-  },
-  "label": {
-    "remembered": {
-      "setAFireInTheKitchen": "Prendisteis fuego en la cocina",
-      "incitedAFightAmongstThePatients": "Incitasteis una pelea entre los pacientes",
-      "distractedTheGuards": "Distrajisteis a los guardias",
-      "releasedADangerousPatient": "Liberasteis a un paciente peligroso",
-      "knowTheGuardsPatrols": "Conocéis las patrullas de los guardias",
-      "recalledTheWayOut": "Recordasteis la salida",
-      "youTookTheKeysByForce": "Os hicisteis con las llaves por la fuerza"
-    },
-    "cloudedMemory": {
-      "forget": "Olvida algo que un investigador haya “recordado” por una capacidad de un Lugar. (Ya no es cierto.)",
-      "chooseForget": "Olvida algo que un investigador haya “recordado” por una capacidad de un Lugar. (Ya no es cierto.)",
-      "horror": "Recibe 1 horror y Memoria nublada obtiene oleada."
-    },
-    "placeMonsterUnderActDeck": "Elige al azar un Enemigo de entre los Enemigos Monstruo puestos aparte y colócalo bajo el mazo de Acto sin mirarlo",
-    "thisTestAutomaticallyFails": "Esta prueba fracasa automáticamente",
-    "infirmary": {
-      "healDamage": "Cura 1 daño y recibe 1 horror directo",
-      "healHorror": "Cura 1 horror y recibe 1 daño directo"
-    },
-    "wallsClosingIn": {
-      "chooseEnemy": "Elige al azar 1 Enemigo de entre los Enemigos Monstruo puestos aparte y colócalo bajo el mazo de Acto sin mirarlo"
-    },
-    "arkhamAsylum": {
-      "youKnockHerOverAndGrabTheKeys": "La derribas y te haces con las llaves"
     }
   },
   "resolutions": {

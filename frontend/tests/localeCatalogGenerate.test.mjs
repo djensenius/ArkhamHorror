@@ -109,8 +109,11 @@ test('every supported UI locale is published with an explicit fallback', () => {
     assert.ok(entry.chunks.length > 0)
   }
   const resolution = new Map(built.manifest.languageResolution.map((row) => [row.tag, row.locale]))
-  for (const tag of ['zh', 'zh-CN', 'zh-Hans', 'zh-Hant', 'zh-TW']) {
+  for (const tag of ['zh', 'zh-Hant', 'zh-TW']) {
     assert.equal(resolution.get(tag), 'zh', `${tag} resolves to zh`)
+  }
+  for (const tag of ['zh-CN', 'zh-Hans']) {
+    assert.equal(resolution.get(tag), 'zh-cn', `${tag} resolves to zh-cn`)
   }
   assert.equal(resolution.get('fr-CA'), 'fr')
   assert.equal(resolution.get('ru'), 'en', 'an unsupported language falls back to the default locale')

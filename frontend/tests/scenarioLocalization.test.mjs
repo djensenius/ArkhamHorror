@@ -95,7 +95,7 @@ test('scenario text uses locale keys instead of hardcoded English', () => {
   const known = new Set([
     'Homebrew/DarkMatter/Scenarios/InTheShadowOfEarth.hs:278',
     'Homebrew/DarkMatter/Scenarios/InTheShadowOfEarth.hs:286',
-    'Scenario/Scenarios/EdgeOfTheEarth/FatalMirage.hs:285',
+    'Scenario/Scenarios/EdgeOfTheEarth/FatalMirage.hs:286',
     'Scenario/Scenarios/ThePathToCarcosa/ThePallidMask.hs:49',
   ])
 
