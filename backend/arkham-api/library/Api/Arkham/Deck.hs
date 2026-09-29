@@ -15,4 +15,6 @@ deckFromCreateRequest userId CreateDeckRequest {deckName, deckUrl, deckList} =
     , arkhamDeckInvestigatorName = investigator_name deckList
     , arkhamDeckName = deckName
     , arkhamDeckList = deckList
+    , arkhamDeckOverlay = Nothing
+    , arkhamDeckLastUsedAt = Nothing
     }

@@ -457,7 +457,7 @@ validateReplayAnswer game ReplayAnswerStep {..} = do
     AmountsAnswer AmountsResponse {..} -> requireVersionAndPlayer "AmountsAnswer" arQuestionVersion arPlayerId
     PaymentAmountsAnswer PaymentAmountsResponse {..} ->
       requireVersionAndPlayer "PaymentAmountsAnswer" parQuestionVersion parPlayerId
-    DeckAnswer _ player -> unless (player == expectedPlayer) $ Left "DeckAnswer playerId does not match expected checkpoint player"
+    DeckAnswer _ player _ -> unless (player == expectedPlayer) $ Left "DeckAnswer playerId does not match expected checkpoint player"
     DeckListAnswer _ player -> unless (player == expectedPlayer) $ Left "DeckListAnswer playerId does not match expected checkpoint player"
     _ -> pure ()
   prompt <-
