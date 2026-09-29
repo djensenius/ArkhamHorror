@@ -1,10 +1,12 @@
 module Arkham.Replay.CheckpointSpec (spec) where
 
-import Api.Handler.Arkham.Game.Debug (checkpointInvestigatorPlayerId)
+import Api.Handler.Arkham.Game.Debug (checkpointInvestigatorForPlayerId, checkpointInvestigatorPlayerId)
 import Api.Arkham.Export
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
 import Arkham.CampaignStep qualified as CS
+import Arkham.Card.CardCode (CardCode (..))
 import Arkham.Classes.HasGame (getGame)
+import Arkham.Entities (Entities (..))
 import Arkham.Git (GitSha (..))
 import Arkham.Replay.Checkpoint
 import Arkham.Replay.ImportAuthority
@@ -99,6 +101,47 @@ spec = describe "deterministic replay checkpoint harness" do
     checkpointInvestigatorPlayerId game ("c" <> unCardCode (unInvestigatorId $ toId self))
       `shouldBe` Right self.player
     checkpointInvestigatorPlayerId game "c99999" `shouldSatisfy` isLeft
+
+  it "finds the investigator whose player owns a solo replay checkpoint prompt" . gameTest $ \_ -> do
+    game <- getGame
+    let firstInvestigatorId = "c01001"
+        secondInvestigatorId = "c01002"
+        firstPlayer = PlayerId $ UUID.fromWords 0 0 0 1
+        secondPlayer = PlayerId $ UUID.fromWords 0 0 0 2
+        unmatchedPlayer = PlayerId $ UUID.fromWords 0 0 0 3
+        gameWithInvestigatorPlayers assignments =
+          game
+            { gameEntities =
+                game.gameEntities
+                  { entitiesInvestigators =
+                      Map.fromList
+                        [ (InvestigatorId $ CardCode $ T.dropWhile (== 'c') investigatorId, lookupInvestigator (InvestigatorId $ CardCode $ T.dropWhile (== 'c') investigatorId) player)
+                        | (investigatorId, player) <- assignments
+                        ]
+                  }
+            }
+        twoHandedGame =
+          gameWithInvestigatorPlayers
+            [(firstInvestigatorId, firstPlayer), (secondInvestigatorId, secondPlayer)]
+        duplicatePlayerGame =
+          gameWithInvestigatorPlayers
+            [(firstInvestigatorId, secondPlayer), (secondInvestigatorId, secondPlayer)]
+    checkpointInvestigatorForPlayerId
+      twoHandedGame
+      [firstInvestigatorId, secondInvestigatorId]
+      secondPlayer
+      `shouldBe` Right (secondInvestigatorId, UUID.toText $ unPlayerId secondPlayer)
+    checkpointInvestigatorForPlayerId
+      twoHandedGame
+      [firstInvestigatorId, secondInvestigatorId]
+      unmatchedPlayer
+      `shouldSatisfy` isLeft
+    checkpointInvestigatorForPlayerId
+      duplicatePlayerGame
+      [firstInvestigatorId, secondInvestigatorId]
+      secondPlayer
+      `shouldSatisfy` isLeft
+    checkpointInvestigatorForPlayerId twoHandedGame [] secondPlayer `shouldSatisfy` isLeft
 
   it "fails closed on prompt and answer constructor mismatches" . gameTest $ \_ -> do
     game <- checkpointGame
