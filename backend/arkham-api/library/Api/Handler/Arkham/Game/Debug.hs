@@ -23,6 +23,7 @@ module Api.Handler.Arkham.Game.Debug (
   decompressReplayImport,
   tryImportDecode,
   validateReplayCheckpointPlayerId,
+  checkpointInvestigatorForPlayerId,
 ) where
 
 import Api.Arkham.Export
@@ -235,6 +236,20 @@ checkpointInvestigatorPlayerId game investigatorId =
       (InvestigatorId $ CardCode $ T.dropWhile (== 'c') investigatorId)
       (entitiesInvestigators $ gameEntities game)
 
+checkpointInvestigatorForPlayerId :: Game -> [Text] -> PlayerId -> Either Text (Text, Text)
+checkpointInvestigatorForPlayerId _ [] _ = Left "No investigators found in game data"
+checkpointInvestigatorForPlayerId game investigatorIds expectedPlayerId = do
+  let matches =
+        [ (investigatorId, UUID.toText $ unPlayerId playerId)
+        | investigatorId <- investigatorIds
+        , Right playerId <- [checkpointInvestigatorPlayerId game investigatorId]
+        , playerId == expectedPlayerId
+        ]
+  case matches of
+    [match] -> Right match
+    [] -> Left "Replay checkpoint prompt playerId is not assigned to any imported investigator"
+    _ -> Left "Replay checkpoint prompt playerId matches multiple imported investigators"
+
 makeReplayPlayerIdMap
   :: [ReplayPlayerRemapping]
   -> Either Text (Map PlayerId PlayerId)
@@ -437,35 +452,56 @@ postApiV1ArkhamGamesImportR = do
               , nonEmpty (aeCampaignPlayers export)
               ]
         campaignInvestigatorIds = map normalizeJsonInvestigatorId $ aeCampaignPlayers export
-      selectedInvestigator <- case variant of
-        Solo -> case headMay allInvestigatorIds of
-          Nothing -> invalidArgs ["No investigators found in game data"]
-          Just iid -> pure iid
-        WithFriends -> case mInvestigatorId <|> headMay campaignInvestigatorIds of
-          Nothing -> invalidArgs ["No investigator specified"]
-          Just iid -> pure iid
-      checkpointPlayerId <- forM importAuthority \authority -> do
-        playerId <-
-          either
-            (invalidArgs . pure)
-            pure
-            $ checkpointInvestigatorPlayerId agedCurrentData selectedInvestigator
-        let checkpointPlayerId = UUID.toText $ unPlayerId playerId
-        either
-          (invalidArgs . pure)
-          pure
-          $ validateReplayCheckpointPlayerId
-            (replayImportCheckpointPlayerId authority)
-            checkpointPlayerId
-        pure checkpointPlayerId
+      (selectedInvestigator, checkpointPlayerId) <- case variant of
+        Solo -> case importAuthority of
+          Just authority -> do
+            (investigatorId, playerId) <-
+              either
+                (invalidArgs . pure)
+                pure
+                $ checkpointInvestigatorForPlayerId
+                  agedCurrentData
+                  allInvestigatorIds
+                  (replayImportCheckpointPlayerId authority)
+            pure (investigatorId, Just playerId)
+          Nothing -> case headMay allInvestigatorIds of
+            Nothing -> invalidArgs ["No investigators found in game data"]
+            Just iid -> pure (iid, Nothing)
+        WithFriends -> do
+          selectedInvestigator <- case mInvestigatorId <|> headMay campaignInvestigatorIds of
+            Nothing -> invalidArgs ["No investigator specified"]
+            Just iid -> pure iid
+          checkpointPlayerId <- forM importAuthority \authority -> do
+            playerId <-
+              either
+                (invalidArgs . pure)
+                pure
+                $ checkpointInvestigatorPlayerId agedCurrentData selectedInvestigator
+            let checkpointPlayerId = UUID.toText $ unPlayerId playerId
+            either
+              (invalidArgs . pure)
+              pure
+              $ validateReplayCheckpointPlayerId
+                (replayImportCheckpointPlayerId authority)
+                checkpointPlayerId
+            pure checkpointPlayerId
+          pure (selectedInvestigator, checkpointPlayerId)
       (importedGame, importReceipt) <- runDB $ do
         gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now
         (playerRemappings, replayPlayerIds) <- case variant of
           Solo -> do
-            newPlayerId <- insert $ ArkhamPlayer userId gameId selectedInvestigator
+            newPlayerIds <-
+              forM allInvestigatorIds \investigatorId -> do
+                playerId <- insert $ ArkhamPlayer userId gameId investigatorId
+                pure (investigatorId, playerId)
             playerRemappings <- case checkpointPlayerId of
               Nothing -> pure []
               Just originalPlayerId -> do
+                newPlayerId <-
+                  maybe
+                    (lift $ invalidArgs ["Replay checkpoint investigator was not inserted"])
+                    pure
+                    $ lookup selectedInvestigator newPlayerIds
                 mapping <-
                   either
                     (lift . invalidArgs . pure)
