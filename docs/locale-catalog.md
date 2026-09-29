@@ -412,11 +412,11 @@ launcher happen to be checked before anything imports or starts them, which is
 worth having only because a half-edited lint should not be deciding anything.
 The suite exercises this by replacing the lint with a permissive stand-in and
 requiring the run to stop before that stand-in's top-level code executes.
-Interpreter binaries and active platform `sysconfigdata` sources are pinned as
-non-empty, lowercase SHA-256 candidate lists per platform. This permits only
-the explicitly reviewed standalone builds that mise caches or currently
-installs; an empty, malformed, duplicate, cross-platform, or otherwise
-undeclared identity is refused.
+Interpreter binaries are accepted by implementation and exact version from the
+explicit mise-managed path rather than by live external binary hashes; active
+platform `sysconfigdata` sources are treated as non-importable platform variants.
+This keeps required checks from depending on refreshed standalone build bytes
+while preserving the source/import-surface attestation below.
 
 **The importable prefix, not just its sources.** Hashing `*.py` under the
 stdlib root leaves two ways into the process before any of it is checked:
@@ -443,8 +443,8 @@ not.
 
 **Environment attestation.** Before the first Python byte runs, the sealed
 shell hashes the complete non-variant stdlib source inventory (path names and
-contents), then hashes each exact CPython, Node and uv binary against the
-platform-specific digest table. Each Python process uses a fresh, empty,
+contents), then checks CPython by implementation and exact version and hashes
+Node and uv against the platform-specific digest table. Each Python process uses a fresh, empty,
 invocation-owned `-X pycache_prefix`, so it cannot consult the installation's
 normal `__pycache__` at all; `-B` additionally prevents new bytecode writes.
 The bootstrap repeats executable/source checks after startup, then proves its
@@ -456,17 +456,17 @@ sealed stdlib root must be a committed digest-table entry that hashes to the
 recorded value, or one of the four exactly-named build-configuration modules
 the lock records as platform variants (and which no importable module can
 reach). The table is platform-independent by construction: every source it
-pins was verified byte-identical in the pinned upstream CPython 3.14.7 tarball
-and in the `python-build-standalone` builds the lock records.
+pins is recorded by path and digest; the interpreter binary itself is accepted
+by implementation and exact CPython 3.14.7 version at the sealed path.
 
 That covers every stdlib `.py` byte. The rest of the standard library is
 covered by an *import-closure* proof rather than by hashing platform-specific
 binaries: starting from exactly the stdlib modules the capability boundary lets
 a governed source name, and following those modules' own imports through their
 attested sources, every reachable name must resolve to an attested `.py` — or
-to no file at all, in which case only the pinned interpreter binary itself (a
-builtin or frozen module, from the distribution the lock records by checksum)
-can satisfy it. A name that resolves to a file-backed extension module, or to
+to no file at all, in which case only the CPython 3.14.7 interpreter itself (a
+builtin or frozen module, accepted by implementation and exact version) can
+satisfy it. A name that resolves to a file-backed extension module, or to
 one of the unhashed platform-variant modules, is refused. Resolution follows
 CPython's own precedence, where a planted `csv.so` shadows the attested
 `csv.py`, so that is exactly the shape the adversarial suite plants. The lock
@@ -658,24 +658,12 @@ requirement and a provenance record, not an authorization root and not a
 JavaScript sandbox. The generator and every module it is allowed to load run
 with full Node privileges.
 
-**Known blockers owned by the offline branch.** Two findings in
-`offline/scripts/03-build-frontend.sh` are being replaced wholesale by
-`fix/locale-offline-authority-final` and are deliberately *not* addressed here,
-so the two branches do not fight over the same file: the offline build accepts
-an already-present Node by version rather than by archive checksum, and its
-`npm ci` path can fall back to `npm install` without a lockfile. Until that
-branch merges, the offline installer lane does not have the tool-identity or
-locked-dependency properties described above; this branch only kept its
-generator-launcher references compiling. Nothing in this document should be
-read as a guarantee about that lane.
-
 **One route, everywhere.** `locale-catalog:generate`, the catalog validator,
-the serving gate, npm's own `prebuild`, the container build, the offline
-installer build and the packaging step all start the generator through that
-launcher. There is no `node .../generate.mjs` left in a production path, and a
-policy test proves it by *discovering* the callers rather than listing them:
-everything executable under `.github/workflows`, `frontend/package.json`,
-`frontend/scripts`, `mise.toml`, `offline/scripts`, `scripts` and the
+the serving gate, npm's own `prebuild` and the container build all start the
+generator through that launcher. There is no `node .../generate.mjs` left in a
+production path, and a policy test proves it by *discovering* the callers rather
+than listing them: everything executable under `.github/workflows`,
+`frontend/package.json`, `frontend/scripts`, `mise.toml`, `scripts` and the
 `Dockerfile`, minus the launcher, its digest table and trusted tests. A new
 wrapper dropped into `frontend/scripts` is therefore covered the moment it is
 committed.
@@ -802,9 +790,9 @@ tolerates the optional whitespace around list separators; a `br` token carrying
 a parameter the config does not recognise, and `*`, both fall back to gzip or
 identity rather than guessing. `Vary: Accept-Encoding` is stated exactly once on
 every branch (`gzip_vary` is off inside the location precisely so nginx does not
-add a second copy). The offline package's generated config applies the same
-rules, and `scripts/validate-catalog-serving.py` drives the whole matrix — 27
-header forms — against both, checking the selected encoding *and* the bytes.
+add a second copy). `scripts/validate-catalog-serving.py` drives the whole
+matrix — 27 header forms — against the production image, checking the selected
+encoding *and* the bytes.
 
 ## Verification
 
@@ -818,14 +806,10 @@ LOCALE_CATALOG_MISE_ROOT=/absolute/path/to/mise-data`; additionally export
     mise run locale-catalog:test                 # render-AST, source-integrity and generator tests
     mise run locale-catalog:backend-keys-test    # the key extractor's own rules, on synthetic modules
     mise run locale-catalog:backend-keys-check   # backend emitted-key registry drift
-    mise run locale-catalog:offline-cache-test   # the offline build's cache key covers every input
-    mise run locale-catalog:offline-cache-hit-test  # catalog-subtree verifier regressions
-    mise run locale-catalog:offline-output-authority-test  # full frontend/package authority regressions
     mise run locale-catalog:serving-cleanup-test # failed nginx setup releases its resources
     mise run locale-catalog:validate             # schemas, digests, provenance, deploy seam
     mise run locale-catalog:capability-settings  # a real manifest configures the advertised capability
     mise run locale-catalog:capability-probe     # ... and the real backend serves it, or refuses to start
-    mise run locale-catalog:offline-toolchain-authority-test  # offline archive/cache authority
     ARKHAM_PRODUCTION_IMAGE=arkham:test mise run locale-catalog:serving  # exact final image nginx
 
 `scripts/validate-locale-catalog.py` regenerates the catalog twice, rebuilds it
@@ -843,16 +827,10 @@ lockfile or the published content must change the revision.
 `scripts/validate-catalog-serving.py` accepts only explicit shipped artifacts;
 it never renders or textually rewrites a surrogate config. For production, CI
 builds the final `app` image and the gate runs its own nginx/config/static tree
-without mounts, first requiring `nginx -t` and the gzip-static module. For the
-offline path, the release workflow invokes the actual generated package
-launcher with an invocation-external CI receipt. That receipt covers the
-Nginx executable, generated-config source, and full bundled-library closure
-before `LD_LIBRARY_PATH`/`DYLD_LIBRARY_PATH` is set; package-local provenance
-is only a consistency record. The launcher then runs `nginx -t` before serving
-through its package binary in an otherwise empty environment.
-Both paths receive live requests for 200, 304, 404 and 405, whole-file Range
-handling, JSON MIME, `nosniff`, `Vary`, gzip/brotli negotiation, and
-byte-exact identity and precompressed payloads from their own catalog tree.
+without mounts, first requiring `nginx -t` and the gzip-static module. The gate
+sends live requests for 200, 304, 404 and 405, whole-file Range handling, JSON
+MIME, `nosniff`, `Vary`, gzip/brotli negotiation, and byte-exact identity and
+precompressed payloads from the catalog tree.
 
 `frontend/scripts/locale-catalog/verify-dist.mjs` proves the built `dist/`
 really contains the catalog with matching digests and precompressed siblings.
@@ -908,13 +886,10 @@ every digest that is compared — so:
 * `--publish` closes the last gap between "these bytes were correct when I read
   them" and "these are the bytes that will be served": the catalog is rewritten
   from the verified buffers into a fresh mode-0700 directory and moved into
-  place with `rename`. **Every path that ends up serving bytes uses it** — the
-  offline fresh build, the offline cache hit, the offline packager (verifying
-  the tree in its final destination, which is also what makes `--skip-frontend`
-  unable to package an unverified catalog), and the Docker frontend stage before
-  its `dist` is copied into the runtime image. Publication keeps a rollback copy
-  where the filesystem allows one and falls back to replace-in-place on a
-  layered filesystem, where renaming a lower-layer directory is `EXDEV`;
+  place with `rename`. The Docker frontend stage uses it before its `dist` is
+  copied into the runtime image. Publication keeps a rollback copy where the
+  filesystem allows one and falls back to replace-in-place on a layered
+  filesystem, where renaming a lower-layer directory is `EXDEV`;
 * the manifest and each chunk are checked against each other, not just against
   their digests: one content path belongs to exactly one descriptor, and every
   chunk is validated against the closed v1 chunk schema and must agree with its
@@ -929,25 +904,13 @@ every digest that is compared — so:
 * `O_NOFOLLOW` and `O_DIRECTORY` are required to exist, since `undefined | 0`
   would silently turn a no-follow open into an ordinary one;
 * the identity/`.gz`/`.br` artifact sets are compared with the manifest in both
-  directions, so nothing unlisted can sit where nginx would serve it;
-the offline build runs the same check against its own output — before both of
-its cache-hit returns — and hashes every catalog provenance input into its
-cache key, so a stale `_deps/frontend` can never be reused.
-`offline/scripts/test-frontend-cache-hash.sh` runs that production hash
-function against a synthetic tree and mutates each input class in turn,
-including the cases where an input is missing and the hash must fail rather
-than quietly hash nothing. A cache restores `offline/_deps` and not
-`frontend/public`, so the cache-hit path verifies the restored output against
-its *own* manifest (`verify-dist.mjs --dist-only`) and treats a failure as a
-cache miss to rebuild from, never as a reason to delete a usable output;
-`offline/scripts/test-frontend-cache-hit.sh` drives those branches with
-`frontend/public/locale-catalog` absent. That check also decompresses every
-`.gz`/`.br` sibling and compares it byte-for-byte with the JSON beside it,
-under a size ceiling, and refuses any compressed artifact the manifest does not
-list: nginx serves those bytes without ever reading the identity file, so a
-cache that restored a stale, corrupt or oversized sibling would otherwise be
-served as if it were the catalog. All of it runs in the `Locale catalog` GitHub Actions
-workflow.
+  directions, so nothing unlisted can sit where nginx would serve it. The check
+  also decompresses every `.gz`/`.br` sibling and compares it byte-for-byte with
+  the JSON beside it, under a size ceiling, and refuses any compressed artifact
+  the manifest does not list: nginx serves those bytes without ever reading the
+  identity file, so a stale, corrupt or oversized sibling would otherwise be
+  served as if it were the catalog. All of it runs in the `Locale catalog`
+  GitHub Actions workflow.
 
 ## Ownership
 

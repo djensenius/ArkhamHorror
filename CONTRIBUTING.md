@@ -27,6 +27,24 @@ mise run contracts:validate
 Runtime changes must also pass the relevant Haskell and container checks already
 defined in `.github/workflows`.
 
+Backend Haskell tools are opt-in so locale/contract-only CI jobs do not install
+GHC or Stack. To install them locally, run:
+
+```sh
+MISE_ENV=haskell mise install
+```
+
+On macOS, backend builds also need Homebrew `pcre` and keg-only `libpq` visible
+to Stack. A typical shell setup is:
+
+```sh
+export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
+export PKG_CONFIG_PATH="/opt/homebrew/opt/libpq/lib/pkgconfig:/opt/homebrew/lib/pkgconfig:$PKG_CONFIG_PATH"
+export CPATH="/opt/homebrew/include:$CPATH"
+export LIBRARY_PATH="/opt/homebrew/opt/libpq/lib:/opt/homebrew/lib:$LIBRARY_PATH"
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/libpq/lib:$DYLD_LIBRARY_PATH"
+```
+
 ## Pull requests
 
 - Branch from the fork's current `main`.
