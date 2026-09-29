@@ -56,6 +56,7 @@
     }
   },
   "labyrinthineHalls": {
+    "additionalActions": "Labyrinthine Halls",
     "label": {
       "chooseAdditionalActions": "You peer through an overgrown mirror and see an unfamiliar reflection. Choose an investigator to take 2 additional actions during their next turn.",
       "chooseDrawCards": "You find an old lockbox in a pile of refuse, and decide to leave something behind. Choose an investigator to draw 2 cards.",

@@ -80,17 +80,22 @@ export function findDuplicateKeys(text, file) {
   return duplicates
 }
 
-function leafEntries(value, prefix, out) {
-  if (value === null || typeof value !== 'object' || value instanceof String) {
+function leafEntries(value, prefix, out, ownerKey) {
+  if (
+    value === null ||
+    typeof value !== 'object' ||
+    value instanceof String ||
+    (ownerKey !== undefined && typeof value[ownerKey] === 'string')
+  ) {
     out.set(prefix, value)
     return out
   }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => leafEntries(item, prefix === '' ? String(index) : `${prefix}.${index}`, out))
+    value.forEach((item, index) => leafEntries(item, prefix === '' ? String(index) : `${prefix}.${index}`, out, ownerKey))
     return out
   }
   for (const [key, child] of Object.entries(value)) {
-    leafEntries(child, prefix === '' ? key : `${prefix}.${key}`, out)
+    leafEntries(child, prefix === '' ? key : `${prefix}.${key}`, out, ownerKey)
   }
   return out
 }
@@ -113,7 +118,12 @@ export function analyzeComposition(composed, files, ownerKey, moduleKey) {
   const mountedAt = new Map()
   if (moduleKey !== undefined) {
     const walkMounts = (node, path) => {
-      if (node === null || typeof node !== 'object' || node instanceof String) return
+      if (
+        node === null ||
+        typeof node !== 'object' ||
+        node instanceof String ||
+        typeof node[ownerKey] === 'string'
+      ) return
       const owner = node[moduleKey]
       if (typeof owner === 'string') {
         if (!mountedAt.has(owner)) mountedAt.set(owner, new Set())
@@ -125,9 +135,9 @@ export function analyzeComposition(composed, files, ownerKey, moduleKey) {
     }
     walkMounts(composed, '')
   }
-  for (const [path, value] of leafEntries(composed, '', new Map())) {
-    if (!(value instanceof String)) continue
-    const owner = value[ownerKey]
+  for (const [path, value] of leafEntries(composed, '', new Map(), ownerKey)) {
+    const owner = value?.[ownerKey]
+    if (typeof owner !== 'string') continue
     if (owner === undefined) continue
     ownerOf.set(path, owner)
     if (!ownedByFile.has(owner)) ownedByFile.set(owner, new Set())
@@ -137,7 +147,7 @@ export function analyzeComposition(composed, files, ownerKey, moduleKey) {
   const findings = []
   for (const { path, tree } of files) {
     if (tree === null || typeof tree !== 'object') continue
-    const declared = [...leafEntries(tree, '', new Map()).keys()]
+    const declared = [...leafEntries(tree, '', new Map(), ownerKey).keys()]
     if (declared.length === 0) continue
 
     const owned = ownedByFile.get(path) ?? new Set()
