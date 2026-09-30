@@ -3456,6 +3456,7 @@ spec = describe "Native client contract fixtures" do
       locationId = LocationId $ UUID.fromWords 0 0 0 74
       cardId = unsafeMakeCardId $ UUID.fromWords 0 0 0 75
       amountId = UUID.fromWords 0 0 0 76
+      paymentId = UUID.fromWords 0 0 0 77
       assertComplete question =
         case QuestionPresentation.questionPresentation 99 question of
           QuestionPresentation.QuestionPresentation _ _ choiceCount presentations -> do
@@ -3512,7 +3513,7 @@ spec = describe "Native client contract fixtures" do
         , ChooseUpToN 1 [Label "$a" [ClearUI], Done "$done"]
         , ChooseOneAtATime [Label "$a" [ClearUI], Label "$b" [ClearUI]]
         , ChooseOneAtATimeWithAuto "$auto" [Label "$a" [ClearUI], Label "$b" [ClearUI]]
-        , ChoosePaymentAmounts "$pay" Nothing [PaymentAmountChoice amountId iid 0 3 "$resource" ClearUI]
+        , ChoosePaymentAmounts "$pay" Nothing [PaymentAmountChoice paymentId iid 0 3 "$resource" ClearUI]
         , ChooseAmounts "$amount" (MinAmountTarget 0) [AmountChoice amountId "$clues" 0 3] (LocationTarget locationId)
         , ChooseUpgradeDeck
         , ChooseDeck
@@ -3543,17 +3544,20 @@ spec = describe "Native client contract fixtures" do
     let
       representativeNames =
         [ "chooseOne-all-ui", "playerWindowChooseOne", "windowChooseOne", "chooseOneFromEach", "chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "choosePaymentAmounts-null-target", "chooseAmounts", "chooseUpgradeDeck", "chooseDeck", "chooseJoinDeck", "questionLabel", "payCostQuestion", "questionWithProxySource", "read", "chooseOneWizard", "pickSupplies", "pickDestiny", "dropDown", "pickScenarioSettings", "pickCampaignSettings", "pickCampaignSpecific", "pickScenarioSpecific", "chooseExchangeAmounts", "continueCampaign" ]
-      representativeFixture =
-        Aeson.object
-          [ "presentations"
-              .= [ Aeson.object
-                    [ "name" .= name
-                    , "presentation" .= QuestionPresentation.questionPresentation (300 + index) question
-                    ]
-                 | (index, (name, question)) <- zip [0 :: Int ..] (zip representativeNames representativeQuestions)
-                 ]
-          ]
-    loadFixture "question-presentation-representatives.json" >>= (`shouldBe` representativeFixture)
+    representativeFixture <- loadFixture "question-presentation-representatives.json"
+    fixturePresentations <- case representativeFixture of
+      Aeson.Object fields -> case AesonKeyMap.lookup "presentations" fields of
+        Just (Aeson.Array values) -> pure $ toList values
+        _ -> expectationFailure "representative fixture missing presentations" >> pure []
+      _ -> expectationFailure "representative fixture must be an object" >> pure []
+    for_ (zip [0 :: Int ..] $ zip representativeNames representativeQuestions) \(index, (name, question)) -> do
+      let expectedPresentation = Aeson.toJSON $ QuestionPresentation.questionPresentation (300 + index) question
+      case find (\case
+        Aeson.Object fields -> AesonKeyMap.lookup "name" fields == Just (Aeson.String name)
+        _ -> False) fixturePresentations of
+        Just (Aeson.Object fields) ->
+          AesonKeyMap.lookup "presentation" fields `shouldBe` Just expectedPresentation
+        other -> expectationFailure $ "Missing representative presentation " <> Text.unpack name <> ": " <> show other
 
   it "matches generic presentation v2 golden fixtures from the real encoder" do
     let

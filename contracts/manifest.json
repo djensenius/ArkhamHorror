@@ -16231,7 +16231,7 @@
     "contracts/fixtures/question-presentation-generic-read.json": "4be412a3141f16035e380c6bd3994fa578804293c6df4fb541643c83d54b937c",
     "contracts/fixtures/question-presentation-generic-skill-label.json": "94b3beab6799f70c876fba203d8a892d6f769de2c38984ac83916521b0f19b2f",
     "contracts/fixtures/question-presentation-generic-wrapped.json": "75595d9f8bda5a779b6409963ce060b8d9049568f2b4ed58d484e59507f096e8",
-    "contracts/fixtures/question-presentation-representatives.json": "addb871794473d770af11fbb28f2e7bc05793032e5a4359a0f990504d805dd00",
+    "contracts/fixtures/question-presentation-representatives.json": "84c7bacb959c360ef9f07345d961ff6f18e3a215e50ec0ffa8f765384e4a6293",
     "contracts/fixtures/question-presentation-treachery-forced-ability.json": "458815ac4e9cd27a5b90db9ac038b99d90de7de13f9b341c75b49e5a53753b3c",
     "contracts/fixtures/question-read-scenario-intro.json": "98cac0992deff7f08005fc25a0227ef62b9aedde00c3b6dcceb25e503d671fd3",
     "contracts/fixtures/question-read-with-cards.json": "402805337459a8e82a518d515f2bafdb4d4d6e6474ae190002dd885a5ed50ba1",
