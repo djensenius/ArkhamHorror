@@ -1,32 +1,32 @@
 {
-   "answer": {
-      "kind": "singleChoice",
-      "tag": "Answer"
-   },
-   "choiceCount": 1,
-   "choices": [
-      {
-         "ability": {
-            "actions": [],
-            "canBeCancelled": true,
-            "cardCode": "c01114",
-            "index": 1,
-            "type": "forced"
-         },
-         "actorId": "c01001",
-         "cost": {
-            "kind": "free"
-         },
-         "entity": {
-            "id": "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
-            "kind": "location"
-         },
-         "kind": "resolveForcedAbility",
-         "selectable": true,
-         "sourceIndex": 0
-      }
-   ],
-   "protocolVersion": 2,
-   "questionKind": "windowChooseOne",
-   "questionVersion": 37
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "choiceCount": 1,
+  "choices": [
+    {
+      "ability": {
+        "actions": [],
+        "canBeCancelled": true,
+        "cardCode": "c01114",
+        "index": 1,
+        "type": "forced"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "kind": "free"
+      },
+      "entity": {
+        "id": "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
+        "kind": "location"
+      },
+      "kind": "resolveForcedAbility",
+      "selectable": true,
+      "sourceIndex": 0
+    }
+  ],
+  "protocolVersion": 2,
+  "questionKind": "windowChooseOne",
+  "questionVersion": 37
 }

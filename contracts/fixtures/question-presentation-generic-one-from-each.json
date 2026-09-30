@@ -1,0 +1,40 @@
+{
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "choiceCount": 2,
+  "choices": [
+    {
+      "groupIndex": 0,
+      "kind": "localizedLabel",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$group.one"
+      },
+      "selectable": true,
+      "sourceIndex": 0
+    },
+    {
+      "groupIndex": 1,
+      "kind": "localizedLabel",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$group.two"
+      },
+      "selectable": true,
+      "sourceIndex": 1
+    }
+  ],
+  "groups": [
+    1,
+    1
+  ],
+  "protocolVersion": 2,
+  "questionKind": "chooseOneFromEach",
+  "questionVersion": 210,
+  "selection": {
+    "max": 1,
+    "min": 1
+  }
+}

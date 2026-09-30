@@ -1,0 +1,20 @@
+{
+  "tag": "ChoosePaymentAmounts",
+  "label": "$pay",
+  "paymentAmountTargetValue": {
+    "tag": "TotalAmountTarget",
+    "contents": 2
+  },
+  "paymentAmountChoices": [
+    {
+      "choiceId": "00000000-0000-0000-0000-000000000066",
+      "investigatorId": "c01001",
+      "minBound": 0,
+      "maxBound": 2,
+      "title": "$resources",
+      "message": {
+        "tag": "ClearUI"
+      }
+    }
+  ]
+}

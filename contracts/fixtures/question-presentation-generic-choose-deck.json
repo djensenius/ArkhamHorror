@@ -1,0 +1,14 @@
+{
+  "answer": {
+    "kind": "deck",
+    "tags": [
+      "DeckAnswer",
+      "DeckListAnswer"
+    ]
+  },
+  "choiceCount": 0,
+  "choices": [],
+  "protocolVersion": 2,
+  "questionKind": "chooseDeck",
+  "questionVersion": 211
+}

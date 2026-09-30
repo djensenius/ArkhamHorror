@@ -1,0 +1,18 @@
+{
+  "tag": "Read",
+  "flavorText": {
+    "title": null,
+    "body": []
+  },
+  "readChoices": {
+    "tag": "BasicReadChoices",
+    "contents": [
+      {
+        "tag": "Label",
+        "label": "$read.continue",
+        "messages": []
+      }
+    ]
+  },
+  "readCards": null
+}

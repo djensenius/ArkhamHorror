@@ -1,0 +1,16 @@
+{
+  "tag": "ChooseN",
+  "amount": 1,
+  "choices": [
+    {
+      "tag": "Label",
+      "label": "$fixture.first",
+      "messages": []
+    },
+    {
+      "tag": "Label",
+      "label": "$fixture.second",
+      "messages": []
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "tag": "ChooseSome",
+  "choices": [
+    {
+      "tag": "Label",
+      "label": "$fixture.first",
+      "messages": []
+    },
+    {
+      "tag": "Done",
+      "label": "$done"
+    }
+  ]
+}

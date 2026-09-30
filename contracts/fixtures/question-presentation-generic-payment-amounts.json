@@ -1,0 +1,31 @@
+{
+  "answer": {
+    "kind": "paymentAmounts",
+    "tag": "PaymentAmountsAnswer"
+  },
+  "choiceCount": 0,
+  "choices": [],
+  "label": {
+    "kind": "embeddedI18n",
+    "text": "$pay"
+  },
+  "paymentChoices": [
+    {
+      "choiceId": "00000000-0000-0000-0000-000000000066",
+      "investigatorId": "c01001",
+      "max": 2,
+      "min": 0,
+      "title": {
+        "kind": "embeddedI18n",
+        "text": "$resources"
+      }
+    }
+  ],
+  "protocolVersion": 2,
+  "questionKind": "choosePaymentAmounts",
+  "questionVersion": 208,
+  "target": {
+    "contents": 2,
+    "tag": "TotalAmountTarget"
+  }
+}

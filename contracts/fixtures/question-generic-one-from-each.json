@@ -1,0 +1,19 @@
+{
+  "tag": "ChooseOneFromEach",
+  "groups": [
+    [
+      {
+        "tag": "Label",
+        "label": "$group.one",
+        "messages": []
+      }
+    ],
+    [
+      {
+        "tag": "Label",
+        "label": "$group.two",
+        "messages": []
+      }
+    ]
+  ]
+}

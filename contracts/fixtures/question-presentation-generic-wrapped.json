@@ -1,0 +1,40 @@
+{
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "cardCode": "c01120",
+  "choiceCount": 1,
+  "choices": [
+    {
+      "kind": "localizedLabel",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$wrapped.choice"
+      },
+      "selectable": true,
+      "sourceIndex": 0
+    }
+  ],
+  "payCost": {
+    "kind": "free"
+  },
+  "protocolVersion": 2,
+  "questionKind": "chooseOne",
+  "questionLabel": {
+    "kind": "embeddedI18n",
+    "text": "$wrapped"
+  },
+  "questionSource": {
+    "entity": {
+      "id": "00000000-0000-0000-0000-000000000064",
+      "kind": "location"
+    },
+    "raw": {
+      "contents": "00000000-0000-0000-0000-000000000064",
+      "tag": "LocationSource"
+    }
+  },
+  "questionVersion": 213,
+  "tooltip": "$tooltip"
+}

@@ -1,41 +1,41 @@
 {
-   "answer": {
-      "kind": "singleChoice",
-      "tag": "Answer"
-   },
-   "choiceCount": 1,
-   "choices": [
-      {
-         "entity": {
-            "id": "c01001",
-            "kind": "investigator"
-         },
-         "kind": "assignHorror",
-         "selectable": true,
-         "sourceIndex": 0
-      }
-   ],
-   "protocolVersion": 2,
-   "questionKind": "chooseOne",
-   "questionLabel": {
-      "kind": "embeddedI18n",
-      "text": "Assign 1 horror"
-   },
-   "questionSource": {
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "choiceCount": 1,
+  "choices": [
+    {
       "entity": {
-         "id": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
-         "kind": "location"
+        "id": "c01001",
+        "kind": "investigator"
       },
-      "raw": {
-         "contents": [
-            {
-               "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
-               "tag": "LocationSource"
-            },
-            1
-         ],
-         "tag": "AbilitySource"
-      }
-   },
-   "questionVersion": 38
+      "kind": "assignHorror",
+      "selectable": true,
+      "sourceIndex": 0
+    }
+  ],
+  "protocolVersion": 2,
+  "questionKind": "chooseOne",
+  "questionLabel": {
+    "kind": "embeddedI18n",
+    "text": "Assign 1 horror"
+  },
+  "questionSource": {
+    "entity": {
+      "id": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+      "kind": "location"
+    },
+    "raw": {
+      "contents": [
+        {
+          "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+          "tag": "LocationSource"
+        },
+        1
+      ],
+      "tag": "AbilitySource"
+    }
+  },
+  "questionVersion": 38
 }

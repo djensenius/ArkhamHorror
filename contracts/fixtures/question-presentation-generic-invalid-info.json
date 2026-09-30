@@ -1,0 +1,30 @@
+{
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "choiceCount": 2,
+  "choices": [
+    {
+      "kind": "invalidLabel",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$fixture.invalid"
+      },
+      "selectable": false,
+      "sourceIndex": 0
+    },
+    {
+      "flavorText": {
+        "body": [],
+        "title": null
+      },
+      "kind": "info",
+      "selectable": false,
+      "sourceIndex": 1
+    }
+  ],
+  "protocolVersion": 2,
+  "questionKind": "chooseOne",
+  "questionVersion": 203
+}

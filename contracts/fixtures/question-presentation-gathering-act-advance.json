@@ -1,21 +1,21 @@
 {
-   "answer": {
-      "kind": "singleChoice",
-      "tag": "Answer"
-   },
-   "choiceCount": 1,
-   "choices": [
-      {
-         "entity": {
-            "id": "c01108",
-            "kind": "act"
-         },
-         "kind": "advanceAct",
-         "selectable": true,
-         "sourceIndex": 0
-      }
-   ],
-   "protocolVersion": 2,
-   "questionKind": "chooseOne",
-   "questionVersion": 35
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "choiceCount": 1,
+  "choices": [
+    {
+      "entity": {
+        "id": "c01108",
+        "kind": "act"
+      },
+      "kind": "advanceAct",
+      "selectable": true,
+      "sourceIndex": 0
+    }
+  ],
+  "protocolVersion": 2,
+  "questionKind": "chooseOne",
+  "questionVersion": 35
 }
