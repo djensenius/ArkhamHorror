@@ -164,9 +164,9 @@ paths:
         conservative compatibility mode using `/site-settings`, but must not
         infer capabilities merely because another route exists.
 
-        `questions.semantic-presentation.v1` is global for this contract
+        `questions.semantic-presentation.v2` is global for this contract
         revision. It means game snapshots may carry backend-authored,
-        render-only `questionPresentation` descriptors bound to the
+        complete render-only `questionPresentation` descriptors bound to the
         authoritative raw question's version and source indices. Clients still
         submit the existing versioned Answer and must never treat presentation
         metadata as rules authority.
