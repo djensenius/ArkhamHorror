@@ -41,7 +41,7 @@ constructor.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.
-- `questions.semantic-presentation.v1` is global at revision `0.1.44`. It
+- `questions.semantic-presentation.v2` is global at revision `0.1.44`. It
   advertises the additive, backend-authored `questionPresentation` projection
   beside the unchanged authoritative raw question. A client uses descriptors
   only to render native controls, validates their protocol/question versions
@@ -615,7 +615,7 @@ Revision `0.1.41` registers
 `question-gathering-act-objective.json`, the authoritative raw question 34
 produced after the Cover Up window resolves, and
 `question-presentation-gathering-act-objective.json`, its additive
-`questions.semantic-presentation.v1` projection. It also registers
+`questions.semantic-presentation.v2` projection. It also registers
 `question-gathering-act-advance.json`, the authoritative raw question 35
 confirmation, and
 `question-presentation-gathering-act-advance.json`, its semantic projection.
@@ -1019,7 +1019,7 @@ both directions.
 - **Disabled preserves the locale-specific legacy shape, not the legacy
   bytes.** A deployment with no catalog serves no `localeCatalog` member and
   no `i18n.locale-catalog.v1` identifier. Other additive global capabilities,
-  including `questions.semantic-presentation.v1`, remain present.
+  including `questions.semantic-presentation.v2`, remain present.
   `schemaRevision` still reports the current bundle, because it identifies this
   server's whole contract rather than one optional runtime feature; a server
   that under-reported it would lie to every client that negotiates on it, and

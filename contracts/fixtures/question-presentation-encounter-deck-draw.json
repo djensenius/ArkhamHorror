@@ -1,13 +1,18 @@
 {
-  "choiceCount": 1,
-  "choices": [
-    {
-      "actorId": "c01001",
-      "kind": "drawEncounterCard",
-      "sourceIndex": 0
-    }
-  ],
-  "protocolVersion": 1,
-  "questionKind": "chooseOne",
-  "questionVersion": 41
+   "answer": {
+      "kind": "singleChoice",
+      "tag": "Answer"
+   },
+   "choiceCount": 1,
+   "choices": [
+      {
+         "actorId": "c01001",
+         "kind": "drawEncounterCard",
+         "selectable": true,
+         "sourceIndex": 0
+      }
+   ],
+   "protocolVersion": 2,
+   "questionKind": "chooseOne",
+   "questionVersion": 41
 }

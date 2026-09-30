@@ -1,16 +1,21 @@
 {
-  "choiceCount": 1,
-  "choices": [
-    {
-      "entity": {
-        "id": "c01001",
-        "kind": "investigator"
-      },
-      "kind": "assignHorror",
-      "sourceIndex": 0
-    }
-  ],
-  "protocolVersion": 1,
-  "questionKind": "chooseOne",
-  "questionVersion": 38
+   "answer": {
+      "kind": "singleChoice",
+      "tag": "Answer"
+   },
+   "choiceCount": 1,
+   "choices": [
+      {
+         "entity": {
+            "id": "c01001",
+            "kind": "investigator"
+         },
+         "kind": "assignHorror",
+         "selectable": true,
+         "sourceIndex": 0
+      }
+   ],
+   "protocolVersion": 2,
+   "questionKind": "chooseOne",
+   "questionVersion": 38
 }

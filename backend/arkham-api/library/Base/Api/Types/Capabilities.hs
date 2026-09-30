@@ -20,7 +20,7 @@ null) otherwise.
 A deployment without a catalog therefore omits both the @localeCatalog@ member
 and the @i18n.locale-catalog.v1@ identifier. Other additive, globally available
 capabilities remain advertised; in particular,
-@questions.semantic-presentation.v1@ is present whether or not a catalog is
+@questions.semantic-presentation.v2@ is present whether or not a catalog is
 configured. The response is deliberately not byte-identical to the historical
 baseline:
 @schemaRevision@ reports the current contract bundle (the catalog capability
@@ -56,7 +56,7 @@ instance ToJSON ServerCapabilities where
   toEncoding = genericToEncoding serverCapabilitiesOptions
 
 semanticQuestionPresentationCapability :: Text
-semanticQuestionPresentationCapability = "questions.semantic-presentation.v1"
+semanticQuestionPresentationCapability = "questions.semantic-presentation.v2"
 
 {- | The running server's contract identity, given whatever locale catalog the
 deployment has configured (see "Base.Api.Types.LocaleCatalog").
@@ -67,7 +67,7 @@ the same 'Maybe', so a client can never be shown one without the other.
 serverCapabilities :: Maybe LocaleCatalog -> ServerCapabilities
 serverCapabilities localeCatalog =
   ServerCapabilities
-    { schemaRevision = "0.1.46"
+    { schemaRevision = "0.1.47"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.0"
