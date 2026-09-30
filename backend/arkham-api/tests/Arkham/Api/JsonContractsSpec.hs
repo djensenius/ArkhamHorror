@@ -37,7 +37,10 @@ import Arkham.Attack.Types
   , EnemyAttackType (RegularAttack)
   )
 import Arkham.Campaign (lookupCampaign)
+import Arkham.ChaosBagStepState (ChaosBagStep (Draw))
+import Arkham.ChaosToken.Types (ChaosTokenFace (Zero))
 import Arkham.Campaign.Types (Campaign)
+import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.EnemyLocation (lookupEnemyLocation)
 import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
@@ -73,6 +76,8 @@ import Arkham.Helpers.Message qualified as MessageHelpers (createEnemy)
 import Arkham.Helpers.Scenario (scenarioField)
 import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Investigator.Types qualified as Investigator
+import Arkham.Key (ArkhamKey (RedKey))
+import Arkham.LocationSymbol (LocationSymbol (Circle))
 import Arkham.Location.Types qualified as Location
 import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
 import Arkham.Matcher
@@ -103,6 +108,9 @@ import Arkham.Phase
 import Arkham.Replay.Checkpoint (canonicalQuestionSha256)
 import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
 import Arkham.Scenario.Types (Field (ScenarioDiscard, ScenarioSetAsideCards), Scenario)
+import Arkham.SkillType (SkillType (SkillWillpower))
+import Arkham.Tarot (TarotCard (TarotCard), TarotCardArcana (TheFool0), TarotCardFacing (Upright))
+import Arkham.Text (Tooltip (Tooltip))
 import Arkham.Timing qualified as Timing
 import Arkham.Treachery.CardDefs.NightOfTheZealot qualified as WeaknessCards
 import Arkham.Treachery.CardDefs.NightOfTheZealot.StrikingFear qualified as TreacheryCards
@@ -3448,6 +3456,93 @@ spec = describe "Native client contract fixtures" do
       , Ask fixturePlayerId
           $ ChooseOneAtATime [EndTurnButton iid [GameOver]]
       ]
+
+  it "keeps representative generic presentations complete for all question and UI constructor families" do
+    let
+      iid = InvestigatorId "01001"
+      enemyId = EnemyId $ UUID.fromWords 0 0 0 71
+      assetId = AssetId $ UUID.fromWords 0 0 0 72
+      effectId = EffectId $ UUID.fromWords 0 0 0 73
+      locationId = LocationId $ UUID.fromWords 0 0 0 74
+      cardId = unsafeMakeCardId $ UUID.fromWords 0 0 0 75
+      amountId = UUID.fromWords 0 0 0 76
+      assertComplete question =
+        case QuestionPresentation.questionPresentation 99 question of
+          QuestionPresentation.QuestionPresentation _ _ choiceCount presentations -> do
+            let sourceIndexes = [sourceIndex | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- presentations]
+            length presentations `shouldBe` choiceCount
+            sourceIndexes `shouldBe` [0 .. choiceCount - 1]
+      abilityChoice = case fixtureGatheringActObjectiveQuestion of
+        PlayerWindowChooseOne choices ->
+          fromMaybe (error "fixture objective ability missing") $ find (\case AbilityLabel {} -> True; _ -> False) choices
+        _ -> error "fixture objective question shape changed"
+      uiChoices =
+        [ Label "$label.basic" [ClearUI]
+        , InvalidLabel "$label.invalid"
+        , TooltipLabel "$label.tooltip" (Tooltip "$tooltip.body") [ClearUI]
+        , CostLabel Cost.Free [ClearUI]
+        , CardLabel "01001" False [ClearUI]
+        , ChaosTokenLabel Zero [ClearUI]
+        , KeyLabel RedKey [ClearUI]
+        , PortraitLabel iid [ClearUI]
+        , TargetLabel (InvestigatorTarget iid) [ClearUI]
+        , SkillLabel SkillWillpower [ClearUI]
+        , SkillLabelWithLabel "$label.skill" SkillWillpower [ClearUI]
+        , EvadeLabel enemyId [ClearUI]
+        , EvadeLabelWithSkill enemyId SkillWillpower [ClearUI]
+        , FightLabel enemyId [ClearUI]
+        , FightLabelWithSkill enemyId SkillWillpower [ClearUI]
+        , EngageLabel enemyId [ClearUI]
+        , GridLabel "$label.grid" [ClearUI]
+        , ConnectionLabel Circle [ClearUI]
+        , TarotLabel (TarotCard Upright TheFool0) [ClearUI]
+        , abilityChoice
+        , ComponentLabel (AssetComponent assetId DamageToken) [ClearUI]
+        , AuxiliaryComponentLabel (InvestigatorComponent iid HorrorToken) [ClearUI]
+        , EndTurnButton iid [ClearUI]
+        , StartSkillTestButton iid
+        , SkillTestApplyResultsButton
+        , ChaosTokenGroupChoice GameSource iid Draw
+        , EffectActionButton (Tooltip "$effect.tooltip") effectId [ClearUI]
+        , Done "$done"
+        , SkipTriggersButton iid
+        , CardPile [PileCard cardId (Just iid)] [ClearUI]
+        , Info mempty
+        , ScenarioLabel "$scenario" "scenario-id" [ClearUI]
+        ]
+      labelQuestion = ChooseOne [Label "$choice" [ClearUI]]
+      representativeQuestions =
+        [ ChooseOne uiChoices
+        , PlayerWindowChooseOne uiChoices
+        , WindowChooseOne uiChoices
+        , ChooseOneFromEach [[Label "$a" [ClearUI]], [Label "$b" [ClearUI]]]
+        , ChooseN 1 [Label "$a" [ClearUI], Label "$b" [ClearUI]]
+        , ChooseSome [Label "$a" [ClearUI], Done "$done"]
+        , ChooseSome1 "$done" [Label "$a" [ClearUI]]
+        , ChooseUpToN 1 [Label "$a" [ClearUI], Done "$done"]
+        , ChooseOneAtATime [Label "$a" [ClearUI], Label "$b" [ClearUI]]
+        , ChooseOneAtATimeWithAuto "$auto" [Label "$a" [ClearUI], Label "$b" [ClearUI]]
+        , ChoosePaymentAmounts "$pay" Nothing [PaymentAmountChoice amountId iid 0 3 "$resource" ClearUI]
+        , ChooseAmounts "$amount" (MinAmountTarget 0) [AmountChoice amountId "$clues" 0 3] (LocationTarget locationId)
+        , ChooseUpgradeDeck
+        , ChooseDeck
+        , ChooseJoinDeck []
+        , QuestionLabel "$wrapped" (Just "01001") labelQuestion
+        , PayCostQuestion Cost.Free labelQuestion
+        , QuestionWithSource (LocationSource locationId) (Just $ Tooltip "$source.tooltip") labelQuestion
+        , Read mempty (BasicReadChoices [Label "$read" [ClearUI]]) Nothing
+        , ChooseOneWizard mempty [WizardChoice "$wizard" mempty [ClearUI]] "$confirm" "$back"
+        , PickSupplies 0 [] [Label "$supply" [ClearUI]] False
+        , PickDestiny []
+        , DropDown [("$option", ClearUI)]
+        , PickScenarioSettings
+        , PickCampaignSettings
+        , PickCampaignSpecific "notz" Aeson.Null
+        , PickScenarioSpecific "gathering" Aeson.Null
+        , ChooseExchangeAmounts GameSource iid 1 (InvestigatorId "01002") 0 Resource
+        , ContinueCampaign
+        ]
+    traverse_ assertComplete representativeQuestions
 
   it "binds the Gathering act objective to source index twelve and its exact server-owned cost" do
     let
