@@ -15,6 +15,7 @@
       "sourceIndex": 0
     },
     {
+      "completesSelection": true,
       "kind": "localizedLabel",
       "label": {
         "kind": "embeddedI18n",

@@ -127,6 +127,7 @@ import Base.Api.Types.LocaleCatalog (localeCatalogCapability)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
+import Data.Data (dataTypeConstrs, dataTypeOf, showConstr)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
@@ -3531,7 +3532,41 @@ spec = describe "Native client contract fixtures" do
         , ChooseExchangeAmounts GameSource iid 1 (InvestigatorId "01002") 0 Resource
         , ContinueCampaign
         ]
+    let
+      uiConstructorNames = map showConstr $ dataTypeConstrs $ dataTypeOf (Label "$x" [] :: UI Message)
+      questionConstructorNames = map showConstr $ dataTypeConstrs $ dataTypeOf (ChooseOne [] :: Question Message)
+    uiConstructorNames
+      `shouldBe` [ "Label", "InvalidLabel", "TooltipLabel", "CostLabel", "CardLabel", "ChaosTokenLabel", "KeyLabel", "PortraitLabel", "TargetLabel", "SkillLabel", "SkillLabelWithLabel", "EvadeLabel", "EvadeLabelWithSkill", "FightLabel", "FightLabelWithSkill", "EngageLabel", "GridLabel", "ConnectionLabel", "TarotLabel", "AbilityLabel", "ComponentLabel", "AuxiliaryComponentLabel", "EndTurnButton", "StartSkillTestButton", "SkillTestApplyResultsButton", "ChaosTokenGroupChoice", "EffectActionButton", "Done", "SkipTriggersButton", "CardPile", "Info", "ScenarioLabel" ]
+    questionConstructorNames
+      `shouldBe` [ "ChooseOne", "PlayerWindowChooseOne", "WindowChooseOne", "ChooseOneFromEach", "ChooseN", "ChooseSome", "ChooseSome1", "ChooseUpToN", "ChooseOneAtATime", "ChooseOneAtATimeWithAuto", "ChoosePaymentAmounts", "ChooseAmounts", "ChooseUpgradeDeck", "ChooseDeck", "ChooseJoinDeck", "QuestionLabel", "PayCostQuestion", "QuestionWithSource", "Read", "ChooseOneWizard", "PickSupplies", "PickDestiny", "DropDown", "PickScenarioSettings", "PickCampaignSettings", "PickCampaignSpecific", "PickScenarioSpecific", "ChooseExchangeAmounts", "ContinueCampaign" ]
     traverse_ assertComplete representativeQuestions
+
+  it "matches generic presentation v2 golden fixtures from the real encoder" do
+    let
+      fixtureCases =
+        [ ("question-generic-cost-ability-window.json", "question-presentation-generic-cost-ability-window.json", 201)
+        , ("question-generic-skill-label.json", "question-presentation-generic-skill-label.json", 202)
+        , ("question-generic-invalid-info.json", "question-presentation-generic-invalid-info.json", 203)
+        , ("question-generic-choose-n.json", "question-presentation-generic-choose-n.json", 204)
+        , ("question-generic-choose-up-to-n.json", "question-presentation-generic-choose-up-to-n.json", 205)
+        , ("question-generic-choose-some.json", "question-presentation-generic-choose-some.json", 206)
+        , ("question-generic-choose-amounts.json", "question-presentation-generic-choose-amounts.json", 207)
+        , ("question-generic-payment-amounts.json", "question-presentation-generic-payment-amounts.json", 208)
+        , ("question-generic-one-at-a-time-auto.json", "question-presentation-generic-one-at-a-time-auto.json", 209)
+        , ("question-generic-one-from-each.json", "question-presentation-generic-one-from-each.json", 210)
+        , ("question-generic-choose-deck.json", "question-presentation-generic-choose-deck.json", 211)
+        , ("question-generic-read.json", "question-presentation-generic-read.json", 212)
+        , ("question-generic-wrapped.json", "question-presentation-generic-wrapped.json", 213)
+        ]
+    for_ fixtureCases \(questionFile, presentationFile, version) -> do
+      question <- loadQuestionFixture questionFile
+      questionFixture <- loadFixture questionFile
+      presentationFixture <- loadFixture presentationFile
+      Aeson.toJSON question `shouldBe` questionFixture
+      viaWireEncoding question `shouldBe` questionFixture
+      let presentation = QuestionPresentation.questionPresentation version question
+      Aeson.toJSON presentation `shouldBe` presentationFixture
+      viaWireEncoding presentation `shouldBe` presentationFixture
 
   it "binds the Gathering act objective to source index twelve and its exact server-owned cost" do
     let

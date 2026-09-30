@@ -171,6 +171,11 @@ QUESTION_PRESENTATION_BINDINGS = {
     ENCOUNTER_DRAW_PRESENTATION_FIXTURE: ENCOUNTER_DRAW_QUESTION_FIXTURE,
 }
 
+for generic_presentation in sorted(CONTRACTS.glob("fixtures/question-presentation-generic-*.json")):
+    stem = generic_presentation.name.removeprefix("question-presentation-generic-").removesuffix(".json")
+    raw_question = f"contracts/fixtures/question-generic-{stem}.json"
+    QUESTION_PRESENTATION_BINDINGS[f"contracts/fixtures/{generic_presentation.name}"] = raw_question
+
 require(
     len(capabilities_fixtures) == 2,
     "manifest.json must register exactly two capabilities fixtures -- the legacy shape a "
@@ -1495,7 +1500,7 @@ def contract_fixture_errors(
     errors.extend(presentation_binding_errors(instance, raw_question))
 
     descriptors = instance.get("choices")
-    if isinstance(descriptors, list):
+    if isinstance(descriptors, list) and fixture_path in EXACT_PRESENTATION_CHOICES:
         for (
             exact_index,
             expected_choice,

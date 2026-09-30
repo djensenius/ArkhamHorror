@@ -34,7 +34,7 @@
   "questionKind": "chooseOneFromEach",
   "questionVersion": 210,
   "selection": {
-    "max": 1,
-    "min": 1
+    "max": 2,
+    "min": 2
   }
 }
