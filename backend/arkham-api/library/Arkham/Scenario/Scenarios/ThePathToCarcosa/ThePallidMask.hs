@@ -11,7 +11,7 @@ import Arkham.Distance
 import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.ThePathToCarcosa.CurtainCall qualified as Enemies
 import Arkham.Enemy.CardDefs.ThePathToCarcosa.TheLastKing qualified as Enemies
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Card
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Modifiers hiding (skillTestModifier)
@@ -260,8 +260,8 @@ instance RunMessage ThePallidMask where
               searchCollectionForRandom lead attrs
                 $ BasicWeaknessCard
                 <> mapOneOf CardWithTrait [Madness, Pact]
-            else chooseSome1M lead "Done having investigators read Act II" do
-              questionLabeled' "chooseWhoReadsActII"
+            else chooseSome1M lead "doneReadingActII" do
+              questionLabeled "chooseWhoReadsActII"
               targets investigators \iid -> do
                 gainXp lead attrs "resolutions.xp.bonus" 2
                 recordSetInsert ReadActII [unInvestigatorId iid]

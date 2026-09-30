@@ -12,6 +12,7 @@ import {
 } from 'vue'
 import { cardImg, formatContent, imgsrc, isLocalized, toCamelCase } from '@/arkham/helpers'
 import { homebrewTokenMap } from '@/arkham/homebrewAssets'
+import { originalArt } from '@/arkham/artVariants'
 import { BugAntIcon } from '@heroicons/vue/20/solid'
 import { useDebug } from '@/arkham/debug'
 import { fetchCard, fetchPlayability, type PlayabilityResponse } from '@/arkham/api'
@@ -185,6 +186,16 @@ const lastPointer = ref<{ clientX: number; clientY: number } | null>(null)
 
 const clearTimer = (t: number | null) => (t !== null ? (clearTimeout(t), null) : null)
 
+// A card image is natively draggable, so a click-and-drag on one starts an HTML5
+// drag even where nothing accepts the drop. `dragend` is not guaranteed to come
+// back: it never fires if a game update unmounts the source card mid-drag, or if
+// the drop lands outside the window. Treat `dragActive` as evidence rather than
+// state -- the browser suppresses mouse events for the whole native drag, so any
+// buttonless one proves the drag is over.
+const endDragIfIdle = (e: MouseEvent) => {
+  if (dragActive && e.buttons === 0) dragActive = false
+}
+
 const targetFromEvent = (e: Event): HTMLElement | null => {
   const raw = e.target as HTMLElement | null
   const closest = raw ? (raw.closest(CARD_SELECTOR) as HTMLElement | null) : null
@@ -226,6 +237,7 @@ const queueHover = (el: HTMLElement) => {
 }
 
 const onMouseOver = (e: MouseEvent) => {
+  endDragIfIdle(e)
   if (currentPointerType === 'touch' || dragActive) return
   lastPointer.value = { clientX: e.clientX, clientY: e.clientY }
   const el = targetFromEvent(e)
@@ -245,6 +257,7 @@ const onMouseLeave = () => {
 
 const onPointerDown = (e: PointerEvent) => {
   currentPointerType = e.pointerType
+  dragActive = false
   if (e.pointerType === 'touch') {
     const el = targetFromEvent(e)
     if (!el) return
@@ -254,6 +267,7 @@ const onPointerDown = (e: PointerEvent) => {
 }
 
 const onPointerMove = (e: PointerEvent) => {
+  endDragIfIdle(e)
   currentPointerType = e.pointerType
   lastPointer.value = { clientX: e.clientX, clientY: e.clientY }
   if (e.pointerType === 'touch') {
@@ -278,6 +292,7 @@ const onPointerUp = (e: PointerEvent) => {
 }
 
 const clearOverlay = () => {
+  canDisablePress = false
   hoverTimer = clearTimer(hoverTimer)
   pressTimer = clearTimer(pressTimer)
   playabilityTimer = clearTimer(playabilityTimer)
@@ -392,8 +407,8 @@ const overlayCardCode = computed<string | null>(() => {
   // like an official card code to the fallback matcher below.
   if (!image || image.includes('/homebrew/')) return null
 
-  const match = image.match(/\/cards\/c?(\d+)b?\.(?:avif|jpg|jpeg|png|webp)(?:\?.*)?$/i)
-  return match?.[1] ?? null
+  const match = image.match(/\/cards\/c?(\d+b?)\.(?:avif|jpg|jpeg|png|webp)(?:\?.*)?$/i)
+  return match ? originalArt(match[1]).replace(/b$/, '') : null
 })
 /* Card-def errata covers a whole card, but some errata only applies to one face —
  * and the overlay resolves both faces to the same card def. A `data-errata`
@@ -645,13 +660,26 @@ const additionalCard = computed<string | null>(() => {
   return imgsrc(`cards/${cardCode.value}b.avif`)
 })
 
+// A later taboo can mutate a card without touching its customizable sheet -- Taboo 24
+// only changed Power Word's test difficulty, which lives on the front. Point those
+// variants at the sheet from the taboo that last changed it.
+const customizationSheetVariants: Record<string, string> = {
+  '09081_Mutated24': '_Mutated21',
+}
+
+const customizationSheetVariant = computed<string>(() => {
+  const variant = customizationVariant.value
+  if (!variant || !cardCode.value) return variant
+  return customizationSheetVariants[`${cardCode.value}${variant}`] ?? variant
+})
+
 const customizationsCard = computed<string | null>(() => {
   if (!cardCode.value) return null
   if (!allCustomizations.has(cardCode.value)) return null
   // Chained sheets (Runic Axe) ship as .avif; base and mutated sheets as .jpg.
   const chained = hoveredElement.value?.dataset?.chained
   if (chained) return imgsrc(`customizations/${cardCode.value}_${chained}.avif`)
-  return imgsrc(`customizations/${cardCode.value}${customizationVariant.value}.jpg`)
+  return imgsrc(`customizations/${cardCode.value}${customizationSheetVariant.value}.jpg`)
 })
 
 /* =============================================================================
@@ -1054,21 +1082,7 @@ const getCardFlavor = (dbCard: ArkhamDBCard, needBack: boolean): string | null =
 const getCardCustomizationText = (dbCard: ArkhamDBCard): string | null =>
   (!card.value || isLocalized(card.value)) ? null : replaceText(dbCard.customization_text || '')
 
-watchEffect(() => {
-  dbCardName.value = dbCardTypeName.value = dbCardFactionName.value = dbCardFactionCode.value = dbCardTraits.value = dbCardText.value = dbCardCustomizationText.value = dbCardFlavor.value = ''
-  const src = card.value
-  if (!src) return
-  const m = src.match(/(\d+b?)(_.*)?\.avif$/)
-  if (!m) return
-  const code = m[1]
-  const tabooSuffix = m[2]
-  const language = localStorage.getItem('language') || 'en'
-  if (imgsrc(`cards/${m[0]}`).includes(language)) return
-
-  const dbCard = store.getDbCard(code)
-  if (!dbCard) return
-  const needBack = dbCard.code !== code
-
+const applyDbCard = (dbCard: ArkhamDBCard, needBack: boolean, tabooSuffix: string | undefined) => {
   const name = getCardName(dbCard, needBack)
   const type = getCardTypeName(dbCard)
   const faction = getCardFactionName(dbCard)
@@ -1086,6 +1100,52 @@ watchEffect(() => {
   dbCardText.value = text ?? ''
   dbCardFlavor.value = flavor ?? ''
   dbCardCustomizationText.value = cust ?? ''
+}
+
+/* We reached `front` through the `<code>b` alias, so the hovered face is a back, and a
+ * single-sided record carries no back_* fields describing it. Ask the engine whether
+ * that face is a card in its own right: each Masked Carnevale-Goer is the back of a
+ * different Carnevale enemy, so describing it with the front would give away which
+ * enemy is hiding there -- look up the record filed under the face's own name instead.
+ * When the engine has no def for the face it is only the front's back art (Atlach-Nacha's
+ * spinner face, Hank Samson's transformed face), and the front does describe it. */
+const resolveHiddenFace = async (src: string, code: string, front: ArkhamDBCard, tabooSuffix: string | undefined) => {
+  let faceDef: CardDef | null
+  if (cardDefCache.has(code)) {
+    faceDef = cardDefCache.get(code) ?? null
+  } else {
+    try {
+      faceDef = await fetchCard(code)
+    } catch {
+      faceDef = null
+    }
+    cardDefCache.set(code, faceDef)
+  }
+
+  if (card.value !== src) return
+  if (!faceDef) return applyDbCard(front, false, tabooSuffix)
+
+  const face = store.getDbCardByRealName(faceDef.name.title)
+  if (face) applyDbCard(face, false, tabooSuffix)
+}
+
+watchEffect(() => {
+  dbCardName.value = dbCardTypeName.value = dbCardFactionName.value = dbCardFactionCode.value = dbCardTraits.value = dbCardText.value = dbCardCustomizationText.value = dbCardFlavor.value = ''
+  const src = card.value
+  if (!src) return
+  const m = src.match(/(\d+b?)(_.*)?\.avif$/)
+  if (!m) return
+  const code = originalArt(m[1])
+  const tabooSuffix = m[2]
+  const language = localStorage.getItem('language') || 'en'
+  if (imgsrc(`cards/${m[0]}`).includes(language)) return
+
+  const dbCard = store.getDbCard(code)
+  if (!dbCard) return
+  const needBack = dbCard.code !== code
+  if (needBack && !dbCard.double_sided) return void resolveHiddenFace(src, code, dbCard, tabooSuffix)
+
+  applyDbCard(dbCard, needBack, tabooSuffix)
 })
 </script>
 
@@ -1302,9 +1362,17 @@ watchEffect(() => {
       <KeyToken v-for="k in spentKeys" :key="keyToId(k)" :keyToken="k" @choose="() => {}"/>
     </div>
 
-    <div class="card-data" v-if="dbCardCustomizationText">
-      <p v-if="dbCardName"><b>{{ dbCardName }}</b></p>
-      <p v-if="dbCardCustomizationText" v-html="dbCardCustomizationText" style="font-size: 0.85em;"></p>
+    <div
+      class="card-data card-data-customization"
+      v-if="dbCardCustomizationText"
+      :class="{ [`faction-${dbCardFactionCode || 'neutral'}`]: true }"
+    >
+      <div class="card-data-header">
+        <p v-if="dbCardName"><b>{{ dbCardName }}</b></p>
+      </div>
+      <div class="card-data-body">
+        <p v-html="dbCardCustomizationText"></p>
+      </div>
     </div>
 
     <div v-if="playabilityData && debug.active" class="playability-panel">
@@ -1462,7 +1530,7 @@ watchEffect(() => {
   font-family: serif;
   flex: 1;
   padding: 15px;
-  background-color: rgba(212, 212, 212, 0.85);
+  background-color: rgba(212, 212, 212, 0.96);
   border-bottom-left-radius: 12px;
   border-bottom-right-radius: 12px;
 }
@@ -1495,6 +1563,18 @@ watchEffect(() => {
 .card-data-body .card-flavor {
   font-size: 0.85em;
   font-style: italic;
+}
+
+/* Customization sheets run longer than card text, and the overlay is
+   pointer-events: none, so a scrollbar would be unusable -- grow instead. */
+.card-data-customization {
+  align-self: flex-start;
+  height: auto;
+  aspect-ratio: auto;
+}
+
+.card-data-customization .card-data-body {
+  font-size: 0.8em;
 }
 
 .card-overlay {

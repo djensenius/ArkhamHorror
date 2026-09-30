@@ -20,7 +20,7 @@ wellFunded :: CardDef
 wellFunded =
   (skill "10051" "Well-Funded" [#wild] Seeker)
     { cdCardTraits = setFromList [Fortune]
-    , cdOutOfPlayEffects = [InHandEffect]
+    , cdOutOfPlayEffects = [InHandEffect, PendingCommitEffect]
     }
 
 esotericMethod1 :: CardDef
@@ -76,7 +76,6 @@ persistence1 =
     { cdCardTraits = setFromList [Practiced]
     , cdLevel = Just 1
     , cdOutOfPlayEffects = [InDiscardEffect]
-    , cdCommitTrigger = True
     }
 
 providential2 :: CardDef
@@ -90,6 +89,7 @@ wellDressed :: CardDef
 wellDressed =
   (skill "10130" "Well-Dressed" [#wild] Neutral)
     { cdCardTraits = setFromList [Practiced, Fortune]
+    , cdOutOfPlayEffects = [PendingCommitEffect]
     }
 
 theHemlockCurse :: CardDef

@@ -23,7 +23,7 @@ import Arkham.Damage
 import Arkham.DamageEffect
 import Arkham.DefeatedBy
 import Arkham.Event.Types (Field (EventUses))
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Calculation (calculate)
 import Arkham.Helpers.Card (getVictoryPoints)
 import Arkham.Helpers.Customization
@@ -78,6 +78,25 @@ defeated AssetAttrs {assetId, assetAssignedHealthDamage, assetAssignedSanityDama
 
 hasUses :: AssetAttrs -> Bool
 hasUses = any (> 0) . toList . assetUses
+
+{- | Whether this asset soaks damage / horror without limit.
+
+An asset with no printed health (or sanity) that its controller is explicitly
+permitted to assign to has no capacity to clamp against -- Enchanted Armor (2)
+piles the tokens on and tests against the total. Mirrors the fallback in
+@AssetCanBeAssignedDamageBy@; without it the generic clamp places nothing.
+-}
+unlimitedSoak :: HasGame m => AssetAttrs -> m (Bool, Bool)
+unlimitedSoak a
+  | isJust (assetHealth a) && isJust (assetSanity a) = pure (False, False)
+  | otherwise = case a.controller of
+      Nothing -> pure (False, False)
+      Just iid -> do
+        mods <- getModifiers iid
+        pure
+          ( isNothing (assetHealth a) && CanAssignDamageToAsset (toId a) `elem` mods
+          , isNothing (assetSanity a) && CanAssignHorrorToAsset (toId a) `elem` mods
+          )
 
 instance RunMessage Asset where
   runMessage msg x@(Asset a) = do
@@ -223,11 +242,19 @@ instance RunMessage AssetAttrs where
       canDamage <- matches a.id (AssetCanBeDamagedBySource source)
       when canDamage do
         mods <- getModifiers a
+        (soaksDamage, soaksHorror) <- unlimitedSoak a
         let n = sum [x | DamageTaken x <- mods]
             extraHealth = sum [x | HealthModifier x <- mods]
             extraSanity = sum [x | SanityModifier x <- mods]
-        let damage' = maybe 0 (min (damage + n) . subtract (assetDamage a) . (+ extraHealth)) assetHealth
-        let horror' = maybe 0 (min horror . subtract (assetHorror a) . (+ extraSanity)) assetSanity
+        let clamp amount cap current extra = maybe 0 (min amount . subtract current . (+ extra)) cap
+        let damage' =
+              if soaksDamage
+                then damage + n
+                else clamp (damage + n) assetHealth (assetDamage a) extraHealth
+        let horror' =
+              if soaksHorror
+                then horror
+                else clamp horror assetSanity (assetHorror a) extraSanity
         if doCheck
           then push $ Msg.DealAssetDirectDamage aid source damage' horror'
           else
@@ -260,7 +287,11 @@ instance RunMessage AssetAttrs where
       pure $ a & sealedChaosTokensL %~ (\ts -> if token `elem` ts then ts else token : ts)
     SealedChaosToken token _ _ -> do
       pure $ a & sealedChaosTokensL %~ filter (/= token)
-    UnsealChaosToken token -> pure $ a & sealedChaosTokensL %~ filter (/= token)
+    UnsealChaosToken token -> runQueueT do
+      when (token `elem` assetSealedChaosTokens) do
+        pushM $ checkWhen $ Window.ChaosTokenReleased (toTarget a) token
+        pushM $ checkAfter $ Window.ChaosTokenReleased (toTarget a) token
+      pure $ a & sealedChaosTokensL %~ filter (/= token)
     ReturnChaosTokensToPool tokens -> pure $ a & sealedChaosTokensL %~ filter (`notElem` tokens)
     RemoveAllChaosTokens face -> do
       pure $ a & sealedChaosTokensL %~ filter ((/= face) . chaosTokenFace)
@@ -633,7 +664,11 @@ instance RunMessage AssetAttrs where
       pushAll [RemoveFromPlay $ toSource a, ObtainCard a.cardId]
       pure a
     Discard mInvestigator source target | a `isTarget` target -> do
-      cannotLeavePlay <- a `hasModifier` CannotLeavePlay
+      -- A card that cannot leave play and then prints its own way out --
+      -- "it cannot leave play except using the ability below" -- is the one
+      -- thing allowed to discard it, so a discard it sources itself is let
+      -- through. Everything else is still stopped.
+      cannotLeavePlay <- if isSource a source then pure False else a `hasModifier` CannotLeavePlay
       if cannotLeavePlay
         then pure a
         else do
@@ -739,7 +774,12 @@ instance RunMessage AssetAttrs where
     ReplacedInvestigatorAsset iid aid | aid == assetId -> do
       pure $ a & placementL .~ InPlayArea iid & controllerL ?~ iid
     AddToVictory _ (AssetTarget aid) | aid == assetId -> do
-      pure $ a & placementL .~ OutOfPlay Zone.VictoryDisplayZone & controllerL .~ Nothing
+      -- leaving play removes every token, doom included (#5680)
+      pure
+        $ a
+        & (placementL .~ OutOfPlay Zone.VictoryDisplayZone)
+        & (controllerL .~ Nothing)
+        & (tokensL .~ mempty)
     AddToScenarioDeck key target | isTarget a target -> do
       pushAll
         [RemoveFromGame (toTarget a), AddCardToScenarioDeck key (toCard a)]

@@ -230,6 +230,7 @@ instance FromJSON (SomeField Location) where
     "LocationPosition" -> pure $ SomeField LocationPosition
     "LocationCostToEnterUnrevealed" -> pure $ SomeField LocationCostToEnterUnrevealed
     "LocationGlobalMeta" -> pure $ SomeField LocationGlobalMeta
+    "LocationConcealedCards" -> pure $ SomeField LocationConcealedCards
     _ -> error "no such Location field"
 
 instance Entity LocationAttrs where
@@ -271,7 +272,7 @@ instance HasCardCode LocationAttrs where
   toCardCode = locationCardCode
 
 instance HasCardDef LocationAttrs where
-  toCardDef a = case lookup (locationCardCode a) (allLocationCards <> allSpecialLocationCards <> allEnemyLocationCards) of
+  toCardDef a = case lookup (locationCardCode a) (allLocationCards <> allSpecialLocationCards <> allEnemyLocationCards) <|> lookupCustomCardDef (locationCardCode a) of
     Just def -> def
     Nothing ->
       error $ "missing card def for location " <> show (locationCardCode a)

@@ -1,9 +1,9 @@
 {
   "canonical.mjs": "4a29e660125e05dcd72d594befd3444dd0abf9473e8e0441920b8663baf22157",
-  "generate.mjs": "b06bb9bdaf1304b962bf42f01894120148dce9caa978cdbc6ca2337ba8f17b62",
-  "inventory.mjs": "ad5692f73b2a5e509afe0ea6051cfc1d369743eb006b1a7e99b94727307c01f6",
-  "known-gaps.json": "7772ad261c8375f1fac33b6d627a00e316df861d62f00c67a13b29fa75367fed",
-  "normalize.mjs": "06e72e6db027e96ea3b2edb9b136fd192be92031d2d76e2e292c401062c165a2",
+  "generate.mjs": "07dd5e725dead930787cd0ca4007df59a7b94d7085246995aed9a25ee492c8ee",
+  "inventory.mjs": "ef80e1288558de6df9cb0fd6f2c6055223a3ea1710621d484961eca08b48c6e9",
+  "known-gaps.json": "93575b10c4b939138fd3377fdaa66017d602faceb151c47e111b5b59d8db11fb",
+  "normalize.mjs": "47f488929706dd2d6c5ff32e4ecbc18c336602c4a9e7ef3aa0da18efce08c86e",
   "owned-build-dir.mjs": "291651caa27f72f851960f6262ad4d03e7d6480043c3e6e1fdf312d279ca2c58",
   "sources.mjs": "55c227dd4ae9f1f6ace3a5dc56e2d49d1aeffa872d9f310968aac09144f4a6db",
   "verify-dist.mjs": "0d0c76de46d58936b5e868531cd08ddceab6fe7131d32243c91ace1e20b52a89"

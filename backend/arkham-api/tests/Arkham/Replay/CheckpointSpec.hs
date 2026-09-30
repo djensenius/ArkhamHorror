@@ -1,6 +1,6 @@
 module Arkham.Replay.CheckpointSpec (spec) where
 
-import Api.Handler.Arkham.Game.Debug (checkpointInvestigatorPlayerId)
+import Api.Handler.Arkham.Game.Debug (checkpointInvestigatorForPlayerId, checkpointInvestigatorPlayerId)
 import Api.Arkham.Export
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
 import Arkham.CampaignStep qualified as CS
@@ -100,6 +100,47 @@ spec = describe "deterministic replay checkpoint harness" do
       `shouldBe` Right self.player
     checkpointInvestigatorPlayerId game "c99999" `shouldSatisfy` isLeft
 
+  it "finds the investigator whose player owns a solo replay checkpoint prompt" . gameTest $ \_ -> do
+    game <- getGame
+    let firstInvestigatorId = "c01001"
+        secondInvestigatorId = "c01002"
+        firstPlayer = PlayerId $ UUID.fromWords 0 0 0 1
+        secondPlayer = PlayerId $ UUID.fromWords 0 0 0 2
+        unmatchedPlayer = PlayerId $ UUID.fromWords 0 0 0 3
+        gameWithInvestigatorPlayers assignments =
+          game
+            { gameEntities =
+                game.gameEntities
+                  { entitiesInvestigators =
+                      Map.fromList
+                        [ (InvestigatorId $ CardCode $ T.dropWhile (== 'c') investigatorId, lookupInvestigator (InvestigatorId $ CardCode $ T.dropWhile (== 'c') investigatorId) player)
+                        | (investigatorId, player) <- assignments
+                        ]
+                  }
+            }
+        twoHandedGame =
+          gameWithInvestigatorPlayers
+            [(firstInvestigatorId, firstPlayer), (secondInvestigatorId, secondPlayer)]
+        duplicatePlayerGame =
+          gameWithInvestigatorPlayers
+            [(firstInvestigatorId, secondPlayer), (secondInvestigatorId, secondPlayer)]
+    checkpointInvestigatorForPlayerId
+      twoHandedGame
+      [firstInvestigatorId, secondInvestigatorId]
+      secondPlayer
+      `shouldBe` Right (secondInvestigatorId, UUID.toText $ unPlayerId secondPlayer)
+    checkpointInvestigatorForPlayerId
+      twoHandedGame
+      [firstInvestigatorId, secondInvestigatorId]
+      unmatchedPlayer
+      `shouldSatisfy` isLeft
+    checkpointInvestigatorForPlayerId
+      duplicatePlayerGame
+      [firstInvestigatorId, secondInvestigatorId]
+      secondPlayer
+      `shouldSatisfy` isLeft
+    checkpointInvestigatorForPlayerId twoHandedGame [] secondPlayer `shouldSatisfy` isLeft
+
   it "fails closed on prompt and answer constructor mismatches" . gameTest $ \_ -> do
     game <- checkpointGame
     let player = game.gameActivePlayerId
@@ -111,6 +152,13 @@ spec = describe "deterministic replay checkpoint harness" do
               { qrChoice = 0
               , qrPlayerId = Just player
               , qrQuestionVersion = Just game.gameScenarioSteps
+              }
+        orderedAnswer =
+          OrderedAnswer
+            OrderedResponse
+              { orChoices = [1, 0]
+              , orPlayerId = Just player
+              , orQuestionVersion = Just game.gameScenarioSteps
               }
         amountsAnswer =
           AmountsAnswer
@@ -158,7 +206,12 @@ spec = describe "deterministic replay checkpoint harness" do
           , (PickCampaignSpecific "campaign" Aeson.Null, CampaignSpecificAnswer "choice" Aeson.Null)
           , (PickScenarioSpecific "scenario" Aeson.Null, ScenarioSpecificAnswer "choice" Aeson.Null)
           , (exchangePrompt, exchangeAnswer)
+          , (ChooseOneAtATime [Label "first" [Noop], Label "second" [Noop]], orderedAnswer)
           , (ContinueCampaign, CampaignStepAnswer CS.PrologueStep)
+          , (ContinueCampaign, RetireInvestigatorAnswer firstInvestigator)
+          , (ContinueCampaign, RejoinInvestigatorAnswer firstInvestigator)
+          , (ContinueCampaign, ApplyOverlayAnswer firstInvestigator Nothing)
+          , (ContinueCampaign, JoinCampaignAnswer)
           ]
     for_ validCases \(prompt, answer) ->
       validateAtPrompt game prompt answer `shouldBe` Right player
@@ -170,11 +223,26 @@ spec = describe "deterministic replay checkpoint harness" do
       , ScenarioSpecificAnswer "choice" Aeson.Null
       , exchangeAnswer
       , CampaignStepAnswer CS.PrologueStep
+      , RetireInvestigatorAnswer firstInvestigator
+      , RejoinInvestigatorAnswer firstInvestigator
+      , ApplyOverlayAnswer firstInvestigator Nothing
+      , JoinCampaignAnswer
       ]
       \answer ->
         validateAtPrompt game (ChooseOne [Label "continue" [Noop]]) answer
           `shouldSatisfy` isLeft
     validateAtPrompt game destinyPrompt choiceAnswer `shouldSatisfy` isLeft
+    validateAtPrompt
+      game
+      (ChooseOneAtATime [Label "first" [Noop], Label "second" [Noop]])
+      ( OrderedAnswer
+          OrderedResponse
+            { orChoices = [0, 0]
+            , orPlayerId = Just player
+            , orQuestionVersion = Just game.gameScenarioSteps
+            }
+      )
+      `shouldSatisfy` isLeft
     validateAtPrompt game (ChooseOne [Label "continue" [Noop]]) (Raw Noop)
       `shouldSatisfy` isLeft
     validateAtPrompt
@@ -418,6 +486,34 @@ spec = describe "deterministic replay checkpoint harness" do
                   , "questionVersion" Aeson..= (1 :: Int)
                   ]
             ]
+        orderedAnswer =
+          Aeson.object
+            [ "tag" Aeson..= ("OrderedAnswer" :: Text)
+            , "contents"
+                Aeson..= Aeson.object
+                  [ "choices" Aeson..= ([1, 0] :: [Int])
+                  , "playerId" Aeson..= ("00000000-0000-0000-0000-000000000001" :: Text)
+                  , "questionVersion" Aeson..= (1 :: Int)
+                  ]
+            ]
+        retireAnswer =
+          Aeson.object
+            [ "tag" Aeson..= ("RetireInvestigatorAnswer" :: Text)
+            , "investigatorId" Aeson..= ("01001" :: Text)
+            ]
+        rejoinAnswer =
+          Aeson.object
+            [ "tag" Aeson..= ("RejoinInvestigatorAnswer" :: Text)
+            , "investigatorId" Aeson..= ("01001" :: Text)
+            ]
+        applyOverlayAnswer =
+          Aeson.object
+            [ "tag" Aeson..= ("ApplyOverlayAnswer" :: Text)
+            , "investigatorId" Aeson..= ("01001" :: Text)
+            , "overlay" Aeson..= Aeson.Null
+            ]
+        joinAnswer =
+          Aeson.object ["tag" Aeson..= ("JoinCampaignAnswer" :: Text)]
         step expected value =
           Aeson.object
             [ "expect" Aeson..= expected
@@ -428,6 +524,11 @@ spec = describe "deterministic replay checkpoint harness" do
             (KeyMap.insert "answers" $ Aeson.toJSON values)
             (planValue 1 "answers" True)
         validPlan = withAnswers [step checkpoint answer]
+        validOrderedPlan = withAnswers [step checkpoint orderedAnswer]
+        validRetirePlan = withAnswers [step checkpoint retireAnswer]
+        validRejoinPlan = withAnswers [step checkpoint rejoinAnswer]
+        validApplyOverlayPlan = withAnswers [step checkpoint applyOverlayAnswer]
+        validJoinPlan = withAnswers [step checkpoint joinAnswer]
         addUnknown = mapRoot $ KeyMap.insert "ignoredTamper" Aeson.Null
         sourceUnknown =
           mapRoot
@@ -457,6 +558,21 @@ spec = describe "deterministic replay checkpoint harness" do
                   (adjustKey "contents" addUnknown)
                   answer
             ]
+        orderedAnswerContentsUnknown =
+          withAnswers
+            [ step checkpoint
+                $ mapRoot
+                  (adjustKey "contents" addUnknown)
+                  orderedAnswer
+            ]
+        retireAnswerUnknown =
+          withAnswers [step checkpoint $ addUnknown retireAnswer]
+        rejoinAnswerUnknown =
+          withAnswers [step checkpoint $ addUnknown rejoinAnswer]
+        applyOverlayAnswerUnknown =
+          withAnswers [step checkpoint $ addUnknown applyOverlayAnswer]
+        joinAnswerUnknown =
+          withAnswers [step checkpoint $ addUnknown joinAnswer]
         standaloneSetting =
           Aeson.object
             [ "type" Aeson..= ("ToggleRecords" :: Text)
@@ -680,6 +796,11 @@ spec = describe "deterministic replay checkpoint harness" do
     traverse_
       (`shouldSatisfy` isRight)
       [ decodeReplayPlan $ encodeStrict validPlan
+      , decodeReplayPlan $ encodeStrict validOrderedPlan
+      , decodeReplayPlan $ encodeStrict validRetirePlan
+      , decodeReplayPlan $ encodeStrict validRejoinPlan
+      , decodeReplayPlan $ encodeStrict validApplyOverlayPlan
+      , decodeReplayPlan $ encodeStrict validJoinPlan
       , decodeReplayPlan $ encodeStrict validStandalonePlan
       , decodeReplayPlan $ encodeStrict validPartnerPlan
       , decodeReplayPlan $ encodeStrict validDeckListPlan
@@ -698,6 +819,11 @@ spec = describe "deterministic replay checkpoint harness" do
       , decodeReplayPlan $ encodeStrict expectedUnknown
       , decodeReplayPlan $ encodeStrict answerUnknown
       , decodeReplayPlan $ encodeStrict answerContentsUnknown
+      , decodeReplayPlan $ encodeStrict orderedAnswerContentsUnknown
+      , decodeReplayPlan $ encodeStrict retireAnswerUnknown
+      , decodeReplayPlan $ encodeStrict rejoinAnswerUnknown
+      , decodeReplayPlan $ encodeStrict applyOverlayAnswerUnknown
+      , decodeReplayPlan $ encodeStrict joinAnswerUnknown
       , decodeReplayPlan $ encodeStrict standaloneSettingUnknown
       , decodeReplayPlan $ encodeStrict standaloneEntryUnknown
       , decodeReplayPlan $ encodeStrict deckListUnknown

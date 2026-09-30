@@ -54,7 +54,7 @@ import Arkham.Event.Types (Field (..))
 import Arkham.Fight.Types
 import {-# SOURCE #-} Arkham.Game (asIfTurn, withoutCanModifiers)
 import Arkham.Game.Settings (settingsStrictAsIfAt)
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Ability (
   getAbilityLimit,
@@ -159,7 +159,6 @@ import Arkham.Modifier qualified as Modifier
 import Arkham.Movement
 import Arkham.Phase
 import Arkham.Placement
-import Arkham.Plural
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.ScenarioLogKey
@@ -294,8 +293,7 @@ handleEndSearch a@InvestigatorAttrs {..} iid iid' = do
               remaining
     ShuffleBackIn -> do
       when (foundKey cardSource /= Zone.FromDeck) (error "Expects a deck: Investigator<ShuffleBackIn>")
-      for_ investigatorSearch \MkSearch {searchType} ->
-        pushWhen (searchType == Searching) $ ShuffleDeck (Deck.InvestigatorDeck a.id)
+      push $ ShuffleDeck (Deck.InvestigatorDeck a.id)
     PutBack -> pure () -- Nothing moves while searching
     DoNothing -> pure () -- Nothing moves while searching
     RemoveRestFromGame -> do

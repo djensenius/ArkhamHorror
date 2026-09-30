@@ -8,12 +8,14 @@ import { cardImage as cardToImage, asCardCode, toCardContents, type Card as Arkh
 import { keyToId } from '@/arkham/types/Key'
 import type { Game } from '@/arkham/types/Game';
 import KeyToken from '@/arkham/components/Key.vue';
+import Modifier from '@/arkham/components/Modifier.vue';
 import PoolItem from '@/arkham/components/PoolItem.vue';
 import TokenView from '@/arkham/components/Token.vue';
 import * as Arkham from '@/arkham/types/Asset';
 import {isUse} from '@/arkham/types/Token';
 import { useDbCardStore } from '@/stores/dbCards'
 import { useCardStore } from '@/stores/cards'
+import { isCustomCardCode } from '@/arkham/customCards'
 
 const props = defineProps<{
   game: Game
@@ -100,7 +102,8 @@ const hasPool = computed(() => {
 <template>
   <Draggable>
     <template #handle><h2>{{ $t('debug.asset.title') }}</h2></template>
-    <div class="asset--outer">
+    <div class="debug-modal debug-window">
+      <div class="asset--outer">
       <div class="asset" :data-index="asset.cardId">
         <div class="card-frame">
           <div class="card-wrapper">
@@ -162,7 +165,7 @@ const hasPool = computed(() => {
       </div>
       <div v-else-if="setModifiers" class="buttons">
         <button @click="setModifiers = false">{{ $t('debug.common.back') }}</button>
-        <Modifier :modifier="modifier" v-for="(modifier, idx) in asset.modifiers" :key="idx" />
+        <Modifier :modifier="modifier" :game="game" v-for="(modifier, idx) in asset.modifiers" :key="idx" />
       </div>
       <div v-else class="buttons">
         <button @click="placeTokens = true">{{ $t('debug.common.placeTokens') }}</button>
@@ -175,10 +178,19 @@ const hasPool = computed(() => {
         <button v-if="canFlip" @click="debug.send(game.id, {tag: 'Flip', contents: [flipInvestigator, { tag: 'GameSource' }, { tag: 'AssetTarget', contents: id}]})">{{ $t('debug.asset.flip') }}</button>
         <button v-if="asset.spiritDeck" @click="inspectSpiritDeck = true">Inspect spirit deck</button>
         <button v-if="slots.length > 0" @click="showSlots = true">{{ $t('debug.asset.showSlots') }}</button>
+        <router-link
+          v-if="isCustomCardCode(cardCode)"
+          :to="{ name: 'CardBuilder', query: { card: cardCode } }"
+          target="_blank"
+          class="edit-custom-card"
+        >
+          Edit custom card
+        </router-link>
         <button @click="setModifiers = true">{{ $t('debug.common.modifiers') }}</button>
-        <button @click="emit('close')">{{ $t('debug.common.close') }}</button>
       </div>
 
+      </div>
+      <button class="debug-close" @click="emit('close')">{{ $t('debug.common.close') }}</button>
     </div>
   </Draggable>
 </template>
@@ -212,10 +224,11 @@ const hasPool = computed(() => {
 }
 
 .asset--outer {
-  padding: 10px;
   display: flex;
   flex-direction: row;
-  align-items: center;
+  /* Card pinned to the top: the button column is taller than the art, and
+     centring it left the card floating mid-panel. */
+  align-items: flex-start;
   gap: 10px;
 }
 

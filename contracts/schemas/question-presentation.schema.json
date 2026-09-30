@@ -502,6 +502,15 @@
         },
         "canBeCancelled": {
           "type": "boolean"
+        },
+        "blocksIn": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "nonBlocking": {
+          "type": "boolean"
         }
       }
     },

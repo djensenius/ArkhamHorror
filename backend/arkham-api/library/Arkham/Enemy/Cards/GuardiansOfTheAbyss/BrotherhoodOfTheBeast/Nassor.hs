@@ -4,7 +4,7 @@ import Arkham.Ability
 import Arkham.Campaigns.GuardiansOfTheAbyss.Helpers
 import Arkham.Enemy.CardDefs.GuardiansOfTheAbyss.BrotherhoodOfTheBeast qualified as Cards
 import Arkham.Enemy.Import.Lifted hiding (EnemyAttacks)
-import {-# SOURCE #-} Arkham.GameEnv (getPhase)
+import Arkham.GameEnv (getPhase)
 import Arkham.Helpers.Modifiers (ModifierType (..))
 import Arkham.I18n
 import Arkham.Matcher
@@ -31,8 +31,8 @@ instance RunMessage Nassor where
       phase <- getPhase
       let extra = if phase == EnemyPhase then 2 else 1
       campaignI18n $ chooseOneM iid do
-        labeled' "nassor.addStrength" $ addStrengthOfTheAbyss 1
-        countVar extra $ labeled' "nassor.extraDamage" do
+        labeled "nassor.addStrength" $ addStrengthOfTheAbyss 1
+        countVar extra $ labeled "nassor.extraDamage" do
           enemyAttackModifiers (attrs.ability 1) attrs [DamageDealt extra, HorrorDealt extra]
       pure e
     _ -> Nassor <$> liftRunMessage msg attrs

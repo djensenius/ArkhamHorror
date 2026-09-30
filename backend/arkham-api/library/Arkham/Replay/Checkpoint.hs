@@ -454,10 +454,11 @@ validateReplayAnswer game ReplayAnswerStep {..} = do
         unless (player == expectedPlayer) $ Left $ label <> " playerId does not match expected checkpoint player"
   case replayAnswerValue of
     Answer QuestionResponse {..} -> requireVersionAndPlayer "Answer" qrQuestionVersion qrPlayerId
+    OrderedAnswer OrderedResponse {..} -> requireVersionAndPlayer "OrderedAnswer" orQuestionVersion orPlayerId
     AmountsAnswer AmountsResponse {..} -> requireVersionAndPlayer "AmountsAnswer" arQuestionVersion arPlayerId
     PaymentAmountsAnswer PaymentAmountsResponse {..} ->
       requireVersionAndPlayer "PaymentAmountsAnswer" parQuestionVersion parPlayerId
-    DeckAnswer _ player -> unless (player == expectedPlayer) $ Left "DeckAnswer playerId does not match expected checkpoint player"
+    DeckAnswer _ player _ -> unless (player == expectedPlayer) $ Left "DeckAnswer playerId does not match expected checkpoint player"
     DeckListAnswer _ player -> unless (player == expectedPlayer) $ Left "DeckListAnswer playerId does not match expected checkpoint player"
     _ -> pure ()
   prompt <-
@@ -476,6 +477,8 @@ replayAnswerMatchesPrompt :: Answer -> Question Message -> Bool
 replayAnswerMatchesPrompt answer prompt = case answer of
   Answer QuestionResponse {qrChoice} ->
     replayChoiceIndexInRange qrChoice $ stripPromptWrappers prompt
+  OrderedAnswer OrderedResponse {orChoices} ->
+    replayOrderedChoicesMatch orChoices $ stripPromptWrappers prompt
   Raw {} -> False
   PaymentAmountsAnswer PaymentAmountsResponse {parAmounts} ->
     replayPaymentAmountsValid parAmounts $ stripPromptWrappers prompt
@@ -524,6 +527,10 @@ replayAnswerMatchesPrompt answer prompt = case answer of
   CampaignStepAnswer {} -> case stripPromptWrappers prompt of
     ContinueCampaign -> True
     _ -> False
+  RetireInvestigatorAnswer {} -> isContinueCampaignPrompt $ stripPromptWrappers prompt
+  RejoinInvestigatorAnswer {} -> isContinueCampaignPrompt $ stripPromptWrappers prompt
+  ApplyOverlayAnswer {} -> isContinueCampaignPrompt $ stripPromptWrappers prompt
+  JoinCampaignAnswer -> isContinueCampaignPrompt $ stripPromptWrappers prompt
 
 replayDestinyAnswerMatches :: [DestinyDrawing] -> [DestinyDrawing] -> Bool
 replayDestinyAnswerMatches drawings answerDrawings =
@@ -568,6 +575,14 @@ stripPromptWrappers = \case
   PayCostQuestion _ prompt -> stripPromptWrappers prompt
   QuestionWithSource _ _ prompt -> stripPromptWrappers prompt
   prompt -> prompt
+
+replayOrderedChoicesMatch :: [Int] -> Question message -> Bool
+replayOrderedChoicesMatch choices = \case
+  ChooseOneAtATime promptChoices -> isExactOrdering $ length promptChoices
+  ChooseOneAtATimeWithAuto _ promptChoices -> isExactOrdering $ length promptChoices
+  _ -> False
+ where
+  isExactOrdering choiceCount = List.sort choices == [0 .. choiceCount - 1]
 
 replayChoiceIndexInRange :: Int -> Question message -> Bool
 replayChoiceIndexInRange choice = \case
@@ -646,9 +661,15 @@ isDeckPrompt = \case
   ChooseUpgradeDeck -> True
   _ -> False
 
+isContinueCampaignPrompt :: Question message -> Bool
+isContinueCampaignPrompt = \case
+  ContinueCampaign -> True
+  _ -> False
+
 replayAnswerConstructor :: Answer -> String
 replayAnswerConstructor = \case
   Answer {} -> "Answer"
+  OrderedAnswer {} -> "OrderedAnswer"
   Raw {} -> "Raw"
   PaymentAmountsAnswer {} -> "PaymentAmountsAnswer"
   AmountsAnswer {} -> "AmountsAnswer"
@@ -661,6 +682,10 @@ replayAnswerConstructor = \case
   ScenarioSpecificAnswer {} -> "ScenarioSpecificAnswer"
   ExchangeAmountsAnswer {} -> "ExchangeAmountsAnswer"
   CampaignStepAnswer {} -> "CampaignStepAnswer"
+  RetireInvestigatorAnswer {} -> "RetireInvestigatorAnswer"
+  RejoinInvestigatorAnswer {} -> "RejoinInvestigatorAnswer"
+  ApplyOverlayAnswer {} -> "ApplyOverlayAnswer"
+  JoinCampaignAnswer -> "JoinCampaignAnswer"
 
 makeCheckpointExport :: ArkhamExport -> Game -> [Message] -> ArkhamExport
 makeCheckpointExport source game pendingQueue =
@@ -801,6 +826,11 @@ parseExactReplayAnswer value = do
         "Answer contents"
         ["choice", "playerId", "questionVersion"]
         value
+    OrderedAnswer _ ->
+      requireExactAnswerContents
+        "OrderedAnswer contents"
+        ["choices", "playerId", "questionVersion"]
+        value
     PaymentAmountsAnswer _ ->
       requireExactAnswerContents
         "PaymentAmountsAnswer contents"
@@ -834,6 +864,10 @@ replayAnswerRootFields = \case
   DeckListAnswer {} -> ["tag", "deckList", "playerId"]
   ExchangeAmountsAnswer {} ->
     ["tag", "source", "fromInvestigator", "toInvestigator", "token", "amount"]
+  RetireInvestigatorAnswer {} -> ["tag", "investigatorId"]
+  RejoinInvestigatorAnswer {} -> ["tag", "investigatorId"]
+  ApplyOverlayAnswer {} -> ["tag", "investigatorId", "overlay"]
+  JoinCampaignAnswer -> ["tag"]
   _ -> ["tag", "contents"]
 
 requireExactAnswerContents :: String -> [Key] -> Value -> Parser ()

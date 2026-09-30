@@ -9,6 +9,7 @@ import Arkham.Matcher
 import Arkham.Matcher qualified as Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Placement
+import Arkham.Scenarios.TheCircleUndone.TheWagesOfSin.Helpers (sendBanished)
 import Arkham.Story.CardDefs.TheCircleUndone.TheWagesOfSin qualified as Cards
 import Arkham.Story.Import.Lifted
 import Arkham.Window qualified as Window
@@ -46,8 +47,8 @@ instance RunMessage UnfinishedBusiness_D where
         & (removeAfterResolutionL .~ False)
     UseThisAbility iid (isSource attrs -> True) 1 -> do
       chooseOneM iid $ withI18n do
-        countVar 1 $ labeled' "takeDamage" $ assignDamage iid (attrs.ability 1) 1
-        labeled' "flipThisBackOver" $ flipOverBy iid (attrs.ability 1) attrs
+        countVar 1 $ labeled "takeDamage" $ assignDamage iid (attrs.ability 1) 1
+        labeled "flipThisBackOver" $ flipOverBy iid (attrs.ability 1) attrs
       pure s
     UseThisAbility iid (isSource attrs -> True) 2 -> do
       sid <- getRandom
@@ -57,7 +58,7 @@ instance RunMessage UnfinishedBusiness_D where
       let card = lookupCard Enemies.heretic_C (toCardId attrs)
       batched \_ -> do
         checkWhen $ Window.ScenarioEvent "wouldBanish" (Just iid) (toJSON card)
-        send $ format card <> " is \"banished\""
+        sendBanished $ format card
         push $ AddToVictory (Just iid) (toTarget attrs)
       pure s
     UseThisAbility iid (isSource attrs -> True) 3 -> do

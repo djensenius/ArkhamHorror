@@ -58,6 +58,6 @@ instance RunMessage OtherworldlySlaughter where
         Just iid -> chooseOneM iid $ scenarioI18n do
           labeledI "advanceCurrentAct" do
             advanceToAct' attrs 1 Acts.escapingTheOtherworld Act.B
-          unscoped $ labeled' "skip" $ push CheckForRemainingInvestigators
+          unscoped $ labeled "skip" $ push CheckForRemainingInvestigators
       pure a
     _ -> OtherworldlySlaughter <$> liftRunMessage msg attrs

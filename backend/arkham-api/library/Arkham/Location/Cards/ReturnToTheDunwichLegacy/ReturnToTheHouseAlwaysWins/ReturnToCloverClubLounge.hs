@@ -34,23 +34,23 @@ instance RunMessage ReturnToCloverClubLounge where
         placeSetAsideLocation_ Cards.cloverClubStage
       pure l
     UseThisAbility iid (isSource attrs -> True) 2 -> do
-      lookAt iid (attrs.ability 2) iid [fromTopOfDeck 1] #any (defer attrs IsNotDraw)
+      lookAt iid (attrs.ability 2) iid [peekTopOfDeck 1] #any (defer attrs IsNotDraw)
       pure l
     SearchFound iid (isTarget attrs -> True) _ cards | notNull cards -> do
       case cards of
         [card] ->
           if card `cardMatch` card_ (#ally <> #asset)
             then chooseOneM iid $ scenarioI18n $ scope "returnToCloverClubLounge" do
-              labeled' "putIntoPlay" $ putCardIntoPlay iid card
-              labeled' "doNotPutIntoPlay" nothing
+              labeled "putIntoPlay" $ putCardIntoPlay iid card
+              labeled "doNotPutIntoPlay" nothing
             else whenM (can.draw.cards iid) $ drawCard iid card
         xs ->
           chooseOneAtATimeM iid do
             targets xs \card ->
               if card `cardMatch` card_ (#ally <> #asset)
                 then chooseOneM iid $ scenarioI18n $ scope "returnToCloverClubLounge" do
-                  labeled' "putIntoPlay" $ putCardIntoPlay iid card
-                  labeled' "doNotPutIntoPlay" nothing
+                  labeled "putIntoPlay" $ putCardIntoPlay iid card
+                  labeled "doNotPutIntoPlay" nothing
                 else whenM (can.draw.cards iid) $ drawCard iid card
       pure l
     _ -> ReturnToCloverClubLounge <$> liftRunMessage msg attrs

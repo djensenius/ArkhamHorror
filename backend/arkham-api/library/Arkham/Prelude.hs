@@ -397,6 +397,9 @@ filterMapM f = fmap mapFromList . filterM (f . snd) . mapToList
 filterBy :: [a -> Bool] -> [a] -> [a]
 filterBy fs = filter (and . sequence fs)
 
+noneBy :: [a -> Bool] -> [a] -> Bool
+noneBy fs = null . filterBy fs
+
 filterByM :: Monad m => [a -> m Bool] -> [a] -> m [a]
 filterByM fs = filterM (andM . sequence fs)
 
@@ -497,6 +500,9 @@ maybeResult :: FromJSON a => Value -> Maybe a
 maybeResult x = case fromJSON x of
   Success a -> Just a
   Error _ -> Nothing
+
+withMaybeResult :: FromJSON a => Value -> x -> (a -> x) -> x
+withMaybeResult a x f = maybe x f (maybeResult a)
 
 countOccurrences :: Ord a => [a] -> Map a Int
 countOccurrences = foldr (\x acc -> Map.insertWith (+) x 1 acc) Map.empty

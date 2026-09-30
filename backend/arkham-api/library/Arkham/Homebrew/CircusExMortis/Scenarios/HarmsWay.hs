@@ -4,6 +4,7 @@ import Arkham.Card
 import Arkham.ChaosToken
 import Arkham.Enemy.Types (Field (EnemyAsSelfLocation))
 import Arkham.Helpers (unDeck)
+import Arkham.Helpers.CustomChaosBag (initCustomChaosBag)
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.History (getHistoryField)
 import Arkham.Helpers.Message.Discard.Lifted (chooseAndDiscardCard)
@@ -19,7 +20,7 @@ import Arkham.Homebrew.CircusExMortis.Key
 import Arkham.Homebrew.CircusExMortis.Sets qualified as Set
 import Arkham.Id (AgendaId (..))
 import Arkham.Investigator.Types (Field (InvestigatorDeck))
-import Arkham.Location.Grid (Pos (..))
+import Arkham.Location.Grid (Pos (..), gridLabel)
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
@@ -89,12 +90,47 @@ instance HasChaosTokenValue HarmsWay where
 
 instance RunMessage HarmsWay where
   runMessage msg s@(HarmsWay attrs) = runQueueT $ scenarioI18n "harmsWay" $ case msg of
-    PreScenarioSetup -> scope "intro" do
-      storyWithChooseOneM' (setTitle "title" >> p "body") do
-        labeled' "faster" $ addChaosToken Skull
-        labeled' "caution" $ addChaosToken Cultist
+    PreScenarioSetup -> do
+      scope "intro" do
+        storyWithChooseOneM (h "title" >> p "body") do
+          labeled "faster" $ addChaosToken Cultist
+          labeled "caution" $ addChaosToken Tablet
+      -- Opening hands and mulligans finish before Setup. Reserve these cards
+      -- now so AdditionalStartingCards can actually add them to the hand.
+      owners <- catMaybes <$> sequence [getAmaltheaWeaverOwner, getDeCultusBestiaeOwner]
+      scope "startingCards" do
+        for_ owners \(iid, def) -> do
+          deck <- field InvestigatorDeck iid
+          for_ (find ((== def) . toCardDef) (unDeck deck)) \card -> do
+            focusCards [card] do
+              investigatorStoryWithChooseOneM' iid (ul $ li "instructions") do
+                labeled "take" do
+                  push $ ObtainCard (toCardId card)
+                  setupModifier ScenarioSource iid (AdditionalStartingCards [toCard card])
+                labeled "leave" nothing
       pure s
     Setup -> runScenarioSetup HarmsWay attrs do
+      bypassedIllusions <- getHasRecord TheInvestigatorsBypassedTheIllusions
+      eyeOnYou <- getHasRecord TheRingmasterHasHisEyeOnYou
+
+      setup $ ul do
+        li "gatherSets"
+        li.nested "placeLocations" do
+          li "startAt"
+        li "toweringDarkYoung"
+        li "furyBag"
+        li "darkYoungStir"
+        li "kidnappedCitizens"
+        li.nested "checkCampaignLogIllusions" do
+          li.validate bypassedIllusions "bypassedTheIllusions"
+          li.validate (not bypassedIllusions) "lostInTheArkhamWoods"
+        li.nested "checkCampaignLogAct" do
+          li.validate eyeOnYou "eyeOnYou"
+          li.validate (not eyeOnYou) "doesNotSuspectYou"
+        li "setAside"
+        li "startingCards"
+        unscoped $ li "shuffleRemainder"
+
       gather Set.HarmsWay
       gather Set.CultOfShubNiggurath
       gather Set.LunaticNight
@@ -112,14 +148,17 @@ instance RunMessage HarmsWay where
 
       (removedYoung, keptYoung) <- splitAt 1 <$> shuffle toweringDarkYoungs
       removeEvery removedYoung
-      -- Keep their mechanical Global placement while rendering the four enemies
-      -- in the otherwise-empty corners around the camp.
-      let cornerLabels = ["posn0101", "pos0101", "posn01n01", "pos01n01"]
-      for_ (zip keptYoung cornerLabels) \(def, label) -> do
-        eid <- placeEnemyCapture def Global
-        push $ UpdateEnemy eid $ Update EnemyAsSelfLocation (Just label)
+      -- They are at no location, so InPosition and not Global: Global means "on
+      -- the same location as everyone", which would make all four fightable
+      -- from anywhere. The four corners are the otherwise-empty diagonals
+      -- around Ringmaster's Trailer at (0, 0).
+      let corners = [Pos (-1) 1, Pos 1 1, Pos (-1) (-1), Pos 1 (-1)]
+      for_ (zip keptYoung corners) \(def, pos) -> do
+        eid <- placeEnemyCapture def (InPosition pos)
+        push $ UpdateEnemy eid $ Update EnemyAsSelfLocation (Just $ gridLabel pos)
 
-      initFuryBag
+      -- The fury bag starts with these four; agenda flips add ☾ tokens on top.
+      initCustomChaosBag furyBagKey [Skull, Cultist, Tablet, ElderThing]
       placeStory Stories.theDarkYoungStir
 
       (removedCitizens, keptCitizens) <- splitAt 2 <$> shuffle kidnappedCitizens
@@ -130,29 +169,18 @@ instance RunMessage HarmsWay where
         push $ StoryMessage $ PlaceStory card (AtLocation lid)
 
       -- "Place 2 doom on agenda 1a. This doom ignores the forced effect."
-      whenM (getHasRecord TheInvestigatorsBypassedTheIllusions) do
+      when bypassedIllusions do
         scenarioSetupModifier
           attrs.id
           attrs
           (AgendaId $ toCardCode Agendas.theCircusSleeps)
           (EntersPlayWithDoom 2)
 
-      eyeOnYou <- getHasRecord TheRingmasterHasHisEyeOnYou
       let (act1, unusedAct1) =
             if eyeOnYou then (Acts.escapeActVI, Acts.escapeActVII) else (Acts.escapeActVII, Acts.escapeActVI)
       removeEvery [unusedAct1]
 
       setAside [Locations.campOutskirtsGuardedClosely, Locations.campOutskirtsQuietForNow]
-
-      -- "The investigators with Amalthea Weaver and De Cultus Bestiae in their
-      -- decks may begin the game with those cards in their opening hands as
-      -- additional cards."
-      owners <- catMaybes <$> sequence [getAmaltheaWeaverOwner, getDeCultusBestiaeOwner]
-      for_ owners \(iid, def) -> do
-        deck <- field InvestigatorDeck iid
-        for_ (find ((== def) . toCardDef) (unDeck deck)) \card -> do
-          push $ ObtainCard (toCardId card)
-          setupModifier ScenarioSource iid (AdditionalStartingCards [toCard card])
 
       setAgendaDeck [Agendas.theCircusSleeps, Agendas.treadingOnEggshells, Agendas.sleepWhenYoureDead]
       setActDeck [act1, Acts.overdueDeparture]
@@ -166,8 +194,8 @@ instance RunMessage HarmsWay where
       pure s
     DoStep 1 (ResolveChaosToken _ _ iid) -> do
       chooseOneM iid $ withI18n do
-        countVar 1 $ labeled' "discardCards" $ chooseAndDiscardCard iid ScenarioSource
-        countVar 1 $ labeled' "loseResources" $ loseResources iid ScenarioSource 1
+        countVar 1 $ labeled "discardCards" $ chooseAndDiscardCard iid ScenarioSource
+        countVar 1 $ labeled "loseResources" $ loseResources iid ScenarioSource 1
       pure s
     FailedSkillTestWithToken _ ElderThing -> do
       revealFuryToken ScenarioSource
@@ -179,8 +207,9 @@ instance RunMessage HarmsWay where
           resolution "resolution1"
           -- "Remove 2 copies of Kidnapped Citizen from the victory display, if
           -- possible", so they neither count for X nor pay out their Victory 1.
-          for_ (take 2 $ mapMaybe (preview _EncounterCard) citizens) (push . AddToEncounterDiscard)
-          recordCount GroupsOfCitizensWereSavedFromTheCircus $ max 0 (length citizens - 2)
+          let (freed, stillCaptive) = splitAt 2 citizens
+          for_ freed removeCardFromGame
+          recordCount GroupsOfCitizensWereSavedFromTheCircus (length stillCaptive)
           push R3
         Resolution 2 -> do
           resolution "resolution2"

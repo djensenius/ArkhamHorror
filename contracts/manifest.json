@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.45",
+  "schemaRevision": "0.1.46",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -3921,7 +3921,7 @@
             "choices"
           ],
           "keyword": "maxItems",
-          "messageContains": "[{'tag': 'TargetLabel', 'target': {'tag': 'EnemyTarget', 'contents': '00000000-0000-0000-0000-000000000386'}, 'messages': [{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}]}, {'tag': 'TargetLabel', 'target': {'tag': 'EnemyTarget', 'contents': '00000000-0000-0000-0000-000000000386'}, 'messages': [{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}]}] is too long"
+          "messageContains": "attackDamageReplacement"
         }
       ]
     },
@@ -4143,7 +4143,7 @@
             "messages"
           ],
           "keyword": "maxItems",
-          "messageContains": "[{'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}, {'tag': 'EnemyAttackMessage', 'contents': {'tag': 'EnemyAttack_', 'contents': {'attackTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackOriginalTarget': {'tag': 'SingleAttackTarget', 'contents': {'tag': 'InvestigatorTarget', 'contents': 'c01001'}}, 'attackEnemy': '00000000-0000-0000-0000-000000000386', 'attackType': 'RegularAttack', 'attackDamageStrategy': {'tag': 'DamageAny'}, 'attackExhaustsEnemy': True, 'attackSource': {'tag': 'EnemySource', 'contents': '00000000-0000-0000-0000-000000000386'}, 'attackCanBeCanceled': True, 'attackAfter': [], 'attackDamaged': [], 'attackDealDamage': True, 'attackDespiteExhausted': False, 'attackCancelled': False}}}] is too long"
+          "messageContains": "attackDamageReplacement"
         }
       ]
     },
@@ -4785,7 +4785,7 @@
         {
           "path": [],
           "keyword": "required",
-          "messageContains": "'attackCancelled' is a required property"
+          "messageContains": "attackCancelled"
         }
       ]
     },
@@ -10572,7 +10572,7 @@
             "7"
           ],
           "keyword": "minItems",
-          "messageContains": "[{'contents': 'c01001', 'tag': 'InvestigatorTarget'}] is too short"
+          "messageContains": "InvestigatorTarget"
         }
       ]
     },
@@ -12329,7 +12329,7 @@
             "choices"
           ],
           "keyword": "maxItems",
-          "messageContains": "[{'tag': 'AbilityLabel', 'investigatorId': 'c01001', 'ability': {'source': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'cardCode': 'c01007', 'index': 1, 'type': {'tag': 'ReactionAbility', 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'cost': {'tag': 'Free'}, 'actions': {'contents': [], 'tag': 'AndActions'}}, 'limit': {'tag': 'PlayerLimit', 'contents': [{'tag': 'PerWindow'}, 1]}, 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'metadata': None, 'criteria': {'tag': 'Criteria', 'contents': [{'tag': 'OnSameLocation'}, {'tag': 'CluesOnThis', 'contents': {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}}]}, 'doesNotProvokeAttacksOfOpportunity': None, 'tooltip': None, 'canBeCancelled': True, 'displayAs': None, 'delayAdditionalCosts': None, 'basic': False, 'additionalCosts': [], 'requestor': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'triggersSkillTest': False, 'wantsSkillTest': None, 'target': None, 'highlightFromWindow': False, 'skipForAll': False, 'ignoreAllCosts': False, 'fightCriteriaOverride': None, 'evadeCriteriaOverride': None}, 'windows': [{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}], 'before': [], 'messages': []}, {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}, {'tag': 'SkipTriggersButton', 'investigatorId': 'c01001'}] is too long"
+          "messageContains": "highlightFromWindow"
         }
       ]
     },
@@ -12349,7 +12349,7 @@
             "choices"
           ],
           "keyword": "minItems",
-          "messageContains": "[{'tag': 'AbilityLabel', 'investigatorId': 'c01001', 'ability': {'source': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'cardCode': 'c01007', 'index': 1, 'type': {'tag': 'ReactionAbility', 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'cost': {'tag': 'Free'}, 'actions': {'contents': [], 'tag': 'AndActions'}}, 'limit': {'tag': 'PlayerLimit', 'contents': [{'tag': 'PerWindow'}, 1]}, 'window': {'tag': 'WouldDiscoverClues', 'contents': ['When', {'tag': 'You'}, {'tag': 'LocationWithInvestigator', 'contents': {'tag': 'You'}}, {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}]}, 'metadata': None, 'criteria': {'tag': 'Criteria', 'contents': [{'tag': 'OnSameLocation'}, {'tag': 'CluesOnThis', 'contents': {'tag': 'GreaterThanOrEqualTo', 'contents': {'tag': 'Static', 'contents': 1}}}]}, 'doesNotProvokeAttacksOfOpportunity': None, 'tooltip': None, 'canBeCancelled': True, 'displayAs': None, 'delayAdditionalCosts': None, 'basic': False, 'additionalCosts': [], 'requestor': {'tag': 'TreacherySource', 'contents': 'fef723b4-ae76-4183-9441-b4f3cb8b1eb5'}, 'triggersSkillTest': False, 'wantsSkillTest': None, 'target': None, 'highlightFromWindow': False, 'skipForAll': False, 'ignoreAllCosts': False, 'fightCriteriaOverride': None, 'evadeCriteriaOverride': None}, 'windows': [{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}], 'before': [], 'messages': []}] is too short"
+          "messageContains": "highlightFromWindow"
         }
       ]
     },
@@ -14410,7 +14410,7 @@
             "windows"
           ],
           "keyword": "items",
-          "messageContains": "Expected at most 1 item but found 1 extra: {'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}"
+          "messageContains": "Expected at most 1 item"
         },
         {
           "path": [
@@ -14419,7 +14419,7 @@
             "windows"
           ],
           "keyword": "maxItems",
-          "messageContains": "[{'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}, {'windowTiming': 'When', 'windowType': {'tag': 'WouldDiscoverClues', 'contents': ['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1]}, 'windowBatchId': None}] is too long"
+          "messageContains": "windowConditionTick"
         }
       ]
     },
@@ -15926,7 +15926,7 @@
   ],
   "artifactHashes": {
     "contracts/asyncapi.yaml": "6479b3faabb2ba2cb192c333b17b3e2da850f409868a64315842d63ddc308f0e",
-    "contracts/fixtures/account.json": "817fa6242dce030a9345ddc632ac223a43d264a6e3d75ddb6422da7f2c868099",
+    "contracts/fixtures/account.json": "173ee819ff6584f68ee801da3cb1925f8f87cb25ae4262c0826c404be0dfe284",
     "contracts/fixtures/achievements.json": "9323f78e201ced419f3ed843ef3bc3d375db24a2f376a25f7cf3e3a085483b83",
     "contracts/fixtures/act-no-advance-cost.json": "ef6aa891184deafe2166b58b0df9c0818237a50efa93e3aa69db4aea0dc30a01",
     "contracts/fixtures/answer-amounts.json": "9e2344dd6b03c2ca40b0ede6f223dc50cac0c20f9af7a5b65d9ddd770e4fd555",
@@ -15947,11 +15947,11 @@
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "03abe307ec98332f6cb9a56aa74ed2ddfe48cb676857ce8f716f89135786c96e",
-    "contracts/fixtures/capabilities.json": "2149dca3c1f1da1eb40bb637460247a480001f4f1af29ae1fbd41543cb424687",
+    "contracts/fixtures/capabilities-locale-catalog.json": "21ce03ec5f3bf26ecf2f64ad74ddb6112c675bf7772961df0c49f081bd5770b6",
+    "contracts/fixtures/capabilities.json": "0d16cdd20da1e0828341d8a65360e519c7f5879ea39bb3bfc02101cd4fe1acd5",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
-    "contracts/fixtures/catalog.json": "653e00824e6834b1a21b803ef01b8a1a4abe4987410830f70890f3accb71ad82",
-    "contracts/fixtures/decks.json": "037153d7c611b2b67e101a6eb847f138e4c2b433a06f567d7d8e05857e21165d",
+    "contracts/fixtures/catalog.json": "481f42cbac1fcb208cdb1b626a3cc6951c35531383e7439dc3c0d7c02a9044ac",
+    "contracts/fixtures/decks.json": "be1b19529d95386c6c2ed0b5c665aa25ae64a450c8a3f412d10b8523b966aaff",
     "contracts/fixtures/event-changed.json": "e5c16ea398ec86f06bccf619cce633eabe0df4051f775b27663e1044b941f75e",
     "contracts/fixtures/game-achievement.json": "8e586865fef4bbb7cc4b17c4e9671bb2a1c73038fd4f76bd34bb1e76ceb434ab",
     "contracts/fixtures/game-audio.json": "f639e38d26c35ff6e805b2749e8990cb07c010af24065780d18394986024a7fe",
@@ -15967,51 +15967,51 @@
     "contracts/fixtures/game-step.json": "441768cb79f54c925cd912b35d9650653be57232997ab4f593294fc622f01013",
     "contracts/fixtures/game-tarot.json": "a7c1c85cf8a607b395070fdd73f18a50b7c73e8a28a4ba4b7c444ec2f982bb6b",
     "contracts/fixtures/game-ui.json": "f96c401c965471510a003fdc497391369bd3930389967d1fa8a94ab43ea9f95a",
-    "contracts/fixtures/game-update.json": "cee7cfb8a7a1ee2c9a04f57eef1faf3e53064ae851a9d4806178d6991c4ccda5",
-    "contracts/fixtures/get-game.json": "44a2c79ae74489faf3321084d825238c86a32d35b6a0ca93b11ed2303b09a478",
+    "contracts/fixtures/game-update.json": "6d16ee03cb099b63f42b6d38869d9cf18217c5337276a96e1eeee728613b6e1a",
+    "contracts/fixtures/get-game.json": "0e187eaf21df45f9a0a57df2a5961d41492981caee51e3322f8961d6c81c87ac",
     "contracts/fixtures/investigator-unhealed-horror-negative.json": "f251bd1a525fa0eb9508db084fbe7fb86928ec1ecb4472cf0c79cbaf9478762f",
     "contracts/fixtures/locale-catalog-backend-registry.json": "3f39e0f443341bc194a2ba645584007a161875d2e1981bb9c16c8f466880c6c4",
     "contracts/fixtures/locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json": "2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448",
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "73a3da25bc11a3866b801fd9eb6315f3b3d1b69e0a0cfe9ee55d9b493ed44516",
+    "contracts/fixtures/locale-catalog-manifest.json": "71210c8ea9793deb49b611dd36410232d0d11189373b1c50c2d99c75c7d919ec",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
     "contracts/fixtures/locale-catalog-source-pt-BR.json": "cd7593ead3708918f8d8df4dea9775659a78351d90c485f3c82ad8fe69f4f241",
     "contracts/fixtures/location-enemy-view.json": "fd2cc29b6ea081cfa340b02c93194433542ee27ea50c9e841c94d6ed37f419b4",
-    "contracts/fixtures/mode-campaign-only.json": "b68d6e0422852684fd4ebdf2d6097bc6b65edda012cc91ccf38b55ca32b9213f",
-    "contracts/fixtures/mode-campaign-scenario.json": "36a77bcf41059ca4a5d2c0e5bbd4d9ff3b429da2f6ddbc35d7fb1e1491e88c89",
-    "contracts/fixtures/mode-turn-zero.json": "acc0cb8613b61d0bbb65ecdaefbae433276996fe8412b76046c4c90b3c933b71",
+    "contracts/fixtures/mode-campaign-only.json": "51162c3cbbd0e479f22f591639e7e8919a84aa3a7316be48f9aace545bf8e81f",
+    "contracts/fixtures/mode-campaign-scenario.json": "7f4348da15b7fb2fe761753b9cdadc3124307a65a75bfcf9fd8546a7cc5c2897",
+    "contracts/fixtures/mode-turn-zero.json": "ac598791652b79370375631658794554cc8af3de97379c11696793bf63ac8a20",
     "contracts/fixtures/movement.json": "c284c0b4244024a072ee7a486c5907db4981c6ff4fed1d55cbe33046fb0b63dc",
-    "contracts/fixtures/question-agenda-advance.json": "922f8e3923e2c74d28f9a2a79166b5ada177a5d75c12747195d1df2ecd17d067",
-    "contracts/fixtures/question-agenda-consequence.json": "279a0b825dd3f5c0a7b08c7f4798660c2b0a3c8e9ec9530081471c985619b0ae",
-    "contracts/fixtures/question-agenda-horror-assignment.json": "999336a2838fde0d40737a35abcab629d46af180e7869294961165c2cb60f2d4",
+    "contracts/fixtures/question-agenda-advance.json": "c92f0ab199c1e0797359360322d479a1dbab9271a229ab6c17009977320a1eaf",
+    "contracts/fixtures/question-agenda-consequence.json": "8cf704ab50b76b7800ff1685e6d70c488f863b48370d1ba8d16827d1527dd16e",
+    "contracts/fixtures/question-agenda-horror-assignment.json": "7bb195142065b5ccd0fa9b32a3833f472e4e2f08e4b1596e0b211625c1dffc31",
     "contracts/fixtures/question-choose-one-location-multiple.json": "25751cccc02dc18de38e0cbebf71acb5303d47df3705367f0c14089853bcbe07",
     "contracts/fixtures/question-choose-one-location.json": "5ce62cbaee22e32f4b8d84e563d331b58d087c3d5f6b3061c7cbfdb177af0f79",
     "contracts/fixtures/question-choose-one.json": "854d6a2891155ff4da9e075224d4cd5a7519e4e4cb2ec659a740c872f8b799fc",
-    "contracts/fixtures/question-cover-up-reaction.json": "0043cefb8ea59423b4283691ea6bbac816ef135b0b13fa380783004cd3613d95",
+    "contracts/fixtures/question-cover-up-reaction.json": "970721a646443a5eb5770d3103ee266b579506b6c76b7f487d287c4f9dae7089",
     "contracts/fixtures/question-encounter-deck-draw.json": "fb341f57cba32fd0d01e3d67098fa7684cd51b6b2b008c65fea61db5487ac703",
     "contracts/fixtures/question-enemy-attack-damage-assignment.json": "36d20df58661bb583dfbe5350519d164d751f5ddc85924a0f8e2917ce1bbbdff",
     "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json": "99e09d65b292ed3535e1d908a76e90855db7b256adfda55755c41fccf4c96018",
     "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json": "5e3eb6076ebeb406632b4aab3a5d0d9b02275c531afb2db52dffb369182df4c7",
-    "contracts/fixtures/question-enemy-attack.json": "1f5ce9f0742e0f3e6891c9e464c19a863038d75cb95ebf7b4ea0ddbbc9fd6b1d",
+    "contracts/fixtures/question-enemy-attack.json": "888ab4cf258272dc7ea5ad70cd34dfcff167f409cee2c4a5b0a31d4f906db797",
     "contracts/fixtures/question-gathering-act-advance.json": "21eb483b08ca6cc6ad76b3d7884dde7f817cc9da9945e71ab975527c13b7fd6b",
-    "contracts/fixtures/question-gathering-act-objective.json": "7ddb854740d021428121fd823adc288cbe50a57b163a11273d4103b04deeedee",
-    "contracts/fixtures/question-gathering-attic-entry-forced.json": "eb36ee5b742cabeb41a6d9e98efba052d9fe6c1a8d610e76651eae8db255877c",
+    "contracts/fixtures/question-gathering-act-objective.json": "e192721b78db903beee104cd4bf25924f458a29a6cf408dbed62f16c003fe40d",
+    "contracts/fixtures/question-gathering-attic-entry-forced.json": "f0859c41b10dbe80f6236d7cfa1152116239c8fb04b0f8816a570a60122f3d7e",
     "contracts/fixtures/question-gathering-attic-horror-assignment.json": "9241df0b7a57a5be5d0d2c35b47635ba39823a6179b018ce730a8e124bb3f6b3",
     "contracts/fixtures/question-gathering-cellar-damage-assignment.json": "1d746cbaa060ef427516d1b949c2e40600c19a86762a0eb892db1f3ade916473",
-    "contracts/fixtures/question-gathering-cellar-entry-forced.json": "08aa1a06e962827fcc25c077cf7c88b6a1d863bc24cdf95252482ba9dad119ce",
-    "contracts/fixtures/question-gathering-movement.json": "d5264a434360c2c4a741b8ef0f2b17b843590b5326f4f0e1067b80574fbf2822",
+    "contracts/fixtures/question-gathering-cellar-entry-forced.json": "ea7c802ed3064fda9707c595ac98a3d96f8b6d4c923ae5ff4657f1e7379beba4",
+    "contracts/fixtures/question-gathering-movement.json": "bfef8a3ead15a37cd119da96e9173f9d8c01e17b9b29abb0d4dd920fd277221f",
     "contracts/fixtures/question-investigate-apply-results.json": "ca3834a719c64a263c31982cfb5987c08da40ec3494d2380ccffaebb46e11774",
     "contracts/fixtures/question-investigate-commit.json": "0cef8bb88be1ac2feb7cd2d37b952bf54fa47b4ea7d83474326baf9da7fb9b18",
-    "contracts/fixtures/question-investigate-fast-window.json": "faa049601d544817746c3621e6865a119c5a38c5eba8daf477da2728a250a913",
-    "contracts/fixtures/question-investigate-reveal-window.json": "faa049601d544817746c3621e6865a119c5a38c5eba8daf477da2728a250a913",
+    "contracts/fixtures/question-investigate-fast-window.json": "6ae49986f27c9ab934ddd53b08e2dd6c3fa33a85a2ee258409c0321332ed731b",
+    "contracts/fixtures/question-investigate-reveal-window.json": "6ae49986f27c9ab934ddd53b08e2dd6c3fa33a85a2ee258409c0321332ed731b",
     "contracts/fixtures/question-mulligan.json": "88249e7206671dbb5f43a8187c9fa6e0cbbee1859e06957ca1a454455d156029",
-    "contracts/fixtures/question-player-window-choose-one.json": "1a10e17e87e2e77b728484443934e3147ea14d5cdee077cf236fc5efb8334eaf",
-    "contracts/fixtures/question-player-window-enemy-actions.json": "153362eff3254415068fdeb21670099d0b82c8c51a82d1b7b1b188d285f1d06d",
-    "contracts/fixtures/question-player-window-engage-action.json": "546a1a8c07b1bf240c61b396c9630d566f68141f10bcf14604c04f2b888f682b",
+    "contracts/fixtures/question-player-window-choose-one.json": "0e29e060f65b8ec05886a0e1339d0dbb89995987dc006d9cd5f6311a5c491805",
+    "contracts/fixtures/question-player-window-enemy-actions.json": "8071d15dd7c4151757885d04cf6ac3b3b452ac6bd79590f4031b3993993a5187",
+    "contracts/fixtures/question-player-window-engage-action.json": "fcda1583d42da4fca7c9f2be593bd0c878dca588fe15d32f24c512154fa8212b",
     "contracts/fixtures/question-presentation-encounter-deck-draw.json": "a8343bef781598fe6e81098d93e9d0b279f851d4bbf2a6a23ce6852d0f4d1217",
     "contracts/fixtures/question-presentation-gathering-act-advance.json": "232062dc5467843242763a428beaa212e082752a6ae02c1f753165f76e322841",
     "contracts/fixtures/question-presentation-gathering-act-objective.json": "768c77f900c61f6bd0e99514b6b71c38a6c939ce192e9f6d0d43d4ef8c623fc6",
@@ -16024,21 +16024,21 @@
     "contracts/fixtures/question-read-scenario-intro.json": "98cac0992deff7f08005fc25a0227ef62b9aedde00c3b6dcceb25e503d671fd3",
     "contracts/fixtures/question-read-with-cards.json": "402805337459a8e82a518d515f2bafdb4d4d6e6474ae190002dd885a5ed50ba1",
     "contracts/fixtures/question-read.json": "e7397b59c9a714a003a0edac3f584b284c5cab03e75b59c1e9b4a84d86964006",
-    "contracts/fixtures/question-roland-defeat-reaction.json": "bd8d242cae7eb93db4ebffc9e80d3fa828304e4fc6cad746d488e7206cd0e50d",
-    "contracts/fixtures/question-round-end-forced-ability.json": "d40629f34d5727a2c9bb873feb09931e3f32e004dc80baf375758833c80ac270",
-    "contracts/fixtures/question-treachery-forced-ability.json": "fc539af36c05a0f924ec255b697669c0ea49282270a80a8b167cabe105f6521b",
+    "contracts/fixtures/question-roland-defeat-reaction.json": "13471177b2ec181fe80b846b8812b5e079bfc22eb763219edc99c05f860ae093",
+    "contracts/fixtures/question-round-end-forced-ability.json": "ccf51b1cd6d4f35a23d05c69d6009d47c8ca60f531d69c7c429a26beac412f5f",
+    "contracts/fixtures/question-treachery-forced-ability.json": "e06cd3debf7b77313c4d4fcf8732944915022e2f99df4535a4177c1521cf899f",
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
-    "contracts/fixtures/replay-attestation.json": "22c1f2cc219dbec0cc7e4fcb3246e19e221495b6777bcb60ef066f442e0b237f",
+    "contracts/fixtures/replay-attestation.json": "801e9961121bd185e31cdf8fc3681cc5b62a31b76a8c1da7d5d70df6105819e2",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "4f9d5eac91191ff194bf80293bd067bfd0f2131891d8e6bc2f10820a9cb48481",
-    "contracts/openapi.yaml": "242bc8c9ea7252ba1937bde275e0de00bf15d883b0fe009ae8406fa8ce54bfd6",
-    "contracts/route-inventory.json": "c25ecdfb221c756a904a19e8c28f8f81c26acff54b2527348d55382deb6af24a",
-    "contracts/schemas/account.schema.json": "e7e3c918a66c736b72254f49147842c1a7e63700981fd3daa2fd4383afc55144",
+    "contracts/manifest.json": "6d373862ffcd86448ca2b3089a4bd6b7f840710323cece4b379655bdf8b4c662",
+    "contracts/openapi.yaml": "62559b4b67807a3a0b8321824a35994883a8fcdbb73d35c7d7c32ee30d3f1c78",
+    "contracts/route-inventory.json": "090194fadafe52c853917f0367bce267a70aa99d41bed4fbd958b45b26730f92",
+    "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
-    "contracts/schemas/basic-choice-question.schema.json": "f812c0a99c436766c8969eeba58ee6579414490975049dc626f3af10b32ab934",
+    "contracts/schemas/basic-choice-question.schema.json": "b545376fafbd9dcc4aa47ad625d91bc96ddd2876ea5be6cbb7a5fc1ca0aa3649",
     "contracts/schemas/capabilities.schema.json": "a9f4424e0a09d76c74e29289c98a53194e5e6690b2f0f33d2efba23720a373dc",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
@@ -16046,7 +16046,7 @@
     "contracts/schemas/chaos-token.schema.json": "f68258413e13898c655769f7bec6047898d9e02723c794782846d0a0fef7f137",
     "contracts/schemas/client-answer.schema.json": "43abf29546487542b9ba56c497c8f38e7815a2dd0cc08faf842ed44243318436",
     "contracts/schemas/cost.schema.json": "8dd749848f54b39edbcd432968d4f22c4f10e8ee7c94d16be0737e5c5c2859ef",
-    "contracts/schemas/decks.schema.json": "6e1e4bd7d5245c63d38a1f78b0c72541d20d36aa571cd3b5b060be6f8d9354ce",
+    "contracts/schemas/decks.schema.json": "c9350787341834c68f7c5bb4d5f1bcaa1880474049bdc12c772ea3fd76b7c440",
     "contracts/schemas/game-lifecycle.schema.json": "894ce38d078fe0857e824033578972bacab4744595ca1741250c2813f2fd682d",
     "contracts/schemas/game-list.schema.json": "f34c3b12198bf2d3d7744d8793cb476b90b30bfec60a3ba5d415221b341e75d2",
     "contracts/schemas/game-state.schema.json": "b193923d9d272df08adad5d2a3845b04171756edb1edb304f21fc774996a3069",
@@ -16055,14 +16055,14 @@
     "contracts/schemas/get-game.schema.json": "60c58782db59095d18c6e6844dbe479b5432e08873a8de7c5dc2c29c895538ef",
     "contracts/schemas/investigator.schema.json": "e71df9c4777bd2802eb12900784113d18f2e2a7429fc73411b97ae271c4b281c",
     "contracts/schemas/location.schema.json": "15d299e7b37a72cd64b9a77f363c184c1e7d3cb9411cf21fbbea18e91bda2f1d",
-    "contracts/schemas/mode.schema.json": "d20070b73bed7a30803699a9cda0e3c094385e4a8ed28561795719b27c972417",
+    "contracts/schemas/mode.schema.json": "abc251f754e31a63781c0db44bfd6d405b2b6201d530300e307afa9d93ecf2d3",
     "contracts/schemas/movement.schema.json": "d9fff125d71f701d3b665c03fb0feb7454fd069083e109fcb252d54564120923",
     "contracts/schemas/name.schema.json": "0a04d31f01c47671c7529f4afacaa42d69dc9f9de222a10eac3a5ecc67ae71d6",
     "contracts/schemas/non-negative-int64.schema.json": "c869ad7885d3be1f548cb1d415cc5c5c7e44271a02f8ee326af88defdad29110",
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
-    "contracts/schemas/public-game.schema.json": "0ac449ea7eb5d2d9e84cf2cfb69f4effd767e28b56b892226c0843118a953f52",
-    "contracts/schemas/question-presentation.schema.json": "a6972d416fe52125b8709457c504b0ee7878d16e3267196f0db262d15450122c",
+    "contracts/schemas/public-game.schema.json": "4cfa07e7aad577afb2b0e8aa21a4905588cbab9e9b7c4485a6818ac2ce4094fb",
+    "contracts/schemas/question-presentation.schema.json": "63da9456efa6059ed4d754488998bcb203186887c1945abd27a5d9a2130ef5b7",
     "contracts/schemas/replay-attestation.schema.json": "ce0a95eb11996ed95ddc47e92a2071202e6ff01d8ff9cf0d352dd13e24739194",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6",

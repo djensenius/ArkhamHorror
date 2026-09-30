@@ -10,13 +10,17 @@ newtype Caboose = Caboose LocationAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 caboose :: LocationCard Caboose
-caboose = location Caboose Cards.caboose 2 (Static 1)
+caboose = symbolLabel $ location Caboose Cards.caboose 2 (Static 1)
 
 instance HasAbilities Caboose where
   getAbilities (Caboose a) =
     extendRevealed1 a
       $ playerLimit PerRound
-      $ restricted a 1 (Here <> notExists (EnemyAt (be a))) actionAbility
+      $ restricted
+        a
+        1
+        (Here <> notExists (EnemyAt (be a)) <> youExist (HealableInvestigator (a.ability 1) #damage Anyone))
+        actionAbility
 
 instance RunMessage Caboose where
   runMessage msg l@(Caboose attrs) = runQueueT $ case msg of

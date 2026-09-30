@@ -37,14 +37,10 @@ instance HasAbilities OnyxPentacle4 where
 instance RunMessage OnyxPentacle4 where
   runMessage msg a@(OnyxPentacle4 attrs) = runQueueT $ case msg of
     UseThisAbility iid (isSource attrs -> True) 1 -> do
-      isForced <- selectNone $ enemyAtLocationWith iid <> EnemyCanBeEvadedBy (attrs.ability 1)
-      chooseOneM iid do
-        when attrs.ready do
-          forcedWhen isForced
-            $ (cardI18n $ labeled' "onyxPentacle4.exhaustToTarget")
-            $ doStep 1 msg
-        (cardI18n $ labeled' "onyxPentacle4.succeedBy2")
-          $ doStep 2 msg
+      canEvadeHere <- selectAny $ enemyAtLocationWith iid <> EnemyCanBeEvadedBy (attrs.ability 1)
+      chooseOneM iid $ cardI18n do
+        when attrs.ready $ labeled "onyxPentacle4.exhaustToTarget" $ doStep 1 msg
+        labeledValidate (canEvadeHere || not attrs.ready) "onyxPentacle4.succeedBy2" $ doStep 2 msg
       pure $ overAttrs (unsetMetaKey "option2") a
     DoStep 1 (UseThisAbility iid (isSource attrs -> True) 1) -> do
       exhaustThis attrs
@@ -60,8 +56,8 @@ instance RunMessage OnyxPentacle4 where
             , enemyAtLocationWith iid
             ]
       chooseOneM iid do
-        (withI18n $ skillVar #willpower $ labeled' "useSkill") $ push $ withSkillType #willpower evade
-        (withI18n $ countVar 1 $ skillVar #agility $ labeled' "getPlus") do
+        (withI18n $ skillVar #willpower $ labeled "useSkill") $ push $ withSkillType #willpower evade
+        (withI18n $ countVar 1 $ skillVar #agility $ labeled "getPlus") do
           skillTestModifier sid (attrs.ability 1) iid (SkillModifier #agility 1)
           push evade
       pure a
@@ -69,8 +65,8 @@ instance RunMessage OnyxPentacle4 where
       sid <- getRandom
       evade <- mkChooseEvade sid iid (attrs.ability 1)
       chooseOneM iid do
-        (withI18n $ skillVar #willpower $ labeled' "useSkill") $ push $ withSkillType #willpower evade
-        (withI18n $ countVar 1 $ skillVar #agility $ labeled' "getPlus") do
+        (withI18n $ skillVar #willpower $ labeled "useSkill") $ push $ withSkillType #willpower evade
+        (withI18n $ countVar 1 $ skillVar #agility $ labeled "getPlus") do
           skillTestModifier sid (attrs.ability 1) iid (SkillModifier #agility 1)
           push evade
       pure $ overAttrs (setMetaKey "option2" True) a

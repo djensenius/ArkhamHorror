@@ -6,12 +6,14 @@
     "password": "new passphrase"
   },
   "userSettings": {
-    "beta": true
+    "beta": true,
+    "phaseTransitionNotifications": false
   },
   "settingsUser": {
     "username": "Investigator",
     "email": "investigator@example.com",
-    "beta": true
+    "beta": true,
+    "phaseTransitionNotifications": false
   },
   "notifications": [
     {

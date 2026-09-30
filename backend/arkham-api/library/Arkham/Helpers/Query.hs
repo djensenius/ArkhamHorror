@@ -9,7 +9,7 @@ import Arkham.Classes.Query
 import Arkham.EncounterSet (EncounterSet)
 import Arkham.Event.Types (Field (..))
 import {-# SOURCE #-} Arkham.Game ()
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Scenario
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
@@ -111,6 +111,9 @@ getSetAsideCardMaybe :: (HasCallStack, HasGame m) => CardDef -> m (Maybe Card)
 getSetAsideCardMaybe def = do
   (\card -> if exactCardCode card == exactCardCode def then card else lookupCard def.cardCode card.id)
     <$$> selectOne (SetAsideCardMatch $ cardIs def)
+
+withSetAsideCard :: (HasCallStack, HasGame m) => CardDef -> (Card -> m ()) -> m ()
+withSetAsideCard def body = getSetAsideCardMaybe def >>= traverse_ body
 
 getSetAsideEncounterSet :: HasGame m => EncounterSet -> m [Card]
 getSetAsideEncounterSet encounterSet =

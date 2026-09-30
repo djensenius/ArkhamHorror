@@ -26,7 +26,6 @@ import Arkham.Location.Grid (Pos (..))
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
-import Arkham.Placement
 import Arkham.Resolution
 import Arkham.Scenario.Deck (ScenarioDeckKey (SummitDeck))
 import Arkham.Scenario.Import.Lifted
@@ -63,8 +62,8 @@ instance RunMessage ObsidianCanyons where
   runMessage msg s@(ObsidianCanyons attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> scope "intro" do
       headedWest <- getHasRecord TheExpeditionHeadedWest
-      storyWithContinue' do
-        setTitle "title"
+      storyWithContinue do
+        h "title"
         p.basic "checkCampaignLog"
         ul do
           li.validate headedWest "headedWest"
@@ -88,7 +87,7 @@ instance RunMessage ObsidianCanyons where
 
       for_ withDreamsOfDestruction \iid -> do
         canErase <- canEraseProgress iid Key.DreamsOfDestruction
-        storyWithChooseOneM'
+        storyWithChooseOneM
           ( compose.green do
               h3 "dreamsOfDestruction.title"
               p "dreamsOfDestruction.instructions"
@@ -101,12 +100,12 @@ instance RunMessage ObsidianCanyons where
                 li "dreamsOfDestruction.letItIn"
           )
           do
-            labeledValidate' canErase "dreamsOfDestruction.drownOut" do
+            labeledValidate canErase "dreamsOfDestruction.drownOut" do
               decrementRecordCountForInvestigator iid Key.DreamsOfDestruction 1
               sufferMentalTrauma iid 1
               -- "You (and only you) gain 2 bonus experience."
               gainXp iid attrs (ikey "xp.dreamsOfDestruction") 2
-            labeled' "dreamsOfDestruction.letItIn" do
+            labeled "dreamsOfDestruction.letItIn" do
               incrementRecordCountForInvestigator iid Key.DreamsOfDestruction 2
               -- "In the Obsidian Canyons scenario" is this scenario, not the next
               -- one; the turn window expires on its own after each investigator's
@@ -114,7 +113,7 @@ instance RunMessage ObsidianCanyons where
               for_ investigators \iid' -> turnModifier iid' attrs iid' dreamsOfDestruction
 
       for_ withProveYourWorth \iid ->
-        storyWithChooseOneM'
+        storyWithChooseOneM
           ( compose.green do
               h3 "proveYourWorth.title"
               p "proveYourWorth.instructions"
@@ -125,12 +124,12 @@ instance RunMessage ObsidianCanyons where
                 li "proveYourWorth.trustTheirHandiwork"
           )
           do
-            labeled' "proveYourWorth.ropesAreWrong" do
+            labeled "proveYourWorth.ropesAreWrong" do
               -- "Choose an investigator to help (not yourself, if able)" — solo is
               -- the only case where you are still a legal choice.
               let others = filter (/= iid) investigators
               chooseOrRunOneM iid do
-                questionLabeled' "proveYourWorth.chooseInvestigator"
+                questionLabeled "proveYourWorth.chooseInvestigator"
                 targets (if null others then [iid] else others) \chosen -> do
                   recordSetInsert Key.HelpedWithTheRopes [unInvestigatorId iid]
                   recordSetInsert Key.WasHelpedWithTheRopes [unInvestigatorId chosen]
@@ -139,7 +138,7 @@ instance RunMessage ObsidianCanyons where
               -- set up. nextSetupModifier is inert while its own scenario is
               -- current and would silently do nothing here.
               for_ investigators \iid' -> setupModifier attrs iid' (StartingResources (-2))
-            labeled' "proveYourWorth.trustTheirHandiwork" do
+            labeled "proveYourWorth.trustTheirHandiwork" do
               for_ investigators \iid' -> setupModifier attrs iid' (StartingResources 1)
       pure s
     StandaloneSetup -> do
@@ -295,16 +294,15 @@ instance RunMessage ObsidianCanyons where
       -- v.I offers an earned Artifact or an Expedition Item; v.II only the Item.
       headedWest <- getHasRecord TheExpeditionHeadedWest
       artifacts <- if headedWest then getAvailableArtifacts else pure []
+      items <- getAvailableExpeditionItems
       chooseOneM iid do
-        questionLabeled' "chooseExpeditionAssetQuestion"
-        labeled' "noExpeditionAsset" nothing
-        for_ (artifacts <> expeditionItems) \asset ->
+        questionLabeled "chooseExpeditionAssetQuestion"
+        labeled "noExpeditionAsset" nothing
+        for_ (artifacts <> items) \asset ->
           cardLabeled asset.cardCode $ handleTarget iid attrs (CardCodeTarget asset.cardCode)
       pure s
     HandleTargetChoice iid (isSource attrs -> True) (CardCodeTarget cardCode) -> do
-      for_ (lookupCardDef cardCode) \def -> do
-        card <- EncounterCard <$> genEncounterCard def
-        createAssetAt_ card (InPlayArea iid)
+      grantExpeditionAsset iid cardCode
       pure s
     ResolveChaosToken _ Cultist iid | isHardExpert attrs -> do
       -- Hard/expert places the doom on reveal; easy/standard only on a failure.
@@ -438,5 +436,8 @@ instance RunMessage ObsidianCanyons where
           resolveProveYourWorth
           endOfScenarioThen $ if headedWest then SepulchreOfTheSleeper else CourtOfTheAncients
         _ -> error $ "Unknown resolution: " <> show res
+      pure s
+    RequestedPlayerCard iid (isSource attrs -> True) mcard _ -> do
+      for_ mcard (addCampaignCardToDeck iid ShuffleIn)
       pure s
     _ -> ObsidianCanyons <$> liftRunMessage msg attrs

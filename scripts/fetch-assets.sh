@@ -14,6 +14,10 @@
 #   ./scripts/fetch-assets.sh en+fr     # English/static + French translations
 #   ./scripts/fetch-assets.sh cards     # English card images + homebrew card images only (~755 MB)
 #   ./scripts/fetch-assets.sh all       # Everything (~2.9 GB)
+#   ./scripts/fetch-assets.sh 3ed       # Third edition images only (~106 MB)
+#
+# Third edition images (img/ah3e/) land in frontend-3ed/public; everything else
+# in frontend/public. en, en+<lang> and all include them.
 #
 # Environment variables:
 #   FETCH_S3_BUCKET   S3 bucket name for listing (default: arkham-horror-assets)
@@ -30,6 +34,7 @@ PARALLEL="${FETCH_PARALLEL:-8}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PUBLIC_DIR="$ROOT_DIR/frontend/public"
+PUBLIC_DIR_3ED="$ROOT_DIR/frontend-3ed/public"
 
 # ── Terminal ──────────────────────────────────────────────────────────────────
 
@@ -89,6 +94,7 @@ Targets:
   ko          Korean translated card images only
   zh          Chinese translated card images only
   all         Everything (~2.9 GB)
+  3ed         Third edition images only (~106 MB)
 
 Env vars:
   FETCH_S3_BUCKET=...         S3 bucket for listing (default: arkham-horror-assets)
@@ -102,10 +108,19 @@ EOF
 _file_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 export -f _file_size
 
-# Called in parallel by xargs. Args: <expected_size> <key>
+# Called in parallel by xargs. Takes ONE argument, a whole listing record:
+# "<size><TAB><key>". It has to be one argument: 99 keys in the bucket contain
+# spaces (the Spanish card art under img/arkham/es/), and xargs splits on any
+# whitespace, not just newlines. Passing size and key as two arguments let a
+# single spaced key shift every following pair by one -- the next key was read
+# as a size and the one after that as a key -- which silently skipped whole
+# directories that sort after img/arkham/es/ (portraits/, sets/, slots/).
 _fetch_one() {
-  local expected_size="$1" key="$2"
-  local dest="$PUBLIC_DIR/$key" tmp="$PUBLIC_DIR/$key.tmp"
+  local record="$1"
+  local expected_size="${record%%$'\t'*}" key="${record#*$'\t'}"
+  local public="$PUBLIC_DIR"
+  case "$key" in img/ah3e/*) public="$PUBLIC_DIR_3ED" ;; esac
+  local dest="$public/$key" tmp="$public/$key.tmp"
   local retries="${FETCH_RETRIES:-3}"
 
   # Skip if the file already exists with the correct size
@@ -118,7 +133,11 @@ _fetch_one() {
 
   local attempt=1
   while [ "$attempt" -le "$retries" ]; do
-    if curl -fsSL --retry 0 "$CDN_BASE/$key" -o "$tmp" 2>/dev/null; then
+    # Timeouts matter: without them a stalled connection blocks a worker
+    # forever, and with -P N all N workers can end up wedged, leaving the whole
+    # fetch hung with no output and no downloads in flight.
+    if curl -fsSL --retry 0 --connect-timeout 10 --max-time 300 --speed-time 60 --speed-limit 1024 \
+         "$CDN_BASE/$key" -o "$tmp" 2>/dev/null; then
       local actual; actual=$(_file_size "$tmp")
       if [ "$actual" = "$expected_size" ]; then
         mv "$tmp" "$dest"
@@ -142,7 +161,7 @@ _fetch_one() {
   return 1
 }
 export -f _fetch_one
-export PUBLIC_DIR CDN_BASE
+export PUBLIC_DIR PUBLIC_DIR_3ED CDN_BASE
 
 _list_objects() {
   aws s3api list-objects-v2 \
@@ -239,8 +258,9 @@ _sync_prefix() {
   fi
 
   local xargs_rc=0
-  printf '%s\n' "$listing" \
-    | xargs -P "$PARALLEL" -n 2 bash -c '_fetch_one "$@"' _ \
+  # NUL-delimited so keys keep their spaces; one record per _fetch_one call.
+  printf '%s\n' "$listing" | tr '\n' '\0' \
+    | xargs -0 -P "$PARALLEL" -n 1 bash -c '_fetch_one "$@"' _ \
     || xargs_rc=$?
 
   # ── Summary ───────────────────────────────────────────────────────────────
@@ -306,6 +326,9 @@ _other_langs_pattern() {
 
 ALL_LANG_PATTERN="img/arkham/($(IFS='|'; printf '%s' "${ALL_LANGS[*]}")/)"
 
+# Never fetched: dev-server-written custom card art, local-only and never synced.
+CUSTOM_PATTERN='img/custom/'
+
 printf '\n%s=== %s ===%s\n\n' "$_BOLD" \
   "$(case "$1" in
     cards)             echo 'Fetching English card images' ;;
@@ -313,6 +336,7 @@ printf '\n%s=== %s ===%s\n\n' "$_BOLD" \
     en+*)              echo "Fetching English/static + ${1#en+} translations" ;;
     fr|es|ita|ko|zh)   echo "Fetching $1 translated images only" ;;
     all)               echo 'Fetching all images' ;;
+    3ed)               echo 'Fetching third edition images' ;;
   esac)" "$_RESET"
 
 case "$1" in
@@ -321,16 +345,19 @@ case "$1" in
     _sync_prefix "img/arkham/homebrew/" -E 'img/arkham/homebrew/[^/]+/cards/'
     ;;
   en)
-    _sync_prefix "img/" -vE "$ALL_LANG_PATTERN"
+    _sync_prefix "img/" -vE "$ALL_LANG_PATTERN|$CUSTOM_PATTERN"
     ;;
   en+fr|en+es|en+ita|en+ko|en+zh)
-    _sync_prefix "img/" -vE "$(_other_langs_pattern "${1#en+}")"
+    _sync_prefix "img/" -vE "$(_other_langs_pattern "${1#en+}")|$CUSTOM_PATTERN"
     ;;
   fr|es|ita|ko|zh)
     _sync_prefix "img/arkham/$1/"
     ;;
   all)
-    _sync_prefix "img/"
+    _sync_prefix "img/" -vE "$CUSTOM_PATTERN"
+    ;;
+  3ed)
+    _sync_prefix "img/ah3e/"
     ;;
   *)
     usage

@@ -4,8 +4,9 @@ import Arkham.Ability
 import Arkham.Enemy.CardDefs.TheInnsmouthConspiracy.ALightInTheFog qualified as Cards
 import Arkham.Enemy.Import.Lifted hiding (EnemyAttacks, EnemyEvaded)
 import Arkham.Enemy.Types (Field (EnemyKeys))
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Modifiers
+import Arkham.I18n
 import Arkham.Investigator.Projection ()
 import Arkham.Key
 import Arkham.Matcher
@@ -45,7 +46,7 @@ instance RunMessage OceirosMarsh where
           ks <- field EnemyKeys attrs.id
           chooseNM iid (min n (length ks)) do
             for_ ks \k ->
-              labeled ("Take " <> keyName k) $ placeKey iid k
+              (withI18n $ keyVar "key" (keyName k) $ labeled "takeKey") $ placeKey iid k
         _ -> pure ()
       pure e
     UseThisAbility iid (isSource attrs -> True) 2 -> do

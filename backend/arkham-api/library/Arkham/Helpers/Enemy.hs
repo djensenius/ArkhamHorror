@@ -13,7 +13,7 @@ import Arkham.Enemy.Creation (EnemyCreation (..))
 import Arkham.Enemy.Helpers
 import Arkham.Enemy.Types
 import Arkham.ForMovement
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.GameValue
 import Arkham.Helpers.Calculation
 import Arkham.Helpers.Damage (damageEffectMatches)
@@ -130,6 +130,17 @@ noSpawn attrs miid = do
     : [ Surge iid (toSource attrs) | enemySurgeIfUnableToSpawn attrs, iid <- toList miid
       ]
 
+{- | The damage and horror an enemy's attack deals, the way 'PerformEnemyAttack'
+computes it: the modified 'EnemyHealthDamage'\/'EnemySanityDamage', except that
+an attack in flight can have its damage switched off ('attackDealDamage').
+-}
+getEnemyAttackDamageAndHorror :: HasGame m => EnemyId -> m (Int, Int)
+getEnemyAttackDamageAndHorror eid = do
+  mdetails <- field EnemyAttacking eid
+  damage <- if all attackDealDamage mdetails then field EnemyHealthDamage eid else pure 0
+  horror <- field EnemySanityDamage eid
+  pure (damage, horror)
+
 getModifiedDamageAmount :: (HasGame m, Targetable target) => target -> DamageAssignment -> m Int
 getModifiedDamageAmount target damageAssignment = do
   modifiers' <- getModifiers target
@@ -232,6 +243,32 @@ canSpawnInLocation eid lid = do
     Modifier.CannotSpawnIn matcher -> lid <=~> matcher
     _ -> pure False
 
+{- | The members a composite enemy stands for, if it is one. See
+'Modifier.InteractAsOneOf'.
+-}
+getInteractAsOneOf :: HasGame m => EnemyId -> m (Maybe EnemyMatcher)
+getInteractAsOneOf eid = do
+  mods <- getModifiers eid
+  pure $ listToMaybe [m | Modifier.InteractAsOneOf m <- mods]
+
+{- | Rewrite a fight/evade matcher so that a composite enemy it picks out is replaced
+by the enemy cards it is made of — "when interacting with Cthulhu, choose one of the
+cards on the Cthulhu Board". The composite is subtracted rather than left to its own
+@CannotBe*@ modifiers because the fight override path ('withFightOverride') matches on
+'EnemyCanBeAttackedBy', which does not read them.
+
+The identity function unless some enemy the matcher already picks out is composite.
+-}
+expandCompositeEnemies :: HasGame m => EnemyMatcher -> m EnemyMatcher
+expandCompositeEnemies matcher = do
+  composites <-
+    select matcher >>= \eids -> forMaybeM eids \eid -> fmap (eid,) <$> getInteractAsOneOf eid
+  pure $ case composites of
+    [] -> matcher
+    _ ->
+      oneOf (matcher : map snd composites)
+        <> not_ (mapOneOf EnemyWithId (map fst composites))
+
 getFightableEnemyIds
   :: (HasGame m, Sourceable source) => InvestigatorId -> source -> m [EnemyId]
 getFightableEnemyIds iid (toSource -> source) = do
@@ -296,12 +333,16 @@ enemyEngagedInvestigators eid = do
   mPlacement <- fieldMay EnemyPlacement eid
   others <- case mPlacement of
     Just (InThreatArea iid) -> pure [iid]
-    Just (AtLocation lid) -> do
-      isEngagedMassive <- eid <=~> (MassiveEnemy <> ReadyEnemy)
-      if isEngagedMassive then select (investigatorAt lid) else pure []
+    Just (AtLocation lid) -> massiveEngaged [lid]
+    -- At each of its locations, so Massive engages everyone standing on any of them.
+    Just (AtLocations lids) -> massiveEngaged (toList lids)
     Just (AsSwarm eid' _) -> enemyEngagedInvestigators eid'
     _ -> pure []
   pure . nub $ asIfEngaged <> others
+ where
+  massiveEngaged lids = do
+    isEngagedMassive <- eid <=~> (MassiveEnemy <> ReadyEnemy)
+    if isEngagedMassive then select (investigatorAt $ mapOneOf LocationWithId lids) else pure []
 
 enemyMatches :: HasGame m => EnemyId -> Matcher.EnemyMatcher -> m Bool
 enemyMatches !enemyId !mtchr = elem enemyId <$> select mtchr
@@ -501,13 +542,14 @@ insteadOfDamage (asId -> eid) body = do
     notAfterDamage = \case
       (windowType -> Window.TakeDamage _ _ (EnemyTarget eid') _) | eid == eid' -> False
       _ -> True
-  lift do
-    overMessagesM \case
-      CheckWindows ws -> case filter notAfterDamage ws of
-        [] -> pure []
-        ws' -> pure [CheckWindows ws']
-      Damaged (EnemyTarget eid') dmg | eid == eid' -> evalQueueT (body dmg)
-      other -> pure [other]
+  -- 'rewriteQueuedM' because the pending 'Damaged' is wrapped in 'MoveWithSkillTest' by
+  -- the time any When-damage-window responder runs; a flat scan never finds it.
+  lift $ overMessagesM $ rewriteQueuedM \case
+    CheckWindows ws -> case filter notAfterDamage ws of
+      [] -> pure []
+      ws' -> pure [CheckWindows ws']
+    Damaged (EnemyTarget eid') dmg | eid == eid' -> evalQueueT (body dmg)
+    other -> pure [other]
 
 {- | Reduce the amount of the pending 'Damaged' message on this enemy to at most
 @n@ (leaving it unchanged if it is already lower). Pair with a forced ability
@@ -518,12 +560,10 @@ reduceDamageTakenTo
   :: (HasQueue Message m, MonadTrans t, ToId enemy EnemyId)
   => enemy -> Int -> t m ()
 reduceDamageTakenTo (asId -> eid) n =
-  lift
-    $ replaceMessageMatching
-      (\case Damaged (EnemyTarget eid') _ -> eid == eid'; _ -> False)
-      \case
-        Damaged target dmg -> [Damaged target dmg {damageAssignmentAmount = min n dmg.amount}]
-        other -> [other]
+  lift $ overMessagesM $ rewriteQueuedM \case
+    Damaged target@(EnemyTarget eid') dmg
+      | eid == eid' -> pure [Damaged target dmg {damageAssignmentAmount = min n dmg.amount}]
+    other -> pure [other]
 
 patrol :: (ReverseQueue m, ToId enemy EnemyId) => enemy -> m ()
 patrol (asId -> eid) = whenJustM (getPatrolMatcher eid) $ push . PatrolMove eid

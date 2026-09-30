@@ -114,6 +114,8 @@ export type Game = {
   investigators: Record<string, Investigator>;
   otherInvestigators: Record<string, Investigator>;
   killedInvestigators: Record<string, Investigator>;
+  /** Investigators whose player left the campaign; they can rejoin between scenarios. */
+  retiredInvestigators: Record<string, Investigator>;
   leadInvestigatorId: string;
   activePlayerId: string;
   locations: Record<string, Location>;
@@ -207,6 +209,20 @@ function questionChoices(question: Question): Message[] {
     default:
       return [];
   }
+}
+
+/* Every card a search or a look has put in front of this player: focused, or
+ * still held as the scenario's / the investigator's search results. A card can
+ * be in any of them depending on how it was revealed, so anything that means
+ * "the cards on the table right now" has to check all four. */
+export function revealedCards(game: Game, playerId: string): Card[] {
+  const investigator = Object.values(game.investigators).find((i) => i.playerId === playerId);
+  return [
+    ...game.focusedCards,
+    ...Object.values(game.foundCards).flat(),
+    ...Object.values(game.scenario?.foundCards ?? {}).flat(),
+    ...Object.values(investigator?.foundCards ?? {}).flat(),
+  ];
 }
 
 export function choices(game: Game, playerId: string): Message[] {
@@ -353,6 +369,7 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     investigators: JsonDecoder.record<Investigator>(investigatorDecoder, 'Dict<UUID, Investigator>'),
     otherInvestigators: JsonDecoder.record<Investigator>(investigatorDecoder, 'Dict<UUID, Investigator>'),
     killedInvestigators: JsonDecoder.optional(JsonDecoder.record<Investigator>(investigatorDecoder, 'Dict<UUID, Investigator>')),
+    retiredInvestigators: JsonDecoder.optional(JsonDecoder.record<Investigator>(investigatorDecoder, 'Dict<UUID, Investigator>')),
     leadInvestigatorId: JsonDecoder.string(),
     activePlayerId: JsonDecoder.string(),
     locations: JsonDecoder.record<Location>(locationDecoder, 'Dict<UUID, Location>'),
@@ -392,10 +409,11 @@ export const gameDecoder: JsonDecoder.Decoder<Game> = JsonDecoder.object(
     enemyAttackTargets: JsonDecoder.fallback([], JsonDecoder.array(JsonDecoder.object<EnemyAttackTarget>({ enemy: JsonDecoder.string(), target: targetDecoder }, 'EnemyAttackTarget'), 'EnemyAttackTarget[]')),
   },
   'Game',
-).map(({mode, killedInvestigators, settings, gameSettings, inAction, undoActionStep, undoTurnStep, undoPhaseStep, undoRoundStep, roundHistory, phaseHistory, turnHistory, ...game}) => ({
+).map(({mode, killedInvestigators, retiredInvestigators, settings, gameSettings, inAction, undoActionStep, undoTurnStep, undoPhaseStep, undoRoundStep, roundHistory, phaseHistory, turnHistory, ...game}) => ({
   scenario: mode?.That ?? null,
   campaign: mode?.This ?? null,
   killedInvestigators: killedInvestigators ?? {},
+  retiredInvestigators: retiredInvestigators ?? {},
   inAction: inAction ?? false,
   settings: settings ?? gameSettings ?? {
     settingsAbilitiesCannotReactToThemselves: true,

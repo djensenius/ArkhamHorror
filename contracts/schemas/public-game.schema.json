@@ -20,6 +20,7 @@
     "investigators",
     "otherInvestigators",
     "killedInvestigators",
+    "retiredInvestigators",
     "enemies",
     "assets",
     "acts",
@@ -336,6 +337,15 @@
             "type": "object"
           }
         }
+      }
+    },
+    "retiredInvestigators": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/cardCodeMapKey"
+      },
+      "additionalProperties": {
+        "$ref": "./investigator.schema.json"
       }
     }
   },

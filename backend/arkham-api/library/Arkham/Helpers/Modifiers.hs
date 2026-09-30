@@ -8,7 +8,7 @@ import Arkham.Cost
 import Arkham.Effect.Window
 import Arkham.EffectMetadata
 import {-# SOURCE #-} Arkham.Game (Game)
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Ref
 import Arkham.Id
 import Arkham.Matcher.Types
@@ -139,6 +139,23 @@ modifySelf
   -> m ()
 modifySelf target mods = tell . MonoidalMap . singletonMap (toTarget target) =<< toModifiers target mods
 
+{- | Mark an enemy as a composite: it stands on the map for a group of enemy cards,
+and fighting or evading it means choosing one of that group instead. The @Cannot*@
+modifiers ride along so the card itself never appears on a target list of its own —
+they belong to 'InteractAsOneOf' and are set here rather than at each call site.
+-}
+interactAsOneOf
+  :: ( Targetable target
+     , Sourceable target
+     , HasGame m
+     , MonadWriter (MonoidalMap Target [Modifier]) m
+     )
+  => target
+  -> EnemyMatcher
+  -> m ()
+interactAsOneOf target matcher =
+  modifySelf target [InteractAsOneOf matcher, CannotBeAttacked, CannotBeEvaded, CannotBeDamaged]
+
 immuneToPlayerEffect :: [ModifierType]
 immuneToPlayerEffect =
   [ CannotBeAttackedByPlayerSourcesExcept $ SourceIsAbility BasicAbility
@@ -162,6 +179,29 @@ immuneToPlayerEffects
   => target
   -> m ()
 immuneToPlayerEffects target = modifySelf target immuneToPlayerEffect
+
+{- | Enemies that are "immune to investigator actions": the fight, evade and
+engage actions cannot pick them, and nothing engages them either -- and so no
+attack of opportunity can come of it.
+
+'immuneToPlayerEffect' deliberately leaves basic abilities a way through, since
+an enemy immune to /player card/ effects (Feline Hybrid) can still be fought and
+evaded. This closes that door, so the two are meant to be used together. There is
+no parley entry because a parley action only exists if the enemy's own card grants
+one; @CannotParleyWith@ is an investigator-side modifier.
+-}
+immuneToAction :: [ModifierType]
+immuneToAction = [CannotBeAttacked, CannotBeEvaded, CannotBeEngaged, CannotBeDamaged]
+
+immuneToActions
+  :: ( Targetable target
+     , Sourceable target
+     , HasGame m
+     , MonadWriter (MonoidalMap Target [Modifier]) m
+     )
+  => target
+  -> m ()
+immuneToActions target = modifySelf target immuneToAction
 
 modifySelf1
   :: ( Targetable target
@@ -424,6 +464,7 @@ maybeModifySelf
   -> MaybeT m [ModifierType]
   -> m ()
 maybeModifySelf a = tell . MonoidalMap . singletonMap (toTarget a) <=< modified a . fromMaybe [] <=< runMaybeT
+
 modified_
   :: ( Sourceable a
      , Targetable target

@@ -27,7 +27,7 @@ instance HasAbilities CityOfTheDeepV1 where
             [ RemoveEnemyDamageCost (PerPlayer 1) (EnemyAt YourLocation <> withTrait AncientOne)
             , GroupClueCost (PerPlayer 1) (withTrait Lair)
             ]
-      , restricted a 2 (Negate $ exists FloodedLocation) $ Objective $ forced AnyWindow
+      , onlyOnce $ restricted a 2 (Negate $ exists FloodedLocation) $ Objective $ forced AnyWindow
       ]
 
 instance RunMessage CityOfTheDeepV1 where
@@ -39,8 +39,8 @@ instance RunMessage CityOfTheDeepV1 where
         then do
           lead <- getLead
           chooseOneM lead $ scenarioI18n $ scope "cityOfTheDeep" do
-            labeled' "continuePlaying" nothing
-            labeled' "proceedToR1" $ push R1
+            labeled "continuePlaying" nothing
+            labeled "proceedToR1" $ push R1
         else push R1
       pure a
     UseThisAbility iid (isSource attrs -> True) 1 -> do

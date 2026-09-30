@@ -18,7 +18,9 @@ import Arkham.Window qualified as Window
 placedInThreatArea :: (HasCallStack, HasGame m) => Placement -> m (Maybe InvestigatorId)
 placedInThreatArea = \case
   AtLocation _ -> pure Nothing
+  AtLocations _ -> pure Nothing
   AttachedToLocation _ -> pure Nothing
+  BetweenLocations _ _ -> pure Nothing
   InPlayArea _ -> pure Nothing
   InVehicle _ -> pure Nothing
   InThreatArea iid -> pure $ Just iid
@@ -42,6 +44,7 @@ placedInThreatArea = \case
   OnTopOfDeck _ -> pure Nothing
   NextToAgenda -> pure Nothing
   NextToAct -> pure Nothing
+  NextToScenarioReference -> pure Nothing
   InTheShadows -> pure Nothing
   OutOfGame _ -> pure Nothing
   InPosition _ -> pure Nothing
@@ -65,6 +68,9 @@ onSameLocation :: (HasCallStack, HasGame m) => InvestigatorId -> Placement -> m 
 onSameLocation iid = \case
   AttachedToLocation lid -> fieldMap InvestigatorLocation (== Just lid) iid
   AtLocation lid -> fieldMap InvestigatorLocation (== Just lid) iid
+  AtLocations lids -> fieldMap InvestigatorLocation (maybe False (`elem` lids)) iid
+  -- Reachable from either end of the connection it sits on.
+  BetweenLocations a b -> fieldMap InvestigatorLocation (`elem` [Just a, Just b]) iid
   InVehicle aid -> do
     field AssetLocation aid >>= \case
       Nothing -> pure False
@@ -122,6 +128,7 @@ onSameLocation iid = \case
   OnTopOfDeck _ -> pure False
   NextToAgenda -> pure False
   NextToAct -> pure False
+  NextToScenarioReference -> pure False
   Near _ -> pure False
   InTheShadows -> pure False
   OutOfGame _ -> pure False

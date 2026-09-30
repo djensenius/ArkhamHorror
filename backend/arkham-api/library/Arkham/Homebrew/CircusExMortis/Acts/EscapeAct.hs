@@ -2,10 +2,43 @@ module Arkham.Homebrew.CircusExMortis.Acts.EscapeAct (escapeActAdvance) where
 
 import Arkham.Act.Import.Lifted
 import Arkham.Card.CardDef
+import Arkham.ChaosToken (ChaosTokenFace)
+import Arkham.Helpers.FlavorText (
+  chaosTokenImg,
+  cols,
+  compose,
+  img,
+  p,
+  scope,
+  setTitle,
+  tokenReveal,
+ )
 import Arkham.Homebrew.CircusExMortis.CardDefs.Stories qualified as Stories
 import Arkham.Homebrew.CircusExMortis.Helpers
 import Arkham.Location.Grid (GridLocation (..))
 import Arkham.Matcher
+import Arkham.Message.Lifted.Choose (storyWithContinue)
+import Arkham.TokenBag
+
+{- | Act 1's back reads the same direction table as 'revealFuryToken' for a different
+purpose: a ☾ is ignored and another token drawn (no recursion), and nothing attacks.
+Persist the consumed debug override here too, even though all drawn tokens return to
+the bag.
+-}
+drawFuryTokenForDirection :: ReverseQueue m => (ChaosTokenFace -> m ()) -> m (Maybe FuryDirection)
+drawFuryTokenForDirection onReveal = go =<< getFuryBag
+ where
+  go bag = do
+    (drawn, bag') <- drawBagToken (.face) bag
+    case drawn of
+      Nothing -> setFuryBag (returnSetAsideTokens bag') $> Nothing
+      Just token -> do
+        onReveal token.face
+        case furyDirection token.face of
+          Just direction -> do
+            setFuryBag $ returnSetAsideTokens $ returnBagToken bag'
+            pure $ Just direction
+          Nothing -> go $ setAsideBagToken bag'
 
 {- | Under Suspicion and Under Their Noses differ only in which Camp Outskirts
 they bring into play.
@@ -17,9 +50,22 @@ escapeActAdvance attrs campOutskirts = do
   -- types, so sweep both entity kinds.
   for_ kidnappedCitizenDefs \def -> selectEach (storyIs def) removeFromGame
   selectEach (AssetWithTitle "Kidnapped Citizen") removeFromGame
-  drawFuryTokenForDirection >>= traverse_ \direction -> do
+  direction <- drawFuryTokenForDirection \face ->
+    scenarioI18n "harmsWay" $ scope "escapeActFuryReveal" $ storyWithContinue $ tokenReveal do
+      setTitle "title"
+      cols do
+        img campOutskirts
+        compose do
+          chaosTokenImg face
+          p $ case furyDirection face of
+            Just FuryNorth -> "north"
+            Just FurySouth -> "south"
+            Just FuryWest -> "west"
+            Just FuryEast -> "east"
+            Nothing -> "moon"
+  for_ direction \direction' -> do
     lid <- placeSetAsideLocation campOutskirts
-    push $ PlaceGrid $ GridLocation (furyDirectionOutwardPos direction) lid
+    push $ PlaceGrid $ GridLocation (furyDirectionOutwardPos direction') lid
   advanceActDeck attrs
 
 kidnappedCitizenDefs :: [CardDef]

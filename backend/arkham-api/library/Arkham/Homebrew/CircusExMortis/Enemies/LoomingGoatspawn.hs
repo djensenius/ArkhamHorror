@@ -4,24 +4,18 @@ import Arkham.Ability
 import Arkham.Enemy.Import.Lifted
 import Arkham.Enemy.Types (Field (..))
 import Arkham.Enemy.Types.Attrs (enemyDamage)
-import Arkham.Helpers.Modifiers (ModifierType (..), modifySelf)
 import Arkham.Homebrew.CircusExMortis.CardDefs.Enemies qualified as Cards
 import Arkham.Homebrew.CircusExMortis.Helpers
-import Arkham.Keyword qualified as Keyword
 import Arkham.Matcher
 import Arkham.Projection
 import Arkham.Window qualified as Window
 
 newtype LoomingGoatspawn = LoomingGoatspawn EnemyAttrs
-  deriving anyclass IsEnemy
+  deriving anyclass (IsEnemy, HasModifiersFor)
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 loomingGoatspawn :: EnemyCard LoomingGoatspawn
 loomingGoatspawn = enemy LoomingGoatspawn Cards.loomingGoatspawn
-
-instance HasModifiersFor LoomingGoatspawn where
-  getModifiersFor (LoomingGoatspawn a) =
-    modifySelf a [AddKeyword Keyword.Massive, AddKeyword Keyword.Alert]
 
 getWouldDamageEnemy :: [Window.Window] -> Maybe (Source, EnemyId, Int)
 getWouldDamageEnemy =
@@ -36,7 +30,9 @@ instance HasAbilities LoomingGoatspawn where
       [ mkAbility a 1 $ forced $ EnemyWouldTakeDamage #when (SourceUsedBy hasSealedMoonToken) (be a)
       , mkAbility a 2
           $ triggered
-            (EnemyTakeDamage #after AnyDamageEffect (be a) (atLeast 1) AnySource)
+            ( EnemyTakeDamage #after AnyDamageEffect (be a) (atLeast 1)
+                $ NotSource (SourceIsAbility $ AbilityIs (toSource a) 2)
+            )
             (GroupClueCostRange (1, 3) Anywhere)
       ]
 

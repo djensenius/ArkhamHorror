@@ -110,7 +110,8 @@
         "useHardExpertReference",
         "usesGrid",
         "victoryDisplay",
-        "xpBreakdown"
+        "xpBreakdown",
+        "customChaosBags"
       ],
       "properties": {
         "actStack": {
@@ -374,6 +375,9 @@
         },
         "xpBreakdown": {
           "description": "Experience-point breakdown shown at scenario resolution. Broad, out of scope for this contract slice."
+        },
+        "customChaosBags": {
+          "type": "object"
         }
       }
     }

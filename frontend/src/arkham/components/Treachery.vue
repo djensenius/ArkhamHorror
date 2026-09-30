@@ -1,5 +1,7 @@
 <script lang="ts" setup>
 import { computed, ref, watch } from 'vue';
+import MissingCardBadge from '@/arkham/components/MissingCardBadge.vue';
+import { CARD_FLIGHT_ATTR, useCardFlight } from '@/arkham/cardFlight'
 import { useDebug } from '@/arkham/debug';
 import { cardImage } from '@/arkham/cardImages';
 import type { Game } from '@/arkham/types/Game';
@@ -20,11 +22,25 @@ export interface Props {
   overlayDelay?: number
   isInHand?: boolean
   mobileHandOpen?: boolean
+  /* Can be dragged into the hidden-cards stack beside the play area. */
+  tuckable?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), { attached: false })
 
+// Where a revealed treachery lands when the revelation overlay hands it over.
+const cardFlightStyle = useCardFlight(() => props.treachery.cardId)
+
 const emits = defineEmits<{ choose: [value: number] }>()
+
+function startDrag(event: DragEvent) {
+  if (!props.tuckable || !event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'copyMove'
+  event.dataTransfer.setData(
+    'text/plain',
+    JSON.stringify({ tag: 'TreacheryTarget', contents: props.treachery.id }),
+  )
+}
 
 const choose = (idx: number) => emits('choose', idx)
 
@@ -94,7 +110,13 @@ function handleCardClick() {
 }
 </script>
 <template>
-  <div class="treachery" :class="{ attached, exhausted: isExhausted }">
+  <div
+    class="treachery"
+    :class="{ attached, exhausted: isExhausted }"
+    :[CARD_FLIGHT_ATTR]="treachery.cardId"
+    :style="cardFlightStyle"
+  >
+    <MissingCardBadge :card-code="treachery.cardCode" />
     <AbilityButton
       v-if="isInHand && !canUseMobileAbilityMenu"
       v-for="ability in abilities"
@@ -109,6 +131,8 @@ function handleCardClick() {
       :src="image"
       class="card"
       :class="{ 'treachery--can-interact': canHighlight, attached, 'in-hand': isInHand }"
+      :draggable="tuckable || undefined"
+      @dragstart="startDrag"
       @click="handleCardClick"
       :data-delay="overlayDelay"
     />

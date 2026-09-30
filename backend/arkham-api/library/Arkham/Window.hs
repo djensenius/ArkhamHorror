@@ -22,12 +22,12 @@ import Arkham.Matcher (LocationMatcher, MovesVia)
 import Arkham.Phase (Phase)
 import Arkham.Placement
 import Arkham.ScenarioLogKey
-import {-# SOURCE #-} Arkham.SkillTest.Base
+import Arkham.SkillTest.Base
 import Arkham.SkillTest.Step
 import Arkham.SkillTest.Type
 import Arkham.Source (Source (GameSource))
 import Arkham.Strategy (DamageStrategy)
-import Arkham.Target (Target (EnemyTarget))
+import Arkham.Target (Target (EnemyTarget, InvestigatorTarget))
 import Arkham.Timing (Timing)
 import Arkham.Timing qualified as Timing
 import Arkham.Token qualified as Token
@@ -42,11 +42,35 @@ data Window = Window
   { windowTiming :: Timing
   , windowType :: WindowType
   , windowBatchId :: Maybe BatchId
+  , windowConditionTick :: Maybe Int
+  {- ^ The window tick at which this window's triggering condition initiated,
+  for windows built ahead of the point where they are checked (e.g. the
+  after-window of an attack, built when the attack starts but checked once
+  it resolves). 'Nothing' means the condition initiated when the window
+  opened. See 'Arkham.Helpers.Action.getActionsWith'.
+  -}
   }
-  deriving stock (Show, Eq, Ord, Data)
+  deriving stock (Show, Data)
+
+{- | 'windowConditionTick' is bookkeeping, not identity: two windows that differ
+only by it are the same window. Ability limits compare recorded windows
+against the open ones ('Arkham.Helpers.Ability') and those recordings persist.
+-}
+instance Eq Window where
+  a == b = windowKey a == windowKey b
+
+instance Ord Window where
+  compare = comparing windowKey
+
+windowKey :: Window -> (Timing, WindowType, Maybe BatchId)
+windowKey w = (windowTiming w, windowType w, windowBatchId w)
 
 replaceWindowType :: WindowType -> Window -> Window
 replaceWindowType wType window = window {windowType = wType}
+
+-- | Pin the tick at which this window's triggering condition initiated.
+setWindowConditionTick :: Int -> Window -> Window
+setWindowConditionTick tick window = window {windowConditionTick = Just tick}
 
 instance HasField "timing" Window Timing where
   getField = windowTiming
@@ -55,19 +79,20 @@ instance HasField "kind" Window WindowType where
   getField = windowType
 
 mkWindow :: Timing -> WindowType -> Window
-mkWindow timing windowType = Window timing windowType Nothing
+mkWindow timing windowType = Window timing windowType Nothing Nothing
 
 mkCancel :: WindowType -> Window
-mkCancel windowType = Window #cancel windowType Nothing
+mkCancel windowType = Window #cancel windowType Nothing Nothing
 
 mkWhen :: WindowType -> Window
-mkWhen windowType = Window #when windowType Nothing
+mkWhen windowType = Window #when windowType Nothing Nothing
 
 mkAtIf :: WindowType -> Window
-mkAtIf windowType = Window #at windowType Nothing
+mkAtIf windowType = Window #at windowType Nothing Nothing
 
 mkAfter :: WindowType -> Window
-mkAfter windowType = Window #after windowType Nothing
+mkAfter windowType = Window #after windowType Nothing Nothing
+
 getBatchId :: [Window] -> BatchId
 getBatchId ws = case getMaybeBatchId ws of
   Just batchId -> batchId
@@ -121,6 +146,34 @@ primaryWindowTarget = \case
   DealtHorror _ target _ -> Just target
   DealtDamage _ _ target _ -> Just target
   _ -> Nothing
+
+{- | The timing points a matched window list holds, for splitting a forced ability's
+initiations (@runWindow@ in "Arkham.Investigator.Runner").
+
+A forced ability initiates once per timing point, and one check can carry several
+(@simultaneously@ merges one 'DealtDamage' window per enemy for Storm of Spirits). But the
+damage and the horror one source deals to one target are a __single__ point: "when X is
+dealt damage or horror" is one trigger that sees both halves. Splitting them made Spectral
+Shield offer two identical target buttons, then cancel damage without asking, then trigger
+again for the horror (#5785). Grouping by source and target keeps "damage dealt to __an__
+asset" initiating once per asset.
+
+'DealtExcessDamage' is deliberately not grouped -- it is its own timing point.
+-}
+windowEventGroups :: [Window] -> [[Window]]
+windowEventGroups = go
+ where
+  go [] = []
+  go (w : rest) = case damageEventKey w of
+    Nothing -> [w] : go rest
+    Just k -> let (same, others) = partition ((== Just k) . damageEventKey) rest in (w : same) : go others
+  damageEventKey w =
+    (windowTiming w,) <$> case windowType w of
+      DealtDamage source _ target _ -> Just (source, target)
+      DealtHorror source target _ -> Just (source, target)
+      TakeDamage source _ target _ -> Just (source, target)
+      TakeHorror source target _ -> Just (source, target)
+      _ -> Nothing
 
 revealedChaosTokens :: [Window] -> [ChaosToken]
 revealedChaosTokens [] = []
@@ -263,7 +316,7 @@ data WindowType
     EnemyWouldBeEvaded InvestigatorId EnemyId
   | EnemyLeaves EnemyId LocationId
   | EnemyWouldSpawnAt EnemyId LocationId
-  | EnemySpawns EnemyId LocationId
+  | EnemySpawns EnemyId Placement
   | EnemyFlipped EnemyId
   | EnemyPlaced EnemyId Placement
   | EnemyWouldAttack EnemyAttackDetails
@@ -379,7 +432,10 @@ data WindowType
     fires for seals onto their assets too.
     -}
     ChaosTokenSealedOn InvestigatorId ChaosToken
-  | ChaosTokenReleased InvestigatorId ChaosToken
+  | {- | Raised on the card the token was sealed on, whichever card that is: an
+    investigator card, but also an enemy, asset, location, treachery or skill.
+    -}
+    ChaosTokenReleased Target ChaosToken
   | IgnoreChaosToken InvestigatorId ChaosToken
   | CancelChaosToken InvestigatorId ChaosToken
   | RevealChaosTokenEffect InvestigatorId ChaosToken EffectId
@@ -506,6 +562,20 @@ mconcat
               case contents of
                 Left cs -> pure $ WouldAddChaosTokensToChaosBag Nothing cs
                 Right (i, cs) -> pure $ WouldAddChaosTokensToChaosBag i cs
+            -- Used to carry the LocationId spawned at; a spawn into the
+            -- shadows has no location, so it carries the placement (#5649).
+            "EnemySpawns" -> do
+              contents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
+              case contents of
+                Right (eid, placement) -> pure $ EnemySpawns eid placement
+                Left (eid, lid) -> pure $ EnemySpawns eid (AtLocation lid)
+            -- Used to carry the investigator whose card held the token; a
+            -- seal lives on any card type, so it carries that card's target.
+            "ChaosTokenReleased" -> do
+              contents <- (Right <$> o .: "contents") <|> (Left <$> o .: "contents")
+              case contents of
+                Right (t, token) -> pure $ ChaosTokenReleased t token
+                Left (iid, token) -> pure $ ChaosTokenReleased (InvestigatorTarget iid) token
             "PerformedDifferentTypesOfActionsInARow" -> do
               -- New shape carries the per-action type groups ([[Action]]); old
               -- saves carry a single flattened SDR ([Action]). Treat each legacy

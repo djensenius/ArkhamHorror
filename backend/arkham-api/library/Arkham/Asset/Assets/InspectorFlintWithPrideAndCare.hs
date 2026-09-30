@@ -38,7 +38,7 @@ instance RunMessage InspectorFlintWithPrideAndCare where
                 flipOverBy iid (attrs.ability 1) cid
                 chooseOneM iid do
                   whenM (can.draw.cards iid) do
-                    withI18n $ countVar 1 $ labeled' "drawCards" $ drawCards iid (attrs.ability 1) 1
+                    withI18n $ countVar 1 $ labeled "drawCards" $ drawCards iid (attrs.ability 1) 1
                   unless (null others) do
                     labeledI "exposeConcealed" do
                       chooseTargetM iid others $ exposeConcealed iid (attrs.ability 1) . toId

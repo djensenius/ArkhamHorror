@@ -91,7 +91,7 @@ const EMPHASIS_ELEMENTS = new Map([
   ['minicaps', 'smallCaps'],
 ])
 
-const GROUP_ELEMENTS = new Set(['div', 'section', 'header', 'span', 'blockquote'])
+const GROUP_ELEMENTS = new Set(['div', 'section', 'header', 'span', 'blockquote', 'center', 'right', 'fancy'])
 const HEADING_ELEMENTS = new Map([
   ['h1', 1],
   ['h2', 2],

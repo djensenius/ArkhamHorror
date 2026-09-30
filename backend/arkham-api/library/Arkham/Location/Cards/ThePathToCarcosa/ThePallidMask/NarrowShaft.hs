@@ -3,7 +3,7 @@ module Arkham.Location.Cards.ThePathToCarcosa.ThePallidMask.NarrowShaft (narrowS
 import Arkham.Ability
 import Arkham.Direction
 import Arkham.Draw.Types
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.GameValue
 import Arkham.Location.CardDefs.ThePathToCarcosa.ThePallidMask qualified as Cards
 import Arkham.Location.Helpers
@@ -53,8 +53,8 @@ instance RunMessage NarrowShaft where
           aboveEmpty <- directionEmpty attrs Above
           rightEmpty <- directionEmpty attrs RightOf
           chooseOrRunOneM iid $ scenarioI18n do
-            when aboveEmpty $ labeled' "above" $ placeAtDirection_ Above attrs card
-            when rightEmpty $ labeled' "right" $ placeAtDirection_ RightOf attrs card
+            when aboveEmpty $ labeled "above" $ placeAtDirection_ Above attrs card
+            when rightEmpty $ labeled "right" $ placeAtDirection_ RightOf attrs card
         [] -> pure ()
         _ -> error "wrong number of cards drawn"
       pure l

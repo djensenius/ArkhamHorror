@@ -97,6 +97,7 @@ const MAX_CATALOG_BYTES = 192 * 1024 * 1024
 
 const PACK_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 const LOCALE_PATTERN = /^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/
+const CANONICAL_LOCALE_PATTERN = /^[a-z]{2,3}(?:-(?:[A-Z]{2}|[A-Z][a-z]{3}|(?![a-z]{2}(?:-|$))(?![a-z]{4}(?:-|$))[a-z0-9]{2,8}))*$/
 
 // Language tags probed through the production resolver so native clients get
 // the web client's exact locale/fallback behavior instead of guessing at it.
@@ -623,10 +624,43 @@ function chunkEntries(entries) {
   return packs
 }
 
-function localeResolutionTable(sources) {
+function canonicalLocaleTag(raw) {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > 64) return null
+  const [primary, ...subtags] = raw.split('-')
+  if (!/^[A-Za-z]{2,3}$/.test(primary)) return null
+  if (!subtags.every((subtag) => /^[A-Za-z0-9]{2,8}$/.test(subtag))) return null
+  return [primary.toLowerCase(), ...subtags.map((subtag) => {
+    if (/^[A-Za-z]{4}$/.test(subtag)) {
+      return `${subtag[0].toUpperCase()}${subtag.slice(1).toLowerCase()}`
+    }
+    if (/^[A-Za-z]{2}$/.test(subtag)) return subtag.toUpperCase()
+    return subtag.toLowerCase()
+  })].join('-')
+}
+
+function catalogLocaleMap(sources) {
+  const bySource = new Map()
+  const seen = new Map()
+  for (const sourceLocale of sources.locales) {
+    if (!LOCALE_PATTERN.test(sourceLocale)) fail(`unsafe locale id ${JSON.stringify(sourceLocale)}`)
+    const catalogLocale = canonicalLocaleTag(sourceLocale)
+    if (catalogLocale === null || !CANONICAL_LOCALE_PATTERN.test(catalogLocale)) {
+      fail(`unsafe canonical locale id ${JSON.stringify(sourceLocale)}`)
+    }
+    const previous = seen.get(catalogLocale)
+    if (previous !== undefined) {
+      fail(`locales ${previous} and ${sourceLocale} both publish as ${catalogLocale}`)
+    }
+    bySource.set(sourceLocale, catalogLocale)
+    seen.set(catalogLocale, sourceLocale)
+  }
+  return bySource
+}
+
+function localeResolutionTable(sources, catalogLocales) {
   return PROBE_LANGUAGE_TAGS.map((tag) => ({
     tag,
-    locale: sources.uiLocaleFor(sources.preferredLanguage(tag)),
+    locale: catalogLocales.get(sources.uiLocaleFor(sources.preferredLanguage(tag))),
   })).sort((a, b) => (a.tag < b.tag ? -1 : 1))
 }
 
@@ -660,13 +694,14 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   }
   const defaultLocale = sources.uiLocaleFor('')
   if (!sources.locales.includes(defaultLocale)) fail(`default locale ${defaultLocale} is not supported`)
+  const catalogLocales = catalogLocaleMap(sources)
+  const defaultCatalogLocale = catalogLocales.get(defaultLocale)
 
   const ownership = await loadOwnershipTrees(frontendDir)
   assertSourceIntegrity(frontendDir, provenance.localeSources, sources, ownership)
 
   const normalized = new Map()
   for (const locale of sources.locales) {
-    if (!LOCALE_PATTERN.test(locale)) fail(`unsafe locale id ${JSON.stringify(locale)}`)
     normalized.set(locale, normalizeLocale(sources.messages[locale], classifyVariable))
   }
   // A downgrade can invalidate an entry that linked to it, so the graph is
@@ -768,9 +803,13 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
 
   // Phase 1: the catalog's content, with no revision and no URLs in it yet.
   const bodies = []
-  for (const locale of [...sources.locales].sort()) {
-    const entries = normalized.get(locale)
-    const fallback = locale === defaultLocale ? null : defaultLocale
+  for (const sourceLocale of [...sources.locales].sort((a, b) => {
+    const byCatalog = catalogLocales.get(a).localeCompare(catalogLocales.get(b))
+    return byCatalog || a.localeCompare(b)
+  })) {
+    const entries = normalized.get(sourceLocale)
+    const locale = catalogLocales.get(sourceLocale)
+    const fallback = sourceLocale === defaultLocale ? null : defaultCatalogLocale
     const packs = chunkEntries(entries)
     if (packs.size > MAX_CHUNKS_PER_LOCALE) fail(`${locale} produced ${packs.size} chunks`)
     for (const pack of [...packs.keys()].sort()) {
@@ -802,10 +841,14 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
   let totalKeys = 0
   let totalUnsupported = 0
 
-  for (const locale of [...sources.locales].sort()) {
+  for (const sourceLocale of [...sources.locales].sort((a, b) => {
+    const byCatalog = catalogLocales.get(a).localeCompare(catalogLocales.get(b))
+    return byCatalog || a.localeCompare(b)
+  })) {
+    const locale = catalogLocales.get(sourceLocale)
     const localeBodies = bodies.filter((body) => body.locale === locale)
-    const fallback = locale === defaultLocale ? null : defaultLocale
-    const entries = normalized.get(locale)
+    const fallback = sourceLocale === defaultLocale ? null : defaultCatalogLocale
+    const entries = normalized.get(sourceLocale)
 
     const chunks = []
     let localeBytes = 0
@@ -866,8 +909,8 @@ export async function buildCatalog({ frontendDir = FRONTEND_DIR, ...options } = 
     revisionManifestPath: `${revisionPrefix}/manifest.json`,
     chunkPathPrefix: `${BASE_PATH}/c/`,
     digestAlgorithm: 'sha256',
-    defaultLocale,
-    languageResolution: localeResolutionTable(sources),
+    defaultLocale: defaultCatalogLocale,
+    languageResolution: localeResolutionTable(sources, catalogLocales),
     locales,
     totals: {
       locales: locales.length,

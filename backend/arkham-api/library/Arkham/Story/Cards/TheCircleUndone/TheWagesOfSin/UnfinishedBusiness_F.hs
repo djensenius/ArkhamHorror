@@ -11,6 +11,7 @@ import Arkham.Matcher qualified as Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Placement
 import Arkham.Projection
+import Arkham.Scenarios.TheCircleUndone.TheWagesOfSin.Helpers (sendBanished)
 import Arkham.Story.CardDefs.TheCircleUndone.TheWagesOfSin qualified as Cards
 import Arkham.Story.Import.Lifted
 import Arkham.Window qualified as Window
@@ -50,8 +51,8 @@ instance RunMessage UnfinishedBusiness_F where
       hasEnoughResources <- fieldMap InvestigatorResources (>= 2) iid
       chooseOneM iid $ withI18n do
         when hasEnoughResources do
-          countVar 2 $ labeled' "loseResources" $ loseResources iid attrs 2
-        labeled' "flipThisBackOver" $ flipOverBy iid (attrs.ability 1) attrs
+          countVar 2 $ labeled "loseResources" $ loseResources iid attrs 2
+        labeled "flipThisBackOver" $ flipOverBy iid (attrs.ability 1) attrs
       pure s
     UseThisAbility iid (isSource attrs -> True) 2 -> do
       sid <- getRandom
@@ -61,7 +62,7 @@ instance RunMessage UnfinishedBusiness_F where
       let card = lookupCard Enemies.heretic_E (toCardId attrs)
       batched \_ -> do
         checkWhen $ Window.ScenarioEvent "wouldBanish" (Just iid) (toJSON card)
-        send $ format card <> " is \"banished\""
+        sendBanished $ format card
         addToVictory iid attrs
       pure s
     UseThisAbility iid (isSource attrs -> True) 3 -> do

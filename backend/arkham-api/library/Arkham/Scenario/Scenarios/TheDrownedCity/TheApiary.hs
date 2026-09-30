@@ -28,7 +28,6 @@ import Arkham.Location.Grid (GridLocation (..))
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
-import Arkham.Placement
 import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
 import Arkham.Scenario.Types (setAsideCardsL)
@@ -60,8 +59,8 @@ instance RunMessage TheApiary where
   runMessage msg s@(TheApiary attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> scope "intro" do
       headedWest <- getHasRecord TheExpeditionHeadedWest
-      storyWithContinue' do
-        setTitle "title"
+      storyWithContinue do
+        h "title"
         p.basic "checkCampaignLog"
         ul do
           li.validate headedWest "headedWest"
@@ -88,18 +87,18 @@ instance RunMessage TheApiary where
             p "apiary2Conclusion"
         ul do
           unscoped
-            $ withVars ["token" .= String (if headedWest then "tablet" else "cultist")]
+            $ withVars ["token" .= String (if headedWest then "cultist" else "tablet")]
             $ li "addToken"
           li.validate (notNull withWalkInFaith) "resolveWalkInFaith"
         p.basic $ if headedWest then "proceedToWesternSetup" else "proceedToEasternSetup"
 
       -- The campaign handles AddChaosToken by adding to its own bag, so this
       -- sticks for the remainder of the campaign and not just this scenario.
-      addChaosToken (if headedWest then Tablet else Cultist)
+      addChaosToken (if headedWest then Cultist else Tablet)
 
       for_ withWalkInFaith \iid -> do
         canErase <- canEraseProgress iid Key.WalkInFaith
-        storyWithChooseOneM'
+        storyWithChooseOneM
           ( compose.green do
               h3 "walkInFaith.title"
               p "walkInFaith.instructions"
@@ -113,10 +112,10 @@ instance RunMessage TheApiary where
             -- Both riders say "in the next scenario", which for a Task story read
             -- in the intro is this scenario. One effect per investigator, each
             -- spent on that investigator's first encounter-deck draw.
-            labeledValidate' canErase "walkInFaith.doubts" do
+            labeledValidate canErase "walkInFaith.doubts" do
               decrementRecordCountForInvestigator iid Key.WalkInFaith 1
               for_ investigators (walkInFaithDoubts attrs)
-            labeled' "walkInFaith.resolve" do
+            labeled "walkInFaith.resolve" do
               incrementRecordCountForInvestigator iid Key.WalkInFaith 2
               sufferMentalTrauma iid 1
               for_ investigators (walkInFaithResolve attrs)
@@ -211,16 +210,15 @@ instance RunMessage TheApiary where
       pure s
     ForInvestigator iid Setup -> do
       artifacts <- getAvailableArtifacts
+      items <- getAvailableExpeditionItems
       chooseOneM iid do
-        questionLabeled' "chooseExpeditionAssetQuestion"
-        labeled' "noExpeditionAsset" nothing
-        for_ (artifacts <> expeditionItems) \asset ->
+        questionLabeled "chooseExpeditionAssetQuestion"
+        labeled "noExpeditionAsset" nothing
+        for_ (artifacts <> items) \asset ->
           cardLabeled asset.cardCode $ handleTarget iid attrs (CardCodeTarget asset.cardCode)
       pure s
     HandleTargetChoice iid (isSource attrs -> True) (CardCodeTarget cardCode) -> do
-      for_ (lookupCardDef cardCode) \def -> do
-        card <- EncounterCard <$> genEncounterCard def
-        createAssetAt_ card (InPlayArea iid)
+      grantExpeditionAsset iid cardCode
       pure s
     EndSetup -> do
       -- The final setup shuffle has already happened, so the hidden location has to
@@ -255,8 +253,8 @@ instance RunMessage TheApiary where
               else select $ enemyAtLocationWith iid
           unless (null enemies) $ chooseTargetM iid enemies \eid -> placeDoom Tablet eid 1
         ElderThing -> chooseOneM iid $ unscoped $ countVar 1 do
-          labeled' "takeDamage" $ assignDamage iid ElderThing 1
-          labeled' "takeHorror" $ assignHorror iid ElderThing 1
+          labeled "takeDamage" $ assignDamage iid ElderThing 1
+          labeled "takeHorror" $ assignHorror iid ElderThing 1
         _ -> pure ()
       pure s
     -- The Hive Mind act flips a coin each round end and rotates the Central
@@ -270,11 +268,11 @@ instance RunMessage TheApiary where
     -- Resolution 4 is only ever reached from resolution 3 or from no resolution, so
     -- it must not re-run the shared bookkeeping (or the defeat story) below.
     ScenarioResolution (Resolution 4) -> scope "resolutions" do
-      storyWithChooseOneM'
+      storyWithChooseOneM
         (compose.resolution $ scope "resolution4" $ setTitle "title" >> p "body")
         do
-          labeled' "resolution4.drownedQuarter" $ endOfScenarioThen TheDrownedQuarter
-          labeled' "resolution4.westernWall" $ endOfScenarioThen TheWesternWall
+          labeled "resolution4.drownedQuarter" $ endOfScenarioThen TheDrownedQuarter
+          labeled "resolution4.westernWall" $ endOfScenarioThen TheWesternWall
       pure s
     ScenarioResolution res -> scope "resolutions" do
       headedWest <- getHasRecord TheExpeditionHeadedWest

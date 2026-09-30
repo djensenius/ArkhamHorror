@@ -396,17 +396,16 @@ spec = describe "selectUploadedExportFile" do
                 then expectationFailure ("missing import-handler source: " <> T.unpack needle) >> error "missing source"
                 else pure $ T.length prefix
         checkpointPlayerBindingNeedle =
-          "validateReplayCheckpointPlayerId (replayImportCheckpointPlayerId authority) checkpointPlayerId"
+          "checkpointInvestigatorForPlayerId agedCurrentData allInvestigatorIds (replayImportCheckpointPlayerId authority)"
         checkpointPlayerBindingPositions =
           map (T.length . fst) $ T.breakOnAll checkpointPlayerBindingNeedle importHandler
     normalized
       `shouldSatisfy` T.isInfixOf
         "postApiV1ArkhamGamesImportR :: Handler (PublicGame ArkhamGameId)"
     decodePosition <- position "decodeExportBytes"
-    checkpointBindingPosition <-
-      position
-        "checkpointPlayerId <- forM importAuthority \\authority -> do"
+    checkpointBindingPosition <- position checkpointPlayerBindingNeedle
     transactionPosition <- position "(importedGame, importReceipt) <- runDB"
+    soloSeatPosition <- position "forM allInvestigatorIds \\investigatorId -> do"
     investigatorRemapPosition <-
       position
         "mRemappedPlayerId <- remapInvestigatorUUID gameId selectedInvestigator newPlayerId"
@@ -433,8 +432,9 @@ spec = describe "selectUploadedExportFile" do
     checkpointBindingPosition `shouldSatisfy` (< transactionPosition)
     case checkpointPlayerBindingPositions of
       [bindingPosition] -> bindingPosition `shouldSatisfy` (< transactionPosition)
-      _ -> expectationFailure "expected one pre-transaction checkpoint-player validation"
-    transactionPosition `shouldSatisfy` (< investigatorRemapPosition)
+      _ -> expectationFailure "expected one pre-transaction solo checkpoint-player lookup"
+    transactionPosition `shouldSatisfy` (< soloSeatPosition)
+    soloSeatPosition `shouldSatisfy` (< investigatorRemapPosition)
     investigatorRemapPosition `shouldSatisfy` (< ordinaryQueueMapPosition)
     ordinaryQueueMapPosition `shouldSatisfy` (< patchRemapPosition)
     patchRemapPosition `shouldSatisfy` (< actionDiffRemapPosition)

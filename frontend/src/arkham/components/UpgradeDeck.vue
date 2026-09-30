@@ -1,8 +1,10 @@
 <script lang="ts" setup>
 import { displayTabooList } from '@/arkham/taboo';
-import { ref, computed, inject, onUnmounted } from 'vue';
-import { fetchGame, fetchGameStep, upgradeDeck } from '@/arkham/api';
-import { imgsrc, localizeArkhamDBBaseUrl, processArkhamBuildDeck } from '@/arkham/helpers';
+import { portraitImage } from '@/arkham/cardImages'
+import { ref, computed, inject } from 'vue';
+import { fetchGame, upgradeDeck } from '@/arkham/api';
+import { useStepPoller } from '@/arkham/composables/useStepPoller';
+import { localizeArkhamDBBaseUrl, processArkhamBuildDeck } from '@/arkham/helpers';
 import { ArkhamDbDecklist } from '@/arkham/types/Deck';
 import { Game } from '@/arkham/types/Game';
 import { Investigator } from '@/arkham/types/Investigator';
@@ -38,7 +40,6 @@ const props = defineProps<Props>()
 const emit = defineEmits<{ choose: [value: number]; update: [game: Game] }>()
 const choose = (idx: number) => emit('choose', idx)
 const waiting = ref(false)
-let waitingPoll: ReturnType<typeof setTimeout> | null = null
 
 function hasUpgradeQuestions(game: Game): boolean {
   return Object.values(game.question).some((question) =>
@@ -47,41 +48,22 @@ function hasUpgradeQuestions(game: Game): boolean {
   )
 }
 
-// Last step we pulled the full game for; null means "not probed yet", so the
-// first tick resyncs once. Probing the step first keeps this off the expensive
-// game endpoint for every tick where nobody has answered anything.
-let waitingStep: number | null = null
-
-async function pollWaitingGame() {
-  try {
-    const step = await fetchGameStep(props.game.id)
-    if (step !== waitingStep) {
-      waitingStep = step
-      const { game } = await fetchGame(props.game.id)
-      emit('update', game)
-      if (!hasUpgradeQuestions(game)) {
-        waiting.value = false
-        waitingPoll = null
-        return
-      }
-    }
-    waitingPoll = setTimeout(pollWaitingGame, 1000 + Math.floor(Math.random() * 500))
-  } catch {
-    waitingPoll = setTimeout(pollWaitingGame, 2000)
-  }
-}
+// Probing the step first keeps this off the expensive game endpoint for every
+// tick where nobody has answered anything.
+const waitingPoll = useStepPoller({
+  gameId: () => props.game.id,
+  onChange: async () => {
+    const { game } = await fetchGame(props.game.id)
+    emit('update', game)
+    if (!hasUpgradeQuestions(game)) waiting.value = false
+  },
+  shouldContinue: () => waiting.value,
+})
 
 function waitForOtherPlayers() {
   waiting.value = true
-  if (waitingPoll === null) {
-    waitingStep = null
-    waitingPoll = setTimeout(pollWaitingGame, 500)
-  }
+  waitingPoll.start()
 }
-
-onUnmounted(() => {
-  if (waitingPoll !== null) clearTimeout(waitingPoll)
-})
 const deck = ref<string | null>(null)
 const deckUrl = ref<string | null>(null)
 const deckList = ref<ArkhamDbDecklist | null>(null)
@@ -527,7 +509,7 @@ const tabooList = function (investigator: Investigator) {
 
     <div v-if="!waiting" class="panel">
       <template v-if="question && investigator && question.tag !== 'ChooseUpgradeDeck'">
-        <img v-if="investigatorId" class="portrait" :src="imgsrc(`portraits/${investigatorId.replace('c', '')}.jpg`)" />
+        <img v-if="investigatorId" class="portrait" :src="portraitImage(investigatorId)" />
         <div v-if="question && playerId == investigator.playerId" class="content question-pane">
           <h3 v-if="questionLabel" class="question-label">{{ questionLabel }}</h3>
           <Question :game="game" :playerId="playerId" @choose="choose" />
@@ -540,7 +522,7 @@ const tabooList = function (investigator: Investigator) {
       </template>
       <template v-else>
         <template v-if="investigatorId && killedInvestigators.includes(investigatorId)">
-          <img class="portrait killed" :src="imgsrc(`portraits/${investigatorId.replace('c', '')}.jpg`)" />
+          <img class="portrait killed" :src="portraitImage(investigatorId)" />
           <div class="content">
             <p class="killed-prompt">{{ $t('upgrade.killed') }}</p>
             <p v-if="error" class="error">{{ error }}</p>
@@ -562,7 +544,7 @@ const tabooList = function (investigator: Investigator) {
           </div>
         </template>
         <template v-else>
-          <img v-if="investigatorId" class="portrait" :src="imgsrc(`portraits/${investigatorId.replace('c', '')}.jpg`)" />
+          <img v-if="investigatorId" class="portrait" :src="portraitImage(investigatorId)" />
           <div class="content">
             <p v-if="error" class="error">{{ error }}</p>
             <p v-if="submitError" class="error">{{ submitError }}</p>
@@ -1032,4 +1014,12 @@ button.skip {
 .breakdowns {
   width: min(1100px, 92vw);
 }
+
+
+
+
+
+
+
+
 </style>

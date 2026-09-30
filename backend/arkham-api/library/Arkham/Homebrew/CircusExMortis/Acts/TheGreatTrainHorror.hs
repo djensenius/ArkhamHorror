@@ -21,15 +21,13 @@ instance HasAbilities TheGreatTrainHorror where
         a
         2
         (TokensOnLocation (locationIs Locations.circusEngine) #damage (AtLeast $ PerPlayer 4))
-        $ Objective
-        $ forced
-        $ RoundEnds #when
+        $ Objective freeTrigger_
     ]
 
 instance RunMessage TheGreatTrainHorror where
   runMessage msg a@(TheGreatTrainHorror attrs) = runQueueT $ case msg of
     UseThisAbility _ (isSource attrs -> True) 1 -> do
-      advanceCurrentAgenda attrs
+      advanceCurrentAgendaByDoom attrs
       pure a
     UseThisAbility _ (isSource attrs -> True) 2 -> do
       advancedWithOther attrs

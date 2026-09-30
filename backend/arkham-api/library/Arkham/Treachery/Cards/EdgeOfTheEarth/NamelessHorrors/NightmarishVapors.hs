@@ -25,13 +25,13 @@ instance RunMessage NightmarishVapors where
 
       chooseOneM iid do
         when (remainingActions >= 2 || length cards < 2 || not canShuffleIn) do
-          withI18n $ countVar 2 $ labeled' "loseActions" $ loseActions iid attrs 2
+          withI18n $ countVar 2 $ labeled "loseActions" $ loseActions iid attrs 2
 
         when (canShuffleIn && (length cards >= 2 || remainingActions < 2)) do
           campaignI18n
             $ scope "nightmarishVapors"
             $ countVar (length cards)
-            $ labeled' "shuffleTekeliliIntoYourDeck"
+            $ labeled "shuffleTekeliliIntoYourDeck"
             $ addTekelili iid cards
 
       pure t

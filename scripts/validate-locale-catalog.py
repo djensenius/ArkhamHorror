@@ -1033,14 +1033,66 @@ def validate_deployment_wiring(manifest: dict) -> None:
     )
 
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    def docker_copies(source: str, destination: str) -> bool:
+        return (
+            re.search(
+                rf"^\s*COPY\s+\.?/?{re.escape(source)}\s+{re.escape(destination)}\s*$",
+                dockerfile,
+                re.MULTILINE,
+            )
+            is not None
+        )
+
+    require(
+        docker_copies("contracts", "/opt/arkham/src/contracts"),
+        "the container build does not provide the contract fixtures the generator requires",
+    )
+    require(
+        docker_copies(
+            "backend/arkham-api/i18n-emitted-keys.json",
+            "/opt/arkham/src/backend/arkham-api/i18n-emitted-keys.json",
+        ),
+        "the container build does not provide the backend emitted-key registry the generator requires",
+    )
+    require(
+        docker_copies(
+            "backend/devel-store-lock/package.yaml",
+            "/opt/arkham/src/backend/devel-store-lock/package.yaml",
+        ),
+        "the container dependency build does not provide devel-store-lock/package.yaml from stack.yaml",
+    )
     require(
         re.search(
-            r"^\s*COPY\s+\.?/?contracts\s+/opt/arkham/src/contracts\s*$",
+            r"^\s*RUN\s+env\s+-i\s+HOME=/nonexistent\s+.*?/usr/local/bin/node\s+scripts/locale-catalog/generator-launcher\.mjs\s+generate\.mjs\s*$",
             dockerfile,
             re.MULTILINE,
         )
         is not None,
-        "the container build does not provide the contract fixtures the generator requires",
+        "the container build does not generate the catalog through the sealed Node launcher",
+    )
+    require(
+        re.search(r"^\s*RUN\s+.*\bnpm\s+ci\b.*--ignore-scripts", dockerfile, re.MULTILINE)
+        is not None,
+        "the container build does not install frontend dependencies with npm lifecycle scripts disabled",
+    )
+    require(
+        re.search(
+            r"^\s*RUN\s+/usr/local/bin/node\s+/usr/local/lib/node_modules/npm/bin/npm-cli\.js\s+run\s+build\s*$",
+            dockerfile,
+            re.MULTILINE,
+        )
+        is not None,
+        "the container build does not run npm build through the sealed Node/npm binaries",
+    )
+    require(
+        re.search(
+            r"^\s*RUN\s+.*\bnode\s+scripts/locale-catalog/generator-launcher\.mjs\s+verify-dist\.mjs\s+--publish\s*$",
+            dockerfile,
+            re.MULTILINE,
+        )
+        is not None,
+        "the container build does not verify and publish the built locale catalog",
     )
     require(
         "ARG GHC=9.14.1" in dockerfile
@@ -1049,7 +1101,23 @@ def validate_deployment_wiring(manifest: dict) -> None:
         and "ghcup -v install stack --isolate /usr/local/bin --force ${STACK}" in dockerfile,
         "the Docker build does not pin the backend GHC/Stack toolchain versions",
     )
-
+    if "COPY --from=mcp /opt/arkham/mcp /opt/arkham/mcp" in dockerfile:
+        app_stage_match = re.search(
+            r"^FROM\s+nginx:1\.27\.5@sha256:[0-9a-f]{64}\s+AS\s+app\b(?P<body>.*)",
+            dockerfile,
+            re.MULTILINE | re.DOTALL,
+        )
+        require(app_stage_match is not None, "the container build does not define the nginx app stage")
+        app_stage = app_stage_match.group("body") if app_stage_match else ""
+        require(
+            re.search(
+                r"^\s*RUN\s+apt-get\s+update\s+&&\s*\\\n\s*apt-get\s+install\s+.*--no-install-recommends\s+python3\b",
+                app_stage,
+                re.MULTILINE,
+            )
+            is not None,
+            "the production app image copies the MCP server without installing python3",
+        )
     ignore = (FRONTEND / ".gitignore").read_text(encoding="utf-8")
     require("public/locale-catalog/" in ignore, "generated catalog output is not git-ignored")
 

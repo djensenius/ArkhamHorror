@@ -1,31 +1,51 @@
 module Arkham.Homebrew.CircusExMortis.Helpers where
 
+import Arkham.Ability (Ability, exists, forced, restricted)
 import Arkham.Card
 import Arkham.ChaosToken
 import Arkham.Classes.HasGame
+import Arkham.Classes.HasQueue (push)
 import Arkham.Classes.Query
 import Arkham.Direction (Direction (..))
-import Arkham.Helpers.Campaign (getCompletedSteps, getOwner)
-import Arkham.Helpers.Modifiers (ModifierType (..))
-import Arkham.Helpers.Scenario (getScenarioMetaKeyDefault, scenarioField, setScenarioMeta)
+import Arkham.Effect.Builder
+import Arkham.Effect.Window
+import Arkham.Enemy.Types (Field (EnemyPlacement))
+import Arkham.Helpers.Campaign (getOwner)
+import Arkham.Helpers.CustomChaosBag
+import Arkham.Helpers.FlavorText (chaosTokenImg, cols, compose, img, p, setTitle, tokenReveal)
+import Arkham.Helpers.Modifiers
+import Arkham.Helpers.Query (getPlayerCount)
+import Arkham.Helpers.Scenario (scenarioField, setScenarioMeta)
+import Arkham.Helpers.SkillTest (getIsBeingInvestigated, getSkillTestInvestigator)
 import Arkham.Homebrew.CircusExMortis.CardDefs.Acts qualified as Acts
 import Arkham.Homebrew.CircusExMortis.CardDefs.Assets qualified as Assets
 import Arkham.Homebrew.CircusExMortis.CardDefs.Locations qualified as Locations
+import Arkham.Homebrew.CircusExMortis.CardDefs.Stories qualified as Stories
 import Arkham.Homebrew.CircusExMortis.Tokens (pattern MoonToken)
 import Arkham.I18n
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
 import Arkham.Location.Grid (Pos (..))
+import Arkham.Location.Types (LocationAttrs)
 import Arkham.Matcher
-import Arkham.Message (ShuffleIn (..))
+import Arkham.Message (pattern PlaceCluesUpToClueValue)
 import Arkham.Message.Lifted
 import Arkham.Message.Lifted.Choose
+import Arkham.Message.Lifted.Log (remember)
+import Arkham.Modifier (Modifier)
+import Arkham.Name (Labeled (..), Named)
+import Arkham.Name qualified as Name
+import Arkham.Placement (Placement (InPosition))
 import Arkham.Prelude
 import Arkham.Projection
-import Arkham.Scenario.Types (Field (ScenarioMeta))
+import Arkham.Scenario.Types (Field (ScenarioMeta, ScenarioRemembered))
+import Arkham.ScenarioLogKey
 import Arkham.Source
 import Arkham.Target
+import Arkham.TokenBag
+import Control.Monad.Writer.Class
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Map.Monoidal.Strict (MonoidalMap)
 
 campaignI18n :: (HasI18n => a) -> a
 campaignI18n a = withI18n $ scope "circusExMortis" a
@@ -51,33 +71,6 @@ moonTokenValue = ChaosTokenValue MoonToken (NegativeModifier 0)
 
 hasSealedMoonToken :: InvestigatorMatcher
 hasSealedMoonToken = InvestigatorWithSealedChaosToken moonToken
-
-{- | Tokens sealed on cards at a location. Seals land on investigator cards (the
-☾ reveal effect) and on assets (De Cultus Bestiae), so those are the two pools
-"sealed on cards at your location" can draw from.
--}
-getSealedTokensAtMatching :: HasGame m => ChaosTokenMatcher -> LocationId -> m [ChaosToken]
-getSealedTokensAtMatching matcher lid = do
-  onInvestigators <- select $ SealedOnInvestigator (InvestigatorAt $ LocationWithId lid) matcher
-  onAssets <- select $ SealedOnAsset (AssetAtLocation lid) matcher
-  pure $ nub (onInvestigators <> onAssets)
-
--- | Moon tokens sealed on cards at a location.
-getSealedMoonTokensAt :: HasGame m => LocationId -> m [ChaosToken]
-getSealedMoonTokensAt = getSealedTokensAtMatching moonToken
-
-{- | Any sealed token on a card at a location: Amalthea's release riders say "a
-token", not "a ☾ token", and are read literally.
--}
-getSealedTokensAt :: HasGame m => LocationId -> m [ChaosToken]
-getSealedTokensAt = getSealedTokensAtMatching AnyChaosToken
-
--- | Moon tokens sealed on the cards an investigator controls.
-getSealedMoonTokensControlledBy :: HasGame m => InvestigatorId -> m [ChaosToken]
-getSealedMoonTokensControlledBy iid = do
-  own <- select $ SealedOnInvestigator (InvestigatorWithId iid) moonToken
-  onAssets <- select $ SealedOnAsset (assetControlledBy iid) moonToken
-  pure $ nub (own <> onAssets)
 
 -- | "Search the chaos bag for a ☾ token and seal it on your investigator card."
 sealMoonTokenOn :: ReverseQueue m => InvestigatorId -> m ()
@@ -127,34 +120,13 @@ ratsInACageVariants =
        , (Acts.ratsInACage_008, (Locations.performerTrailers, Cultist))
        ]
 
-lookupRatsInACage :: CardDef -> Maybe (CardDef, ChaosTokenFace)
-lookupRatsInACage def = lookup def (toList ratsInACageVariants)
+lookupRatsInACage :: HasCardDef a => a -> Maybe (CardDef, ChaosTokenFace)
+lookupRatsInACage (toCardDef -> def) = lookup def (toList ratsInACageVariants)
+
+bigTopRings :: LocationMatcher
+bigTopRings = LocationWithTitle "The Big Top"
 
 -- * Story-asset versions (Amalthea Weaver / De Cultus Bestiae)
-
--- | Every printing of Amalthea Weaver, base version first.
-amaltheaWeaverVersions :: [CardDef]
-amaltheaWeaverVersions =
-  [ Assets.amaltheaWeaverCircusFortuneTeller
-  , Assets.amaltheaWeaverAspirantOfCourage
-  , Assets.amaltheaWeaverAspirantOfWisdom
-  , Assets.amaltheaWeaverOracleOfPurity
-  , Assets.amaltheaWeaverOracleOfResolve
-  , Assets.amaltheaWeaverOracleOfEnlightenment
-  , Assets.amaltheaWeaverOracleOfMystery
-  ]
-
--- | Every printing of De Cultus Bestiae, base version first.
-deCultusBestiaeVersions :: [CardDef]
-deCultusBestiaeVersions =
-  [ Assets.deCultusBestiaeForgottenWorkOfApuleius
-  , Assets.deCultusBestiaeInterpretationOfConviction
-  , Assets.deCultusBestiaeInterpretationOfObsession
-  , Assets.deCultusBestiaeProphecyOfTheBeyond
-  , Assets.deCultusBestiaeProphecyOfTheEternal
-  , Assets.deCultusBestiaeProphecyOfTheHorde
-  , Assets.deCultusBestiaeProphecyOfTheBehemoth
-  ]
 
 -- | Find the owner and current version of a versioned story asset.
 findVersionOwner
@@ -162,37 +134,32 @@ findVersionOwner
 findVersionOwner defs =
   listToMaybe . catMaybes <$> for defs \def -> fmap (,def) <$> getOwner def
 
+-- | Base version first; 'findVersionOwner' returns whichever one is owned.
 getAmaltheaWeaverOwner :: HasGame m => m (Maybe (InvestigatorId, CardDef))
-getAmaltheaWeaverOwner = findVersionOwner amaltheaWeaverVersions
+getAmaltheaWeaverOwner =
+  findVersionOwner
+    [ Assets.amaltheaWeaverCircusFortuneTeller
+    , Assets.amaltheaWeaverAspirantOfCourage
+    , Assets.amaltheaWeaverAspirantOfWisdom
+    , Assets.amaltheaWeaverOracleOfPurity
+    , Assets.amaltheaWeaverOracleOfResolve
+    , Assets.amaltheaWeaverOracleOfEnlightenment
+    , Assets.amaltheaWeaverOracleOfMystery
+    ]
 
 getDeCultusBestiaeOwner :: HasGame m => m (Maybe (InvestigatorId, CardDef))
-getDeCultusBestiaeOwner = findVersionOwner deCultusBestiaeVersions
-
-{- | Swap a versioned campaign story card for its next version in the same
-investigator's deck (Relic of Ages pattern: remove the old def, add the new
-one without counting toward deck size). No-op when nobody owns the old
-version.
--}
-swapCampaignCard :: ReverseQueue m => CardDef -> CardDef -> m ()
-swapCampaignCard old new =
-  getOwner old >>= traverse_ \iid -> do
-    removeCampaignCard old
-    addCampaignCardToDeck iid DoNotShuffleIn new
+getDeCultusBestiaeOwner =
+  findVersionOwner
+    [ Assets.deCultusBestiaeForgottenWorkOfApuleius
+    , Assets.deCultusBestiaeInterpretationOfConviction
+    , Assets.deCultusBestiaeInterpretationOfObsession
+    , Assets.deCultusBestiaeProphecyOfTheBeyond
+    , Assets.deCultusBestiaeProphecyOfTheEternal
+    , Assets.deCultusBestiaeProphecyOfTheHorde
+    , Assets.deCultusBestiaeProphecyOfTheBehemoth
+    ]
 
 -- * Curse of the Rougarou side story
-
-{- | The guide offers Curse of the Rougarou between Harm's Way and All Points
-West; All Points West reads its Back on Track intro when the side story was
-the most recently completed scenario. Completion itself is recorded by the
-official scenario's resolutions (the TheRougarou* campaign log keys).
--}
-playedCurseOfTheRougarouEnRoute :: HasGame m => m Bool
-playedCurseOfTheRougarouEnRoute = do
-  steps <- getCompletedSteps
-  -- completed steps are stored most-recent-first
-  pure $ case mapMaybe (.scenario) steps of
-    (sid : _) -> sid == curseOfTheRougarouId
-    _ -> False
 
 curseOfTheRougarouId :: ScenarioId
 curseOfTheRougarouId = "81001"
@@ -202,21 +169,17 @@ curseOfTheRougarouId = "81001"
 {- | The fury bag (guide p11) is a second bag of tokens that are explicitly NOT
 chaos tokens: it is never drawn from during a skill test and has no
 'HasChaosTokenValue'. 'ChaosTokenFace' is reused purely as the tagged union of
-faces the bag can hold. The bag lives in scenario meta so every card that says
-"reveal a fury token" reads the same list.
+faces the bag can hold. It is the scenario's named "fury" custom chaos bag,
+so every card that says "reveal a fury token" shares its state and debug override.
 -}
-furyBagKey :: Key
-furyBagKey = "furyBag"
+furyBagKey :: Text
+furyBagKey = "fury"
 
--- | The bag the scenario is set up with; agenda flips add ☾ tokens on top.
-initialFuryBag :: [ChaosTokenFace]
-initialFuryBag = [Skull, Cultist, Tablet, ElderThing]
+getFuryBag :: HasGame m => m CustomChaosBag
+getFuryBag = getCustomChaosBag furyBagKey
 
-getFuryBag :: HasGame m => m [ChaosTokenFace]
-getFuryBag = getScenarioMetaKeyDefault furyBagKey initialFuryBag
-
-setFuryBag :: ReverseQueue m => [ChaosTokenFace] -> m ()
-setFuryBag = setScenarioMetaKey furyBagKey
+setFuryBag :: ReverseQueue m => CustomChaosBag -> m ()
+setFuryBag = setCustomChaosBag furyBagKey
 
 {- | Write one key of the scenario's meta object, leaving the rest alone.
 'setScenarioMeta' replaces the whole value, and the engine has no per-key
@@ -231,17 +194,14 @@ setScenarioMetaKey k v = do
         _ -> KeyMap.empty
   setScenarioMeta $ Object $ KeyMap.insert k (toJSON v) object'
 
--- | Setup: "Create a separate bag consisting of a ☠, ☾, 𝍎, and ✷ token."
-initFuryBag :: ReverseQueue m => m ()
-initFuryBag = setFuryBag initialFuryBag
-
 {- | "Add a ☾ token to the fury bag" (Restless Night, Midnight Snacking). The
 bag only ever grows, so this is the one place its contents change.
 -}
 addFuryToken :: ReverseQueue m => ChaosTokenFace -> m ()
 addFuryToken face = do
   bag <- getFuryBag
-  setFuryBag (face : bag)
+  tokenId <- getRandom
+  setFuryBag bag {bagTokens = BagToken tokenId face : bag.tokens}
 
 {- | The direction vocabulary shared by The Dark Young Stir... and Act 1's back.
 It is a fixed mapping onto the four Camp locations flanking Ringmaster's
@@ -268,6 +228,12 @@ furyDirectionPos = \case
   FuryWest -> Pos (-1) 0
   FuryEast -> Pos 1 0
 
+-- | Fury directions are relative to each Dark Young, not the map's center.
+furyAttackPosition :: Pos -> FuryDirection -> Pos
+furyAttackPosition (Pos x y) direction =
+  let Pos dx dy = furyDirectionPos direction
+   in Pos (x + dx) (y + dy)
+
 -- | Grid position one step further out, where Camp Outskirts is placed.
 furyDirectionOutwardPos :: FuryDirection -> Pos
 furyDirectionOutwardPos = \case
@@ -276,35 +242,26 @@ furyDirectionOutwardPos = \case
   FuryWest -> Pos (-2) 0
   FuryEast -> Pos 2 0
 
-furyDirectionLocation :: HasGame m => FuryDirection -> m (Maybe LocationId)
-furyDirectionLocation = selectOne . LocationInPosition . furyDirectionPos
-
-{- | Every location a direction resolves to. Camp Outskirts is "considered to be
-at the same position as the adjacent [[Camp]] location while resolving fury
-tokens", and Act 1 places it one step further out along the direction it drew,
-so the outward grid slot aliases onto the same direction.
--}
-furyDirectionLocations :: HasGame m => FuryDirection -> m [LocationId]
-furyDirectionLocations direction =
-  catMaybes
-    <$> traverse
-      (selectOne . LocationInPosition)
-      [furyDirectionPos direction, furyDirectionOutwardPos direction]
-
 {- | Draw @n@ pending tokens without replacement; a ☾ costs nothing but adds two
-more pending draws (The Dark Young Stir's recursion). The bag itself is never
-written to: every drawn token is returned once the instruction resolves, so the
-net change is zero.
+more pending draws (The Dark Young Stir's recursion). Every drawn token is
+returned once the instruction resolves; only a consumed debug override changes
+the persisted state.
 -}
-drawFuryTokens :: MonadRandom m => [ChaosTokenFace] -> Int -> m [ChaosTokenFace]
-drawFuryTokens pool n
-  | n <= 0 = pure []
-  | otherwise = case nonEmpty pool of
-      Nothing -> pure []
-      Just candidates -> do
-        face <- sample candidates
-        let pending = if face == MoonToken then n + 1 else n - 1
-        (face :) <$> drawFuryTokens (deleteFirst face pool) pending
+
+-- The temporary set-aside pile prevents repeats during Moon recursion.
+drawFuryBagTokens
+  :: MonadRandom m => CustomChaosBag -> Int -> m ([ChaosTokenFace], CustomChaosBag)
+drawFuryBagTokens bag n
+  | n <= 0 = pure ([], bag)
+  | otherwise = do
+      (drawn, bag') <- drawBagToken (.face) bag
+      case drawn of
+        Nothing -> pure ([], bag')
+        Just token -> do
+          let face = token.face
+          let pending = if face == MoonToken then n + 1 else n - 1
+          (faces, finalBag) <- drawFuryBagTokens (setAsideBagToken bag') pending
+          pure (face : faces, finalBag)
 
 {- | "Reveal a fury token", resolved through The Dark Young Stir...: every
 Towering Dark Young in play immediately attacks each investigator at the
@@ -313,31 +270,49 @@ location the drawn token names. A ☾ reveals two more tokens instead.
 revealFuryToken :: (ReverseQueue m, Sourceable source) => source -> m ()
 revealFuryToken source = do
   bag <- getFuryBag
-  faces <- drawFuryTokens bag 1
-  for_ (mapMaybe furyDirection faces) \direction -> do
-    darkYoung <- select $ EnemyWithTitle "Towering Dark Young"
-    locations <- furyDirectionLocations direction
-    for_ locations \lid -> do
-      investigators <- select $ InvestigatorAt (LocationWithId lid)
-      -- One real single-target attack per pair: the Towering Dark Young
-      -- reactions hang off EnemyWouldAttack and Cautious Jailers off
-      -- EnemyAttacksEvenIfCancelled, and both noMatch on massive multi-target
-      -- attacks.
-      for_ darkYoung \eid -> for_ investigators $ initiateEnemyAttack eid source
-
-{- | Act 1's back reads the same direction table for a different purpose: a ☾ is
-ignored and another token drawn (no recursion), and nothing attacks.
--}
-drawFuryTokenForDirection :: (HasGame m, MonadRandom m) => m (Maybe FuryDirection)
-drawFuryTokenForDirection = go =<< getFuryBag
- where
-  go pool = case nonEmpty pool of
-    Nothing -> pure Nothing
-    Just candidates -> do
-      face <- sample candidates
-      case furyDirection face of
-        Just direction -> pure (Just direction)
-        Nothing -> go (deleteFirst face pool)
+  (faces, drawnBag) <- drawFuryBagTokens bag 1
+  setFuryBag $ returnSetAsideTokens drawnBag
+  for_ faces \face -> scenarioI18n "harmsWay" $ scope "furyReveal" do
+    case furyDirection face of
+      Nothing -> storyWithContinue $ tokenReveal do
+        setTitle "title"
+        cols do
+          img Stories.theDarkYoungStir
+          compose do
+            chaosTokenImg face
+            p "moon"
+      Just direction -> do
+        darkYoung <- select $ EnemyWithTitle "Towering Dark Young"
+        storyWithContinue $ tokenReveal do
+          setTitle "title"
+          cols do
+            img Stories.theDarkYoungStir
+            compose do
+              chaosTokenImg face
+              p $ case direction of
+                FuryNorth -> "north"
+                FurySouth -> "south"
+                FuryWest -> "west"
+                FuryEast -> "east"
+        -- Preserve single-target attacks so enemy attack reactions still match.
+        for_ darkYoung \eid -> do
+          placement <- field EnemyPlacement eid
+          case placement of
+            InPosition pos -> do
+              let targetPos = furyAttackPosition pos direction
+              -- Outskirts also counts as the Camp location on its side of the map.
+              -- Camp Outskirts counts as the Camp location on its side of the map, so
+              -- the outward grid slot aliases onto the same direction.
+              locations <- case find ((== targetPos) . furyDirectionPos) [FuryNorth, FurySouth, FuryWest, FuryEast] of
+                Just side ->
+                  catMaybes
+                    <$> traverse
+                      (selectOne . LocationInPosition)
+                      [furyDirectionPos side, furyDirectionOutwardPos side]
+                Nothing -> select $ LocationInPosition targetPos
+              investigators <- concatMapM (select . InvestigatorAt . LocationWithId) locations
+              for_ investigators $ initiateEnemyAttack eid source
+            _ -> pure ()
 
 -- * The Primrose Path
 
@@ -363,3 +338,121 @@ neighbouringMoonlitForestColumn :: LocationMatcher -> LocationMatcher
 neighbouringMoonlitForestColumn self =
   moonlitForests
     <> LocationInColumnOf (LocationMatchAny [LocationInDirection d self | d <- [LeftOf, RightOf]])
+
+-- * Piper at the Gates of Dawn
+
+{- | The Forced ability all three agenda fronts print. 'LocationNotAtClueLimit' keeps it
+from firing when every revealed ring is already at (or over) its printed clue value,
+which is the common case once act 1's back has added its extra clues.
+-}
+replenishBigTopRingsAbility :: (HasCardCode a, Sourceable a) => a -> Ability
+replenishBigTopRingsAbility a =
+  restricted a 1 (exists replenishableBigTopRings) $ forced $ RoundEnds #when
+
+replenishableBigTopRings :: LocationMatcher
+replenishableBigTopRings = bigTopRings <> RevealedLocation <> LocationNotAtClueLimit
+
+{- | "Replenish all clues on each revealed The Big Top location": the message tops each
+ring up to its printed reveal value, so the extra clues act 1's back placed on the rings
+are not restored.
+-}
+replenishBigTopRings :: (ReverseQueue m, Sourceable source) => source -> m ()
+replenishBigTopRings source = do
+  n <- getPlayerCount
+  selectEach replenishableBigTopRings \lid ->
+    push $ PlaceCluesUpToClueValue lid (toSource source) n
+
+{- | Agendas 1b and 2b: each investigator without a ☾ token sealed on their investigator
+card searches the chaos bag for one and seals it there, and loses an action if they
+cannot. Resolve one investigator at a time: each seal takes a ☾ out of the bag, so the
+next investigator has to read the bag as it now stands.
+-}
+sealMoonTokenOrLoseAction
+  :: (ReverseQueue m, Sourceable source) => source -> InvestigatorId -> m ()
+sealMoonTokenOrLoseAction source iid = unlessM (iid <=~> hasSealedMoonToken) do
+  moonInBag <- selectAny moonToken
+  if moonInBag then sealMoonTokenOn iid else loseActions iid source 1
+
+-- * Bacchanalia: vices
+
+{- | The four vices an investigator may claim in the scenario's intro. Each one is
+remembered about that investigator ('HomebrewScenarioLogKeyFor'), so the scenario
+log both shows them and pays them out as bonus experience at the resolution.
+-}
+data Vice = Revelry | Intimacy | Opulence | Violence
+  deriving stock (Show, Eq, Ord, Enum, Bounded)
+
+allVices :: [Vice]
+allVices = [minBound .. maxBound]
+
+-- | Namespaced so the frontend can pick the campaign's i18n scope out of the key.
+viceKey :: Vice -> Text
+viceKey v = "circusExMortis.AViceFor" <> tshow v
+
+viceByKey :: [(Text, Vice)]
+viceByKey = [(viceKey v, v) | v <- allVices]
+
+viceLogKey :: Named name => name -> InvestigatorId -> Vice -> ScenarioLogKey
+viceLogKey name iid v = HomebrewScenarioLogKeyFor (viceKey v) (Name.labeled name iid)
+
+recordVice :: ReverseQueue m => InvestigatorId -> Vice -> m ()
+recordVice iid v = do
+  name <- field InvestigatorName iid
+  remember $ viceLogKey name iid v
+
+vicesOf :: Set ScenarioLogKey -> InvestigatorId -> [Vice]
+vicesOf ks iid =
+  [ v | HomebrewScenarioLogKeyFor t (Labeled _ i) <- toList ks, i == iid, Just v <- [lookup t viceByKey]
+  ]
+
+{- | Reads the scenario log rather than modifiers, so it is safe to call from a
+card's 'HasModifiersFor' — the shroud reductions on the four themed locations all
+do. 'investigatorWithVice' is the matcher form.
+-}
+getVices :: HasGame m => InvestigatorId -> m [Vice]
+getVices iid = flip vicesOf iid <$> scenarioField ScenarioRemembered
+
+hasVice :: HasGame m => InvestigatorId -> Vice -> m Bool
+hasVice iid v = elem v <$> getVices iid
+
+getViceCount :: HasGame m => InvestigatorId -> m Int
+getViceCount = fmap length . getVices
+
+{- | Matcher form, backed by the 'ScenarioModifier's the scenario republishes from
+the log (the three Cultists' @Prey@ lines need a matcher). Never read these from
+inside a 'HasModifiersFor'; use 'hasVice' there.
+-}
+investigatorWithVice :: Vice -> InvestigatorMatcher
+investigatorWithVice = InvestigatorWithModifier . ScenarioModifier . viceKey
+
+{- | "While you are investigating <location>, if you have \"a vice for X,\" it gets
+-2 shroud value." Banquet Hall, Statuary Gardens, Private Parlor and Collection Hall
+each print this for a different vice. It reads the vice of whoever is running the
+investigation, so only that investigator sees the reduced shroud.
+-}
+viceShroudReduction
+  :: (HasGame m, MonadWriter (MonoidalMap Target [Modifier]) m)
+  => LocationAttrs -> Vice -> m ()
+viceShroudReduction a v = modifySelfMaybe a do
+  liftGuardM $ getIsBeingInvestigated a
+  iid <- MaybeT getSkillTestInvestigator
+  liftGuardM $ hasVice iid v
+  pure [ShroudModifier (-2)]
+
+{- | "You get +1 skill value while parleying at <location> until the end of the
+round" — Banquet Hall, Statuary Gardens and Private Parlor all grant it. The
+effect is enabled only for that investigator's parley tests while they are at the
+location, and is removed at the end of the round.
+-}
+parleyBonusAt
+  :: (ReverseQueue m, WithEffect m, Sourceable source)
+  => source -> InvestigatorId -> LocationId -> m ()
+parleyBonusAt source iid lid = effectWithSource source iid do
+  enableOn
+    $ EffectSkillTestMatchingWindow
+    $ SkillTestMatches
+      [ WhileParleying
+      , SkillTestOfInvestigator (InvestigatorWithId iid <> InvestigatorAt (LocationWithId lid))
+      ]
+  removeOn EffectRoundWindow
+  apply $ AnySkillValue 1

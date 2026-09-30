@@ -24,7 +24,7 @@ instance HasModifiersFor NephthysHuntressOfBast4 where
 
 instance HasAbilities NephthysHuntressOfBast4 where
   getAbilities (NephthysHuntressOfBast4 x) =
-    [ controlled_ x 1 $ freeReaction (TokensWouldBeRemovedFromChaosBag #when #bless)
+    [ controlled x 1 DuringAnySkillTest $ freeReaction (TokensWouldBeRemovedFromChaosBag #when #bless)
     , controlled x 2 (exists (be x <> AssetWithSealedChaosTokens 3 #bless)) $ FastAbility (exhaust x)
     ]
 
@@ -44,9 +44,9 @@ instance RunMessage NephthysHuntressOfBast4 where
       blessTokens <-
         take 3 <$> filterM (<=~> IncludeSealed (ChaosTokenFaceIs #bless)) attrs.sealedChaosTokens
       chooseOrRunOneM iid $ cardI18n $ scope "nephthysHuntressOfBast4" do
-        labeled' "releaseBlessTokens" $ for_ blessTokens unsealChaosToken
+        labeled "releaseBlessTokens" $ for_ blessTokens unsealChaosToken
         when (notNull enemies || notNull concealed) do
-          labeled' "returnBlessForDamage" do
+          labeled "returnBlessForDamage" do
             push $ ReturnChaosTokensToPool blessTokens
             chooseDamageEnemy iid (attrs.ability 2) (locationWithInvestigator iid) AnyEnemy 2
       pure a

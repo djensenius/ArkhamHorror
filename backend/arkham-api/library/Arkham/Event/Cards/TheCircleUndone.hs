@@ -12,20 +12,20 @@ import Arkham.SlotType
 
 unsolvedCase :: CardDef
 unsolvedCase =
-  (event "05010" "Unsolved Case" 4 Neutral)
-    { cdCardTraits = setFromList [Insight, Mystery]
-    , cdCardSubType = Just Weakness
-    , cdLevel = Nothing
-    }
+  signature "05002"
+    $ (event "05010" "Unsolved Case" 4 Neutral)
+      { cdCardTraits = setFromList [Insight, Mystery]
+      , cdCardSubType = Just Weakness
+      }
 
 lodgeDebts :: CardDef
 lodgeDebts =
-  (event "05012" "Lodge \"Debts\"" 10 Neutral)
-    { cdCardTraits = singleton Pact
-    , cdCardSubType = Just Weakness
-    , cdLevel = Nothing
-    , cdOutOfPlayEffects = [InHandEffect]
-    }
+  signature "05003"
+    $ (event "05012" "Lodge \"Debts\"" 10 Neutral)
+      { cdCardTraits = singleton Pact
+      , cdCardSubType = Just Weakness
+      , cdOutOfPlayEffects = [InHandEffect]
+      }
 
 darkInsight :: CardDef
 darkInsight =
@@ -126,7 +126,9 @@ denyExistence =
             ]
     }
  where
-  source = SourceMatchesAny [SourceIsEnemyAttack AnyEnemy, Matcher.EncounterCardSource]
+  source =
+    Matcher.SourceIsCancelable
+      $ SourceMatchesAny [SourceIsEnemyAttack AnyEnemy, Matcher.EncounterCardSource]
 
 eldritchInspiration :: CardDef
 eldritchInspiration =
@@ -349,7 +351,9 @@ denyExistence5 =
     , cdLevel = Just 5
     }
  where
-  source = SourceMatchesAny [SourceIsEnemyAttack AnyEnemy, Matcher.EncounterCardSource]
+  source =
+    Matcher.SourceIsCancelable
+      $ SourceMatchesAny [SourceIsEnemyAttack AnyEnemy, Matcher.EncounterCardSource]
 
 trialByFire :: CardDef
 trialByFire =

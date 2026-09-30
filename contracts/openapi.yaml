@@ -1020,6 +1020,7 @@ components:
         - username
         - email
         - beta
+        - phaseTransitionNotifications
         - admin
       properties:
         username:
@@ -1028,6 +1029,8 @@ components:
           type: string
           format: email
         beta:
+          type: boolean
+        phaseTransitionNotifications:
           type: boolean
         admin:
           type: boolean

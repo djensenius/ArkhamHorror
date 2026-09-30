@@ -17,7 +17,7 @@ import Arkham.Cost.FieldCost
 import Arkham.Distance
 import Arkham.Enemy.Types (Field (EnemySealedChaosTokens, EnemyTokens))
 import Arkham.Event.Types (Field (..))
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Action (additionalActionCovers)
 import {-# SOURCE #-} Arkham.Helpers.Calculation
 import Arkham.Helpers.Card (extendedCardMatch, getModifiedCardCost)
@@ -26,8 +26,8 @@ import Arkham.Helpers.ChaosToken (matchChaosToken)
 import {-# SOURCE #-} Arkham.Helpers.Criteria (passesCriteria)
 import Arkham.Helpers.Customization
 import Arkham.Helpers.GameValue
-import {-# SOURCE #-} Arkham.Helpers.Investigator ()
-import {-# SOURCE #-} Arkham.Helpers.Investigator qualified as Investigator (
+import Arkham.Helpers.Investigator ()
+import Arkham.Helpers.Investigator qualified as Investigator (
   getSpendableClueCount,
  )
 import Arkham.Helpers.Location (getLocationOf)
@@ -115,6 +115,7 @@ hasSkillTestCost = \case
   AsIfAtLocationCost _ x -> hasSkillTestCost x
   NonBlankedCost x -> hasSkillTestCost x
   LabeledCost _ x -> hasSkillTestCost x
+  SourcedCost _ x -> hasSkillTestCost x
   XCost x -> hasSkillTestCost x
   OneOfDistanceCost _ x -> hasSkillTestCost x
   _ -> False
@@ -191,6 +192,8 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
                 then pure True
                 else getCanAffordCost_ iid source actions windows' canModify $ fold @[Cost] (replicate dist c)
       LabeledCost _ inner -> getCanAffordCost_ iid source actions windows' canModify inner
+      SourcedCost costSource inner ->
+        getCanAffordCost_ iid costSource actions windows' canModify inner
       ShuffleTopOfScenarioDeckIntoYourDeck n deckKey -> do
         cs <- take n <$> getScenarioDeck deckKey
         andM [pure (length cs >= n), getCanShuffleIn iid cs]
@@ -234,6 +237,13 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
           clueCount <- field fld enemy
           pure $ maybe False (clues >=) clueCount
       ChooseExtendedCardCost mtcr -> selectAny mtcr
+      -- Revealing is something the investigator does, and a card can forbid it.
+      RevealChosenCardCost mtcr -> andM [can.reveal.cards iid, selectAny mtcr]
+      {- Which card's traits these will be is not known until the cost that chooses
+         it has been paid, so there is nothing to check here. The card matcher of
+         that earlier cost is where the requirement belongs. -}
+      ChooseTraitOfChosenCardCost -> pure True
+      ChosenTraitCost _ -> pure True
       ChosenEnemyCost eid -> selectAny (Matcher.EnemyWithId eid)
       ChosenCardCost cid -> selectAny (Matcher.basic $ Matcher.CardWithId cid)
       Free -> pure True
@@ -589,6 +599,7 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
       DoomCost _ (AgendaMatcherTarget agendaMatcher) _ -> selectAny agendaMatcher
       DoomCost {} -> pure True -- TODO: Make better
       EnemyDoomCost _ enemyMatcher -> selectAny enemyMatcher
+      AssetDoomCost _ assetMatcher -> selectAny (Matcher.replaceYouMatcher iid assetMatcher)
       SkillIconCostMatching n skillTypes matcher -> do
         cards <- mapMaybe (preview _PlayerCard) <$> select matcher
         let countF = if null skillTypes then const True else (`member` insertSet WildIcon skillTypes)
@@ -618,6 +629,9 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
         let total = unionsWith (+) $ map (frequencies . cdSkills . toCardDef) cards
         let wildCount = total ^. at #wild . non 0
         pure $ foldr (\x y -> y || x + wildCount >= n) False $ toList $ deleteMap #wild total
+      CalculatedDiscardCombinedCost calc -> do
+        n <- calculate (Matcher.replaceYouMatcher iid calc)
+        getCanAffordCost_ iid source actions windows' canModify (DiscardCombinedCost n)
       DiscardCombinedCost n -> do
         handCards <-
           mapMaybe (preview _PlayerCard)
@@ -698,6 +712,7 @@ getCanAffordCost_ !iid !(toSource -> source) !actions !windows' !canModify cost_
       ReturnChaosTokensToPoolCost n matcher -> do
         (>= n) <$> selectCount matcher
       ReturnChaosTokenToPoolCost _ -> pure True
+      ReturnChosenChaosTokensToPoolCost -> pure True
       FieldResourceCost (FieldCost mtchr fld) -> do
         ns <- selectFields fld mtchr
         resources <- getSpendableResources iid
@@ -731,6 +746,9 @@ getSpendableResources iid = do
 getSpendableClueCount :: HasGame m => [InvestigatorId] -> m Int
 getSpendableClueCount investigatorIds =
   getSum <$> foldMapM (fmap Sum . Investigator.getSpendableClueCount) investigatorIds
+
+getSpendableClueCountOf :: HasGame m => Matcher.InvestigatorMatcher -> m Int
+getSpendableClueCountOf = select >=> getSpendableClueCount
 
 applyActionCostModifier :: [[Action]] -> [[Action]] -> [Action] -> ModifierType -> Int -> Int
 applyActionCostModifier _ _ actions (ActionCostOf (IsAction action') m) n

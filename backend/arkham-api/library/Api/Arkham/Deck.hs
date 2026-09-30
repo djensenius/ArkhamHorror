@@ -6,6 +6,7 @@ import Api.Arkham.Types.Deck (CreateDeckRequest (..))
 import Arkham.Decklist (investigator_name)
 import Entity.Arkham.Deck (ArkhamDeck (..))
 import Entity.User (UserId)
+import Relude (Maybe (Nothing))
 
 deckFromCreateRequest :: UserId -> CreateDeckRequest -> ArkhamDeck
 deckFromCreateRequest userId CreateDeckRequest {deckName, deckUrl, deckList} =
@@ -15,4 +16,6 @@ deckFromCreateRequest userId CreateDeckRequest {deckName, deckUrl, deckList} =
     , arkhamDeckInvestigatorName = investigator_name deckList
     , arkhamDeckName = deckName
     , arkhamDeckList = deckList
+    , arkhamDeckOverlay = Nothing
+    , arkhamDeckLastUsedAt = Nothing
     }

@@ -2,7 +2,7 @@ module Arkham.Investigator.Cards.AmandaSharpe (amandaSharpe) where
 
 import Arkham.Ability
 import Arkham.Card
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.Modifiers (ModifierType (..))
 import Arkham.Helpers.SkillTest
 import Arkham.Investigator.Cards qualified as Cards
@@ -71,13 +71,17 @@ instance RunMessage AmandaSharpe where
       let meta = toResult @(Maybe CardId) attrs.meta
       withSkillTest \sid -> do
         for_ meta \cardId -> do
-          card <- getCard cardId
-          committable <- getIsCommittable iid card
-          when committable do
-            -- because we force it to be committed, we do not pay additional costs
-            skillTestModifiers sid attrs cardId [MustBeCommitted, NoAdditionalCosts, LeaveCardWhereItIs]
-            skillTestModifiers sid attrs iid [AsIfInHandFor NotForPlay cardId]
-            commitCard iid card
+          -- because we force it to be committed, we do not pay additional costs.
+          -- These must land before the committability check, which folds the
+          -- card's own additional cost into its affordability guard.
+          skillTestModifiers sid attrs cardId [MustBeCommitted, NoAdditionalCosts, LeaveCardWhereItIs]
+          skillTestModifiers sid attrs iid [AsIfInHandFor NotForPlay cardId]
+          doStep 1 msg
+      pure i
+    DoStep 1 (UseThisAbility iid (isSource attrs -> True) 2) -> do
+      for_ (toResult @(Maybe CardId) attrs.meta) \cardId -> do
+        card <- getCard cardId
+        whenM (getIsCommittable iid card) $ commitCard iid card
       pure i
     ElderSignEffect iid | attrs `is` iid -> do
       withSkillTest \sid -> do

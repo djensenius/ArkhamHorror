@@ -501,6 +501,7 @@
     "completedActStack": [],
     "completedAgendaStack": [],
     "counts": [],
+    "customChaosBags": {},
     "deckDiscards": [],
     "decks": [],
     "decksLayout": [

@@ -19,10 +19,11 @@ import Arkham.Id
 import Arkham.Investigator.Types (Field (InvestigatorLog))
 import Arkham.Matcher
 import Arkham.Message (Message (CreateEffect, DecreaseFloodLevel, IncreaseFloodLevel))
-import Arkham.Message.Lifted (takeControlOfAsset)
+import Arkham.Message.Lifted (createAssetAt_, takeControlOfAsset)
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Queue
 import Arkham.Modifier
+import Arkham.Placement
 import Arkham.Prelude
 import Arkham.Projection (fieldMap)
 import Arkham.Source
@@ -79,6 +80,15 @@ the two windows.
 -}
 taskEnds :: WindowMatcher
 taskEnds = oneOf [GameEnds #when, InvestigatorEliminated #when You]
+
+{- | A Task's progress check, capped at once per game.
+
+An investigator who resigns and then ends the scenario opens both of 'taskEnds'
+windows, and a forced ability's default 'GroupLimit PerWindow' only dedupes within
+one window, so the progress would be marked twice.
+-}
+taskEndsAbility :: (HasCardCode a, Sourceable a) => a -> Criterion -> Ability
+taskEndsAbility a crit = onlyOnce $ controlled a 2 crit $ forced taskEnds
 
 investigatorHasTask
   :: (HasGame m, HasCardDef card) => InvestigatorId -> card -> m Bool
@@ -154,6 +164,42 @@ expeditionItems =
   , Assets.divingSuitTheDrownedCity
   ]
 
+{- | The card for an /Expedition/ set story asset — an Expedition Item or an
+Artifact.
+
+These are printed on *player* card backs, so they have to be generated as player
+cards. Generated as encounter cards they go to the encounter discard when they
+leave play — a spent Laudanum, a destroyed Diving Suit — and the next reshuffle
+deals them back out of the encounter deck as if they were mythos cards, #5711.
+A player card with no owner is simply obtained instead, which is what leaving the
+expedition behind should look like.
+-}
+expeditionAssetCard :: CardGen m => CardDef -> m Card
+expeditionAssetCard = genCard
+
+{- | Put an Expedition Item or Artifact into an investigator's play area. Takes a
+card code because that is the shape the scenarios' setup choice hands back.
+-}
+grantExpeditionAsset
+  :: (ReverseQueue m, HasCardCode cardCode) => InvestigatorId -> cardCode -> m ()
+grantExpeditionAsset iid cardCode =
+  for_ (lookupCardDef cardCode) \def -> do
+    card <- expeditionAssetCard def
+    createAssetAt_ card (InPlayArea iid)
+
+{- | The Expedition Items an investigator may still choose to begin play with.
+
+The set holds four Diving Suits but only one each of the rest, so availability is a
+count of the copies already in play against @cdEncounterSetQuantity@ rather than a
+uniqueness check.
+-}
+getAvailableExpeditionItems :: HasGame m => m [CardDef]
+getAvailableExpeditionItems = filterM available expeditionItems
+ where
+  available def = do
+    inPlay <- selectCount (assetIs def)
+    pure $ inPlay < fromMaybe 1 (cdEncounterSetQuantity def)
+
 -- | Each Task: campaign-log key, the story-asset card, and its i18n label.
 tasks :: [(TheDrownedCityKey, CardDef, Text)]
 tasks =
@@ -188,7 +234,7 @@ Every Task checkpoint is a choice between erasing 1 progress for a small boon an
 marking 2 progress for a cost (usually trauma). Erasing from 0 progress is a
 no-op — 'decrementRecordCountForInvestigator' clamps at 0 — so at 0 the erase
 branch would be a boon for free, which is not the trade the checkpoint offers.
-Pass this to @labeledValidate'@ so the branch shows up disabled rather than
+Pass this to @labeledValidate@ so the branch shows up disabled rather than
 vanishing, keeping the buttons lined up with the printed choices.
 -}
 canEraseProgress :: (HasGame m, IsCampaignLogKey k) => InvestigatorId -> k -> m Bool

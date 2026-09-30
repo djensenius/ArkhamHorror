@@ -2,11 +2,13 @@
 import { useI18n } from 'vue-i18n'
 import { onBeforeUnmount, ComputedRef, ref, computed, watch, nextTick } from 'vue'
 import { useDebug } from '@/arkham/debug'
+import { CARD_FLIGHT_ATTR, useCardFlight } from '@/arkham/cardFlight'
 import { Game } from '@/arkham/types/Game'
 import { imgsrc } from '@/arkham/helpers'
 import { cardArt, cardImage } from '@/arkham/cardImages'
 import { keyToId } from '@/arkham/types/Key'
-import { useGameChoices } from '@/arkham/composables/useGameChoices'
+import { useGameChoices, useStickyChoicesSource } from '@/arkham/composables/useGameChoices'
+import { proxyOriginId } from '@/arkham/types/Source'
 import { useGameIndexes } from '@/arkham/composables/useGameIndexes'
 import { useCardFlip } from '@/arkham/composables/useCardFlip'
 import DebugLocation from '@/arkham/components/debug/Location.vue'
@@ -25,6 +27,7 @@ import Story from '@/arkham/components/Story.vue'
 import ScarletKey from '@/arkham/components/ScarletKey.vue'
 import Treachery from '@/arkham/components/Treachery.vue'
 import SealedChaosTokens from '@/arkham/components/SealedChaosTokens.vue'
+import { locationTarget, cardDropHandlers } from '@/arkham/debugCardDrop'
 import AbilitiesMenu from '@/arkham/components/AbilitiesMenu.vue'
 import PoolItem from '@/arkham/components/PoolItem.vue'
 import TokenPool from '@/arkham/components/TokenPool.vue'
@@ -63,10 +66,14 @@ const dragover = (e: DragEvent) => {
 }
 
 const props = defineProps<Props>()
+const abilitiesHovering = ref(false)
 const emits = defineEmits<{
   choose: [value: number]
   show: [cards: ComputedRef<Card[]>, title: string, isDiscards: boolean, revealed?: boolean]
 }>()
+
+// Where a revealed location lands when the revelation overlay hands it over.
+const cardFlightStyle = useCardFlight(() => props.location.cardId)
 
 const choose = (n: number) => emits('choose', n)
 
@@ -480,6 +487,9 @@ const { displayedImage: displayedFloodLevel, flipping: floodLevelFlipping } = us
 )
 
 const debug = useDebug()
+// Debug: a chaos token dragged from the bag seals here; a token from the debug
+// token panel is placed here.
+const cardDrop = cardDropHandlers(props.game.id, () => locationTarget(props.location.id))
 
 function onDrop(event: DragEvent) {
   event.preventDefault()
@@ -539,6 +549,20 @@ const showCardsUnderneath = () => emits('show', cardsUnderneathToShow, 'Cards Un
 const isAttackTarget = computed(() => props.game.enemyAttackTargets.some((e) => e.target.contents === props.location.id))
 const highlighted = computed(() => highlighter.highlighted.value === props.location.id || isAttackTarget.value)
 
+// Yellow marks the actor/source of what is happening. Two cases put this location there:
+// a pending question wrapped in QuestionWithSource (e.g. the location charging an
+// additional cost to leave it), and an offered proxied ability this location granted to
+// the card it now sits on.
+const choicesSource = useStickyChoicesSource(() => props.game, () => props.playerId)
+const sourceHighlighted = computed(() => {
+  const source = choicesSource.value
+  if (source !== null && 'contents' in source && source.contents === props.location.id) return true
+
+  return choices.value.some(
+    (c) => c.tag === MessageType.ABILITY_LABEL && proxyOriginId(c.ability.source) === props.location.id
+  )
+})
+
 function isVehicleAsset(assetId: string): boolean {
   const asset = props.game.assets[assetId]
   if (!asset) return false
@@ -575,7 +599,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
           />
         </div>
       </div>
-      <div v-if="vehicleAssetIds.length > 0" class="location-vehicle-asset-column">
+      <div v-if="vehicleAssetIds.length > 0" class="location-vehicle-asset-column" :class="{ 'abilities-hovering': abilitiesHovering }">
         <Asset
           v-for="assetId in vehicleAssetIds"
           :asset="game.assets[assetId]"
@@ -584,9 +608,10 @@ const hasAnyLocationVehicleAssets = computed(() =>
           :key="assetId"
           :atLocation="true"
           @choose="choose"
+          @abilities-hover="abilitiesHovering = $event"
         />
       </div>
-      <div class="location-column">
+      <div class="location-column" v-bind="cardDrop">
         <div class="card-frame" :class="{ explosion, 'location--objective': hasObjective, 'objective-ring': hasObjective }" ref="frame" @click="clicked">
           <Locus v-if="locus" class="locus" />
           <span v-if="blocked" class="status-icon" v-tooltip="'Blocked'">
@@ -616,9 +641,10 @@ const hasAnyLocationVehicleAssets = computed(() =>
           <div
             ref="innerFrame"
             class="card-frame-inner"
-            :class="{ highlighted, blocked, exhausted: isExhausted, 'card--flipping': flipping && !locationStory }"
-            :style="{ '--ui-rotation': `${uiRotation}deg` }"
+            :class="{ highlighted, blocked, 'blocked--selectable': blocked && canInteract && !hasObjective, exhausted: isExhausted, 'card--flipping': flipping && !locationStory }"
+            :style="[{ '--ui-rotation': `${uiRotation}deg` }, cardFlightStyle]"
             :data-rotation="uiRotation || undefined"
+            :[CARD_FLIGHT_ATTR]="location.cardId"
           >
             <Story
               v-if="locationStory"
@@ -637,7 +663,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
                 :data-id="id"
                 class="card card--locations"
                 :src="displayedImage"
-                :class="{ 'location--can-interact': canInteract && !hasObjective, 'location--can-interact-cursor': canInteract }"
+                :class="{ 'location--can-interact': canInteract && !hasObjective && !blocked, 'location--can-interact-cursor': canInteract, 'source-highlight': sourceHighlighted }"
                 draggable="false"
                 @drop="onDrop"
                 @dragover.prevent="dragover"
@@ -734,7 +760,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
         </button>
 
         <template v-if="debug.active">
-          <button @click="debugging = true">{{ $t('enemy.debug') }}</button>
+          <button class="debug-open" @click="debugging = true">{{ $t('enemy.debug') }}</button>
         </template>
       </div>
       <div class="attachments" v-if="hasAttachments">
@@ -775,7 +801,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
           :attached="true"
         />
       </div>
-      <div class="location-asset-column">
+      <div class="location-asset-column" :class="{ 'abilities-hovering': abilitiesHovering }">
         <Asset
           v-for="assetId in nonVehicleAssetIds"
           :asset="game.assets[assetId]"
@@ -784,6 +810,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
           :key="assetId"
           :atLocation="true"
           @choose="choose"
+          @abilities-hover="abilitiesHovering = $event"
         />
         <Enemy
           v-for="enemyId in enemies"
@@ -794,6 +821,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
           :playerId="playerId"
           :atLocation="true"
           @choose="choose"
+          @abilities-hover="abilitiesHovering = $event"
         />
         <Story
           v-for="storyId in stories"
@@ -837,6 +865,10 @@ const hasAnyLocationVehicleAssets = computed(() =>
 .location--can-interact {
   border: 2px solid var(--select);
   cursor: pointer;
+}
+
+img.card.source-highlight {
+  box-shadow: 0 0 0 2px var(--important), 0 0 6px 1px var(--important), var(--card-shadow);
 }
 
 .location--can-interact-cursor {
@@ -1043,7 +1075,8 @@ const hasAnyLocationVehicleAssets = computed(() =>
   &:deep(.poolItem) {
     width: calc(var(--card-width) * 0.4) !important;
   }
-  &:hover {
+  &:hover,
+  &.abilities-hovering {
     animation-fill-mode: forwards;
     > div:not(:last-child) {
       margin-top: 10px;
@@ -1149,8 +1182,24 @@ const hasAnyLocationVehicleAssets = computed(() =>
     &.exhausted {
       transform: rotate(calc(90deg + var(--ui-rotation))) translateX(-10px);
     }
-    &.blocked {
+    /* Dim the art, not the affordance. `filter` applies to the whole subtree, so
+       a blocked location that is also the pending choice used to render its
+       --select border in muted grey (#5592). */
+    &.blocked :deep(.card) {
       filter: grayscale(0.5) brightness(0.85);
+    }
+
+    /* A pseudo-element, not `outline`: an inset outline is swallowed by the
+       frame's `overflow: hidden`, and a non-inset one grows the tile. */
+    &.blocked--selectable::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      box-sizing: border-box;
+      border: 2px solid var(--select);
+      border-radius: 3px;
+      pointer-events: none;
+      z-index: var(--z-index-1);
     }
     --gradient-glow: #bde038, rebeccapurple, rebeccapurple, #bde038;
   }
@@ -1204,7 +1253,7 @@ const hasAnyLocationVehicleAssets = computed(() =>
 }
 
 .location:has(.abilities) {
-  z-index: var(--z-index-30) !important;
+  z-index: var(--z-board-location-raised) !important;
 }
 
 .locus {

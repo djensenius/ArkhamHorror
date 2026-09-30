@@ -98,9 +98,13 @@ import Text.Regex.Posix ((=~))
 -- Import all relevant handler modules here.
 -- Don't forget to add new modules to your cabal file!
 
+import Api.Handler.ApiKeys
 import Api.Handler.Arkham.Achievements
 import Api.Handler.Arkham.Admin.Metrics
 import Api.Handler.Arkham.Cards
+import Api.Handler.Arkham.CustomCards
+import Api.Handler.Arkham.CustomCardSets
+import Api.Handler.Arkham.PublishedCardSets
 import Api.Handler.Arkham.Decks
 import Api.Handler.Arkham.Events
 import Api.Handler.Arkham.Game.Bug
@@ -112,6 +116,7 @@ import Api.Handler.Arkham.Old
 import Api.Handler.Arkham.PendingGames
 import Api.Handler.Arkham.Replay
 import Api.Handler.Arkham.Undo
+import Api.Handler.ThirdEdition
 import Base.Api.Handler.Account
 import Base.Api.Handler.Authentication
 import Base.Api.Handler.Capabilities
@@ -122,6 +127,7 @@ import Base.Api.Handler.Registration
 import Base.Api.Handler.Settings
 import Base.Api.Types.LocaleCatalog.SettingsPreflight (captureSettingsSnapshot, loadSettingsSnapshot)
 import Handler.Health
+import ThirdEdition.Store qualified as ThirdEdition
 
 -- This line actually creates our YesodDispatch instance. It is the second half
 -- of the call to mkYesodData which occurs in Foundation.hs. Please see the
@@ -143,6 +149,7 @@ makeFoundation appSettings = do
 
   appGameRooms <- newMVar mempty
   appEventRooms <- newMVar mempty
+  appThirdEditionRooms <- newMVar mempty
   appPubSubHealth <- newTVarIO =<< getCurrentTime
 
   -- Constructed once, here -- before Warp is ever handed the application
@@ -184,6 +191,10 @@ makeFoundation appSettings = do
           -- we initially create a temporary foundation without a real
           -- connection pool, get a log function from there, and then create
           -- the real foundation.
+          appThirdEditionStore <- case appMessageBroker of
+            RedisBroker conn _ -> ThirdEdition.newRedisStore conn
+            WebSocketBroker -> ThirdEdition.newMemoryStore
+
           let mkFoundation appConnPool = App {..}
               -- The App {..} syntax is an example of record wild cards. For
               -- more information, see:

@@ -24,9 +24,9 @@ instance RunMessage AlkalineForest where
     UseThisAbility iid (isSource attrs -> True) 1 -> do
       discardOk <- selectAny $ basic DiscardableCard <> inHandOf NotForPlay iid
       chooseOrRunOneM iid $ withI18n do
-        countVar 1 $ labeled' "takeDirectHorror" $ directHorror iid (attrs.ability 1) 1
+        countVar 1 $ labeled "takeDirectHorror" $ directHorror iid (attrs.ability 1) 1
         countVar 2
-          $ labeledValidate' discardOk "discardRandomCardsFromHand"
+          $ labeledValidate discardOk "discardRandomCardsFromHand"
           $ randomDiscardN iid (attrs.ability 1) 2
       pure l
     _ -> AlkalineForest <$> liftRunMessage msg attrs

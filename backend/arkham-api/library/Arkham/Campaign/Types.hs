@@ -5,7 +5,9 @@ module Arkham.Campaign.Types where
 
 import Arkham.Ability.Types (Ability)
 import Arkham.Ability.Used
+import Arkham.Campaign.Overlay (CampaignOverlay)
 import Arkham.CampaignLog
+import Arkham.CampaignLogKey
 import Arkham.CampaignStep
 import Arkham.Card
 import Arkham.ChaosToken.Types
@@ -59,6 +61,8 @@ class
   campaignTokens :: Difficulty -> [ChaosTokenFace]
   campaignAbilities :: a -> [Ability]
   campaignAbilities _ = []
+  campaignOverlays :: a -> [CampaignOverlay]
+  campaignOverlays _ = []
 
 data instance Field Campaign :: Type -> Type where
   CampaignCompletedSteps :: Field Campaign [CampaignStep]
@@ -91,6 +95,18 @@ data ChaosBagChange = ChaosBagChange
   }
   deriving stock (Show, Eq, Ord, Generic, Data)
 
+{- | A recorded change to one of the campaign log's counts (Yig's Fury, ...),
+grouped by the campaign step it happened during, so the log can show how a
+total was arrived at rather than just its current value.
+-}
+data RecordCountChange = RecordCountChange
+  { rccStep :: CampaignStep
+  , rccKey :: CampaignLogKey
+  , rccBefore :: Int
+  , rccAfter :: Int
+  }
+  deriving stock (Show, Eq, Ord, Generic, Data)
+
 data CampaignAttrs = CampaignAttrs
   { campaignId :: CampaignId
   , campaignName :: Text
@@ -99,6 +115,7 @@ data CampaignAttrs = CampaignAttrs
   , campaignDifficulty :: Difficulty
   , campaignChaosBag :: [ChaosTokenFace]
   , campaignChaosBagHistory :: [ChaosBagChange]
+  , campaignRecordCountHistory :: [RecordCountChange]
   , campaignLog :: CampaignLog
   , campaignStep :: CampaignStep
   , campaignCompletedSteps :: [CampaignStep]
@@ -243,6 +260,32 @@ overCampaignChaosBag f attrs
     c : rest | c.cbcStep == step -> [c {cbcAfter = after} | sort c.cbcBefore /= sort after] <> rest
     history -> ChaosBagChange step before after : history
 
+recordCountHistoryL :: Lens' CampaignAttrs [RecordCountChange]
+recordCountHistoryL =
+  lens campaignRecordCountHistory $ \m x -> m {campaignRecordCountHistory = x}
+
+{- | Change one of the campaign log's counts, recording the change so the log can
+show where the total came from. Like 'overCampaignChaosBag', everything that
+happens to a key during one campaign step folds into a single entry, and an
+entry that nets back to where it started is dropped.
+-}
+overRecordedCount
+  :: CampaignLogKey -> (Maybe Int -> Maybe Int) -> CampaignAttrs -> CampaignAttrs
+overRecordedCount key f attrs
+  | before == after = attrs'
+  | otherwise = attrs' & recordCountHistoryL %~ record
+ where
+  counts = (campaignLog attrs).recordedCounts
+  before = findWithDefault 0 key counts
+  after = fromMaybe 0 $ f (lookup key counts)
+  attrs' = attrs & logL . recordedCountsL %~ alterMap f key
+  step = normalizedCampaignStep (campaignStep attrs)
+  -- Other keys can be written in between, so fold into this key's entry for the
+  -- step wherever it sits rather than only when it is the most recent one.
+  record history = case break (\c -> c.rccStep == step && c.rccKey == key) history of
+    (before', c : after') -> before' <> [c {rccAfter = after} | c.rccBefore /= after] <> after'
+    _ -> RecordCountChange step key before after : history
+
 completeStep :: CampaignStep -> [CampaignStep] -> [CampaignStep]
 completeStep step' steps = step' : steps
 
@@ -326,6 +369,7 @@ campaign f campaignId' name difficulty =
       , campaignDifficulty = difficulty
       , campaignChaosBag = campaignTokens @a difficulty
       , campaignChaosBagHistory = mempty
+      , campaignRecordCountHistory = mempty
       , campaignLog = mkCampaignLog
       , campaignStep = ContinueCampaignStep $ Continuation PrologueStep False False Nothing False
       , campaignCompletedSteps = []
@@ -368,7 +412,7 @@ instance Show Campaign where
   show (Campaign a) = show a
 
 instance ToJSON Campaign where
-  toJSON (Campaign a) = toJSON a
+  toJSON (Campaign a) = toJSON (With a $ Envelope @"overlays" $ campaignOverlays a)
 
 instance HasModifiersFor Campaign where
   getModifiersFor (Campaign a) = getModifiersFor a
@@ -400,6 +444,14 @@ instance FromJSON ChaosBagChange where
   parseJSON = withObject "ChaosBagChange" $ \o ->
     ChaosBagChange <$> o .: "step" <*> o .: "before" <*> o .: "after"
 
+instance ToJSON RecordCountChange where
+  toJSON c =
+    object ["step" .= c.rccStep, "key" .= c.rccKey, "before" .= c.rccBefore, "after" .= c.rccAfter]
+
+instance FromJSON RecordCountChange where
+  parseJSON = withObject "RecordCountChange" $ \o ->
+    RecordCountChange <$> o .: "step" <*> o .: "key" <*> o .: "before" <*> o .: "after"
+
 oldBreakdown :: Map ScenarioId XpBreakdown -> [(CampaignStep, XpBreakdown)]
 oldBreakdown = map (first ScenarioStep) . Map.toList
 
@@ -421,6 +473,7 @@ instance FromJSON CampaignAttrs where
     campaignDifficulty <- o .: "difficulty"
     campaignChaosBag <- o .: "chaosBag"
     campaignChaosBagHistory <- o .:? "chaosBagHistory" .!= mempty
+    campaignRecordCountHistory <- o .:? "recordCountHistory" .!= mempty
     campaignLog <- o .: "log"
     campaignStep <- o .: "step"
     campaignCompletedSteps <- o .: "completedSteps"

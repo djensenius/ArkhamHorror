@@ -22,6 +22,7 @@
     "test:locale-catalog": "node --test tests/localeCatalog*.test.mjs",
     "digest": "node ./scripts/digest.cjs",
     "fetch-card-data": "node ./scripts/fetch-card-data.cjs --slim",
+    "import-fr-cards": "node ./scripts/import-card-translations.cjs --source-locale fr --output-lang fr --slim",
     "import-zh-cn-cards": "node ./scripts/import-card-translations.cjs --source-locale zh-cn --output-lang zh-cn --slim",
     "slim-cards": "node ./scripts/slim-cards.cjs",
     "locale-catalog": "cd .. && /bin/sh scripts/run-locale-catalog-python.sh scripts/generate-locale-catalog.py",

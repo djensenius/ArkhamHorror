@@ -183,6 +183,7 @@ compiledSourceRoots =
   , "backend/cards-discover/library"
   , "backend/cards-discover/app"
   , "backend/devel-store-lock/library"
+  , "backend/ah3e/library"
   ]
 
 gitBytes :: FilePath -> [String] -> IO BS.ByteString

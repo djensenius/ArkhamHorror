@@ -10,16 +10,18 @@ import Arkham.ChaosToken.Types
 import Arkham.Classes
 import Arkham.Classes.HasGame
 import Arkham.Game.Settings (activeUltimatumsAndBoons)
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers.ChaosToken (matchChaosToken)
 import Arkham.Helpers.Message
 import Arkham.Helpers.Modifiers (ModifierType (..), getModifiers, hasModifier)
 import Arkham.Helpers.Query (getActiveInvestigatorId, getInvestigators, getLead)
 import Arkham.Helpers.Window (checkWhen, checkWindows)
+import Arkham.Homebrew.Tokens (chaosTokenFacePool, pooledChaosTokenFaces)
 import Arkham.Id
 import Arkham.Investigator.Types (Investigator)
-import Arkham.Homebrew.Tokens (chaosTokenFacePool, pooledChaosTokenFaces)
-import Arkham.Matcher (ChaosTokenMatcher (AnyChaosToken, ChaosTokenFaceIs, ChaosTokenFaceIsNot, IncludeSealed))
+import Arkham.Matcher (
+  ChaosTokenMatcher (AnyChaosToken, ChaosTokenFaceIs, ChaosTokenFaceIsNot, IncludeSealed),
+ )
 import Arkham.Message.Lifted.Queue
 import Arkham.Modifier (_CancelAnyChaosToken, _CancelAnyChaosTokenAndDrawAnother)
 import Arkham.Prelude
@@ -659,6 +661,10 @@ instance RunMessage ChaosBag where
         & (tokenPoolL .~ pool)
     ReturnChaosTokensToPool tokensToPool -> do
       let toPool = and . sequence [isJust . chaosTokenFacePool . (.face), not . (.cancelled)]
+      -- only tokens leaving the bag itself count as "removed from the chaos bag"
+      let fromBag = filter (`elem` chaosBagChaosTokens) tokensToPool
+      unless (null fromBag) do
+        push =<< checkWindows [mkWhen $ Window.TokensWouldBeRemovedFromChaosBag fromBag]
       pure
         $ c
         & (chaosTokensL %~ filter (`notElem` tokensToPool))
@@ -801,10 +807,10 @@ instance RunMessage ChaosBag where
         -- token message as it will still be on the stack even though that
         -- token draw is gone
         removeAllMessagesMatching $ \case
-          CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _] -> True
-          Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _]) -> True
-          CheckWindows [Window Timing.When (Window.WouldRevealChaosTokens {}) _] -> True
-          Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosTokens {}) _]) -> True
+          CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _ _] -> True
+          Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _ _]) -> True
+          CheckWindows [Window Timing.When (Window.WouldRevealChaosTokens {}) _ _] -> True
+          Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosTokens {}) _ _]) -> True
           _ -> False
 
         let choice'' = replaceChooseMatchChoice choice' (Decided step)
@@ -817,10 +823,10 @@ instance RunMessage ChaosBag where
         & (chaosTokensL %~ filter (/= token))
     ReplaceEntireDraw source iid step -> do
       removeAllMessagesMatching $ \case
-        CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _] -> True
-        Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _]) -> True
-        CheckWindows [Window Timing.When (Window.WouldRevealChaosTokens {}) _] -> True
-        Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosTokens {}) _]) -> True
+        CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _ _] -> True
+        Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _ _]) -> True
+        CheckWindows [Window Timing.When (Window.WouldRevealChaosTokens {}) _ _] -> True
+        Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosTokens {}) _ _]) -> True
         _ -> False
 
       iids <- getInvestigators
@@ -839,8 +845,8 @@ instance RunMessage ChaosBag where
         -- still open and other reactors (Jacqueline Fine + Eyes of the
         -- Dreamer, etc.) must still be able to fire on it.
         removeAllMessagesMatching $ \case
-          CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _] -> True
-          Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _]) -> True
+          CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _ _] -> True
+          Do (CheckWindows [Window Timing.When (Window.WouldRevealChaosToken {}) _ _]) -> True
           _ -> False
 
         iids <- getInvestigators

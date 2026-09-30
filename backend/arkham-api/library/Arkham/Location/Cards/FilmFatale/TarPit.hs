@@ -28,8 +28,8 @@ instance RunMessage TarPit where
     FailedThisSkillTest iid (isAbilitySource attrs 1 -> True) -> do
       assets <- select (assetControlledBy iid <> hasAnyTrait [Ally, Footwear] <> DiscardableAsset)
       chooseOneM iid do
-        withI18n $ countVar 1 $ labeled' "takeDirectHorror" $ directHorror iid (attrs.ability 1) 1
-        scenarioI18n $ labeledValidate' (notNull assets) "tarPit.option" do
+        withI18n $ countVar 1 $ labeled "takeDirectHorror" $ directHorror iid (attrs.ability 1) 1
+        scenarioI18n $ labeledValidate (notNull assets) "tarPit.option" do
           chooseTargetM iid assets (toDiscardBy iid (attrs.ability 1))
       pure l
     _ -> TarPit <$> liftRunMessage msg attrs

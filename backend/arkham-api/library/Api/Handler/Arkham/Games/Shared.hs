@@ -12,11 +12,13 @@ import Api.Arkham.Epic (
  )
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game
-import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (WithFriends))
+import Api.Arkham.Types.MultiplayerVariant
+import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Arkham.Achievement.Types (Achievement, achievementChecklist, achievementName)
 import Arkham.Asset.Types (Asset, assetController, assetOwner, assetPlacement)
 import Arkham.Campaign.Types (CampaignAttrs)
 import Arkham.Card.CardCode (CardCode (..), HasCardCode (toCardCode))
+import Arkham.Card.CustomCard (CustomCard, registerCustomCards)
 import Arkham.Classes.Entity (attr, overAttrs, toAttrs)
 import Arkham.Classes.GameLogger
 import Arkham.Classes.HasQueue
@@ -56,6 +58,7 @@ import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (Investigator, investigatorPlacement, investigatorPlayerId)
 import Arkham.Location.CardDefs.TheBlobThatAteEverythingELSE qualified as Locations
 import Arkham.Message
+import Arkham.Phase (Phase)
 import Arkham.Placement (
   Placement (AtLocation, AttachedToInvestigator, InPlayArea, InThreatArea, StillInHand),
  )
@@ -101,6 +104,7 @@ import UnliftIO.Exception hiding (Handler)
 import UnliftIO.Timeout (timeout)
 import Yesod.WebSockets
 
+
 {- | Admit administrators without a membership query; otherwise require the
 caller's @ArkhamPlayer@ row. The rejection action is 'notFound' in production
 so game absence and missing membership remain indistinguishable.
@@ -122,8 +126,8 @@ withGameAccess :: Monad m => Bool -> m Bool -> m a -> m a -> m a
 withGameAccess isAdmin lookupMembership reject protected
   | isAdmin = protected
   | otherwise = do
-    isMember <- lookupMembership
-    if isMember then protected else reject
+      isMember <- lookupMembership
+      if isMember then protected else reject
 
 {- | How often to ping an idle websocket. Must stay comfortably under Warp's
 'settingsTimeout' (30s by default) -- see 'withKeepAlive'.
@@ -221,13 +225,16 @@ decodeGameStreamAnswer ParticipantStream = fmap Just . eitherDecodeStrict
 decodeGameStreamAnswer SpectatorStream = const $ Right Nothing
 
 gameStream :: ArkhamGameId -> WebSocketsT Handler ()
-gameStream = gameStreamFor ParticipantStream
+gameStream gameId = do
+  userId <- lift getRequestUserId
+  customCards <- lift $ userCustomCards userId
+  gameStreamFor ParticipantStream customCards gameId
 
 spectatorGameStream :: ArkhamGameId -> WebSocketsT Handler ()
-spectatorGameStream = gameStreamFor SpectatorStream
+spectatorGameStream = gameStreamFor SpectatorStream mempty
 
-gameStreamFor :: GameStreamRole -> ArkhamGameId -> WebSocketsT Handler ()
-gameStreamFor role gameId = catchingConnectionException $ withKeepAlive do
+gameStreamFor :: GameStreamRole -> Map CardCode CustomCard -> ArkhamGameId -> WebSocketsT Handler ()
+gameStreamFor role customCards gameId = catchingConnectionException $ withKeepAlive do
   let cleanup room subId = do
         unsubscribeFromRoom room subId
         lift $ decrRoomMember gameId
@@ -262,14 +269,14 @@ gameStreamFor role gameId = catchingConnectionException $ withKeepAlive do
 
     race_
       sender
-      (runConduit $ sourceWS .| mapM_C (handleData role room broadcast))
+      (runConduit $ sourceWS .| mapM_C (handleData role customCards room broadcast))
  where
-  handleData streamRole room broadcast dataPacket = lift do
+  handleData streamRole customCards room broadcast dataPacket = lift do
     case decodeGameStreamAnswer streamRole dataPacket of
       Left err -> $(logWarn) $ tshow err
       Right Nothing -> pure ()
       Right (Just answer) ->
-        updateGame answer gameId (Just room) `catch` \(e :: SomeException) -> do
+        updateGame customCards answer gameId (Just room) `catch` \(e :: SomeException) -> do
           liftIO $ broadcast $ encode $ GameError $ tshow e
 
 data SlowSubscriber = SlowSubscriber
@@ -341,8 +348,21 @@ data EpicOrganizerGateBlocked = EpicOrganizerGateBlocked
   deriving stock Show
   deriving anyclass Exception
 
-updateGame :: Answer -> ArkhamGameId -> Maybe Room -> Handler ()
-updateGame response gameId mRoom = do
+{- | The phases to announce, in the order the action actually entered them.
+@entered@ holds every phase whose @Begin@ ran, so an answer that carries the
+game through a whole round announces each phase instead of nothing; the final
+phase is appended for the paths that set it without a @Begin@.
+-}
+phaseTransitions :: Phase -> Phase -> [Phase] -> [Phase]
+phaseTransitions oldPhase newPhase entered = go oldPhase (entered <> [newPhase])
+ where
+  go _ [] = []
+  go prev (p : ps)
+    | p == prev = go prev ps
+    | otherwise = p : go p ps
+
+updateGame :: Map CardCode CustomCard -> Answer -> ArkhamGameId -> Maybe Room -> Handler ()
+updateGame customCards response gameId mRoom = do
   let broadcast :: Broadcast
       broadcast = case mRoom of
         Nothing -> \_ -> pure ()
@@ -350,7 +370,7 @@ updateGame response gameId mRoom = do
   let rejectOrganizerGate action =
         action `catch` \EpicOrganizerGateBlocked ->
           permissionDenied "This event is waiting for the organizer's clue allocation"
-  (ArkhamGame {..}, oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
+  (ArkhamGame {..}, oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements, mPhaseChanged) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
     -- Read the prior log from the per-room cache when it's in sync with
     -- the just-locked game's step; otherwise fall back to the DB. Avoids
     -- the 217-row-avg getGameLog read on every action in the common case.
@@ -361,9 +381,14 @@ updateGame response gameId mRoom = do
 
     mLastStep <- getBy $ UniqueStep gameId arkhamGameStep
     let
-      gameJson@Game {..} = arkhamGameCurrentData
+      gameJson@Game {gamePhase = oldPhase, ..} = arkhamGameCurrentData
       currentQueue =
         maybe [] (choiceMessages . arkhamStepChoice . entityVal) mLastStep
+
+    -- Deserializing `arkhamGameCurrentData` registered its durable snapshot.
+    -- Overlay the owner's library after that point so card-builder saves are
+    -- live in games already using the card.
+    registerCustomCards customCards
 
     activePlayer <- runReaderT getActivePlayer gameJson
 
@@ -372,7 +397,7 @@ updateGame response gameId mRoom = do
     logRef <- newIORef []
     reply <- handleAnswer gameJson playerId response
     case reply of
-      Unhandled _ -> pure (g, oldLogEntries, [], Nothing, False, [])
+      Unhandled _ -> pure (g, oldLogEntries, [], Nothing, False, [], [])
       Handled answerMessages -> do
         -- Epic Multiplayer: if this game is a group within an event, build an
         -- EpicEnv so Shared* messages emitted during the action are captured as
@@ -418,17 +443,19 @@ updateGame response gameId mRoom = do
         achievementsByRef <- newIORef []
         achievementProgressRef <- newIORef []
         achievementProgressByRef <- newIORef []
+        enteredPhasesRef <- newIORef []
         let
-          collectAchievements = \case
+          collectFromRun = \case
             EarnAchievement a -> modifyIORef' achievementsRef (a :)
             EarnAchievementBy iid a -> modifyIORef' achievementsByRef ((iid, a) :)
             AchievementProgress a items -> modifyIORef' achievementProgressRef ((a, items) :)
             AchievementProgressBy iid a items ->
               modifyIORef' achievementProgressByRef ((iid, a, items) :)
+            Begin phase -> modifyIORef' enteredPhasesRef (phase :)
             _ -> pure ()
         mResult <- liftIO $ timeout runMessagesTimeoutMicros do
           runGameApp (GameApp gameRef queueRef genRef (handleMessageLog logRef broadcast) mEpicEnv) do
-            runMessages (gameIdToText gameId) (Just collectAchievements)
+            runMessages (gameIdToText gameId) (Just collectFromRun)
         case mResult of
           Just () -> pure ()
           Nothing -> liftIO $ throwIO $ RunMessagesTimeout gameId runMessagesTimeoutMicros
@@ -446,15 +473,24 @@ updateGame response gameId mRoom = do
         updatedQueue <- readIORef $ queueToRef queueRef
         -- handleMessageLog conses for O(1) inserts; reverse here to restore order.
         updatedLog <- reverse <$> readIORef logRef
+        enteredPhases <- reverse <$> readIORef enteredPhasesRef
 
         now <- liftIO getCurrentTime
+        -- A one-player game is created WithFriends, but its player adding a second
+        -- hand makes it multihanded solo: both seats now belong to the same user.
+        -- The row was inserted by handleAnswer above, in this transaction.
+        variant' <- case response of
+          JoinCampaignAnswer | arkhamGameMultiplayerVariant /= Solo -> do
+            seats <- P.count [ArkhamPlayerArkhamGameId P.==. gameId]
+            pure $ if seats > 1 then Solo else arkhamGameMultiplayerVariant
+          _ -> pure arkhamGameMultiplayerVariant
         deleteWhere [ArkhamStepArkhamGameId P.==. gameId, ArkhamStepStep P.>. arkhamGameStep]
         let g' =
               ArkhamGame
                 arkhamGameName
                 ge
                 (arkhamGameStep + 1)
-                arkhamGameMultiplayerVariant
+                variant'
                 arkhamGameCreatedAt
                 now
         replace gameId g'
@@ -514,11 +550,17 @@ updateGame response gameId mRoom = do
               players <- P.selectList [ArkhamPlayerArkhamGameId P.==. gameId] []
               let userIds = ordNub $ map (arkhamPlayerUserId . entityVal) players
               let
+                -- Seat rows are written in two formats: the deck-selection path
+                -- stores the bare ArkhamDB code ("03004"), while the debug import
+                -- and claim-seat paths store the JSON-shaped, 'c'-prefixed one
+                -- ("c03004"). Compare both ends stripped, the way CardCode's
+                -- FromJSON does, or an earn silently credits nobody.
+                normalizeSeat = T.dropWhile (== 'c')
                 usersFor iid =
                   ordNub
                     [ arkhamPlayerUserId p
                     | p <- map entityVal players
-                    , arkhamPlayerInvestigatorId p == coerce iid
+                    , normalizeSeat (arkhamPlayerInvestigatorId p) == normalizeSeat (coerce iid)
                     ]
               directEarns <- fmap concat $ for earned \achievement -> do
                 inserted <- for userIds \uid ->
@@ -543,7 +585,16 @@ updateGame response gameId mRoom = do
                 pure [achievement | or completions]
               pure $ ordNub $ directEarns <> soloEarns <> progressEarns <> soloProgressEarns
 
-        pure (g', oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements)
+        pure
+          ( g'
+          , oldLogEntries
+          , updatedLog
+          , mSharedUpdate
+          , actAdvanced
+          , newAchievements
+          , case ge of
+              Game {gamePhase = newPhase} -> phaseTransitions oldPhase newPhase enteredPhases
+          )
 
   -- Update the per-room cache after the DB transaction has committed,
   -- so the cache is never ahead of durably-stored state.
@@ -572,6 +623,8 @@ updateGame response gameId mRoom = do
       arkhamGameCurrentData
 
   -- Achievement unlock toasts, after the rows are durably committed.
+  for_ mPhaseChanged \phase -> publishToRoom gameId $ PhaseChanged phase
+
   for_ newAchievements \achievement ->
     publishToRoom gameId $ GameAchievement (achievementName achievement)
 
@@ -673,10 +726,12 @@ handleMessageLog logRef broadcast msg = liftIO $ do
     ClientAudio txt -> GameAudio txt
     ClientCard t v -> GameCard t v
     ClientCardOnly i t v -> GameCardOnly i t v
+    ClientDrewCards i t v k -> GameDrewCards i t v k
     ClientTarot v -> GameTarot v
     ClientShowDiscard v -> GameShowDiscard v
     ClientShowUnder v -> GameShowUnder v
     ClientPlayabilityReport cid cc chks -> GamePlayabilityInfo cid cc chks
+    ClientCustomCardIssue cc detail payload -> GameCustomCardIssue cc detail payload
   toClientText = \case
     ClientText txt -> Just txt
     ClientError {} -> Nothing
@@ -684,10 +739,13 @@ handleMessageLog logRef broadcast msg = liftIO $ do
     ClientAudio {} -> Nothing
     ClientCard {} -> Nothing
     ClientCardOnly {} -> Nothing
+    -- A UI event, not a log line: the log already says what was drawn.
+    ClientDrewCards {} -> Nothing
     ClientTarot {} -> Nothing
     ClientShowDiscard {} -> Nothing
     ClientShowUnder {} -> Nothing
     ClientPlayabilityReport {} -> Nothing
+    ClientCustomCardIssue {} -> Nothing
 
 publishToRoom :: (MonadIO m, ToJSON a, HasApp m) => ArkhamGameId -> a -> m ()
 publishToRoom gameId a = do

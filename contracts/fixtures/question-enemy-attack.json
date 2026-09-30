@@ -42,7 +42,8 @@
               "attackDamaged": [],
               "attackDealDamage": true,
               "attackDespiteExhausted": false,
-              "attackCancelled": false
+              "attackCancelled": false,
+              "attackDamageReplacement": []
             }
           }
         }

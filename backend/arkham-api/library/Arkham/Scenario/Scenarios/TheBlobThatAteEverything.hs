@@ -84,7 +84,7 @@ instance RunMessage TheBlobThatAteEverything where
         & setMetaKey "variant" ("else" :: Text)
     Setup -> do
       -- Epic Multiplayer group games are flagged in scenario meta at creation
-      -- (see Api.Handler.Arkham.Events.buildGroupGame): the join/setup path has
+      -- (see Api.Handler.Arkham.Events.createGroupGame): the join/setup path has
       -- no event context, so we cannot consult the event row here. In epic mode
       -- the global health pool (Subject 8L-08) and the countermeasures pool are
       -- event-wide shared state, so we place the epic subject and let the shared
@@ -346,10 +346,10 @@ instance RunMessage TheBlobThatAteEverything where
           push $ RaiseShared pendingKey 1
           if countermeasures > 0
             then chooseOneM lead do
-              labeled "Spend 1 countermeasure to prevent the replication" do
+              labeled "replicatingAberration.spendCountermeasure" do
                 push $ RemoveTokens (toSource attrs) ScenarioTarget Token.Resource 1
                 push $ SpendShared pendingKey 1
-              labeled "Allow the Replicating Aberration to spawn" do
+              labeled "replicatingAberration.allowSpawn" do
                 push $ SpendShared pendingKey 1
                 push spawn
             else do

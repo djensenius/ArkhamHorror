@@ -111,7 +111,9 @@
         "skipForAll": false,
         "ignoreAllCosts": false,
         "fightCriteriaOverride": null,
-        "evadeCriteriaOverride": null
+        "evadeCriteriaOverride": null,
+        "nonBlocking": false,
+        "blocksIn": null
       },
       "windows": [
         {
@@ -135,7 +137,8 @@
               1
             ]
           },
-          "windowBatchId": null
+          "windowBatchId": null,
+          "windowConditionTick": null
         }
       ],
       "before": [],

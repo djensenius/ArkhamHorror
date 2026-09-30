@@ -12,19 +12,25 @@ newtype CraneCar = CraneCar LocationAttrs
   deriving newtype (Show, Eq, ToJSON, FromJSON, Entity)
 
 craneCar :: LocationCard CraneCar
-craneCar = location CraneCar Cards.craneCar 3 (Static 2)
+craneCar = symbolLabel $ location CraneCar Cards.craneCar 3 (Static 2)
 
 instance HasAbilities CraneCar where
   getAbilities (CraneCar a) =
     extendRevealed1 a
       $ groupLimit PerRound
-      $ restricted a 1 (thisExists a LocationWithoutClues) actionAbility
+      $ restricted
+        a
+        1
+        ( thisExists a LocationWithoutClues
+            <> oneOf [exists $ InvestigatorAt $ not_ $ be a, exists $ NonEliteEnemy <> EnemyAt (not_ $ be a)]
+        )
+        actionAbility
 
 instance RunMessage CraneCar where
   runMessage msg l@(CraneCar attrs) = runQueueT $ case msg of
     UseThisAbility iid (isSource attrs -> True) 1 -> do
-      investigators <- select Anyone
-      enemies <- select NonEliteEnemy
+      investigators <- select $ InvestigatorAt $ not_ $ be attrs
+      enemies <- select $ NonEliteEnemy <> EnemyAt (not_ $ be attrs)
       chooseOrRunOneM iid do
         targets investigators \iid' -> do
           selectEach (enemyEngagedWith iid') (disengageEnemy iid')

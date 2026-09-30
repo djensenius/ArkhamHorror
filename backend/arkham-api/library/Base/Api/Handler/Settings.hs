@@ -21,8 +21,11 @@ putApiV1SettingsR = do
   userId <- getRequestUserId
   settings <- requireCheckJsonBody :: Handler UserSettings
   runDB do
+    let UserSettings mBeta mPhaseTransitionNotifications = settings
     update \u -> do
-      set u [UserBeta =. val settings.betaSetting]
+      for_ mBeta \value -> set u [UserBeta =. val value]
+      for_ mPhaseTransitionNotifications \value ->
+        set u [UserPhaseTransitionNotifications =. val value]
       where_ $ u.id ==. val userId
-    User {..} <- get404 userId
-    pure $ SettingsUser userUsername userEmail userBeta
+    User { userUsername, userEmail, userBeta, userPhaseTransitionNotifications } <- get404 userId
+    pure $ SettingsUser userUsername userEmail userBeta userPhaseTransitionNotifications

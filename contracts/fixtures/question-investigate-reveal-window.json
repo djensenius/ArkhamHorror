@@ -38,7 +38,8 @@
                 "windowType": {
                   "tag": "FastPlayerWindow"
                 },
-                "windowBatchId": null
+                "windowBatchId": null,
+                "windowConditionTick": null
               }
             ],
             true

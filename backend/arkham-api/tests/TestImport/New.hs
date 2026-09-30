@@ -35,6 +35,7 @@ import Arkham.Deck qualified as Deck
 import Arkham.Discover
 import Arkham.Enemy.Types
 import Arkham.Enemy.Types qualified as Field
+import Arkham.EnemyLocation.Types (EnemyLocationAttrs, enemyLocationAsEnemyId)
 import Arkham.Entities qualified as Entities
 import Arkham.Exhaust
 import Arkham.Fight
@@ -47,6 +48,7 @@ import Arkham.Helpers.Investigator qualified as Helpers
 import Arkham.Helpers.Message qualified as Helpers
 import Arkham.Helpers.Playable
 import Arkham.Helpers.Use (asStartingUses)
+import Arkham.I18n
 import Arkham.Investigate.Types
 import Arkham.Investigator.Types qualified as Field
 import Arkham.Keyword qualified as Keyword
@@ -109,7 +111,8 @@ useAbility i a = run $ UseAbility (toId i) a []
 
 clickLabel :: Text -> TestAppT ()
 clickLabel txt = chooseOptionMatching (T.unpack txt) \case
-  Label label _ -> label == txt
+  -- i18n vars ride along as "$key var=...", compare the key
+  Label label _ -> T.takeWhile (/= ' ') label == T.takeWhile (/= ' ') txt
   _ -> False
 
 useReaction :: HasCallStack => TestAppT ()
@@ -147,6 +150,27 @@ setChaosTokens = run . SetChaosTokens
 
 spawnAt :: Enemy -> Location -> TestAppT ()
 spawnAt e l = run $ EnemySpawnAtLocationMatching Nothing (Matcher.LocationWithId $ toId l) (toId e)
+
+{- | Put an enemy-location into play. Enemy-locations aren't 'Location' entities, so
+they need their own helper; 'PlaceEnemyLocation' is the path 'Arkham.Game.Runner' uses.
+-}
+placeEnemyLocation :: CardDef -> TestAppT LocationId
+placeEnemyLocation def = do
+  card <- genCard def
+  lid <- getRandom
+  run $ PlaceEnemyLocation lid card
+  pure lid
+
+-- | The coerced 'EnemyId' the fight and evade subsystems target an enemy-location by.
+asEnemyLocationEnemy :: LocationId -> EnemyId
+asEnemyLocationEnemy = enemyLocationAsEnemyId . EnemyLocationId
+
+enemyLocationAttrs :: HasCallStack => LocationId -> TestAppT EnemyLocationAttrs
+enemyLocationAttrs lid = do
+  els <- view (entitiesL . Entities.enemyLocationsL) <$> getGame
+  case lookup lid els of
+    Just el -> pure (toAttrs el)
+    Nothing -> error $ "expected an enemy-location at " <> show lid
 
 class CanMoveTo a where
   moveTo :: Investigator -> a -> TestAppT ()
@@ -522,7 +546,7 @@ chooseSkill :: HasCallStack => SkillType -> TestAppT ()
 chooseSkill sType =
   chooseOptionMatching "choose self" \case
     SkillLabel sType' _ -> sType == sType'
-    Label lbl _ -> lookup lbl labeledSkills == Just sType
+    Label lbl _ -> lbl == withI18n (skillVar sType $ "$" <> labelKey "chooseSkill")
     _ -> False
 
 evadedBy :: Enemy -> Investigator -> TestAppT Bool
@@ -723,10 +747,11 @@ commitFor i (toCardId -> cid) = do
     TargetLabel (CardIdTarget c) _ -> c == cid
     _ -> False
 
--- | Like 'assertNoReaction', but scoped to a single source and scanning every
--- pending question rather than requiring exactly one. Use this when another
--- investigator may hold the window open, so the absence being asserted is real
--- rather than an artifact of there being no question at all.
+{- | Like 'assertNoReaction', but scoped to a single source and scanning every
+pending question rather than requiring exactly one. Use this when another
+investigator may hold the window open, so the absence being asserted is real
+rather than an artifact of there being no question at all.
+-}
 assertNoReactionOf :: (HasCallStack, Sourceable source) => source -> TestAppT ()
 assertNoReactionOf (toSource -> source) = do
   questionMap <- gameQuestion <$> getGame
@@ -743,7 +768,12 @@ assertNoReactionOf (toSource -> source) = do
       _ -> False
   case find isReaction (concatMap (choicesOf . snd) (mapToList questionMap)) of
     Nothing -> pure ()
-    Just choice -> expectationFailure $ "expected no reaction from " <> show source <> ", but found:\n\n" <> show choice
+    Just choice ->
+      expectationFailure
+        $ "expected no reaction from "
+        <> show source
+        <> ", but found:\n\n"
+        <> show choice
 
 {- | Like 'assertNoReactionOf', but matches any ability from the source, forced
 abilities included. A forced trigger that fires for the wrong investigator shows
@@ -864,6 +894,42 @@ assertNotTarget (toTarget -> target) = do
   case find isMessageTarget choices of
     Nothing -> pure ()
     Just _ -> expectationFailure $ "expected not to find target " <> show target <> " but did"
+
+{- | Assert the open question does not offer to /play/ this card.
+
+Narrower than 'assertNotTarget', which only sees the target: a card can sit under
+the same 'CardIdTarget' as a commit option, so an event with a skill icon (Live
+and Learn) is a legitimate target of a commit window while not being on offer as
+a reaction.
+-}
+assertNotPlayable :: (HasCallStack, IsCard card) => card -> TestAppT ()
+assertNotPlayable (toCardId -> cardId) = do
+  questionMap <- gameQuestion <$> getGame
+  let
+    choices = case mapToList questionMap of
+      [(_, question)] -> case stripQuestionWrappers question of
+        ChooseOne msgs -> msgs
+        PlayerWindowChooseOne msgs -> msgs
+        ChooseN _ msgs -> msgs
+        _ -> []
+      _ -> []
+    isPlayOf = \case
+      InitiatePlayCard _ c _ _ _ _ -> toCardId c == cardId
+      InitiatePlayCardWithWindows _ c _ _ _ _ -> toCardId c == cardId
+      PlayCard _ c _ _ _ _ -> toCardId c == cardId
+      _ -> False
+    playsCard = \case
+      TargetLabel _ msgs -> any isPlayOf msgs
+      _ -> False
+
+  case find playsCard choices of
+    Nothing -> pure ()
+    Just choice ->
+      expectationFailure
+        $ "expected "
+        <> show cardId
+        <> " not to be playable, but found:\n\n"
+        <> show choice
 
 unlessSetting :: (Settings -> Bool) -> TestAppT () -> TestAppT ()
 unlessSetting f body = do

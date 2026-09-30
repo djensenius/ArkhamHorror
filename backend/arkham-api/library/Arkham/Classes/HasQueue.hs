@@ -71,6 +71,15 @@ class QueueWrapper msg where
   stripQueueWrappers :: msg -> msg
   stripQueueWrappers = id
 
+  {- | A message that carries a group of other messages, plus how to rebuild it.
+
+  Unlike 'stripQueueWrappers' a group cannot normalize to a single message, so the
+  ordinary primitives cannot see through it. Only the @*Nested@ primitives descend,
+  and they must be asked for explicitly.
+  -}
+  queueGroup :: msg -> Maybe ([msg], [msg] -> msg)
+  queueGroup _ = Nothing
+
 -- | Apply a predicate through the transport wrappers.
 matchesQueued :: QueueWrapper msg => (msg -> Bool) -> msg -> Bool
 matchesQueued p = p . stripQueueWrappers
@@ -184,12 +193,66 @@ popMessagesMatching f = withQueue \queue ->
           else go (a <> [msg], b) rest
    in go ([], []) queue
 
+{- | 'popMessagesMatching', but descending into grouped messages ('queueGroup').
+
+A batch that fans out into sub-sequences -- 'Arkham.Message.Simultaneously' and the
+'Arkham.Message.Run' blocks it interleaves into -- carries its payload where a flat
+scan cannot reach it, so a scan that has to pull a pending message out of the queue
+(gluing damage to a nested test, say) sees nothing. Results come back in queue order,
+outermost first, already stripped. A group nothing was popped from is kept as-is.
+-}
+popMessagesMatchingNested :: (HasQueue msg m, QueueWrapper msg) => (msg -> Bool) -> m [msg]
+popMessagesMatchingNested f = withQueue (go f)
+ where
+  go p = foldr step ([], [])
+   where
+    step msg (keep, found)
+      | matchesQueued p msg = (keep, stripQueueWrappers msg : found)
+      | otherwise = case queueGroup msg of
+          Just (children, rebuild) ->
+            case go p children of
+              (_, []) -> (msg : keep, found)
+              (children', found') -> (rebuild children' : keep, found' <> found)
+          Nothing -> (msg : keep, found)
+
+{- | Rewrite every matching message in place, descending into groups ('queueGroup').
+The match is applied through the transport wrappers, but the rewrite replaces the
+whole queued message, wrappers included -- use it with wrapping/annotating functions.
+-}
+wrapMessagesMatchingNested
+  :: (HasQueue msg m, QueueWrapper msg) => (msg -> Bool) -> (msg -> msg) -> m ()
+wrapMessagesMatchingNested p f = withQueue_ (map go)
+ where
+  go msg
+    | matchesQueued p msg = f msg
+    | otherwise = case queueGroup msg of
+        Just (children, rebuild) -> rebuild (map go children)
+        Nothing -> msg
+
 popMessageMatching_ :: (HasQueue msg m, QueueWrapper msg) => (msg -> Bool) -> m ()
 popMessageMatching_ = void . popMessageMatching
 
 removeAllMessagesMatching
   :: (HasQueue msg m, QueueWrapper msg) => (msg -> Bool) -> m ()
 removeAllMessagesMatching matcher = withQueue_ $ filter (not . matchesQueued matcher)
+
+{- | 'removeAllMessagesMatching', but descending into grouped messages ('queueGroup').
+
+A cascade that was batched -- 'Arkham.Message.Simultaneously' and the
+'Arkham.Message.Run' blocks it interleaves into -- keeps its payload where a flat filter
+cannot reach it, so a cancel written as a flat filter silently no-ops. A group a message
+is pulled out of is rebuilt around what is left.
+-}
+removeAllMessagesMatchingNested
+  :: (HasQueue msg m, QueueWrapper msg) => (msg -> Bool) -> m ()
+removeAllMessagesMatchingNested matcher = withQueue_ go
+ where
+  go = mapMaybe prune
+  prune msg
+    | matchesQueued matcher msg = Nothing
+    | otherwise = case queueGroup msg of
+        Just (children, rebuild) -> Just (rebuild (go children))
+        Nothing -> Just msg
 
 removeAllMessagesMatchingM
   :: (HasQueue msg m, QueueWrapper msg) => (msg -> m Bool) -> m ()
@@ -205,6 +268,19 @@ insertAfterMatching msgs p = withQueue_ \queue ->
    in case rest of
         (x : xs) -> before <> (x : msgs <> xs)
         _ -> error $ "no matching message:\n" <> prettyCallStack callStack
+
+{- | 'insertAfterMatching', anchored on the LAST match instead of the first, and
+a no-op when nothing matches.
+
+Waiting behind a batch of queued messages means waiting behind all of them, not
+just the one nearest the front.
+-}
+insertAfterLastMatching
+  :: (HasQueue msg m, QueueWrapper msg) => [msg] -> (msg -> Bool) -> m ()
+insertAfterLastMatching msgs p = withQueue_ \queue ->
+  case break (matchesQueued p) (reverse queue) of
+    (_, []) -> queue
+    (after, anchor : before) -> reverse before <> (anchor : msgs) <> reverse after
 
 insertAfterMatchingOrNow
   :: (HasQueue msg m, QueueWrapper msg) => [msg] -> (msg -> Bool) -> m ()

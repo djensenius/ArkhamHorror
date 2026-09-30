@@ -54,7 +54,7 @@ import Arkham.Event.Types (Field (..))
 import Arkham.Fight.Types
 import {-# SOURCE #-} Arkham.Game (asIfTurn, withoutCanModifiers)
 import Arkham.Game.Settings (settingsStrictAsIfAt)
-import {-# SOURCE #-} Arkham.GameEnv
+import Arkham.GameEnv
 import Arkham.Helpers
 import Arkham.Helpers.Ability (
   getAbilityLimit,
@@ -82,7 +82,7 @@ import Arkham.Helpers.Cost (getCanAffordCost, getSpendableResources, hasSkillTes
 import Arkham.Helpers.Criteria (passesCriteria)
 import Arkham.Helpers.Deck qualified as Deck
 import Arkham.Helpers.Discover
-import Arkham.Helpers.Game (withAlteredGame)
+import Arkham.Helpers.Game (getRemovedFromPlayCards, withAlteredGame)
 import Arkham.Helpers.Location (
   getCanMoveTo,
   getCanMoveToMatchingLocations,
@@ -116,7 +116,7 @@ import Arkham.Helpers.Window (
  )
 import Arkham.Helpers.Window qualified as Helpers
 import Arkham.History
-import Arkham.I18n (countVar, ikey', withI18n)
+import Arkham.I18n (countVar, ikey', investigatorNameVar, withI18n)
 import Arkham.Investigate.Types
 import {-# SOURCE #-} Arkham.Investigator
 import Arkham.Investigator.Runner.Damage
@@ -160,7 +160,6 @@ import Arkham.Modifier qualified as Modifier
 import Arkham.Movement
 import Arkham.Phase
 import Arkham.Placement
-import Arkham.Plural
 import Arkham.Prelude
 import Arkham.Projection
 import Arkham.ScenarioLogKey
@@ -676,6 +675,25 @@ handleDrawCards a@InvestigatorAttrs {..} iid cardDraw = do
         : [drawEncounterCardWindow | cardDraw.isEncounterDraw] <> [DoDrawCards iid, DrawEnded cid iid]
   pure $ a & drawingL ?~ cardDraw
 
+{- | Which sort of draw this was, so a client can honour a preference narrower
+than on/off.
+
+@upkeep@ is really "the game made you draw this", which is the distinction a
+player means by it -- the noisy case they want to suppress is a card that hands
+them a fistful, not the one card the round gives everybody.
+-}
+cardDrawKindName :: CardDraw msg -> Text
+cardDrawKindName cardDraw
+  | StartingHandCardDraw <- cardDraw.kind = "opening"
+  | cardDrawAction cardDraw = "action"
+  | fromGame (cardDrawSource cardDraw) = "upkeep"
+  | otherwise = "card"
+ where
+  fromGame = \case
+    ScenarioSource -> True
+    GameSource -> True
+    _ -> False
+
 handleMoveTopOfDeckToBottom a@InvestigatorAttrs {..} iid n = do
   let (cards, deck) = draw n investigatorDeck
   pure $ a & deckL .~ Deck.withDeck (<> cards) deck
@@ -769,6 +787,19 @@ handleDoDrawCardsV2 a@InvestigatorAttrs {..} iid cardDraw = do
               min (length discardable) $ getSum (foldMap toDrawDiscard (toList $ cardDrawRules cardDraw))
             -- Only focus those that will still be in hand
             focusable = map toCard $ filter (`cardMatch` NotCard CardWithRevelation) allDrawn
+          -- Tell the drawing player's client what they just drew, as one batch: a
+          -- draw of six is one look at six cards rather than six reveals. Sent
+          -- whatever their preference says, because whether to show it -- and how
+          -- -- is a display choice that belongs to the browser, not to the game.
+          -- `focusable` is the right set: a card with a revelation resolves and
+          -- leaves, and it already announces itself.
+          unless (null focusable) do
+            withI18n $ investigatorNameVar a $ countVar (length focusable) do
+              sendDrewCards
+                player
+                (ikey' $ if length focusable == 1 then "drewCard" else "drewCards")
+                (toJSON focusable)
+                (cardDrawKindName cardDraw)
           pushAll
             $ windowMsgs
             <> [DeckHasNoCards iid Nothing | null deck']
@@ -1055,8 +1086,11 @@ handleDrawToHand a@InvestigatorAttrs {..} iid cards = do
     & (searchL . _Just . Search.drawnCardsL %~ (<> cards))
 
 handleAddToHand a@InvestigatorAttrs {..} iid cards msg = do
-  for_ cards obtainCard
-  push $ Do msg
+  -- a card removed from the game stays removed, even if a delayed effect returns it
+  removed <- map toCardId <$> getRemovedFromPlayCards
+  let cards' = filter ((`notElem` removed) . toCardId) cards
+  for_ cards' obtainCard
+  unless (null cards') $ push $ Do (AddToHand iid cards')
   pure a
 
 handleDoAddToHand a@InvestigatorAttrs {..} iid cards = do
@@ -1104,50 +1138,51 @@ handleShuffleCardsIntoDeckV2 a@InvestigatorAttrs {..} iid cards = do
     & (foundCardsL . each %~ filter (`notElem` cards))
 
 handleAddFocusedToHand a@InvestigatorAttrs {..} iid' cardSource cardId = do
-  let
-    card =
-      fromJustNote "missing card"
-        $ find ((== cardId) . toCardId) (findWithDefault [] cardSource $ a ^. foundCardsL)
-    foundCards' = Map.map (filter ((/= cardId) . toCardId)) (a ^. foundCardsL)
-  push $ addToHand iid' card
-  pure $ a & foundCardsL .~ foundCards' & (deckL %~ Deck . filter ((/= card) . toCard) . unDeck)
+  case findFocusedCard a cardSource cardId of
+    Nothing -> pure a
+    Just card -> do
+      let foundCards' = Map.map (filter ((/= cardId) . toCardId)) (a ^. foundCardsL)
+      push $ addToHand iid' card
+      pure $ a & foundCardsL .~ foundCards' & (deckL %~ Deck . filter ((/= card) . toCard) . unDeck)
 
 handleDrawFocusedToHand a@InvestigatorAttrs {..} iid' cardSource cardId = do
-  let
-    card =
-      fromJustNote "missing card"
-        $ find ((== cardId) . toCardId) (findWithDefault [] cardSource $ a ^. foundCardsL)
-    foundCards' = Map.map (filter ((/= cardId) . toCardId)) (a ^. foundCardsL)
-    -- SearchAllInvestigators can surface cards from another investigator's zone or
-    -- a scenario deck (FromCollection). Those aren't in the drawer's own deck, so
-    -- the normal draw-from-deck removal would leave a duplicate. Route them through
-    -- the global obtain path (addToHand -> obtainCard), which clears the card from
-    -- any owner's hand/deck/discard and scenario decks while preserving pcOwner.
-    -- The own-zone case is left byte-for-byte identical (same draw-trigger windows).
-    inOwnZone = case cardSource of
-      Zone.FromDeck -> card `elem` map toCard (unDeck investigatorDeck)
-      Zone.FromTopOfDeck _ -> card `elem` map toCard (unDeck investigatorDeck)
-      Zone.FromBottomOfDeck _ -> card `elem` map toCard (unDeck investigatorDeck)
-      Zone.FromHand -> card `elem` investigatorHand
-      Zone.FromDiscard -> card `elem` map toCard investigatorDiscard
-      _ -> False
-  push
-    $ if inOwnZone
-      then case zoneToDeck a.id cardSource of
-        Nothing -> drawToHand iid' card
-        Just deck -> drawToHandFrom iid' deck card
-      else addToHand iid' card
-  pure $ a & foundCardsL .~ foundCards' & (deckL %~ Deck . filter ((/= card) . toCard) . unDeck)
+  case findFocusedCard a cardSource cardId of
+    Nothing -> pure a
+    Just card -> do
+      let
+        foundCards' = Map.map (filter ((/= cardId) . toCardId)) (a ^. foundCardsL)
+        -- SearchAllInvestigators can surface cards from another investigator's zone or
+        -- a scenario deck (FromCollection). Those aren't in the drawer's own deck, so
+        -- the normal draw-from-deck removal would leave a duplicate. Route them through
+        -- the global obtain path (addToHand -> obtainCard), which clears the card from
+        -- any owner's hand/deck/discard and scenario decks while preserving pcOwner.
+        -- The own-zone case is left byte-for-byte identical (same draw-trigger windows).
+        inOwnZone = case cardSource of
+          Zone.FromDeck -> card `elem` map toCard (unDeck investigatorDeck)
+          Zone.FromTopOfDeck _ -> card `elem` map toCard (unDeck investigatorDeck)
+          Zone.FromBottomOfDeck _ -> card `elem` map toCard (unDeck investigatorDeck)
+          Zone.FromHand -> card `elem` investigatorHand
+          Zone.FromDiscard -> card `elem` map toCard investigatorDiscard
+          _ -> False
+      push
+        $ if inOwnZone
+          then case zoneToDeck a.id cardSource of
+            Nothing -> drawToHand iid' card
+            Just deck -> drawToHandFrom iid' deck card
+          else addToHand iid' card
+      pure $ a & foundCardsL .~ foundCards' & (deckL %~ Deck . filter ((/= card) . toCard) . unDeck)
 
 handleAddFocusedToTopOfDeck a@InvestigatorAttrs {..} iid' cardId = do
   let
-    card =
-      fromJustNote "missing card"
-        $ find ((== cardId) . toCardId) (concat $ toList $ a ^. foundCardsL)
+    mcard =
+      find ((== cardId) . toCardId) (concat (toList $ a ^. foundCardsL) <> zoneCards a Zone.FromDeck)
         >>= toPlayerCard
-    foundCards = Map.map (filter ((/= cardId) . toCardId)) $ a ^. foundCardsL
-  push $ PutCardOnTopOfDeck iid' (Deck.InvestigatorDeck iid') (toCard card)
-  pure $ a & foundCardsL .~ foundCards
+  case mcard of
+    Nothing -> pure a
+    Just card -> do
+      let foundCards = Map.map (filter ((/= cardId) . toCardId)) $ a ^. foundCardsL
+      push $ PutCardOnTopOfDeck iid' (Deck.InvestigatorDeck iid') (toCard card)
+      pure $ a & foundCardsL .~ foundCards
 
 handleShuffleAllFocusedIntoDeck a@InvestigatorAttrs {..} iid' = do
   let cards = findWithDefault [] Zone.FromDeck $ a ^. foundCardsL
@@ -1184,6 +1219,26 @@ handleRemovePlayerCardFromGame a@InvestigatorAttrs {..} card = do
     Nothing ->
       -- encounter cards can only be in hand
       pure $ a & (handL %~ filter (/= card))
+
+-- A focused-card question can outlive its search: a raw message re-parks the open
+-- question behind itself (Entity.Answer), so a second search's EndSearch clears
+-- foundCards before the first one is answered (#5615). Fall back to the zone the
+-- message names, and let the caller no-op when the card is gone for good.
+findFocusedCard :: InvestigatorAttrs -> Zone.Zone -> CardId -> Maybe Card
+findFocusedCard a zone cardId =
+  find ((== cardId) . toCardId) (findWithDefault [] zone $ a ^. foundCardsL)
+    <|> find ((== cardId) . toCardId) (zoneCards a zone)
+
+zoneCards :: InvestigatorAttrs -> Zone.Zone -> [Card]
+zoneCards a = \case
+  Zone.FromDeck -> map toCard (unDeck a.deck)
+  Zone.FromTopOfDeck {} -> map toCard (unDeck a.deck)
+  Zone.FromBottomOfDeck {} -> map toCard (unDeck a.deck)
+  Zone.FromHand -> investigatorHand a
+  Zone.FromDiscard -> map toCard a.discard
+  Zone.FromPlay -> []
+  Zone.FromOutOfPlay {} -> []
+  Zone.FromCollection -> []
 
 zoneToDeck :: InvestigatorId -> Zone.Zone -> Maybe Deck.DeckSignifier
 zoneToDeck iid = \case

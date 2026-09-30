@@ -799,6 +799,15 @@
         },
         "window": {
           "$ref": "#/$defs/gatheringFastPlayerWindowMatcher"
+        },
+        "blocksIn": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "nonBlocking": {
+          "type": "boolean"
         }
       }
     },
@@ -1007,6 +1016,12 @@
         },
         "windowBatchId": {
           "type": "null"
+        },
+        "windowConditionTick": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       }
     },
@@ -1027,6 +1042,12 @@
         },
         "windowBatchId": {
           "type": "null"
+        },
+        "windowConditionTick": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       }
     },
@@ -1056,6 +1077,12 @@
         },
         "windowBatchId": {
           "type": "null"
+        },
+        "windowConditionTick": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       }
     },
@@ -1228,6 +1255,15 @@
         },
         "window": {
           "$ref": "#/$defs/coverUpWouldDiscoverCluesMatcher"
+        },
+        "blocksIn": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "nonBlocking": {
+          "type": "boolean"
         }
       },
       "description": "The complete production Ability payload for Cover Up's first reaction. JSON Schema cannot require source and requestor UUID equality; the production Haskell fixture assertion binds both to the same TreacheryId."
@@ -1508,6 +1544,12 @@
               "items": false
             }
           }
+        },
+        "windowConditionTick": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       }
     },
@@ -1628,7 +1670,7 @@
           "const": []
         },
         "messages": {
-          "const": []
+          "$ref": "#/$defs/messages"
         }
       }
     },
@@ -1733,6 +1775,15 @@
         },
         "window": {
           "$ref": "#/$defs/coverUpForcedAbilityWindowMatcher"
+        },
+        "blocksIn": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "nonBlocking": {
+          "type": "boolean"
         }
       }
     },
@@ -1929,6 +1980,12 @@
         },
         "windowBatchId": {
           "type": "null"
+        },
+        "windowConditionTick": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       }
     },
@@ -2101,6 +2158,15 @@
         },
         "window": {
           "$ref": "#/$defs/rolandIfEnemyDefeatedMatcher"
+        },
+        "blocksIn": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "nonBlocking": {
+          "type": "boolean"
         }
       }
     },
@@ -2417,6 +2483,12 @@
               "items": false
             }
           }
+        },
+        "windowConditionTick": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       }
     },
@@ -2562,7 +2634,7 @@
           "const": []
         },
         "messages": {
-          "const": []
+          "$ref": "#/$defs/messages"
         }
       }
     },
@@ -2667,6 +2739,15 @@
         },
         "window": {
           "$ref": "#/$defs/roundEndsWhen"
+        },
+        "blocksIn": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "nonBlocking": {
+          "type": "boolean"
         }
       },
       "description": "The complete production Ability display payload for Dissonant Voices' first forced ability. JSON Schema cannot require source and requestor UUID equality; the production Haskell fixture assertion binds both to the same TreacheryId."
@@ -2806,6 +2887,12 @@
         },
         "windowBatchId": {
           "type": "null"
+        },
+        "windowConditionTick": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       }
     },
@@ -3510,6 +3597,9 @@
         },
         "attackCancelled": {
           "const": false
+        },
+        "attackDamageReplacement": {
+          "type": "array"
         }
       }
     },

@@ -1,11 +1,14 @@
 module Arkham.Homebrew.CircusExMortis.Skills.InvocationOfDiana (invocationOfDiana) where
 
+import Arkham.ChaosToken (ChaosToken)
+import Arkham.Classes.HasGame (HasGame)
 import Arkham.Helpers.Modifiers (ModifierType (..), modified_)
 import Arkham.Helpers.SkillTest (getSkillTestInvestigator, withSkillTest)
 import Arkham.Homebrew.CircusExMortis.CardDefs.Skills qualified as Cards
 import Arkham.Homebrew.CircusExMortis.Helpers
 import Arkham.Homebrew.CircusExMortis.Tokens (pattern MoonToken)
 import Arkham.I18n
+import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Skill.Import.Lifted
 
@@ -15,6 +18,13 @@ newtype InvocationOfDiana = InvocationOfDiana SkillAttrs
 
 invocationOfDiana :: SkillCard InvocationOfDiana
 invocationOfDiana = skill InvocationOfDiana Cards.invocationOfDiana
+
+-- | Moon tokens sealed on the cards an investigator controls.
+getSealedMoonTokensControlledBy :: HasGame m => InvestigatorId -> m [ChaosToken]
+getSealedMoonTokensControlledBy iid = do
+  own <- select $ SealedOnInvestigator (InvestigatorWithId iid) moonToken
+  onAssets <- select $ SealedOnAsset (assetControlledBy iid) moonToken
+  pure $ nub (own <> onAssets)
 
 {- | "Cancel each moon token revealed during this test." Modeled the way Defiance
 models cancelling a face for a whole test: the token resolves no effects, so it
@@ -36,9 +46,9 @@ instance RunMessage InvocationOfDiana where
       getSkillTestInvestigator >>= traverse_ \iid -> do
         tokens <- getSealedMoonTokensControlledBy iid
         chooseOneM iid $ campaignI18n $ scope "invocationOfDiana" do
-          unscoped $ countVar 2 $ labeled' "drawCards" $ drawCards iid attrs 2
-          when (notNull tokens) $ labeled' "releaseTokens" $ doStep 2 msg
-          unscoped $ labeled' "doNothing" nothing
+          unscoped $ countVar 2 $ labeled "drawCards" $ drawCards iid attrs 2
+          when (notNull tokens) $ labeled "releaseTokens" $ doStep 2 msg
+          unscoped $ labeled "doNothing" nothing
       pure s
     DoStep 2 (DoStep 1 (PassedSkillTest _ _ _ (isTarget attrs -> True) _ _)) -> do
       getSkillTestInvestigator >>= traverse_ \iid ->

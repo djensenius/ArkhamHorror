@@ -1,10 +1,11 @@
 <script lang="ts" setup>
 import { useDbCardStore } from '@/stores/dbCards'
-import { chaosTokenImage } from '@/arkham/types/ChaosToken';
+import { chaosTokenImage, type ChaosToken } from '@/arkham/types/ChaosToken';
 import { useI18n } from 'vue-i18n';
 import { useDebouncedRef } from '@/composable/debouncedRef';
-import { handleEmbeddedI18n } from '@/arkham/i18n';
+import { handleEmbeddedI18n, parseInput } from '@/arkham/i18n';
 import { formatCost } from '@/arkham/cost';
+import { abilityNeedsGhostModal } from '@/arkham/ghostAbility';
 import { choiceRequiresModal, MessageType, CardLabel, ChaosTokenLabel, type Message, type TargetLabel } from '@/arkham/types/Message';
 import { computed, inject, ref, watch, onMounted } from 'vue';
 import { imgsrc, formatContent } from '@/arkham/helpers';
@@ -22,6 +23,10 @@ import ChaosBagChoice from '@/arkham/components/ChaosBagChoice.vue';
 import FormattedEntry from '@/arkham/components/FormattedEntry.vue';
 import QuestionChoices from '@/arkham/components/QuestionChoices.vue';
 import CardImage from '@/arkham/components/CardImage.vue';
+import CardPoolPicker from '@/arkham/components/CardPoolPicker.vue';
+import { cardPoolForLabelKey } from '@/arkham/cardPools';
+import { putBackInAnyOrderPicks } from '@/arkham/putBackInAnyOrder';
+import PutBackInAnyOrder from '@/arkham/components/PutBackInAnyOrder.vue';
 
 export interface Props {
   game: Game
@@ -329,6 +334,50 @@ const isSummitDeckView = computed(() =>
     && question.value.label.includes('searchTheSpires.')
 )
 
+// Setup questions that build a set-aside pool from your own deck (Joe Diamond's
+// hunch deck, Underworld Market, Stick to the Plan) get their own panel so the
+// destination -- and how much of it is left -- is obvious.
+const cardPoolPick = computed(() => {
+  const q = question.value
+  if (q?.tag !== QuestionType.QUESTION_LABEL || !q.label.startsWith('$')) return null
+  const { key, params } = parseInput(q.label)
+  const pool = cardPoolForLabelKey(key)
+  if (!pool) return null
+
+  // ChooseN re-asks with the count decremented, so it is its own progress
+  // counter. One-at-a-time picks (ChooseUpToN) carry `remaining` on the label.
+  const remaining = q.question.tag === QuestionType.CHOOSE_N
+    ? q.question.amount
+    : typeof params.remaining === 'number' ? params.remaining : null
+  if (remaining === null) return null
+
+  return { pool, remaining, chosen: pool.chosen(props.game, props.playerId) }
+})
+
+// The cards the pool question is actually offering. Taking them from the
+// choices rather than from every revealed card keeps a deck-wide search (Stick
+// to the Plan) from showing cards that cannot be picked.
+const cardPoolCandidates = computed(() => {
+  const byId = new Map<string, ArkhamCard>()
+  for (const card of [...focusedCards.value, ...searchedCards.value.flatMap((g) => g.cards)]) {
+    byId.set(toCardContents(card).id, card)
+  }
+
+  return choices.value.flatMap((choice) => {
+    if (choice.tag !== MessageType.TARGET_LABEL) return []
+    const { target } = choice
+    if (target.tag !== 'CardIdTarget' || typeof target.contents !== 'string') return []
+    const card = byId.get(target.contents)
+    return card ? [card] : []
+  })
+})
+
+const cardPoolActive = computed(() => cardPoolPick.value !== null && cardPoolCandidates.value.length > 0)
+
+// The put-back panel owns its own state and styles; this only decides whether it
+// is what the modal should be showing.
+const putBackActive = computed(() => putBackInAnyOrderPicks(props.game, props.playerId) !== null)
+
 const focusedCardGroups = computed<SearchedCardGroup[]>(() => {
   if (focusedCardsForGroups.value.length === 0) return []
 
@@ -463,6 +512,24 @@ function abilitySourceHandledElsewhere(source: any) {
   }
 }
 
+// Chaos tokens that already have a clickable representation on the board: everything
+// SealedChaosTokens mounts (investigators, assets, enemies, locations). Token.vue turns
+// those into active tokens for a matching TargetLabel, so the modal needs no button.
+const boardChaosTokenIds = computed(() => {
+  const ids = new Set<string>()
+  const add = (tokens: ChaosToken[] | undefined) => tokens?.forEach((token) => ids.add(token.id))
+
+  Object.values(props.game.investigators).forEach((i) => add(i.sealedChaosTokens))
+  Object.values(props.game.assets).forEach((a) => add(a.sealedChaosTokens))
+  Object.values(props.game.enemies).forEach((e) => add(e.sealedChaosTokens))
+  Object.values(props.game.locations).forEach((l) => {
+    add(l.sealedChaosTokens)
+    add(l.placedChaosTokens)
+  })
+
+  return ids
+})
+
 function targetLabelHandledElsewhere(choice: TargetLabel) {
   const target = choice.target
   const contents = target.contents
@@ -492,7 +559,8 @@ function targetLabelHandledElsewhere(choice: TargetLabel) {
   }
 
   if (target.tag === 'ChaosTokenTarget' && typeof contents === 'object' && contents !== null && 'id' in contents) {
-    return props.game.focusedChaosTokens.some((token) => token.id === contents.id)
+    const id = contents.id as string
+    return props.game.focusedChaosTokens.some((token) => token.id === id) || boardChaosTokenIds.value.has(id)
   }
 
   return false
@@ -505,6 +573,12 @@ const showChoices = computed(() => {
     return false
   }
   if (choices.value.some(choiceRequiresModal)) {
+    return true
+  }
+  // An ability whose source card has left play has no card to carry its button, so the
+  // modal (with its ghost card) is the only place it can render -- Caught in the
+  // Crossfire's later initiations resolve after it discards itself. #5743
+  if (choices.value.some((c) => abilityNeedsGhostModal(props.game, c))) {
     return true
   }
   return props.game.focusedChaosTokens.length > 0 || focusedCards.value.length > 0 || searchedCards.value.length > 0 || paymentAmountsLabel.value || amountsLabel.value
@@ -929,7 +1003,24 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
         </div>
 
         <div class='question-content'>
-          <div v-if="focusedCardGroups.length > 0 && choices.length > 0" class="modal">
+          <CardPoolPicker
+            v-if="cardPoolActive && cardPoolPick"
+            :game="game"
+            :playerId="playerId"
+            :cards="cardPoolCandidates"
+            :chosen="cardPoolPick.chosen"
+            :remaining="cardPoolPick.remaining"
+            :titleKey="cardPoolPick.pool.titleKey"
+            :candidatesKey="cardPoolPick.pool.candidatesKey"
+            :accent="cardPoolPick.pool.accent"
+            @choose="$emit('choose', $event)"
+          />
+          <PutBackInAnyOrder
+            v-else-if="putBackActive"
+            :game="game"
+            :playerId="playerId"
+          />
+          <div v-else-if="focusedCardGroups.length > 0 && choices.length > 0" class="modal">
             <div class="modal-contents searched-cards focused-cards">
               <div v-for="group in focusedCardGroups" :key="group.key" class="group">
                 <h2>{{ group.label }}</h2>
@@ -951,7 +1042,7 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
               </div>
             </div>
           </div>
-          <div v-if="searchedCards.length > 0 && choices.length > 0" class="modal">
+          <div v-if="searchedCards.length > 0 && choices.length > 0 && !cardPoolActive && !putBackActive" class="modal">
             <div class="modal-contents searched-cards">
               <div v-for="group in searchedCards" :key="group.key" class="group">
                 <h2>{{ group.label }}</h2>
@@ -983,26 +1074,28 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
                 <legend v-html="paymentAmountsLabel"></legend>
                 <div class="amount-choice-list">
                   <template v-for="amountChoice in paymentAmountsChoices" :key="amountChoice.choiceId">
-                    <div v-if="amountChoice.maxBound !== 0" class="amount-choice">
-                      <label :for="`payment-choice-${amountChoice.choiceId}`">{{ amountChoice.title }}</label>
-                      <span class="amount-input-wrapper">
+                    <div
+                      v-if="amountChoice.maxBound !== 0"
+                      class="amount-choice"
+                      :class="traumaKind(amountChoice.title) ? `amount-choice--${traumaKind(amountChoice.title)}` : null"
+                    >
+                      <label :for="`payment-choice-${amountChoice.choiceId}`">
                         <span
                           v-if="traumaIcon(amountChoice.title)"
-                          class="amount-input-icon"
-                          :class="`amount-input-icon--${traumaKind(amountChoice.title)}`"
+                          class="amount-choice-icon"
                           :style="traumaIconStyle(amountChoice.title)"
                         ></span>
-                        <input
-                          :id="`payment-choice-${amountChoice.choiceId}`"
-                          class="amount-input"
-                          :class="{ 'with-icon': traumaIcon(amountChoice.title) }"
-                          type="number"
-                          :min="amountChoice.minBound"
-                          :max="amountChoice.maxBound"
-                          v-model.number="amountSelections[amountChoice.choiceId]"
-                          onclick="this.select()"
-                        />
-                      </span>
+                        <span>{{ amountChoice.title }}</span>
+                      </label>
+                      <input
+                        :id="`payment-choice-${amountChoice.choiceId}`"
+                        class="amount-input"
+                        type="number"
+                        :min="amountChoice.minBound"
+                        :max="amountChoice.maxBound"
+                        v-model.number="amountSelections[amountChoice.choiceId]"
+                        onclick="this.select()"
+                      />
                     </div>
                   </template>
                 </div>
@@ -1035,27 +1128,29 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
                 <legend v-html="amountsLabel"></legend>
                 <div class="amount-choice-list">
                   <template v-for="paymentChoice in chooseAmountsChoices" :key="paymentChoice.choiceId">
-                    <div v-if="paymentChoice.maxBound !== 0" class="amount-choice">
-                      <label :for="`choice-${paymentChoice.choiceId}`" v-html="paymentChoiceLabel(paymentChoice.label)"></label>
-                      <span class="amount-input-wrapper">
+                    <div
+                      v-if="paymentChoice.maxBound !== 0"
+                      class="amount-choice"
+                      :class="traumaKind(paymentChoice.label) ? `amount-choice--${traumaKind(paymentChoice.label)}` : null"
+                    >
+                      <label :for="`choice-${paymentChoice.choiceId}`">
                         <span
                           v-if="traumaIcon(paymentChoice.label)"
-                          class="amount-input-icon"
-                          :class="`amount-input-icon--${traumaKind(paymentChoice.label)}`"
+                          class="amount-choice-icon"
                           :style="traumaIconStyle(paymentChoice.label)"
                         ></span>
-                        <input
-                          :id="`choice-${paymentChoice.choiceId}`"
-                          class="amount-input"
-                          :class="{ 'with-icon': traumaIcon(paymentChoice.label) }"
-                          type="number"
-                          :min="paymentChoice.minBound"
-                          :max="paymentChoice.maxBound"
-                          v-model.number="amountSelections[paymentChoice.choiceId]"
-                          :name="`choice-${paymentChoice.choiceId}`"
-                          onclick="this.select()"
-                        />
-                      </span>
+                        <span v-html="paymentChoiceLabel(paymentChoice.label)"></span>
+                      </label>
+                      <input
+                        :id="`choice-${paymentChoice.choiceId}`"
+                        class="amount-input"
+                        type="number"
+                        :min="paymentChoice.minBound"
+                        :max="paymentChoice.maxBound"
+                        v-model.number="amountSelections[paymentChoice.choiceId]"
+                        :name="`choice-${paymentChoice.choiceId}`"
+                        onclick="this.select()"
+                      />
                     </div>
                   </template>
                 </div>
@@ -1086,7 +1181,7 @@ const filteredCards = computed<{ choice: CardLabel; index: number }[]>(() => {
         <img :src="questionImage" class="card" />
       </div>
     </template>
-    <div v-if="doneLabel && doneIsFooter">
+    <div v-if="doneLabel && doneIsFooter" class="done-choice">
       <button class="done" @click="$emit('choose', doneLabel.index)" v-html="label(doneLabel.label)"></button>
     </div>
   </div>
@@ -1220,6 +1315,7 @@ section {
       content: "";
       filter: blur(0.25em);
       z-index: var(--z-index-1);
+      pointer-events: none;
     }
     h1 {
       color: #19214F;
@@ -1615,7 +1711,23 @@ h2 {
   max-width: 100%;
 }
 
+/* Two side by side leaves the label about 45px once the number field has taken
+   its 5.5rem, which clips "Physical" down to its first letter. Stack them. */
+@media (max-width: 700px) {
+  .amount-choice {
+    flex-basis: 100%;
+    max-width: 100%;
+  }
+
+  .amount-input {
+    padding: 0.75em 0.65em;
+  }
+}
+
 .amount-choice label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: #f6edf8;
   font-size: 1.05em;
   font-weight: 700;
@@ -1623,34 +1735,46 @@ h2 {
   text-align: left;
 }
 
-.amount-input-wrapper {
-  position: relative;
-  display: block;
-  min-width: 0;
+/* Physical and mental trauma are the same shape of question but not the same
+   decision, so each field carries its own colour rather than an icon tucked
+   inside a shared input. */
+.amount-choice--health {
+  background: rgba(174, 66, 54, 0.18);
+  border-color: rgba(232, 139, 128, 0.38);
 }
 
-.amount-input-icon {
-  position: absolute;
-  top: 50%;
-  left: 0.55em;
-  width: 1.1em;
-  height: 1.1em;
-  transform: translateY(-50%);
-  pointer-events: none;
+.amount-choice--horror {
+  background: rgba(44, 127, 192, 0.18);
+  border-color: rgba(124, 192, 240, 0.38);
+}
+
+.amount-choice--health label {
+  color: #f3c3bd;
+}
+
+.amount-choice--horror label {
+  color: #bcdff7;
+}
+
+.amount-choice--health .amount-input {
+  background: #f4ece9;
+}
+
+.amount-choice--horror .amount-input {
+  background: #e9eef4;
+}
+
+.amount-choice-icon {
+  flex-shrink: 0;
+  width: 1.15em;
+  height: 1.15em;
+  background-color: currentColor;
   mask-repeat: no-repeat;
   mask-position: center;
   mask-size: contain;
   -webkit-mask-repeat: no-repeat;
   -webkit-mask-position: center;
   -webkit-mask-size: contain;
-}
-
-.amount-input-icon--health {
-  background-color: #d44;
-}
-
-.amount-input-icon--horror {
-  background-color: #1f6fbf;
 }
 
 .amount-input {
@@ -1665,10 +1789,6 @@ h2 {
   font-weight: 800;
   text-align: center;
   box-sizing: border-box;
-}
-
-.amount-input.with-icon {
-  padding-left: 2em;
 }
 
 .amount-input::-webkit-inner-spin-button,
@@ -1788,6 +1908,13 @@ h2 {
 .extend-search:hover {
   background: rgba(214, 205, 174, 0.14);
   border-color: rgba(214, 205, 174, 0.7);
+}
+
+/* Keep focus rings inside clipped panels without changing button spacing. */
+.done:focus-visible,
+:deep(.question-choices button:focus-visible),
+:deep(.question-choices a.button:focus-visible) {
+  outline-offset: -4px;
 }
 
 .done {
@@ -1998,6 +2125,7 @@ h2 {
       content: "";
       filter: blur(0.25em);
       z-index: var(--z-index-1);
+      pointer-events: none;
     }
     h1 {
       color: #19214F;
@@ -2145,8 +2273,13 @@ h2 {
   gap: 10px;
 }
 
-.question-wrapper:has(.haunted) {
+.question-wrapper:has(.haunted, .token-reveal) {
   gap: 0;
+
+  :deep(button:active:not(:disabled)),
+  :deep(a.button:active) {
+    transform: none !important;
+  }
 
   :deep(.question-choices) {
     gap: 0;
@@ -2158,6 +2291,9 @@ h2 {
     padding: 0;
   }
 
+}
+
+.question-wrapper:has(.haunted) {
   .done,
   :deep(.question-choices button),
   :deep(.question-choices a.button) {
@@ -2200,4 +2336,5 @@ h2 {
     width: 100%;
   }
 }
+
 </style>

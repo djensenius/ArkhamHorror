@@ -5,6 +5,9 @@ import Arkham.Calculation (GameCalculation (Fixed))
 import Arkham.Card hiding (SkillType)
 import Arkham.ChaosToken
 import Arkham.Classes.HasGame (HasGame)
+import Arkham.Deck qualified as Deck
+import Arkham.Helpers.Act (getCurrentActStep)
+import Arkham.Helpers.Campaign (getCompletedSteps, getMaybeCampaignStoryCard, getOwner)
 import Arkham.Helpers.Doom (getDoomCount)
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Modifiers (ModifierType (..))
@@ -14,6 +17,7 @@ import Arkham.Homebrew.CircusExMortis.CardDefs.Agendas qualified as Agendas
 import Arkham.Homebrew.CircusExMortis.CardDefs.Assets qualified as Assets
 import Arkham.Homebrew.CircusExMortis.CardDefs.Enemies qualified as Enemies
 import Arkham.Homebrew.CircusExMortis.CardDefs.Locations qualified as Locations
+import Arkham.Homebrew.CircusExMortis.CardDefs.Treacheries qualified as Treacheries
 import Arkham.Homebrew.CircusExMortis.Helpers
 import Arkham.Homebrew.CircusExMortis.Key
 import Arkham.Homebrew.CircusExMortis.NowArriving
@@ -21,6 +25,7 @@ import Arkham.Homebrew.CircusExMortis.Sets qualified as Set
 import Arkham.Id (InvestigatorId)
 import Arkham.Investigator.Types (Field (InvestigatorHand))
 import Arkham.Matcher
+import Arkham.Message (pattern FailedThisSkillTest)
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
 import Arkham.Projection
@@ -29,9 +34,35 @@ import Arkham.Scenario.Import.Lifted
 import Arkham.Scenario.Types (Field (ScenarioActStack))
 import Arkham.SkillType (SkillType)
 import Arkham.Token qualified as Token
-import Arkham.Trait (Trait)
+import Arkham.Trait (Trait (DarkYoung, Hazard))
 import Arkham.Trait qualified as Trait
-import Arkham.Treachery.CardDefs.CurseOfTheRougarou qualified as Treacheries
+import Arkham.Treachery.CardDefs.CurseOfTheRougarou qualified as TreacheryCards
+
+{- | The guide offers Curse of the Rougarou between Harm's Way and All Points West;
+this scenario reads its Back on Track intro when the side story was the most recently
+completed scenario. Completion itself is recorded by the official scenario's
+resolutions (the TheRougarou* campaign log keys).
+-}
+playedCurseOfTheRougarouEnRoute :: HasGame m => m Bool
+playedCurseOfTheRougarouEnRoute = do
+  steps <- getCompletedSteps
+  -- completed steps are stored most-recent-first
+  pure $ case mapMaybe (.scenario) steps of
+    (sid : _) -> sid == curseOfTheRougarouId
+    _ -> False
+
+{- | Upgrade a campaign story card to a different printing in place. Unlike
+'swapCampaignCard' this keeps the card id, so the copy already dealt into the current
+scenario's deck becomes the new card too rather than only the campaign store (which
+would not take effect until the next scenario).
+-}
+upgradeCampaignCard :: ReverseQueue m => CardDef -> CardDef -> m ()
+upgradeCampaignCard old new = do
+  mOwner <- getOwner old
+  mCard <- getMaybeCampaignStoryCard old
+  for_ ((,) <$> mOwner <*> mCard) \(iid, card) -> do
+    new' <- setOwner iid (lookupCard new card.id)
+    push $ ReplaceCard card.id new'
 
 newtype AllPointsWest = AllPointsWest ScenarioAttrs
   deriving anyclass (IsScenario, HasModifiersFor)
@@ -39,7 +70,14 @@ newtype AllPointsWest = AllPointsWest ScenarioAttrs
 
 allPointsWest :: Difficulty -> AllPointsWest
 allPointsWest difficulty =
-  scenario AllPointsWest ":circus-ex-mortis:074" "All Points West" difficulty []
+  scenario
+    AllPointsWest
+    ":circus-ex-mortis:074"
+    "All Points West"
+    difficulty
+    [ "equals square    star heart"
+    , "moon   hourglass plus ."
+    ]
 
 freightCars :: [CardDef]
 freightCars =
@@ -183,30 +221,54 @@ instance HasChaosTokenValue AllPointsWest where
 instance RunMessage AllPointsWest where
   runMessage msg s@(AllPointsWest attrs) = runQueueT $ scenarioI18n "allPointsWest" $ case msg of
     PreScenarioSetup -> scope "intro" do
+      flavor $ h "title" >> p "check"
       fromNewOrleans <- playedCurseOfTheRougarouEnRoute
       if fromNewOrleans
         then do
-          scope "backOnTrack" $ flavor $ setTitle "title" >> p "body"
-          -- The granted reactions themselves live on the campaign; this reads the flavor only.
-          whenM (selectAny $ DeckWith $ HasCard $ cardIs Treacheries.curseOfTheRougarou)
-            $ scope "whatAHorribleNight"
-            $ flavor
-            $ setTitle "title"
-            >> p "body"
-          whenM (selectAny $ DeckWith $ HasCard $ cardIs AssetCards.ladyEsprit)
-            $ scope "goodJuju"
-            $ flavor
-            $ setTitle "title"
-            >> p "body"
-        else scope "rightOnSchedule" $ flavor $ setTitle "title" >> p "body"
+          cursed <- selectAny $ DeckWith $ HasCard $ cardIs TreacheryCards.curseOfTheRougarou
+          when cursed do
+            upgradeCampaignCard TreacheryCards.curseOfTheRougarou Treacheries.curseOfTheRougarou
+          goodJuju <- selectAny $ DeckWith $ HasCard $ cardIs AssetCards.ladyEsprit
+          when goodJuju do
+            upgradeCampaignCard AssetCards.ladyEsprit Assets.ladyEsprit
+
+          flavor do
+            h "title"
+            p "backOnTrack"
+            p.green.validate cursed "whatAHorribleNight"
+            p.green.validate goodJuju "goodJuju"
+            ul do
+              li "fromNewOrleans"
+              li "skipToSetup"
+        else flavor do
+          h "title"
+          p "rightOnSchedule"
+          ul do
+            li "fromArkham"
+            li "proceedToSetup"
       pure s
     Setup -> runScenarioSetup AllPointsWest attrs do
+      fromNewOrleans <- playedCurseOfTheRougarouEnRoute
+
+      setup $ ul do
+        li "gatherSets"
+        li.validate (not fromNewOrleans) "fromArkham"
+        li.validate fromNewOrleans "fromNewOrleans"
+        li "placeLocations"
+        li "allies"
+        li "setAside"
+        li.nested.byDifficulty "addTokens" do
+          li.validate (attrs.difficulty == Easy) "easy"
+          li.validate (attrs.difficulty == Standard) "standard"
+          li.validate (attrs.difficulty == Hard) "hard"
+          li.validate (attrs.difficulty == Expert) "expert"
+        unscoped $ li "shuffleRemainder"
+
       gather Set.AllPointsWest
       gather Set.CultOfShubNiggurath
       gather Set.NewMoonDaredevils
       gather Set.PrimordialEvils
 
-      fromNewOrleans <- playedCurseOfTheRougarouEnRoute
       let (act1, unusedAct1) =
             if fromNewOrleans
               then (Acts.throughTheForestsVII, Acts.throughTheForestsVI)
@@ -238,14 +300,25 @@ instance RunMessage AllPointsWest where
 
       setAgendaDeck [Agendas.scheduleToKeep]
       setActDeck [act1, Acts.noFreeRides, Acts.engineTrouble, Acts.theGreatTrainHorror]
-    ScenarioSpecific key v | key == nowArrivingKey -> do
+    ScenarioSpecific key v | key == nowArrivingKey -> scope "interludes" do
       for_ (maybeResult v) \arrival -> do
         doom <- getDoomCount
         let interlude = interludeFor arrival (doom <= 6)
-        scope "interludes" $ scope interlude.interludeKey do
-          storyWithChooseOneM' (setTitle "title" >> p "body") do
-            labeled' (optionLabel interlude.interludeOption) $ doStep 1 msg
-            labeled' interlude.interludeSkipLabel $ daysBehind interlude.interludeSkipResources
+        canAfford <- case interlude.interludeOption of
+          TestOption {} -> pure True
+          IconTax _ n ts -> do
+            cards <- iconTaxCandidates
+            reduction <- countTraits ts
+            pure $ sum (map (iconCount . snd) cards) >= n - reduction
+          AssetTax _ n ts -> do
+            assets <- selectCount $ DiscardableAsset <> NonWeaknessAsset <> AssetControlledBy Anyone
+            reduction <- countTraits ts
+            pure $ assets >= n - reduction
+
+        storyWithChooseOneM (setTitle "title" >> scope interlude.interludeKey (p.green "body")) do
+          scope interlude.interludeKey do
+            labeledValidate canAfford (optionLabel interlude.interludeOption) $ doStep 1 msg
+            labeled interlude.interludeSkipLabel $ daysBehind interlude.interludeSkipResources
       pure s
     DoStep 1 (ScenarioSpecific key v) | key == nowArrivingKey -> do
       for_ (maybeResult v) \arrival -> do
@@ -255,7 +328,7 @@ instance RunMessage AllPointsWest where
             lead <- getLead
             setScenarioMetaKey interludeFailureKey failResources
             investigators <- select UneliminatedInvestigator
-            chooseOneM lead $ targets investigators (`forInvestigator` msg)
+            chooseOrRunOneM lead $ targets investigators (`forInvestigator` msg)
           IconTax _ owed traits -> do
             reduction <- countTraits traits
             push $ ScenarioSpecific iconTaxKey $ toJSON $ max 0 (owed - 2 * reduction)
@@ -300,13 +373,38 @@ instance RunMessage AllPointsWest where
           toDiscardBy lead ScenarioSource aid
           push $ ScenarioSpecific assetTaxKey $ toJSON (owed - 1)
       pure s
-    FailedSkillTest _ _ _ (isTarget ScenarioTarget -> True) _ _ -> do
-      owed <- getScenarioMetaKeyDefault interludeFailureKey (0 :: Int)
-      daysBehind owed
+    FailedThisSkillTest _ ScenarioSource -> do
+      daysBehind =<< getScenarioMetaKeyDefault interludeFailureKey 0
+      pure s
+    FailedSkillTestWithToken _ Cultist | isEasyStandard attrs -> do
+      withMatch (locationIs Locations.locomotiveEngine) $ placeDoomOn Cultist 1
+      pure s
+    ResolveChaosToken _ Cultist _iid | isHardExpert attrs -> do
+      withMatch (locationIs Locations.locomotiveEngine) $ placeDoomOn Cultist 1
+      pure s
+    FailedSkillTestWithToken iid Tablet | isEasyStandard attrs -> do
+      findTopOfDiscard (#treachery <> withTrait Hazard)
+        >>= traverse_ (drawCardFrom iid Deck.EncounterDiscard)
+      pure s
+    ResolveChaosToken _ Tablet iid | isHardExpert attrs -> do
+      findTopOfDiscard (#treachery <> withTrait Hazard)
+        >>= traverse_ (drawCardFrom iid Deck.EncounterDiscard)
+      pure s
+    FailedSkillTestWithToken iid ElderThing | isEasyStandard attrs -> do
+      darkYoung <- select $ enemy_ $ #exhausted <> withTrait DarkYoung
+      chooseTargetM iid darkYoung readyThis
+      pure s
+    ResolveChaosToken _ ElderThing iid | isHardExpert attrs -> do
+      darkYoung <- select $ enemy_ $ #exhausted <> withTrait DarkYoung
+      chooseTargetM iid darkYoung readyThis
       pure s
     ScenarioResolution r -> scope "resolutions" do
       case r of
-        _ | r `elem` [NoResolution, Resolution 1] -> do
+        NoResolution -> do
+          resolution "noResolution"
+          act <- getCurrentActStep
+          push $ if act < 4 then R1 else R2
+        Resolution 1 -> do
           remaining <- scenarioFieldMap ScenarioActStack (length . findWithDefault [] 1)
           resolution "resolution1"
           daysBehind (2 * remaining)
