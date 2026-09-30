@@ -3131,23 +3131,12 @@ spec = describe "Native client contract fixtures" do
     let
       assertAssignment questionFile expectedKind = do
         question <- loadQuestionFixture questionFile
-        QuestionPresentation.questionPresentation 38 question
-          `shouldBe` QuestionPresentation.QuestionPresentation
-            38
-            "chooseOne"
-            1
-            [ QuestionPresentation.ChoicePresentation
-                0
-                expectedKind
-                Nothing
-                ( Just
-                    $ QuestionPresentation.InvestigatorEntity
-                    $ InvestigatorId "01001"
-                )
-                Nothing
-                Nothing
-                Nothing
-            ]
+        case QuestionPresentation.questionPresentation 38 question of
+          QuestionPresentation.QuestionPresentation _ "chooseOne" 1
+            [QuestionPresentation.ChoicePresentation 0 kind Nothing entity Nothing Nothing Nothing] -> do
+              kind `shouldBe` expectedKind
+              entity `shouldBe` Just (QuestionPresentation.InvestigatorEntity $ InvestigatorId "01001")
+          other -> expectationFailure $ "Expected one assignment descriptor, got " <> show other
     assertAssignment
       "question-gathering-attic-horror-assignment.json"
       QuestionPresentation.AssignHorror
@@ -4044,27 +4033,17 @@ spec = describe "Native client contract fixtures" do
             q38Actions `shouldBe` 1
             q38Damage `shouldBe` 1
             q38Horror `shouldBe` 3
-            Map.lookup
+            case Map.lookup
               fixturePlayerId
               ( QuestionPresentation.questionPresentations
                   (gameScenarioSteps q38Game)
                   (gameQuestion q38Game)
-              )
-              `shouldBe` Just
-                ( QuestionPresentation.QuestionPresentation
-                    38
-                    "chooseOne"
-                    1
-                    [ QuestionPresentation.ChoicePresentation
-                        0
-                        assignmentKind
-                        Nothing
-                        (Just $ QuestionPresentation.InvestigatorEntity iid)
-                        Nothing
-                        Nothing
-                        Nothing
-                    ]
-                )
+              ) of
+              Just (QuestionPresentation.QuestionPresentation _ "chooseOne" 1
+                [QuestionPresentation.ChoicePresentation 0 kind Nothing entity Nothing Nothing Nothing]) -> do
+                  kind `shouldBe` assignmentKind
+                  entity `shouldBe` Just (QuestionPresentation.InvestigatorEntity iid)
+              other -> expectationFailure $ "Expected the assignment presentation, got " <> show other
 
           q38AnswerVersion <- answerFixturePlayerQuestion 0
           q39Game <- getGame
@@ -4497,12 +4476,10 @@ spec = describe "Native client contract fixtures" do
             messages
         _ -> error "Expected an AbilityLabel fixture"
       assertOmitted choice =
-        QuestionPresentation.questionPresentation 68 (WindowChooseOne [choice])
-          `shouldBe` QuestionPresentation.QuestionPresentation
-            68
-            "windowChooseOne"
-            1
-            []
+        case QuestionPresentation.questionPresentation 68 (WindowChooseOne [choice]) of
+          QuestionPresentation.QuestionPresentation _ "windowChooseOne" 1
+            [QuestionPresentation.ChoicePresentation 0 QuestionPresentation.UseAbility _ _ _ _ _] -> pure ()
+          other -> expectationFailure $ "Expected one generic fallback ability descriptor, got " <> show other
     case fixtureCoverUpForcedQuestion of
       WindowChooseOne [choice] ->
         for_
