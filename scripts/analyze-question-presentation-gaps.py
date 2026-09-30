@@ -59,35 +59,41 @@ READ_CHOICE_TAGS = {
     "LeadInvestigatorMustDecide",
 }
 PRESENTATION_QUESTION_KINDS = {
+    "ChooseAmounts": "chooseAmounts",
+    "ChooseDeck": "chooseDeck",
+    "ChooseExchangeAmounts": "chooseExchangeAmounts",
+    "ChooseJoinDeck": "chooseJoinDeck",
     "ChooseN": "chooseN",
     "ChooseOne": "chooseOne",
     "ChooseOneAtATime": "chooseOneAtATime",
+    "ChooseOneAtATimeWithAuto": "chooseOneAtATimeWithAuto",
+    "ChooseOneFromEach": "chooseOneFromEach",
+    "ChooseOneWizard": "chooseOneWizard",
+    "ChoosePaymentAmounts": "choosePaymentAmounts",
     "ChooseSome": "chooseSome",
-    "ChooseSome1": "chooseSome",
+    "ChooseSome1": "chooseSome1",
     "ChooseUpToN": "chooseUpToN",
+    "ChooseUpgradeDeck": "chooseUpgradeDeck",
+    "ContinueCampaign": "continueCampaign",
+    "DropDown": "dropDown",
+    "PickCampaignSettings": "pickCampaignSettings",
+    "PickCampaignSpecific": "pickCampaignSpecific",
+    "PickDestiny": "pickDestiny",
+    "PickScenarioSettings": "pickScenarioSettings",
+    "PickScenarioSpecific": "pickScenarioSpecific",
+    "PickSupplies": "pickSupplies",
     "PlayerWindowChooseOne": "playerWindowChooseOne",
     "Read": "read",
     "WindowChooseOne": "windowChooseOne",
 }
 PRESENTATION_CHOICE_KINDS = {
-    "advanceAct",
-    "advanceAgenda",
-    "applySkillTestResults",
-    "chooseTarget",
-    "drawCard",
-    "drawEncounterCard",
-    "endTurn",
-    "engage",
-    "evade",
-    "fight",
-    "gainResource",
-    "investigate",
-    "localizedLabel",
-    "skipTriggers",
-    "startSkillTest",
-    "useAbility",
+    "advanceAct", "advanceAgenda", "applySkillTestResults", "assignDamage", "assignHorror", "auto",
+    "auxiliaryComponentLabel", "cardPile", "chaosTokenGroupChoice", "chaosTokenLabel", "chooseTarget",
+    "componentLabel", "connectionLabel", "costLabel", "drawCard", "drawEncounterCard", "effectActionButton",
+    "endTurn", "engage", "evade", "fight", "gainResource", "info", "invalidLabel", "investigate",
+    "keyLabel", "localizedLabel", "move", "opaque", "resolveForcedAbility", "skillLabel", "skipTriggers",
+    "startSkillTest", "tarotLabel", "useAbility", "wizardChoice",
 }
-
 
 @dataclass(frozen=True, order=True)
 class GapKey:
@@ -282,9 +288,9 @@ def trusted_source_indices(
     if (
         isinstance(protocol_version, bool)
         or not isinstance(protocol_version, int)
-        or protocol_version != 1
+        or protocol_version != 2
     ):
-        diagnostics.append(f"{context}: presentation protocolVersion is not 1")
+        diagnostics.append(f"{context}: presentation protocolVersion is not 2")
         return set()
     question_version = presentation.get("questionVersion")
     if (
@@ -611,7 +617,7 @@ def run_self_test() -> None:
     diagnostics: list[str] = []
     trusted = trusted_source_indices(
         {
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "questionVersion": 34,
             "questionKind": "playerWindowChooseOne",
             "choiceCount": 2,
@@ -641,11 +647,11 @@ def run_self_test() -> None:
         pointer="",
         player_id=None,
         question={
-            "tag": "ChooseDeck",
+            "tag": "UnsupportedQuestion",
             "choices": [{"tag": "Label", "label": "deck", "messages": []}],
         },
         presentation={
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "questionVersion": 1,
             "questionKind": "chooseOne",
             "choiceCount": 1,
@@ -681,11 +687,11 @@ def run_self_test() -> None:
             "choices": question["choices"],
         },
         presentation={
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "questionVersion": 34,
-            "questionKind": "unsupported",
-            "choiceCount": 0,
-            "choices": [],
+            "questionKind": "chooseOneAtATimeWithAuto",
+            "choiceCount": 2,
+            "choices": [{"sourceIndex": 0, "kind": "auto"}, {"sourceIndex": 1, "kind": "localizedLabel"}],
         },
         expected_version=34,
     )
@@ -696,8 +702,8 @@ def run_self_test() -> None:
             auto_choice_analysis.described_choice_count,
             sum(auto_choice_analysis.counts.values()),
         )
-        == (1, 2, 0, 2),
-        "auto-prefixed answer indexes must remain unsupported and visible as gaps",
+        == (1, 2, 2, 0),
+        "auto-prefixed answer indexes must be trusted when v2 presentation is complete",
     )
     require(
         not auto_choice_analysis.diagnostics,
@@ -718,7 +724,7 @@ def run_self_test() -> None:
             },
             "questionPresentation": {
                 "player": {
-                    "protocolVersion": 1,
+                    "protocolVersion": 2,
                     "questionVersion": 34,
                     "questionKind": "playerWindowChooseOne",
                     "choiceCount": 2,
@@ -763,7 +769,7 @@ def run_self_test() -> None:
         player_id=None,
         question=question,
         presentation={
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "questionVersion": 34,
             "questionKind": "playerWindowChooseOne",
             "choiceCount": 2,
@@ -791,7 +797,7 @@ def run_self_test() -> None:
     diagnostics = []
     trusted = trusted_source_indices(
         {
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "questionVersion": 33,
             "questionKind": "playerWindowChooseOne",
             "choiceCount": 2,
@@ -807,12 +813,12 @@ def run_self_test() -> None:
     require(len(diagnostics) == 1, f"unexpected mismatch diagnostics: {diagnostics}")
 
     for field, value, expected_message in (
-        ("protocolVersion", True, "protocolVersion is not 1"),
+        ("protocolVersion", True, "protocolVersion is not 2"),
         ("questionKind", "chooseOne", "questionKind does not match"),
         ("choiceCount", 1, "choiceCount does not match"),
     ):
         presentation = {
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "questionVersion": 34,
             "questionKind": "playerWindowChooseOne",
             "choiceCount": 2,
@@ -850,7 +856,7 @@ def run_self_test() -> None:
         diagnostics = []
         trusted = trusted_source_indices(
             {
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "questionVersion": 34,
                 "questionKind": "playerWindowChooseOne",
                 "choiceCount": 2,
