@@ -3492,7 +3492,7 @@ spec = describe "Native client contract fixtures" do
         , EndTurnButton iid [ClearUI]
         , StartSkillTestButton iid
         , SkillTestApplyResultsButton
-        , ChaosTokenGroupChoice GameSource iid Draw
+        , ChaosTokenGroupChoice (ProxySource (LocationSource locationId) GameSource) iid Draw
         , EffectActionButton (Tooltip "$effect.tooltip") effectId [ClearUI]
         , Done "$done"
         , SkipTriggersButton iid
@@ -3508,7 +3508,7 @@ spec = describe "Native client contract fixtures" do
         , ChooseOneFromEach [[Label "$a" [ClearUI]], [Label "$b" [ClearUI]]]
         , ChooseN 1 [Label "$a" [ClearUI], Label "$b" [ClearUI]]
         , ChooseSome [Label "$a" [ClearUI], Done "$done"]
-        , ChooseSome1 "$done" [Label "$a" [ClearUI]]
+        , ChooseSome1 "$done" [Label "$a" [ClearUI], Done "$done"]
         , ChooseUpToN 1 [Label "$a" [ClearUI], Done "$done"]
         , ChooseOneAtATime [Label "$a" [ClearUI], Label "$b" [ClearUI]]
         , ChooseOneAtATimeWithAuto "$auto" [Label "$a" [ClearUI], Label "$b" [ClearUI]]
@@ -3519,11 +3519,11 @@ spec = describe "Native client contract fixtures" do
         , ChooseJoinDeck []
         , QuestionLabel "$wrapped" (Just "01001") labelQuestion
         , PayCostQuestion Cost.Free labelQuestion
-        , QuestionWithSource (LocationSource locationId) (Just $ Tooltip "$source.tooltip") labelQuestion
+        , QuestionWithSource (ProxySource (LocationSource locationId) GameSource) (Just $ Tooltip "$source.tooltip") labelQuestion
         , Read mempty (BasicReadChoices [Label "$read" [ClearUI]]) Nothing
         , ChooseOneWizard mempty [WizardChoice "$wizard" mempty [ClearUI]] "$confirm" "$back"
         , PickSupplies 0 [] [Label "$supply" [ClearUI]] False
-        , PickDestiny []
+        , PickDestiny [DestinyDrawing "scenario" (TarotCard Upright TheFool0)]
         , DropDown [("$option", ClearUI)]
         , PickScenarioSettings
         , PickCampaignSettings
@@ -3540,6 +3540,20 @@ spec = describe "Native client contract fixtures" do
     questionConstructorNames
       `shouldBe` [ "ChooseOne", "PlayerWindowChooseOne", "WindowChooseOne", "ChooseOneFromEach", "ChooseN", "ChooseSome", "ChooseSome1", "ChooseUpToN", "ChooseOneAtATime", "ChooseOneAtATimeWithAuto", "ChoosePaymentAmounts", "ChooseAmounts", "ChooseUpgradeDeck", "ChooseDeck", "ChooseJoinDeck", "QuestionLabel", "PayCostQuestion", "QuestionWithSource", "Read", "ChooseOneWizard", "PickSupplies", "PickDestiny", "DropDown", "PickScenarioSettings", "PickCampaignSettings", "PickCampaignSpecific", "PickScenarioSpecific", "ChooseExchangeAmounts", "ContinueCampaign" ]
     traverse_ assertComplete representativeQuestions
+    let
+      representativeNames =
+        [ "chooseOne-all-ui", "playerWindowChooseOne", "windowChooseOne", "chooseOneFromEach", "chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "choosePaymentAmounts-null-target", "chooseAmounts", "chooseUpgradeDeck", "chooseDeck", "chooseJoinDeck", "questionLabel", "payCostQuestion", "questionWithProxySource", "read", "chooseOneWizard", "pickSupplies", "pickDestiny", "dropDown", "pickScenarioSettings", "pickCampaignSettings", "pickCampaignSpecific", "pickScenarioSpecific", "chooseExchangeAmounts", "continueCampaign" ]
+      representativeFixture =
+        Aeson.object
+          [ "presentations"
+              .= [ Aeson.object
+                    [ "name" .= name
+                    , "presentation" .= QuestionPresentation.questionPresentation (300 + index) question
+                    ]
+                 | (index, (name, question)) <- zip [0 :: Int ..] (zip representativeNames representativeQuestions)
+                 ]
+          ]
+    loadFixture "question-presentation-representatives.json" >>= (`shouldBe` representativeFixture)
 
   it "matches generic presentation v2 golden fixtures from the real encoder" do
     let

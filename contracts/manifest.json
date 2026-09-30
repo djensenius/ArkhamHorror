@@ -48,7 +48,9 @@
     "contracts/fixtures/locale-catalog-owned-files.json",
     "contracts/fixtures/locale-catalog-source-de.json",
     "contracts/fixtures/locale-catalog-source-en.json",
-    "contracts/fixtures/locale-catalog-source-pt-BR.json"
+    "contracts/fixtures/locale-catalog-source-pt-BR.json",
+    "contracts/schemas/question-presentation-representatives.schema.json",
+    "contracts/schemas/raw-question-fixture.schema.json"
   ],
   "fixtures": [
     {
@@ -60,108 +62,12 @@
       "schema": "contracts/schemas/achievements.schema.json"
     },
     {
-      "path": "contracts/fixtures/act-no-advance-cost.json",
-      "schema": "contracts/schemas/act.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-amounts.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-apply-overlay.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-campaign-settings.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-campaign-specific.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-campaign-step.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-deck-list.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-deck.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-enemy-attack-assign-damage.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-enemy-attack-assign-horror.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-damage.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-horror.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-enemy-attack.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-exchange-amounts.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-join-campaign.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-payment-amounts.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-pick-destiny.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-question.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-raw.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-rejoin-investigator.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-retire-investigator.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-scenario-specific.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/answer-standalone-settings.json",
-      "schema": "contracts/schemas/client-answer.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/capabilities-locale-catalog.json",
-      "schema": "contracts/schemas/capabilities.schema.json"
-    },
-    {
       "path": "contracts/fixtures/capabilities.json",
       "schema": "contracts/schemas/capabilities.schema.json"
     },
     {
-      "path": "contracts/fixtures/card-code-entity-map.json",
-      "schema": "contracts/schemas/card-code-entity-map.schema.json"
+      "path": "contracts/fixtures/capabilities-locale-catalog.json",
+      "schema": "contracts/schemas/capabilities.schema.json"
     },
     {
       "path": "contracts/fixtures/catalog.json",
@@ -172,191 +78,31 @@
       "schema": "contracts/schemas/decks.schema.json"
     },
     {
-      "path": "contracts/fixtures/event-changed.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-achievement.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-audio.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-card-only.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-card.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-error.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
       "path": "contracts/fixtures/game-lifecycle.json",
       "schema": "contracts/schemas/game-lifecycle.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-list.json",
-      "schema": "contracts/schemas/game-list.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-message.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-playability-info.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-show-discard.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-show-under.json",
-      "schema": "contracts/schemas/server-message.schema.json"
     },
     {
       "path": "contracts/fixtures/game-step.json",
       "schema": "contracts/schemas/game-step.schema.json"
     },
     {
-      "path": "contracts/fixtures/game-tarot.json",
-      "schema": "contracts/schemas/server-message.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/game-ui.json",
-      "schema": "contracts/schemas/server-message.schema.json"
+      "path": "contracts/fixtures/replay-attestation.json",
+      "schema": "contracts/schemas/replay-attestation.schema.json"
     },
     {
       "path": "contracts/fixtures/game-update.json",
       "schema": "contracts/schemas/server-message.schema.json"
     },
     {
+      "path": "contracts/fixtures/game-list.json",
+      "schema": "contracts/schemas/game-list.schema.json"
+    },
+    {
       "path": "contracts/fixtures/get-game.json",
       "schema": "contracts/schemas/get-game.schema.json"
     },
     {
-      "path": "contracts/fixtures/investigator-unhealed-horror-negative.json",
-      "schema": "contracts/schemas/investigator.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/location-enemy-view.json",
-      "schema": "contracts/schemas/location.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/mode-campaign-only.json",
-      "schema": "contracts/schemas/mode.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/mode-campaign-scenario.json",
-      "schema": "contracts/schemas/mode.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/mode-turn-zero.json",
-      "schema": "contracts/schemas/mode.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/movement.json",
-      "schema": "contracts/schemas/movement.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-agenda-advance.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-agenda-consequence.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-agenda-horror-assignment.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-choose-one-location-multiple.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-choose-one-location.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
       "path": "contracts/fixtures/question-choose-one.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-cover-up-reaction.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-encounter-deck-draw.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-enemy-attack.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-gathering-act-advance.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-gathering-act-objective.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-gathering-attic-entry-forced.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-gathering-attic-horror-assignment.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-gathering-cellar-damage-assignment.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-gathering-cellar-entry-forced.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-gathering-movement.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-investigate-apply-results.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-investigate-commit.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-investigate-fast-window.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-investigate-reveal-window.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
-    },
-    {
-      "path": "contracts/fixtures/question-mulligan.json",
       "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
@@ -372,36 +118,336 @@
       "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-presentation-encounter-deck-draw.json",
-      "schema": "contracts/schemas/question-presentation.schema.json"
+      "path": "contracts/fixtures/question-roland-defeat-reaction.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-presentation-gathering-act-advance.json",
-      "schema": "contracts/schemas/question-presentation.schema.json"
+      "path": "contracts/fixtures/question-cover-up-reaction.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-gathering-act-objective.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
       "path": "contracts/fixtures/question-presentation-gathering-act-objective.json",
       "schema": "contracts/schemas/question-presentation.schema.json"
     },
     {
+      "path": "contracts/fixtures/question-gathering-act-advance.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-gathering-act-advance.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-gathering-movement.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-gathering-movement.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-gathering-attic-entry-forced.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
       "path": "contracts/fixtures/question-presentation-gathering-attic-entry-forced.json",
       "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-gathering-attic-horror-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
       "path": "contracts/fixtures/question-presentation-gathering-attic-horror-assignment.json",
       "schema": "contracts/schemas/question-presentation.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-presentation-gathering-cellar-damage-assignment.json",
-      "schema": "contracts/schemas/question-presentation.schema.json"
+      "path": "contracts/fixtures/question-gathering-cellar-entry-forced.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
     },
     {
       "path": "contracts/fixtures/question-presentation-gathering-cellar-entry-forced.json",
       "schema": "contracts/schemas/question-presentation.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-presentation-gathering-movement.json",
+      "path": "contracts/fixtures/question-gathering-cellar-damage-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-gathering-cellar-damage-assignment.json",
       "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-round-end-forced-ability.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-treachery-forced-ability.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-treachery-forced-ability.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-agenda-advance.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-agenda-consequence.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-agenda-horror-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-window-choose-one.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-investigate-fast-window.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-investigate-commit.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-investigate-reveal-window.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-investigate-apply-results.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-encounter-deck-draw.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-encounter-deck-draw.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-read.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-read-scenario-intro.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-mulligan.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-read-with-cards.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-choose-one-location.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-choose-one-location-multiple.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/mode-campaign-only.json",
+      "schema": "contracts/schemas/mode.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/mode-campaign-scenario.json",
+      "schema": "contracts/schemas/mode.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/mode-turn-zero.json",
+      "schema": "contracts/schemas/mode.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/location-enemy-view.json",
+      "schema": "contracts/schemas/location.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/movement.json",
+      "schema": "contracts/schemas/movement.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/act-no-advance-cost.json",
+      "schema": "contracts/schemas/act.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/investigator-unhealed-horror-negative.json",
+      "schema": "contracts/schemas/investigator.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/uuid-entity-map.json",
+      "schema": "contracts/schemas/uuid-entity-map.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/card-code-entity-map.json",
+      "schema": "contracts/schemas/card-code-entity-map.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-error.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-message.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-ui.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-audio.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-card.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-card-only.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-tarot.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-show-discard.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-show-under.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-achievement.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/game-playability-info.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/shared-state-update.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/event-changed.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-question.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-raw.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-payment-amounts.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-amounts.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-standalone-settings.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-campaign-settings.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-deck.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-deck-list.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-pick-destiny.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-campaign-specific.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-scenario-specific.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-exchange-amounts.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-campaign-step.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-enemy-attack.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-enemy-attack-damage-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack-assign-damage.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack-assign-horror.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-enemy-attack-remaining-horror-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-horror.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-enemy-attack-remaining-damage-assignment.json",
+      "schema": "contracts/schemas/basic-choice-question.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-damage.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-apply-overlay.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-join-campaign.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-rejoin-investigator.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-retire-investigator.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
     },
     {
       "path": "contracts/fixtures/question-presentation-generic-choose-amounts.json",
@@ -456,48 +502,60 @@
       "schema": "contracts/schemas/question-presentation.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-presentation-treachery-forced-ability.json",
-      "schema": "contracts/schemas/question-presentation.schema.json"
+      "path": "contracts/fixtures/question-presentation-representatives.json",
+      "schema": "contracts/schemas/question-presentation-representatives.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-read-scenario-intro.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
+      "path": "contracts/fixtures/question-generic-choose-amounts.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-read-with-cards.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
+      "path": "contracts/fixtures/question-generic-choose-deck.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-read.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
+      "path": "contracts/fixtures/question-generic-choose-n.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-roland-defeat-reaction.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
+      "path": "contracts/fixtures/question-generic-choose-some.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-round-end-forced-ability.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
+      "path": "contracts/fixtures/question-generic-choose-up-to-n.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-treachery-forced-ability.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
+      "path": "contracts/fixtures/question-generic-cost-ability-window.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/question-window-choose-one.json",
-      "schema": "contracts/schemas/basic-choice-question.schema.json"
+      "path": "contracts/fixtures/question-generic-invalid-info.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/replay-attestation.json",
-      "schema": "contracts/schemas/replay-attestation.schema.json"
+      "path": "contracts/fixtures/question-generic-one-at-a-time-auto.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/shared-state-update.json",
-      "schema": "contracts/schemas/server-message.schema.json"
+      "path": "contracts/fixtures/question-generic-one-from-each.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     },
     {
-      "path": "contracts/fixtures/uuid-entity-map.json",
-      "schema": "contracts/schemas/uuid-entity-map.schema.json"
+      "path": "contracts/fixtures/question-generic-payment-amounts.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-read.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-skill-label.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-wrapped.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     }
   ],
   "compatibility": {
@@ -16094,8 +16152,8 @@
     "contracts/fixtures/game-step.json": "441768cb79f54c925cd912b35d9650653be57232997ab4f593294fc622f01013",
     "contracts/fixtures/game-tarot.json": "a7c1c85cf8a607b395070fdd73f18a50b7c73e8a28a4ba4b7c444ec2f982bb6b",
     "contracts/fixtures/game-ui.json": "f96c401c965471510a003fdc497391369bd3930389967d1fa8a94ab43ea9f95a",
-    "contracts/fixtures/game-update.json": "fdee5276f4bc927fd9e712a03080ea53340291b1a4f217ec2c5c7dbaee493c61",
-    "contracts/fixtures/get-game.json": "c5b9aa1b4f4c4e826e792c1dbabd804395033b44366dd5b4496c2059a8424d1e",
+    "contracts/fixtures/game-update.json": "1c72d670d73e20f7923c8abc8817a89f198418bde23d1f0577e25386638ef827",
+    "contracts/fixtures/get-game.json": "9747de6984c2028a043f9fd5a20b29179ad0980705b010e5a196f9eb4cb8a80c",
     "contracts/fixtures/investigator-unhealed-horror-negative.json": "f251bd1a525fa0eb9508db084fbe7fb86928ec1ecb4472cf0c79cbaf9478762f",
     "contracts/fixtures/locale-catalog-backend-registry.json": "3f39e0f443341bc194a2ba645584007a161875d2e1981bb9c16c8f466880c6c4",
     "contracts/fixtures/locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json": "2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448",
@@ -16131,6 +16189,19 @@
     "contracts/fixtures/question-gathering-cellar-damage-assignment.json": "1d746cbaa060ef427516d1b949c2e40600c19a86762a0eb892db1f3ade916473",
     "contracts/fixtures/question-gathering-cellar-entry-forced.json": "ea7c802ed3064fda9707c595ac98a3d96f8b6d4c923ae5ff4657f1e7379beba4",
     "contracts/fixtures/question-gathering-movement.json": "bfef8a3ead15a37cd119da96e9173f9d8c01e17b9b29abb0d4dd920fd277221f",
+    "contracts/fixtures/question-generic-choose-amounts.json": "fc587b6b9962db5bf585ca71524ade287847b121a42bd85d3c0ca09f01f03c73",
+    "contracts/fixtures/question-generic-choose-deck.json": "839049ffb1bf6bc2cf56955b4e9f724e17b8a5bafe48ea25dc245032ccc78194",
+    "contracts/fixtures/question-generic-choose-n.json": "fe4422e28ef55c79ffad0dfcf081b57d4f6eb95fe8108b089a72536bc43f7bdb",
+    "contracts/fixtures/question-generic-choose-some.json": "a91b4852482477c02ff6485c2ebb60970811c4b1eb44c7859456c49d8f75ae4b",
+    "contracts/fixtures/question-generic-choose-up-to-n.json": "870da3ca5c45e95bdd95d69e385e25b3e18d07f3227787cb0cfa6d378c313357",
+    "contracts/fixtures/question-generic-cost-ability-window.json": "ae4ca77aa580dfff8340ae9acc1f96811f52312ed4aa18f57b5298cf07f4fb43",
+    "contracts/fixtures/question-generic-invalid-info.json": "6ca58559a1a8da1dc1ffd48e542b3b4e3512fc4e34dcbd6a60205ce2dc8c184a",
+    "contracts/fixtures/question-generic-one-at-a-time-auto.json": "a7f5b6b1fc2027ff1ac5ddba7b47a2d6fb39ab376a3252e1cc739385cf4041c6",
+    "contracts/fixtures/question-generic-one-from-each.json": "848e1bc5c694db89f2bc68b5395dbce704dbeac4e94fd167c485d5ed4859e83c",
+    "contracts/fixtures/question-generic-payment-amounts.json": "f72a58a043fa25dfdf28ede236179725e9902663444168a87102c3ad1cc8a277",
+    "contracts/fixtures/question-generic-read.json": "439f4ed45a2d0e9b380a36af4ce9e9f1785acafe622811a6212973d89a7a9a10",
+    "contracts/fixtures/question-generic-skill-label.json": "b1aef3920e49726302603823eedf213ba7a555cd7a0458d79515b01fd609546e",
+    "contracts/fixtures/question-generic-wrapped.json": "8d330117c0a48b2cea42d9ed68e2e823370535e12b5b0c70d2cf217fe846f446",
     "contracts/fixtures/question-investigate-apply-results.json": "ca3834a719c64a263c31982cfb5987c08da40ec3494d2380ccffaebb46e11774",
     "contracts/fixtures/question-investigate-commit.json": "0cef8bb88be1ac2feb7cd2d37b952bf54fa47b4ea7d83474326baf9da7fb9b18",
     "contracts/fixtures/question-investigate-fast-window.json": "6ae49986f27c9ab934ddd53b08e2dd6c3fa33a85a2ee258409c0321332ed731b",
@@ -16154,12 +16225,13 @@
     "contracts/fixtures/question-presentation-generic-choose-up-to-n.json": "912b862349c1db44e4151920d95e780c75cbac7592c913dcaf0c50bc4c718855",
     "contracts/fixtures/question-presentation-generic-cost-ability-window.json": "66364c46bad7a04a49426c69f78ba70f67792b04a5e828e9c150336fc0155418",
     "contracts/fixtures/question-presentation-generic-invalid-info.json": "be93995e75bdec258df9e9de35e51b670fe6f09e087454db482be1428c173034",
-    "contracts/fixtures/question-presentation-generic-one-at-a-time-auto.json": "a6823481e1a1ab4257bb3ad5c848516f52a76fb46d19bdf81252a1091ab6efa6",
+    "contracts/fixtures/question-presentation-generic-one-at-a-time-auto.json": "8767491be9558be4b07481ea32c36f1e1c813226472c85feb9187e9c898c628d",
     "contracts/fixtures/question-presentation-generic-one-from-each.json": "4e8d95c7a556e90c1ac60a612dd6b214d882aac3467d27d41d2811344bca48e9",
     "contracts/fixtures/question-presentation-generic-payment-amounts.json": "36ed7d650080f463fa2868e0e105a58e769228389d80184bd6abb269f939a2fb",
     "contracts/fixtures/question-presentation-generic-read.json": "4be412a3141f16035e380c6bd3994fa578804293c6df4fb541643c83d54b937c",
     "contracts/fixtures/question-presentation-generic-skill-label.json": "94b3beab6799f70c876fba203d8a892d6f769de2c38984ac83916521b0f19b2f",
     "contracts/fixtures/question-presentation-generic-wrapped.json": "75595d9f8bda5a779b6409963ce060b8d9049568f2b4ed58d484e59507f096e8",
+    "contracts/fixtures/question-presentation-representatives.json": "addb871794473d770af11fbb28f2e7bc05793032e5a4359a0f990504d805dd00",
     "contracts/fixtures/question-presentation-treachery-forced-ability.json": "458815ac4e9cd27a5b90db9ac038b99d90de7de13f9b341c75b49e5a53753b3c",
     "contracts/fixtures/question-read-scenario-intro.json": "98cac0992deff7f08005fc25a0227ef62b9aedde00c3b6dcceb25e503d671fd3",
     "contracts/fixtures/question-read-with-cards.json": "402805337459a8e82a518d515f2bafdb4d4d6e6474ae190002dd885a5ed50ba1",
@@ -16171,7 +16243,7 @@
     "contracts/fixtures/replay-attestation.json": "269c8c2d6774c47ad50a4d61632fc437092471dafea5dbf263d3627cf4b6792f",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "7a2d85e07e292826414ff6d985e1efc34924afeb2651b0068b0d7939579f1276",
+    "contracts/manifest.json": "49130f114786e27ee70c51860556a67adf3b2d344c73211b43c37c48cbdad4cf",
     "contracts/openapi.yaml": "62559b4b67807a3a0b8321824a35994883a8fcdbb73d35c7d7c32ee30d3f1c78",
     "contracts/route-inventory.json": "090194fadafe52c853917f0367bce267a70aa99d41bed4fbd958b45b26730f92",
     "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
@@ -16202,7 +16274,9 @@
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
     "contracts/schemas/public-game.schema.json": "4cfa07e7aad577afb2b0e8aa21a4905588cbab9e9b7c4485a6818ac2ce4094fb",
-    "contracts/schemas/question-presentation.schema.json": "1efe21d8281e60a212bb821fc7570d63b3d0dc3e4e29f48eb6b31906efb912c4",
+    "contracts/schemas/question-presentation-representatives.schema.json": "9c0cc63da26781a4a78e76433395437d05a5859b628c647dcac5d1d1438fdddf",
+    "contracts/schemas/question-presentation.schema.json": "a960f4c588c7b44a660ac2c507de3c84c3341499adca18e181166da87a827ff6",
+    "contracts/schemas/raw-question-fixture.schema.json": "cdc83061a2631f80942b5608529d5ebe0037e4a40630476fc81d2ac942ddd692",
     "contracts/schemas/replay-attestation.schema.json": "ce0a95eb11996ed95ddc47e92a2071202e6ff01d8ff9cf0d352dd13e24739194",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6",

@@ -1,104 +1,24 @@
 {
-  "eventId": null,
+  "playerId": "00000000-0000-0000-0000-000000000001",
+  "multiplayerMode": "Solo",
   "game": {
-    "activeCard": null,
-    "activeInvestigatorId": "c01001",
-    "activePlayerId": "00000000-0000-0000-0000-000000000001",
-    "acts": {
-      "c01108": {
-        "advanceCost": {
-          "contents": [
-            {
-              "contents": 2,
-              "tag": "PerPlayer"
-            },
-            {
-              "tag": "Anywhere"
-            }
-          ],
-          "tag": "GroupClueCost"
-        },
-        "breaches": null,
-        "cardId": "419015cc-abb7-41d0-9795-7ec1d981955f",
-        "cardsUnderneath": [],
-        "deckId": 1,
-        "flipped": false,
-        "id": "c01108",
-        "keys": [],
-        "meta": null,
-        "modifiers": [],
-        "sequence": [
-          1,
-          "A"
-        ],
-        "tokens": [],
-        "treacheries": [],
-        "usedWheelOfFortuneX": false
-      }
+    "tag": "PublicGame",
+    "name": "Contract fixture game",
+    "id": "00000000-0000-0000-0000-000000000003",
+    "log": [
+      "Contract fixture log entry."
+    ],
+    "git": "contract-fixture",
+    "settings": {
+      "settingsAbilitiesCannotReactToThemselves": true,
+      "settingsAchievementsEnabled": true,
+      "settingsAsIfRuling": "chapter1",
+      "settingsRolledUltimatumOrBoon": null,
+      "settingsScreamedAllies": [],
+      "settingsStrictAsIfAt": false,
+      "settingsUltimatumsAndBoons": [],
+      "settingsUltimatumsAndBoonsEnabled": true
     },
-    "agendas": {
-      "c01105": {
-        "cardId": "d96ae83d-bf74-48e1-8233-78b565f30716",
-        "cardsUnderneath": [],
-        "deckId": 1,
-        "doom": 0,
-        "doomThreshold": {
-          "contents": 3,
-          "tag": "Static"
-        },
-        "flipped": false,
-        "id": "c01105",
-        "meta": null,
-        "modifiers": [],
-        "removeDoomMatchers": {
-          "removeDoomActs": {
-            "tag": "AnyAct"
-          },
-          "removeDoomAgendas": {
-            "tag": "AnyAgenda"
-          },
-          "removeDoomAssets": {
-            "tag": "AnyAsset"
-          },
-          "removeDoomEnemies": {
-            "tag": "AnyEnemy"
-          },
-          "removeDoomEvents": {
-            "tag": "AnyEvent"
-          },
-          "removeDoomInvestigators": {
-            "tag": "Anyone"
-          },
-          "removeDoomLocations": {
-            "tag": "Anywhere"
-          },
-          "removeDoomSkills": {
-            "tag": "AnySkill"
-          },
-          "removeDoomTreacheries": {
-            "tag": "AnyTreachery"
-          }
-        },
-        "sequence": {
-          "agendaSequenceSide": "A",
-          "agendaSequenceStep": 1
-        },
-        "tokens": [],
-        "treacheries": [],
-        "usedWheelOfFortuneX": false
-      }
-    },
-    "assets": {},
-    "cards": {},
-    "concealed": {},
-    "encounterDeckSize": 26,
-    "enemies": {},
-    "enemyAttackTargets": [],
-    "events": {},
-    "focusedCards": [],
-    "focusedChaosTokens": [],
-    "focusedTarotCards": [],
-    "foundCards": {},
     "gameSettings": {
       "settingsAbilitiesCannotReactToThemselves": true,
       "settingsAchievementsEnabled": true,
@@ -109,296 +29,6 @@
       "settingsUltimatumsAndBoons": [],
       "settingsUltimatumsAndBoonsEnabled": true
     },
-    "gameState": {
-      "tag": "IsActive"
-    },
-    "git": "contract-fixture",
-    "highlightedCards": [],
-    "id": "00000000-0000-0000-0000-000000000003",
-    "inAction": false,
-    "inSetup": false,
-    "investigators": {
-      "c01001": {
-        "actionsPerformed": [],
-        "actionsTaken": [],
-        "additionalActions": [],
-        "agility": 2,
-        "art": "c01001",
-        "assets": [],
-        "assignedHealthDamage": 0,
-        "assignedHealthHeal": [],
-        "assignedSanityDamage": 0,
-        "assignedSanityHeal": [],
-        "beganRoundAt": "d5a66e84-c729-4066-8475-d8a155609025",
-        "bondedCards": [],
-        "cardCode": "c01001",
-        "cardsUnderneath": [],
-        "class": "Guardian",
-        "combat": 4,
-        "connectedLocations": [],
-        "deck": [],
-        "deckBuildingAdjustments": [],
-        "deckSize": 0,
-        "deckUrl": null,
-        "decks": [],
-        "defeated": false,
-        "discard": [],
-        "discarding": null,
-        "discover": null,
-        "drawing": null,
-        "drawnCards": [],
-        "drivenInsane": false,
-        "eliminated": false,
-        "endedTurn": false,
-        "engagedEnemies": [],
-        "events": [],
-        "excludeFromMulligan": [],
-        "form": {
-          "tag": "RegularForm"
-        },
-        "formMeta": null,
-        "hand": [],
-        "handSize": 8,
-        "health": 9,
-        "horrorHealed": 0,
-        "id": "c01001",
-        "intellect": 3,
-        "keys": [],
-        "killed": false,
-        "log": {
-          "crossedOut": [],
-          "options": [],
-          "orderedKeys": [],
-          "partners": {},
-          "recorded": [],
-          "recordedCounts": [],
-          "recordedSets": []
-        },
-        "mentalTrauma": 0,
-        "meta": null,
-        "modifiers": [],
-        "movement": null,
-        "mulligansTaken": 0,
-        "mutated": null,
-        "name": {
-          "subtitle": "The Fed",
-          "title": "Roland Banks"
-        },
-        "physicalTrauma": 0,
-        "placement": {
-          "contents": "d5a66e84-c729-4066-8475-d8a155609025",
-          "tag": "AtLocation"
-        },
-        "playerId": "00000000-0000-0000-0000-000000000001",
-        "previousLocation": null,
-        "remainingActions": 3,
-        "resigned": false,
-        "sanity": 5,
-        "scarletKeys": [],
-        "sealedChaosTokens": [],
-        "seals": [],
-        "search": null,
-        "settings": {
-          "globalSettings": {
-            "ignoreUnrelatedSkillTestTriggers": true
-          },
-          "perCardSettings": {}
-        },
-        "sideDeck": null,
-        "skills": [],
-        "skippedWindow": false,
-        "slots": [
-          [
-            "HandSlot",
-            [
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              },
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              }
-            ]
-          ],
-          [
-            "BodySlot",
-            [
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              }
-            ]
-          ],
-          [
-            "AllySlot",
-            [
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              }
-            ]
-          ],
-          [
-            "AccessorySlot",
-            [
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              }
-            ]
-          ],
-          [
-            "ArcaneSlot",
-            [
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              },
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              }
-            ]
-          ],
-          [
-            "TarotSlot",
-            [
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              }
-            ]
-          ],
-          [
-            "HeadSlot",
-            [
-              {
-                "assets": [],
-                "source": {
-                  "contents": "c01001",
-                  "tag": "InvestigatorSource"
-                },
-                "tag": "Slot"
-              }
-            ]
-          ]
-        ],
-        "spentXp": 0,
-        "startsWith": [],
-        "startsWithInHand": [],
-        "supplies": [],
-        "taboo": null,
-        "tokens": [],
-        "traits": [
-          "Agency",
-          "Detective"
-        ],
-        "treacheries": [],
-        "unhealedHorrorThisRound": 0,
-        "usedAbilities": [],
-        "usedAdditionalActions": [],
-        "willpower": 3,
-        "xp": 0
-      }
-    },
-    "killedInvestigators": {},
-    "leadInvestigatorId": "c01001",
-    "locations": {
-      "d5a66e84-c729-4066-8475-d8a155609025": {
-        "assets": [],
-        "beingRemoved": false,
-        "brazier": null,
-        "breaches": null,
-        "canBeFlipped": false,
-        "cardCode": "c01111",
-        "cardId": "de1daac2-e51f-4fc2-a671-23bda0e0dbb9",
-        "cardsUnderneath": [],
-        "concealedCards": [],
-        "connectedLocations": [],
-        "connectedMatchers": [],
-        "connectsTo": [],
-        "costToEnterUnrevealed": {
-          "tag": "Free"
-        },
-        "directions": [],
-        "enemies": [],
-        "events": [],
-        "floodLevel": null,
-        "globalMeta": {},
-        "id": "d5a66e84-c729-4066-8475-d8a155609025",
-        "investigateSkill": "SkillIntellect",
-        "investigators": [
-          "c01001"
-        ],
-        "keys": [],
-        "label": "study",
-        "meta": null,
-        "modifiers": [],
-        "outOfGame": false,
-        "placedChaosTokens": [],
-        "placement": null,
-        "position": null,
-        "revealClues": {
-          "contents": 2,
-          "tag": "PerPlayer"
-        },
-        "revealed": true,
-        "revealedConnectedMatchers": [],
-        "revealedSymbol": "Circle",
-        "scarletKeys": [],
-        "sealedChaosTokens": [],
-        "seals": [],
-        "shroud": {
-          "contents": 2,
-          "tag": "Static"
-        },
-        "symbol": "Circle",
-        "tokens": [
-          [
-            "Clue",
-            2
-          ]
-        ],
-        "treacheries": [],
-        "withoutClues": false
-      }
-    },
-    "log": [
-      "Contract fixture log entry."
-    ],
     "mode": {
       "That": {
         "actStack": [
@@ -1311,206 +941,595 @@
       }
     },
     "modifiers": [],
-    "name": "Contract fixture game",
-    "otherInvestigators": {},
-    "phase": "InvestigationPhase",
-    "phaseHistory": {},
-    "phaseStep": {
-      "contents": "InvestigatorTakesActionStep",
-      "tag": "InvestigationPhaseStep"
+    "encounterDeckSize": 26,
+    "locations": {
+      "d5a66e84-c729-4066-8475-d8a155609025": {
+        "assets": [],
+        "beingRemoved": false,
+        "brazier": null,
+        "breaches": null,
+        "canBeFlipped": false,
+        "cardCode": "c01111",
+        "cardId": "de1daac2-e51f-4fc2-a671-23bda0e0dbb9",
+        "cardsUnderneath": [],
+        "concealedCards": [],
+        "connectedLocations": [],
+        "connectedMatchers": [],
+        "connectsTo": [],
+        "costToEnterUnrevealed": {
+          "tag": "Free"
+        },
+        "directions": [],
+        "enemies": [],
+        "events": [],
+        "floodLevel": null,
+        "globalMeta": {},
+        "id": "d5a66e84-c729-4066-8475-d8a155609025",
+        "investigateSkill": "SkillIntellect",
+        "investigators": [
+          "c01001"
+        ],
+        "keys": [],
+        "label": "study",
+        "meta": null,
+        "modifiers": [],
+        "outOfGame": false,
+        "placedChaosTokens": [],
+        "placement": null,
+        "position": null,
+        "revealClues": {
+          "contents": 2,
+          "tag": "PerPlayer"
+        },
+        "revealed": true,
+        "revealedConnectedMatchers": [],
+        "revealedSymbol": "Circle",
+        "scarletKeys": [],
+        "sealedChaosTokens": [],
+        "seals": [],
+        "shroud": {
+          "contents": 2,
+          "tag": "Static"
+        },
+        "symbol": "Circle",
+        "tokens": [
+          [
+            "Clue",
+            2
+          ]
+        ],
+        "treacheries": [],
+        "withoutClues": false
+      }
     },
+    "investigators": {
+      "c01001": {
+        "actionsPerformed": [],
+        "actionsTaken": [],
+        "additionalActions": [],
+        "agility": 2,
+        "art": "c01001",
+        "assets": [],
+        "assignedHealthDamage": 0,
+        "assignedHealthHeal": [],
+        "assignedSanityDamage": 0,
+        "assignedSanityHeal": [],
+        "beganRoundAt": "d5a66e84-c729-4066-8475-d8a155609025",
+        "bondedCards": [],
+        "cardCode": "c01001",
+        "cardsUnderneath": [],
+        "class": "Guardian",
+        "combat": 4,
+        "connectedLocations": [],
+        "deck": [],
+        "deckBuildingAdjustments": [],
+        "deckSize": 0,
+        "deckUrl": null,
+        "decks": [],
+        "defeated": false,
+        "discard": [],
+        "discarding": null,
+        "discover": null,
+        "drawing": null,
+        "drawnCards": [],
+        "drivenInsane": false,
+        "eliminated": false,
+        "endedTurn": false,
+        "engagedEnemies": [],
+        "events": [],
+        "excludeFromMulligan": [],
+        "form": {
+          "tag": "RegularForm"
+        },
+        "formMeta": null,
+        "hand": [],
+        "handSize": 8,
+        "health": 9,
+        "horrorHealed": 0,
+        "id": "c01001",
+        "intellect": 3,
+        "keys": [],
+        "killed": false,
+        "log": {
+          "crossedOut": [],
+          "options": [],
+          "orderedKeys": [],
+          "partners": {},
+          "recorded": [],
+          "recordedCounts": [],
+          "recordedSets": []
+        },
+        "mentalTrauma": 0,
+        "meta": null,
+        "modifiers": [],
+        "movement": null,
+        "mulligansTaken": 0,
+        "mutated": null,
+        "name": {
+          "subtitle": "The Fed",
+          "title": "Roland Banks"
+        },
+        "physicalTrauma": 0,
+        "placement": {
+          "contents": "d5a66e84-c729-4066-8475-d8a155609025",
+          "tag": "AtLocation"
+        },
+        "playerId": "00000000-0000-0000-0000-000000000001",
+        "previousLocation": null,
+        "remainingActions": 3,
+        "resigned": false,
+        "sanity": 5,
+        "scarletKeys": [],
+        "sealedChaosTokens": [],
+        "seals": [],
+        "search": null,
+        "settings": {
+          "globalSettings": {
+            "ignoreUnrelatedSkillTestTriggers": true
+          },
+          "perCardSettings": {}
+        },
+        "sideDeck": null,
+        "skills": [],
+        "skippedWindow": false,
+        "slots": [
+          [
+            "HandSlot",
+            [
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              },
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              }
+            ]
+          ],
+          [
+            "BodySlot",
+            [
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              }
+            ]
+          ],
+          [
+            "AllySlot",
+            [
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              }
+            ]
+          ],
+          [
+            "AccessorySlot",
+            [
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              }
+            ]
+          ],
+          [
+            "ArcaneSlot",
+            [
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              },
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              }
+            ]
+          ],
+          [
+            "TarotSlot",
+            [
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              }
+            ]
+          ],
+          [
+            "HeadSlot",
+            [
+              {
+                "assets": [],
+                "source": {
+                  "contents": "c01001",
+                  "tag": "InvestigatorSource"
+                },
+                "tag": "Slot"
+              }
+            ]
+          ]
+        ],
+        "spentXp": 0,
+        "startsWith": [],
+        "startsWithInHand": [],
+        "supplies": [],
+        "taboo": null,
+        "tokens": [],
+        "traits": [
+          "Agency",
+          "Detective"
+        ],
+        "treacheries": [],
+        "unhealedHorrorThisRound": 0,
+        "usedAbilities": [],
+        "usedAdditionalActions": [],
+        "willpower": 3,
+        "xp": 0
+      }
+    },
+    "otherInvestigators": {},
+    "killedInvestigators": {},
+    "retiredInvestigators": {},
+    "enemies": {},
+    "assets": {},
+    "acts": {
+      "c01108": {
+        "advanceCost": {
+          "contents": [
+            {
+              "contents": 2,
+              "tag": "PerPlayer"
+            },
+            {
+              "tag": "Anywhere"
+            }
+          ],
+          "tag": "GroupClueCost"
+        },
+        "breaches": null,
+        "cardId": "419015cc-abb7-41d0-9795-7ec1d981955f",
+        "cardsUnderneath": [],
+        "deckId": 1,
+        "flipped": false,
+        "id": "c01108",
+        "keys": [],
+        "meta": null,
+        "modifiers": [],
+        "sequence": [
+          1,
+          "A"
+        ],
+        "tokens": [],
+        "treacheries": [],
+        "usedWheelOfFortuneX": false
+      }
+    },
+    "agendas": {
+      "c01105": {
+        "cardId": "d96ae83d-bf74-48e1-8233-78b565f30716",
+        "cardsUnderneath": [],
+        "deckId": 1,
+        "doom": 0,
+        "doomThreshold": {
+          "contents": 3,
+          "tag": "Static"
+        },
+        "flipped": false,
+        "id": "c01105",
+        "meta": null,
+        "modifiers": [],
+        "removeDoomMatchers": {
+          "removeDoomActs": {
+            "tag": "AnyAct"
+          },
+          "removeDoomAgendas": {
+            "tag": "AnyAgenda"
+          },
+          "removeDoomAssets": {
+            "tag": "AnyAsset"
+          },
+          "removeDoomEnemies": {
+            "tag": "AnyEnemy"
+          },
+          "removeDoomEvents": {
+            "tag": "AnyEvent"
+          },
+          "removeDoomInvestigators": {
+            "tag": "Anyone"
+          },
+          "removeDoomLocations": {
+            "tag": "Anywhere"
+          },
+          "removeDoomSkills": {
+            "tag": "AnySkill"
+          },
+          "removeDoomTreacheries": {
+            "tag": "AnyTreachery"
+          }
+        },
+        "sequence": {
+          "agendaSequenceSide": "A",
+          "agendaSequenceStep": 1
+        },
+        "tokens": [],
+        "treacheries": [],
+        "usedWheelOfFortuneX": false
+      }
+    },
+    "treacheries": {},
+    "events": {},
+    "concealed": {},
+    "skills": {},
+    "stories": {},
+    "scarletKeys": {},
     "playerCount": 1,
+    "activeInvestigatorId": "c01001",
+    "activePlayerId": "00000000-0000-0000-0000-000000000001",
+    "turnPlayerInvestigatorId": "c01001",
+    "leadInvestigatorId": "c01001",
     "playerOrder": [
       "c01001"
     ],
+    "phase": "InvestigationPhase",
+    "phaseStep": {
+      "tag": "InvestigationPhaseStep",
+      "contents": "InvestigatorTakesActionStep"
+    },
+    "inAction": false,
+    "skillTest": null,
+    "skillTestChaosTokens": [],
+    "focusedCards": [],
+    "highlightedCards": [],
+    "focusedTarotCards": [],
+    "foundCards": {},
+    "focusedChaosTokens": [],
+    "activeCard": null,
+    "removedFromPlay": [],
+    "gameState": {
+      "tag": "IsActive"
+    },
+    "inSetup": false,
+    "skillTestResults": null,
     "question": {
       "00000000-0000-0000-0000-000000000001": {
+        "tag": "PlayerWindowChooseOne",
         "choices": [
           {
+            "tag": "ComponentLabel",
             "component": {
-              "investigatorId": "c01001",
               "tag": "InvestigatorComponent",
+              "investigatorId": "c01001",
               "tokenType": "ResourceToken"
             },
             "messages": [
               {
+                "tag": "TakeResources",
                 "contents": [
                   "c01001",
                   1,
                   {
-                    "contents": "c01001",
-                    "tag": "ResourceSource"
+                    "tag": "ResourceSource",
+                    "contents": "c01001"
                   },
                   true
-                ],
-                "tag": "TakeResources"
+                ]
               }
-            ],
-            "tag": "ComponentLabel"
+            ]
           },
           {
+            "tag": "ComponentLabel",
             "component": {
-              "investigatorId": "c01001",
-              "tag": "InvestigatorDeckComponent"
+              "tag": "InvestigatorDeckComponent",
+              "investigatorId": "c01001"
             },
             "messages": [
               {
+                "tag": "DrawCards",
                 "contents": [
                   "c01001",
                   {
-                    "cardDrawAction": true,
-                    "cardDrawAlreadyDrawn": [],
-                    "cardDrawAmount": 1,
-                    "cardDrawAndThen": null,
-                    "cardDrawDeck": {
-                      "contents": "c01001",
-                      "tag": "InvestigatorDeck"
-                    },
-                    "cardDrawDiscard": null,
-                    "cardDrawKind": "StandardCardDraw",
-                    "cardDrawPosition": "DrawFromTop",
-                    "cardDrawRules": [],
                     "cardDrawSource": {
-                      "contents": "c01001",
-                      "tag": "InvestigatorSource"
+                      "tag": "InvestigatorSource",
+                      "contents": "c01001"
                     },
+                    "cardDrawDeck": {
+                      "tag": "InvestigatorDeck",
+                      "contents": "c01001"
+                    },
+                    "cardDrawAmount": 1,
                     "cardDrawState": {
                       "tag": "UnresolvedCardDraw"
                     },
-                    "cardDrawTarget": null
+                    "cardDrawTarget": null,
+                    "cardDrawAction": true,
+                    "cardDrawKind": "StandardCardDraw",
+                    "cardDrawPosition": "DrawFromTop",
+                    "cardDrawRules": [],
+                    "cardDrawAndThen": null,
+                    "cardDrawAlreadyDrawn": [],
+                    "cardDrawDiscard": null
                   }
-                ],
-                "tag": "DrawCards"
+                ]
               }
-            ],
-            "tag": "ComponentLabel"
+            ]
           },
           {
+            "tag": "EndTurnButton",
             "investigatorId": "c01001",
             "messages": [
               {
-                "contents": "c01001",
-                "tag": "ChooseEndTurn"
+                "tag": "ChooseEndTurn",
+                "contents": "c01001"
               }
-            ],
-            "tag": "EndTurnButton"
+            ]
           },
           {
+            "tag": "AbilityLabel",
+            "investigatorId": "c01001",
             "ability": {
-              "additionalCosts": [],
-              "basic": true,
-              "blocksIn": null,
-              "canBeCancelled": true,
-              "cardCode": "c01111",
-              "criteria": {
-                "contents": [
-                  {
-                    "contents": {
-                      "contents": "d5a66e84-c729-4066-8475-d8a155609025",
-                      "tag": "LocationWithId"
-                    },
-                    "tag": "OnLocation"
-                  },
-                  {
-                    "contents": {
-                      "contents": [
-                        {
-                          "contents": "d5a66e84-c729-4066-8475-d8a155609025",
-                          "tag": "LocationWithId"
-                        },
-                        {
-                          "tag": "InvestigatableLocation"
-                        }
-                      ],
-                      "tag": "LocationMatchAll"
-                    },
-                    "tag": "LocationExists"
-                  }
-                ],
-                "tag": "Criteria"
-              },
-              "delayAdditionalCosts": null,
-              "displayAs": null,
-              "doesNotProvokeAttacksOfOpportunity": null,
-              "evadeCriteriaOverride": null,
-              "fightCriteriaOverride": null,
-              "highlightFromWindow": false,
-              "ignoreAllCosts": false,
-              "index": 103,
-              "limit": {
-                "tag": "NoLimit"
-              },
-              "metadata": null,
-              "nonBlocking": false,
-              "requestor": {
-                "contents": "d5a66e84-c729-4066-8475-d8a155609025",
-                "tag": "LocationSource"
-              },
-              "skipForAll": false,
               "source": {
-                "contents": "d5a66e84-c729-4066-8475-d8a155609025",
-                "tag": "LocationSource"
+                "tag": "LocationSource",
+                "contents": "d5a66e84-c729-4066-8475-d8a155609025"
               },
-              "target": null,
-              "tooltip": null,
-              "triggersSkillTest": true,
+              "cardCode": "c01111",
+              "index": 103,
               "type": {
+                "tag": "ActionAbility",
                 "actions": {
                   "contents": "Investigate",
                   "tag": "SingleAction"
                 },
-                "cost": {
-                  "contents": 1,
-                  "tag": "ActionCost"
-                },
                 "skillTypes": {
-                  "contents": "SkillIntellect",
-                  "tag": "AbilitySkill"
+                  "tag": "AbilitySkill",
+                  "contents": "SkillIntellect"
                 },
-                "tag": "ActionAbility"
-              },
-              "wantsSkillTest": null,
-              "window": {
-                "contents": {
-                  "tag": "You"
-                },
-                "tag": "DuringYourAction"
-              }
-            },
-            "before": [],
-            "investigatorId": "c01001",
-            "messages": [],
-            "tag": "AbilityLabel",
-            "windows": [
-              {
-                "windowBatchId": null,
-                "windowConditionTick": null,
-                "windowTiming": "When",
-                "windowType": {
-                  "contents": "c01001",
-                  "tag": "DuringTurn"
+                "cost": {
+                  "tag": "ActionCost",
+                  "contents": 1
                 }
               },
+              "limit": {
+                "tag": "NoLimit"
+              },
+              "window": {
+                "tag": "DuringYourAction",
+                "contents": {
+                  "tag": "You"
+                }
+              },
+              "metadata": null,
+              "criteria": {
+                "tag": "Criteria",
+                "contents": [
+                  {
+                    "tag": "OnLocation",
+                    "contents": {
+                      "tag": "LocationWithId",
+                      "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+                    }
+                  },
+                  {
+                    "tag": "LocationExists",
+                    "contents": {
+                      "tag": "LocationMatchAll",
+                      "contents": [
+                        {
+                          "tag": "LocationWithId",
+                          "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+                        },
+                        {
+                          "tag": "InvestigatableLocation"
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "doesNotProvokeAttacksOfOpportunity": null,
+              "tooltip": null,
+              "canBeCancelled": true,
+              "displayAs": null,
+              "delayAdditionalCosts": null,
+              "basic": true,
+              "additionalCosts": [],
+              "requestor": {
+                "tag": "LocationSource",
+                "contents": "d5a66e84-c729-4066-8475-d8a155609025"
+              },
+              "triggersSkillTest": true,
+              "wantsSkillTest": null,
+              "target": null,
+              "highlightFromWindow": false,
+              "skipForAll": false,
+              "ignoreAllCosts": false,
+              "fightCriteriaOverride": null,
+              "evadeCriteriaOverride": null,
+              "nonBlocking": false,
+              "blocksIn": null
+            },
+            "windows": [
               {
+                "windowTiming": "When",
+                "windowType": {
+                  "tag": "DuringTurn",
+                  "contents": "c01001"
+                },
                 "windowBatchId": null,
-                "windowConditionTick": null,
+                "windowConditionTick": null
+              },
+              {
                 "windowTiming": "When",
                 "windowType": {
                   "tag": "FastPlayerWindow"
-                }
+                },
+                "windowBatchId": null,
+                "windowConditionTick": null
               },
               {
-                "windowBatchId": null,
-                "windowConditionTick": null,
                 "windowTiming": "When",
                 "windowType": {
                   "tag": "NonFast"
-                }
+                },
+                "windowBatchId": null,
+                "windowConditionTick": null
               }
-            ]
+            ],
+            "before": [],
+            "messages": []
           }
-        ],
-        "tag": "PlayerWindowChooseOne"
+        ]
       }
     },
     "questionPresentation": {
@@ -1568,37 +1587,18 @@
         "questionVersion": 3
       }
     },
-    "removedFromPlay": [],
-    "retiredInvestigators": {},
-    "roundHistory": {},
-    "scarletKeys": {},
-    "scenarioSteps": 3,
-    "settings": {
-      "settingsAbilitiesCannotReactToThemselves": true,
-      "settingsAchievementsEnabled": true,
-      "settingsAsIfRuling": "chapter1",
-      "settingsRolledUltimatumOrBoon": null,
-      "settingsScreamedAllies": [],
-      "settingsStrictAsIfAt": false,
-      "settingsUltimatumsAndBoons": [],
-      "settingsUltimatumsAndBoonsEnabled": true
-    },
-    "skillTest": null,
-    "skillTestChaosTokens": [],
-    "skillTestResults": null,
-    "skills": {},
-    "stories": {},
-    "tag": "PublicGame",
-    "totalClues": 0,
+    "cards": {},
     "totalDoom": 0,
-    "treacheries": {},
-    "turnHistory": {},
-    "turnPlayerInvestigatorId": "c01001",
+    "totalClues": 0,
+    "scenarioSteps": 3,
     "undoActionStep": null,
+    "undoTurnStep": 3,
     "undoPhaseStep": 3,
     "undoRoundStep": 3,
-    "undoTurnStep": 3
+    "roundHistory": {},
+    "phaseHistory": {},
+    "turnHistory": {},
+    "enemyAttackTargets": []
   },
-  "multiplayerMode": "Solo",
-  "playerId": "00000000-0000-0000-0000-000000000001"
+  "eventId": null
 }

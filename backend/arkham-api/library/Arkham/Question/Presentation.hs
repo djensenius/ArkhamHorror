@@ -474,7 +474,7 @@ presentQuestion version = \case
       "chooseOneAtATimeWithAuto"
       (length choices + 1)
       (autoChoice label : zipWith (presentChoice GeneralChoiceContext) [1 ..] choices)
-      (defaultQuestionMetadata "chooseOneAtATimeWithAuto" <> Map.singleton "selection" (selection 1 $ length choices))
+      (defaultQuestionMetadata "chooseOneAtATimeWithAuto" <> Map.singleton "selection" (selection 0 $ length choices))
   ChoosePaymentAmounts label target choices ->
     amountQuestion
       version
@@ -636,7 +636,7 @@ readChoicePresentation = \case
     ( choices
     , Map.fromList
         [ ("readChoiceKind", String "chooseUpToN")
-        , ("selection", selection 0 amount)
+        , ("selection", selection 0 (min amount $ selectablePickCount choices))
         ]
     )
   LeadInvestigatorMustDecide choices ->

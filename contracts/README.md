@@ -554,10 +554,12 @@ auto-resolve choice carry `completesSelection: true`.
 
 `selection` always describes the total number of non-completion picks across
 the repeated `Answer` submissions for that question. `chooseN` is exactly
-`n..n`; `chooseUpToN` is `0..n` excluding a Done choice; `chooseSome` excludes
-Done from its maximum; `chooseOneAtATime` is `n..n`; and
-`chooseOneFromEach` is `groupCount..groupCount` with each descriptor carrying
-`groupIndex` so clients can enforce one selection per group. The answer
+`n..n`; `chooseUpToN` is `0..n` excluding a Done choice; `chooseSome` is
+`0..nonDoneCount`; `chooseSome1` is `1..nonDoneCount`; `chooseOneAtATime` is
+`n..n`; `chooseOneAtATimeWithAuto` is `0..n` because the auto choice resolves
+all remaining choices with zero ordinary picks; and `chooseOneFromEach` is
+`groupCount..groupCount` with each descriptor carrying `groupIndex` so clients
+can enforce one selection per group. The answer
 envelope table is: ordinary choice prompts (`chooseOne`,
 `playerWindowChooseOne`, `windowChooseOne`, `chooseN`, `chooseSome`,
 `chooseSome1`, `chooseUpToN`, `chooseOneAtATime`,

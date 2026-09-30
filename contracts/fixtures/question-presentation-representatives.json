@@ -1,0 +1,1755 @@
+{
+  "presentations": [
+    {
+      "name": "chooseOne-all-ui",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 32,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.basic"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "kind": "invalidLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.invalid"
+            },
+            "selectable": false,
+            "sourceIndex": 1
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.tooltip"
+            },
+            "selectable": true,
+            "sourceIndex": 2,
+            "tooltip": "$tooltip.body"
+          },
+          {
+            "cost": {
+              "kind": "free"
+            },
+            "kind": "costLabel",
+            "selectable": true,
+            "sourceIndex": 3
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "cardCode"
+            },
+            "flippable": false,
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 4
+          },
+          {
+            "face": "Zero",
+            "kind": "chaosTokenLabel",
+            "selectable": true,
+            "sourceIndex": 5
+          },
+          {
+            "key": {
+              "tag": "RedKey"
+            },
+            "kind": "keyLabel",
+            "selectable": true,
+            "sourceIndex": 6
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 7
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 8
+          },
+          {
+            "kind": "skillLabel",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 9
+          },
+          {
+            "kind": "skillLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.skill"
+            },
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 10
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "evade",
+            "selectable": true,
+            "sourceIndex": 11
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "evade",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 12
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "fight",
+            "selectable": true,
+            "sourceIndex": 13
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "fight",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 14
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "engage",
+            "selectable": true,
+            "sourceIndex": 15
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.grid"
+            },
+            "selectable": true,
+            "sourceIndex": 16
+          },
+          {
+            "connection": "Circle",
+            "kind": "connectionLabel",
+            "selectable": true,
+            "sourceIndex": 17
+          },
+          {
+            "kind": "tarotLabel",
+            "selectable": true,
+            "sourceIndex": 18,
+            "tarotCard": {
+              "arcana": "TheFool0",
+              "facing": "Upright"
+            }
+          },
+          {
+            "ability": {
+              "actions": [
+                "activate"
+              ],
+              "canBeCancelled": true,
+              "cardCode": "c01104",
+              "index": 1,
+              "type": "action"
+            },
+            "actorId": "c01001",
+            "cost": {
+              "kind": "free"
+            },
+            "entity": {
+              "id": "c01104",
+              "kind": "cardCode"
+            },
+            "kind": "useAbility",
+            "selectable": true,
+            "sourceIndex": 19
+          },
+          {
+            "component": {
+              "assetId": "00000000-0000-0000-0000-000000000048",
+              "tag": "AssetComponent",
+              "tokenType": "DamageToken"
+            },
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000048",
+              "kind": "asset"
+            },
+            "kind": "componentLabel",
+            "selectable": true,
+            "sourceIndex": 20
+          },
+          {
+            "component": {
+              "investigatorId": "c01001",
+              "tag": "InvestigatorComponent",
+              "tokenType": "HorrorToken"
+            },
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "auxiliaryComponentLabel",
+            "selectable": true,
+            "sourceIndex": 21
+          },
+          {
+            "actorId": "c01001",
+            "kind": "endTurn",
+            "selectable": true,
+            "sourceIndex": 22
+          },
+          {
+            "actorId": "c01001",
+            "kind": "startSkillTest",
+            "selectable": true,
+            "sourceIndex": 23
+          },
+          {
+            "kind": "applySkillTestResults",
+            "selectable": true,
+            "sourceIndex": 24
+          },
+          {
+            "actorId": "c01001",
+            "entity": {
+              "id": "00000000-0000-0000-0000-00000000004a",
+              "kind": "location"
+            },
+            "kind": "chaosTokenGroupChoice",
+            "selectable": true,
+            "source": {
+              "entity": {
+                "id": "00000000-0000-0000-0000-00000000004a",
+                "kind": "location"
+              },
+              "raw": {
+                "originalSource": {
+                  "tag": "GameSource"
+                },
+                "source": {
+                  "contents": "00000000-0000-0000-0000-00000000004a",
+                  "tag": "LocationSource"
+                },
+                "tag": "ProxySource"
+              }
+            },
+            "sourceIndex": 25,
+            "step": {
+              "tag": "Draw"
+            }
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000049",
+              "kind": "effect"
+            },
+            "kind": "effectActionButton",
+            "selectable": true,
+            "sourceIndex": 26,
+            "tooltip": "$effect.tooltip"
+          },
+          {
+            "completesSelection": true,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$done"
+            },
+            "selectable": true,
+            "sourceIndex": 27
+          },
+          {
+            "actorId": "c01001",
+            "kind": "skipTriggers",
+            "selectable": true,
+            "sourceIndex": 28
+          },
+          {
+            "cards": [
+              {
+                "cardId": "00000000-0000-0000-0000-00000000004b",
+                "cardOwner": "c01001"
+              }
+            ],
+            "kind": "cardPile",
+            "selectable": true,
+            "sourceIndex": 29
+          },
+          {
+            "flavorText": {
+              "body": [],
+              "title": null
+            },
+            "kind": "info",
+            "selectable": false,
+            "sourceIndex": 30
+          },
+          {
+            "entity": {
+              "id": "scenario-id",
+              "kind": "scenario"
+            },
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$scenario"
+            },
+            "selectable": true,
+            "sourceIndex": 31
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionVersion": 300
+      }
+    },
+    {
+      "name": "playerWindowChooseOne",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 32,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.basic"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "kind": "invalidLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.invalid"
+            },
+            "selectable": false,
+            "sourceIndex": 1
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.tooltip"
+            },
+            "selectable": true,
+            "sourceIndex": 2,
+            "tooltip": "$tooltip.body"
+          },
+          {
+            "cost": {
+              "kind": "free"
+            },
+            "kind": "costLabel",
+            "selectable": true,
+            "sourceIndex": 3
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "cardCode"
+            },
+            "flippable": false,
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 4
+          },
+          {
+            "face": "Zero",
+            "kind": "chaosTokenLabel",
+            "selectable": true,
+            "sourceIndex": 5
+          },
+          {
+            "key": {
+              "tag": "RedKey"
+            },
+            "kind": "keyLabel",
+            "selectable": true,
+            "sourceIndex": 6
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 7
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 8
+          },
+          {
+            "kind": "skillLabel",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 9
+          },
+          {
+            "kind": "skillLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.skill"
+            },
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 10
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "evade",
+            "selectable": true,
+            "sourceIndex": 11
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "evade",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 12
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "fight",
+            "selectable": true,
+            "sourceIndex": 13
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "fight",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 14
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "engage",
+            "selectable": true,
+            "sourceIndex": 15
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.grid"
+            },
+            "selectable": true,
+            "sourceIndex": 16
+          },
+          {
+            "connection": "Circle",
+            "kind": "connectionLabel",
+            "selectable": true,
+            "sourceIndex": 17
+          },
+          {
+            "kind": "tarotLabel",
+            "selectable": true,
+            "sourceIndex": 18,
+            "tarotCard": {
+              "arcana": "TheFool0",
+              "facing": "Upright"
+            }
+          },
+          {
+            "ability": {
+              "actions": [
+                "activate"
+              ],
+              "canBeCancelled": true,
+              "cardCode": "c01104",
+              "index": 1,
+              "type": "action"
+            },
+            "actorId": "c01001",
+            "cost": {
+              "kind": "free"
+            },
+            "entity": {
+              "id": "c01104",
+              "kind": "cardCode"
+            },
+            "kind": "useAbility",
+            "selectable": true,
+            "sourceIndex": 19
+          },
+          {
+            "component": {
+              "assetId": "00000000-0000-0000-0000-000000000048",
+              "tag": "AssetComponent",
+              "tokenType": "DamageToken"
+            },
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000048",
+              "kind": "asset"
+            },
+            "kind": "componentLabel",
+            "selectable": true,
+            "sourceIndex": 20
+          },
+          {
+            "component": {
+              "investigatorId": "c01001",
+              "tag": "InvestigatorComponent",
+              "tokenType": "HorrorToken"
+            },
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "auxiliaryComponentLabel",
+            "selectable": true,
+            "sourceIndex": 21
+          },
+          {
+            "actorId": "c01001",
+            "kind": "endTurn",
+            "selectable": true,
+            "sourceIndex": 22
+          },
+          {
+            "actorId": "c01001",
+            "kind": "startSkillTest",
+            "selectable": true,
+            "sourceIndex": 23
+          },
+          {
+            "kind": "applySkillTestResults",
+            "selectable": true,
+            "sourceIndex": 24
+          },
+          {
+            "actorId": "c01001",
+            "entity": {
+              "id": "00000000-0000-0000-0000-00000000004a",
+              "kind": "location"
+            },
+            "kind": "chaosTokenGroupChoice",
+            "selectable": true,
+            "source": {
+              "entity": {
+                "id": "00000000-0000-0000-0000-00000000004a",
+                "kind": "location"
+              },
+              "raw": {
+                "originalSource": {
+                  "tag": "GameSource"
+                },
+                "source": {
+                  "contents": "00000000-0000-0000-0000-00000000004a",
+                  "tag": "LocationSource"
+                },
+                "tag": "ProxySource"
+              }
+            },
+            "sourceIndex": 25,
+            "step": {
+              "tag": "Draw"
+            }
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000049",
+              "kind": "effect"
+            },
+            "kind": "effectActionButton",
+            "selectable": true,
+            "sourceIndex": 26,
+            "tooltip": "$effect.tooltip"
+          },
+          {
+            "completesSelection": true,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$done"
+            },
+            "selectable": true,
+            "sourceIndex": 27
+          },
+          {
+            "actorId": "c01001",
+            "kind": "skipTriggers",
+            "selectable": true,
+            "sourceIndex": 28
+          },
+          {
+            "cards": [
+              {
+                "cardId": "00000000-0000-0000-0000-00000000004b",
+                "cardOwner": "c01001"
+              }
+            ],
+            "kind": "cardPile",
+            "selectable": true,
+            "sourceIndex": 29
+          },
+          {
+            "flavorText": {
+              "body": [],
+              "title": null
+            },
+            "kind": "info",
+            "selectable": false,
+            "sourceIndex": 30
+          },
+          {
+            "entity": {
+              "id": "scenario-id",
+              "kind": "scenario"
+            },
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$scenario"
+            },
+            "selectable": true,
+            "sourceIndex": 31
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "playerWindowChooseOne",
+        "questionVersion": 301
+      }
+    },
+    {
+      "name": "windowChooseOne",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 32,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.basic"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "kind": "invalidLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.invalid"
+            },
+            "selectable": false,
+            "sourceIndex": 1
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.tooltip"
+            },
+            "selectable": true,
+            "sourceIndex": 2,
+            "tooltip": "$tooltip.body"
+          },
+          {
+            "cost": {
+              "kind": "free"
+            },
+            "kind": "costLabel",
+            "selectable": true,
+            "sourceIndex": 3
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "cardCode"
+            },
+            "flippable": false,
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 4
+          },
+          {
+            "face": "Zero",
+            "kind": "chaosTokenLabel",
+            "selectable": true,
+            "sourceIndex": 5
+          },
+          {
+            "key": {
+              "tag": "RedKey"
+            },
+            "kind": "keyLabel",
+            "selectable": true,
+            "sourceIndex": 6
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 7
+          },
+          {
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "chooseTarget",
+            "selectable": true,
+            "sourceIndex": 8
+          },
+          {
+            "kind": "skillLabel",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 9
+          },
+          {
+            "kind": "skillLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.skill"
+            },
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 10
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "evade",
+            "selectable": true,
+            "sourceIndex": 11
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "evade",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 12
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "fight",
+            "selectable": true,
+            "sourceIndex": 13
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "fight",
+            "selectable": true,
+            "skillType": "SkillWillpower",
+            "sourceIndex": 14
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000047",
+              "kind": "enemy"
+            },
+            "kind": "engage",
+            "selectable": true,
+            "sourceIndex": 15
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$label.grid"
+            },
+            "selectable": true,
+            "sourceIndex": 16
+          },
+          {
+            "connection": "Circle",
+            "kind": "connectionLabel",
+            "selectable": true,
+            "sourceIndex": 17
+          },
+          {
+            "kind": "tarotLabel",
+            "selectable": true,
+            "sourceIndex": 18,
+            "tarotCard": {
+              "arcana": "TheFool0",
+              "facing": "Upright"
+            }
+          },
+          {
+            "ability": {
+              "actions": [
+                "activate"
+              ],
+              "canBeCancelled": true,
+              "cardCode": "c01104",
+              "index": 1,
+              "type": "action"
+            },
+            "actorId": "c01001",
+            "cost": {
+              "kind": "free"
+            },
+            "entity": {
+              "id": "c01104",
+              "kind": "cardCode"
+            },
+            "kind": "useAbility",
+            "selectable": true,
+            "sourceIndex": 19
+          },
+          {
+            "component": {
+              "assetId": "00000000-0000-0000-0000-000000000048",
+              "tag": "AssetComponent",
+              "tokenType": "DamageToken"
+            },
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000048",
+              "kind": "asset"
+            },
+            "kind": "componentLabel",
+            "selectable": true,
+            "sourceIndex": 20
+          },
+          {
+            "component": {
+              "investigatorId": "c01001",
+              "tag": "InvestigatorComponent",
+              "tokenType": "HorrorToken"
+            },
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "auxiliaryComponentLabel",
+            "selectable": true,
+            "sourceIndex": 21
+          },
+          {
+            "actorId": "c01001",
+            "kind": "endTurn",
+            "selectable": true,
+            "sourceIndex": 22
+          },
+          {
+            "actorId": "c01001",
+            "kind": "startSkillTest",
+            "selectable": true,
+            "sourceIndex": 23
+          },
+          {
+            "kind": "applySkillTestResults",
+            "selectable": true,
+            "sourceIndex": 24
+          },
+          {
+            "actorId": "c01001",
+            "entity": {
+              "id": "00000000-0000-0000-0000-00000000004a",
+              "kind": "location"
+            },
+            "kind": "chaosTokenGroupChoice",
+            "selectable": true,
+            "source": {
+              "entity": {
+                "id": "00000000-0000-0000-0000-00000000004a",
+                "kind": "location"
+              },
+              "raw": {
+                "originalSource": {
+                  "tag": "GameSource"
+                },
+                "source": {
+                  "contents": "00000000-0000-0000-0000-00000000004a",
+                  "tag": "LocationSource"
+                },
+                "tag": "ProxySource"
+              }
+            },
+            "sourceIndex": 25,
+            "step": {
+              "tag": "Draw"
+            }
+          },
+          {
+            "entity": {
+              "id": "00000000-0000-0000-0000-000000000049",
+              "kind": "effect"
+            },
+            "kind": "effectActionButton",
+            "selectable": true,
+            "sourceIndex": 26,
+            "tooltip": "$effect.tooltip"
+          },
+          {
+            "completesSelection": true,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$done"
+            },
+            "selectable": true,
+            "sourceIndex": 27
+          },
+          {
+            "actorId": "c01001",
+            "kind": "skipTriggers",
+            "selectable": true,
+            "sourceIndex": 28
+          },
+          {
+            "cards": [
+              {
+                "cardId": "00000000-0000-0000-0000-00000000004b",
+                "cardOwner": "c01001"
+              }
+            ],
+            "kind": "cardPile",
+            "selectable": true,
+            "sourceIndex": 29
+          },
+          {
+            "flavorText": {
+              "body": [],
+              "title": null
+            },
+            "kind": "info",
+            "selectable": false,
+            "sourceIndex": 30
+          },
+          {
+            "entity": {
+              "id": "scenario-id",
+              "kind": "scenario"
+            },
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$scenario"
+            },
+            "selectable": true,
+            "sourceIndex": 31
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "windowChooseOne",
+        "questionVersion": 302
+      }
+    },
+    {
+      "name": "chooseOneFromEach",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 2,
+        "choices": [
+          {
+            "groupIndex": 0,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$a"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "groupIndex": 1,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$b"
+            },
+            "selectable": true,
+            "sourceIndex": 1
+          }
+        ],
+        "groups": [
+          1,
+          1
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOneFromEach",
+        "questionVersion": 303,
+        "selection": {
+          "max": 2,
+          "min": 2
+        }
+      }
+    },
+    {
+      "name": "chooseN",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 2,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$a"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$b"
+            },
+            "selectable": true,
+            "sourceIndex": 1
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseN",
+        "questionVersion": 304,
+        "selection": {
+          "max": 1,
+          "min": 1
+        }
+      }
+    },
+    {
+      "name": "chooseSome",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 2,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$a"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "completesSelection": true,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$done"
+            },
+            "selectable": true,
+            "sourceIndex": 1
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseSome",
+        "questionVersion": 305,
+        "selection": {
+          "max": 1,
+          "min": 0
+        }
+      }
+    },
+    {
+      "name": "chooseSome1",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 2,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$a"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "completesSelection": true,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$done"
+            },
+            "selectable": true,
+            "sourceIndex": 1
+          }
+        ],
+        "completionLabel": {
+          "kind": "embeddedI18n",
+          "text": "$done"
+        },
+        "protocolVersion": 2,
+        "questionKind": "chooseSome1",
+        "questionVersion": 306,
+        "selection": {
+          "max": 1,
+          "min": 1
+        }
+      }
+    },
+    {
+      "name": "chooseUpToN",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 2,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$a"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "completesSelection": true,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$done"
+            },
+            "selectable": true,
+            "sourceIndex": 1
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseUpToN",
+        "questionVersion": 307,
+        "selection": {
+          "max": 1,
+          "min": 0
+        }
+      }
+    },
+    {
+      "name": "chooseOneAtATime",
+      "presentation": {
+        "answer": {
+          "alternateTags": [
+            "OrderedAnswer"
+          ],
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 2,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$a"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$b"
+            },
+            "selectable": true,
+            "sourceIndex": 1
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOneAtATime",
+        "questionVersion": 308,
+        "selection": {
+          "max": 2,
+          "min": 2
+        }
+      }
+    },
+    {
+      "name": "chooseOneAtATimeWithAuto",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 3,
+        "choices": [
+          {
+            "completesSelection": true,
+            "kind": "auto",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$auto"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$a"
+            },
+            "selectable": true,
+            "sourceIndex": 1
+          },
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$b"
+            },
+            "selectable": true,
+            "sourceIndex": 2
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOneAtATimeWithAuto",
+        "questionVersion": 309,
+        "selection": {
+          "max": 2,
+          "min": 0
+        }
+      }
+    },
+    {
+      "name": "choosePaymentAmounts-null-target",
+      "presentation": {
+        "answer": {
+          "kind": "paymentAmounts",
+          "tag": "PaymentAmountsAnswer"
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "label": {
+          "kind": "embeddedI18n",
+          "text": "$pay"
+        },
+        "paymentChoices": [
+          {
+            "choiceId": "00000000-0000-0000-0000-00000000004d",
+            "investigatorId": "c01001",
+            "max": 3,
+            "min": 0,
+            "title": {
+              "kind": "embeddedI18n",
+              "text": "$resource"
+            }
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "choosePaymentAmounts",
+        "questionVersion": 310,
+        "target": null
+      }
+    },
+    {
+      "name": "chooseAmounts",
+      "presentation": {
+        "amountChoices": [
+          {
+            "choiceId": "00000000-0000-0000-0000-00000000004c",
+            "label": "$clues",
+            "maxBound": 3,
+            "minBound": 0
+          }
+        ],
+        "answer": {
+          "kind": "amounts",
+          "tag": "AmountsAnswer"
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "label": {
+          "kind": "embeddedI18n",
+          "text": "$amount"
+        },
+        "protocolVersion": 2,
+        "questionKind": "chooseAmounts",
+        "questionVersion": 311,
+        "resolveTarget": {
+          "contents": "00000000-0000-0000-0000-00000000004a",
+          "tag": "LocationTarget"
+        },
+        "target": {
+          "contents": 0,
+          "tag": "MinAmountTarget"
+        }
+      }
+    },
+    {
+      "name": "chooseUpgradeDeck",
+      "presentation": {
+        "answer": {
+          "kind": "deck",
+          "tags": [
+            "DeckAnswer",
+            "DeckListAnswer"
+          ]
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "protocolVersion": 2,
+        "questionKind": "chooseUpgradeDeck",
+        "questionVersion": 312
+      }
+    },
+    {
+      "name": "chooseDeck",
+      "presentation": {
+        "answer": {
+          "kind": "deck",
+          "tags": [
+            "DeckAnswer",
+            "DeckListAnswer"
+          ]
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "protocolVersion": 2,
+        "questionKind": "chooseDeck",
+        "questionVersion": 313
+      }
+    },
+    {
+      "name": "chooseJoinDeck",
+      "presentation": {
+        "answer": {
+          "kind": "deck",
+          "tags": [
+            "DeckAnswer",
+            "DeckListAnswer"
+          ]
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "protocolVersion": 2,
+        "questionKind": "chooseJoinDeck",
+        "questionVersion": 314,
+        "usedInvestigators": []
+      }
+    },
+    {
+      "name": "questionLabel",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "cardCode": "c01001",
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$choice"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionLabel": {
+          "kind": "embeddedI18n",
+          "text": "$wrapped"
+        },
+        "questionVersion": 315
+      }
+    },
+    {
+      "name": "payCostQuestion",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$choice"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "payCost": {
+          "kind": "free"
+        },
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionVersion": 316
+      }
+    },
+    {
+      "name": "questionWithProxySource",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$choice"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionSource": {
+          "entity": {
+            "id": "00000000-0000-0000-0000-00000000004a",
+            "kind": "location"
+          },
+          "raw": {
+            "originalSource": {
+              "tag": "GameSource"
+            },
+            "source": {
+              "contents": "00000000-0000-0000-0000-00000000004a",
+              "tag": "LocationSource"
+            },
+            "tag": "ProxySource"
+          }
+        },
+        "questionVersion": 317,
+        "tooltip": "$source.tooltip"
+      }
+    },
+    {
+      "name": "read",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$read"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "flavorText": {
+          "body": [],
+          "title": null
+        },
+        "protocolVersion": 2,
+        "questionKind": "read",
+        "questionVersion": 318,
+        "readChoiceKind": "basic"
+      }
+    },
+    {
+      "name": "chooseOneWizard",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "backLabel": {
+          "kind": "embeddedI18n",
+          "text": "$back"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "flavorText": {
+              "body": [],
+              "title": null
+            },
+            "kind": "wizardChoice",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$wizard"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "confirmLabel": {
+          "kind": "embeddedI18n",
+          "text": "$confirm"
+        },
+        "flavorText": {
+          "body": [],
+          "title": null
+        },
+        "protocolVersion": 2,
+        "questionKind": "chooseOneWizard",
+        "questionVersion": 319
+      }
+    },
+    {
+      "name": "pickSupplies",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$supply"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "chosenSupplies": [],
+        "pointsRemaining": 0,
+        "protocolVersion": 2,
+        "questionKind": "pickSupplies",
+        "questionVersion": 320,
+        "resupply": false
+      }
+    },
+    {
+      "name": "pickDestiny",
+      "presentation": {
+        "answer": {
+          "kind": "pickDestiny",
+          "tag": "PickDestinyAnswer"
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "drawings": [
+          {
+            "scenario": "scenario",
+            "tarot": {
+              "arcana": "TheFool0",
+              "facing": "Upright"
+            }
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "pickDestiny",
+        "questionVersion": 321
+      }
+    },
+    {
+      "name": "dropDown",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$option"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "dropDown",
+        "questionVersion": 322
+      }
+    },
+    {
+      "name": "pickScenarioSettings",
+      "presentation": {
+        "answer": {
+          "kind": "standaloneSettings",
+          "tag": "StandaloneSettingsAnswer"
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "protocolVersion": 2,
+        "questionKind": "pickScenarioSettings",
+        "questionVersion": 323
+      }
+    },
+    {
+      "name": "pickCampaignSettings",
+      "presentation": {
+        "answer": {
+          "kind": "campaignSettings",
+          "tag": "CampaignSettingsAnswer"
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "protocolVersion": 2,
+        "questionKind": "pickCampaignSettings",
+        "questionVersion": 324
+      }
+    },
+    {
+      "name": "pickCampaignSpecific",
+      "presentation": {
+        "answer": {
+          "kind": "campaignSpecific",
+          "tag": "CampaignSpecificAnswer"
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "key": "notz",
+        "protocolVersion": 2,
+        "questionKind": "pickCampaignSpecific",
+        "questionVersion": 325,
+        "value": null
+      }
+    },
+    {
+      "name": "pickScenarioSpecific",
+      "presentation": {
+        "answer": {
+          "kind": "scenarioSpecific",
+          "tag": "ScenarioSpecificAnswer"
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "key": "gathering",
+        "protocolVersion": 2,
+        "questionKind": "pickScenarioSpecific",
+        "questionVersion": 326,
+        "value": null
+      }
+    },
+    {
+      "name": "chooseExchangeAmounts",
+      "presentation": {
+        "answer": {
+          "kind": "exchangeAmounts",
+          "tag": "ExchangeAmountsAnswer"
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "fromInitialAmount": 1,
+        "fromInvestigator": "c01001",
+        "protocolVersion": 2,
+        "questionKind": "chooseExchangeAmounts",
+        "questionVersion": 327,
+        "source": {
+          "raw": {
+            "tag": "GameSource"
+          }
+        },
+        "toInitialAmount": 0,
+        "toInvestigator": "c01002",
+        "token": "Resource"
+      }
+    },
+    {
+      "name": "continueCampaign",
+      "presentation": {
+        "answer": {
+          "kind": "continueCampaign",
+          "tags": [
+            "CampaignStepAnswer",
+            "RetireInvestigatorAnswer",
+            "RejoinInvestigatorAnswer",
+            "ApplyOverlayAnswer",
+            "JoinCampaignAnswer"
+          ]
+        },
+        "choiceCount": 0,
+        "choices": [],
+        "protocolVersion": 2,
+        "questionKind": "continueCampaign",
+        "questionVersion": 328
+      }
+    }
+  ]
+}
