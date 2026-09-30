@@ -3151,12 +3151,12 @@ spec = describe "Native client contract fixtures" do
     let
       iid = InvestigatorId "01001"
       question = ChooseOne [DamageLabel iid [GameOver]] :: Question Message
-    QuestionPresentation.questionPresentation 38 question
-      `shouldBe` QuestionPresentation.QuestionPresentation
-        38
-        "chooseOne"
-        1
-        []
+    case QuestionPresentation.questionPresentation 38 question of
+      QuestionPresentation.QuestionPresentation _ "chooseOne" 1
+        [QuestionPresentation.ChoicePresentation 0 kind _ entity _ _ _] -> do
+          kind `shouldBe` QuestionPresentation.ComponentChoice
+          entity `shouldBe` Just (QuestionPresentation.InvestigatorEntity iid)
+      other -> expectationFailure $ "Expected one generic component descriptor, got " <> show other
 
   it "keeps unsupported forced variants generic instead of overpromising raw support" do
     let
@@ -3233,7 +3233,7 @@ spec = describe "Native client contract fixtures" do
                     presentations
                 ]
             choiceCount `shouldBe` 12
-            sourceIndexes `shouldBe` [0 .. 8] <> [10, 11]
+            sourceIndexes `shouldBe` [0 .. 11]
 
         case drop 9 choices of
           AbilityLabel _ cellarAbility _ _ _
@@ -3268,7 +3268,7 @@ spec = describe "Native client contract fixtures" do
                         presentations
                     ]
                 choiceCount `shouldBe` 12
-                sourceIndexes `shouldBe` [0 .. 8] <> [10, 11]
+                sourceIndexes `shouldBe` [0 .. 11]
           otherChoices ->
             expectationFailure
               $ "Expected both Gathering movement choices, got "
@@ -3330,14 +3330,10 @@ spec = describe "Native client contract fixtures" do
     forced <- loadQuestionFixture "question-gathering-attic-entry-forced.json"
     case forced of
       WindowChooseOne [choice] ->
-        QuestionPresentation.questionPresentation
-          37
-          (WindowChooseOne [removeProjectedSource choice])
-          `shouldBe` QuestionPresentation.QuestionPresentation
-            37
-            "windowChooseOne"
-            1
-            []
+        case QuestionPresentation.questionPresentation 37 (WindowChooseOne [removeProjectedSource choice]) of
+          QuestionPresentation.QuestionPresentation _ "windowChooseOne" 1
+            [QuestionPresentation.ChoicePresentation 0 QuestionPresentation.UseAbility _ _ _ _ _] -> pure ()
+          other -> expectationFailure $ "Expected one generic forced ability descriptor, got " <> show other
       other ->
         expectationFailure
           $ "Expected the Gathering Attic forced prompt, got "
@@ -3362,20 +3358,16 @@ spec = describe "Native client contract fixtures" do
     forced <- loadQuestionFixture "question-gathering-attic-entry-forced.json"
     case forced of
       WindowChooseOne [choice] ->
-        QuestionPresentation.questionPresentation
-          37
-          (WindowChooseOne [replaceWithInvestigatorSource choice])
-          `shouldBe` QuestionPresentation.QuestionPresentation
-            37
-            "windowChooseOne"
-            1
-            []
+        case QuestionPresentation.questionPresentation 37 (WindowChooseOne [replaceWithInvestigatorSource choice]) of
+          QuestionPresentation.QuestionPresentation _ "windowChooseOne" 1
+            [QuestionPresentation.ChoicePresentation 0 QuestionPresentation.UseAbility _ _ _ _ _] -> pure ()
+          other -> expectationFailure $ "Expected one generic forced ability descriptor, got " <> show other
       other ->
         expectationFailure
           $ "Expected the Gathering Attic forced prompt, got "
           <> show other
 
-  it "keeps Gathering semantic choices fail-closed without changing raw source indexes" do
+  it "keeps Gathering semantic choices complete without changing raw source indexes" do
     let
       iid = InvestigatorId "01001"
       question =
@@ -3399,6 +3391,14 @@ spec = describe "Native client contract fixtures" do
             Nothing
             Nothing
         , QuestionPresentation.ChoicePresentation
+            1
+            QuestionPresentation.InvalidChoice
+            Nothing
+            Nothing
+            (Just $ QuestionPresentation.EmbeddedI18nLabel "$fixture.unsupported")
+            Nothing
+            Nothing
+        , QuestionPresentation.ChoicePresentation
             2
             QuestionPresentation.EndTurn
             (Just iid)
@@ -3408,7 +3408,7 @@ spec = describe "Native client contract fixtures" do
             Nothing
         ]
 
-  it "fails closed when a synthetic auto action shifts every real answer index" do
+  it "models a synthetic auto action without shifting hidden real answer indexes" do
     let
       iid = InvestigatorId "01001"
       question =
@@ -3436,12 +3436,11 @@ spec = describe "Native client contract fixtures" do
               $ "auto-choice answer rejected: "
               <> Text.unpack reason
           Handled messages -> messages `shouldBe` expected
-    QuestionPresentation.questionPresentation 7 question
-      `shouldBe` QuestionPresentation.QuestionPresentation
-        7
-        "unsupported"
-        0
-        []
+    case QuestionPresentation.questionPresentation 7 question of
+      QuestionPresentation.QuestionPresentation _ "chooseOneAtATimeWithAuto" 3 choices -> do
+        let sourceIndexes = [sourceIndex | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- choices]
+        sourceIndexes `shouldBe` [0, 1, 2]
+      other -> expectationFailure $ "Expected complete auto presentation, got " <> show other
     assertAnswer 0 [Run [ClearUI], Run [GameOver]]
     assertAnswer
       1

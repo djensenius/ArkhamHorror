@@ -1,6 +1,12 @@
+{-# LANGUAGE PatternSynonyms #-}
+
 module Arkham.Question.Presentation (
   QuestionPresentation (..),
+  pattern QuestionPresentation,
+  pattern QuestionPresentationWithMetadata,
   ChoicePresentation (..),
+  pattern ChoicePresentation,
+  pattern ChoicePresentationWithMetadata,
   ChoicePresentationKind (..),
   PresentationEntity (..),
   PresentationLabel (..),
@@ -35,19 +41,36 @@ import Arkham.Prelude
 import Arkham.Question
 import Arkham.Source
 import Arkham.Target
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Map.Strict qualified as Map
 
 questionPresentationProtocolVersion :: Int
-questionPresentationProtocolVersion = 1
+questionPresentationProtocolVersion = 2
 
-data QuestionPresentation = QuestionPresentation
+data QuestionPresentation = QuestionPresentationV2
   Int
   Text
   Int
   [ChoicePresentation]
+  (Map Text Value)
   deriving stock (Show, Eq)
 
-data ChoicePresentation = ChoicePresentation
+pattern QuestionPresentation :: Int -> Text -> Int -> [ChoicePresentation] -> QuestionPresentation
+pattern QuestionPresentation version kind choiceCount choices <-
+  QuestionPresentationV2 version kind choiceCount choices _
+  where
+    QuestionPresentation version kind choiceCount choices =
+      QuestionPresentationV2 version kind choiceCount choices (defaultQuestionMetadata kind)
+
+pattern QuestionPresentationWithMetadata :: Int -> Text -> Int -> [ChoicePresentation] -> Map Text Value -> QuestionPresentation
+pattern QuestionPresentationWithMetadata version kind choiceCount choices metadata =
+  QuestionPresentationV2 version kind choiceCount choices metadata
+
+{-# COMPLETE QuestionPresentationWithMetadata #-}
+
+data ChoicePresentation = ChoicePresentationV2
   Int
   ChoicePresentationKind
   (Maybe InvestigatorId)
@@ -55,7 +78,38 @@ data ChoicePresentation = ChoicePresentation
   (Maybe PresentationLabel)
   (Maybe AbilityPresentation)
   (Maybe PresentationCost)
+  (Map Text Value)
   deriving stock (Show, Eq)
+
+pattern ChoicePresentation
+  :: Int
+  -> ChoicePresentationKind
+  -> Maybe InvestigatorId
+  -> Maybe PresentationEntity
+  -> Maybe PresentationLabel
+  -> Maybe AbilityPresentation
+  -> Maybe PresentationCost
+  -> ChoicePresentation
+pattern ChoicePresentation sourceIndex kind actor entity label ability cost <-
+  ChoicePresentationV2 sourceIndex kind actor entity label ability cost _
+  where
+    ChoicePresentation sourceIndex kind actor entity label ability cost =
+      ChoicePresentationV2 sourceIndex kind actor entity label ability cost mempty
+
+pattern ChoicePresentationWithMetadata
+  :: Int
+  -> ChoicePresentationKind
+  -> Maybe InvestigatorId
+  -> Maybe PresentationEntity
+  -> Maybe PresentationLabel
+  -> Maybe AbilityPresentation
+  -> Maybe PresentationCost
+  -> Map Text Value
+  -> ChoicePresentation
+pattern ChoicePresentationWithMetadata sourceIndex kind actor entity label ability cost metadata =
+  ChoicePresentationV2 sourceIndex kind actor entity label ability cost metadata
+
+{-# COMPLETE ChoicePresentationWithMetadata #-}
 
 data ChoicePresentationKind
   = AdvanceAct
@@ -63,21 +117,37 @@ data ChoicePresentationKind
   | ApplySkillTestResults
   | AssignDamage
   | AssignHorror
+  | AutoChoice
+  | CardPileChoice
+  | ChaosTokenChoice
+  | ChaosTokenGroupChoiceKind
   | ChooseTarget
+  | ComponentChoice
+  | AuxiliaryComponentChoice
+  | ConnectionChoice
+  | CostChoice
   | DrawCard
   | DrawEncounterCard
+  | EffectActionChoice
   | EndTurn
   | Engage
   | Evade
   | Fight
   | GainResource
+  | InfoChoice
+  | InvalidChoice
   | Investigate
+  | KeyChoice
   | LocalizedLabel
   | Move
+  | OpaqueChoice
   | ResolveForcedAbility
+  | SkillChoice
   | SkipTriggers
   | StartSkillTest
+  | TarotChoice
   | UseAbility
+  | WizardChoiceKind
   deriving stock (Show, Eq)
 
 data PresentationEntity
@@ -139,26 +209,29 @@ data PresentationScope
   deriving stock (Show, Eq)
 
 instance ToJSON QuestionPresentation where
-  toJSON (QuestionPresentation version kind choiceCount choices) =
-    object
-      [ "protocolVersion" .= questionPresentationProtocolVersion
-      , "questionVersion" .= version
-      , "questionKind" .= kind
-      , "choiceCount" .= choiceCount
-      , "choices" .= choices
-      ]
+  toJSON (QuestionPresentationV2 version kind choiceCount choices metadata) =
+    jsonObject
+      $ [ ("protocolVersion", Aeson.toJSON questionPresentationProtocolVersion)
+        , ("questionVersion", Aeson.toJSON version)
+        , ("questionKind", Aeson.toJSON kind)
+        , ("choiceCount", Aeson.toJSON choiceCount)
+        , ("choices", Aeson.toJSON choices)
+        ]
+      <> Map.toList metadata
 
 instance ToJSON ChoicePresentation where
-  toJSON (ChoicePresentation sourceIndex kind actor entity label ability cost) =
-    object
-      $ [ "sourceIndex" .= sourceIndex
-        , "kind" .= choiceKindText kind
+  toJSON (ChoicePresentationV2 sourceIndex kind actor entity label ability cost metadata) =
+    jsonObject
+      $ [ ("sourceIndex", Aeson.toJSON sourceIndex)
+        , ("kind", Aeson.toJSON $ choiceKindText kind)
+        , ("selectable", Aeson.toJSON $ choiceSelectable kind)
         ]
-      <> ["actorId" .= value | Just value <- [actor]]
-      <> ["entity" .= value | Just value <- [entity]]
-      <> ["label" .= value | Just value <- [label]]
-      <> ["ability" .= value | Just value <- [ability]]
-      <> ["cost" .= value | Just value <- [cost]]
+      <> [("actorId", Aeson.toJSON value) | Just value <- [actor]]
+      <> [("entity", Aeson.toJSON value) | Just value <- [entity]]
+      <> [("label", Aeson.toJSON value) | Just value <- [label]]
+      <> [("ability", Aeson.toJSON value) | Just value <- [ability]]
+      <> [("cost", Aeson.toJSON value) | Just value <- [cost]]
+      <> Map.toList metadata
 
 instance ToJSON PresentationEntity where
   toJSON = \case
@@ -238,6 +311,12 @@ instance ToJSON PresentationScope where
       object ["kind" .= String "location", "locationId" .= locationId]
     OtherScope -> object ["kind" .= String "other"]
 
+jsonObject :: [(Text, Value)] -> Value
+jsonObject fields =
+  Aeson.Object
+    $ AesonKeyMap.fromList
+    $ map (\(key, value) -> (AesonKey.fromText key, value)) fields
+
 choiceKindText :: ChoicePresentationKind -> Text
 choiceKindText = \case
   AdvanceAct -> "advanceAct"
@@ -245,29 +324,98 @@ choiceKindText = \case
   ApplySkillTestResults -> "applySkillTestResults"
   AssignDamage -> "assignDamage"
   AssignHorror -> "assignHorror"
+  AutoChoice -> "auto"
+  CardPileChoice -> "cardPile"
+  ChaosTokenChoice -> "chaosTokenLabel"
+  ChaosTokenGroupChoiceKind -> "chaosTokenGroupChoice"
   ChooseTarget -> "chooseTarget"
+  ComponentChoice -> "componentLabel"
+  AuxiliaryComponentChoice -> "auxiliaryComponentLabel"
+  ConnectionChoice -> "connectionLabel"
+  CostChoice -> "costLabel"
   DrawCard -> "drawCard"
   DrawEncounterCard -> "drawEncounterCard"
+  EffectActionChoice -> "effectActionButton"
   EndTurn -> "endTurn"
   Engage -> "engage"
   Evade -> "evade"
   Fight -> "fight"
   GainResource -> "gainResource"
+  InfoChoice -> "info"
+  InvalidChoice -> "invalidLabel"
   Investigate -> "investigate"
+  KeyChoice -> "keyLabel"
   LocalizedLabel -> "localizedLabel"
   Move -> "move"
+  OpaqueChoice -> "opaque"
   ResolveForcedAbility -> "resolveForcedAbility"
+  SkillChoice -> "skillLabel"
   SkipTriggers -> "skipTriggers"
   StartSkillTest -> "startSkillTest"
+  TarotChoice -> "tarotLabel"
   UseAbility -> "useAbility"
+  WizardChoiceKind -> "wizardChoice"
+
+choiceSelectable :: ChoicePresentationKind -> Bool
+choiceSelectable = \case
+  InvalidChoice -> False
+  InfoChoice -> False
+  _ -> True
 
 data ChoiceContext = PlayerWindowContext | GeneralChoiceContext
   deriving stock Eq
 
+defaultQuestionMetadata :: Text -> Map Text Value
+defaultQuestionMetadata kind = Map.singleton "answer" $ answerEnvelopeFor kind
+
+answerEnvelopeFor :: Text -> Value
+answerEnvelopeFor = \case
+  "chooseAmounts" -> answer "amounts" "AmountsAnswer"
+  "choosePaymentAmounts" -> answer "paymentAmounts" "PaymentAmountsAnswer"
+  "chooseExchangeAmounts" -> answer "exchangeAmounts" "ExchangeAmountsAnswer"
+  "chooseDeck" -> deckAnswer
+  "chooseUpgradeDeck" -> deckAnswer
+  "chooseJoinDeck" -> deckAnswer
+  "pickScenarioSettings" -> answer "standaloneSettings" "StandaloneSettingsAnswer"
+  "pickCampaignSettings" -> answer "campaignSettings" "CampaignSettingsAnswer"
+  "pickDestiny" -> answer "pickDestiny" "PickDestinyAnswer"
+  "pickCampaignSpecific" -> answer "campaignSpecific" "CampaignSpecificAnswer"
+  "pickScenarioSpecific" -> answer "scenarioSpecific" "ScenarioSpecificAnswer"
+  "continueCampaign" ->
+    jsonObject
+      [ ("kind", String "continueCampaign")
+      , ( "tags"
+        , Aeson.toJSON
+            [ "CampaignStepAnswer" :: Text
+            , "RetireInvestigatorAnswer"
+            , "RejoinInvestigatorAnswer"
+            , "ApplyOverlayAnswer"
+            , "JoinCampaignAnswer"
+            ]
+        )
+      ]
+  "unsupported" -> jsonObject [("kind", String "unsupported")]
+  "chooseOneAtATime" -> orderedCapableAnswer
+  "chooseOneAtATimeWithAuto" -> orderedCapableAnswer
+  _ -> answer "singleChoice" "Answer"
+ where
+  answer kind tag = jsonObject [("kind", String kind), ("tag", String tag)]
+  deckAnswer =
+    jsonObject
+      [ ("kind", String "deck")
+      , ("tags", Aeson.toJSON ["DeckAnswer" :: Text, "DeckListAnswer"])
+      ]
+  orderedCapableAnswer =
+    jsonObject
+      [ ("kind", String "singleChoice")
+      , ("tag", String "Answer")
+      , ("alternateTags", Aeson.toJSON ["OrderedAnswer" :: Text])
+      ]
+
 questionPresentation :: Int -> Question Message.Message -> QuestionPresentation
 questionPresentation version question
   | Just investigatorId <- encounterDeckDrawInvestigator question =
-      QuestionPresentation
+      QuestionPresentationWithMetadata
         version
         "chooseOne"
         1
@@ -280,13 +428,10 @@ questionPresentation version question
             Nothing
             Nothing
         ]
+        (defaultQuestionMetadata "chooseOne")
   | otherwise =
-      let (kind, context, choices) = questionChoices question
-       in QuestionPresentation
-            version
-            kind
-            (length choices)
-            (mapMaybe (uncurry $ presentChoice context) $ zip [0 ..] choices)
+      let QuestionPresentationWithMetadata _ kind choiceCount choices metadata = presentQuestion version question
+       in QuestionPresentationWithMetadata version kind choiceCount choices metadata
 
 questionPresentations
   :: Int
@@ -294,133 +439,470 @@ questionPresentations
   -> Map PlayerId QuestionPresentation
 questionPresentations version = Map.map (questionPresentation version)
 
-questionChoices :: Question msg -> (Text, ChoiceContext, [UI msg])
-questionChoices = \case
-  ChooseOne choices -> ("chooseOne", GeneralChoiceContext, choices)
-  PlayerWindowChooseOne choices -> ("playerWindowChooseOne", PlayerWindowContext, choices)
-  WindowChooseOne choices -> ("windowChooseOne", GeneralChoiceContext, choices)
-  ChooseN _ choices -> ("chooseN", GeneralChoiceContext, choices)
-  ChooseSome choices -> ("chooseSome", GeneralChoiceContext, choices)
-  ChooseSome1 _ choices -> ("chooseSome", GeneralChoiceContext, choices)
-  ChooseUpToN _ choices -> ("chooseUpToN", GeneralChoiceContext, choices)
-  ChooseOneAtATime choices -> ("chooseOneAtATime", GeneralChoiceContext, choices)
-  -- Answer index 0 is a synthetic "resolve all" action that is not present in
-  -- the raw choices array, so v1 cannot safely expose this as ordinary indices.
-  ChooseOneAtATimeWithAuto _ _ -> ("unsupported", GeneralChoiceContext, [])
-  QuestionLabel _ _ question -> questionChoices question
-  PayCostQuestion _ question -> questionChoices question
-  QuestionWithSource _ _ question -> questionChoices question
-  Read _ readChoices _ ->
-    ("read", GeneralChoiceContext, readChoiceList readChoices)
-  _ -> ("unsupported", GeneralChoiceContext, [])
+presentQuestion :: Int -> Question Message.Message -> QuestionPresentation
+presentQuestion version = \case
+  ChooseOne choices -> choiceQuestion version "chooseOne" GeneralChoiceContext choices Null
+  PlayerWindowChooseOne choices -> choiceQuestion version "playerWindowChooseOne" PlayerWindowContext choices Null
+  WindowChooseOne choices -> choiceQuestion version "windowChooseOne" GeneralChoiceContext choices Null
+  ChooseOneFromEach groups ->
+    let choices = groupedPresentations groups
+        metadata =
+          Map.fromList
+            [ ("selection", selection 1 1)
+            , ("groups", Aeson.toJSON $ map length groups)
+            ]
+     in QuestionPresentationWithMetadata
+          version
+          "chooseOneFromEach"
+          (sum $ map length groups)
+          choices
+          (defaultQuestionMetadata "chooseOneFromEach" <> metadata)
+  ChooseN amount choices ->
+    choiceQuestion version "chooseN" GeneralChoiceContext choices $ selection amount amount
+  ChooseSome choices ->
+    choiceQuestion version "chooseSome" GeneralChoiceContext choices $ selection 0 (length choices)
+  ChooseSome1 label choices ->
+    choiceQuestion version "chooseSome1" GeneralChoiceContext choices (selection 1 $ length choices)
+      & addQuestionField "completionLabel" (Aeson.toJSON $ EmbeddedI18nLabel label)
+  ChooseUpToN amount choices ->
+    choiceQuestion version "chooseUpToN" GeneralChoiceContext choices $ selection 0 amount
+  ChooseOneAtATime choices ->
+    choiceQuestion version "chooseOneAtATime" GeneralChoiceContext choices $ selection 1 1
+  ChooseOneAtATimeWithAuto label choices ->
+    QuestionPresentationWithMetadata
+      version
+      "chooseOneAtATimeWithAuto"
+      (length choices + 1)
+      (autoChoice label : zipWith (presentChoice GeneralChoiceContext) [1 ..] choices)
+      (defaultQuestionMetadata "chooseOneAtATimeWithAuto" <> Map.singleton "selection" (selection 1 1))
+  ChoosePaymentAmounts label target choices ->
+    amountQuestion
+      version
+      "choosePaymentAmounts"
+      [ ("label", Aeson.toJSON $ EmbeddedI18nLabel label)
+      , ("target", Aeson.toJSON target)
+      , ("paymentChoices", Aeson.toJSON $ map paymentAmountChoice choices)
+      ]
+  ChooseAmounts label target choices target' ->
+    amountQuestion
+      version
+      "chooseAmounts"
+      [ ("label", Aeson.toJSON $ EmbeddedI18nLabel label)
+      , ("target", Aeson.toJSON target)
+      , ("resolveTarget", Aeson.toJSON target')
+      , ("amountChoices", Aeson.toJSON choices)
+      ]
+  ChooseUpgradeDeck -> deckQuestion version "chooseUpgradeDeck" mempty
+  ChooseDeck -> deckQuestion version "chooseDeck" mempty
+  ChooseJoinDeck usedInvestigators ->
+    deckQuestion version "chooseJoinDeck" $ Map.singleton "usedInvestigators" (Aeson.toJSON usedInvestigators)
+  QuestionLabel label card question ->
+    presentQuestion version question
+      & addQuestionField "questionLabel" (Aeson.toJSON $ EmbeddedI18nLabel label)
+      & maybe id (addQuestionField "cardCode" . Aeson.toJSON) card
+  PayCostQuestion cost question ->
+    presentQuestion version question
+      & addQuestionField "payCost" (Aeson.toJSON $ presentCost cost)
+  QuestionWithSource source tooltip question ->
+    presentQuestion version question
+      & addQuestionField "questionSource" (sourceMetadata source)
+      & maybe id (addQuestionField "tooltip" . Aeson.toJSON) tooltip
+  Read flavor readChoices readCards ->
+    let (choices, metadata) = readChoicePresentation readChoices
+     in QuestionPresentationWithMetadata
+          version
+          "read"
+          (length choices)
+          (zipWith (presentChoice GeneralChoiceContext) [0 ..] choices)
+          ( defaultQuestionMetadata "read"
+              <> metadata
+              <> Map.fromList
+                ( [ ("flavorText", Aeson.toJSON flavor) ]
+                    <> [("readCards", Aeson.toJSON cards) | Just cards <- [readCards]]
+                )
+          )
+  ChooseOneWizard flavor choices confirmLabel backLabel ->
+    QuestionPresentationWithMetadata
+      version
+      "chooseOneWizard"
+      (length choices)
+      (zipWith wizardChoicePresentation [0 ..] choices)
+      ( defaultQuestionMetadata "chooseOneWizard"
+          <> Map.fromList
+            [ ("flavorText", Aeson.toJSON flavor)
+            , ("confirmLabel", Aeson.toJSON $ EmbeddedI18nLabel confirmLabel)
+            , ("backLabel", Aeson.toJSON $ EmbeddedI18nLabel backLabel)
+            ]
+      )
+  PickSupplies pointsRemaining chosenSupplies choices resupply ->
+    choiceQuestion version "pickSupplies" GeneralChoiceContext choices Null
+      & addQuestionField "pointsRemaining" (Aeson.toJSON pointsRemaining)
+      & addQuestionField "chosenSupplies" (Aeson.toJSON chosenSupplies)
+      & addQuestionField "resupply" (Aeson.toJSON resupply)
+  PickDestiny drawings ->
+    noChoiceQuestion version "pickDestiny" $ Map.singleton "drawings" (Aeson.toJSON drawings)
+  DropDown options ->
+    QuestionPresentationWithMetadata
+      version
+      "dropDown"
+      (length options)
+      (zipWith dropDownChoice [0 ..] options)
+      (defaultQuestionMetadata "dropDown")
+  PickScenarioSettings -> noChoiceQuestion version "pickScenarioSettings" mempty
+  PickCampaignSettings -> noChoiceQuestion version "pickCampaignSettings" mempty
+  PickCampaignSpecific key value ->
+    noChoiceQuestion version "pickCampaignSpecific" $ Map.fromList [("key", Aeson.toJSON key), ("value", value)]
+  PickScenarioSpecific key value ->
+    noChoiceQuestion version "pickScenarioSpecific" $ Map.fromList [("key", Aeson.toJSON key), ("value", value)]
+  ChooseExchangeAmounts source investigator1 initial1 investigator2 initial2 token ->
+    noChoiceQuestion version "chooseExchangeAmounts"
+      $ Map.fromList
+        [ ("source", sourceMetadata source)
+        , ("fromInvestigator", Aeson.toJSON investigator1)
+        , ("fromInitialAmount", Aeson.toJSON initial1)
+        , ("toInvestigator", Aeson.toJSON investigator2)
+        , ("toInitialAmount", Aeson.toJSON initial2)
+        , ("token", Aeson.toJSON token)
+        ]
+  ContinueCampaign -> noChoiceQuestion version "continueCampaign" mempty
 
-readChoiceList :: ReadChoices msg -> [UI msg]
-readChoiceList = \case
-  BasicReadChoices choices -> choices
-  BasicReadChoicesN _ choices -> choices
-  BasicReadChoicesUpToN _ choices -> choices
-  LeadInvestigatorMustDecide choices -> choices
+choiceQuestion
+  :: Int
+  -> Text
+  -> ChoiceContext
+  -> [UI Message.Message]
+  -> Value
+  -> QuestionPresentation
+choiceQuestion version kind context choices selectionMetadata =
+  let metadata =
+        defaultQuestionMetadata kind
+          <> if selectionMetadata == Null then mempty else Map.singleton "selection" selectionMetadata
+   in QuestionPresentationWithMetadata
+        version
+        kind
+        (length choices)
+        (zipWith (presentChoice context) [0 ..] choices)
+        metadata
 
-presentChoice :: ChoiceContext -> Int -> UI Message.Message -> Maybe ChoicePresentation
-presentChoice context sourceIndex = \case
-  Label label _ -> Just $ labeledChoice sourceIndex label Nothing
-  TooltipLabel label _ _ -> Just $ labeledChoice sourceIndex label Nothing
-  CardLabel cardCode _ _ ->
-    Just $ targetChoice sourceIndex ChooseTarget (CardCodeEntity cardCode)
+noChoiceQuestion :: Int -> Text -> Map Text Value -> QuestionPresentation
+noChoiceQuestion version kind metadata =
+  QuestionPresentationWithMetadata version kind 0 [] (defaultQuestionMetadata kind <> metadata)
+
+deckQuestion :: Int -> Text -> Map Text Value -> QuestionPresentation
+deckQuestion = noChoiceQuestion
+
+amountQuestion :: Int -> Text -> [(Text, Value)] -> QuestionPresentation
+amountQuestion version kind fields =
+  noChoiceQuestion version kind (Map.fromList fields)
+
+selection :: Int -> Int -> Value
+selection minCount maxCount =
+  jsonObject [("min", Aeson.toJSON minCount), ("max", Aeson.toJSON maxCount)]
+
+addQuestionField :: Text -> Value -> QuestionPresentation -> QuestionPresentation
+addQuestionField key value (QuestionPresentationWithMetadata version kind choiceCount choices metadata) =
+  QuestionPresentationWithMetadata version kind choiceCount choices (Map.insert key value metadata)
+
+autoChoice :: Text -> ChoicePresentation
+autoChoice label =
+  ChoicePresentation 0 AutoChoice Nothing Nothing (Just $ EmbeddedI18nLabel label) Nothing Nothing
+
+groupedPresentations :: [[UI Message.Message]] -> [ChoicePresentation]
+groupedPresentations groups = go 0 0 groups
+ where
+  go _ _ [] = []
+  go sourceIndex groupIndex (group : rest) =
+    let rendered =
+          [ addChoiceField "groupIndex" (Aeson.toJSON groupIndex) $ presentChoice GeneralChoiceContext idx choice
+          | (idx, choice) <- zip [sourceIndex ..] group
+          ]
+     in rendered <> go (sourceIndex + length group) (groupIndex + 1) rest
+
+readChoicePresentation :: ReadChoices Message.Message -> ([UI Message.Message], Map Text Value)
+readChoicePresentation = \case
+  BasicReadChoices choices -> (choices, Map.singleton "readChoiceKind" (String "basic"))
+  BasicReadChoicesN amount choices ->
+    ( choices
+    , Map.fromList
+        [ ("readChoiceKind", String "chooseN")
+        , ("selection", selection amount amount)
+        ]
+    )
+  BasicReadChoicesUpToN amount choices ->
+    ( choices
+    , Map.fromList
+        [ ("readChoiceKind", String "chooseUpToN")
+        , ("selection", selection 0 amount)
+        ]
+    )
+  LeadInvestigatorMustDecide choices ->
+    (choices, Map.singleton "readChoiceKind" (String "leadInvestigatorMustDecide"))
+
+paymentAmountChoice :: PaymentAmountChoice Message.Message -> Value
+paymentAmountChoice PaymentAmountChoice {..} =
+  jsonObject
+    [ ("choiceId", Aeson.toJSON choiceId)
+    , ("investigatorId", Aeson.toJSON investigatorId)
+    , ("min", Aeson.toJSON minBound)
+    , ("max", Aeson.toJSON maxBound)
+    , ("title", Aeson.toJSON $ EmbeddedI18nLabel title)
+    ]
+
+wizardChoicePresentation :: Int -> WizardChoice Message.Message -> ChoicePresentation
+wizardChoicePresentation sourceIndex WizardChoice {..} =
+  ChoicePresentationWithMetadata
+    sourceIndex
+    WizardChoiceKind
+    Nothing
+    Nothing
+    (Just $ EmbeddedI18nLabel label)
+    Nothing
+    Nothing
+    (Map.singleton "flavorText" $ Aeson.toJSON flavorText)
+
+dropDownChoice :: Int -> (Text, Message.Message) -> ChoicePresentation
+dropDownChoice sourceIndex (label, _) = labeledChoice sourceIndex label Nothing
+
+presentChoice :: ChoiceContext -> Int -> UI Message.Message -> ChoicePresentation
+presentChoice context sourceIndex choice = case choice of
+  Label label _ -> labeledChoice sourceIndex label Nothing
+  InvalidLabel label ->
+    ChoicePresentation sourceIndex InvalidChoice Nothing Nothing (Just $ EmbeddedI18nLabel label) Nothing Nothing
+  TooltipLabel label tooltip _ ->
+    addChoiceField "tooltip" (Aeson.toJSON tooltip) $ labeledChoice sourceIndex label Nothing
+  CostLabel cost _ ->
+    ChoicePresentation sourceIndex CostChoice Nothing Nothing Nothing Nothing (Just $ presentCost cost)
+  CardLabel cardCode flippable _ ->
+    addChoiceField "flippable" (Aeson.toJSON flippable)
+      $ targetChoice sourceIndex ChooseTarget (CardCodeEntity cardCode)
+  ChaosTokenLabel face _ ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      ChaosTokenChoice
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      (Map.singleton "face" $ Aeson.toJSON face)
+  KeyLabel key _ ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      KeyChoice
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      (Map.singleton "key" $ Aeson.toJSON key)
   PortraitLabel investigatorId _ ->
-    Just $ targetChoice sourceIndex ChooseTarget (InvestigatorEntity investigatorId)
-  TargetLabel target messages -> do
-    entity <- entityFromTarget target
-    pure $ targetChoice sourceIndex (targetChoiceKind entity messages) entity
+    targetChoice sourceIndex ChooseTarget (InvestigatorEntity investigatorId)
+  TargetLabel target messages ->
+    case entityFromTarget target of
+      Just entity -> targetChoice sourceIndex (targetChoiceKind entity messages) entity
+      Nothing -> opaqueChoice sourceIndex "TargetLabel" Nothing $ Map.singleton "target" (Aeson.toJSON target)
   EvadeLabel enemyId _ ->
-    Just $ actionTargetChoice sourceIndex Evade (EnemyEntity enemyId)
-  EvadeLabelWithSkill enemyId _ _ ->
-    Just $ actionTargetChoice sourceIndex Evade (EnemyEntity enemyId)
+    actionTargetChoice sourceIndex Evade (EnemyEntity enemyId)
+  EvadeLabelWithSkill enemyId skillType _ ->
+    addChoiceField "skillType" (Aeson.toJSON skillType)
+      $ actionTargetChoice sourceIndex Evade (EnemyEntity enemyId)
   FightLabel enemyId _ ->
-    Just $ actionTargetChoice sourceIndex Fight (EnemyEntity enemyId)
-  FightLabelWithSkill enemyId _ _ ->
-    Just $ actionTargetChoice sourceIndex Fight (EnemyEntity enemyId)
+    actionTargetChoice sourceIndex Fight (EnemyEntity enemyId)
+  FightLabelWithSkill enemyId skillType _ ->
+    addChoiceField "skillType" (Aeson.toJSON skillType)
+      $ actionTargetChoice sourceIndex Fight (EnemyEntity enemyId)
   EngageLabel enemyId _ ->
-    Just $ actionTargetChoice sourceIndex Engage (EnemyEntity enemyId)
+    actionTargetChoice sourceIndex Engage (EnemyEntity enemyId)
+  GridLabel label _ -> labeledChoice sourceIndex label Nothing
+  ConnectionLabel connection _ ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      ConnectionChoice
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      (Map.singleton "connection" $ Aeson.toJSON connection)
+  TarotLabel tarotCard _ ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      TarotChoice
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      (Map.singleton "tarotCard" $ Aeson.toJSON tarotCard)
   AbilityLabel investigatorId ability _ _ _ ->
     abilityChoice sourceIndex investigatorId ability
   ComponentLabel component messages ->
     case component of
       InvestigatorComponent investigatorId DamageToken
         | any (assignsDamageTo investigatorId) messages ->
-        Just $ targetChoice sourceIndex AssignDamage (InvestigatorEntity investigatorId)
+            targetChoice sourceIndex AssignDamage (InvestigatorEntity investigatorId)
       InvestigatorComponent investigatorId HorrorToken
         | any (assignsHorrorTo investigatorId) messages ->
-        Just $ targetChoice sourceIndex AssignHorror (InvestigatorEntity investigatorId)
+            targetChoice sourceIndex AssignHorror (InvestigatorEntity investigatorId)
       InvestigatorComponent investigatorId ResourceToken
         | context == PlayerWindowContext ->
-            Just
-              $ ChoicePresentation
-                sourceIndex
-                GainResource
-                (Just investigatorId)
-                Nothing
-                Nothing
-                Nothing
-                Nothing
+            ChoicePresentation
+              sourceIndex
+              GainResource
+              (Just investigatorId)
+              Nothing
+              Nothing
+              Nothing
+              Nothing
       InvestigatorDeckComponent investigatorId
         | context == PlayerWindowContext ->
-            Just
-              $ ChoicePresentation
-                sourceIndex
-                DrawCard
-                (Just investigatorId)
-                Nothing
-                Nothing
-                Nothing
-                Nothing
-      _ -> Nothing
+            ChoicePresentation
+              sourceIndex
+              DrawCard
+              (Just investigatorId)
+              Nothing
+              Nothing
+              Nothing
+              Nothing
+      _ -> componentChoice sourceIndex ComponentChoice component
+  AuxiliaryComponentLabel component _ ->
+    componentChoice sourceIndex AuxiliaryComponentChoice component
   EndTurnButton investigatorId _ ->
-    Just
-      $ ChoicePresentation
-        sourceIndex
-        EndTurn
-        (Just investigatorId)
-        Nothing
-        Nothing
-        Nothing
-        Nothing
+    ChoicePresentation
+      sourceIndex
+      EndTurn
+      (Just investigatorId)
+      Nothing
+      Nothing
+      Nothing
+      Nothing
   StartSkillTestButton investigatorId ->
-    Just
-      $ ChoicePresentation
-        sourceIndex
-        StartSkillTest
-        (Just investigatorId)
-        Nothing
-        Nothing
-        Nothing
-        Nothing
+    ChoicePresentation
+      sourceIndex
+      StartSkillTest
+      (Just investigatorId)
+      Nothing
+      Nothing
+      Nothing
+      Nothing
   SkillTestApplyResultsButton ->
-    Just
-      $ ChoicePresentation
-        sourceIndex
-        ApplySkillTestResults
-        Nothing
-        Nothing
-        Nothing
-        Nothing
-        Nothing
-  Done label -> Just $ labeledChoice sourceIndex label Nothing
+    ChoicePresentation
+      sourceIndex
+      ApplySkillTestResults
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+  ChaosTokenGroupChoice source investigatorId step ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      ChaosTokenGroupChoiceKind
+      (Just investigatorId)
+      (entityFromSource source)
+      Nothing
+      Nothing
+      Nothing
+      ( Map.fromList
+          [ ("source", sourceMetadata source)
+          , ("step", Aeson.toJSON step)
+          ]
+      )
+  EffectActionButton tooltip effectId _ ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      EffectActionChoice
+      Nothing
+      (Just $ EffectEntity effectId)
+      Nothing
+      Nothing
+      Nothing
+      (Map.singleton "tooltip" $ Aeson.toJSON tooltip)
+  Done label -> labeledChoice sourceIndex label Nothing
   SkipTriggersButton investigatorId ->
-    Just
-      $ ChoicePresentation
-        sourceIndex
-        SkipTriggers
-        (Just investigatorId)
-        Nothing
-        Nothing
-        Nothing
-        Nothing
-  GridLabel label _ -> Just $ labeledChoice sourceIndex label Nothing
-  SkillLabelWithLabel label _ _ -> Just $ labeledChoice sourceIndex label Nothing
+    ChoicePresentation
+      sourceIndex
+      SkipTriggers
+      (Just investigatorId)
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+  CardPile pile _ ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      CardPileChoice
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      (Map.singleton "cards" $ Aeson.toJSON pile)
+  Info flavor ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      InfoChoice
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      (Map.singleton "flavorText" $ Aeson.toJSON flavor)
+  SkillLabel skillType _ ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      SkillChoice
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      Nothing
+      (Map.singleton "skillType" $ Aeson.toJSON skillType)
+  SkillLabelWithLabel label skillType _ ->
+    ChoicePresentationWithMetadata
+      sourceIndex
+      SkillChoice
+      Nothing
+      Nothing
+      (Just $ EmbeddedI18nLabel label)
+      Nothing
+      Nothing
+      (Map.singleton "skillType" $ Aeson.toJSON skillType)
   ScenarioLabel label scenarioId _ ->
-    Just $ labeledChoice sourceIndex label (Just $ ScenarioEntity scenarioId)
-  _ -> Nothing
+    labeledChoice sourceIndex label (Just $ ScenarioEntity scenarioId)
+ where
+  opaqueChoice sourceIndex tag mLabel metadata =
+    ChoicePresentationWithMetadata
+      sourceIndex
+      OpaqueChoice
+      Nothing
+      Nothing
+      (Just $ EmbeddedI18nLabel $ fromMaybe "$choice.opaque" mLabel)
+      Nothing
+      Nothing
+      (Map.insert "uiTag" (Aeson.toJSON tag) metadata)
+
+componentChoice :: Int -> ChoicePresentationKind -> Component -> ChoicePresentation
+componentChoice sourceIndex kind component =
+  ChoicePresentationWithMetadata
+    sourceIndex
+    kind
+    Nothing
+    (entityFromComponent component)
+    Nothing
+    Nothing
+    Nothing
+    (Map.singleton "component" $ Aeson.toJSON component)
+
+entityFromComponent :: Component -> Maybe PresentationEntity
+entityFromComponent = \case
+  InvestigatorComponent investigatorId _ -> Just $ InvestigatorEntity investigatorId
+  InvestigatorDeckComponent investigatorId -> Just $ InvestigatorEntity investigatorId
+  AssetComponent assetId _ -> Just $ AssetEntity assetId
+
+addChoiceField :: Text -> Value -> ChoicePresentation -> ChoicePresentation
+addChoiceField key value (ChoicePresentationWithMetadata sourceIndex kind actor entity label ability cost metadata) =
+  ChoicePresentationWithMetadata sourceIndex kind actor entity label ability cost (Map.insert key value metadata)
 
 labeledChoice
   :: Int
@@ -519,7 +1001,7 @@ actionTargetChoice sourceIndex kind entity =
     Nothing
     Nothing
 
-abilityChoice :: Int -> InvestigatorId -> Ability.Ability -> Maybe ChoicePresentation
+abilityChoice :: Int -> InvestigatorId -> Ability.Ability -> ChoicePresentation
 abilityChoice sourceIndex investigatorId ability =
   let
     sourceEntity = entityFromSource (Ability.abilitySource ability)
@@ -548,19 +1030,18 @@ abilityChoice sourceIndex investigatorId ability =
         Nothing
         (Just abilityPresentation)
         (Just $ presentCost totalCost)
-    choice = choiceFor kind
    in case (kind, sourceEntity, entity) of
         (Move, Just source@LocationEntity {}, Just projected)
-          | source == projected -> Just choice
-        (Move, Just LocationEntity {}, _) -> Nothing
-        (Move, Nothing, _) -> Nothing
-        (Move, Just _, _) -> Just $ choiceFor UseAbility
+          | source == projected -> choiceFor Move
+        (Move, Just LocationEntity {}, _) -> choiceFor UseAbility
+        (Move, Nothing, _) -> choiceFor UseAbility
+        (Move, Just _, _) -> choiceFor UseAbility
         (ResolveForcedAbility, Just source, Just projected)
           | isSupportedForcedAbilityEntity source
           , source == projected ->
-              Just choice
-        (ResolveForcedAbility, _, _) -> Nothing
-        _ -> Just choice
+              choiceFor ResolveForcedAbility
+        (ResolveForcedAbility, _, _) -> choiceFor UseAbility
+        _ -> choiceFor kind
 
 isSupportedForcedAbilityEntity :: PresentationEntity -> Bool
 isSupportedForcedAbilityEntity = \case
@@ -631,6 +1112,12 @@ actionText = \case
   Action.Explore -> Just "explore"
   Action.Circle -> Just "circle"
   Action.HomebrewAction _ -> Nothing
+
+sourceMetadata :: Source -> Value
+sourceMetadata source =
+  jsonObject
+    $ [("raw", Aeson.toJSON source)]
+    <> [("entity", Aeson.toJSON entity) | Just entity <- [entityFromSource source]]
 
 entityFromSource :: Source -> Maybe PresentationEntity
 entityFromSource = \case

@@ -49,6 +49,43 @@
       ],
       "properties": {
         "tag": {
+          "const": "OrderedAnswer"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "choices",
+            "playerId",
+            "questionVersion"
+          ],
+          "properties": {
+            "choices": {
+              "type": "array",
+              "items": {
+                "$ref": "./non-negative-int64.schema.json"
+              },
+              "description": "Ordered raw choice indexes for ChooseOneAtATime / ChooseOneAtATimeWithAuto."
+            },
+            "playerId": {
+              "$ref": "./uuid.schema.json"
+            },
+            "questionVersion": {
+              "$ref": "./non-negative-int64.schema.json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
           "const": "Raw"
         },
         "contents": {
@@ -176,6 +213,10 @@
         "playerId": {
           "type": "string",
           "format": "uuid"
+        },
+        "overlay": {
+          "type": ["object", "null"],
+          "description": "Optional DeckOverlay; web sends this when custom-card overlays are applied."
         }
       }
     },
