@@ -1,0 +1,42 @@
+{
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "choiceCount": 2,
+  "choices": [
+    {
+      "cost": {
+        "kind": "free"
+      },
+      "kind": "costLabel",
+      "selectable": true,
+      "sourceIndex": 0
+    },
+    {
+      "ability": {
+        "actions": [
+          "activate"
+        ],
+        "canBeCancelled": true,
+        "cardCode": "c01104",
+        "index": 1,
+        "type": "action"
+      },
+      "actorId": "c01001",
+      "cost": {
+        "kind": "free"
+      },
+      "entity": {
+        "id": "c01104",
+        "kind": "cardCode"
+      },
+      "kind": "useAbility",
+      "selectable": true,
+      "sourceIndex": 1
+    }
+  ],
+  "protocolVersion": 2,
+  "questionKind": "chooseOne",
+  "questionVersion": 201
+}

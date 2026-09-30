@@ -37,7 +37,10 @@ import Arkham.Attack.Types
   , EnemyAttackType (RegularAttack)
   )
 import Arkham.Campaign (lookupCampaign)
+import Arkham.ChaosBagStepState (ChaosBagStep (..), ChaosTokenStrategy (..))
+import Arkham.ChaosToken.Types (ChaosTokenFace (Zero))
 import Arkham.Campaign.Types (Campaign)
+import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Asset.Cards qualified as AssetCards
 import Arkham.EnemyLocation (lookupEnemyLocation)
 import Arkham.EnemyLocation.Cards qualified as EnemyLocationCards
@@ -73,6 +76,8 @@ import Arkham.Helpers.Message qualified as MessageHelpers (createEnemy)
 import Arkham.Helpers.Scenario (scenarioField)
 import Arkham.Investigator.Cards qualified as InvestigatorCards
 import Arkham.Investigator.Types qualified as Investigator
+import Arkham.Key (ArkhamKey (RedKey))
+import Arkham.LocationSymbol (LocationSymbol (Circle))
 import Arkham.Location.Types qualified as Location
 import Arkham.Location.CardDefs.NightOfTheZealot.TheGathering qualified as Locations
 import Arkham.Matcher
@@ -86,6 +91,7 @@ import Arkham.Matcher
   , WindowMatcher (RoundEnds)
   )
 import Arkham.Matcher qualified as Matcher
+import Arkham.Matcher.ChaosToken (ChaosTokenMatcher (AnyChaosToken))
 import Arkham.Message qualified as Msg (storyWithCards)
 import Arkham.Message.Lifted.Choose (chooseTargetM)
 import Arkham.Message.Lifted.Location (unsafeReveal)
@@ -103,6 +109,9 @@ import Arkham.Phase
 import Arkham.Replay.Checkpoint (canonicalQuestionSha256)
 import Arkham.Replay.ImportAuthority (ReplayImportReceipt)
 import Arkham.Scenario.Types (Field (ScenarioDiscard, ScenarioSetAsideCards), Scenario)
+import Arkham.SkillType (SkillType (SkillWillpower))
+import Arkham.Tarot (TarotCard (TarotCard), TarotCardArcana (TheFool0), TarotCardFacing (Upright))
+import Arkham.Text (Tooltip (Tooltip))
 import Arkham.Timing qualified as Timing
 import Arkham.Treachery.CardDefs.NightOfTheZealot qualified as WeaknessCards
 import Arkham.Treachery.CardDefs.NightOfTheZealot.StrikingFear qualified as TreacheryCards
@@ -119,6 +128,7 @@ import Base.Api.Types.LocaleCatalog (localeCatalogCapability)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
+import Data.Data (dataTypeConstrs, dataTypeOf, showConstr)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
@@ -3123,23 +3133,12 @@ spec = describe "Native client contract fixtures" do
     let
       assertAssignment questionFile expectedKind = do
         question <- loadQuestionFixture questionFile
-        QuestionPresentation.questionPresentation 38 question
-          `shouldBe` QuestionPresentation.QuestionPresentation
-            38
-            "chooseOne"
-            1
-            [ QuestionPresentation.ChoicePresentation
-                0
-                expectedKind
-                Nothing
-                ( Just
-                    $ QuestionPresentation.InvestigatorEntity
-                    $ InvestigatorId "01001"
-                )
-                Nothing
-                Nothing
-                Nothing
-            ]
+        case QuestionPresentation.questionPresentation 38 question of
+          QuestionPresentation.QuestionPresentation _ "chooseOne" 1
+            [QuestionPresentation.ChoicePresentation 0 kind Nothing entity Nothing Nothing Nothing] -> do
+              kind `shouldBe` expectedKind
+              entity `shouldBe` Just (QuestionPresentation.InvestigatorEntity $ InvestigatorId "01001")
+          other -> expectationFailure $ "Expected one assignment descriptor, got " <> show other
     assertAssignment
       "question-gathering-attic-horror-assignment.json"
       QuestionPresentation.AssignHorror
@@ -3151,12 +3150,12 @@ spec = describe "Native client contract fixtures" do
     let
       iid = InvestigatorId "01001"
       question = ChooseOne [DamageLabel iid [GameOver]] :: Question Message
-    QuestionPresentation.questionPresentation 38 question
-      `shouldBe` QuestionPresentation.QuestionPresentation
-        38
-        "chooseOne"
-        1
-        []
+    case QuestionPresentation.questionPresentation 38 question of
+      QuestionPresentation.QuestionPresentation _ "chooseOne" 1
+        [QuestionPresentation.ChoicePresentation 0 kind _ entity _ _ _] -> do
+          kind `shouldBe` QuestionPresentation.ComponentChoice
+          entity `shouldBe` Just (QuestionPresentation.InvestigatorEntity iid)
+      other -> expectationFailure $ "Expected one generic component descriptor, got " <> show other
 
   it "keeps unsupported forced variants generic instead of overpromising raw support" do
     let
@@ -3233,7 +3232,7 @@ spec = describe "Native client contract fixtures" do
                     presentations
                 ]
             choiceCount `shouldBe` 12
-            sourceIndexes `shouldBe` [0 .. 8] <> [10, 11]
+            sourceIndexes `shouldBe` [0 .. 11]
 
         case drop 9 choices of
           AbilityLabel _ cellarAbility _ _ _
@@ -3268,7 +3267,7 @@ spec = describe "Native client contract fixtures" do
                         presentations
                     ]
                 choiceCount `shouldBe` 12
-                sourceIndexes `shouldBe` [0 .. 8] <> [10, 11]
+                sourceIndexes `shouldBe` [0 .. 11]
           otherChoices ->
             expectationFailure
               $ "Expected both Gathering movement choices, got "
@@ -3330,14 +3329,10 @@ spec = describe "Native client contract fixtures" do
     forced <- loadQuestionFixture "question-gathering-attic-entry-forced.json"
     case forced of
       WindowChooseOne [choice] ->
-        QuestionPresentation.questionPresentation
-          37
-          (WindowChooseOne [removeProjectedSource choice])
-          `shouldBe` QuestionPresentation.QuestionPresentation
-            37
-            "windowChooseOne"
-            1
-            []
+        case QuestionPresentation.questionPresentation 37 (WindowChooseOne [removeProjectedSource choice]) of
+          QuestionPresentation.QuestionPresentation _ "windowChooseOne" 1
+            [QuestionPresentation.ChoicePresentation 0 QuestionPresentation.UseAbility _ _ _ _ _] -> pure ()
+          other -> expectationFailure $ "Expected one generic forced ability descriptor, got " <> show other
       other ->
         expectationFailure
           $ "Expected the Gathering Attic forced prompt, got "
@@ -3362,20 +3357,16 @@ spec = describe "Native client contract fixtures" do
     forced <- loadQuestionFixture "question-gathering-attic-entry-forced.json"
     case forced of
       WindowChooseOne [choice] ->
-        QuestionPresentation.questionPresentation
-          37
-          (WindowChooseOne [replaceWithInvestigatorSource choice])
-          `shouldBe` QuestionPresentation.QuestionPresentation
-            37
-            "windowChooseOne"
-            1
-            []
+        case QuestionPresentation.questionPresentation 37 (WindowChooseOne [replaceWithInvestigatorSource choice]) of
+          QuestionPresentation.QuestionPresentation _ "windowChooseOne" 1
+            [QuestionPresentation.ChoicePresentation 0 QuestionPresentation.UseAbility _ _ _ _ _] -> pure ()
+          other -> expectationFailure $ "Expected one generic forced ability descriptor, got " <> show other
       other ->
         expectationFailure
           $ "Expected the Gathering Attic forced prompt, got "
           <> show other
 
-  it "keeps Gathering semantic choices fail-closed without changing raw source indexes" do
+  it "keeps Gathering semantic choices complete without changing raw source indexes" do
     let
       iid = InvestigatorId "01001"
       question =
@@ -3399,6 +3390,14 @@ spec = describe "Native client contract fixtures" do
             Nothing
             Nothing
         , QuestionPresentation.ChoicePresentation
+            1
+            QuestionPresentation.InvalidChoice
+            Nothing
+            Nothing
+            (Just $ QuestionPresentation.EmbeddedI18nLabel "$fixture.unsupported")
+            Nothing
+            Nothing
+        , QuestionPresentation.ChoicePresentation
             2
             QuestionPresentation.EndTurn
             (Just iid)
@@ -3408,7 +3407,7 @@ spec = describe "Native client contract fixtures" do
             Nothing
         ]
 
-  it "fails closed when a synthetic auto action shifts every real answer index" do
+  it "models a synthetic auto action without shifting hidden real answer indexes" do
     let
       iid = InvestigatorId "01001"
       question =
@@ -3436,12 +3435,11 @@ spec = describe "Native client contract fixtures" do
               $ "auto-choice answer rejected: "
               <> Text.unpack reason
           Handled messages -> messages `shouldBe` expected
-    QuestionPresentation.questionPresentation 7 question
-      `shouldBe` QuestionPresentation.QuestionPresentation
-        7
-        "unsupported"
-        0
-        []
+    case QuestionPresentation.questionPresentation 7 question of
+      QuestionPresentation.QuestionPresentation _ "chooseOneAtATimeWithAuto" 3 choices -> do
+        let sourceIndexes = [sourceIndex | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- choices]
+        sourceIndexes `shouldBe` [0, 1, 2]
+      other -> expectationFailure $ "Expected complete auto presentation, got " <> show other
     assertAnswer 0 [Run [ClearUI], Run [GameOver]]
     assertAnswer
       1
@@ -3449,6 +3447,164 @@ spec = describe "Native client contract fixtures" do
       , Ask fixturePlayerId
           $ ChooseOneAtATime [EndTurnButton iid [GameOver]]
       ]
+
+  it "keeps representative generic presentations complete for all question and UI constructor families" do
+    let
+      iid = InvestigatorId "01001"
+      enemyId = EnemyId $ UUID.fromWords 0 0 0 71
+      assetId = AssetId $ UUID.fromWords 0 0 0 72
+      effectId = EffectId $ UUID.fromWords 0 0 0 73
+      locationId = LocationId $ UUID.fromWords 0 0 0 74
+      cardId = unsafeMakeCardId $ UUID.fromWords 0 0 0 75
+      amountId = UUID.fromWords 0 0 0 76
+      paymentId = UUID.fromWords 0 0 0 77
+      assertComplete question =
+        case QuestionPresentation.questionPresentation 99 question of
+          QuestionPresentation.QuestionPresentation _ _ choiceCount presentations -> do
+            let sourceIndexes = [sourceIndex | QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _ <- presentations]
+            length presentations `shouldBe` choiceCount
+            sourceIndexes `shouldBe` [0 .. choiceCount - 1]
+      abilityChoice = case fixtureGatheringActObjectiveQuestion of
+        PlayerWindowChooseOne choices ->
+          fromMaybe (error "fixture objective ability missing") $ find (\case AbilityLabel {} -> True; _ -> False) choices
+        _ -> error "fixture objective question shape changed"
+      uiChoices =
+        [ Label "$label.basic" [ClearUI]
+        , InvalidLabel "$label.invalid"
+        , TooltipLabel "$label.tooltip" (Tooltip "$tooltip.body") [ClearUI]
+        , CostLabel Cost.Free [ClearUI]
+        , CardLabel "01001" False [ClearUI]
+        , ChaosTokenLabel Zero [ClearUI]
+        , KeyLabel RedKey [ClearUI]
+        , PortraitLabel iid [ClearUI]
+        , TargetLabel (InvestigatorTarget iid) [ClearUI]
+        , SkillLabel SkillWillpower [ClearUI]
+        , SkillLabelWithLabel "$label.skill" SkillWillpower [ClearUI]
+        , EvadeLabel enemyId [ClearUI]
+        , EvadeLabelWithSkill enemyId SkillWillpower [ClearUI]
+        , FightLabel enemyId [ClearUI]
+        , FightLabelWithSkill enemyId SkillWillpower [ClearUI]
+        , EngageLabel enemyId [ClearUI]
+        , GridLabel "$label.grid" [ClearUI]
+        , ConnectionLabel Circle [ClearUI]
+        , TarotLabel (TarotCard Upright TheFool0) [ClearUI]
+        , abilityChoice
+        , ComponentLabel (AssetComponent assetId DamageToken) [ClearUI]
+        , AuxiliaryComponentLabel (InvestigatorComponent iid HorrorToken) [ClearUI]
+        , EndTurnButton iid [ClearUI]
+        , StartSkillTestButton iid
+        , SkillTestApplyResultsButton
+        , ChaosTokenGroupChoice (ProxySource (LocationSource locationId) GameSource) iid Draw
+        , EffectActionButton (Tooltip "$effect.tooltip") effectId [ClearUI]
+        , Done "$done"
+        , SkipTriggersButton iid
+        , CardPile [PileCard cardId (Just iid)] [ClearUI]
+        , Info mempty
+        , ScenarioLabel "$scenario" "scenario-id" [ClearUI]
+        ]
+      labelQuestion = ChooseOne [Label "$choice" [ClearUI]]
+      chaosChooseStep = Choose GameSource 1 ResolveChoice [] [] Nothing
+      chaosChooseMatchStep = ChooseMatch GameSource 1 ResolveChoice [] [] AnyChaosToken Nothing
+      chaosChooseMatchChoiceStep = ChooseMatchChoice [] [] [(AnyChaosToken, ("$token.choice", Draw))]
+      representativeQuestions =
+        [ ChooseOne uiChoices
+        , PlayerWindowChooseOne uiChoices
+        , WindowChooseOne uiChoices
+        , ChooseOneFromEach [[Label "$a" [ClearUI]], [Label "$b" [ClearUI]]]
+        , ChooseN 1 [Label "$a" [ClearUI], Label "$b" [ClearUI]]
+        , ChooseSome [Label "$a" [ClearUI], Done "$done"]
+        , ChooseSome1 "$done" [Label "$a" [ClearUI], Done "$done"]
+        , ChooseUpToN 1 [Label "$a" [ClearUI], Done "$done"]
+        , ChooseOneAtATime [Label "$a" [ClearUI], Label "$b" [ClearUI]]
+        , ChooseOneAtATimeWithAuto "$auto" [Label "$a" [ClearUI], Label "$b" [ClearUI]]
+        , ChoosePaymentAmounts "$pay" Nothing [PaymentAmountChoice paymentId iid 0 3 "$resource" ClearUI]
+        , ChooseAmounts "$amount" (MinAmountTarget 0) [AmountChoice amountId "$clues" 0 3] (LocationTarget locationId)
+        , ChooseUpgradeDeck
+        , ChooseDeck
+        , ChooseJoinDeck []
+        , QuestionLabel "$wrapped" (Just "01001") labelQuestion
+        , PayCostQuestion Cost.Free labelQuestion
+        , QuestionWithSource (ProxySource (LocationSource locationId) GameSource) (Just $ Tooltip "$source.tooltip") labelQuestion
+        , Read mempty (BasicReadChoices [Label "$read" [ClearUI]]) Nothing
+        , Read mempty (BasicReadChoicesN 1 [Label "$read.n" [ClearUI]]) Nothing
+        , Read mempty (BasicReadChoicesUpToN 1 [Label "$read.upToN" [ClearUI], Done "$done"]) (Just ["01104"])
+        , Read mempty (LeadInvestigatorMustDecide [Label "$read.lead" [ClearUI]]) Nothing
+        , ChooseOne [ChaosTokenGroupChoice GameSource iid chaosChooseStep]
+        , ChooseOne [ChaosTokenGroupChoice GameSource iid chaosChooseMatchStep]
+        , ChooseOne [ChaosTokenGroupChoice GameSource iid chaosChooseMatchChoiceStep]
+        , ChooseOne [TargetLabel TestTarget [ClearUI]]
+        , ChooseOne [ComponentLabel (InvestigatorDeckComponent iid) [ClearUI]]
+        , ChooseOneWizard mempty [WizardChoice "$wizard" mempty [ClearUI]] "$confirm" "$back"
+        , PickSupplies 0 [] [Label "$supply" [ClearUI]] False
+        , PickDestiny [DestinyDrawing "scenario" (TarotCard Upright TheFool0)]
+        , DropDown [("$option", ClearUI)]
+        , PickScenarioSettings
+        , PickCampaignSettings
+        , PickCampaignSpecific "notz" Aeson.Null
+        , PickScenarioSpecific "gathering" Aeson.Null
+        , ChooseExchangeAmounts GameSource iid 1 (InvestigatorId "01002") 0 Resource
+        , ContinueCampaign
+        ]
+    let
+      uiConstructorNames = map showConstr $ dataTypeConstrs $ dataTypeOf (Label "$x" [] :: UI Message)
+      questionConstructorNames = map showConstr $ dataTypeConstrs $ dataTypeOf (ChooseOne [] :: Question Message)
+    uiConstructorNames
+      `shouldBe` [ "Label", "InvalidLabel", "TooltipLabel", "CostLabel", "CardLabel", "ChaosTokenLabel", "KeyLabel", "PortraitLabel", "TargetLabel", "SkillLabel", "SkillLabelWithLabel", "EvadeLabel", "EvadeLabelWithSkill", "FightLabel", "FightLabelWithSkill", "EngageLabel", "GridLabel", "ConnectionLabel", "TarotLabel", "AbilityLabel", "ComponentLabel", "AuxiliaryComponentLabel", "EndTurnButton", "StartSkillTestButton", "SkillTestApplyResultsButton", "ChaosTokenGroupChoice", "EffectActionButton", "Done", "SkipTriggersButton", "CardPile", "Info", "ScenarioLabel" ]
+    questionConstructorNames
+      `shouldBe` [ "ChooseOne", "PlayerWindowChooseOne", "WindowChooseOne", "ChooseOneFromEach", "ChooseN", "ChooseSome", "ChooseSome1", "ChooseUpToN", "ChooseOneAtATime", "ChooseOneAtATimeWithAuto", "ChoosePaymentAmounts", "ChooseAmounts", "ChooseUpgradeDeck", "ChooseDeck", "ChooseJoinDeck", "QuestionLabel", "PayCostQuestion", "QuestionWithSource", "Read", "ChooseOneWizard", "PickSupplies", "PickDestiny", "DropDown", "PickScenarioSettings", "PickCampaignSettings", "PickCampaignSpecific", "PickScenarioSpecific", "ChooseExchangeAmounts", "ContinueCampaign" ]
+    traverse_ assertComplete representativeQuestions
+    let
+      representativeNames :: [Text]
+      representativeNames =
+        [ "chooseOne-all-ui", "playerWindowChooseOne", "windowChooseOne", "chooseOneFromEach", "chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "choosePaymentAmounts-null-target", "chooseAmounts", "chooseUpgradeDeck", "chooseDeck", "chooseJoinDeck", "questionLabel", "payCostQuestion", "questionWithProxySource", "read", "readN", "readUpToNWithCards", "readLead", "chaosStepChoose", "chaosStepChooseMatch", "chaosStepChooseMatchChoice", "opaqueTarget", "componentInvestigatorDeckGeneral", "chooseOneWizard", "pickSupplies", "pickDestiny", "dropDown", "pickScenarioSettings", "pickCampaignSettings", "pickCampaignSpecific", "pickScenarioSpecific", "chooseExchangeAmounts", "continueCampaign" ]
+    length representativeNames `shouldBe` length representativeQuestions
+    representativeFixture <- loadFixture "question-presentation-representatives.json"
+    fixturePresentations <- case representativeFixture of
+      Aeson.Object fields -> case AesonKeyMap.lookup "presentations" fields of
+        Just (Aeson.Array values) -> pure $ toList values
+        _ -> expectationFailure "representative fixture missing presentations" >> pure []
+      _ -> expectationFailure "representative fixture must be an object" >> pure []
+    let fixtureNames =
+          [ name
+          | Aeson.Object fields <- fixturePresentations
+          , Just (Aeson.String name) <- [AesonKeyMap.lookup "name" fields]
+          ]
+    fixtureNames `shouldBe` representativeNames
+    for_ (zip [0 :: Int ..] $ zip representativeNames representativeQuestions) \(index, (name, question)) -> do
+      let expectedPresentation = Aeson.toJSON $ QuestionPresentation.questionPresentation (300 + index) question
+      case find (\case
+        Aeson.Object fields -> AesonKeyMap.lookup "name" fields == Just (Aeson.String name)
+        _ -> False) fixturePresentations of
+        Just (Aeson.Object fields) ->
+          AesonKeyMap.lookup "presentation" fields `shouldBe` Just expectedPresentation
+        other -> expectationFailure $ "Missing representative presentation " <> Text.unpack name <> ": " <> show other
+
+  it "matches generic presentation v2 golden fixtures from the real encoder" do
+    let
+      fixtureCases =
+        [ ("question-generic-cost-ability-window.json", "question-presentation-generic-cost-ability-window.json", 201)
+        , ("question-generic-skill-label.json", "question-presentation-generic-skill-label.json", 202)
+        , ("question-generic-invalid-info.json", "question-presentation-generic-invalid-info.json", 203)
+        , ("question-generic-choose-n.json", "question-presentation-generic-choose-n.json", 204)
+        , ("question-generic-choose-up-to-n.json", "question-presentation-generic-choose-up-to-n.json", 205)
+        , ("question-generic-choose-some.json", "question-presentation-generic-choose-some.json", 206)
+        , ("question-generic-choose-amounts.json", "question-presentation-generic-choose-amounts.json", 207)
+        , ("question-generic-payment-amounts.json", "question-presentation-generic-payment-amounts.json", 208)
+        , ("question-generic-one-at-a-time-auto.json", "question-presentation-generic-one-at-a-time-auto.json", 209)
+        , ("question-generic-one-from-each.json", "question-presentation-generic-one-from-each.json", 210)
+        , ("question-generic-choose-deck.json", "question-presentation-generic-choose-deck.json", 211)
+        , ("question-generic-read.json", "question-presentation-generic-read.json", 212)
+        , ("question-generic-wrapped.json", "question-presentation-generic-wrapped.json", 213)
+        ]
+    for_ fixtureCases \(questionFile, presentationFile, version) -> do
+      question <- loadQuestionFixture questionFile
+      questionFixture <- loadFixture questionFile
+      presentationFixture <- loadFixture presentationFile
+      Aeson.toJSON question `shouldBe` questionFixture
+      viaWireEncoding question `shouldBe` questionFixture
+      let presentation = QuestionPresentation.questionPresentation version question
+      Aeson.toJSON presentation `shouldBe` presentationFixture
+      viaWireEncoding presentation `shouldBe` presentationFixture
 
   it "binds the Gathering act objective to source index twelve and its exact server-owned cost" do
     let
@@ -3950,27 +4106,17 @@ spec = describe "Native client contract fixtures" do
             q38Actions `shouldBe` 1
             q38Damage `shouldBe` 1
             q38Horror `shouldBe` 3
-            Map.lookup
+            case Map.lookup
               fixturePlayerId
               ( QuestionPresentation.questionPresentations
                   (gameScenarioSteps q38Game)
                   (gameQuestion q38Game)
-              )
-              `shouldBe` Just
-                ( QuestionPresentation.QuestionPresentation
-                    38
-                    "chooseOne"
-                    1
-                    [ QuestionPresentation.ChoicePresentation
-                        0
-                        assignmentKind
-                        Nothing
-                        (Just $ QuestionPresentation.InvestigatorEntity iid)
-                        Nothing
-                        Nothing
-                        Nothing
-                    ]
-                )
+              ) of
+              Just (QuestionPresentation.QuestionPresentation _ "chooseOne" 1
+                [QuestionPresentation.ChoicePresentation 0 kind Nothing entity Nothing Nothing Nothing]) -> do
+                  kind `shouldBe` assignmentKind
+                  entity `shouldBe` Just (QuestionPresentation.InvestigatorEntity iid)
+              other -> expectationFailure $ "Expected the assignment presentation, got " <> show other
 
           q38AnswerVersion <- answerFixturePlayerQuestion 0
           q39Game <- getGame
@@ -4403,12 +4549,10 @@ spec = describe "Native client contract fixtures" do
             messages
         _ -> error "Expected an AbilityLabel fixture"
       assertOmitted choice =
-        QuestionPresentation.questionPresentation 68 (WindowChooseOne [choice])
-          `shouldBe` QuestionPresentation.QuestionPresentation
-            68
-            "windowChooseOne"
-            1
-            []
+        case QuestionPresentation.questionPresentation 68 (WindowChooseOne [choice]) of
+          QuestionPresentation.QuestionPresentation _ "windowChooseOne" 1
+            [QuestionPresentation.ChoicePresentation 0 QuestionPresentation.UseAbility _ _ _ _ _] -> pure ()
+          other -> expectationFailure $ "Expected one generic fallback ability descriptor, got " <> show other
     case fixtureCoverUpForcedQuestion of
       WindowChooseOne [choice] ->
         for_

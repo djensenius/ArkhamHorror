@@ -6,13 +6,13 @@
   "choiceCount": 1,
   "choices": [
     {
-      "actorId": "c01001",
-      "kind": "drawEncounterCard",
+      "kind": "skillLabel",
       "selectable": true,
+      "skillType": "SkillWillpower",
       "sourceIndex": 0
     }
   ],
   "protocolVersion": 2,
   "questionKind": "chooseOne",
-  "questionVersion": 41
+  "questionVersion": 202
 }

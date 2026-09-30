@@ -1,0 +1,29 @@
+{
+  "tag": "QuestionWithSource",
+  "source": {
+    "tag": "LocationSource",
+    "contents": "00000000-0000-0000-0000-000000000064"
+  },
+  "tooltip": "$tooltip",
+  "question": {
+    "tag": "PayCostQuestion",
+    "cost": {
+      "tag": "Free"
+    },
+    "question": {
+      "tag": "QuestionLabel",
+      "label": "$wrapped",
+      "card": "c01120",
+      "question": {
+        "tag": "ChooseOne",
+        "choices": [
+          {
+            "tag": "Label",
+            "label": "$wrapped.choice",
+            "messages": []
+          }
+        ]
+      }
+    }
+  }
+}

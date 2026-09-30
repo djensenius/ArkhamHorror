@@ -1,0 +1,20 @@
+{
+  "tag": "ChooseAmounts",
+  "label": "$amount",
+  "amountTargetValue": {
+    "tag": "MinAmountTarget",
+    "contents": 0
+  },
+  "amountChoices": [
+    {
+      "choiceId": "00000000-0000-0000-0000-000000000065",
+      "label": "$clues",
+      "minBound": 0,
+      "maxBound": 3
+    }
+  ],
+  "target": {
+    "tag": "LocationTarget",
+    "contents": "00000000-0000-0000-0000-000000000064"
+  }
+}

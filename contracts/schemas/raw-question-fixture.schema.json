@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/raw-question-fixture.schema.json",
+  "title": "RawQuestionFixture",
+  "description": "Governed raw Question fixtures used as authorities for question-presentation fixtures. This intentionally requires only the constructor tag because full raw Question/UI JSON is governed elsewhere incrementally and is not changed by the presentation contract.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["tag"],
+  "properties": {
+    "tag": { "type": "string" }
+  }
+}

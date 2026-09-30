@@ -1,14 +1,20 @@
 {
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
   "choiceCount": 13,
   "choices": [
     {
       "actorId": "c01001",
       "kind": "gainResource",
+      "selectable": true,
       "sourceIndex": 0
     },
     {
       "actorId": "c01001",
       "kind": "drawCard",
+      "selectable": true,
       "sourceIndex": 1
     },
     {
@@ -17,6 +23,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 2
     },
     {
@@ -25,6 +32,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 3
     },
     {
@@ -33,6 +41,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 4
     },
     {
@@ -41,6 +50,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 5
     },
     {
@@ -49,6 +59,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 6
     },
     {
@@ -57,11 +68,13 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 7
     },
     {
       "actorId": "c01001",
       "kind": "endTurn",
+      "selectable": true,
       "sourceIndex": 8
     },
     {
@@ -84,6 +97,7 @@
         "kind": "location"
       },
       "kind": "investigate",
+      "selectable": true,
       "sourceIndex": 9
     },
     {
@@ -106,6 +120,7 @@
         "kind": "enemy"
       },
       "kind": "fight",
+      "selectable": true,
       "sourceIndex": 10
     },
     {
@@ -128,6 +143,7 @@
         "kind": "enemy"
       },
       "kind": "evade",
+      "selectable": true,
       "sourceIndex": 11
     },
     {
@@ -154,10 +170,11 @@
         "kind": "act"
       },
       "kind": "advanceAct",
+      "selectable": true,
       "sourceIndex": 12
     }
   ],
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "questionKind": "playerWindowChooseOne",
   "questionVersion": 34
 }

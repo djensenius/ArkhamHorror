@@ -1534,21 +1534,28 @@
     },
     "questionPresentation": {
       "00000000-0000-0000-0000-000000000001": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
         "choiceCount": 4,
         "choices": [
           {
             "actorId": "c01001",
             "kind": "gainResource",
+            "selectable": true,
             "sourceIndex": 0
           },
           {
             "actorId": "c01001",
             "kind": "drawCard",
+            "selectable": true,
             "sourceIndex": 1
           },
           {
             "actorId": "c01001",
             "kind": "endTurn",
+            "selectable": true,
             "sourceIndex": 2
           },
           {
@@ -1571,10 +1578,11 @@
               "kind": "location"
             },
             "kind": "investigate",
+            "selectable": true,
             "sourceIndex": 3
           }
         ],
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "questionKind": "playerWindowChooseOne",
         "questionVersion": 3
       }

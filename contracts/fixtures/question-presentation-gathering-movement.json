@@ -1,14 +1,20 @@
 {
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
   "choiceCount": 12,
   "choices": [
     {
       "actorId": "c01001",
       "kind": "gainResource",
+      "selectable": true,
       "sourceIndex": 0
     },
     {
       "actorId": "c01001",
       "kind": "drawCard",
+      "selectable": true,
       "sourceIndex": 1
     },
     {
@@ -17,6 +23,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 2
     },
     {
@@ -25,6 +32,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 3
     },
     {
@@ -33,6 +41,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 4
     },
     {
@@ -41,6 +50,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 5
     },
     {
@@ -49,6 +59,7 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 6
     },
     {
@@ -57,11 +68,13 @@
         "kind": "card"
       },
       "kind": "chooseTarget",
+      "selectable": true,
       "sourceIndex": 7
     },
     {
       "actorId": "c01001",
       "kind": "endTurn",
+      "selectable": true,
       "sourceIndex": 8
     },
     {
@@ -92,6 +105,7 @@
         "kind": "location"
       },
       "kind": "move",
+      "selectable": true,
       "sourceIndex": 9
     },
     {
@@ -122,6 +136,7 @@
         "kind": "location"
       },
       "kind": "move",
+      "selectable": true,
       "sourceIndex": 10
     },
     {
@@ -144,10 +159,11 @@
         "kind": "location"
       },
       "kind": "investigate",
+      "selectable": true,
       "sourceIndex": 11
     }
   ],
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "questionKind": "playerWindowChooseOne",
   "questionVersion": 36
 }

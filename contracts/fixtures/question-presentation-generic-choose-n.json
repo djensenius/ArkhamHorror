@@ -1,0 +1,34 @@
+{
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "choiceCount": 2,
+  "choices": [
+    {
+      "kind": "localizedLabel",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$fixture.first"
+      },
+      "selectable": true,
+      "sourceIndex": 0
+    },
+    {
+      "kind": "localizedLabel",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$fixture.second"
+      },
+      "selectable": true,
+      "sourceIndex": 1
+    }
+  ],
+  "protocolVersion": 2,
+  "questionKind": "chooseN",
+  "questionVersion": 204,
+  "selection": {
+    "max": 1,
+    "min": 1
+  }
+}

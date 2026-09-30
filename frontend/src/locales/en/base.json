@@ -168,6 +168,7 @@
     "damage": "Damage",
     "horror": "Horror",
     "mental": "Mental",
+    "opaque": "Continue",
     "physical": "Physical",
     "resources": "Resources",
     "secret": "Secret",

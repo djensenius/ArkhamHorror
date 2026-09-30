@@ -1,0 +1,15 @@
+{
+  "tag": "ChooseUpToN",
+  "amount": 1,
+  "choices": [
+    {
+      "tag": "Label",
+      "label": "$fixture.first",
+      "messages": []
+    },
+    {
+      "tag": "Done",
+      "label": "$done"
+    }
+  ]
+}

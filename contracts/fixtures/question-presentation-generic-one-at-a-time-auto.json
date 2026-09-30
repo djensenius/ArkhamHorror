@@ -1,0 +1,44 @@
+{
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
+  "choiceCount": 3,
+  "choices": [
+    {
+      "completesSelection": true,
+      "kind": "auto",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$auto"
+      },
+      "selectable": true,
+      "sourceIndex": 0
+    },
+    {
+      "kind": "localizedLabel",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$fixture.first"
+      },
+      "selectable": true,
+      "sourceIndex": 1
+    },
+    {
+      "kind": "localizedLabel",
+      "label": {
+        "kind": "embeddedI18n",
+        "text": "$fixture.second"
+      },
+      "selectable": true,
+      "sourceIndex": 2
+    }
+  ],
+  "protocolVersion": 2,
+  "questionKind": "chooseOneAtATimeWithAuto",
+  "questionVersion": 209,
+  "selection": {
+    "max": 2,
+    "min": 0
+  }
+}

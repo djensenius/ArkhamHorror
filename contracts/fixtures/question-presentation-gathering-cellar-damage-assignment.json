@@ -1,4 +1,8 @@
 {
+  "answer": {
+    "kind": "singleChoice",
+    "tag": "Answer"
+  },
   "choiceCount": 1,
   "choices": [
     {
@@ -7,10 +11,31 @@
         "kind": "investigator"
       },
       "kind": "assignDamage",
+      "selectable": true,
       "sourceIndex": 0
     }
   ],
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "questionKind": "chooseOne",
+  "questionLabel": {
+    "kind": "embeddedI18n",
+    "text": "Assign 1 damage"
+  },
+  "questionSource": {
+    "entity": {
+      "id": "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
+      "kind": "location"
+    },
+    "raw": {
+      "contents": [
+        {
+          "contents": "a3497b9f-796b-406d-aeb4-9b96fa9f4905",
+          "tag": "LocationSource"
+        },
+        1
+      ],
+      "tag": "AbilitySource"
+    }
+  },
   "questionVersion": 38
 }

@@ -46,6 +46,10 @@ constructor.
   beside the unchanged authoritative raw question. A client uses descriptors
   only to render native controls, validates their protocol/question versions
   and source-index bindings, and still submits the existing versioned answer.
+- `questions.semantic-presentation.v2` is global at revision `0.1.47`. It
+  guarantees complete source-index coverage for every presented prompt, adds
+  all question and UI constructor families to the projection, and adds
+  `selectable`, `completesSelection`, and total-pick `selection` metadata.
   Every `PublicGame` carries exactly the same `PlayerId` keys in `question`
   and `questionPresentation`; contract validation recursively binds each shared
   entry's `questionVersion` to `scenarioSteps`, `questionKind` and `choiceCount`
@@ -540,6 +544,41 @@ These descriptors remain render-only: clients submit the unchanged source
 index and question version, while Haskell alone checks and resolves the forced
 ability.
 
+Revision `0.1.47` upgrades the projection to
+`questions.semantic-presentation.v2` / protocol version `2`. The projection is
+still render-only, but it is now complete for presented prompts: `choices`
+contains exactly `choiceCount` descriptors and source indexes `0..choiceCount-1`
+appear exactly once. Every raw UI constructor is represented; non-answerable
+rows carry `selectable: false`, and completion rows such as `Done` or the
+auto-resolve choice carry `completesSelection: true`.
+
+`selection` always describes the total number of non-completion picks across
+the repeated `Answer` submissions for that question. `chooseN` is exactly
+`n..n`; `chooseUpToN` is `0..n` excluding a Done choice; `chooseSome` is
+`0..nonDoneCount`; `chooseSome1` is `1..nonDoneCount`; `chooseOneAtATime` is
+`n..n`; `chooseOneAtATimeWithAuto` is `0..n` because the auto choice resolves
+all remaining choices with zero ordinary picks; and `chooseOneFromEach` is
+`groupCount..groupCount` with each descriptor carrying `groupIndex` so clients
+can enforce one selection per group. The answer
+envelope table is: ordinary choice prompts (`chooseOne`,
+`playerWindowChooseOne`, `windowChooseOne`, `chooseN`, `chooseSome`,
+`chooseSome1`, `chooseUpToN`, `chooseOneAtATime`,
+`chooseOneAtATimeWithAuto`, `chooseOneFromEach`, `read`,
+`chooseOneWizard`, `pickSupplies`, `dropDown`) use `Answer`; plain
+`chooseOneAtATime` additionally allows `OrderedAnswer` using raw indexes;
+`chooseAmounts` uses `AmountsAnswer`; `choosePaymentAmounts` uses
+`PaymentAmountsAnswer`; `chooseExchangeAmounts` uses `ExchangeAmountsAnswer`;
+deck prompts use `DeckAnswer` or `DeckListAnswer`; setting/specific/campaign
+prompts use their same-named answer tags; and `continueCampaign` may use
+`CampaignStepAnswer`, `RetireInvestigatorAnswer`, `RejoinInvestigatorAnswer`,
+`ApplyOverlayAnswer`, or `JoinCampaignAnswer`.
+
+Wrapper limits mirror `Entity.Answer`: `AmountsAnswer` is accepted only for a
+bare `ChooseAmounts` or one inside `QuestionLabel`; `PaymentAmountsAnswer` is
+accepted only bare or inside `PayCostQuestion`. `DeckAnswer.overlay` is governed
+as `object|null` for compatibility with the web client, but the inner overlay
+shape remains intentionally ungoverned and tracked for a later contract.
+
 #### Roland Banks post-defeat reaction
 
 Revision `0.1.39` adds
@@ -1019,7 +1058,7 @@ both directions.
 - **Disabled preserves the locale-specific legacy shape, not the legacy
   bytes.** A deployment with no catalog serves no `localeCatalog` member and
   no `i18n.locale-catalog.v1` identifier. Other additive global capabilities,
-  including `questions.semantic-presentation.v1`, remain present.
+  including `questions.semantic-presentation.v2`, remain present.
   `schemaRevision` still reports the current bundle, because it identifies this
   server's whole contract rather than one optional runtime feature; a server
   that under-reported it would lie to every client that negotiates on it, and

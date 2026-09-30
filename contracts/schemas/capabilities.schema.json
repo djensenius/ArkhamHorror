@@ -48,7 +48,7 @@
       "properties": {
         "capabilities": {
           "contains": {
-            "const": "questions.semantic-presentation.v1"
+            "const": "questions.semantic-presentation.v2"
           }
         }
       }

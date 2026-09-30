@@ -1,0 +1,16 @@
+{
+  "tag": "ChooseOne",
+  "choices": [
+    {
+      "tag": "InvalidLabel",
+      "label": "$fixture.invalid"
+    },
+    {
+      "tag": "Info",
+      "flavor": {
+        "title": null,
+        "body": []
+      }
+    }
+  ]
+}

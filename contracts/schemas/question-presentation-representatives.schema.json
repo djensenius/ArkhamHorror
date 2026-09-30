@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/question-presentation-representatives.schema.json",
+  "title": "QuestionPresentationRepresentatives",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["presentations"],
+  "properties": {
+    "presentations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "presentation"],
+        "properties": {
+          "name": { "type": "string" },
+          "presentation": { "$ref": "./question-presentation.schema.json" }
+        }
+      }
+    }
+  }
+}

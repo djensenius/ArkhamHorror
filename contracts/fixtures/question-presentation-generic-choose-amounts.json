@@ -1,0 +1,31 @@
+{
+  "amountChoices": [
+    {
+      "choiceId": "00000000-0000-0000-0000-000000000065",
+      "label": "$clues",
+      "maxBound": 3,
+      "minBound": 0
+    }
+  ],
+  "answer": {
+    "kind": "amounts",
+    "tag": "AmountsAnswer"
+  },
+  "choiceCount": 0,
+  "choices": [],
+  "label": {
+    "kind": "embeddedI18n",
+    "text": "$amount"
+  },
+  "protocolVersion": 2,
+  "questionKind": "chooseAmounts",
+  "questionVersion": 207,
+  "resolveTarget": {
+    "contents": "00000000-0000-0000-0000-000000000064",
+    "tag": "LocationTarget"
+  },
+  "target": {
+    "contents": 0,
+    "tag": "MinAmountTarget"
+  }
+}

@@ -955,7 +955,7 @@ differ without recompiling anything
 Every one of them blank (the default) means the deployment publishes no
 pointer: the capabilities response carries no `localeCatalog` object and no
 `i18n.locale-catalog.v1` identifier. Other globally available additive
-capabilities, including `questions.semantic-presentation.v1`, remain
+capabilities, including `questions.semantic-presentation.v2`, remain
 advertised. The response is therefore not byte-identical to the pre-`0.1.23`
 baseline: `schemaRevision` reports the current contract bundle, because it
 identifies the server's whole contract rather than this optional feature, and

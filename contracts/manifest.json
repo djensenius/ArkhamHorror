@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.46",
+  "schemaRevision": "0.1.47",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -48,7 +48,9 @@
     "contracts/fixtures/locale-catalog-owned-files.json",
     "contracts/fixtures/locale-catalog-source-de.json",
     "contracts/fixtures/locale-catalog-source-en.json",
-    "contracts/fixtures/locale-catalog-source-pt-BR.json"
+    "contracts/fixtures/locale-catalog-source-pt-BR.json",
+    "contracts/schemas/question-presentation-representatives.schema.json",
+    "contracts/schemas/raw-question-fixture.schema.json"
   ],
   "fixtures": [
     {
@@ -430,6 +432,130 @@
     {
       "path": "contracts/fixtures/answer-enemy-attack-assign-remaining-damage.json",
       "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-apply-overlay.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-join-campaign.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-rejoin-investigator.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/answer-retire-investigator.json",
+      "schema": "contracts/schemas/client-answer.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-choose-amounts.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-choose-deck.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-choose-n.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-choose-some.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-choose-up-to-n.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-cost-ability-window.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-invalid-info.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-one-at-a-time-auto.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-one-from-each.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-payment-amounts.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-read.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-skill-label.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-generic-wrapped.json",
+      "schema": "contracts/schemas/question-presentation.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-presentation-representatives.json",
+      "schema": "contracts/schemas/question-presentation-representatives.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-choose-amounts.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-choose-deck.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-choose-n.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-choose-some.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-choose-up-to-n.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-cost-ability-window.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-invalid-info.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-one-at-a-time-auto.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-one-from-each.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-payment-amounts.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-read.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-skill-label.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/question-generic-wrapped.json",
+      "schema": "contracts/schemas/raw-question-fixture.schema.json"
     }
   ],
   "compatibility": {
@@ -14505,7 +14631,7 @@
       "mutation": {
         "op": "replace",
         "pointer": "/protocolVersion",
-        "value": 2
+        "value": 3
       },
       "expectedErrors": [
         {
@@ -14513,7 +14639,7 @@
             "protocolVersion"
           ],
           "keyword": "const",
-          "messageContains": "1 was expected"
+          "messageContains": "2 was expected"
         }
       ]
     },
@@ -14534,6 +14660,13 @@
           ],
           "keyword": "rawChoiceCount",
           "messageContains": "choiceCount 14 does not match the authoritative raw question choice count 13"
+        },
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "completeSourceIndexes",
+          "messageContains": "choices must contain exactly choiceCount descriptors"
         }
       ]
     },
@@ -14556,6 +14689,13 @@
           ],
           "keyword": "uniqueSourceIndex",
           "messageContains": "sourceIndex 0 duplicates choices/0/sourceIndex"
+        },
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "completeSourceIndexes",
+          "messageContains": "choices must contain exactly choiceCount descriptors"
         }
       ]
     },
@@ -14577,7 +14717,14 @@
             "sourceIndex"
           ],
           "keyword": "sourceIndexBounds",
-          "messageContains": "sourceIndex 13 is outside 0..12 for the authoritative raw question"
+          "messageContains": "sourceIndex 13 is outside 0..12 for the authoritative presentation"
+        },
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "completeSourceIndexes",
+          "messageContains": "choices must contain exactly choiceCount descriptors"
         }
       ]
     },
@@ -15810,6 +15957,15 @@
           ],
           "keyword": "rawChoiceCount",
           "messageContains": "choiceCount 5 does not match the authoritative raw question choice count 4"
+        },
+        {
+          "path": [
+            "questionPresentation",
+            "00000000-0000-0000-0000-000000000001",
+            "choices"
+          ],
+          "keyword": "completeSourceIndexes",
+          "messageContains": "choices must contain exactly choiceCount descriptors"
         }
       ]
     },
@@ -15834,6 +15990,15 @@
           ],
           "keyword": "uniqueSourceIndex",
           "messageContains": "sourceIndex 0 duplicates choices/0/sourceIndex"
+        },
+        {
+          "path": [
+            "questionPresentation",
+            "00000000-0000-0000-0000-000000000001",
+            "choices"
+          ],
+          "keyword": "completeSourceIndexes",
+          "messageContains": "choices must contain exactly choiceCount descriptors"
         }
       ]
     },
@@ -15857,7 +16022,16 @@
             "sourceIndex"
           ],
           "keyword": "sourceIndexBounds",
-          "messageContains": "sourceIndex 4 is outside 0..3 for the authoritative raw question"
+          "messageContains": "sourceIndex 4 is outside 0..3 for the authoritative presentation"
+        },
+        {
+          "path": [
+            "questionPresentation",
+            "00000000-0000-0000-0000-000000000001",
+            "choices"
+          ],
+          "keyword": "completeSourceIndexes",
+          "messageContains": "choices must contain exactly choiceCount descriptors"
         }
       ]
     },
@@ -15920,6 +16094,13 @@
           ],
           "keyword": "encounterDrawSemantic",
           "messageContains": "must draw exactly one encounter card for investigator c01001"
+        },
+        {
+          "path": [
+            "choices"
+          ],
+          "keyword": "completeSourceIndexes",
+          "messageContains": "choices must contain exactly choiceCount descriptors"
         }
       ]
     }
@@ -15930,6 +16111,7 @@
     "contracts/fixtures/achievements.json": "9323f78e201ced419f3ed843ef3bc3d375db24a2f376a25f7cf3e3a085483b83",
     "contracts/fixtures/act-no-advance-cost.json": "ef6aa891184deafe2166b58b0df9c0818237a50efa93e3aa69db4aea0dc30a01",
     "contracts/fixtures/answer-amounts.json": "9e2344dd6b03c2ca40b0ede6f223dc50cac0c20f9af7a5b65d9ddd770e4fd555",
+    "contracts/fixtures/answer-apply-overlay.json": "a0d5a72629ece4caa3882c23186aa2c3ba76804ddf458ba91ecdd7e9b7b30d10",
     "contracts/fixtures/answer-campaign-settings.json": "c64dd66679039db223b3d3879b6ef609cc89d1071bfa2438be34ada2f7e72ade",
     "contracts/fixtures/answer-campaign-specific.json": "44e5d7bb1181a886c8331d9abd699b602aa0897c890390f64fc2510f201c61dd",
     "contracts/fixtures/answer-campaign-step.json": "448ae784aa4b518ddfd5a8c71b997abdca327e55bd8a3d2ddf7ee862059eca76",
@@ -15941,14 +16123,17 @@
     "contracts/fixtures/answer-enemy-attack-assign-remaining-horror.json": "e7c4bcbd8f246c8c34c3c1ef42e11bd342ca18fe88d8193c46b4647fd424a767",
     "contracts/fixtures/answer-enemy-attack.json": "d99928af1d38ffe97adbeea9861e8f5edc43b937a309e90e27f5fb6071b555b4",
     "contracts/fixtures/answer-exchange-amounts.json": "358e6dbd9a75ddf0080df46954cc58dd0df538205375cab61bd882396bf84f9e",
+    "contracts/fixtures/answer-join-campaign.json": "20ba6492e3dca2fc66417786945eebbaa9541cfd25b42ba34e934173bc72d0f9",
     "contracts/fixtures/answer-payment-amounts.json": "d55055b00a8d4d7c93ca121af1d870367dd110ae95e271b47770b14bcf12bd1e",
     "contracts/fixtures/answer-pick-destiny.json": "711e45c443be781868e7f30fde1d45c8b659bae6a53d9537cc021a5c2eccc8a0",
     "contracts/fixtures/answer-question.json": "b6d6b4d70acadd6d11d7c30fd67d052085384c478a00520d68c5c2f4d1b18fa7",
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
+    "contracts/fixtures/answer-rejoin-investigator.json": "64bbd1ca25fd88e846056e465279970e22ff911ba316fe732ccb19553813ebb0",
+    "contracts/fixtures/answer-retire-investigator.json": "765180a79c83be002b4fd4c2879e6f3b84ad14df44bc986d70043dbd109708c2",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/capabilities-locale-catalog.json": "21ce03ec5f3bf26ecf2f64ad74ddb6112c675bf7772961df0c49f081bd5770b6",
-    "contracts/fixtures/capabilities.json": "0d16cdd20da1e0828341d8a65360e519c7f5879ea39bb3bfc02101cd4fe1acd5",
+    "contracts/fixtures/capabilities-locale-catalog.json": "43a700d52e6776260e5714476ebaf60969b71735222c4d4fceaf9484c5ffc78d",
+    "contracts/fixtures/capabilities.json": "d4ee241a69b4d8bbb79bcc20823cf3568d69f70ae05ee44b254c8a10ab8500e8",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "481f42cbac1fcb208cdb1b626a3cc6951c35531383e7439dc3c0d7c02a9044ac",
     "contracts/fixtures/decks.json": "be1b19529d95386c6c2ed0b5c665aa25ae64a450c8a3f412d10b8523b966aaff",
@@ -15967,15 +16152,15 @@
     "contracts/fixtures/game-step.json": "441768cb79f54c925cd912b35d9650653be57232997ab4f593294fc622f01013",
     "contracts/fixtures/game-tarot.json": "a7c1c85cf8a607b395070fdd73f18a50b7c73e8a28a4ba4b7c444ec2f982bb6b",
     "contracts/fixtures/game-ui.json": "f96c401c965471510a003fdc497391369bd3930389967d1fa8a94ab43ea9f95a",
-    "contracts/fixtures/game-update.json": "6d16ee03cb099b63f42b6d38869d9cf18217c5337276a96e1eeee728613b6e1a",
-    "contracts/fixtures/get-game.json": "0e187eaf21df45f9a0a57df2a5961d41492981caee51e3322f8961d6c81c87ac",
+    "contracts/fixtures/game-update.json": "1c72d670d73e20f7923c8abc8817a89f198418bde23d1f0577e25386638ef827",
+    "contracts/fixtures/get-game.json": "9747de6984c2028a043f9fd5a20b29179ad0980705b010e5a196f9eb4cb8a80c",
     "contracts/fixtures/investigator-unhealed-horror-negative.json": "f251bd1a525fa0eb9508db084fbe7fb86928ec1ecb4472cf0c79cbaf9478762f",
     "contracts/fixtures/locale-catalog-backend-registry.json": "3f39e0f443341bc194a2ba645584007a161875d2e1981bb9c16c8f466880c6c4",
     "contracts/fixtures/locale-catalog-chunk-2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448.json": "2efb9d458b5dd9b7ae9a284c277ca68e47a40212c95ce85da5b50f598d9fc448",
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d.json": "932fbfdd3570550d2bd7255599e7b54cb8ceac12d4597686613d97254b67c12d",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "71210c8ea9793deb49b611dd36410232d0d11189373b1c50c2d99c75c7d919ec",
+    "contracts/fixtures/locale-catalog-manifest.json": "252eadfb84255735d3ba37cb06e13eda29fac7ce97110f605875e356c8056506",
     "contracts/fixtures/locale-catalog-owned-files.json": "139e69af182999d7a9164c87bb7395c702717b0afaf0dd7d1de1082b613f979e",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "deeb7057a50a687039efdb42bb1484b0d67afb9c73ee670a39c67485f94e2a19",
@@ -16004,6 +16189,19 @@
     "contracts/fixtures/question-gathering-cellar-damage-assignment.json": "1d746cbaa060ef427516d1b949c2e40600c19a86762a0eb892db1f3ade916473",
     "contracts/fixtures/question-gathering-cellar-entry-forced.json": "ea7c802ed3064fda9707c595ac98a3d96f8b6d4c923ae5ff4657f1e7379beba4",
     "contracts/fixtures/question-gathering-movement.json": "bfef8a3ead15a37cd119da96e9173f9d8c01e17b9b29abb0d4dd920fd277221f",
+    "contracts/fixtures/question-generic-choose-amounts.json": "fc587b6b9962db5bf585ca71524ade287847b121a42bd85d3c0ca09f01f03c73",
+    "contracts/fixtures/question-generic-choose-deck.json": "839049ffb1bf6bc2cf56955b4e9f724e17b8a5bafe48ea25dc245032ccc78194",
+    "contracts/fixtures/question-generic-choose-n.json": "fe4422e28ef55c79ffad0dfcf081b57d4f6eb95fe8108b089a72536bc43f7bdb",
+    "contracts/fixtures/question-generic-choose-some.json": "a91b4852482477c02ff6485c2ebb60970811c4b1eb44c7859456c49d8f75ae4b",
+    "contracts/fixtures/question-generic-choose-up-to-n.json": "870da3ca5c45e95bdd95d69e385e25b3e18d07f3227787cb0cfa6d378c313357",
+    "contracts/fixtures/question-generic-cost-ability-window.json": "ae4ca77aa580dfff8340ae9acc1f96811f52312ed4aa18f57b5298cf07f4fb43",
+    "contracts/fixtures/question-generic-invalid-info.json": "6ca58559a1a8da1dc1ffd48e542b3b4e3512fc4e34dcbd6a60205ce2dc8c184a",
+    "contracts/fixtures/question-generic-one-at-a-time-auto.json": "a7f5b6b1fc2027ff1ac5ddba7b47a2d6fb39ab376a3252e1cc739385cf4041c6",
+    "contracts/fixtures/question-generic-one-from-each.json": "848e1bc5c694db89f2bc68b5395dbce704dbeac4e94fd167c485d5ed4859e83c",
+    "contracts/fixtures/question-generic-payment-amounts.json": "f72a58a043fa25dfdf28ede236179725e9902663444168a87102c3ad1cc8a277",
+    "contracts/fixtures/question-generic-read.json": "439f4ed45a2d0e9b380a36af4ce9e9f1785acafe622811a6212973d89a7a9a10",
+    "contracts/fixtures/question-generic-skill-label.json": "b1aef3920e49726302603823eedf213ba7a555cd7a0458d79515b01fd609546e",
+    "contracts/fixtures/question-generic-wrapped.json": "8d330117c0a48b2cea42d9ed68e2e823370535e12b5b0c70d2cf217fe846f446",
     "contracts/fixtures/question-investigate-apply-results.json": "ca3834a719c64a263c31982cfb5987c08da40ec3494d2380ccffaebb46e11774",
     "contracts/fixtures/question-investigate-commit.json": "0cef8bb88be1ac2feb7cd2d37b952bf54fa47b4ea7d83474326baf9da7fb9b18",
     "contracts/fixtures/question-investigate-fast-window.json": "6ae49986f27c9ab934ddd53b08e2dd6c3fa33a85a2ee258409c0321332ed731b",
@@ -16012,15 +16210,29 @@
     "contracts/fixtures/question-player-window-choose-one.json": "0e29e060f65b8ec05886a0e1339d0dbb89995987dc006d9cd5f6311a5c491805",
     "contracts/fixtures/question-player-window-enemy-actions.json": "8071d15dd7c4151757885d04cf6ac3b3b452ac6bd79590f4031b3993993a5187",
     "contracts/fixtures/question-player-window-engage-action.json": "fcda1583d42da4fca7c9f2be593bd0c878dca588fe15d32f24c512154fa8212b",
-    "contracts/fixtures/question-presentation-encounter-deck-draw.json": "a8343bef781598fe6e81098d93e9d0b279f851d4bbf2a6a23ce6852d0f4d1217",
-    "contracts/fixtures/question-presentation-gathering-act-advance.json": "232062dc5467843242763a428beaa212e082752a6ae02c1f753165f76e322841",
-    "contracts/fixtures/question-presentation-gathering-act-objective.json": "768c77f900c61f6bd0e99514b6b71c38a6c939ce192e9f6d0d43d4ef8c623fc6",
-    "contracts/fixtures/question-presentation-gathering-attic-entry-forced.json": "36117fa21a39361bbc06d54bdd76905855d3ab4913f0fd5973611ca74316f0cc",
-    "contracts/fixtures/question-presentation-gathering-attic-horror-assignment.json": "5b00bb0d74400bf6e1b03a64332d500cb70d368bc68fe4cd1e1bbe8e65b308d7",
-    "contracts/fixtures/question-presentation-gathering-cellar-damage-assignment.json": "b55f3887017f1eb392f7b15faf6324d81471712c0f18294c175ec9ea751cfd8f",
-    "contracts/fixtures/question-presentation-gathering-cellar-entry-forced.json": "a9eab9713c85b3b3556a88611c4513ec98d0a77a0bf7f233b3f6c1a8a673c850",
-    "contracts/fixtures/question-presentation-gathering-movement.json": "e87a92d62a40cbff46a55f8476984c84b130428f8b077d86131ac013cf394a00",
-    "contracts/fixtures/question-presentation-treachery-forced-ability.json": "bd988ba0d52a24a7b7ef6591a49a769bec440e90eca6915bbb250978f99b3b06",
+    "contracts/fixtures/question-presentation-encounter-deck-draw.json": "81af695fe229f59dd631dda136086baeec6047b334b42cc135160f925ae42f6d",
+    "contracts/fixtures/question-presentation-gathering-act-advance.json": "1e2dc53385e49a67a6bcee0fcb9f9b2d203e23f57de8a7db7195239e4d9d4dcd",
+    "contracts/fixtures/question-presentation-gathering-act-objective.json": "70fdbf504aae36b7ae5a9fba45cc2d33bc0a1f950789c63d621fd7f9a5741f23",
+    "contracts/fixtures/question-presentation-gathering-attic-entry-forced.json": "1ff2e9976a812c0a3bbbafb143e846194fc0b3e957a0220aa9710762e9790a57",
+    "contracts/fixtures/question-presentation-gathering-attic-horror-assignment.json": "d9137fdfb93327654c3fc9e1b431d788c4d2f8b660a1e9f62961009c3918067f",
+    "contracts/fixtures/question-presentation-gathering-cellar-damage-assignment.json": "c8d18ae5a338b525ba6819f127783a1699b6d494aa7ee7d6724b6a8ff9a3e033",
+    "contracts/fixtures/question-presentation-gathering-cellar-entry-forced.json": "e3b4ccd1e322f625a3611f0f0bac7a1e56c2fcfe80838baf5f8d5bb39fc04cff",
+    "contracts/fixtures/question-presentation-gathering-movement.json": "f862281f67a8b9d80c1dc84bbbf7ffc556ae6524452aca1c0654f452d560f770",
+    "contracts/fixtures/question-presentation-generic-choose-amounts.json": "386a7ad1e8d3f23d683201bd3fe59d5c7175a19e29c43fd929fb77bf460a5475",
+    "contracts/fixtures/question-presentation-generic-choose-deck.json": "262feb493d23bc3c4a49491927006cd7299fe733e05c7237227635dd84ee0480",
+    "contracts/fixtures/question-presentation-generic-choose-n.json": "17c80908ee0b16cf73e610851a6818ae4179deb8cdfbddf4ee1c204dbab1346c",
+    "contracts/fixtures/question-presentation-generic-choose-some.json": "94e86c8ae3620fd4319d59227c941f7eea9615beea2a94fcffb3c3bdad4724a3",
+    "contracts/fixtures/question-presentation-generic-choose-up-to-n.json": "912b862349c1db44e4151920d95e780c75cbac7592c913dcaf0c50bc4c718855",
+    "contracts/fixtures/question-presentation-generic-cost-ability-window.json": "66364c46bad7a04a49426c69f78ba70f67792b04a5e828e9c150336fc0155418",
+    "contracts/fixtures/question-presentation-generic-invalid-info.json": "be93995e75bdec258df9e9de35e51b670fe6f09e087454db482be1428c173034",
+    "contracts/fixtures/question-presentation-generic-one-at-a-time-auto.json": "8767491be9558be4b07481ea32c36f1e1c813226472c85feb9187e9c898c628d",
+    "contracts/fixtures/question-presentation-generic-one-from-each.json": "4e8d95c7a556e90c1ac60a612dd6b214d882aac3467d27d41d2811344bca48e9",
+    "contracts/fixtures/question-presentation-generic-payment-amounts.json": "36ed7d650080f463fa2868e0e105a58e769228389d80184bd6abb269f939a2fb",
+    "contracts/fixtures/question-presentation-generic-read.json": "4be412a3141f16035e380c6bd3994fa578804293c6df4fb541643c83d54b937c",
+    "contracts/fixtures/question-presentation-generic-skill-label.json": "94b3beab6799f70c876fba203d8a892d6f769de2c38984ac83916521b0f19b2f",
+    "contracts/fixtures/question-presentation-generic-wrapped.json": "75595d9f8bda5a779b6409963ce060b8d9049568f2b4ed58d484e59507f096e8",
+    "contracts/fixtures/question-presentation-representatives.json": "7d3b65869b5c880b1206d5c7921a3bcbcc93b69a5257e0eeb02479368e551ab0",
+    "contracts/fixtures/question-presentation-treachery-forced-ability.json": "458815ac4e9cd27a5b90db9ac038b99d90de7de13f9b341c75b49e5a53753b3c",
     "contracts/fixtures/question-read-scenario-intro.json": "98cac0992deff7f08005fc25a0227ef62b9aedde00c3b6dcceb25e503d671fd3",
     "contracts/fixtures/question-read-with-cards.json": "402805337459a8e82a518d515f2bafdb4d4d6e6474ae190002dd885a5ed50ba1",
     "contracts/fixtures/question-read.json": "e7397b59c9a714a003a0edac3f584b284c5cab03e75b59c1e9b4a84d86964006",
@@ -16028,23 +16240,23 @@
     "contracts/fixtures/question-round-end-forced-ability.json": "ccf51b1cd6d4f35a23d05c69d6009d47c8ca60f531d69c7c429a26beac412f5f",
     "contracts/fixtures/question-treachery-forced-ability.json": "e06cd3debf7b77313c4d4fcf8732944915022e2f99df4535a4177c1521cf899f",
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
-    "contracts/fixtures/replay-attestation.json": "801e9961121bd185e31cdf8fc3681cc5b62a31b76a8c1da7d5d70df6105819e2",
+    "contracts/fixtures/replay-attestation.json": "269c8c2d6774c47ad50a4d61632fc437092471dafea5dbf263d3627cf4b6792f",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "6d373862ffcd86448ca2b3089a4bd6b7f840710323cece4b379655bdf8b4c662",
-    "contracts/openapi.yaml": "62559b4b67807a3a0b8321824a35994883a8fcdbb73d35c7d7c32ee30d3f1c78",
+    "contracts/manifest.json": "49130f114786e27ee70c51860556a67adf3b2d344c73211b43c37c48cbdad4cf",
+    "contracts/openapi.yaml": "bd454feb5d64506b590d95380c3cd5229a5f676818534aeba9e35c4de1562d84",
     "contracts/route-inventory.json": "090194fadafe52c853917f0367bce267a70aa99d41bed4fbd958b45b26730f92",
     "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
     "contracts/schemas/basic-choice-question.schema.json": "b545376fafbd9dcc4aa47ad625d91bc96ddd2876ea5be6cbb7a5fc1ca0aa3649",
-    "contracts/schemas/capabilities.schema.json": "a9f4424e0a09d76c74e29289c98a53194e5e6690b2f0f33d2efba23720a373dc",
+    "contracts/schemas/capabilities.schema.json": "c0638d27e54ede08d37afaf77d2c6d063e1f46a5c44066bf361b22b5fe980103",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
     "contracts/schemas/chaos-bag.schema.json": "45c9a42563b5e13d054f5689a8acf578df81f45746445020628335794fce4339",
     "contracts/schemas/chaos-token.schema.json": "f68258413e13898c655769f7bec6047898d9e02723c794782846d0a0fef7f137",
-    "contracts/schemas/client-answer.schema.json": "43abf29546487542b9ba56c497c8f38e7815a2dd0cc08faf842ed44243318436",
+    "contracts/schemas/client-answer.schema.json": "76a9a9d2c1190053b9d1876790da465506fc1d798498b622d2611b05d13973a0",
     "contracts/schemas/cost.schema.json": "8dd749848f54b39edbcd432968d4f22c4f10e8ee7c94d16be0737e5c5c2859ef",
     "contracts/schemas/decks.schema.json": "c9350787341834c68f7c5bb4d5f1bcaa1880474049bdc12c772ea3fd76b7c440",
     "contracts/schemas/game-lifecycle.schema.json": "894ce38d078fe0857e824033578972bacab4744595ca1741250c2813f2fd682d",
@@ -16062,7 +16274,9 @@
     "contracts/schemas/phase-step.schema.json": "f7ee038f02c68a69542aaaa8e0c15aa51120d115a10a6f1d70c076613eb752ca",
     "contracts/schemas/placement.schema.json": "48c22c25b10be0756ac890a34e20e93fadaf4f43915e5afdb13b8c9029d82621",
     "contracts/schemas/public-game.schema.json": "4cfa07e7aad577afb2b0e8aa21a4905588cbab9e9b7c4485a6818ac2ce4094fb",
-    "contracts/schemas/question-presentation.schema.json": "63da9456efa6059ed4d754488998bcb203186887c1945abd27a5d9a2130ef5b7",
+    "contracts/schemas/question-presentation-representatives.schema.json": "9c0cc63da26781a4a78e76433395437d05a5859b628c647dcac5d1d1438fdddf",
+    "contracts/schemas/question-presentation.schema.json": "a960f4c588c7b44a660ac2c507de3c84c3341499adca18e181166da87a827ff6",
+    "contracts/schemas/raw-question-fixture.schema.json": "cdc83061a2631f80942b5608529d5ebe0037e4a40630476fc81d2ac942ddd692",
     "contracts/schemas/replay-attestation.schema.json": "ce0a95eb11996ed95ddc47e92a2071202e6ff01d8ff9cf0d352dd13e24739194",
     "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6",
@@ -16328,7 +16542,7 @@
     ]
   },
   "legacyCompatibilityChecks": {
-    "description": "The exact GET /api/v1/capabilities body this contract served at revision 0.1.22, before the optional locale-catalog pointer and later global semantic-question capability existed. A deployment that configures no catalog is NOT byte-identical to it, and must not be: issue #53 requires a monotonic contract bump, schemaRevision describes the backend contract bundle, and unknown capability identifiers are explicitly additive. What is guaranteed is the exact legacy field values and legacy identifiers after the current revision plus known additive capability identifiers are normalized away: no localeCatalog member and no i18n.locale-catalog.v1 identifier when the deployment publishes no catalog, while questions.semantic-presentation.v1 remains present in every current response. Clients compare the three numeric revision components and ignore unknown identifiers (see 'Capability negotiation'), so an older client reading a newer revision behaves exactly as it did at 0.1.22. scripts/validate-contract-fixtures.py and Arkham.Api.LocaleCatalogCapabilitySpec both compare the real response against this baseline with allowedDifferences normalized away.",
+    "description": "The exact GET /api/v1/capabilities body this contract served at revision 0.1.22, before the optional locale-catalog pointer and later global semantic-question capability existed. A deployment that configures no catalog is NOT byte-identical to it, and must not be: issue #53 requires a monotonic contract bump, schemaRevision describes the backend contract bundle, and unknown capability identifiers are explicitly additive. What is guaranteed is the exact legacy field values and legacy identifiers after the current revision plus known additive capability identifiers are normalized away: no localeCatalog member and no i18n.locale-catalog.v1 identifier when the deployment publishes no catalog, while questions.semantic-presentation.v2 remains present in every current response. Clients compare the three numeric revision components and ignore unknown identifiers (see 'Capability negotiation'), so an older client reading a newer revision behaves exactly as it did at 0.1.22. scripts/validate-contract-fixtures.py and Arkham.Api.LocaleCatalogCapabilitySpec both compare the real response against this baseline with allowedDifferences normalized away.",
     "baselineRevision": "0.1.22",
     "baselineResponse": {
       "schemaRevision": "0.1.22",
@@ -16344,7 +16558,7 @@
     },
     "addedCapability": "i18n.locale-catalog.v1",
     "globalCapabilities": [
-      "questions.semantic-presentation.v1"
+      "questions.semantic-presentation.v2"
     ],
     "allowedDifferences": {
       "disabled": [

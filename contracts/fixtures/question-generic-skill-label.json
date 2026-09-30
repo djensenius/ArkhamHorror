@@ -1,0 +1,10 @@
+{
+  "tag": "ChooseOne",
+  "choices": [
+    {
+      "tag": "SkillLabel",
+      "skillType": "SkillWillpower",
+      "messages": []
+    }
+  ]
+}

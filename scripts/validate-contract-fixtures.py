@@ -108,7 +108,7 @@ capabilities_fixtures = [
 # backend both come from a single `Maybe` (see
 # Base.Api.Types.Capabilities.serverCapabilities).
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
-SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v1"
+SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v2"
 BASIC_CHOICE_QUESTION_SCHEMA = "contracts/schemas/basic-choice-question.schema.json"
 QUESTION_PRESENTATION_SCHEMA = "contracts/schemas/question-presentation.schema.json"
 Q34_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-act-objective.json"
@@ -170,6 +170,11 @@ QUESTION_PRESENTATION_BINDINGS = {
     TREACHERY_FORCED_PRESENTATION_FIXTURE: TREACHERY_FORCED_QUESTION_FIXTURE,
     ENCOUNTER_DRAW_PRESENTATION_FIXTURE: ENCOUNTER_DRAW_QUESTION_FIXTURE,
 }
+
+for generic_presentation in sorted(CONTRACTS.glob("fixtures/question-presentation-generic-*.json")):
+    stem = generic_presentation.name.removeprefix("question-presentation-generic-").removesuffix(".json")
+    raw_question = f"contracts/fixtures/question-generic-{stem}.json"
+    QUESTION_PRESENTATION_BINDINGS[f"contracts/fixtures/{generic_presentation.name}"] = raw_question
 
 require(
     len(capabilities_fixtures) == 2,
@@ -274,12 +279,29 @@ class ContractValidationError:
 
 
 _QUESTION_KIND_BY_TAG = {
+    "ChooseAmounts": "chooseAmounts",
+    "ChooseDeck": "chooseDeck",
+    "ChooseExchangeAmounts": "chooseExchangeAmounts",
+    "ChooseJoinDeck": "chooseJoinDeck",
     "ChooseN": "chooseN",
     "ChooseOne": "chooseOne",
     "ChooseOneAtATime": "chooseOneAtATime",
+    "ChooseOneAtATimeWithAuto": "chooseOneAtATimeWithAuto",
+    "ChooseOneFromEach": "chooseOneFromEach",
+    "ChooseOneWizard": "chooseOneWizard",
+    "ChoosePaymentAmounts": "choosePaymentAmounts",
     "ChooseSome": "chooseSome",
-    "ChooseSome1": "chooseSome",
+    "ChooseSome1": "chooseSome1",
+    "ChooseUpgradeDeck": "chooseUpgradeDeck",
     "ChooseUpToN": "chooseUpToN",
+    "ContinueCampaign": "continueCampaign",
+    "DropDown": "dropDown",
+    "PickCampaignSettings": "pickCampaignSettings",
+    "PickCampaignSpecific": "pickCampaignSpecific",
+    "PickDestiny": "pickDestiny",
+    "PickScenarioSettings": "pickScenarioSettings",
+    "PickScenarioSpecific": "pickScenarioSpecific",
+    "PickSupplies": "pickSupplies",
     "PlayerWindowChooseOne": "playerWindowChooseOne",
     "WindowChooseOne": "windowChooseOne",
 }
@@ -326,7 +348,8 @@ def raw_question_presentation_shape(raw_question: object) -> tuple[str, int]:
     if not isinstance(tag, str):
         return "unsupported", 0
     if tag == "ChooseOneAtATimeWithAuto":
-        return "unsupported", 0
+        choices = raw_question.get("choices")
+        return "chooseOneAtATimeWithAuto", len(choices) + 1 if isinstance(choices, list) else 1
 
     if tag == "Read":
         read_choices = raw_question.get("readChoices")
@@ -349,10 +372,21 @@ def raw_question_presentation_shape(raw_question: object) -> tuple[str, int]:
         return "read", len(choices) if isinstance(choices, list) else 0
 
     question_kind = _QUESTION_KIND_BY_TAG.get(tag)
-    choices = raw_question.get("choices")
-    if question_kind is None or not isinstance(choices, list):
+    if question_kind is None:
         return "unsupported", 0
-    return question_kind, len(choices)
+    if tag == "ChooseOneFromEach":
+        groups = raw_question.get("groups")
+        return question_kind, sum(len(group) for group in groups if isinstance(group, list)) if isinstance(groups, list) else 0
+    if tag == "ChooseOneWizard":
+        choices = raw_question.get("wizardChoices")
+        return question_kind, len(choices) if isinstance(choices, list) else 0
+    if tag == "DropDown":
+        options = raw_question.get("options")
+        return question_kind, len(options) if isinstance(options, list) else 0
+    choices = raw_question.get("choices")
+    if isinstance(choices, list):
+        return question_kind, len(choices)
+    return question_kind, 0
 
 
 def presentation_binding_errors(
@@ -434,18 +468,30 @@ def presentation_binding_errors(
                 if raw_choice_count == 0:
                     message = (
                         f"sourceIndex {source_index} cannot address the authoritative "
-                        "raw question because it has no choices"
+                        "presentation because it has no choices"
                     )
                 else:
                     message = (
                         f"sourceIndex {source_index} is outside 0..{raw_choice_count - 1} "
-                        "for the authoritative raw question"
+                        "for the authoritative presentation"
                     )
                 errors.append(
                     ContractValidationError(
                         [*path, "choices", str(descriptor_index), "sourceIndex"],
                         "sourceIndexBounds",
                         message,
+                    )
+                )
+        if is_non_negative_integer(choice_count):
+            expected = set(range(choice_count))
+            actual = set(seen)
+            if len(descriptors) != choice_count or actual != expected:
+                errors.append(
+                    ContractValidationError(
+                        [*path, "choices"],
+                        "completeSourceIndexes",
+                        "choices must contain exactly choiceCount descriptors and sourceIndex values 0..choiceCount-1; "
+                        f"got length {len(descriptors)} and indexes {sorted(actual)}",
                     )
                 )
 
@@ -521,6 +567,7 @@ Q34_OBJECTIVE_PRESENTATION = {
         "kind": "act",
     },
     "kind": "advanceAct",
+    "selectable": True,
     "sourceIndex": 12,
 }
 
@@ -530,6 +577,7 @@ Q35_ADVANCE_PRESENTATION = {
         "kind": "act",
     },
     "kind": "advanceAct",
+    "selectable": True,
     "sourceIndex": 0,
 }
 
@@ -563,6 +611,7 @@ def gathering_move_presentation(
             "kind": "location",
         },
         "kind": "move",
+        "selectable": True,
         "sourceIndex": source_index,
     }
 
@@ -587,6 +636,7 @@ def gathering_forced_presentation(
             "kind": "location",
         },
         "kind": "resolveForcedAbility",
+        "selectable": True,
         "sourceIndex": 0,
     }
 
@@ -615,6 +665,7 @@ Q38_ATTIC_HORROR_PRESENTATION = {
         "kind": "investigator",
     },
     "kind": "assignHorror",
+    "selectable": True,
     "sourceIndex": 0,
 }
 Q38_CELLAR_DAMAGE_PRESENTATION = {
@@ -623,6 +674,7 @@ Q38_CELLAR_DAMAGE_PRESENTATION = {
         "kind": "investigator",
     },
     "kind": "assignDamage",
+    "selectable": True,
     "sourceIndex": 0,
 }
 TREACHERY_FORCED_PRESENTATION = {
@@ -642,11 +694,13 @@ TREACHERY_FORCED_PRESENTATION = {
         "kind": "treachery",
     },
     "kind": "resolveForcedAbility",
+    "selectable": True,
     "sourceIndex": 0,
 }
 ENCOUNTER_DRAW_PRESENTATION = {
     "actorId": "c01001",
     "kind": "drawEncounterCard",
+    "selectable": True,
     "sourceIndex": 0,
 }
 
@@ -1446,7 +1500,7 @@ def contract_fixture_errors(
     errors.extend(presentation_binding_errors(instance, raw_question))
 
     descriptors = instance.get("choices")
-    if isinstance(descriptors, list):
+    if isinstance(descriptors, list) and fixture_path in EXACT_PRESENTATION_CHOICES:
         for (
             exact_index,
             expected_choice,

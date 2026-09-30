@@ -49,6 +49,43 @@
       ],
       "properties": {
         "tag": {
+          "const": "OrderedAnswer"
+        },
+        "contents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "choices",
+            "playerId",
+            "questionVersion"
+          ],
+          "properties": {
+            "choices": {
+              "type": "array",
+              "items": {
+                "$ref": "./non-negative-int64.schema.json"
+              },
+              "description": "Ordered raw choice indexes for ChooseOneAtATime. ChooseOneAtATimeWithAuto is answered with repeated Answer using the presented sourceIndex values."
+            },
+            "playerId": {
+              "$ref": "./uuid.schema.json"
+            },
+            "questionVersion": {
+              "$ref": "./non-negative-int64.schema.json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
           "const": "Raw"
         },
         "contents": {
@@ -176,6 +213,10 @@
         "playerId": {
           "type": "string",
           "format": "uuid"
+        },
+        "overlay": {
+          "type": ["object", "null"],
+          "description": "Optional DeckOverlay; web sends this when custom-card overlays are applied."
         }
       }
     },
@@ -303,6 +344,58 @@
             }
           },
           "description": "CampaignStep; nested constructor coverage is pending."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "enum": [
+            "RetireInvestigatorAnswer",
+            "RejoinInvestigatorAnswer"
+          ]
+        },
+        "investigatorId": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "overlay"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ApplyOverlayAnswer"
+        },
+        "investigatorId": {
+          "type": "string"
+        },
+        "overlay": {
+          "type": ["object", "null"],
+          "description": "Optional DeckOverlay; inner shape is not yet governed."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "JoinCampaignAnswer"
         }
       }
     }

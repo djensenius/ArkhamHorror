@@ -52,7 +52,7 @@ SYNTHETIC_MANIFEST = "contracts/fixtures/locale-catalog-manifest.json"
 CONTRACT_MANIFEST = "contracts/manifest.json"
 ADVERTISED_FIXTURE = "contracts/fixtures/capabilities-locale-catalog.json"
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
-SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v1"
+SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v2"
 SCRATCH_PREFIX = ".locale-catalog-capability-probe-"
 SCRATCH_OWNER_FILE = "owner"
 
