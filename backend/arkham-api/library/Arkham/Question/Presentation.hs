@@ -461,8 +461,13 @@ presentQuestion version = \case
   ChooseSome choices ->
     choiceQuestion version "chooseSome" GeneralChoiceContext choices $ selection 0 (selectablePickCount choices)
   ChooseSome1 label choices ->
-    choiceQuestion version "chooseSome1" GeneralChoiceContext choices (selection 1 $ selectablePickCount choices)
-      & addQuestionField "completionLabel" (Aeson.toJSON $ EmbeddedI18nLabel label)
+    let maxPicks = selectablePickCount choices
+        -- A re-asked ChooseSome1 can contain only Done after the required
+        -- first pick was already made; clamp the displayed total-pick minimum
+        -- so the completion choice remains selectable in that terminal prompt.
+        minPicks = min 1 maxPicks
+     in choiceQuestion version "chooseSome1" GeneralChoiceContext choices (selection minPicks maxPicks)
+          & addQuestionField "completionLabel" (Aeson.toJSON $ EmbeddedI18nLabel label)
   ChooseUpToN amount choices ->
     choiceQuestion version "chooseUpToN" GeneralChoiceContext choices $ selection 0 (min amount $ selectablePickCount choices)
   ChooseOneAtATime choices ->
