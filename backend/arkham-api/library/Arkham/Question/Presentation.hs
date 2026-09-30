@@ -1,4 +1,5 @@
 {-# LANGUAGE PatternSynonyms #-}
+{-# OPTIONS_GHC -Werror=incomplete-patterns #-}
 
 module Arkham.Question.Presentation (
   QuestionPresentation (..),
@@ -396,7 +397,6 @@ answerEnvelopeFor = \case
       ]
   "unsupported" -> jsonObject [("kind", String "unsupported")]
   "chooseOneAtATime" -> orderedCapableAnswer
-  "chooseOneAtATimeWithAuto" -> orderedCapableAnswer
   _ -> answer "singleChoice" "Answer"
  where
   answer kind tag = jsonObject [("kind", String kind), ("tag", String tag)]
@@ -448,7 +448,7 @@ presentQuestion version = \case
     let choices = groupedPresentations groups
         metadata =
           Map.fromList
-            [ ("selection", selection 1 1)
+            [ ("selection", selection (length groups) (length groups))
             , ("groups", Aeson.toJSON $ map length groups)
             ]
      in QuestionPresentationWithMetadata
@@ -460,21 +460,21 @@ presentQuestion version = \case
   ChooseN amount choices ->
     choiceQuestion version "chooseN" GeneralChoiceContext choices $ selection amount amount
   ChooseSome choices ->
-    choiceQuestion version "chooseSome" GeneralChoiceContext choices $ selection 0 (length choices)
+    choiceQuestion version "chooseSome" GeneralChoiceContext choices $ selection 0 (selectablePickCount choices)
   ChooseSome1 label choices ->
-    choiceQuestion version "chooseSome1" GeneralChoiceContext choices (selection 1 $ length choices)
+    choiceQuestion version "chooseSome1" GeneralChoiceContext choices (selection 1 $ selectablePickCount choices)
       & addQuestionField "completionLabel" (Aeson.toJSON $ EmbeddedI18nLabel label)
   ChooseUpToN amount choices ->
-    choiceQuestion version "chooseUpToN" GeneralChoiceContext choices $ selection 0 amount
+    choiceQuestion version "chooseUpToN" GeneralChoiceContext choices $ selection 0 (min amount $ selectablePickCount choices)
   ChooseOneAtATime choices ->
-    choiceQuestion version "chooseOneAtATime" GeneralChoiceContext choices $ selection 1 1
+    choiceQuestion version "chooseOneAtATime" GeneralChoiceContext choices $ selection (length choices) (length choices)
   ChooseOneAtATimeWithAuto label choices ->
     QuestionPresentationWithMetadata
       version
       "chooseOneAtATimeWithAuto"
       (length choices + 1)
       (autoChoice label : zipWith (presentChoice GeneralChoiceContext) [1 ..] choices)
-      (defaultQuestionMetadata "chooseOneAtATimeWithAuto" <> Map.singleton "selection" (selection 1 1))
+      (defaultQuestionMetadata "chooseOneAtATimeWithAuto" <> Map.singleton "selection" (selection 1 $ length choices))
   ChoosePaymentAmounts label target choices ->
     amountQuestion
       version
@@ -599,13 +599,17 @@ selection :: Int -> Int -> Value
 selection minCount maxCount =
   jsonObject [("min", Aeson.toJSON minCount), ("max", Aeson.toJSON maxCount)]
 
+selectablePickCount :: [UI Message.Message] -> Int
+selectablePickCount = length . filter (\case Done {} -> False; _ -> True)
+
 addQuestionField :: Text -> Value -> QuestionPresentation -> QuestionPresentation
 addQuestionField key value (QuestionPresentationWithMetadata version kind choiceCount choices metadata) =
   QuestionPresentationWithMetadata version kind choiceCount choices (Map.insert key value metadata)
 
 autoChoice :: Text -> ChoicePresentation
 autoChoice label =
-  ChoicePresentation 0 AutoChoice Nothing Nothing (Just $ EmbeddedI18nLabel label) Nothing Nothing
+  addChoiceField "completesSelection" (Aeson.toJSON True)
+    $ ChoicePresentation 0 AutoChoice Nothing Nothing (Just $ EmbeddedI18nLabel label) Nothing Nothing
 
 groupedPresentations :: [[UI Message.Message]] -> [ChoicePresentation]
 groupedPresentations groups = go 0 0 groups
@@ -818,7 +822,9 @@ presentChoice context sourceIndex choice = case choice of
       Nothing
       Nothing
       (Map.singleton "tooltip" $ Aeson.toJSON tooltip)
-  Done label -> labeledChoice sourceIndex label Nothing
+  Done label ->
+    addChoiceField "completesSelection" (Aeson.toJSON True)
+      $ labeledChoice sourceIndex label Nothing
   SkipTriggersButton investigatorId ->
     ChoicePresentation
       sourceIndex

@@ -65,7 +65,7 @@
               "items": {
                 "$ref": "./non-negative-int64.schema.json"
               },
-              "description": "Ordered raw choice indexes for ChooseOneAtATime / ChooseOneAtATimeWithAuto."
+              "description": "Ordered raw choice indexes for ChooseOneAtATime. ChooseOneAtATimeWithAuto is answered with repeated Answer using the presented sourceIndex values."
             },
             "playerId": {
               "$ref": "./uuid.schema.json"
@@ -344,6 +344,58 @@
             }
           },
           "description": "CampaignStep; nested constructor coverage is pending."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId"
+      ],
+      "properties": {
+        "tag": {
+          "enum": [
+            "RetireInvestigatorAnswer",
+            "RejoinInvestigatorAnswer"
+          ]
+        },
+        "investigatorId": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "investigatorId",
+        "overlay"
+      ],
+      "properties": {
+        "tag": {
+          "const": "ApplyOverlayAnswer"
+        },
+        "investigatorId": {
+          "type": "string"
+        },
+        "overlay": {
+          "type": ["object", "null"],
+          "description": "Optional DeckOverlay; inner shape is not yet governed."
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "JoinCampaignAnswer"
         }
       }
     }

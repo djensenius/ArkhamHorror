@@ -2,23 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/question-presentation.schema.json",
   "title": "QuestionPresentationV2",
-  "description": "Complete render-only question descriptors bound to the authoritative raw question. Clients answer with the documented envelope and sourceIndex values; the server remains the legality authority.",
+  "description": "Complete render-only question descriptors bound to the authoritative raw question. The selection object describes the total number of non-completion picks a client may/must submit across repeated Answer envelopes for this question; choices marked completesSelection finish early and do not count toward that total. Clients answer with the documented envelope and presented sourceIndex values; the server remains the legality authority.",
   "type": "object",
   "additionalProperties": false,
   "required": ["protocolVersion", "questionVersion", "questionKind", "choiceCount", "choices", "answer"],
   "properties": {
     "protocolVersion": { "const": 2 },
     "questionVersion": { "$ref": "./non-negative-int64.schema.json" },
-    "questionKind": {
-      "enum": [
-        "chooseAmounts", "chooseDeck", "chooseExchangeAmounts", "chooseJoinDeck", "chooseN",
-        "chooseOne", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "chooseOneFromEach",
-        "chooseOneWizard", "choosePaymentAmounts", "chooseSome", "chooseSome1", "chooseUpgradeDeck",
-        "chooseUpToN", "continueCampaign", "dropDown", "pickCampaignSettings", "pickCampaignSpecific",
-        "pickDestiny", "pickScenarioSettings", "pickScenarioSpecific", "pickSupplies", "playerWindowChooseOne",
-        "read", "unsupported", "windowChooseOne"
-      ]
-    },
+    "questionKind": { "$ref": "#/$defs/questionKind" },
     "choiceCount": { "type": "integer", "minimum": 0 },
     "choices": { "type": "array", "items": { "$ref": "#/$defs/choice" } },
     "answer": { "$ref": "#/$defs/answer" },
@@ -33,162 +24,139 @@
     "payCost": { "$ref": "#/$defs/cost" },
     "questionSource": { "$ref": "#/$defs/source" },
     "tooltip": { "type": "string" },
-    "flavorText": { "type": "object" },
+    "flavorText": { "$ref": "#/$defs/flavorText" },
     "readCards": { "type": "array", "items": { "type": "string" } },
     "readChoiceKind": { "enum": ["basic", "chooseN", "chooseUpToN", "leadInvestigatorMustDecide"] },
-    "target": {},
-    "resolveTarget": {},
+    "target": { "$ref": "#/$defs/amountTarget" },
+    "resolveTarget": { "$ref": "#/$defs/rawTarget" },
     "amountChoices": { "type": "array", "items": { "$ref": "#/$defs/amountChoice" } },
     "paymentChoices": { "type": "array", "items": { "$ref": "#/$defs/paymentAmountChoice" } },
     "usedInvestigators": { "type": "array", "items": { "type": "string" } },
     "pointsRemaining": { "type": "integer" },
-    "chosenSupplies": { "type": "array" },
+    "chosenSupplies": { "type": "array", "items": { "$ref": "#/$defs/supply" } },
     "resupply": { "type": "boolean" },
-    "drawings": { "type": "array" },
+    "drawings": { "type": "array", "items": { "$ref": "#/$defs/destinyDrawing" } },
     "key": { "type": "string" },
-    "value": {},
+    "value": { "$ref": "#/$defs/opaqueJson", "description": "Campaign/scenario-specific settings are card- or campaign-owned JSON blobs; their inner shape is intentionally opaque to the generic presentation contract." },
     "source": { "$ref": "#/$defs/source" },
     "fromInvestigator": { "type": "string" },
     "fromInitialAmount": { "type": "integer" },
     "toInvestigator": { "type": "string" },
     "toInitialAmount": { "type": "integer" },
-    "token": {}
+    "token": { "$ref": "#/$defs/token" }
   },
+  "allOf": [
+    { "if": { "properties": { "questionKind": { "enum": ["chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto"] } }, "required": ["questionKind"] }, "then": { "properties": { "selection": { "$ref": "#/$defs/selection" } }, "required": ["selection"] } },
+    { "if": { "properties": { "questionKind": { "const": "chooseOneFromEach" } }, "required": ["questionKind"] }, "then": { "properties": { "selection": { "$ref": "#/$defs/selection" }, "groups": { "type": "array", "items": { "type": "integer", "minimum": 0 } } }, "required": ["selection", "groups"] } },
+    { "if": { "properties": { "questionKind": { "const": "chooseAmounts" } }, "required": ["questionKind"] }, "then": { "properties": { "label": { "$ref": "#/$defs/label" }, "target": { "$ref": "#/$defs/amountTarget" }, "resolveTarget": { "$ref": "#/$defs/rawTarget" }, "amountChoices": { "type": "array", "items": { "$ref": "#/$defs/amountChoice" } }, "answer": { "$ref": "#/$defs/amountsAnswer" } }, "required": ["label", "target", "resolveTarget", "amountChoices", "answer"] } },
+    { "if": { "properties": { "questionKind": { "const": "choosePaymentAmounts" } }, "required": ["questionKind"] }, "then": { "properties": { "label": { "$ref": "#/$defs/label" }, "target": { "oneOf": [{ "$ref": "#/$defs/amountTarget" }, { "type": "null" }] }, "paymentChoices": { "type": "array", "items": { "$ref": "#/$defs/paymentAmountChoice" } }, "answer": { "$ref": "#/$defs/paymentAmountsAnswer" } }, "required": ["label", "target", "paymentChoices", "answer"] } },
+    { "if": { "properties": { "questionKind": { "const": "chooseExchangeAmounts" } }, "required": ["questionKind"] }, "then": { "properties": { "source": { "$ref": "#/$defs/source" }, "fromInvestigator": { "type": "string" }, "fromInitialAmount": { "type": "integer" }, "toInvestigator": { "type": "string" }, "toInitialAmount": { "type": "integer" }, "token": { "$ref": "#/$defs/token" }, "answer": { "$ref": "#/$defs/exchangeAmountsAnswer" } }, "required": ["source", "fromInvestigator", "fromInitialAmount", "toInvestigator", "toInitialAmount", "token", "answer"] } },
+    { "if": { "properties": { "questionKind": { "enum": ["chooseDeck", "chooseUpgradeDeck", "chooseJoinDeck"] } }, "required": ["questionKind"] }, "then": { "properties": { "answer": { "$ref": "#/$defs/deckAnswer" } }, "required": ["answer"] } },
+    { "if": { "properties": { "questionKind": { "const": "chooseJoinDeck" } }, "required": ["questionKind"] }, "then": { "properties": { "usedInvestigators": { "type": "array", "items": { "type": "string" } } }, "required": ["usedInvestigators"] } },
+    { "if": { "properties": { "questionKind": { "const": "read" } }, "required": ["questionKind"] }, "then": { "properties": { "flavorText": { "$ref": "#/$defs/flavorText" }, "readChoiceKind": { "enum": ["basic", "chooseN", "chooseUpToN", "leadInvestigatorMustDecide"] } }, "required": ["flavorText", "readChoiceKind"] } },
+    { "if": { "properties": { "questionKind": { "const": "chooseOneWizard" } }, "required": ["questionKind"] }, "then": { "properties": { "flavorText": { "$ref": "#/$defs/flavorText" }, "confirmLabel": { "$ref": "#/$defs/label" }, "backLabel": { "$ref": "#/$defs/label" } }, "required": ["flavorText", "confirmLabel", "backLabel"] } },
+    { "if": { "properties": { "questionKind": { "const": "pickSupplies" } }, "required": ["questionKind"] }, "then": { "properties": { "pointsRemaining": { "type": "integer" }, "chosenSupplies": { "type": "array", "items": { "$ref": "#/$defs/supply" } }, "resupply": { "type": "boolean" } }, "required": ["pointsRemaining", "chosenSupplies", "resupply"] } },
+    { "if": { "properties": { "questionKind": { "const": "pickDestiny" } }, "required": ["questionKind"] }, "then": { "properties": { "drawings": { "type": "array", "items": { "$ref": "#/$defs/destinyDrawing" } }, "answer": { "$ref": "#/$defs/pickDestinyAnswer" } }, "required": ["drawings", "answer"] } },
+    { "if": { "properties": { "questionKind": { "const": "pickCampaignSpecific" } }, "required": ["questionKind"] }, "then": { "properties": { "key": { "type": "string" }, "value": { "$ref": "#/$defs/opaqueJson" }, "answer": { "$ref": "#/$defs/campaignSpecificAnswer" } }, "required": ["key", "value", "answer"] } },
+    { "if": { "properties": { "questionKind": { "const": "pickScenarioSpecific" } }, "required": ["questionKind"] }, "then": { "properties": { "key": { "type": "string" }, "value": { "$ref": "#/$defs/opaqueJson" }, "answer": { "$ref": "#/$defs/scenarioSpecificAnswer" } }, "required": ["key", "value", "answer"] } },
+    { "if": { "properties": { "questionKind": { "const": "continueCampaign" } }, "required": ["questionKind"] }, "then": { "properties": { "answer": { "$ref": "#/$defs/continueCampaignAnswer" } }, "required": ["answer"] } }
+  ],
   "$defs": {
+    "questionKind": { "enum": ["chooseAmounts", "chooseDeck", "chooseExchangeAmounts", "chooseJoinDeck", "chooseN", "chooseOne", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "chooseOneFromEach", "chooseOneWizard", "choosePaymentAmounts", "chooseSome", "chooseSome1", "chooseUpgradeDeck", "chooseUpToN", "continueCampaign", "dropDown", "pickCampaignSettings", "pickCampaignSpecific", "pickDestiny", "pickScenarioSettings", "pickScenarioSpecific", "pickSupplies", "playerWindowChooseOne", "read", "unsupported", "windowChooseOne"] },
     "choice": {
       "type": "object",
       "additionalProperties": false,
       "required": ["sourceIndex", "kind", "selectable"],
       "properties": {
         "sourceIndex": { "type": "integer", "minimum": 0 },
-        "kind": {
-          "enum": [
-            "advanceAct", "advanceAgenda", "applySkillTestResults", "assignDamage", "assignHorror", "auto",
-            "auxiliaryComponentLabel", "cardPile", "chaosTokenGroupChoice", "chaosTokenLabel", "chooseTarget",
-            "componentLabel", "connectionLabel", "costLabel", "drawCard", "drawEncounterCard", "effectActionButton",
-            "endTurn", "engage", "evade", "fight", "gainResource", "info", "invalidLabel", "investigate",
-            "keyLabel", "localizedLabel", "move", "opaque", "resolveForcedAbility", "skillLabel", "skipTriggers",
-            "startSkillTest", "tarotLabel", "useAbility", "wizardChoice"
-          ]
-        },
+        "kind": { "$ref": "#/$defs/choiceKind" },
         "selectable": { "type": "boolean" },
+        "completesSelection": { "type": "boolean" },
         "actorId": { "type": "string" },
         "entity": { "$ref": "#/$defs/entity" },
         "label": { "$ref": "#/$defs/label" },
         "ability": { "$ref": "#/$defs/ability" },
         "cost": { "$ref": "#/$defs/cost" },
         "flippable": { "type": "boolean" },
-        "face": {},
-        "key": {},
-        "skillType": {},
-        "connection": {},
-        "tarotCard": {},
-        "component": {},
+        "face": { "$ref": "#/$defs/chaosTokenFace" },
+        "key": { "$ref": "#/$defs/arkhamKey" },
+        "skillType": { "$ref": "#/$defs/skillType" },
+        "connection": { "$ref": "#/$defs/locationSymbol" },
+        "tarotCard": { "$ref": "#/$defs/tarotCard" },
+        "component": { "$ref": "#/$defs/component" },
         "source": { "$ref": "#/$defs/source" },
-        "step": {},
+        "step": { "$ref": "#/$defs/chaosBagStep" },
         "tooltip": { "type": "string" },
-        "cards": { "type": "array" },
-        "flavorText": { "type": "object" },
+        "cards": { "type": "array", "items": { "$ref": "#/$defs/pileCard" } },
+        "flavorText": { "$ref": "#/$defs/flavorText" },
         "uiTag": { "type": "string" },
-        "target": {},
+        "target": { "$ref": "#/$defs/rawTarget" },
         "groupIndex": { "type": "integer", "minimum": 0 }
       },
       "allOf": [
-        {
-          "if": { "properties": { "kind": { "enum": ["advanceAct", "advanceAgenda", "assignDamage", "assignHorror", "chooseTarget", "move", "resolveForcedAbility"] } }, "required": ["kind"] },
-          "then": { "required": ["entity"] }
-        },
-        {
-          "if": { "properties": { "kind": { "enum": ["move", "resolveForcedAbility", "useAbility"] } }, "required": ["kind"] },
-          "then": { "required": ["ability", "cost"] }
-        },
-        {
-          "if": { "properties": { "kind": { "const": "resolveForcedAbility" } }, "required": ["kind"] },
-          "then": { "properties": { "entity": { "properties": { "kind": { "enum": ["location", "treachery"] } } } } }
-        },
-        {
-          "if": { "properties": { "kind": { "const": "move" } }, "required": ["kind"] },
-          "then": { "properties": { "entity": { "properties": { "kind": { "const": "location" } } } } }
-        },
-        {
-          "if": { "properties": { "kind": { "const": "advanceAct" } }, "required": ["kind"] },
-          "then": { "properties": { "entity": { "properties": { "kind": { "const": "act" } } } } }
-        },
-        {
-          "if": { "properties": { "kind": { "const": "advanceAgenda" } }, "required": ["kind"] },
-          "then": { "properties": { "entity": { "properties": { "kind": { "const": "agenda" } } } } }
-        },
-        {
-          "if": { "properties": { "kind": { "enum": ["assignDamage", "assignHorror"] } }, "required": ["kind"] },
-          "then": {
-            "properties": { "entity": { "properties": { "kind": { "const": "investigator" } } } },
-            "not": { "anyOf": [{ "required": ["actorId"] }, { "required": ["ability"] }, { "required": ["cost"] }] }
-          }
-        }
+        { "if": { "properties": { "kind": { "enum": ["advanceAct", "advanceAgenda", "assignDamage", "assignHorror", "chooseTarget", "move", "resolveForcedAbility"] } }, "required": ["kind"] }, "then": { "properties": { "entity": { "$ref": "#/$defs/entity" } }, "required": ["entity"] } },
+        { "if": { "properties": { "kind": { "enum": ["move", "resolveForcedAbility", "useAbility"] } }, "required": ["kind"] }, "then": { "properties": { "ability": { "$ref": "#/$defs/ability" }, "cost": { "$ref": "#/$defs/cost" } }, "required": ["ability", "cost"] } },
+        { "if": { "properties": { "kind": { "enum": ["drawCard", "drawEncounterCard", "endTurn", "gainResource", "skipTriggers", "startSkillTest"] } }, "required": ["kind"] }, "then": { "properties": { "actorId": { "type": "string" } }, "required": ["actorId"] } },
+        { "if": { "properties": { "kind": { "enum": ["localizedLabel", "auto", "invalidLabel", "wizardChoice"] } }, "required": ["kind"] }, "then": { "properties": { "label": { "$ref": "#/$defs/label" } }, "required": ["label"] } },
+        { "if": { "properties": { "kind": { "const": "costLabel" } }, "required": ["kind"] }, "then": { "properties": { "cost": { "$ref": "#/$defs/cost" } }, "required": ["cost"] } },
+        { "if": { "properties": { "kind": { "const": "skillLabel" } }, "required": ["kind"] }, "then": { "properties": { "skillType": { "$ref": "#/$defs/skillType" } }, "required": ["skillType"] } },
+        { "if": { "properties": { "kind": { "const": "info" } }, "required": ["kind"] }, "then": { "properties": { "flavorText": { "$ref": "#/$defs/flavorText" }, "selectable": { "const": false } }, "required": ["flavorText"] } },
+        { "if": { "properties": { "kind": { "const": "invalidLabel" } }, "required": ["kind"] }, "then": { "properties": { "selectable": { "const": false } } } },
+        { "if": { "properties": { "kind": { "const": "opaque" } }, "required": ["kind"] }, "then": { "properties": { "uiTag": { "type": "string" } }, "required": ["uiTag"] } },
+        { "if": { "properties": { "kind": { "const": "connectionLabel" } }, "required": ["kind"] }, "then": { "properties": { "connection": { "$ref": "#/$defs/locationSymbol" } }, "required": ["connection"] } },
+        { "if": { "properties": { "kind": { "const": "chaosTokenLabel" } }, "required": ["kind"] }, "then": { "properties": { "face": { "$ref": "#/$defs/chaosTokenFace" } }, "required": ["face"] } },
+        { "if": { "properties": { "kind": { "const": "keyLabel" } }, "required": ["kind"] }, "then": { "properties": { "key": { "$ref": "#/$defs/arkhamKey" } }, "required": ["key"] } },
+        { "if": { "properties": { "kind": { "const": "tarotLabel" } }, "required": ["kind"] }, "then": { "properties": { "tarotCard": { "$ref": "#/$defs/tarotCard" } }, "required": ["tarotCard"] } },
+        { "if": { "properties": { "kind": { "enum": ["componentLabel", "auxiliaryComponentLabel"] } }, "required": ["kind"] }, "then": { "properties": { "component": { "$ref": "#/$defs/component" } }, "required": ["component"] } },
+        { "if": { "properties": { "kind": { "const": "chaosTokenGroupChoice" } }, "required": ["kind"] }, "then": { "properties": { "actorId": { "type": "string" }, "source": { "$ref": "#/$defs/source" }, "step": { "$ref": "#/$defs/chaosBagStep" } }, "required": ["actorId", "source", "step"] } },
+        { "if": { "properties": { "kind": { "const": "effectActionButton" } }, "required": ["kind"] }, "then": { "properties": { "entity": { "$ref": "#/$defs/entity" }, "tooltip": { "type": "string" } }, "required": ["entity", "tooltip"] } },
+        { "if": { "properties": { "kind": { "const": "cardPile" } }, "required": ["kind"] }, "then": { "properties": { "cards": { "type": "array", "items": { "$ref": "#/$defs/pileCard" } } }, "required": ["cards"] } },
+        { "if": { "properties": { "kind": { "const": "resolveForcedAbility" } }, "required": ["kind"] }, "then": { "properties": { "entity": { "allOf": [{ "$ref": "#/$defs/entity" }, { "properties": { "kind": { "enum": ["location", "treachery"] } } }] } } } },
+        { "if": { "properties": { "kind": { "const": "move" } }, "required": ["kind"] }, "then": { "properties": { "entity": { "allOf": [{ "$ref": "#/$defs/entity" }, { "properties": { "kind": { "const": "location" } } }] } } } },
+        { "if": { "properties": { "kind": { "const": "advanceAct" } }, "required": ["kind"] }, "then": { "properties": { "entity": { "allOf": [{ "$ref": "#/$defs/entity" }, { "properties": { "kind": { "const": "act" } } }] } } } },
+        { "if": { "properties": { "kind": { "const": "advanceAgenda" } }, "required": ["kind"] }, "then": { "properties": { "entity": { "allOf": [{ "$ref": "#/$defs/entity" }, { "properties": { "kind": { "const": "agenda" } } }] } } } },
+        { "if": { "properties": { "kind": { "enum": ["assignDamage", "assignHorror"] } }, "required": ["kind"] }, "then": { "properties": { "entity": { "allOf": [{ "$ref": "#/$defs/entity" }, { "properties": { "kind": { "const": "investigator" } } }] }, "actorId": false, "ability": false, "cost": false } } }
       ]
     },
-    "answer": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind"],
-      "properties": {
-        "kind": { "enum": ["amounts", "campaignSettings", "campaignSpecific", "continueCampaign", "deck", "exchangeAmounts", "paymentAmounts", "pickDestiny", "scenarioSpecific", "singleChoice", "standaloneSettings", "unsupported"] },
-        "tag": { "type": "string" },
-        "tags": { "type": "array", "items": { "type": "string" } },
-        "alternateTags": { "type": "array", "items": { "type": "string" } }
-      }
-    },
-    "selection": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["min", "max"],
-      "properties": { "min": { "type": "integer", "minimum": 0 }, "max": { "type": "integer", "minimum": 0 } }
-    },
-    "source": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["raw"],
-      "properties": { "raw": {}, "entity": { "$ref": "#/$defs/entity" } }
-    },
-    "entity": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "id"],
-      "properties": {
-        "kind": { "enum": ["act", "agenda", "asset", "card", "cardCode", "effect", "enemy", "event", "investigator", "location", "player", "scenario", "skill", "story", "treachery"] },
-        "id": { "type": "string" }
-      }
-    },
-    "label": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["kind", "text"],
-      "properties": { "kind": { "const": "embeddedI18n" }, "text": { "type": "string" } }
-    },
-    "ability": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["cardCode", "index", "type", "actions", "canBeCancelled"],
-      "properties": {
-        "cardCode": { "type": "string" },
-        "index": { "type": "integer" },
-        "type": { "enum": ["action", "delayed", "effect", "fast", "forced", "objective", "other", "reaction"] },
-        "actions": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
-        "canBeCancelled": { "type": "boolean" }
-      }
-    },
-    "amountChoice": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["choiceId", "label", "minBound", "maxBound"],
-      "properties": { "choiceId": { "type": "string", "format": "uuid" }, "label": { "type": "string" }, "minBound": { "type": "integer" }, "maxBound": { "type": "integer" } }
-    },
-    "paymentAmountChoice": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["choiceId", "investigatorId", "min", "max", "title"],
-      "properties": { "choiceId": { "type": "string", "format": "uuid" }, "investigatorId": { "type": "string" }, "min": { "type": "integer" }, "max": { "type": "integer" }, "title": { "$ref": "#/$defs/label" } }
-    },
+    "choiceKind": { "enum": ["advanceAct", "advanceAgenda", "applySkillTestResults", "assignDamage", "assignHorror", "auto", "auxiliaryComponentLabel", "cardPile", "chaosTokenGroupChoice", "chaosTokenLabel", "chooseTarget", "componentLabel", "connectionLabel", "costLabel", "drawCard", "drawEncounterCard", "effectActionButton", "endTurn", "engage", "evade", "fight", "gainResource", "info", "invalidLabel", "investigate", "keyLabel", "localizedLabel", "move", "opaque", "resolveForcedAbility", "skillLabel", "skipTriggers", "startSkillTest", "tarotLabel", "useAbility", "wizardChoice"] },
+    "answer": { "oneOf": [{ "$ref": "#/$defs/singleChoiceAnswer" }, { "$ref": "#/$defs/amountsAnswer" }, { "$ref": "#/$defs/paymentAmountsAnswer" }, { "$ref": "#/$defs/exchangeAmountsAnswer" }, { "$ref": "#/$defs/deckAnswer" }, { "$ref": "#/$defs/standaloneSettingsAnswer" }, { "$ref": "#/$defs/campaignSettingsAnswer" }, { "$ref": "#/$defs/pickDestinyAnswer" }, { "$ref": "#/$defs/campaignSpecificAnswer" }, { "$ref": "#/$defs/scenarioSpecificAnswer" }, { "$ref": "#/$defs/continueCampaignAnswer" }, { "$ref": "#/$defs/unsupportedAnswer" }] },
+    "singleChoiceAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "singleChoice" }, "tag": { "const": "Answer" }, "alternateTags": { "type": "array", "items": { "const": "OrderedAnswer" }, "minItems": 1, "maxItems": 1 } } },
+    "amountsAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "amounts" }, "tag": { "const": "AmountsAnswer" } } },
+    "paymentAmountsAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "paymentAmounts" }, "tag": { "const": "PaymentAmountsAnswer" } } },
+    "exchangeAmountsAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "exchangeAmounts" }, "tag": { "const": "ExchangeAmountsAnswer" } } },
+    "deckAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tags"], "properties": { "kind": { "const": "deck" }, "tags": { "type": "array", "prefixItems": [{ "const": "DeckAnswer" }, { "const": "DeckListAnswer" }], "items": false, "minItems": 2, "maxItems": 2 } } },
+    "standaloneSettingsAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "standaloneSettings" }, "tag": { "const": "StandaloneSettingsAnswer" } } },
+    "campaignSettingsAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "campaignSettings" }, "tag": { "const": "CampaignSettingsAnswer" } } },
+    "pickDestinyAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "pickDestiny" }, "tag": { "const": "PickDestinyAnswer" } } },
+    "campaignSpecificAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "campaignSpecific" }, "tag": { "const": "CampaignSpecificAnswer" } } },
+    "scenarioSpecificAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tag"], "properties": { "kind": { "const": "scenarioSpecific" }, "tag": { "const": "ScenarioSpecificAnswer" } } },
+    "unsupportedAnswer": { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "unsupported" } } },
+    "continueCampaignAnswer": { "type": "object", "additionalProperties": false, "required": ["kind", "tags"], "properties": { "kind": { "const": "continueCampaign" }, "tags": { "type": "array", "items": { "enum": ["CampaignStepAnswer", "RetireInvestigatorAnswer", "RejoinInvestigatorAnswer", "ApplyOverlayAnswer", "JoinCampaignAnswer"] }, "minItems": 1, "uniqueItems": true } } },
+    "selection": { "type": "object", "additionalProperties": false, "description": "Total number of non-completion picks across repeated Answer submissions for this question.", "required": ["min", "max"], "properties": { "min": { "type": "integer", "minimum": 0 }, "max": { "type": "integer", "minimum": 0 } } },
+    "source": { "type": "object", "additionalProperties": false, "required": ["raw"], "properties": { "raw": { "$ref": "#/$defs/rawSource" }, "entity": { "$ref": "#/$defs/entity" } } },
+    "rawSource": { "$ref": "#/$defs/taggedJson" },
+    "rawTarget": { "$ref": "#/$defs/taggedJson" },
+    "entity": { "type": "object", "additionalProperties": false, "required": ["kind", "id"], "properties": { "kind": { "enum": ["act", "agenda", "asset", "card", "cardCode", "effect", "enemy", "event", "investigator", "location", "player", "scenario", "skill", "story", "treachery"] }, "id": { "type": "string" } } },
+    "label": { "type": "object", "additionalProperties": false, "required": ["kind", "text"], "properties": { "kind": { "const": "embeddedI18n" }, "text": { "type": "string" } } },
+    "ability": { "type": "object", "additionalProperties": false, "required": ["cardCode", "index", "type", "actions", "canBeCancelled"], "properties": { "cardCode": { "type": "string" }, "index": { "type": "integer" }, "type": { "enum": ["action", "delayed", "effect", "fast", "forced", "objective", "other", "reaction"] }, "actions": { "type": "array", "uniqueItems": true, "items": { "enum": ["activate", "circle", "draw", "engage", "evade", "explore", "fight", "investigate", "move", "parley", "play", "resign", "resource"] } }, "canBeCancelled": { "type": "boolean" } } },
+    "skillType": { "enum": ["SkillWillpower", "SkillIntellect", "SkillCombat", "SkillAgility", "SkillWild"] },
+    "chaosTokenFace": { "type": "string" },
+    "locationSymbol": { "enum": ["Circle", "Square", "Triangle", "Plus", "Diamond", "Squiggle", "Moon", "Hourglass", "T", "Equals", "Heart", "Star", "Droplet", "Trefoil", "Spade", "NoSymbol"] },
+    "token": { "type": "string" },
+    "arkhamKey": { "$ref": "#/$defs/taggedJson" },
+    "component": { "$ref": "#/$defs/taggedJson" },
+    "chaosBagStep": { "$ref": "#/$defs/taggedJson" },
+    "tarotCard": { "$ref": "#/$defs/taggedJson" },
+    "supply": { "type": "string" },
+    "destinyDrawing": { "$ref": "#/$defs/taggedJson" },
+    "pileCard": { "type": "object", "additionalProperties": false, "required": ["cardId", "cardOwner"], "properties": { "cardId": { "type": "string" }, "cardOwner": { "oneOf": [{ "type": "string" }, { "type": "null" }] } } },
+    "amountChoice": { "type": "object", "additionalProperties": false, "required": ["choiceId", "label", "minBound", "maxBound"], "properties": { "choiceId": { "type": "string", "format": "uuid" }, "label": { "type": "string" }, "minBound": { "type": "integer" }, "maxBound": { "type": "integer" } } },
+    "paymentAmountChoice": { "type": "object", "additionalProperties": false, "required": ["choiceId", "investigatorId", "min", "max", "title"], "properties": { "choiceId": { "type": "string", "format": "uuid" }, "investigatorId": { "type": "string" }, "min": { "type": "integer" }, "max": { "type": "integer" }, "title": { "$ref": "#/$defs/label" } } },
+    "amountTarget": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["tag", "contents"], "properties": { "tag": { "enum": ["MinAmountTarget", "MaxAmountTarget", "TotalAmountTarget"] }, "contents": { "type": "integer" } } }, { "type": "object", "additionalProperties": false, "required": ["tag", "contents"], "properties": { "tag": { "const": "AmountOneOf" }, "contents": { "type": "array", "items": { "type": "integer" } } } }] },
+    "flavorText": { "type": "object", "additionalProperties": false, "required": ["title", "body"], "properties": { "title": { "oneOf": [{ "type": "string" }, { "type": "null" }] }, "body": { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } } } },
+    "taggedJson": { "type": "object", "additionalProperties": false, "required": ["tag"], "properties": { "tag": { "type": "string" }, "contents": { "$ref": "#/$defs/jsonValue" } } },
+    "opaqueJson": { "$ref": "#/$defs/jsonValue" },
+    "jsonValue": { "oneOf": [{ "type": "null" }, { "type": "boolean" }, { "type": "number" }, { "type": "string" }, { "type": "array", "items": { "$ref": "#/$defs/jsonValue" } }, { "type": "object", "additionalProperties": { "$ref": "#/$defs/jsonValue" } }] },
     "cost": { "oneOf": [{ "$ref": "#/$defs/unitCost" }, { "$ref": "#/$defs/scalarCost" }, { "$ref": "#/$defs/clueCost" }, { "$ref": "#/$defs/groupCost" }, { "$ref": "#/$defs/compositeCost" }, { "$ref": "#/$defs/otherCost" }] },
     "unitCost": { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "free" } } },
     "scalarCost": { "type": "object", "additionalProperties": false, "required": ["kind", "amount"], "properties": { "kind": { "enum": ["action", "resource"] }, "amount": { "type": "integer", "minimum": 0 } } },
@@ -196,19 +164,7 @@
     "groupCost": { "type": "object", "additionalProperties": false, "required": ["kind", "amount", "scope"], "properties": { "kind": { "enum": ["groupClue", "groupResource"] }, "amount": { "$ref": "#/$defs/amount" }, "scope": { "$ref": "#/$defs/scope" } } },
     "compositeCost": { "type": "object", "additionalProperties": false, "required": ["kind", "costs"], "properties": { "kind": { "enum": ["all", "choice"] }, "costs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/cost" } } } },
     "otherCost": { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "other" } } },
-    "amount": {
-      "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "enum": ["fixed", "perPlayer"] }, "value": { "type": "integer", "minimum": 0 } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "fixed", "perPlayer"], "properties": { "kind": { "const": "fixedPlusPerPlayer" }, "fixed": { "type": "integer", "minimum": 0 }, "perPlayer": { "type": "integer", "minimum": 0 } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "values"], "properties": { "kind": { "const": "byPlayerCount" }, "values": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "integer", "minimum": 0 } } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["star", "unknown", "x"] } } }
-      ]
-    },
-    "scope": {
-      "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["anywhere", "other", "sameLocation"] } } },
-        { "type": "object", "additionalProperties": false, "required": ["kind", "locationId"], "properties": { "kind": { "const": "location" }, "locationId": { "type": "string" } } }
-      ]
-    }
+    "amount": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["kind", "value"], "properties": { "kind": { "enum": ["fixed", "perPlayer"] }, "value": { "type": "integer", "minimum": 0 } } }, { "type": "object", "additionalProperties": false, "required": ["kind", "fixed", "perPlayer"], "properties": { "kind": { "const": "fixedPlusPerPlayer" }, "fixed": { "type": "integer", "minimum": 0 }, "perPlayer": { "type": "integer", "minimum": 0 } } }, { "type": "object", "additionalProperties": false, "required": ["kind", "values"], "properties": { "kind": { "const": "byPlayerCount" }, "values": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "integer", "minimum": 0 } } } }, { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["star", "unknown", "x"] } } }] },
+    "scope": { "oneOf": [{ "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "enum": ["anywhere", "other", "sameLocation"] } } }, { "type": "object", "additionalProperties": false, "required": ["kind", "locationId"], "properties": { "kind": { "const": "location" }, "locationId": { "type": "string" } } }] }
   }
 }
