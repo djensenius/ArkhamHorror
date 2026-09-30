@@ -1537,6 +1537,291 @@
       }
     },
     {
+      "name": "readN",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$read.n"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "flavorText": {
+          "body": [],
+          "title": null
+        },
+        "protocolVersion": 2,
+        "questionKind": "read",
+        "questionVersion": 319,
+        "readChoiceKind": "chooseN",
+        "selection": {
+          "max": 1,
+          "min": 1
+        }
+      }
+    },
+    {
+      "name": "readUpToNWithCards",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 2,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$read.upToN"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          },
+          {
+            "completesSelection": true,
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$done"
+            },
+            "selectable": true,
+            "sourceIndex": 1
+          }
+        ],
+        "flavorText": {
+          "body": [],
+          "title": null
+        },
+        "protocolVersion": 2,
+        "questionKind": "read",
+        "questionVersion": 320,
+        "readCards": [
+          "c01104"
+        ],
+        "readChoiceKind": "chooseUpToN",
+        "selection": {
+          "max": 1,
+          "min": 0
+        }
+      }
+    },
+    {
+      "name": "readLead",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "localizedLabel",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$read.lead"
+            },
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "flavorText": {
+          "body": [],
+          "title": null
+        },
+        "protocolVersion": 2,
+        "questionKind": "read",
+        "questionVersion": 321,
+        "readChoiceKind": "leadInvestigatorMustDecide"
+      }
+    },
+    {
+      "name": "chaosStepChoose",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "actorId": "c01001",
+            "kind": "chaosTokenGroupChoice",
+            "selectable": true,
+            "source": {
+              "raw": {
+                "tag": "GameSource"
+              }
+            },
+            "sourceIndex": 0,
+            "step": {
+              "amount": 1,
+              "chooseAndThen": null,
+              "source": {
+                "tag": "GameSource"
+              },
+              "steps": [],
+              "tag": "Choose",
+              "tokenGroups": [],
+              "tokenStrategy": "ResolveChoice"
+            }
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionVersion": 322
+      }
+    },
+    {
+      "name": "chaosStepChooseMatch",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "actorId": "c01001",
+            "kind": "chaosTokenGroupChoice",
+            "selectable": true,
+            "source": {
+              "raw": {
+                "tag": "GameSource"
+              }
+            },
+            "sourceIndex": 0,
+            "step": {
+              "amount": 1,
+              "chooseAndThen": null,
+              "source": {
+                "tag": "GameSource"
+              },
+              "steps": [],
+              "tag": "ChooseMatch",
+              "tokenGroups": [],
+              "tokenMatcher": {
+                "tag": "AnyChaosToken"
+              },
+              "tokenStrategy": "ResolveChoice"
+            }
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionVersion": 323
+      }
+    },
+    {
+      "name": "chaosStepChooseMatchChoice",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "actorId": "c01001",
+            "kind": "chaosTokenGroupChoice",
+            "selectable": true,
+            "source": {
+              "raw": {
+                "tag": "GameSource"
+              }
+            },
+            "sourceIndex": 0,
+            "step": {
+              "steps": [],
+              "tag": "ChooseMatchChoice",
+              "tokenGroups": [],
+              "tokenMatcherChoices": [
+                [
+                  {
+                    "tag": "AnyChaosToken"
+                  },
+                  [
+                    "$token.choice",
+                    {
+                      "tag": "Draw"
+                    }
+                  ]
+                ]
+              ]
+            }
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionVersion": 324
+      }
+    },
+    {
+      "name": "opaqueTarget",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "kind": "opaque",
+            "label": {
+              "kind": "embeddedI18n",
+              "text": "$choice.opaque"
+            },
+            "selectable": true,
+            "sourceIndex": 0,
+            "target": {
+              "tag": "TestTarget"
+            },
+            "uiTag": "TargetLabel"
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionVersion": 325
+      }
+    },
+    {
+      "name": "componentInvestigatorDeckGeneral",
+      "presentation": {
+        "answer": {
+          "kind": "singleChoice",
+          "tag": "Answer"
+        },
+        "choiceCount": 1,
+        "choices": [
+          {
+            "component": {
+              "investigatorId": "c01001",
+              "tag": "InvestigatorDeckComponent"
+            },
+            "entity": {
+              "id": "c01001",
+              "kind": "investigator"
+            },
+            "kind": "componentLabel",
+            "selectable": true,
+            "sourceIndex": 0
+          }
+        ],
+        "protocolVersion": 2,
+        "questionKind": "chooseOne",
+        "questionVersion": 326
+      }
+    },
+    {
       "name": "chooseOneWizard",
       "presentation": {
         "answer": {
@@ -1573,7 +1858,7 @@
         },
         "protocolVersion": 2,
         "questionKind": "chooseOneWizard",
-        "questionVersion": 319
+        "questionVersion": 327
       }
     },
     {
@@ -1599,7 +1884,7 @@
         "pointsRemaining": 0,
         "protocolVersion": 2,
         "questionKind": "pickSupplies",
-        "questionVersion": 320,
+        "questionVersion": 328,
         "resupply": false
       }
     },
@@ -1623,7 +1908,7 @@
         ],
         "protocolVersion": 2,
         "questionKind": "pickDestiny",
-        "questionVersion": 321
+        "questionVersion": 329
       }
     },
     {
@@ -1647,7 +1932,7 @@
         ],
         "protocolVersion": 2,
         "questionKind": "dropDown",
-        "questionVersion": 322
+        "questionVersion": 330
       }
     },
     {
@@ -1661,7 +1946,7 @@
         "choices": [],
         "protocolVersion": 2,
         "questionKind": "pickScenarioSettings",
-        "questionVersion": 323
+        "questionVersion": 331
       }
     },
     {
@@ -1675,7 +1960,7 @@
         "choices": [],
         "protocolVersion": 2,
         "questionKind": "pickCampaignSettings",
-        "questionVersion": 324
+        "questionVersion": 332
       }
     },
     {
@@ -1690,7 +1975,7 @@
         "key": "notz",
         "protocolVersion": 2,
         "questionKind": "pickCampaignSpecific",
-        "questionVersion": 325,
+        "questionVersion": 333,
         "value": null
       }
     },
@@ -1706,7 +1991,7 @@
         "key": "gathering",
         "protocolVersion": 2,
         "questionKind": "pickScenarioSpecific",
-        "questionVersion": 326,
+        "questionVersion": 334,
         "value": null
       }
     },
@@ -1723,7 +2008,7 @@
         "fromInvestigator": "c01001",
         "protocolVersion": 2,
         "questionKind": "chooseExchangeAmounts",
-        "questionVersion": 327,
+        "questionVersion": 335,
         "source": {
           "raw": {
             "tag": "GameSource"
@@ -1751,7 +2036,7 @@
         "choices": [],
         "protocolVersion": 2,
         "questionKind": "continueCampaign",
-        "questionVersion": 328
+        "questionVersion": 336
       }
     }
   ]

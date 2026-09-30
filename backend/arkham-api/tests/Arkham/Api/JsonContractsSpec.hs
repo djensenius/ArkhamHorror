@@ -37,7 +37,7 @@ import Arkham.Attack.Types
   , EnemyAttackType (RegularAttack)
   )
 import Arkham.Campaign (lookupCampaign)
-import Arkham.ChaosBagStepState (ChaosBagStep (Draw))
+import Arkham.ChaosBagStepState (ChaosBagStep (..), ChaosTokenStrategy (..))
 import Arkham.ChaosToken.Types (ChaosTokenFace (Zero))
 import Arkham.Campaign.Types (Campaign)
 import Arkham.Card.Id (unsafeMakeCardId)
@@ -91,6 +91,7 @@ import Arkham.Matcher
   , WindowMatcher (RoundEnds)
   )
 import Arkham.Matcher qualified as Matcher
+import Arkham.Matcher.ChaosToken (ChaosTokenMatcher (AnyChaosToken))
 import Arkham.Message qualified as Msg (storyWithCards)
 import Arkham.Message.Lifted.Choose (chooseTargetM)
 import Arkham.Message.Lifted.Location (unsafeReveal)
@@ -3502,6 +3503,9 @@ spec = describe "Native client contract fixtures" do
         , ScenarioLabel "$scenario" "scenario-id" [ClearUI]
         ]
       labelQuestion = ChooseOne [Label "$choice" [ClearUI]]
+      chaosChooseStep = Choose GameSource 1 ResolveChoice [] [] Nothing
+      chaosChooseMatchStep = ChooseMatch GameSource 1 ResolveChoice [] [] AnyChaosToken Nothing
+      chaosChooseMatchChoiceStep = ChooseMatchChoice [] [] [(AnyChaosToken, ("$token.choice", Draw))]
       representativeQuestions =
         [ ChooseOne uiChoices
         , PlayerWindowChooseOne uiChoices
@@ -3522,6 +3526,14 @@ spec = describe "Native client contract fixtures" do
         , PayCostQuestion Cost.Free labelQuestion
         , QuestionWithSource (ProxySource (LocationSource locationId) GameSource) (Just $ Tooltip "$source.tooltip") labelQuestion
         , Read mempty (BasicReadChoices [Label "$read" [ClearUI]]) Nothing
+        , Read mempty (BasicReadChoicesN 1 [Label "$read.n" [ClearUI]]) Nothing
+        , Read mempty (BasicReadChoicesUpToN 1 [Label "$read.upToN" [ClearUI], Done "$done"]) (Just ["01104"])
+        , Read mempty (LeadInvestigatorMustDecide [Label "$read.lead" [ClearUI]]) Nothing
+        , ChooseOne [ChaosTokenGroupChoice GameSource iid chaosChooseStep]
+        , ChooseOne [ChaosTokenGroupChoice GameSource iid chaosChooseMatchStep]
+        , ChooseOne [ChaosTokenGroupChoice GameSource iid chaosChooseMatchChoiceStep]
+        , ChooseOne [TargetLabel TestTarget [ClearUI]]
+        , ChooseOne [ComponentLabel (InvestigatorDeckComponent iid) [ClearUI]]
         , ChooseOneWizard mempty [WizardChoice "$wizard" mempty [ClearUI]] "$confirm" "$back"
         , PickSupplies 0 [] [Label "$supply" [ClearUI]] False
         , PickDestiny [DestinyDrawing "scenario" (TarotCard Upright TheFool0)]
@@ -3542,8 +3554,9 @@ spec = describe "Native client contract fixtures" do
       `shouldBe` [ "ChooseOne", "PlayerWindowChooseOne", "WindowChooseOne", "ChooseOneFromEach", "ChooseN", "ChooseSome", "ChooseSome1", "ChooseUpToN", "ChooseOneAtATime", "ChooseOneAtATimeWithAuto", "ChoosePaymentAmounts", "ChooseAmounts", "ChooseUpgradeDeck", "ChooseDeck", "ChooseJoinDeck", "QuestionLabel", "PayCostQuestion", "QuestionWithSource", "Read", "ChooseOneWizard", "PickSupplies", "PickDestiny", "DropDown", "PickScenarioSettings", "PickCampaignSettings", "PickCampaignSpecific", "PickScenarioSpecific", "ChooseExchangeAmounts", "ContinueCampaign" ]
     traverse_ assertComplete representativeQuestions
     let
+      representativeNames :: [Text]
       representativeNames =
-        [ "chooseOne-all-ui", "playerWindowChooseOne", "windowChooseOne", "chooseOneFromEach", "chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "choosePaymentAmounts-null-target", "chooseAmounts", "chooseUpgradeDeck", "chooseDeck", "chooseJoinDeck", "questionLabel", "payCostQuestion", "questionWithProxySource", "read", "chooseOneWizard", "pickSupplies", "pickDestiny", "dropDown", "pickScenarioSettings", "pickCampaignSettings", "pickCampaignSpecific", "pickScenarioSpecific", "chooseExchangeAmounts", "continueCampaign" ]
+        [ "chooseOne-all-ui", "playerWindowChooseOne", "windowChooseOne", "chooseOneFromEach", "chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "choosePaymentAmounts-null-target", "chooseAmounts", "chooseUpgradeDeck", "chooseDeck", "chooseJoinDeck", "questionLabel", "payCostQuestion", "questionWithProxySource", "read", "readN", "readUpToNWithCards", "readLead", "chaosStepChoose", "chaosStepChooseMatch", "chaosStepChooseMatchChoice", "opaqueTarget", "componentInvestigatorDeckGeneral", "chooseOneWizard", "pickSupplies", "pickDestiny", "dropDown", "pickScenarioSettings", "pickCampaignSettings", "pickCampaignSpecific", "pickScenarioSpecific", "chooseExchangeAmounts", "continueCampaign" ]
     length representativeNames `shouldBe` length representativeQuestions
     representativeFixture <- loadFixture "question-presentation-representatives.json"
     fixturePresentations <- case representativeFixture of
