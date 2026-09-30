@@ -3544,12 +3544,19 @@ spec = describe "Native client contract fixtures" do
     let
       representativeNames =
         [ "chooseOne-all-ui", "playerWindowChooseOne", "windowChooseOne", "chooseOneFromEach", "chooseN", "chooseSome", "chooseSome1", "chooseUpToN", "chooseOneAtATime", "chooseOneAtATimeWithAuto", "choosePaymentAmounts-null-target", "chooseAmounts", "chooseUpgradeDeck", "chooseDeck", "chooseJoinDeck", "questionLabel", "payCostQuestion", "questionWithProxySource", "read", "chooseOneWizard", "pickSupplies", "pickDestiny", "dropDown", "pickScenarioSettings", "pickCampaignSettings", "pickCampaignSpecific", "pickScenarioSpecific", "chooseExchangeAmounts", "continueCampaign" ]
+    length representativeNames `shouldBe` length representativeQuestions
     representativeFixture <- loadFixture "question-presentation-representatives.json"
     fixturePresentations <- case representativeFixture of
       Aeson.Object fields -> case AesonKeyMap.lookup "presentations" fields of
         Just (Aeson.Array values) -> pure $ toList values
         _ -> expectationFailure "representative fixture missing presentations" >> pure []
       _ -> expectationFailure "representative fixture must be an object" >> pure []
+    let fixtureNames =
+          [ name
+          | Aeson.Object fields <- fixturePresentations
+          , Just (Aeson.String name) <- [AesonKeyMap.lookup "name" fields]
+          ]
+    fixtureNames `shouldBe` representativeNames
     for_ (zip [0 :: Int ..] $ zip representativeNames representativeQuestions) \(index, (name, question)) -> do
       let expectedPresentation = Aeson.toJSON $ QuestionPresentation.questionPresentation (300 + index) question
       case find (\case
