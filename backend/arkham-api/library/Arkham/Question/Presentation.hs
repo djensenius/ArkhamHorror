@@ -395,7 +395,6 @@ answerEnvelopeFor = \case
             ]
         )
       ]
-  "unsupported" -> jsonObject [("kind", String "unsupported")]
   "chooseOneAtATime" -> orderedCapableAnswer
   _ -> answer "singleChoice" "Answer"
  where
