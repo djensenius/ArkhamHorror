@@ -41,11 +41,15 @@ constructor.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.
-- `questions.semantic-presentation.v2` is global at revision `0.1.44`. It
+- `questions.semantic-presentation.v1` is global at revision `0.1.44`. It
   advertises the additive, backend-authored `questionPresentation` projection
   beside the unchanged authoritative raw question. A client uses descriptors
   only to render native controls, validates their protocol/question versions
   and source-index bindings, and still submits the existing versioned answer.
+- `questions.semantic-presentation.v2` is global at revision `0.1.47`. It
+  guarantees complete source-index coverage for every presented prompt, adds
+  all question and UI constructor families to the projection, and adds
+  `selectable`, `completesSelection`, and total-pick `selection` metadata.
   Every `PublicGame` carries exactly the same `PlayerId` keys in `question`
   and `questionPresentation`; contract validation recursively binds each shared
   entry's `questionVersion` to `scenarioSteps`, `questionKind` and `choiceCount`
@@ -540,6 +544,39 @@ These descriptors remain render-only: clients submit the unchanged source
 index and question version, while Haskell alone checks and resolves the forced
 ability.
 
+Revision `0.1.47` upgrades the projection to
+`questions.semantic-presentation.v2` / protocol version `2`. The projection is
+still render-only, but it is now complete for presented prompts: `choices`
+contains exactly `choiceCount` descriptors and source indexes `0..choiceCount-1`
+appear exactly once. Every raw UI constructor is represented; non-answerable
+rows carry `selectable: false`, and completion rows such as `Done` or the
+auto-resolve choice carry `completesSelection: true`.
+
+`selection` always describes the total number of non-completion picks across
+the repeated `Answer` submissions for that question. `chooseN` is exactly
+`n..n`; `chooseUpToN` is `0..n` excluding a Done choice; `chooseSome` excludes
+Done from its maximum; `chooseOneAtATime` is `n..n`; and
+`chooseOneFromEach` is `groupCount..groupCount` with each descriptor carrying
+`groupIndex` so clients can enforce one selection per group. The answer
+envelope table is: ordinary choice prompts (`chooseOne`,
+`playerWindowChooseOne`, `windowChooseOne`, `chooseN`, `chooseSome`,
+`chooseSome1`, `chooseUpToN`, `chooseOneAtATime`,
+`chooseOneAtATimeWithAuto`, `chooseOneFromEach`, `read`,
+`chooseOneWizard`, `pickSupplies`, `dropDown`) use `Answer`; plain
+`chooseOneAtATime` additionally allows `OrderedAnswer` using raw indexes;
+`chooseAmounts` uses `AmountsAnswer`; `choosePaymentAmounts` uses
+`PaymentAmountsAnswer`; `chooseExchangeAmounts` uses `ExchangeAmountsAnswer`;
+deck prompts use `DeckAnswer` or `DeckListAnswer`; setting/specific/campaign
+prompts use their same-named answer tags; and `continueCampaign` may use
+`CampaignStepAnswer`, `RetireInvestigatorAnswer`, `RejoinInvestigatorAnswer`,
+`ApplyOverlayAnswer`, or `JoinCampaignAnswer`.
+
+Wrapper limits mirror `Entity.Answer`: `AmountsAnswer` is accepted only for a
+bare `ChooseAmounts` or one inside `QuestionLabel`; `PaymentAmountsAnswer` is
+accepted only bare or inside `PayCostQuestion`. `DeckAnswer.overlay` is governed
+as `object|null` for compatibility with the web client, but the inner overlay
+shape remains intentionally ungoverned and tracked for a later contract.
+
 #### Roland Banks post-defeat reaction
 
 Revision `0.1.39` adds
@@ -615,7 +652,7 @@ Revision `0.1.41` registers
 `question-gathering-act-objective.json`, the authoritative raw question 34
 produced after the Cover Up window resolves, and
 `question-presentation-gathering-act-objective.json`, its additive
-`questions.semantic-presentation.v2` projection. It also registers
+`questions.semantic-presentation.v1` projection. It also registers
 `question-gathering-act-advance.json`, the authoritative raw question 35
 confirmation, and
 `question-presentation-gathering-act-advance.json`, its semantic projection.
