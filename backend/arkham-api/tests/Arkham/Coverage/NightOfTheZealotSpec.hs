@@ -9,7 +9,7 @@ import Arkham.Campaign.Types (campaignResolutions, campaignStep)
 import Arkham.CampaignStep qualified as CS
 import Arkham.Card.CardCode (CardCode (..), unCardCode)
 import Arkham.Classes.Entity (toAttrs)
-import Arkham.Classes.HasQueue (newQueue, pushAll)
+import Arkham.Classes.HasQueue (newQueue)
 import Arkham.Decklist.Type qualified as Decklist
 import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Game (Game (..), newCampaign, runMessages)
@@ -17,10 +17,11 @@ import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsOver))
 import Arkham.Game.Utils (modeCampaign, modeScenario)
 import Arkham.Id (CampaignId (..), InvestigatorId (..), PlayerId (..), ScenarioId (..), unInvestigatorId, unScenarioId)
-import Arkham.Message (Message (ClearUI, SetActivePlayer))
+import Arkham.Message (Message (ClearUI, DoneChoosingDecks, LoadDecklist, SetActivePlayer))
 import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Prelude
 import Arkham.Question
+import Arkham.Queue (queueToRef)
 import Arkham.Question.Presentation qualified as QuestionPresentation
 import Arkham.Scenario.Types (scenarioId)
 import Arkham.Source (Source (GameSource))
@@ -51,6 +52,17 @@ spec = describe "Night of the Zealot coverage generator" do
   describe "core starter decks" do
     it "uses legal 30-card ordinary decks plus required cards and one random basic weakness" do
       traverse_ assertLegalStarterDeck coreInvestigators
+
+  describe "coverage answer replay" do
+    it "prepends answers before parked continuation messages" do
+      gameRef <- newIORef $ newCampaign (CampaignId "01") Nothing 1 1 Easy False
+      queueRef <- newQueue [DoneChoosingDecks]
+      genRef <- newIORef $ mkStdGen 1
+      let app = GameApp gameRef queueRef genRef (pure . const ()) Nothing
+          answerMessage = LoadDecklist samplePlayerId (starterDeck sampleInvestigator)
+      prependAnswerMessages app [answerMessage]
+
+      readIORef (queueToRef app.appQueue) `shouldReturn` [ClearUI, answerMessage, DoneChoosingDecks]
 
   outputDir <- runIO $ lookupEnv "ARKHAM_NOTZ_COVERAGE_DIR"
   case outputDir of
@@ -385,12 +397,17 @@ applySelectedAnswer app defaultPlayer game SelectedAnswer {..} = do
           [SetActivePlayer answerPid | activePid /= answerPid]
             <> messages
             <> [SetActivePlayer activePid | activePid /= answerPid]
-    runGameApp app $ pushAll (ClearUI : bracketed)
+    prependAnswerMessages app bracketed
     drainMessages app
   pure case result of
     Left err -> Left $ "answer failed: " <> T.pack (show err)
     Right (Left err) -> Left err
     Right (Right ()) -> Right ()
+
+prependAnswerMessages :: GameApp -> [Message] -> IO ()
+prependAnswerMessages app messages =
+  atomicModifyIORef' (queueToRef app.appQueue) \currentQueue ->
+    ((ClearUI : messages) <> currentQueue, ())
 
 -- Keep each drain bounded so an engine loop records a stop instead of hanging
 -- the nightly/manual coverage job indefinitely.
@@ -546,6 +563,12 @@ allocatePaymentTo target choices = Map.fromList $ go (max 0 $ target - sum (map 
         amount = choice.minBound + extra
      in (choice.choiceId, amount) : go (remaining - extra) rest
 
+samplePlayerId :: PlayerId
+samplePlayerId = PlayerId $ UUID.fromWords 0 0 0 1
+
+sampleInvestigator :: InvestigatorSpec
+sampleInvestigator = fromMaybe (error "coreInvestigators is unexpectedly empty") $ headMay coreInvestigators
+
 answerEncodingExamples :: [(String, Answer)]
 answerEncodingExamples =
   [ ("Answer", Answer $ QuestionResponse 0 (Just samplePlayerId) (Just 7))
@@ -558,9 +581,6 @@ answerEncodingExamples =
   , ("CampaignStepAnswer", CampaignStepAnswer $ CS.ScenarioStep "01104")
   , ("PickDestinyAnswer", PickDestinyAnswer [])
   ]
- where
-  samplePlayerId = PlayerId $ UUID.fromWords 0 0 0 1
-  sampleInvestigator = fromMaybe (error "coreInvestigators is unexpectedly empty") $ headMay coreInvestigators
 
 answerToJSON :: Answer -> Value
 answerToJSON = \case
