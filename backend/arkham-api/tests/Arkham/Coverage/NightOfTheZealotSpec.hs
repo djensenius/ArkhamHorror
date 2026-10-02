@@ -5,15 +5,16 @@
 module Arkham.Coverage.NightOfTheZealotSpec (spec) where
 
 import Api.Arkham.Helpers (GameApp (..), runGameApp)
-import Arkham.Campaign.Types (campaignStep)
+import Arkham.Campaign.Types (campaignResolutions, campaignStep)
 import Arkham.CampaignStep qualified as CS
-import Arkham.Card.CardCode (CardCode, unCardCode)
+import Arkham.Card.CardCode (CardCode (..), unCardCode)
 import Arkham.Classes.Entity (toAttrs)
 import Arkham.Classes.HasQueue (newQueue, pushAll)
 import Arkham.Decklist.Type qualified as Decklist
 import Arkham.Difficulty (Difficulty (Easy))
 import Arkham.Game (Game (..), newCampaign, runMessages)
 import Arkham.Game qualified as Game
+import Arkham.Game.State (GameState (IsOver))
 import Arkham.Game.Utils (modeCampaign, modeScenario)
 import Arkham.Id (CampaignId (..), InvestigatorId (..), PlayerId (..), ScenarioId (..), unInvestigatorId, unScenarioId)
 import Arkham.Message (Message (ClearUI, SetActivePlayer))
@@ -21,9 +22,11 @@ import Arkham.Prelude
 import Arkham.Question
 import Arkham.Question.Presentation qualified as QuestionPresentation
 import Arkham.Scenario.Types (scenarioId)
+import Control.Exception qualified as Exception
 import Control.Monad.Random (mkStdGen)
-import Data.Aeson.Types (Pair)
-import Data.ByteString.Lazy qualified as LBS
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.UUID qualified as UUID
@@ -39,42 +42,45 @@ spec = describe "Night of the Zealot coverage generator" do
   case outputDir of
     Nothing ->
       it "runs only when ARKHAM_NOTZ_COVERAGE_DIR is set" do
-        pendingWith "set ARKHAM_NOTZ_COVERAGE_DIR to generate coverage fixtures"
+        pendingWith "set ARKHAM_NOTZ_COVERAGE_DIR to generate coverage JSONL fixtures"
     Just dir ->
       it "records a deterministic solo campaign bot run for each core investigator" do
         results <- traverse (runInvestigatorCoverage dir) coreInvestigators
         writeSummary dir results
-        unless (all (not . null . crRecords) results) $
-          expectationFailure "expected every investigator to record at least one prompt"
+        unless (all crReachedDevourerBelowEnd results) $
+          expectationFailure "expected every investigator to reach the end of 01142"
 
 coreInvestigators :: [InvestigatorSpec]
 coreInvestigators =
-  [ InvestigatorSpec "01001" "Roland Banks" 12001 rolandStarterDeck
-  , InvestigatorSpec "01002" "Daisy Walker" 12002 daisyStarterDeck
-  , InvestigatorSpec "01003" "Skids O'Toole" 12003 skidsStarterDeck
-  , InvestigatorSpec "01004" "Agnes Baker" 12004 agnesStarterDeck
-  , InvestigatorSpec "01005" "Wendy Adams" 12005 wendyStarterDeck
+  [ investigator "01001" "Roland Banks" 12001 rolandStarterDeck
+  , investigator "01002" "Daisy Walker" 12002 daisyStarterDeck
+  , investigator "01003" "Skids O'Toole" 12003 skidsStarterDeck
+  , investigator "01004" "Agnes Baker" 12004 agnesStarterDeck
+  , investigator "01005" "Wendy Adams" 12005 wendyStarterDeck
   ]
+ where
+  investigator iid name seed deck = InvestigatorSpec iid name seed deck (basicWeaknessFor seed)
 
 data InvestigatorSpec = InvestigatorSpec
   { isInvestigatorId :: InvestigatorId
   , isInvestigatorName :: Text
   , isSeed :: Int
   , isDeckSlots :: Map CardCode Int
+  , isBasicWeakness :: CardCode
   }
 
-starterDeck :: InvestigatorId -> Text -> Map CardCode Int -> Decklist.ArkhamDBDecklist
-starterDeck investigatorId investigatorName slots =
+starterDeck :: InvestigatorSpec -> Decklist.ArkhamDBDecklist
+starterDeck InvestigatorSpec {..} =
   Decklist.ArkhamDBDecklist
-    { Decklist.slots = slots
+    { Decklist.slots = Map.insertWith (+) isBasicWeakness 1 isDeckSlots
     , Decklist.sideSlots = mempty
-    , Decklist.investigator_code = investigatorId
-    , Decklist.investigator_name = investigatorName
+    , Decklist.investigator_code = isInvestigatorId
+    , Decklist.investigator_name = isInvestigatorName
     , Decklist.meta = Nothing
     , Decklist.taboo_id = Nothing
     , Decklist.url = Nothing
-    , Decklist.decklist_id = Just $ "core-starter-" <> unCardCode (unInvestigatorId investigatorId)
-    , Decklist.decklist_name = Just $ investigatorName <> " core starter"
+    , Decklist.decklist_id = Just $ "core-starter-" <> unCardCode (unInvestigatorId isInvestigatorId)
+    , Decklist.decklist_name = Just $ isInvestigatorName <> " core starter"
     }
 
 oneEach :: [CardCode] -> Map CardCode Int
@@ -90,6 +96,12 @@ rogue0 = ["01044", "01045", "01046", "01047", "01048", "01049", "01050", "01051"
 mystic0 = ["01058", "01059", "01060", "01061", "01062", "01063", "01064", "01065", "01066", "01067"]
 survivor0 = ["01072", "01073", "01074", "01075", "01076", "01077", "01078", "01079", "01080", "01081"]
 
+coreBasicWeaknesses :: [CardCode]
+coreBasicWeaknesses = ["01096", "01097", "01098", "01099", "01100", "01101", "01102", "01103"]
+
+basicWeaknessFor :: Int -> CardCode
+basicWeaknessFor seed = fromMaybe "01096" $ coreBasicWeaknesses !!? (seed `mod` length coreBasicWeaknesses)
+
 rolandStarterDeck, daisyStarterDeck, skidsStarterDeck, agnesStarterDeck, wendyStarterDeck :: Map CardCode Int
 rolandStarterDeck = oneEach $ ["01006", "01007"] <> guardian0 <> seeker0 <> neutralCore
 daisyStarterDeck = oneEach $ ["01008", "01009"] <> seeker0 <> mystic0 <> neutralCore
@@ -101,10 +113,28 @@ data CoverageResult = CoverageResult
   { crInvestigator :: InvestigatorSpec
   , crRecords :: [CoverageRecord]
   , crStop :: StopReport
+  , crOutcomes :: Map Text ScenarioOutcome
+  , crReachedDevourerBelowEnd :: Bool
+  , crJsonlBytes :: Integer
   }
 
+data ScenarioOutcome = ScenarioOutcome
+  { soScenario :: Text
+  , soStatus :: Text
+  , soResolution :: Maybe Value
+  }
+
+instance ToJSON ScenarioOutcome where
+  toJSON ScenarioOutcome {..} =
+    object
+      [ "scenario" .= soScenario
+      , "status" .= soStatus
+      , "resolution" .= soResolution
+      ]
+
 data CoverageRecord = CoverageRecord
-  { recordScenario :: Text
+  { recordScenario :: Value
+  , recordScenarioKey :: Text
   , recordInvestigator :: InvestigatorId
   , recordStepIndex :: Int
   , recordQuestionVersion :: Int
@@ -117,49 +147,42 @@ data CoverageRecord = CoverageRecord
 
 data StopReport = StopReport
   { stopReason :: Text
-  , stopScenario :: Text
-  , stopStepsByScenario :: Map Text Int
+  , stopScenario :: Value
+  , stopScenarioKey :: Text
+  , stopLastQuestion :: Maybe Value
+  , stopCampaignFinished :: Bool
   }
 
 instance ToJSON CoverageRecord where
   toJSON CoverageRecord {..} =
     object
-      [ "scenario" .= recordScenario
-      , "investigator" .= recordInvestigator
-      , "stepIndex" .= recordStepIndex
-      , "questionVersion" .= recordQuestionVersion
-      , "playerId" .= recordPlayerId
-      , "rawQuestion" .= recordRawQuestion
-      , "questionPresentation" .= recordQuestionPresentation
+      [ "choiceNote" .= recordChoiceNote
       , "chosenAnswer" .= recordChosenAnswer
-      , "choiceNote" .= recordChoiceNote
+      , "investigator" .= recordInvestigator
+      , "playerId" .= recordPlayerId
+      , "questionPresentation" .= recordQuestionPresentation
+      , "questionVersion" .= recordQuestionVersion
+      , "rawQuestion" .= recordRawQuestion
+      , "scenario" .= recordScenario
+      , "scenarioKey" .= recordScenarioKey
+      , "stepIndex" .= recordStepIndex
       ]
 
 instance ToJSON StopReport where
   toJSON StopReport {..} =
     object
-      [ "reason" .= stopReason
+      [ "campaignFinished" .= stopCampaignFinished
+      , "lastQuestion" .= stopLastQuestion
+      , "reason" .= stopReason
       , "scenario" .= stopScenario
-      , "stepsByScenario" .= stopStepsByScenario
+      , "scenarioKey" .= stopScenarioKey
       ]
-
-coverageValue :: CoverageResult -> Value
-coverageValue CoverageResult {..} =
-  object
-    [ "schemaVersion" .= (1 :: Int)
-    , "campaign" .= object ["id" .= ("01" :: Text), "name" .= ("Night of the Zealot" :: Text)]
-    , "difficulty" .= ("Easy" :: Text)
-    , "botPolicy" .= ("prefer end/skip/done/progress choices; otherwise first legal choice; minimum legal amounts; exchange 0; continue with server next step" :: Text)
-    , "investigator" .= investigatorMetadata crInvestigator
-    , "deck" .= starterDeck crInvestigator.isInvestigatorId crInvestigator.isInvestigatorName crInvestigator.isDeckSlots
-    , "stop" .= crStop
-    , "records" .= crRecords
-    ]
 
 investigatorMetadata :: InvestigatorSpec -> Value
 investigatorMetadata InvestigatorSpec {..} =
   object
-    [ "id" .= isInvestigatorId
+    [ "basicWeakness" .= isBasicWeakness
+    , "id" .= isInvestigatorId
     , "name" .= isInvestigatorName
     , "seed" .= isSeed
     ]
@@ -167,27 +190,28 @@ investigatorMetadata InvestigatorSpec {..} =
 runInvestigatorCoverage :: FilePath -> InvestigatorSpec -> IO CoverageResult
 runInvestigatorCoverage dir spec' = do
   createDirectoryIfMissing True dir
-  let playerId = PlayerId $ UUID.fromWords 0 0 0 (fromIntegral spec'.isSeed)
-      game0 = newCampaign (CampaignId "01") Nothing spec'.isSeed 1 Easy False
-  gameRef <- newIORef game0
-  queueRef <- newQueue []
-  genRef <- newIORef $ mkStdGen spec'.isSeed
-  let app = GameApp gameRef queueRef genRef (pure . const ()) Nothing
-      drain = drainMessages app
-  runGameApp app $ do
-    Game.addPlayer playerId
-  drain
-  result <- botLoop app spec' playerId 0 mempty []
-  let fileName = T.unpack (unCardCode $ unInvestigatorId spec'.isInvestigatorId) <> ".json"
-  LBS.writeFile (dir </> fileName) (encode $ coverageValue result)
-  pure result
-
--- Keep each drain bounded so an engine loop reports as a stop instead of hanging
--- the nightly/manual coverage job indefinitely.
-drainMessages :: GameApp -> IO ()
-drainMessages app = do
-  result <- Timeout.timeout (30 * 1000 * 1000) $ runGameApp app (runMessages "notz-coverage" Nothing)
-  when (isNothing result) $ expectationFailure "message processing timed out after 30 seconds"
+  result <- doRun `catchAny` \err -> pure $ emptyCoverageResult spec' ("exception before run: " <> T.pack (show err))
+  bytes <- writeRecords dir result
+  pure result {crJsonlBytes = bytes}
+ where
+  doRun = do
+    let playerId = PlayerId $ UUID.fromWords 0 0 0 (fromIntegral spec'.isSeed)
+        game0 = newCampaign (CampaignId "01") Nothing spec'.isSeed 1 Easy False
+    gameRef <- newIORef game0
+    queueRef <- newQueue []
+    genRef <- newIORef $ mkStdGen spec'.isSeed
+    let app = GameApp gameRef queueRef genRef (pure . const ()) Nothing
+    setupResult <- tryAny do
+      runGameApp app $ Game.addPlayer playerId
+      drainMessages app
+    case setupResult of
+      Left err -> do
+        game <- readIORef app.appGame
+        finishWith spec' game [] ("setup failed: " <> T.pack (show err)) Nothing
+      Right (Left err) -> do
+        game <- readIORef app.appGame
+        finishWith spec' game [] ("setup failed: " <> err) Nothing
+      Right (Right ()) -> botLoop app spec' playerId 0 mempty [] Nothing
 
 botLoop
   :: GameApp
@@ -196,138 +220,178 @@ botLoop
   -> Int
   -> Map Text Int
   -> [CoverageRecord]
+  -> Maybe Value
   -> IO CoverageResult
-botLoop app spec' playerId step seen records
-  | step >= maxSteps = finish "step cap reached"
+botLoop app spec' playerId step seen records lastQuestion
+  | step >= maxSteps = do
+      game <- readIORef app.appGame
+      finishWith spec' game (reverse records) "step cap reached" lastQuestion
   | otherwise = do
       game <- readIORef app.appGame
+      let (scenarioKey, scenarioValue) = scenarioLabel game
       case Map.lookup playerId game.gameQuestion of
-        Nothing -> finish "no pending question for investigator"
+        Nothing -> finishWith spec' game (reverse records) (noQuestionReason game) lastQuestion
         Just question -> do
-          let scenario = scenarioLabel game
-              qVersion = game.gameScenarioSteps
+          let qVersion = game.gameScenarioSteps
               presentation = QuestionPresentation.questionPresentation qVersion question
-              rawQuestion = toJSON question
-              seenKey = scenario <> ":" <> tshow qVersion <> ":" <> T.pack (show rawQuestion)
+              presentationValue = canonicalValue $ toJSON presentation
+              rawQuestion = canonicalValue $ toJSON question
+              lastQuestion' = Just $ smallQuestionSummary scenarioKey scenarioValue qVersion presentationValue rawQuestion
+              seenKey = scenarioKey <> ":" <> compactText rawQuestion <> ":" <> compactText (withoutQuestionVersion presentationValue)
               repeatCount = Map.findWithDefault 0 seenKey seen
-              selected = selectAnswer spec' playerId game question repeatCount
-              record =
-                CoverageRecord
-                  { recordScenario = scenario
-                  , recordInvestigator = spec'.isInvestigatorId
-                  , recordStepIndex = step
-                  , recordQuestionVersion = qVersion
-                  , recordPlayerId = playerId
-                  , recordRawQuestion = rawQuestion
-                  , recordQuestionPresentation = toJSON presentation
-                  , recordChosenAnswer = selected.answerJson
-                  , recordChoiceNote = selected.note
-                  }
-          applySelectedAnswer app playerId game selected
-          botLoop app spec' playerId (step + 1) (Map.insert seenKey (repeatCount + 1) seen) (record : records)
+          case selectAnswer spec' playerId game question presentationValue repeatCount of
+            Left reason -> finishWith spec' game (reverse records) reason lastQuestion'
+            Right selected -> do
+              let answerJson = canonicalValue $ toJSON selected.answerValue
+              case assertAnswerRoundTrip selected.answerValue answerJson of
+                Left reason -> finishWith spec' game (reverse records) reason lastQuestion'
+                Right () -> do
+                  let record =
+                        CoverageRecord
+                          { recordScenario = scenarioValue
+                          , recordScenarioKey = scenarioKey
+                          , recordInvestigator = spec'.isInvestigatorId
+                          , recordStepIndex = step
+                          , recordQuestionVersion = qVersion
+                          , recordPlayerId = playerId
+                          , recordRawQuestion = rawQuestion
+                          , recordQuestionPresentation = presentationValue
+                          , recordChosenAnswer = answerJson
+                          , recordChoiceNote = selected.note
+                          }
+                      records' = record : records
+                  applySelectedAnswer app playerId game selected >>= \case
+                    Left reason -> finishWith spec' game (reverse records') reason lastQuestion'
+                    Right () -> botLoop app spec' playerId (step + 1) (Map.insert seenKey (repeatCount + 1) seen) records' lastQuestion'
  where
   maxSteps = 2500
-  finish reason = do
-    game <- readIORef app.appGame
-    pure
-      CoverageResult
-        { crInvestigator = spec'
-        , crRecords = reverse records
-        , crStop = StopReport reason (scenarioLabel game) (stepsByScenario $ reverse records)
-        }
 
-stepsByScenario :: [CoverageRecord] -> Map Text Int
-stepsByScenario = foldl' (\m r -> Map.insertWith (+) r.recordScenario 1 m) mempty
+smallQuestionSummary :: Text -> Value -> Int -> Value -> Value -> Value
+smallQuestionSummary scenarioKey scenarioValue questionVersion presentation rawQuestion =
+  object
+    [ "questionKind" .= questionKind presentation
+    , "questionVersion" .= questionVersion
+    , "rawQuestionTag" .= rawQuestionTag rawQuestion
+    , "scenario" .= scenarioValue
+    , "scenarioKey" .= scenarioKey
+    ]
+
+noQuestionReason :: Game -> Text
+noQuestionReason game
+  | campaignFinished game = "campaign finished"
+  | otherwise = "stuck: no pending question for investigator"
+
+finishWith :: InvestigatorSpec -> Game -> [CoverageRecord] -> Text -> Maybe Value -> IO CoverageResult
+finishWith spec' game records reason lastQuestion = do
+  let outcomes = scenarioOutcomes game
+      reachedEnd = Map.member "01142" outcomes
+      (_, scenarioValue) = scenarioLabel game
+      (scenarioKey, _) = scenarioLabel game
+  pure
+    CoverageResult
+      { crInvestigator = spec'
+      , crRecords = records
+      , crStop = StopReport reason scenarioValue scenarioKey lastQuestion (campaignFinished game)
+      , crOutcomes = outcomes
+      , crReachedDevourerBelowEnd = reachedEnd
+      , crJsonlBytes = 0
+      }
+
+emptyCoverageResult :: InvestigatorSpec -> Text -> CoverageResult
+emptyCoverageResult spec' reason =
+  CoverageResult
+    { crInvestigator = spec'
+    , crRecords = []
+    , crStop = StopReport reason (object ["kind" .= ("not-started" :: Text)]) "not-started" Nothing False
+    , crOutcomes = mempty
+    , crReachedDevourerBelowEnd = False
+    , crJsonlBytes = 0
+    }
 
 data SelectedAnswer = SelectedAnswer
   { answerValue :: Answer
-  , answerJson :: Value
   , answerMessages :: Maybe [Message]
   , note :: Text
   }
 
-applySelectedAnswer :: GameApp -> PlayerId -> Game -> SelectedAnswer -> IO ()
+applySelectedAnswer :: GameApp -> PlayerId -> Game -> SelectedAnswer -> IO (Either Text ())
 applySelectedAnswer app defaultPlayer game SelectedAnswer {..} = do
-  messages <- case answerMessages of
-    Just msgs -> pure msgs
-    Nothing -> do
-      let answerPid = fromMaybe defaultPlayer (answerPlayer answerValue)
-      handleAnswerPure game answerPid answerValue >>= \case
-        Unhandled reason -> expectationFailure ("bot answer was not handled: " <> T.unpack reason) >> pure []
-        Handled msgs -> pure msgs
-  let answerPid = fromMaybe defaultPlayer (answerPlayer answerValue)
-      activePid = game.gameActivePlayerId
-      bracketed =
-        [SetActivePlayer answerPid | activePid /= answerPid]
-          <> messages
-          <> [SetActivePlayer activePid | activePid /= answerPid]
-  runGameApp app $ pushAll (ClearUI : bracketed)
-  drainMessages app
+  result <- tryAny do
+    messages <- case answerMessages of
+      Just msgs -> pure msgs
+      Nothing -> do
+        let answerPid = fromMaybe defaultPlayer (answerPlayer answerValue)
+        handleAnswerPure game answerPid answerValue >>= \case
+          Unhandled reason -> Exception.throwIO $ userError $ T.unpack reason
+          Handled msgs -> pure msgs
+    let answerPid = fromMaybe defaultPlayer (answerPlayer answerValue)
+        activePid = game.gameActivePlayerId
+        bracketed =
+          [SetActivePlayer answerPid | activePid /= answerPid]
+            <> messages
+            <> [SetActivePlayer activePid | activePid /= answerPid]
+    runGameApp app $ pushAll (ClearUI : bracketed)
+    drainMessages app
+  pure case result of
+    Left err -> Left $ "answer failed: " <> T.pack (show err)
+    Right (Left err) -> Left err
+    Right (Right ()) -> Right ()
 
-selectAnswer :: InvestigatorSpec -> PlayerId -> Game -> Question Message -> Int -> SelectedAnswer
-selectAnswer spec' playerId game question repeatCount = case stripQuestion question of
-  ChooseDeck -> deckListAnswer "starter deck"
-  ChooseUpgradeDeck -> deckListAnswer "continue without upgrading"
-  ChooseJoinDeck {} -> deckListAnswer "join with starter deck"
-  PickScenarioSettings -> answerOnly (StandaloneSettingsAnswer []) standaloneSettingsJson "empty standalone settings"
-  PickCampaignSettings -> answerOnly (CampaignSettingsAnswer emptyCampaignSettings) campaignSettingsJson "empty campaign settings"
-  PickCampaignSpecific key value -> answerOnly (CampaignSpecificAnswer key value) (taggedContents "CampaignSpecificAnswer" ["key" .= key, "value" .= value]) "echo campaign-specific value"
-  PickScenarioSpecific key value -> answerOnly (ScenarioSpecificAnswer key value) (taggedContents "ScenarioSpecificAnswer" ["key" .= key, "value" .= value]) "echo scenario-specific value"
+-- Keep each drain bounded so an engine loop records a stop instead of hanging
+-- the nightly/manual coverage job indefinitely.
+drainMessages :: GameApp -> IO (Either Text ())
+drainMessages app = do
+  result <- tryAny $ Timeout.timeout (30 * 1000 * 1000) $ runGameApp app (runMessages "notz-coverage" Nothing)
+  pure case result of
+    Left err -> Left $ "message processing threw: " <> T.pack (show err)
+    Right Nothing -> Left "message processing timed out after 30 seconds"
+    Right (Just ()) -> Right ()
+
+selectAnswer :: InvestigatorSpec -> PlayerId -> Game -> Question Message -> Value -> Int -> Either Text SelectedAnswer
+selectAnswer spec' playerId game question presentation repeatCount = case stripQuestion question of
+  ChooseDeck -> Right $ deckListAnswer "starter deck"
+  ChooseUpgradeDeck -> Right $ deckListAnswer "continue without upgrading"
+  ChooseJoinDeck {} -> Right $ deckListAnswer "join with starter deck"
+  PickScenarioSettings -> Right $ answerOnly (StandaloneSettingsAnswer []) "empty standalone settings"
+  PickCampaignSettings -> Right $ answerOnly (CampaignSettingsAnswer emptyCampaignSettings) "empty campaign settings"
+  PickCampaignSpecific key value -> Right $ answerOnly (CampaignSpecificAnswer key value) "echo campaign-specific value"
+  PickScenarioSpecific key value -> Right $ answerOnly (ScenarioSpecificAnswer key value) "echo scenario-specific value"
   ChooseAmounts _ target choices _ ->
-    let amounts = minimumAmounts target choices
-     in answerOnly
-          (AmountsAnswer $ AmountsResponse amounts (Just game.gameScenarioSteps) (Just playerId))
-          (taggedContents "AmountsAnswer" ["amounts" .= amounts, "questionVersion" .= game.gameScenarioSteps, "playerId" .= playerId])
-          "minimum legal amounts"
+    Right $ answerOnly (AmountsAnswer $ AmountsResponse (minimumAmounts target choices) (Just game.gameScenarioSteps) (Just playerId)) "minimum legal amounts"
   ChoosePaymentAmounts _ target choices ->
-    let amounts = minimumPaymentAmounts target choices
-     in answerOnly
-          (PaymentAmountsAnswer $ PaymentAmountsResponse amounts (Just game.gameScenarioSteps) (Just playerId))
-          (taggedContents "PaymentAmountsAnswer" ["amounts" .= amounts, "questionVersion" .= game.gameScenarioSteps, "playerId" .= playerId])
-          "minimum legal payment amounts"
+    Right $ answerOnly (PaymentAmountsAnswer $ PaymentAmountsResponse (minimumPaymentAmounts target choices) (Just game.gameScenarioSteps) (Just playerId)) "minimum legal payment amounts"
   ChooseExchangeAmounts source iid1 _ iid2 _ token ->
-    answerOnly
-      (ExchangeAmountsAnswer source iid1 iid2 token 0)
-      ( object
-          [ "tag" .= ("ExchangeAmountsAnswer" :: Text)
-          , "source" .= source
-          , "fromInvestigator" .= iid1
-          , "toInvestigator" .= iid2
-          , "token" .= token
-          , "amount" .= (0 :: Int)
-          ]
-      )
-      "exchange 0"
+    Right $ answerOnly (ExchangeAmountsAnswer source iid1 iid2 token 0) "exchange 0"
   ContinueCampaign ->
-    let next = nextCampaignAnswer game
-     in answerOnly
-          (CampaignStepAnswer next)
-          (object ["tag" .= ("CampaignStepAnswer" :: Text), "contents" .= next])
-          "continue with current server campaign step"
-  PickDestiny drawings ->
-    answerOnly
-      (PickDestinyAnswer drawings)
-      (object ["tag" .= ("PickDestinyAnswer" :: Text), "contents" .= drawings])
-      "keep destiny drawing order"
-  q -> choiceAnswer q
+    Right $ answerOnly (CampaignStepAnswer $ nextCampaignAnswer game) "continue with current server campaign step"
+  PickDestiny drawings -> Right $ answerOnly (PickDestinyAnswer drawings) "keep destiny drawing order"
+  _ -> choiceAnswer
  where
-  deck = starterDeck spec'.isInvestigatorId spec'.isInvestigatorName spec'.isDeckSlots
+  deck = starterDeck spec'
   deckListAnswer note' =
     SelectedAnswer
       { answerValue = DeckListAnswer deck playerId
-      , answerJson = object ["tag" .= ("DeckListAnswer" :: Text), "deckList" .= deck, "playerId" .= playerId]
       , answerMessages = Just $ deckChosen game playerId deck
       , note = note'
       }
-  answerOnly answer json note' = SelectedAnswer answer json Nothing note'
-  choiceAnswer q =
-    let choice = chooseIndex q repeatCount
-     in SelectedAnswer
-          { answerValue = Answer $ QuestionResponse choice (Just playerId) (Just game.gameScenarioSteps)
-          , answerJson = taggedContents "Answer" ["choice" .= choice, "playerId" .= playerId, "questionVersion" .= game.gameScenarioSteps]
-          , answerMessages = Nothing
-          , note = "choice " <> tshow choice
-          }
+  answerOnly answer note' = SelectedAnswer answer Nothing note'
+  choiceAnswer = case selectableIndexes presentation of
+    [] -> Left $ "stuck: no selectable choices for " <> fromMaybe "unknown" (questionKind presentation)
+    indexes@(firstChoice : _) ->
+      let choice = fromMaybe firstChoice $ indexes !!? (repeatCount `mod` length indexes)
+       in Right
+            SelectedAnswer
+              { answerValue = Answer $ QuestionResponse choice (Just playerId) (Just game.gameScenarioSteps)
+              , answerMessages = Nothing
+              , note = "selectable choice " <> tshow choice
+              }
+
+assertAnswerRoundTrip :: Answer -> Value -> Either Text ()
+assertAnswerRoundTrip answer answerJson = case fromJSON @Answer answerJson of
+  Error err -> Left $ "chosenAnswer did not parse as server Answer: " <> T.pack err
+  Success decoded
+    | show decoded == show answer -> Right ()
+    | otherwise -> Left "chosenAnswer parsed to a different Answer than the bot applied"
 
 stripQuestion :: Question msg -> Question msg
 stripQuestion = \case
@@ -336,68 +400,42 @@ stripQuestion = \case
   QuestionWithSource _ _ q -> stripQuestion q
   q -> q
 
-chooseIndex :: Question Message -> Int -> Int
-chooseIndex q repeatCount = case q of
-  QuestionLabel _ _ q' -> chooseIndex q' repeatCount
-  PayCostQuestion _ q' -> chooseIndex q' repeatCount
-  QuestionWithSource _ _ q' -> chooseIndex q' repeatCount
-  ChooseOne choices -> preferredChoice choices repeatCount False
-  PlayerWindowChooseOne choices -> preferredChoice choices repeatCount True
-  WindowChooseOne choices -> preferredChoice choices repeatCount True
-  ChooseOneFromEach groups -> preferredChoice (concat groups) repeatCount False
-  ChooseN _ choices -> preferredChoice choices repeatCount False
-  ChooseSome choices -> preferredChoice choices repeatCount True
-  ChooseSome1 _ choices -> preferredChoice choices repeatCount True
-  ChooseUpToN _ choices -> preferredChoice choices repeatCount True
-  ChooseOneAtATime choices -> preferredChoice choices repeatCount False
-  ChooseOneAtATimeWithAuto _ choices -> if length choices > 1 then 0 else preferredChoice choices repeatCount False
-  Read _ readChoices _ -> case readChoices of
-    BasicReadChoices choices -> preferredChoice choices repeatCount False
-    BasicReadChoicesN _ choices -> preferredChoice choices repeatCount False
-    BasicReadChoicesUpToN _ choices -> preferredChoice choices repeatCount True
-    LeadInvestigatorMustDecide choices -> preferredChoice choices repeatCount False
-  ChooseOneWizard _ choices _ _ -> min repeatCount (max 0 $ length choices - 1)
-  PickSupplies _ _ choices _ -> preferredChoice choices repeatCount False
-  DropDown options -> if null options then 0 else repeatCount `mod` length options
-  _ -> 0
+selectableIndexes :: Value -> [Int]
+selectableIndexes = \case
+  Object o -> case KeyMap.lookup "choices" o of
+    Just (Array choices) ->
+      [ i
+      | (i, Object choice) <- zip [0 ..] (toList choices)
+      , KeyMap.lookup "selectable" choice == Just (Bool True)
+      ]
+    _ -> []
+  _ -> []
 
-preferredChoice :: [UI Message] -> Int -> Bool -> Int
-preferredChoice choices repeatCount allowDone = case ranked of
-  [] -> 0
-  xs -> fromMaybe 0 $ xs !!? (repeatCount `mod` length xs)
- where
-  indexed = zip [0 ..] choices
-  ranked =
-    map fst (filter (isEndTurn . snd) indexed)
-      <> map fst (filter (isApplyResults . snd) indexed)
-      <> [i | (i, c) <- indexed, allowDone, isDoneLike c]
-      <> map fst (filter (isStartSkillTest . snd) indexed)
-      <> map fst (filter (isProgressLabel . snd) indexed)
-      <> [i | (i, c) <- indexed, not (isInvalid c), not (allowDone && isDoneLike c)]
-  isInvalid = \case
-    InvalidLabel {} -> True
-    Info {} -> True
-    _ -> False
-  isEndTurn = \case
-    EndTurnButton {} -> True
-    _ -> False
-  isApplyResults = \case
-    SkillTestApplyResultsButton -> True
-    _ -> False
-  isStartSkillTest = \case
-    StartSkillTestButton {} -> True
-    _ -> False
-  isDoneLike = \case
-    Done {} -> True
-    SkipTriggersButton {} -> True
-    Label label _ -> "done" `T.isInfixOf` T.toLower label || "skip" `T.isInfixOf` T.toLower label || "no" == T.toLower label
-    _ -> False
-  isProgressLabel = \case
-    Label label _ ->
-      let lower = T.toLower label
-       in any (`T.isInfixOf` lower) ["continue", "resign", "advance", "resolution", "proceed"]
-    ScenarioLabel label _ _ -> "continue" `T.isInfixOf` T.toLower label
-    _ -> False
+questionKind :: Value -> Maybe Text
+questionKind = \case
+  Object o -> case KeyMap.lookup "questionKind" o of
+    Just (String kind) -> Just kind
+    _ -> Nothing
+  _ -> Nothing
+
+rawQuestionTag :: Value -> Maybe Text
+rawQuestionTag = \case
+  Object o -> case KeyMap.lookup "tag" o of
+    Just (String tag) -> Just tag
+    _ -> Nothing
+  _ -> Nothing
+
+choiceKinds :: Value -> [Text]
+choiceKinds = \case
+  Object o -> case KeyMap.lookup "choices" o of
+    Just (Array choices) -> nub $ sort [kind | Object choice <- toList choices, Just (String kind) <- [KeyMap.lookup "kind" choice]]
+    _ -> []
+  _ -> []
+
+withoutQuestionVersion :: Value -> Value
+withoutQuestionVersion = \case
+  Object o -> Object $ KeyMap.delete "questionVersion" o
+  other -> other
 
 minimumAmounts :: AmountTarget -> [AmountChoice] -> Map UUID.UUID Int
 minimumAmounts target choices = allocateTo (targetAmount target choices) choices
@@ -444,22 +482,6 @@ allocatePaymentTo target choices = Map.fromList $ go (max 0 $ target - sum (map 
 emptyCampaignSettings :: CampaignSettings
 emptyCampaignSettings = CampaignSettings [] mempty mempty []
 
-standaloneSettingsJson :: Value
-standaloneSettingsJson = object ["tag" .= ("StandaloneSettingsAnswer" :: Text), "contents" .= ([] :: [Value])]
-
-campaignSettingsJson :: Value
-campaignSettingsJson =
-  taggedContents
-    "CampaignSettingsAnswer"
-    [ "keys" .= ([] :: [Value])
-    , "counts" .= object ([] :: [Pair])
-    , "sets" .= object ([] :: [Pair])
-    , "options" .= ([] :: [Value])
-    ]
-
-taggedContents :: Text -> [Pair] -> Value
-taggedContents tag fields = object ["tag" .= tag, "contents" .= object fields]
-
 nextCampaignAnswer :: Game -> CS.CampaignStep
 nextCampaignAnswer game =
   fromMaybe CS.PrologueStep do
@@ -468,27 +490,144 @@ nextCampaignAnswer game =
  where
   scenarioStep scenario = (toAttrs scenario).step
 
-scenarioLabel :: Game -> Text
+scenarioLabel :: Game -> (Text, Value)
 scenarioLabel game = case modeScenario game.gameMode of
-  Just scenario -> unCardCode $ unScenarioId $ scenarioId $ toAttrs scenario
+  Just scenario ->
+    let code = unCardCode $ unScenarioId $ scenarioId $ toAttrs scenario
+     in (code, object ["code" .= code, "kind" .= ("scenario" :: Text)])
   Nothing -> case modeCampaign game.gameMode of
-    Just campaign -> "campaign:" <> tshow (campaignStep $ toAttrs campaign)
-    Nothing -> "no-scenario"
+    Just campaign -> campaignStepLabel $ campaignStep $ toAttrs campaign
+    Nothing -> ("no-scenario", object ["kind" .= ("no-scenario" :: Text)])
+
+campaignStepLabel :: CS.CampaignStep -> (Text, Value)
+campaignStepLabel step =
+  ( key
+  , object
+      [ "kind" .= ("campaignStep" :: Text)
+      , "step" .= canonicalValue (toJSON step)
+      ]
+  )
+ where
+  key = case step of
+    CS.PrologueStep -> "prologue"
+    CS.ContinueCampaignStep continuation -> "continue:" <> campaignStepKey continuation.nextStep
+    _ -> "campaign:" <> campaignStepKey step
+
+campaignStepKey :: CS.CampaignStep -> Text
+campaignStepKey = \case
+  CS.ScenarioStep sid -> unCardCode $ unScenarioId sid
+  CS.ScenarioStepWithOptions sid _ -> unCardCode $ unScenarioId sid
+  CS.StandaloneScenarioStep sid _ -> unCardCode $ unScenarioId sid
+  CS.StandaloneScenarioStepWithOptions sid _ _ -> unCardCode $ unScenarioId sid
+  CS.PrologueStep -> "prologue"
+  other -> compactText $ canonicalValue $ toJSON other
+
+scenarioOutcomes :: Game -> Map Text ScenarioOutcome
+scenarioOutcomes game = case modeCampaign game.gameMode of
+  Nothing -> mempty
+  Just campaign ->
+    let resolutions = campaignResolutions $ toAttrs campaign
+     in Map.fromList
+          [ (code, scenarioOutcome code (Map.lookup (ScenarioId $ CardCode code) resolutions))
+          | code <- ["01104", "01120", "01142"]
+          ]
+ where
+  scenarioOutcome code = \case
+    Nothing -> ScenarioOutcome code "not-recorded" Nothing
+    Just resolution -> ScenarioOutcome code "recorded" (Just $ canonicalValue $ toJSON resolution)
+
+campaignFinished :: Game -> Bool
+campaignFinished game =
+  game.gameGameState == IsOver
+    || ( isNothing (modeScenario game.gameMode)
+          && maybe False (isJust . soResolution) (Map.lookup "01142" $ scenarioOutcomes game)
+       )
+
+writeRecords :: FilePath -> CoverageResult -> IO Integer
+writeRecords dir CoverageResult {..} = do
+  createDirectoryIfMissing True dir
+  let fileName = T.unpack (unCardCode $ unInvestigatorId crInvestigator.isInvestigatorId) <> ".jsonl"
+      bytes = BL8.unlines $ map (encodeCanonical . toJSON) crRecords
+      path = dir </> fileName
+  BL8.writeFile path bytes
+  pure $ fromIntegral $ BL8.length bytes
 
 writeSummary :: FilePath -> [CoverageResult] -> IO ()
 writeSummary dir results = do
   createDirectoryIfMissing True dir
-  LBS.writeFile (dir </> "summary.json") $ encode $ object
-    [ "schemaVersion" .= (1 :: Int)
-    , "campaign" .= ("Night of the Zealot" :: Text)
+  BL8.writeFile (dir </> "summary.json") $ BL8.pack $ prettyCanonical $ summaryValue results
+
+summaryValue :: [CoverageResult] -> Value
+summaryValue results =
+  object
+    [ "artifactName" .= ("night-of-the-zealot-coverage-jsonl" :: Text)
+    , "botPolicy" .= ("first selectable presentation choice; rotate selectable choices on repeated question shape; minimum legal amounts; exchange 0; continue with server-provided step" :: Text)
+    , "campaign" .= object ["id" .= ("01" :: Text), "name" .= ("Night of the Zealot" :: Text)]
+    , "difficulty" .= ("Easy" :: Text)
     , "investigators" .= map resultSummary results
+    , "schemaVersion" .= (1 :: Int)
     ]
  where
   resultSummary CoverageResult {..} =
     object
-      [ "investigator" .= investigatorMetadata crInvestigator
-      , "stop" .= crStop
-      , "steps" .= length crRecords
+      [ "distinctChoiceKinds" .= distinctChoiceKinds crRecords
+      , "distinctQuestionKinds" .= distinctQuestionKinds crRecords
+      , "file" .= (T.unpack (unCardCode $ unInvestigatorId crInvestigator.isInvestigatorId) <> ".jsonl")
+      , "investigator" .= investigatorMetadata crInvestigator
+      , "jsonlBytes" .= crJsonlBytes
+      , "outcomes" .= crOutcomes
+      , "recordCount" .= length crRecords
+      , "reachedEndOf01142" .= crReachedDevourerBelowEnd
       , "stepsByScenario" .= stepsByScenario crRecords
-      , "file" .= (T.unpack (unCardCode $ unInvestigatorId crInvestigator.isInvestigatorId) <> ".json")
+      , "stop" .= crStop
       ]
+
+stepsByScenario :: [CoverageRecord] -> Map Text Int
+stepsByScenario = foldl' (\m r -> Map.insertWith (+) r.recordScenarioKey 1 m) mempty
+
+distinctQuestionKinds :: [CoverageRecord] -> [Text]
+distinctQuestionKinds = nub . sort . mapMaybe (questionKind . recordQuestionPresentation)
+
+distinctChoiceKinds :: [CoverageRecord] -> [Text]
+distinctChoiceKinds = nub . sort . concatMap (choiceKinds . recordQuestionPresentation)
+
+canonicalValue :: Value -> Value
+canonicalValue = \case
+  Object o -> Object $ KeyMap.fromList [(k, canonicalValue v) | (k, v) <- sortOn (Key.toText . fst) (KeyMap.toList o)]
+  Array values -> Array $ fmap canonicalValue values
+  other -> other
+
+encodeCanonical :: Value -> BL8.ByteString
+encodeCanonical = encode . canonicalValue
+
+compactText :: Value -> Text
+compactText = decodeUtf8 . BL8.toStrict . encodeCanonical
+
+prettyCanonical :: Value -> String
+prettyCanonical value = pretty 0 (canonicalValue value) <> "\n"
+ where
+  pretty indent = \case
+    Object o
+      | KeyMap.null o -> "{}"
+      | otherwise ->
+          "{\n"
+            <> intercalate
+              ",\n"
+              [ spaces (indent + 2) <> showJsonString (Key.toText key) <> ": " <> pretty (indent + 2) value'
+              | (key, value') <- KeyMap.toList o
+              ]
+            <> "\n"
+            <> spaces indent
+            <> "}"
+    Array values
+      | null values -> "[]"
+      | otherwise ->
+          "[\n"
+            <> intercalate ",\n" [spaces (indent + 2) <> pretty (indent + 2) value' | value' <- toList values]
+            <> "\n"
+            <> spaces indent
+            <> "]"
+    scalar -> BL8.unpack $ encode scalar
+  spaces n = replicate n ' '
+  showJsonString = BL8.unpack . encode . String
+
