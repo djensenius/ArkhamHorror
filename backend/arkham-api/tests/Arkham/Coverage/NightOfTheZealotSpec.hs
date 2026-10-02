@@ -24,6 +24,7 @@ import Arkham.Question.Presentation qualified as QuestionPresentation
 import Arkham.Scenario.Types (scenarioId)
 import Control.Exception qualified as Exception
 import Control.Monad.Random (mkStdGen)
+import Data.Aeson (Result (..))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
