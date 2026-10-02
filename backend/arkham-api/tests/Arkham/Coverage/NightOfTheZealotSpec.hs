@@ -687,11 +687,7 @@ scenarioOutcomes game = case modeCampaign game.gameMode of
     Just resolution -> ScenarioOutcome code "recorded" (Just $ canonicalValue $ toJSON resolution)
 
 campaignFinished :: Game -> Bool
-campaignFinished game =
-  game.gameGameState == IsOver
-    || ( isNothing (modeScenario game.gameMode)
-          && maybe False (isJust . soResolution) (Map.lookup "01142" $ scenarioOutcomes game)
-       )
+campaignFinished game = game.gameGameState == IsOver
 
 writeRecords :: FilePath -> CoverageResult -> IO Integer
 writeRecords dir CoverageResult {..} = do
