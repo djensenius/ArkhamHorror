@@ -8,11 +8,6 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    shell: bash
-    working-directory: ./backend
-
 jobs:
   generate:
     name: Generate deterministic prompt coverage
@@ -28,7 +23,12 @@ jobs:
         with:
           ghc-version: "9.14.1"
           stack-version: "3.7.1"
-      - name: Cache
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+          install_args: "node python uv"
+      - name: Cache Stack
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         env:
           cache-name: cache-stack
@@ -41,14 +41,13 @@ jobs:
             ${{ runner.os }}-build-
       - name: Install pcre
         run: sudo apt-get install -y libpcre3 libpcre3-dev
-      - name: Generate recordings
+      - name: Generate recordings and verify summary drift
         env:
           ARKHAM_NOTZ_COVERAGE_DIR: ${{ github.workspace }}/contracts/coverage/night-of-the-zealot/generated
-        run: |
-          stack test arkham-api:spec --system-ghc --test-arguments '--match "Night of the Zealot coverage generator"'
-      - name: Upload coverage recordings
+        run: mise run coverage:notz
+      - name: Upload coverage JSONL recordings
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: night-of-the-zealot-coverage
-          path: contracts/coverage/night-of-the-zealot/generated
+          name: night-of-the-zealot-coverage-jsonl
+          path: contracts/coverage/night-of-the-zealot/generated/*.jsonl
           if-no-files-found: error
