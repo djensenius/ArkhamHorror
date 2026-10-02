@@ -15,27 +15,6 @@ run = "/bin/sh scripts/test-replay-harness.sh --run"
 description = "Run focused replay unit and actual-executable fixture tests"
 run = "/bin/sh scripts/test-replay-harness.sh"
 
-[tasks."coverage:notz"]
-description = "Generate deterministic Night of the Zealot prompt coverage JSONL and verify the committed summary"
-run = '''
-set -eu
-output_dir="${ARKHAM_NOTZ_COVERAGE_DIR:-$PWD/contracts/coverage/night-of-the-zealot/generated}"
-case "${output_dir}" in
-  ""|"/"|"${HOME}")
-    printf 'refusing unsafe ARKHAM_NOTZ_COVERAGE_DIR: %s\n' "${output_dir}" >&2
-    exit 1
-    ;;
-esac
-mkdir -p "${output_dir}"
-rm -f "${output_dir}"/*.jsonl "${output_dir}"/summary.json
-(
-  cd backend
-  ARKHAM_NOTZ_COVERAGE_DIR="${output_dir}" \
-    stack test arkham-api:spec --system-ghc --test-arguments '--match "Night of the Zealot coverage generator"'
-)
-diff -u contracts/coverage/night-of-the-zealot/summary.json "${output_dir}/summary.json"
-'''
-
 [tasks."questions:presentation-gaps"]
 description = "Cluster authoritative question choices that lack semantic presentation descriptors"
 raw = true
