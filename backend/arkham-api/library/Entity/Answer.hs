@@ -328,13 +328,14 @@ instance ToJSON StandaloneSetting where
     SetOption key content -> object ["type" .= ("ToggleOption" :: Text), "key" .= key, "content" .= content]
     ChooseNum key content -> object ["type" .= ("ChooseNum" :: Text), "key" .= key, "content" .= content]
     NoChooseRecord -> object ["type" .= ("ChooseRecord" :: Text), "selected" .= (Nothing :: Maybe CampaignLogKey)]
-    StandaloneSetPartnerStatus damage horror status crash cardCode ->
-      object
-        [ "type" .= (if crash then "SetPartnerKilled" else "SetPartnerDetails" :: Text)
-        , "content" .= cardCode
-        , "value" .= cardCode
-        , "details" .= object ["damage" .= damage, "horror" .= horror, "status" .= status]
-        ]
+    StandaloneSetPartnerStatus damage horror status crash cardCode
+      | crash -> object ["type" .= ("SetPartnerKilled" :: Text), "content" .= cardCode]
+      | otherwise ->
+          object
+            [ "type" .= ("SetPartnerDetails" :: Text)
+            , "content" .= object ["damage" .= damage, "horror" .= horror, "status" .= status]
+            , "value" .= cardCode
+            ]
     SettingsGroup settings -> object ["type" .= ("Group" :: Text), "content" .= settings]
 
 instance ToJSON SetRecordedEntry where
@@ -351,7 +352,7 @@ instance FromJSON SetRecordedEntry where
 
 recordableTypeJSON :: SomeRecordableType -> Value
 recordableTypeJSON = \case
-  SomeRecordableType recordableType -> toJSON recordableType
+  SomeRecordableType rType -> toJSON rType
 
 newtype CrossedOutResults = CrossedOutResults [SetRecordedEntry]
   deriving stock Show
