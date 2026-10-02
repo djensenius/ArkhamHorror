@@ -559,12 +559,7 @@ the repeated `Answer` submissions for that question. `chooseN` is exactly
 `n..n`; `chooseOneAtATimeWithAuto` is `0..n` because the auto choice resolves
 all remaining choices with zero ordinary picks; and `chooseOneFromEach` is
 `groupCount..groupCount` with each descriptor carrying `groupIndex` so clients
-can enforce one selection per group. Revision `0.1.48` refreshes governed locale-catalog/capabilities fixture
-provenance after adding the Night of the Zealot coverage generator. It does not
-change the `questions.semantic-presentation.v2` JSON shape or answer envelope
-semantics.
-
-The answer
+can enforce one selection per group. The answer
 envelope table is: ordinary choice prompts (`chooseOne`,
 `playerWindowChooseOne`, `windowChooseOne`, `chooseN`, `chooseSome`,
 `chooseSome1`, `chooseUpToN`, `chooseOneAtATime`,
