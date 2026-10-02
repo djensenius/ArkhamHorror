@@ -18,6 +18,7 @@ import Arkham.Game.State (GameState (IsOver))
 import Arkham.Game.Utils (modeCampaign, modeScenario)
 import Arkham.Id (CampaignId (..), InvestigatorId (..), PlayerId (..), ScenarioId (..), unInvestigatorId, unScenarioId)
 import Arkham.Message (Message (ClearUI, SetActivePlayer))
+import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Prelude
 import Arkham.Question
 import Arkham.Question.Presentation qualified as QuestionPresentation
@@ -46,6 +47,10 @@ spec = describe "Night of the Zealot coverage generator" do
     for_ answerEncodingExamples \(label, answer) ->
       it ("round-trips " <> label <> " through the server Answer parser") do
         assertAnswerRoundTrip answer (answerToJSON answer) `shouldBe` Right ()
+
+  describe "core starter decks" do
+    it "uses legal 30-card ordinary decks plus required cards and one random basic weakness" do
+      traverse_ assertLegalStarterDeck coreInvestigators
 
   outputDir <- runIO $ lookupEnv "ARKHAM_NOTZ_COVERAGE_DIR"
   case outputDir of
@@ -96,6 +101,13 @@ starterDeck InvestigatorSpec {..} =
 oneEach :: [CardCode] -> Map CardCode Int
 oneEach = Map.fromList . map (,1)
 
+addSecondCopies :: [CardCode] -> Map CardCode Int -> Map CardCode Int
+addSecondCopies secondCopies deck = foldl' (\acc cardCode -> Map.insertWith (+) cardCode 1 acc) deck secondCopies
+
+coreStarterDeck :: [CardCode] -> [CardCode] -> [CardCode] -> Map CardCode Int
+coreStarterDeck requiredCards ordinaryCards secondCopies =
+  addSecondCopies secondCopies $ oneEach $ requiredCards <> ordinaryCards
+
 neutralCore :: [CardCode]
 neutralCore = ["01086", "01087", "01088", "01089", "01090", "01091", "01092", "01093"]
 
@@ -113,11 +125,33 @@ basicWeaknessFor :: Int -> CardCode
 basicWeaknessFor seed = fromMaybe "01096" $ coreBasicWeaknesses !!? (seed `mod` length coreBasicWeaknesses)
 
 rolandStarterDeck, daisyStarterDeck, skidsStarterDeck, agnesStarterDeck, wendyStarterDeck :: Map CardCode Int
-rolandStarterDeck = oneEach $ ["01006", "01007"] <> guardian0 <> seeker0 <> neutralCore
-daisyStarterDeck = oneEach $ ["01008", "01009"] <> seeker0 <> mystic0 <> neutralCore
-skidsStarterDeck = oneEach $ ["01010", "01011"] <> rogue0 <> guardian0 <> neutralCore
-agnesStarterDeck = oneEach $ ["01012", "01013"] <> mystic0 <> survivor0 <> neutralCore
-wendyStarterDeck = oneEach $ ["01014", "01015"] <> survivor0 <> rogue0 <> neutralCore
+rolandStarterDeck = coreStarterDeck ["01006", "01007"] (guardian0 <> seeker0 <> neutralCore) ["01017", "01020"]
+daisyStarterDeck = coreStarterDeck ["01008", "01009"] (seeker0 <> mystic0 <> neutralCore) ["01031", "01033"]
+skidsStarterDeck = coreStarterDeck ["01010", "01011"] (rogue0 <> guardian0 <> neutralCore) ["01047", "01048"]
+agnesStarterDeck = coreStarterDeck ["01012", "01013"] (mystic0 <> survivor0 <> neutralCore) ["01059", "01060"]
+wendyStarterDeck = coreStarterDeck ["01014", "01015"] (survivor0 <> rogue0 <> neutralCore) ["01048", "01049"]
+
+requiredStarterCards :: InvestigatorSpec -> (CardCode, CardCode)
+requiredStarterCards InvestigatorSpec {..} = case unInvestigatorId isInvestigatorId of
+  "01001" -> ("01006", "01007")
+  "01002" -> ("01008", "01009")
+  "01003" -> ("01010", "01011")
+  "01004" -> ("01012", "01013")
+  "01005" -> ("01014", "01015")
+  other -> error $ "unknown core starter investigator: " <> T.unpack (unCardCode other)
+
+assertLegalStarterDeck :: InvestigatorSpec -> Expectation
+assertLegalStarterDeck spec'@InvestigatorSpec {..} = do
+  let (signatureCard, personalWeakness) = requiredStarterCards spec'
+      ordinaryCount = sum [n | (cardCode, n) <- Map.toList isDeckSlots, cardCode /= signatureCard, cardCode /= personalWeakness]
+      fullSlots = Decklist.slots $ starterDeck spec'
+      unimplementedCards = filter (`Map.notMember` allPlayerCards) $ Map.keys fullSlots
+  ordinaryCount `shouldBe` 30
+  Map.lookup signatureCard isDeckSlots `shouldBe` Just 1
+  Map.lookup personalWeakness isDeckSlots `shouldBe` Just 1
+  Map.lookup isBasicWeakness fullSlots `shouldBe` Just 1
+  sum (Map.elems fullSlots) `shouldBe` 33
+  unimplementedCards `shouldBe` []
 
 data CoverageResult = CoverageResult
   { crInvestigator :: InvestigatorSpec
