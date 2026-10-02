@@ -96,12 +96,15 @@ replayAmountAllocationValid
   -> Bool
 replayAmountAllocationValid choices target amounts =
   length choices == Map.size bounds
-    && Map.keysSet amounts == Map.keysSet bounds
+    && all (`Map.member` bounds) (Map.keys amounts)
     && all validChoice choices
     && amountTargetSatisfied target (sum $ map (toInteger . snd) $ Map.toList amounts)
  where
   bounds = Map.fromList [(choiceId, (lowerBound, upperBound)) | (choiceId, lowerBound, upperBound) <- choices]
   validChoice (choiceId, lowerBound, upperBound) =
+    -- A malformed prompt whose lower bound exceeds its upper bound is
+    -- intentionally unsatisfiable. Live answer handling reuses the replay rule,
+    -- so such a prompt is rejected rather than accepting corrupting data.
     lowerBound <= upperBound
       && let amount = Map.findWithDefault 0 choiceId amounts
           in amount >= lowerBound && amount <= upperBound

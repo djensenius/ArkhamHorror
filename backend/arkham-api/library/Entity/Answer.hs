@@ -623,15 +623,15 @@ handleAnswerPure game@Game {..} playerId = \case
       Just v | v /= gameScenarioSteps -> unhandled "Stale question"
       _ -> do
         let
-          doResolve prompt choices target
-            | not (replayAmountsValid (arAmounts response) prompt) = unhandled "Illegal amount allocation"
-            | otherwise = do
-                let nameMap = Map.fromList $ map (\(AmountChoice cId lbl _ _) -> (cId, lbl)) choices
-                let lookupChoice (uuid, n) =
-                      (\lbl -> (NamedUUID lbl uuid, n)) <$> Map.lookup uuid nameMap
-                case traverse lookupChoice (Map.toList $ arAmounts response) of
-                  Nothing -> unhandled "Wrong choice id"
-                  Just amounts ->
+          doResolve prompt choices target = do
+            let nameMap = Map.fromList $ map (\(AmountChoice cId lbl _ _) -> (cId, lbl)) choices
+            let lookupChoice (uuid, n) =
+                  (\lbl -> (NamedUUID lbl uuid, n)) <$> Map.lookup uuid nameMap
+            case traverse lookupChoice (Map.toList $ arAmounts response) of
+              Nothing -> unhandled "Wrong choice id"
+              Just amounts
+                | not (replayAmountsValid (arAmounts response) prompt) -> unhandled "Illegal amount allocation"
+                | otherwise ->
                     handled
                       $ ResolveAmounts (playerInvestigator gameEntities playerId) amounts target
                       : reAskOthers game playerId
