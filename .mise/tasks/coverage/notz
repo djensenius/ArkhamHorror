@@ -2,17 +2,20 @@
 #MISE description="Generate deterministic Night of the Zealot prompt coverage JSONL and verify the committed summary"
 set -eu
 output_dir="${ARKHAM_NOTZ_COVERAGE_DIR:-$PWD/contracts/coverage/night-of-the-zealot/generated}"
-case "${output_dir}" in
-  ""|"/"|"${HOME}")
-    printf 'refusing unsafe ARKHAM_NOTZ_COVERAGE_DIR: %s\n' "${output_dir}" >&2
+mkdir -p "${output_dir}"
+canonical_output_dir="$(cd "${output_dir}" && pwd -P)"
+canonical_root="$(cd / && pwd -P)"
+canonical_home="$(cd "${HOME}" && pwd -P)"
+case "${canonical_output_dir}" in
+  "${canonical_root}"|"${canonical_home}")
+    printf 'refusing unsafe ARKHAM_NOTZ_COVERAGE_DIR: %s -> %s\n' "${output_dir}" "${canonical_output_dir}" >&2
     exit 1
     ;;
 esac
-mkdir -p "${output_dir}"
-rm -f "${output_dir}"/*.jsonl "${output_dir}"/summary.json
+rm -f "${canonical_output_dir}"/*.jsonl "${canonical_output_dir}"/summary.json
 (
   cd backend
-  ARKHAM_NOTZ_COVERAGE_DIR="${output_dir}" \
+  ARKHAM_NOTZ_COVERAGE_DIR="${canonical_output_dir}" \
     stack test arkham-api:spec --system-ghc --test-arguments '--match "Night of the Zealot coverage generator"'
 )
-diff -u contracts/coverage/night-of-the-zealot/summary.json "${output_dir}/summary.json"
+diff -u contracts/coverage/night-of-the-zealot/summary.json "${canonical_output_dir}/summary.json"
