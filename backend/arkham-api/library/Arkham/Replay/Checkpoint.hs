@@ -36,18 +36,16 @@ module Arkham.Replay.Checkpoint (
 import Api.Arkham.Export
 import Arkham.Game (Game (..))
 import Arkham.Git (GitSha (..))
-import Arkham.Id (InvestigatorId, PlayerId)
+import Arkham.Id (PlayerId)
 import Arkham.Json (aesonOptions)
 import Arkham.Message (Message)
 import Arkham.Prelude
 import Arkham.Question (
-  AmountChoice (..),
-  AmountTarget (..),
   DestinyDrawing (..),
-  PaymentAmountChoice (..),
   Question (..),
   ReadChoices (..),
  )
+import Arkham.Question.AnswerValidation
 import Arkham.Replay.BuildIdentity
 import Arkham.Tarot (TarotCard (..), TarotCardFacing (Reversed))
 import Base.Api.Types.Capabilities qualified as Capabilities
@@ -502,28 +500,7 @@ replayAnswerMatchesPrompt answer prompt = case answer of
     PickScenarioSpecific {} -> True
     _ -> False
   ExchangeAmountsAnswer answerSource answerFrom answerTo answerToken amount ->
-    case stripPromptWrappers prompt of
-      ChooseExchangeAmounts
-        promptSource
-        firstInvestigator
-        firstAmount
-        secondInvestigator
-        secondAmount
-        promptToken ->
-        answerSource == promptSource
-          && answerToken == promptToken
-          && ( (answerFrom == firstInvestigator && answerTo == secondInvestigator)
-                || (answerFrom == secondInvestigator && answerTo == firstInvestigator)
-             )
-          && replayExchangeAmountWithinBalances
-            firstInvestigator
-            firstAmount
-            secondInvestigator
-            secondAmount
-            answerFrom
-            answerTo
-            amount
-      _ -> False
+    replayExchangeAmountsValid answerSource answerFrom answerTo answerToken amount prompt
   CampaignStepAnswer {} -> case stripPromptWrappers prompt of
     ContinueCampaign -> True
     _ -> False
@@ -547,34 +524,6 @@ replayDestinyAnswerMatches drawings answerDrawings =
       [ ()
       | DestinyDrawing _ (TarotCard Reversed _) <- answerDrawings
       ]
-
-replayExchangeAmountWithinBalances
-  :: InvestigatorId
-  -> Int
-  -> InvestigatorId
-  -> Int
-  -> InvestigatorId
-  -> InvestigatorId
-  -> Int
-  -> Bool
-replayExchangeAmountWithinBalances iid1 iid1Amount iid2 iid2Amount fromIid toIid amount
-  | iid1Amount < 0 || iid2Amount < 0 = False
-  | fromIid == iid1 && toIid == iid2 =
-      transferred <= toInteger iid1Amount
-        && transferred >= negate (toInteger iid2Amount)
-  | fromIid == iid2 && toIid == iid1 =
-      transferred <= toInteger iid2Amount
-        && transferred >= negate (toInteger iid1Amount)
-  | otherwise = False
- where
-  transferred = toInteger amount
-
-stripPromptWrappers :: Question message -> Question message
-stripPromptWrappers = \case
-  QuestionLabel _ _ prompt -> stripPromptWrappers prompt
-  PayCostQuestion _ prompt -> stripPromptWrappers prompt
-  QuestionWithSource _ _ prompt -> stripPromptWrappers prompt
-  prompt -> prompt
 
 replayOrderedChoicesMatch :: [Int] -> Question message -> Bool
 replayOrderedChoicesMatch choices = \case
@@ -609,51 +558,6 @@ replayChoiceIndexInRange choice = \case
  where
    inRange :: [a] -> Bool
    inRange choices = isJust $ choices !!? choice
-
-replayAmountsValid :: Map UUID.UUID Int -> Question message -> Bool
-replayAmountsValid amounts = \case
-  ChooseAmounts _ target choices _ ->
-    replayAmountAllocationValid
-      [(choiceId, lowerBound, upperBound) | AmountChoice choiceId _ lowerBound upperBound <- choices]
-      (Just target)
-      amounts
-  _ -> False
-
-replayPaymentAmountsValid :: Map UUID.UUID Int -> Question message -> Bool
-replayPaymentAmountsValid amounts = \case
-  ChoosePaymentAmounts _ target choices ->
-    replayAmountAllocationValid
-      [ (choiceId, lowerBound, upperBound)
-      | PaymentAmountChoice choiceId _ lowerBound upperBound _ _ <- choices
-      ]
-      target
-      amounts
-  _ -> False
-
-replayAmountAllocationValid
-  :: [(UUID.UUID, Int, Int)]
-  -> Maybe AmountTarget
-  -> Map UUID.UUID Int
-  -> Bool
-replayAmountAllocationValid choices target amounts =
-  length choices == Map.size bounds
-    && all validChoice choices
-    && all (`Map.member` bounds) (Map.keys amounts)
-    && amountTargetSatisfied target (sum $ map (toInteger . snd) $ Map.toList amounts)
- where
-  bounds = Map.fromList [(choiceId, (lowerBound, upperBound)) | (choiceId, lowerBound, upperBound) <- choices]
-  validChoice (choiceId, lowerBound, upperBound) =
-    lowerBound <= upperBound
-      && let amount = Map.findWithDefault 0 choiceId amounts
-          in amount >= lowerBound && amount <= upperBound
-
-amountTargetSatisfied :: Maybe AmountTarget -> Integer -> Bool
-amountTargetSatisfied target total = case target of
-  Nothing -> True
-  Just (MinAmountTarget minimumAmount) -> total >= toInteger minimumAmount
-  Just (MaxAmountTarget maximumAmount) -> total <= toInteger maximumAmount
-  Just (TotalAmountTarget requiredAmount) -> total == toInteger requiredAmount
-  Just (AmountOneOf allowedAmounts) -> total `elem` map toInteger allowedAmounts
 
 isDeckPrompt :: Question message -> Bool
 isDeckPrompt = \case

@@ -6387,6 +6387,7 @@ library
       Arkham.Projection
       Arkham.Query
       Arkham.Question
+      Arkham.Question.AnswerValidation
       Arkham.Question.Presentation
       Arkham.Queue
       Arkham.Random

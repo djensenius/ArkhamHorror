@@ -5,6 +5,7 @@ import Arkham.Campaign.Types (campaignStep)
 import Arkham.CampaignStep qualified as CS
 import Arkham.Classes.HasGame (getGame)
 import Arkham.Difficulty
+import Arkham.Token (Token (Clue, Resource))
 import Data.UUID (fromWords64)
 import Entity.Answer
 import TestImport.New
@@ -166,3 +167,141 @@ spec = do
         Handled msgs -> do
           reparked msgs `shouldBe` mempty
           [m | AskMap m <- msgs] `shouldBe` []
+
+  describe "amount, payment, and exchange answers" do
+    let
+      expectUnhandled expected game pid candidate =
+        liftIO (handleAnswerPure game pid candidate) >>= \case
+          Unhandled reason -> reason `shouldBe` expected
+          Handled messages -> expectationFailure $ "illegal answer emitted messages: " <> show messages
+
+      expectHandled expected game pid candidate =
+        liftIO (handleAnswerPure game pid candidate) >>= \case
+          Unhandled reason -> expectationFailure $ "legal answer rejected: " <> show reason
+          Handled messages -> messages `shouldBe` expected
+
+    it "rejects illegal AmountsAnswer values before emitting messages" . gameTest $ \self -> do
+      pid <- getPlayer (toId self)
+      baseGame <- getGame
+      let
+        firstChoice = fromWords64 0 10
+        secondChoice = fromWords64 0 11
+        unknownChoice = fromWords64 0 12
+        bareQuestion =
+          ChooseAmounts
+            "$amount"
+            (TotalAmountTarget 3)
+            [ AmountChoice firstChoice "first" 1 2
+            , AmountChoice secondChoice "second" 0 2
+            ]
+            GameTarget
+        amountLabelWrapped = QuestionLabel "amounts" Nothing bareQuestion
+        sourceWrapped = QuestionWithSource GameSource Nothing bareQuestion
+        payCostWrapped = PayCostQuestion Free bareQuestion
+        doubleWrapped = QuestionWithSource GameSource Nothing (QuestionLabel "amounts" Nothing bareQuestion)
+        gameFor question = baseGame {gameQuestion = singletonMap pid question, gameScenarioSteps = 12}
+        answer game values =
+          AmountsAnswer
+            AmountsResponse
+              { arAmounts = mapFromList values
+              , arQuestionVersion = Just game.gameScenarioSteps
+              , arPlayerId = Just pid
+              }
+        legalValues = [(firstChoice, 1), (secondChoice, 2)]
+        legalMessages =
+          [ ResolveAmounts
+              (toId self)
+              [(NamedUUID "first" firstChoice, 1), (NamedUUID "second" secondChoice, 2)]
+              GameTarget
+          ]
+        legalQuestions = [bareQuestion, amountLabelWrapped, sourceWrapped, payCostWrapped, doubleWrapped]
+        wrappedGame = gameFor doubleWrapped
+      for_ legalQuestions \prompt -> do
+        let promptedGame = gameFor prompt
+        expectHandled legalMessages promptedGame pid (answer promptedGame legalValues)
+      expectUnhandled "Wrong choice id" wrappedGame pid $
+        answer wrappedGame [(firstChoice, 1), (secondChoice, 2), (unknownChoice, 0)]
+      traverse_
+        (expectUnhandled "Illegal amount allocation" wrappedGame pid)
+        [ answer wrappedGame [(firstChoice, 1)]
+        , answer wrappedGame [(firstChoice, 3), (secondChoice, 0)]
+        , answer wrappedGame [(firstChoice, 1), (secondChoice, 1)]
+        ]
+
+    it "rejects illegal PaymentAmountsAnswer values before emitting messages" . gameTest $ \self -> do
+      pid <- getPlayer (toId self)
+      baseGame <- getGame
+      let
+        investigator = toId self
+        firstChoice = fromWords64 0 20
+        secondChoice = fromWords64 0 21
+        unknownChoice = fromWords64 0 22
+        bareQuestion =
+          ChoosePaymentAmounts
+            "$payment"
+            (Just $ AmountOneOf [2, 3])
+            [ PaymentAmountChoice firstChoice investigator 1 2 "first" ClearUI
+            , PaymentAmountChoice secondChoice investigator 0 2 "second" GameOver
+            ]
+        payCostWrapped = PayCostQuestion Free bareQuestion
+        paymentLabelWrapped = QuestionLabel "payment" Nothing bareQuestion
+        sourceWrapped = QuestionWithSource GameSource Nothing bareQuestion
+        doubleWrapped = QuestionWithSource GameSource Nothing (PayCostQuestion Free bareQuestion)
+        gameFor question = baseGame {gameQuestion = singletonMap pid question, gameScenarioSteps = 13}
+        answer game values =
+          PaymentAmountsAnswer
+            PaymentAmountsResponse
+              { parAmounts = mapFromList values
+              , parQuestionVersion = Just game.gameScenarioSteps
+              , parPlayerId = Just pid
+              }
+        legalMessages = [ClearUI, ClearUI]
+        legalQuestions = [bareQuestion, payCostWrapped, paymentLabelWrapped, sourceWrapped, doubleWrapped]
+        wrappedGame = gameFor doubleWrapped
+      for_ legalQuestions \prompt -> do
+        let promptedGame = gameFor prompt
+        expectHandled legalMessages promptedGame pid (answer promptedGame [(firstChoice, 2)])
+      expectUnhandled "Wrong choice id" wrappedGame pid $
+        answer wrappedGame [(firstChoice, 2), (secondChoice, 0), (unknownChoice, 0)]
+      traverse_
+        (expectUnhandled "Illegal amount allocation" wrappedGame pid)
+        [ answer wrappedGame [(firstChoice, 0), (secondChoice, 2)]
+        , answer wrappedGame [(firstChoice, 2), (secondChoice, 2)]
+        ]
+
+    it "rejects ExchangeAmountsAnswer values outside the prompted balances before emitting messages" . gameTest $ \self -> do
+      pid <- getPlayer (toId self)
+      baseGame <- getGame
+      let
+        firstInvestigator = toId self
+        secondInvestigator = "01002" :: InvestigatorId
+        question = ChooseExchangeAmounts GameSource firstInvestigator 2 secondInvestigator 3 Resource
+        promptedGame = baseGame {gameQuestion = singletonMap pid question, gameScenarioSteps = 14}
+        noPromptGame = baseGame {gameQuestion = mempty, gameScenarioSteps = 14}
+        answer amount = ExchangeAmountsAnswer GameSource firstInvestigator secondInvestigator Resource amount
+        reverseAnswer amount = ExchangeAmountsAnswer GameSource secondInvestigator firstInvestigator Resource amount
+      expectHandled
+        [MoveTokens GameSource (toSource firstInvestigator) (toTarget secondInvestigator) Resource 2]
+        promptedGame
+        pid
+        (answer 2)
+      expectHandled
+        [MoveTokens GameSource (toSource secondInvestigator) (toTarget firstInvestigator) Resource 3]
+        promptedGame
+        pid
+        (answer (-3))
+      expectHandled
+        [MoveTokens GameSource (toSource secondInvestigator) (toTarget firstInvestigator) Resource 3]
+        promptedGame
+        pid
+        (reverseAnswer 3)
+      traverse_
+        (expectUnhandled "Illegal exchange amount" promptedGame pid)
+        [ answer 3
+        , answer (-4)
+        , ExchangeAmountsAnswer GameSource firstInvestigator firstInvestigator Resource 1
+        , ExchangeAmountsAnswer ScenarioSource firstInvestigator secondInvestigator Resource 1
+        , ExchangeAmountsAnswer GameSource firstInvestigator secondInvestigator Clue 1
+        , answer minBound
+        ]
+      expectUnhandled "Wrong question type" noPromptGame pid (answer 1)
