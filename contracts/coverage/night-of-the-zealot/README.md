@@ -22,7 +22,8 @@ ARKHAM_NOTZ_COVERAGE_DIR=/tmp/notz-coverage mise run coverage:notz
 The task writes one `<investigator>.jsonl` file per core investigator plus a
 `summary.json` beside them, then fails if that generated summary differs from
 the committed `contracts/coverage/night-of-the-zealot/summary.json`. The Haskell
-spec also fails if any run does not reach the end of `01142`.
+spec also fails unless every investigator records a real `01142` resolution and
+stops with `campaign finished`.
 
 Each JSONL line is one answered prompt with sorted keys and includes:
 
@@ -35,6 +36,7 @@ Each JSONL line is one answered prompt with sorted keys and includes:
 - `questionPresentation`
 - `chosenAnswer`
 - `choiceNote`
+- `chosenChoiceKind`
 
 The bot answers from the server's semantic presentation: it picks the first
 `presentation.choices[i].selectable` choice, rotating to the next selectable

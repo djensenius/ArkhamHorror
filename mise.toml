@@ -20,8 +20,14 @@ description = "Generate deterministic Night of the Zealot prompt coverage JSONL 
 run = '''
 set -eu
 output_dir="${ARKHAM_NOTZ_COVERAGE_DIR:-$PWD/contracts/coverage/night-of-the-zealot/generated}"
-rm -rf "${output_dir}"
+case "${output_dir}" in
+  ""|"/"|"${HOME}")
+    printf 'refusing unsafe ARKHAM_NOTZ_COVERAGE_DIR: %s\n' "${output_dir}" >&2
+    exit 1
+    ;;
+esac
 mkdir -p "${output_dir}"
+rm -f "${output_dir}"/*.jsonl "${output_dir}"/summary.json
 (
   cd backend
   ARKHAM_NOTZ_COVERAGE_DIR="${output_dir}" \

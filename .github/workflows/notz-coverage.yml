@@ -51,3 +51,12 @@ jobs:
           name: night-of-the-zealot-coverage-jsonl
           path: contracts/coverage/night-of-the-zealot/generated/*.jsonl
           if-no-files-found: error
+      - name: Upload failed coverage JSONL recordings
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: night-of-the-zealot-coverage-jsonl-failed
+          path: |
+            contracts/coverage/night-of-the-zealot/generated/*.jsonl
+            contracts/coverage/night-of-the-zealot/generated/summary.json
+          if-no-files-found: ignore
