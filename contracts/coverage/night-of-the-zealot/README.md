@@ -52,5 +52,19 @@ constructor (`deckChosen`) directly, which keeps gameplay rules out of the test
 while still driving the engine with the selected starter deck. Upgrade prompts
 are recorded if they occur; the bot continues without upgrading.
 
+The generated decklists are legal coverage decks, not the printed core starter
+lists. Each deck starts with the investigator's signature card and personal
+weakness, then uses both of that investigator's level-0 class card sets plus the
+neutral core cards. Those ordinary cards total 28, so the coverage deck adds two
+named second copies that are legal under the investigator's deckbuilding rules:
+
+| Investigator | Extra ordinary copies |
+| --- | --- |
+| Roland Banks | `01017` Physical Training, `01020` Machete |
+| Daisy Walker | `01031` Old Book of Lore, `01033` Dr. Milan Christopher |
+| Skids O'Toole | `01047` .41 Derringer, `01048` Leo De Luca |
+| Agnes Baker | `01059` Holy Rosary, `01060` Shrivelling |
+| Wendy Adams | `01048` Leo De Luca, `01049` Hard Knocks |
+
 Starter decks include a deterministic core random basic weakness per
 investigator, selected from a fixed seed so the run is reproducible.

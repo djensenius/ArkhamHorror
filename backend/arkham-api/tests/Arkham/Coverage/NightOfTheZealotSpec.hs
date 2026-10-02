@@ -21,8 +21,9 @@ import Arkham.Message (Message (ClearUI, DoneChoosingDecks, LoadDecklist, SetAct
 import Arkham.PlayerCard (allPlayerCards)
 import Arkham.Prelude
 import Arkham.Question
-import Arkham.Queue (queueToRef)
 import Arkham.Question.Presentation qualified as QuestionPresentation
+import Arkham.Queue (queueToRef)
+import Arkham.Replay.Checkpoint (prependReplayAnswerMessages)
 import Arkham.Scenario.Types (scenarioId)
 import Arkham.Source (Source (GameSource))
 import Arkham.Token (Token (Resource))
@@ -54,15 +55,10 @@ spec = describe "Night of the Zealot coverage generator" do
       traverse_ assertLegalStarterDeck coreInvestigators
 
   describe "coverage answer replay" do
-    it "prepends answers before parked continuation messages" do
-      gameRef <- newIORef $ newCampaign (CampaignId "01") Nothing 1 1 Easy False
-      queueRef <- newQueue [DoneChoosingDecks]
-      genRef <- newIORef $ mkStdGen 1
-      let app = GameApp gameRef queueRef genRef (pure . const ()) Nothing
-          answerMessage = LoadDecklist samplePlayerId (starterDeck sampleInvestigator)
-      prependAnswerMessages app [answerMessage]
-
-      readIORef (queueToRef app.appQueue) `shouldReturn` [ClearUI, answerMessage, DoneChoosingDecks]
+    it "uses the replay helper to prepend answers before parked continuation messages" do
+      let answerMessage = LoadDecklist samplePlayerId (starterDeck sampleInvestigator)
+      prependReplayAnswerMessages [ClearUI, answerMessage] [DoneChoosingDecks]
+        `shouldBe` [ClearUI, answerMessage, DoneChoosingDecks]
 
   outputDir <- runIO $ lookupEnv "ARKHAM_NOTZ_COVERAGE_DIR"
   case outputDir of
@@ -120,6 +116,13 @@ coreStarterDeck :: [CardCode] -> [CardCode] -> [CardCode] -> Map CardCode Int
 coreStarterDeck requiredCards ordinaryCards secondCopies =
   addSecondCopies secondCopies $ oneEach $ requiredCards <> ordinaryCards
 
+{- | Legal NOTZ coverage decks, not the printed core starter lists. Each uses two
+complete level-0 class sets, the neutral core cards, signature/personal weakness,
+and two investigator-specific extra copies:
+Roland: Physical Training, Machete; Daisy: Old Book of Lore, Dr. Milan Christopher;
+Skids: .41 Derringer, Leo De Luca; Agnes: Holy Rosary, Shrivelling;
+Wendy: Leo De Luca, Hard Knocks.
+-}
 neutralCore :: [CardCode]
 neutralCore = ["01086", "01087", "01088", "01089", "01090", "01091", "01092", "01093"]
 
@@ -397,17 +400,14 @@ applySelectedAnswer app defaultPlayer game SelectedAnswer {..} = do
           [SetActivePlayer answerPid | activePid /= answerPid]
             <> messages
             <> [SetActivePlayer activePid | activePid /= answerPid]
-    prependAnswerMessages app bracketed
+    atomicModifyIORef' (queueToRef app.appQueue) \q ->
+      (prependReplayAnswerMessages (ClearUI : bracketed) q, ())
     drainMessages app
   pure case result of
     Left err -> Left $ "answer failed: " <> T.pack (show err)
     Right (Left err) -> Left err
     Right (Right ()) -> Right ()
 
-prependAnswerMessages :: GameApp -> [Message] -> IO ()
-prependAnswerMessages app messages =
-  atomicModifyIORef' (queueToRef app.appQueue) \currentQueue ->
-    ((ClearUI : messages) <> currentQueue, ())
 
 -- Keep each drain bounded so an engine loop records a stop instead of hanging
 -- the nightly/manual coverage job indefinitely.
