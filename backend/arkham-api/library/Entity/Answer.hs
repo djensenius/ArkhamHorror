@@ -636,30 +636,36 @@ handleAnswerPure game@Game {..} playerId = \case
                       $ ResolveAmounts (playerInvestigator gameEntities playerId) amounts target
                       : reAskOthers game playerId
         case Map.lookup playerId gameQuestion of
-          Just q@(ChooseAmounts _ _ choices target) -> doResolve q choices target
-          Just q@(QuestionLabel _ _ (ChooseAmounts _ _ choices target)) -> doResolve q choices target
-          _ -> unhandled "Wrong question type"
+          Just q -> case stripPromptWrappers q of
+            ChooseAmounts _ _ choices target -> doResolve q choices target
+            _ -> unhandled "Wrong question type"
+          Nothing -> unhandled "Wrong question type"
   PaymentAmountsAnswer response ->
     case parQuestionVersion response of
       Just v | v /= gameScenarioSteps -> unhandled "Stale question"
       _ -> do
         let
-          doResolve prompt info
-            | not (replayPaymentAmountsValid (parAmounts response) prompt) = unhandled "Illegal amount allocation"
-            | otherwise = do
-                let costMap = Map.fromList $ map (\(PaymentAmountChoice cId _ _ _ _ cost) -> (cId, cost)) info
-                let
-                  combinePaymentAmounts n = \case
-                    PayCost acId iid skip (UseCost aMatcher uType m) -> [PayCost acId iid skip (UseCost aMatcher uType (n * m))]
-                    PayCost acId iid skip (ResourceCost _) | n == 0 -> [PayCost acId iid skip (ResourceCost 0)]
-                    PayCost acId iid skip other -> [PayCost acId iid skip (fold $ replicate n other)]
-                    payMsg -> replicate n payMsg
-                let handleCost (cId, n) = combinePaymentAmounts n $ Map.findWithDefault Noop cId costMap
-                handled $ concatMap handleCost $ Map.toList (parAmounts response)
+          doResolve prompt info = do
+            let costMap = Map.fromList $ map (\(PaymentAmountChoice cId _ _ _ _ cost) -> (cId, cost)) info
+            if not $ all (`Map.member` costMap) (Map.keys $ parAmounts response)
+              then unhandled "Wrong choice id"
+              else
+                if not (replayPaymentAmountsValid (parAmounts response) prompt)
+                  then unhandled "Illegal amount allocation"
+                  else do
+                    let
+                      combinePaymentAmounts n = \case
+                        PayCost acId iid skip (UseCost aMatcher uType m) -> [PayCost acId iid skip (UseCost aMatcher uType (n * m))]
+                        PayCost acId iid skip (ResourceCost _) | n == 0 -> [PayCost acId iid skip (ResourceCost 0)]
+                        PayCost acId iid skip other -> [PayCost acId iid skip (fold $ replicate n other)]
+                        payMsg -> replicate n payMsg
+                    let handleCost (cId, n) = combinePaymentAmounts n $ Map.findWithDefault Noop cId costMap
+                    handled $ concatMap handleCost $ Map.toList (parAmounts response)
         case Map.lookup playerId gameQuestion of
-          Just q@(PayCostQuestion _ (ChoosePaymentAmounts _ _ info)) -> doResolve q info
-          Just q@(ChoosePaymentAmounts _ _ info) -> doResolve q info
-          _ -> unhandled "Wrong question type"
+          Just q -> case stripPromptWrappers q of
+            ChoosePaymentAmounts _ _ info -> doResolve q info
+            _ -> unhandled "Wrong question type"
+          Nothing -> unhandled "Wrong question type"
   Raw message -> do
     let inFastWindow =
           maybe

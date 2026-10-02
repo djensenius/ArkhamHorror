@@ -195,7 +195,10 @@ spec = do
             , AmountChoice secondChoice "second" 0 2
             ]
             GameTarget
-        wrappedQuestion = QuestionLabel "amounts" Nothing bareQuestion
+        amountLabelWrapped = QuestionLabel "amounts" Nothing bareQuestion
+        sourceWrapped = QuestionWithSource GameSource Nothing bareQuestion
+        payCostWrapped = PayCostQuestion Free bareQuestion
+        doubleWrapped = QuestionWithSource GameSource Nothing (QuestionLabel "amounts" Nothing bareQuestion)
         gameFor question = baseGame {gameQuestion = singletonMap pid question, gameScenarioSteps = 12}
         answer game values =
           AmountsAnswer
@@ -204,16 +207,18 @@ spec = do
               , arQuestionVersion = Just game.gameScenarioSteps
               , arPlayerId = Just pid
               }
+        legalValues = [(firstChoice, 1), (secondChoice, 2)]
         legalMessages =
           [ ResolveAmounts
               (toId self)
               [(NamedUUID "first" firstChoice, 1), (NamedUUID "second" secondChoice, 2)]
               GameTarget
           ]
-        bareGame = gameFor bareQuestion
-        wrappedGame = gameFor wrappedQuestion
-      expectHandled legalMessages bareGame pid (answer bareGame [(firstChoice, 1), (secondChoice, 2)])
-      expectHandled legalMessages wrappedGame pid (answer wrappedGame [(firstChoice, 1), (secondChoice, 2)])
+        legalQuestions = [bareQuestion, amountLabelWrapped, sourceWrapped, payCostWrapped, doubleWrapped]
+        wrappedGame = gameFor doubleWrapped
+      for_ legalQuestions \prompt -> do
+        let promptedGame = gameFor prompt
+        expectHandled legalMessages promptedGame pid (answer promptedGame legalValues)
       expectUnhandled "Wrong choice id" wrappedGame pid $
         answer wrappedGame [(firstChoice, 1), (secondChoice, 2), (unknownChoice, 0)]
       traverse_
@@ -238,7 +243,10 @@ spec = do
             [ PaymentAmountChoice firstChoice investigator 1 2 "first" ClearUI
             , PaymentAmountChoice secondChoice investigator 0 2 "second" GameOver
             ]
-        wrappedQuestion = PayCostQuestion Free bareQuestion
+        payCostWrapped = PayCostQuestion Free bareQuestion
+        paymentLabelWrapped = QuestionLabel "payment" Nothing bareQuestion
+        sourceWrapped = QuestionWithSource GameSource Nothing bareQuestion
+        doubleWrapped = QuestionWithSource GameSource Nothing (PayCostQuestion Free bareQuestion)
         gameFor question = baseGame {gameQuestion = singletonMap pid question, gameScenarioSteps = 13}
         answer game values =
           PaymentAmountsAnswer
@@ -247,15 +255,17 @@ spec = do
               , parQuestionVersion = Just game.gameScenarioSteps
               , parPlayerId = Just pid
               }
-        bareGame = gameFor bareQuestion
-        wrappedGame = gameFor wrappedQuestion
         legalMessages = [ClearUI, ClearUI]
-      expectHandled legalMessages bareGame pid (answer bareGame [(firstChoice, 2), (secondChoice, 0)])
-      expectHandled legalMessages wrappedGame pid (answer wrappedGame [(firstChoice, 2)])
+        legalQuestions = [bareQuestion, payCostWrapped, paymentLabelWrapped, sourceWrapped, doubleWrapped]
+        wrappedGame = gameFor doubleWrapped
+      for_ legalQuestions \prompt -> do
+        let promptedGame = gameFor prompt
+        expectHandled legalMessages promptedGame pid (answer promptedGame [(firstChoice, 2)])
+      expectUnhandled "Wrong choice id" wrappedGame pid $
+        answer wrappedGame [(firstChoice, 2), (secondChoice, 0), (unknownChoice, 0)]
       traverse_
         (expectUnhandled "Illegal amount allocation" wrappedGame pid)
-        [ answer wrappedGame [(firstChoice, 2), (secondChoice, 0), (unknownChoice, 0)]
-        , answer wrappedGame [(firstChoice, 0), (secondChoice, 2)]
+        [ answer wrappedGame [(firstChoice, 0), (secondChoice, 2)]
         , answer wrappedGame [(firstChoice, 2), (secondChoice, 2)]
         ]
 
