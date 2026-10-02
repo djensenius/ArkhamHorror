@@ -42,13 +42,11 @@
         "gainResource",
         "localizedLabel",
         "resolveForcedAbility",
-        "skipTriggers",
         "startSkillTest",
         "useAbility"
       ],
       "distinctQuestionKinds": [
         "chooseDeck",
-        "chooseN",
         "chooseOne",
         "chooseOneAtATime",
         "continueCampaign",
@@ -63,7 +61,7 @@
         "name": "Roland Banks",
         "seed": 12001
       },
-      "jsonlBytes": 4503112,
+      "jsonlBytes": 756868,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -89,11 +87,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 994,
+      "recordCount": 187,
       "stepsByScenario": {
-        "01104": 859,
-        "01120": 61,
-        "01142": 68,
+        "01104": 93,
+        "01120": 34,
+        "01142": 54,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -104,7 +102,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 68,
+          "questionVersion": 54,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -139,6 +137,7 @@
         "investigate",
         "localizedLabel",
         "move",
+        "skipTriggers",
         "startSkillTest",
         "useAbility"
       ],
@@ -151,8 +150,10 @@
         "drawCard",
         "drawEncounterCard",
         "endTurn",
+        "evade",
         "gainResource",
         "localizedLabel",
+        "skipTriggers",
         "startSkillTest",
         "useAbility"
       ],
@@ -172,7 +173,7 @@
         "name": "Daisy Walker",
         "seed": 12002
       },
-      "jsonlBytes": 773977,
+      "jsonlBytes": 868882,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -198,11 +199,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 174,
+      "recordCount": 180,
       "stepsByScenario": {
-        "01104": 56,
-        "01120": 85,
-        "01142": 27,
+        "01104": 46,
+        "01120": 55,
+        "01142": 73,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -213,7 +214,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 27,
+          "questionVersion": 73,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -249,7 +250,6 @@
         "investigate",
         "localizedLabel",
         "move",
-        "resolveForcedAbility",
         "skipTriggers",
         "startSkillTest",
         "useAbility"
@@ -260,13 +260,11 @@
         "assignDamage",
         "assignHorror",
         "chooseTarget",
-        "componentLabel",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
         "gainResource",
         "localizedLabel",
-        "resolveForcedAbility",
         "startSkillTest",
         "useAbility"
       ],
@@ -286,7 +284,7 @@
         "name": "Skids O'Toole",
         "seed": 12003
       },
-      "jsonlBytes": 837730,
+      "jsonlBytes": 885369,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -312,11 +310,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 150,
+      "recordCount": 185,
       "stepsByScenario": {
-        "01104": 39,
-        "01120": 75,
-        "01142": 30,
+        "01104": 44,
+        "01120": 68,
+        "01142": 67,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -327,7 +325,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 30,
+          "questionVersion": 67,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -348,13 +346,11 @@
     },
     {
       "distinctChoiceKinds": [
-        "advanceAct",
         "advanceAgenda",
         "applySkillTestResults",
         "assignDamage",
         "assignHorror",
         "chooseTarget",
-        "componentLabel",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
@@ -370,18 +366,16 @@
         "useAbility"
       ],
       "distinctChosenChoiceKinds": [
-        "advanceAct",
         "advanceAgenda",
         "applySkillTestResults",
         "assignDamage",
         "assignHorror",
         "chooseTarget",
-        "componentLabel",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
-        "evade",
         "gainResource",
+        "investigate",
         "localizedLabel",
         "resolveForcedAbility",
         "startSkillTest",
@@ -403,7 +397,7 @@
         "name": "Agnes Baker",
         "seed": 12004
       },
-      "jsonlBytes": 1596071,
+      "jsonlBytes": 1582177,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -429,11 +423,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 366,
+      "recordCount": 423,
       "stepsByScenario": {
-        "01104": 274,
-        "01120": 58,
-        "01142": 28,
+        "01104": 300,
+        "01120": 83,
+        "01142": 34,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -444,7 +438,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 28,
+          "questionVersion": 34,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -470,7 +464,6 @@
         "assignDamage",
         "assignHorror",
         "chooseTarget",
-        "componentLabel",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
@@ -491,17 +484,12 @@
         "assignDamage",
         "assignHorror",
         "chooseTarget",
-        "componentLabel",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
-        "evade",
-        "fight",
         "gainResource",
-        "investigate",
         "localizedLabel",
         "resolveForcedAbility",
-        "skipTriggers",
         "startSkillTest",
         "useAbility"
       ],
@@ -522,7 +510,7 @@
         "name": "Wendy Adams",
         "seed": 12005
       },
-      "jsonlBytes": 2215363,
+      "jsonlBytes": 766155,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -548,11 +536,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 535,
+      "recordCount": 171,
       "stepsByScenario": {
-        "01104": 394,
-        "01120": 92,
-        "01142": 43,
+        "01104": 43,
+        "01120": 73,
+        "01142": 49,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -563,7 +551,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 43,
+          "questionVersion": 49,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
