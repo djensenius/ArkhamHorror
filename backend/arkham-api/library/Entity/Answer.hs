@@ -144,6 +144,88 @@ instance FromJSON AmountsResponse where
     arPlayerId <- o .:? "playerId"
     pure AmountsResponse {..}
 
+instance ToJSON QuestionResponse where
+  toJSON QuestionResponse {..} =
+    object
+      [ "choice" .= qrChoice
+      , "playerId" .= qrPlayerId
+      , "questionVersion" .= qrQuestionVersion
+      ]
+
+instance ToJSON OrderedResponse where
+  toJSON OrderedResponse {..} =
+    object
+      [ "choices" .= orChoices
+      , "playerId" .= orPlayerId
+      , "questionVersion" .= orQuestionVersion
+      ]
+
+instance ToJSON PaymentAmountsResponse where
+  toJSON PaymentAmountsResponse {..} =
+    object
+      [ "amounts" .= parAmounts
+      , "questionVersion" .= parQuestionVersion
+      , "playerId" .= parPlayerId
+      ]
+
+instance ToJSON AmountsResponse where
+  toJSON AmountsResponse {..} =
+    object
+      [ "amounts" .= arAmounts
+      , "questionVersion" .= arQuestionVersion
+      , "playerId" .= arPlayerId
+      ]
+
+instance ToJSON Answer where
+  toJSON = \case
+    Answer response -> taggedContents "Answer" response
+    OrderedAnswer response -> taggedContents "OrderedAnswer" response
+    Raw message -> taggedContents "Raw" message
+    PaymentAmountsAnswer response -> taggedContents "PaymentAmountsAnswer" response
+    AmountsAnswer response -> taggedContents "AmountsAnswer" response
+    StandaloneSettingsAnswer settings -> taggedContents "StandaloneSettingsAnswer" settings
+    CampaignSettingsAnswer settings -> taggedContents "CampaignSettingsAnswer" settings
+    DeckAnswer deckId playerId overlay ->
+      object
+        $ [ "tag" .= ("DeckAnswer" :: Text)
+          , "deckId" .= deckId
+          , "playerId" .= playerId
+          ]
+        <> ["overlay" .= overlay | isJust overlay]
+    DeckListAnswer deckList playerId ->
+      object
+        [ "tag" .= ("DeckListAnswer" :: Text)
+        , "deckList" .= deckList
+        , "playerId" .= playerId
+        ]
+    PickDestinyAnswer drawings -> taggedContents "PickDestinyAnswer" drawings
+    CampaignSpecificAnswer key value -> taggedContents "CampaignSpecificAnswer" [toJSON key, value]
+    ScenarioSpecificAnswer key value -> taggedContents "ScenarioSpecificAnswer" [toJSON key, value]
+    ExchangeAmountsAnswer source fromInvestigator toInvestigator token amount ->
+      object
+        [ "tag" .= ("ExchangeAmountsAnswer" :: Text)
+        , "source" .= source
+        , "fromInvestigator" .= fromInvestigator
+        , "toInvestigator" .= toInvestigator
+        , "token" .= token
+        , "amount" .= amount
+        ]
+    CampaignStepAnswer step -> taggedContents "CampaignStepAnswer" step
+    RetireInvestigatorAnswer investigatorId ->
+      object ["tag" .= ("RetireInvestigatorAnswer" :: Text), "investigatorId" .= investigatorId]
+    RejoinInvestigatorAnswer investigatorId ->
+      object ["tag" .= ("RejoinInvestigatorAnswer" :: Text), "investigatorId" .= investigatorId]
+    ApplyOverlayAnswer investigatorId overlay ->
+      object
+        $ [ "tag" .= ("ApplyOverlayAnswer" :: Text)
+          , "investigatorId" .= investigatorId
+          ]
+        <> ["overlay" .= overlay | isJust overlay]
+    JoinCampaignAnswer -> object ["tag" .= ("JoinCampaignAnswer" :: Text)]
+   where
+    taggedContents :: ToJSON a => Text -> a -> Value
+    taggedContents tagName contents = object ["tag" .= tagName, "contents" .= contents]
+
 data StandaloneSetting
   = SetKey CampaignLogKey Bool
   | SetRecorded CampaignLogKey SomeRecordableType [SetRecordedEntry]
@@ -233,11 +315,43 @@ instance FromJSON StandaloneSetting where
           $ if details.status == Resolute then toResolute cCode else cCode
       _ -> fail $ "No such standalone setting " <> t
 
+instance ToJSON StandaloneSetting where
+  toJSON = \case
+    SetKey key content -> object ["type" .= ("ToggleKey" :: Text), "key" .= key, "content" .= content]
+    SetRecorded key recordable entries ->
+      object
+        [ "type" .= ("ToggleRecords" :: Text)
+        , "key" .= key
+        , "recordable" .= recordableTypeJSON recordable
+        , "content" .= entries
+        ]
+    SetOption key content -> object ["type" .= ("ToggleOption" :: Text), "key" .= key, "content" .= content]
+    ChooseNum key content -> object ["type" .= ("ChooseNum" :: Text), "key" .= key, "content" .= content]
+    NoChooseRecord -> object ["type" .= ("ChooseRecord" :: Text), "selected" .= (Nothing :: Maybe CampaignLogKey)]
+    StandaloneSetPartnerStatus damage horror status crash cardCode ->
+      object
+        [ "type" .= (if crash then "SetPartnerKilled" else "SetPartnerDetails" :: Text)
+        , "content" .= cardCode
+        , "value" .= cardCode
+        , "details" .= object ["damage" .= damage, "horror" .= horror, "status" .= status]
+        ]
+    SettingsGroup settings -> object ["type" .= ("Group" :: Text), "content" .= settings]
+
+instance ToJSON SetRecordedEntry where
+  toJSON = \case
+    SetAsCrossedOut value -> object ["key" .= value, "content" .= False]
+    SetAsRecorded value -> object ["key" .= value, "content" .= True]
+    DoNotRecord value -> object ["key" .= value, "content" .= False]
+
 instance FromJSON SetRecordedEntry where
   parseJSON = withObject "SetRecordedEntry" $ \o -> do
     k <- o .: "key"
     v <- o .: "content"
     pure $ if v then SetAsRecorded k else DoNotRecord k
+
+recordableTypeJSON :: SomeRecordableType -> Value
+recordableTypeJSON = \case
+  SomeRecordableType recordableType -> toJSON recordableType
 
 newtype CrossedOutResults = CrossedOutResults [SetRecordedEntry]
   deriving stock Show
@@ -279,6 +393,11 @@ data CampaignSettings = CampaignSettings
   }
   deriving stock Show
 
+instance ToJSON CampaignRecordedEntry where
+  toJSON = \case
+    CampaignEntryRecorded value -> object ["tag" .= ("Recorded" :: Text), "value" .= value]
+    CampaignEntryCrossedOut value -> object ["tag" .= ("CrossedOut" :: Text), "value" .= value]
+
 instance FromJSON CampaignSettings where
   parseJSON = withObject "CampaignSettings" $ \o -> do
     options <- o .: "options" >>= traverse parseOption
@@ -292,11 +411,27 @@ instance FromJSON CampaignSettings where
       String s -> parseJSON (object ["tag" .= String s])
       v -> parseJSON v
 
+instance ToJSON CampaignSettings where
+  toJSON CampaignSettings {..} =
+    object
+      [ "keys" .= keys
+      , "counts" .= counts
+      , "sets" .= sets
+      , "options" .= options
+      ]
+
 instance FromJSON CampaignRecorded where
   parseJSON = withObject "CampaignRecorded" $ \o ->
     CampaignRecorded
       <$> (o .: "recordable")
       <*> (o .: "entries")
+
+instance ToJSON CampaignRecorded where
+  toJSON CampaignRecorded {..} =
+    object
+      [ "recordable" .= recordableTypeJSON recordable
+      , "entries" .= entries
+      ]
 
 makeCampaignLog :: CampaignSettings -> CampaignLog
 makeCampaignLog settings =
