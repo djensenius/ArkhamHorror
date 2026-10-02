@@ -407,7 +407,7 @@ spec = describe "deterministic replay checkpoint harness" do
               }
     validateAtPrompt game amountPrompt (amountsAnswer [(firstChoice, 1), (secondChoice, 2)])
       `shouldBe` Right player
-    validateAtPrompt game paymentPrompt (paymentAnswer [(firstChoice, 2)])
+    validateAtPrompt game paymentPrompt (paymentAnswer [(firstChoice, 2), (secondChoice, 0)])
       `shouldBe` Right player
     traverse_
       (`shouldSatisfy` isLeft)
