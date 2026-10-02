@@ -29,6 +29,23 @@
         "startSkillTest",
         "useAbility"
       ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
       "distinctQuestionKinds": [
         "chooseDeck",
         "chooseN",
@@ -46,7 +63,7 @@
         "name": "Roland Banks",
         "seed": 12001
       },
-      "jsonlBytes": 4469333,
+      "jsonlBytes": 4503112,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -125,6 +142,20 @@
         "startSkillTest",
         "useAbility"
       ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "startSkillTest",
+        "useAbility"
+      ],
       "distinctQuestionKinds": [
         "chooseDeck",
         "chooseOne",
@@ -141,7 +172,7 @@
         "name": "Daisy Walker",
         "seed": 12002
       },
-      "jsonlBytes": 768080,
+      "jsonlBytes": 773977,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -223,6 +254,22 @@
         "startSkillTest",
         "useAbility"
       ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "startSkillTest",
+        "useAbility"
+      ],
       "distinctQuestionKinds": [
         "chooseDeck",
         "chooseOne",
@@ -239,7 +286,7 @@
         "name": "Skids O'Toole",
         "seed": 12003
       },
-      "jsonlBytes": 832690,
+      "jsonlBytes": 837730,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -322,6 +369,24 @@
         "startSkillTest",
         "useAbility"
       ],
+      "distinctChosenChoiceKinds": [
+        "advanceAct",
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "startSkillTest",
+        "useAbility"
+      ],
       "distinctQuestionKinds": [
         "chooseDeck",
         "chooseOne",
@@ -338,7 +403,7 @@
         "name": "Agnes Baker",
         "seed": 12004
       },
-      "jsonlBytes": 1583696,
+      "jsonlBytes": 1596071,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -420,6 +485,26 @@
         "startSkillTest",
         "useAbility"
       ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
       "distinctQuestionKinds": [
         "chooseDeck",
         "chooseN",
@@ -437,7 +522,7 @@
         "name": "Wendy Adams",
         "seed": 12005
       },
-      "jsonlBytes": 2197190,
+      "jsonlBytes": 2215363,
       "outcomes": {
         "01104": {
           "resolution": {
