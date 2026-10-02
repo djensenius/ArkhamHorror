@@ -8706,6 +8706,7 @@ test-suite spec
       Arkham.CampaignLogKeySpec
       Arkham.Card.CardCodeSpec
       Arkham.ChaosTokenFaceSpec
+      Arkham.Coverage.NightOfTheZealotSpec
       Arkham.DecklistSpec
       Arkham.EncounterSetSpec
       Arkham.Enemy.Cards.BrethrenOfAsh.FlyingTerrors.BatHorrorSpec

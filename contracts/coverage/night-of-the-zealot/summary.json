@@ -1,0 +1,575 @@
+{
+  "artifactName": "night-of-the-zealot-coverage-jsonl",
+  "botPolicy": "first selectable presentation choice; rotate selectable choices on repeated question shape; minimum legal amounts; exchange 0; continue with server-provided step",
+  "campaign": {
+    "id": "01",
+    "name": "Night of the Zealot"
+  },
+  "difficulty": "Easy",
+  "investigators": [
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "01001.jsonl",
+      "investigator": {
+        "basicWeakness": "c01097",
+        "id": "c01001",
+        "name": "Roland Banks",
+        "seed": 12001
+      },
+      "jsonlBytes": 756868,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "reachedEndOf01142": true,
+      "recordCount": 187,
+      "stepsByScenario": {
+        "01104": 93,
+        "01120": 34,
+        "01142": 54,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 2,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 54,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      }
+    },
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "gainResource",
+        "localizedLabel",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "01002.jsonl",
+      "investigator": {
+        "basicWeakness": "c01098",
+        "id": "c01002",
+        "name": "Daisy Walker",
+        "seed": 12002
+      },
+      "jsonlBytes": 868882,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "reachedEndOf01142": true,
+      "recordCount": 180,
+      "stepsByScenario": {
+        "01104": 46,
+        "01120": 55,
+        "01142": 73,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 2,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 73,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      }
+    },
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "01003.jsonl",
+      "investigator": {
+        "basicWeakness": "c01099",
+        "id": "c01003",
+        "name": "Skids O'Toole",
+        "seed": 12003
+      },
+      "jsonlBytes": 885369,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "reachedEndOf01142": true,
+      "recordCount": 185,
+      "stepsByScenario": {
+        "01104": 44,
+        "01120": 68,
+        "01142": 67,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 2,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 67,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      }
+    },
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "01004.jsonl",
+      "investigator": {
+        "basicWeakness": "c01100",
+        "id": "c01004",
+        "name": "Agnes Baker",
+        "seed": 12004
+      },
+      "jsonlBytes": 1582177,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "reachedEndOf01142": true,
+      "recordCount": 423,
+      "stepsByScenario": {
+        "01104": 300,
+        "01120": 83,
+        "01142": 34,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 2,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 34,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      }
+    },
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseN",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "01005.jsonl",
+      "investigator": {
+        "basicWeakness": "c01101",
+        "id": "c01005",
+        "name": "Wendy Adams",
+        "seed": 12005
+      },
+      "jsonlBytes": 766155,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "reachedEndOf01142": true,
+      "recordCount": 171,
+      "stepsByScenario": {
+        "01104": 43,
+        "01120": 73,
+        "01142": 49,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 2,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 49,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      }
+    }
+  ],
+  "schemaVersion": 1
+}
