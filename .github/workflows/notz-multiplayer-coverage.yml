@@ -1,0 +1,63 @@
+name: Night of the Zealot multiplayer coverage
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "43 10 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: Generate deterministic multiplayer prompt coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: haskell-actions/setup@bda9c527d4136f7759733016190c34a24c84f4f4
+        name: Setup Haskell Stack
+        with:
+          ghc-version: "9.14.1"
+          stack-version: "3.7.1"
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+        with:
+          version: 2026.8.14
+          cache: true
+          install_args: "node python uv"
+      - name: Cache Stack
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        env:
+          cache-name: cache-stack
+        with:
+          path: ~/.stack
+          key: ${{ runner.os }}-notz-multiplayer-coverage-${{ env.cache-name }}-${{ hashFiles('**/stack.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-notz-multiplayer-coverage-${{ env.cache-name }}-
+            ${{ runner.os }}-notz-coverage-${{ env.cache-name }}-
+            ${{ runner.os }}-build-${{ env.cache-name }}-
+            ${{ runner.os }}-build-
+      - name: Install pcre
+        run: sudo apt-get install -y libpcre3 libpcre3-dev
+      - name: Generate multiplayer recordings and verify summary drift
+        env:
+          ARKHAM_NOTZ_MULTIPLAYER_COVERAGE_DIR: ${{ github.workspace }}/contracts/coverage/night-of-the-zealot-multiplayer/generated
+        run: mise run coverage:notz-multiplayer
+      - name: Upload multiplayer coverage JSONL recordings
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: night-of-the-zealot-multiplayer-coverage-jsonl
+          path: contracts/coverage/night-of-the-zealot-multiplayer/generated/*.jsonl
+          if-no-files-found: error
+      - name: Upload failed multiplayer coverage JSONL recordings
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: night-of-the-zealot-multiplayer-coverage-jsonl-failed
+          path: |
+            contracts/coverage/night-of-the-zealot-multiplayer/generated/*.jsonl
+            contracts/coverage/night-of-the-zealot-multiplayer/generated/summary.json
+          if-no-files-found: ignore
