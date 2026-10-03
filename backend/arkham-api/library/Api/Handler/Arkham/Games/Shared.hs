@@ -269,9 +269,9 @@ gameStreamFor role customCards gameId = catchingConnectionException $ withKeepAl
 
     race_
       sender
-      (runConduit $ sourceWS .| mapM_C (handleData role customCards room sub broadcast))
+      (runConduit $ sourceWS .| mapM_C (handleData role room sub broadcast))
  where
-  handleData streamRole customCards room subscriber broadcast dataPacket = lift do
+  handleData streamRole room subscriber broadcast dataPacket = lift do
     case decodeGameStreamAnswer streamRole dataPacket of
       Left err -> $(logWarn) $ tshow err
       Right Nothing -> pure ()
