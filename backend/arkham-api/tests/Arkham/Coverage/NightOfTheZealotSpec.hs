@@ -266,6 +266,15 @@ investigatorMetadata InvestigatorSpec {..} =
     , "seed" .= isSeed
     ]
 
+multiplayerInvestigatorMetadata :: InvestigatorSpec -> Value
+multiplayerInvestigatorMetadata InvestigatorSpec {..} =
+  object
+    [ "basicWeakness" .= isBasicWeakness
+    , "id" .= isInvestigatorId
+    , "name" .= isInvestigatorName
+    , "weaknessSeed" .= isSeed
+    ]
+
 runInvestigatorCoverage :: FilePath -> InvestigatorSpec -> IO CoverageResult
 runInvestigatorCoverage dir spec' = do
   createDirectoryIfMissing True dir
@@ -400,6 +409,7 @@ multiplayerParties = map (`take` coreInvestigators) [2, 3, 4]
 
 data MultiplayerCoverageResult = MultiplayerCoverageResult
   { mcrPlayerCount :: Int
+  , mcrSeed :: Int
   , mcrPlayers :: [(PlayerId, InvestigatorSpec)]
   , mcrRecords :: [CoverageRecord]
   , mcrStop :: StopReport
@@ -416,7 +426,7 @@ runMultiplayerCoverage dir specs = do
   pure result {mcrJsonlBytes = bytes}
  where
   playerCount = length specs
-  seed = 22000 + playerCount
+  seed = multiplayerSeed playerCount
   players = multiplayerPlayers playerCount specs
   doRun = do
     let game0 = newCampaign (CampaignId "01") Nothing seed playerCount Easy False
@@ -435,6 +445,9 @@ runMultiplayerCoverage dir specs = do
         game <- readIORef app.appGame
         finishMultiplayerWith players game [] ("setup failed: " <> err) Nothing
       Right (Right ()) -> multiplayerBotLoop app players 0 mempty mempty [] Nothing
+
+multiplayerSeed :: Int -> Int
+multiplayerSeed playerCount = 22000 + playerCount
 
 multiplayerPlayers :: Int -> [InvestigatorSpec] -> [(PlayerId, InvestigatorSpec)]
 multiplayerPlayers playerCount specs =
@@ -530,6 +543,7 @@ finishMultiplayerWith players game records reason lastQuestion = do
   pure
     MultiplayerCoverageResult
       { mcrPlayerCount = length players
+      , mcrSeed = multiplayerSeed (length players)
       , mcrPlayers = players
       , mcrRecords = records
       , mcrStop = StopReport reason scenarioValue scenarioKey lastQuestion (campaignFinished game)
@@ -542,6 +556,7 @@ emptyMultiplayerCoverageResult :: [InvestigatorSpec] -> Text -> MultiplayerCover
 emptyMultiplayerCoverageResult specs reason =
   MultiplayerCoverageResult
     { mcrPlayerCount = length specs
+    , mcrSeed = multiplayerSeed (length specs)
     , mcrPlayers = multiplayerPlayers (length specs) specs
     , mcrRecords = []
     , mcrStop = StopReport reason (object ["kind" .= ("not-started" :: Text)]) "not-started" Nothing False
@@ -1053,6 +1068,7 @@ multiplayerSummaryValue results =
       , "playerCount" .= mcrPlayerCount
       , "players" .= map (playerSummary $ promptCountsByPlayer mcrRecords) mcrPlayers
       , "recordCount" .= length mcrRecords
+      , "seed" .= mcrSeed
       , "reachedEndOf01142" .= mcrReachedDevourerBelowEnd
       , "stepsByScenario" .= stepsByScenario mcrRecords
       , "stop" .= mcrStop
@@ -1061,7 +1077,7 @@ multiplayerSummaryValue results =
 
   playerSummary counts (playerId, spec') =
     object
-      [ "investigator" .= investigatorMetadata spec'
+      [ "investigator" .= multiplayerInvestigatorMetadata spec'
       , "playerId" .= playerId
       , "promptCount" .= Map.findWithDefault 0 playerId counts
       ]

@@ -60,7 +60,10 @@ are recorded if they occur; the bot continues without upgrading.
 The generated decklists are the same legal coverage decks used by the solo Night
 of the Zealot fixture. The 2-, 3-, and 4-player runs use the first two, three,
 and four core investigators respectively, with deterministic player ids and
-random seeds so the runs are reproducible.
+run-level RNG seeds (`22000 + playerCount`) so the runs are reproducible. The
+per-player `weaknessSeed` values in `summary.json` are fixture inputs used to
+choose deterministic core basic weaknesses; they are not the multiplayer run RNG
+seed.
 
 ## Hidden information finding
 

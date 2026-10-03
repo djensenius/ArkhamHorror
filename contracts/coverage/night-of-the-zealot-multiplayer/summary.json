@@ -89,7 +89,7 @@
             "basicWeakness": "c01097",
             "id": "c01001",
             "name": "Roland Banks",
-            "seed": 12001
+            "weaknessSeed": 12001
           },
           "playerId": "00000000-0000-0000-0000-000200000001",
           "promptCount": 191
@@ -99,7 +99,7 @@
             "basicWeakness": "c01098",
             "id": "c01002",
             "name": "Daisy Walker",
-            "seed": 12002
+            "weaknessSeed": 12002
           },
           "playerId": "00000000-0000-0000-0000-000200000002",
           "promptCount": 134
@@ -107,6 +107,7 @@
       ],
       "reachedEndOf01142": true,
       "recordCount": 325,
+      "seed": 22002,
       "stepsByScenario": {
         "01104": 180,
         "01120": 94,
@@ -222,7 +223,7 @@
             "basicWeakness": "c01097",
             "id": "c01001",
             "name": "Roland Banks",
-            "seed": 12001
+            "weaknessSeed": 12001
           },
           "playerId": "00000000-0000-0000-0000-000300000001",
           "promptCount": 123
@@ -232,7 +233,7 @@
             "basicWeakness": "c01098",
             "id": "c01002",
             "name": "Daisy Walker",
-            "seed": 12002
+            "weaknessSeed": 12002
           },
           "playerId": "00000000-0000-0000-0000-000300000002",
           "promptCount": 88
@@ -242,7 +243,7 @@
             "basicWeakness": "c01099",
             "id": "c01003",
             "name": "Skids O'Toole",
-            "seed": 12003
+            "weaknessSeed": 12003
           },
           "playerId": "00000000-0000-0000-0000-000300000003",
           "promptCount": 169
@@ -250,6 +251,7 @@
       ],
       "reachedEndOf01142": true,
       "recordCount": 380,
+      "seed": 22003,
       "stepsByScenario": {
         "01104": 147,
         "01120": 128,
@@ -366,7 +368,7 @@
             "basicWeakness": "c01097",
             "id": "c01001",
             "name": "Roland Banks",
-            "seed": 12001
+            "weaknessSeed": 12001
           },
           "playerId": "00000000-0000-0000-0000-000400000001",
           "promptCount": 101
@@ -376,7 +378,7 @@
             "basicWeakness": "c01098",
             "id": "c01002",
             "name": "Daisy Walker",
-            "seed": 12002
+            "weaknessSeed": 12002
           },
           "playerId": "00000000-0000-0000-0000-000400000002",
           "promptCount": 135
@@ -386,7 +388,7 @@
             "basicWeakness": "c01099",
             "id": "c01003",
             "name": "Skids O'Toole",
-            "seed": 12003
+            "weaknessSeed": 12003
           },
           "playerId": "00000000-0000-0000-0000-000400000003",
           "promptCount": 107
@@ -396,7 +398,7 @@
             "basicWeakness": "c01100",
             "id": "c01004",
             "name": "Agnes Baker",
-            "seed": 12004
+            "weaknessSeed": 12004
           },
           "playerId": "00000000-0000-0000-0000-000400000004",
           "promptCount": 132
@@ -404,6 +406,7 @@
       ],
       "reachedEndOf01142": true,
       "recordCount": 475,
+      "seed": 22004,
       "stepsByScenario": {
         "01104": 180,
         "01120": 173,
