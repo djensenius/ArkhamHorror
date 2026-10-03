@@ -65,16 +65,20 @@ random seeds so the runs are reproducible.
 ## Hidden information finding
 
 The server's REST and websocket game update projection is `PublicGame` in
-`backend/arkham-api/library/Arkham/Game.hs`, delivered by
-`Api/Handler/Arkham/Games.hs` and `Api/Handler/Arkham/Games/Shared.hs`. The
-projection is not filtered per participant: each participant receives the same
-`PublicGame` JSON object, while the surrounding REST envelope only changes the
-caller `playerId`.
+`backend/arkham-api/library/Arkham/Game.hs`. The task-2.20 Haskell test is a
+projection/wire-encoding check: it encodes `PublicGame` through `toEncoding`,
+decodes those bytes, and verifies that the projection contains every
+investigator entry, including other players' non-empty `hand` and `deck` fields
+and the owner's own ordered `deck` field. That means hidden information is
+present in the `PublicGame` bytes.
 
-The task-2.20 Haskell test documents the current behavior concretely: for a
-WithFriends game, every participant's public game JSON contains every
-investigator entry, including other players' non-empty `hand` and `deck` fields.
-That means hidden information is present on the wire.
+The per-participant conclusion comes from the server delivery code, not from a
+per-user filter in the test: `Api/Handler/Arkham/Games.hs:148-158` builds the
+same `PublicGame gameId g.name gameLog.entries g.currentData` for the REST game
+payload while only the envelope `player` changes, and
+`Api/Handler/Arkham/Games/Shared.hs:617-623` publishes a single
+`GameUpdate (PublicGame gameId arkhamGameName publishLog arkhamGameCurrentData)`
+to the whole room. The projection is therefore not filtered per participant.
 
 The web client treats that payload as trusted game state and hides other hands in
 the UI by default rather than relying on a server-side projection. In
@@ -82,5 +86,7 @@ the UI by default rather than relying on a server-side projection. In
 the owning investigator, revealed cards, or when the local
 `showOtherPlayersHands` preference is enabled. `frontend/src/arkham/components/Player.vue`
 applies the same preference/ownership gate to in-hand enemies and treacheries.
-No gameplay or projection change is made here; this coverage task reports the
-existing hidden-information leak for follow-up client/server decisions.
+I found no matching UI gate for the full ordered `deck` field; that deck-order
+leak affects the owner as well as other players. No gameplay or projection
+change is made here; this coverage task reports the existing hidden-information
+leak for follow-up client/server decisions.

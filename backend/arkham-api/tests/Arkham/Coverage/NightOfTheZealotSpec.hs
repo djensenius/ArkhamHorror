@@ -60,12 +60,12 @@ spec = describe "Night of the Zealot coverage generator" do
         `shouldBe` [ClearUI, answerMessage, DoneChoosingDecks]
 
   describe "participant game views" do
-    it "documents that participant PublicGame views include every investigator's hand and deck" do
+    it "documents that the encoded PublicGame projection includes every investigator's hand and deck" do
       HiddenInformationReport {..} <- buildHiddenInformationReport (take 2 coreInvestigators)
-      hirParticipantViews `shouldBe` 2
-      hirIdenticalPublicGameForParticipants `shouldBe` True
+      hirWireProjectionDecoded `shouldBe` True
       hirOtherHandsPresent `shouldBe` True
       hirOtherDecksPresent `shouldBe` True
+      hirOwnerDecksPresent `shouldBe` True
 
   outputDir <- runIO $ lookupEnv "ARKHAM_NOTZ_COVERAGE_DIR"
   case outputDir of
@@ -319,7 +319,7 @@ botLoop app spec' playerId step seen scenarioCounts records lastQuestion = do
               lastQuestion' = Just $ smallQuestionSummary scenarioKey scenarioValue qVersion presentationValue rawQuestion
               seenKey = scenarioKey <> ":" <> compactText rawQuestion <> ":" <> compactText (withoutQuestionVersion presentationValue)
               repeatCount = Map.findWithDefault 0 seenKey seen
-          case selectAnswer spec' playerId game question presentationValue repeatCount of
+          case selectAnswer SoloBotPolicy spec' playerId game question presentationValue repeatCount of
             Left reason -> finishWith spec' game (reverse records) reason lastQuestion'
             Right selected -> do
               let answerJson = canonicalValue $ answerToJSON selected.answerValue
@@ -468,7 +468,7 @@ multiplayerBotLoop app players step seen scenarioCounts records lastQuestion = d
               lastQuestion' = Just $ smallQuestionSummary scenarioKey scenarioValue qVersion presentationValue rawQuestion
               seenKey = tshow playerId <> ":" <> scenarioKey <> ":" <> compactText rawQuestion <> ":" <> compactText (withoutQuestionVersion presentationValue)
               repeatCount = Map.findWithDefault 0 seenKey seen
-          case selectAnswer spec' playerId game question presentationValue repeatCount of
+          case selectAnswer MultiplayerBotPolicy spec' playerId game question presentationValue repeatCount of
             Left reason -> finishMultiplayerWith players game (reverse records) reason lastQuestion'
             Right selected -> do
               let answerJson = canonicalValue $ answerToJSON selected.answerValue
@@ -555,30 +555,33 @@ assertMultiplayerComplete result = do
   result.mcrStop.stopReason `shouldBe` "campaign finished"
   result.mcrStop.stopCampaignFinished `shouldBe` True
   result.mcrReachedDevourerBelowEnd `shouldBe` True
+  promptCountsByPlayer result.mcrRecords `Map.restrictKeys` Map.keysSet (Map.fromList result.mcrPlayers)
+    `shouldBe` promptCountsByPlayer result.mcrRecords
+  for_ result.mcrPlayers \(playerId, _) ->
+    Map.findWithDefault 0 playerId (promptCountsByPlayer result.mcrRecords) `shouldSatisfy` (> 0)
   case Map.lookup "01142" result.mcrOutcomes of
     Just ScenarioOutcome {soResolution = Just _} -> pure ()
     _ -> expectationFailure "multiplayer coverage finished without a real 01142 resolution"
 
 data HiddenInformationReport = HiddenInformationReport
-  { hirParticipantViews :: Int
-  , hirIdenticalPublicGameForParticipants :: Bool
+  { hirWireProjectionDecoded :: Bool
   , hirOtherHandsPresent :: Bool
   , hirOtherDecksPresent :: Bool
+  , hirOwnerDecksPresent :: Bool
   }
 
 buildHiddenInformationReport :: [InvestigatorSpec] -> IO HiddenInformationReport
 buildHiddenInformationReport specs = do
   game <- setupGameUntilPublicHands specs
   let players = multiplayerPlayers (length specs) specs
-      participantViews = map (participantView game) players
-      encodedGames = map snd participantViews
-      otherValues = [(viewer, other, gameValue) | (viewer, gameValue) <- participantViews, (other, _) <- players, viewer /= other]
+      wireProjection = publicGameWireProjection game
+      otherValues = [(viewer, other, wireProjection) | (viewer, _) <- players, (other, _) <- players, viewer /= other]
   pure
     HiddenInformationReport
-      { hirParticipantViews = length participantViews
-      , hirIdenticalPublicGameForParticipants = length (nub encodedGames) == 1
+      { hirWireProjectionDecoded = isJust $ previewPublicGameWireProjection game
       , hirOtherHandsPresent = all (\(_, other, gameValue) -> investigatorFieldPresent other "hand" gameValue) otherValues
       , hirOtherDecksPresent = all (\(_, other, gameValue) -> investigatorFieldPresent other "deck" gameValue) otherValues
+      , hirOwnerDecksPresent = all (\(playerId, _) -> investigatorFieldPresent playerId "deck" wireProjection) players
       }
 
 setupGameUntilPublicHands :: [InvestigatorSpec] -> IO Game
@@ -605,21 +608,25 @@ setupGameUntilPublicHands specs = do
             Nothing -> Exception.throwIO $ userError "hidden information setup stopped before all public hands/decks were visible"
             Just (playerId, spec', question) -> do
               let presentationValue = canonicalValue $ toJSON $ QuestionPresentation.questionPresentation game.gameScenarioSteps question
-              case selectAnswer spec' playerId game question presentationValue 0 of
+              case selectAnswer MultiplayerBotPolicy spec' playerId game question presentationValue 0 of
                 Left reason -> Exception.throwIO $ userError $ T.unpack reason
                 Right selected -> do
                   applySelectedAnswer app playerId game selected >>= either (Exception.throwIO . userError . T.unpack) pure
                   drive app players (step + 1)
 
-participantView :: Game -> (PlayerId, InvestigatorSpec) -> (PlayerId, Value)
-participantView game (playerId, _) =
-  ( playerId
-  , canonicalValue $ toJSON $ PublicGame ("hidden-information" :: Text) ("Hidden information check" :: Text) [] game
-  )
+publicGameWireProjection :: Game -> Value
+publicGameWireProjection game = fromMaybe (error "PublicGame wire projection did not decode") $ previewPublicGameWireProjection game
+
+previewPublicGameWireProjection :: Game -> Maybe Value
+previewPublicGameWireProjection game =
+  canonicalValue <$> either (const Nothing) Just decoded
+ where
+  publicGame = PublicGame ("hidden-information" :: Text) ("Hidden information check" :: Text) [] game
+  decoded = eitherDecode (encode publicGame) :: Either String Value
 
 publicGameHasHandsAndDecks :: [PlayerId] -> Game -> Bool
 publicGameHasHandsAndDecks players game =
-  let gameValue = snd $ participantView game (samplePlayerId, sampleInvestigator)
+  let gameValue = publicGameWireProjection game
    in all (\playerId -> investigatorFieldPresent playerId "hand" gameValue && investigatorFieldPresent playerId "deck" gameValue) players
 
 investigatorFieldPresent :: PlayerId -> Text -> Value -> Bool
@@ -643,6 +650,9 @@ investigatorForPlayer playerId = \case
   belongsToPlayer pid = \case
     Object investigator -> KeyMap.lookup "playerId" investigator == Just (toJSON pid)
     _ -> False
+
+data BotPolicy = SoloBotPolicy | MultiplayerBotPolicy
+  deriving stock Eq
 
 data SelectedAnswer = SelectedAnswer
   { answerValue :: Answer
@@ -686,8 +696,8 @@ drainMessages app = do
     Right Nothing -> Left "message processing timed out after 30 seconds"
     Right (Just ()) -> Right ()
 
-selectAnswer :: InvestigatorSpec -> PlayerId -> Game -> Question Message -> Value -> Int -> Either Text SelectedAnswer
-selectAnswer spec' playerId game question presentation repeatCount = case stripQuestion question of
+selectAnswer :: BotPolicy -> InvestigatorSpec -> PlayerId -> Game -> Question Message -> Value -> Int -> Either Text SelectedAnswer
+selectAnswer botPolicy spec' playerId game question presentation repeatCount = case stripQuestion question of
   ChooseDeck -> Right $ deckListAnswer "starter deck"
   ChooseUpgradeDeck -> Right $ deckListAnswer "continue without upgrading"
   ChooseJoinDeck {} -> Right $ deckListAnswer "join with starter deck"
@@ -718,7 +728,10 @@ selectAnswer spec' playerId game question presentation repeatCount = case stripQ
   choiceAnswer = case selectableIndexes presentation of
     [] -> Left $ "stuck: no selectable choices for " <> fromMaybe "unknown" (questionKind presentation)
     indexes@(firstChoice : _) ->
-      let choice = fromMaybe (fromMaybe firstChoice $ indexes !!? (repeatCount `mod` length indexes)) $ preferredSelectableIndex presentation indexes
+      let rotatedChoice = fromMaybe firstChoice $ indexes !!? (repeatCount `mod` length indexes)
+          choice = case botPolicy of
+            SoloBotPolicy -> rotatedChoice
+            MultiplayerBotPolicy -> fromMaybe rotatedChoice $ preferredSelectableIndex presentation indexes
        in Right
             SelectedAnswer
               { answerValue = Answer $ QuestionResponse choice (Just playerId) (Just game.gameScenarioSteps)
