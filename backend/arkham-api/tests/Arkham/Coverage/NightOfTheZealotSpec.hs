@@ -12,7 +12,7 @@ import Arkham.Classes.Entity (toAttrs)
 import Arkham.Classes.HasQueue (newQueue)
 import Arkham.Decklist.Type qualified as Decklist
 import Arkham.Difficulty (Difficulty (Easy))
-import Arkham.Game (Game (..), newCampaign, runMessages)
+import Arkham.Game (Game (..), PublicGame (..), newCampaign, runMessages)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsOver))
 import Arkham.Game.Utils (modeCampaign, modeScenario)
@@ -29,10 +29,9 @@ import Arkham.Source (Source (GameSource))
 import Arkham.Token (Token (Resource))
 import Control.Exception qualified as Exception
 import Control.Monad.Random (mkStdGen)
-import Data.Aeson (Result (..), Value (..), encode, fromJSON, object, toJSON, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.Aeson.Types (Pair)
+import Data.Aeson.Types (Pair, Result (..))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -60,6 +59,14 @@ spec = describe "Night of the Zealot coverage generator" do
       prependReplayAnswerMessages [ClearUI, answerMessage] [DoneChoosingDecks]
         `shouldBe` [ClearUI, answerMessage, DoneChoosingDecks]
 
+  describe "participant game views" do
+    it "documents that the encoded PublicGame projection includes every investigator's hand and deck" do
+      HiddenInformationReport {..} <- buildHiddenInformationReport (take 2 coreInvestigators)
+      hirWireProjectionDecoded `shouldBe` True
+      hirOtherHandsPresent `shouldBe` True
+      hirOtherDecksPresent `shouldBe` True
+      hirOwnerDecksPresent `shouldBe` True
+
   outputDir <- runIO $ lookupEnv "ARKHAM_NOTZ_COVERAGE_DIR"
   case outputDir of
     Nothing ->
@@ -72,6 +79,17 @@ spec = describe "Night of the Zealot coverage generator" do
         for_ results \result -> do
           result.crStop.stopReason `shouldBe` "campaign finished"
           result.crReachedDevourerBelowEnd `shouldBe` True
+
+  multiplayerOutputDir <- runIO $ lookupEnv "ARKHAM_NOTZ_MULTIPLAYER_COVERAGE_DIR"
+  case multiplayerOutputDir of
+    Nothing ->
+      it "runs multiplayer coverage only when ARKHAM_NOTZ_MULTIPLAYER_COVERAGE_DIR is set" do
+        pendingWith "set ARKHAM_NOTZ_MULTIPLAYER_COVERAGE_DIR to generate multiplayer coverage JSONL fixtures"
+    Just dir ->
+      it "records deterministic 2-4 investigator WithFriends campaign bot runs" do
+        results <- traverse (runMultiplayerCoverage dir) multiplayerParties
+        writeMultiplayerSummary dir results
+        for_ results assertMultiplayerComplete
 
 coreInvestigators :: [InvestigatorSpec]
 coreInvestigators =
@@ -301,7 +319,7 @@ botLoop app spec' playerId step seen scenarioCounts records lastQuestion = do
               lastQuestion' = Just $ smallQuestionSummary scenarioKey scenarioValue qVersion presentationValue rawQuestion
               seenKey = scenarioKey <> ":" <> compactText rawQuestion <> ":" <> compactText (withoutQuestionVersion presentationValue)
               repeatCount = Map.findWithDefault 0 seenKey seen
-          case selectAnswer spec' playerId game question presentationValue repeatCount of
+          case selectAnswer SoloBotPolicy spec' playerId game question presentationValue repeatCount of
             Left reason -> finishWith spec' game (reverse records) reason lastQuestion'
             Right selected -> do
               let answerJson = canonicalValue $ answerToJSON selected.answerValue
@@ -377,6 +395,265 @@ emptyCoverageResult spec' reason =
     , crJsonlBytes = 0
     }
 
+multiplayerParties :: [[InvestigatorSpec]]
+multiplayerParties = map (`take` coreInvestigators) [2, 3, 4]
+
+data MultiplayerCoverageResult = MultiplayerCoverageResult
+  { mcrPlayerCount :: Int
+  , mcrPlayers :: [(PlayerId, InvestigatorSpec)]
+  , mcrRecords :: [CoverageRecord]
+  , mcrStop :: StopReport
+  , mcrOutcomes :: Map Text ScenarioOutcome
+  , mcrReachedDevourerBelowEnd :: Bool
+  , mcrJsonlBytes :: Integer
+  }
+
+runMultiplayerCoverage :: FilePath -> [InvestigatorSpec] -> IO MultiplayerCoverageResult
+runMultiplayerCoverage dir specs = do
+  createDirectoryIfMissing True dir
+  result <- doRun `catchAny` \err -> pure $ emptyMultiplayerCoverageResult specs ("exception before run: " <> T.pack (show err))
+  bytes <- writeMultiplayerRecords dir result
+  pure result {mcrJsonlBytes = bytes}
+ where
+  playerCount = length specs
+  seed = 22000 + playerCount
+  players = multiplayerPlayers playerCount specs
+  doRun = do
+    let game0 = newCampaign (CampaignId "01") Nothing seed playerCount Easy False
+    gameRef <- newIORef game0
+    queueRef <- newQueue []
+    genRef <- newIORef $ mkStdGen seed
+    let app = GameApp gameRef queueRef genRef (pure . const ()) Nothing
+    setupResult <- tryAny do
+      runGameApp app $ traverse_ (Game.addPlayer . fst) players
+      drainMessages app
+    case setupResult of
+      Left err -> do
+        game <- readIORef app.appGame
+        finishMultiplayerWith players game [] ("setup failed: " <> T.pack (show err)) Nothing
+      Right (Left err) -> do
+        game <- readIORef app.appGame
+        finishMultiplayerWith players game [] ("setup failed: " <> err) Nothing
+      Right (Right ()) -> multiplayerBotLoop app players 0 mempty mempty [] Nothing
+
+multiplayerPlayers :: Int -> [InvestigatorSpec] -> [(PlayerId, InvestigatorSpec)]
+multiplayerPlayers playerCount specs =
+  [ (PlayerId $ UUID.fromWords 0 0 (fromIntegral playerCount) (fromIntegral (idx + 1)), spec')
+  | (idx, spec') <- zip [(0 :: Int) ..] specs
+  ]
+
+multiplayerBotLoop
+  :: GameApp
+  -> [(PlayerId, InvestigatorSpec)]
+  -> Int
+  -> Map Text Int
+  -> Map Text Int
+  -> [CoverageRecord]
+  -> Maybe Value
+  -> IO MultiplayerCoverageResult
+multiplayerBotLoop app players step seen scenarioCounts records lastQuestion = do
+  result <- tryAny do
+    game <- readIORef app.appGame
+    let (scenarioKey, scenarioValue) = scenarioLabel game
+        scenarioStepCount = Map.findWithDefault 0 scenarioKey scenarioCounts
+    if scenarioStepCount >= multiplayerMaxStepsPerScenario
+      then finishMultiplayerWith players game (reverse records) ("step cap reached for scenario " <> scenarioKey) lastQuestion
+      else case nextPendingPlayerQuestion players game of
+        Nothing -> finishMultiplayerWith players game (reverse records) (noMultiplayerQuestionReason game) lastQuestion
+        Just (playerId, spec', question) -> do
+          let qVersion = game.gameScenarioSteps
+              presentation = QuestionPresentation.questionPresentation qVersion question
+              presentationValue = canonicalValue $ toJSON presentation
+              rawQuestion = canonicalValue $ toJSON question
+              lastQuestion' = Just $ smallQuestionSummary scenarioKey scenarioValue qVersion presentationValue rawQuestion
+              seenKey = tshow playerId <> ":" <> scenarioKey <> ":" <> compactText rawQuestion <> ":" <> compactText (withoutQuestionVersion presentationValue)
+              repeatCount = Map.findWithDefault 0 seenKey seen
+          case selectAnswer MultiplayerBotPolicy spec' playerId game question presentationValue repeatCount of
+            Left reason -> finishMultiplayerWith players game (reverse records) reason lastQuestion'
+            Right selected -> do
+              let answerJson = canonicalValue $ answerToJSON selected.answerValue
+              case assertAnswerRoundTrip selected.answerValue answerJson of
+                Left reason -> finishMultiplayerWith players game (reverse records) reason lastQuestion'
+                Right () -> do
+                  let record =
+                        CoverageRecord
+                          { recordScenario = scenarioValue
+                          , recordScenarioKey = scenarioKey
+                          , recordInvestigator = spec'.isInvestigatorId
+                          , recordStepIndex = step
+                          , recordQuestionVersion = qVersion
+                          , recordPlayerId = playerId
+                          , recordRawQuestion = rawQuestion
+                          , recordQuestionPresentation = presentationValue
+                          , recordChosenAnswer = answerJson
+                          , recordChoiceNote = selected.note
+                          , recordChosenChoiceKind = selected.chosenChoiceKind
+                          }
+                      records' = record : records
+                      scenarioCounts' = Map.insertWith (+) scenarioKey 1 scenarioCounts
+                  applySelectedAnswer app playerId game selected >>= \case
+                    Left reason -> finishMultiplayerWith players game (reverse records') reason lastQuestion'
+                    Right () -> multiplayerBotLoop app players (step + 1) (Map.insert seenKey (repeatCount + 1) seen) scenarioCounts' records' lastQuestion'
+  case result of
+    Left err -> do
+      game <- readIORef app.appGame
+      finishMultiplayerWith players game (reverse records) ("exception during run: " <> T.pack (show err)) lastQuestion
+    Right coverage -> pure coverage
+ where
+  multiplayerMaxStepsPerScenario = 3500
+
+nextPendingPlayerQuestion :: [(PlayerId, InvestigatorSpec)] -> Game -> Maybe (PlayerId, InvestigatorSpec, Question Message)
+nextPendingPlayerQuestion players game = asum do
+  playerId <- nub $ game.gameActivePlayerId : map fst players
+  spec' <- toList $ Map.lookup playerId playerMap
+  pure $ (playerId, spec',) <$> Map.lookup playerId game.gameQuestion
+ where
+  playerMap = Map.fromList players
+
+noMultiplayerQuestionReason :: Game -> Text
+noMultiplayerQuestionReason game
+  | campaignFinished game = "campaign finished"
+  | otherwise = "stuck: no pending question for any coverage player"
+
+finishMultiplayerWith
+  :: [(PlayerId, InvestigatorSpec)]
+  -> Game
+  -> [CoverageRecord]
+  -> Text
+  -> Maybe Value
+  -> IO MultiplayerCoverageResult
+finishMultiplayerWith players game records reason lastQuestion = do
+  let outcomes = scenarioOutcomes game
+      reachedEnd = maybe False (isJust . soResolution) (Map.lookup "01142" outcomes)
+      (_, scenarioValue) = scenarioLabel game
+      (scenarioKey, _) = scenarioLabel game
+  pure
+    MultiplayerCoverageResult
+      { mcrPlayerCount = length players
+      , mcrPlayers = players
+      , mcrRecords = records
+      , mcrStop = StopReport reason scenarioValue scenarioKey lastQuestion (campaignFinished game)
+      , mcrOutcomes = outcomes
+      , mcrReachedDevourerBelowEnd = reachedEnd
+      , mcrJsonlBytes = 0
+      }
+
+emptyMultiplayerCoverageResult :: [InvestigatorSpec] -> Text -> MultiplayerCoverageResult
+emptyMultiplayerCoverageResult specs reason =
+  MultiplayerCoverageResult
+    { mcrPlayerCount = length specs
+    , mcrPlayers = multiplayerPlayers (length specs) specs
+    , mcrRecords = []
+    , mcrStop = StopReport reason (object ["kind" .= ("not-started" :: Text)]) "not-started" Nothing False
+    , mcrOutcomes = mempty
+    , mcrReachedDevourerBelowEnd = False
+    , mcrJsonlBytes = 0
+    }
+
+assertMultiplayerComplete :: MultiplayerCoverageResult -> Expectation
+assertMultiplayerComplete result = do
+  result.mcrStop.stopReason `shouldBe` "campaign finished"
+  result.mcrStop.stopCampaignFinished `shouldBe` True
+  result.mcrReachedDevourerBelowEnd `shouldBe` True
+  promptCountsByPlayer result.mcrRecords `Map.restrictKeys` Map.keysSet (Map.fromList result.mcrPlayers)
+    `shouldBe` promptCountsByPlayer result.mcrRecords
+  for_ result.mcrPlayers \(playerId, _) ->
+    Map.findWithDefault 0 playerId (promptCountsByPlayer result.mcrRecords) `shouldSatisfy` (> 0)
+  case Map.lookup "01142" result.mcrOutcomes of
+    Just ScenarioOutcome {soResolution = Just _} -> pure ()
+    _ -> expectationFailure "multiplayer coverage finished without a real 01142 resolution"
+
+data HiddenInformationReport = HiddenInformationReport
+  { hirWireProjectionDecoded :: Bool
+  , hirOtherHandsPresent :: Bool
+  , hirOtherDecksPresent :: Bool
+  , hirOwnerDecksPresent :: Bool
+  }
+
+buildHiddenInformationReport :: [InvestigatorSpec] -> IO HiddenInformationReport
+buildHiddenInformationReport specs = do
+  game <- setupGameUntilPublicHands specs
+  let players = multiplayerPlayers (length specs) specs
+      wireProjection = publicGameWireProjection game
+      otherValues = [(viewer, other, wireProjection) | (viewer, _) <- players, (other, _) <- players, viewer /= other]
+  pure
+    HiddenInformationReport
+      { hirWireProjectionDecoded = isJust $ previewPublicGameWireProjection game
+      , hirOtherHandsPresent = all (\(_, other, gameValue) -> investigatorFieldPresent other "hand" gameValue) otherValues
+      , hirOtherDecksPresent = all (\(_, other, gameValue) -> investigatorFieldPresent other "deck" gameValue) otherValues
+      , hirOwnerDecksPresent = all (\(playerId, _) -> investigatorFieldPresent playerId "deck" wireProjection) players
+      }
+
+setupGameUntilPublicHands :: [InvestigatorSpec] -> IO Game
+setupGameUntilPublicHands specs = do
+  let playerCount = length specs
+      seed = 23000 + playerCount
+      players = multiplayerPlayers playerCount specs
+      game0 = newCampaign (CampaignId "01") Nothing seed playerCount Easy False
+  gameRef <- newIORef game0
+  queueRef <- newQueue []
+  genRef <- newIORef $ mkStdGen seed
+  let app = GameApp gameRef queueRef genRef (pure . const ()) Nothing
+  runGameApp app $ traverse_ (Game.addPlayer . fst) players
+  drainMessages app >>= either (Exception.throwIO . userError . T.unpack) pure
+  drive app players (0 :: Int)
+ where
+  drive app players step
+    | step >= 100 = Exception.throwIO $ userError "hidden information setup did not expose public hands within 100 answers"
+    | otherwise = do
+        game <- readIORef app.appGame
+        if publicGameHasHandsAndDecks (map fst players) game
+          then pure game
+          else case nextPendingPlayerQuestion players game of
+            Nothing -> Exception.throwIO $ userError "hidden information setup stopped before all public hands/decks were visible"
+            Just (playerId, spec', question) -> do
+              let presentationValue = canonicalValue $ toJSON $ QuestionPresentation.questionPresentation game.gameScenarioSteps question
+              case selectAnswer MultiplayerBotPolicy spec' playerId game question presentationValue 0 of
+                Left reason -> Exception.throwIO $ userError $ T.unpack reason
+                Right selected -> do
+                  applySelectedAnswer app playerId game selected >>= either (Exception.throwIO . userError . T.unpack) pure
+                  drive app players (step + 1)
+
+publicGameWireProjection :: Game -> Value
+publicGameWireProjection game = fromMaybe (error "PublicGame wire projection did not decode") $ previewPublicGameWireProjection game
+
+previewPublicGameWireProjection :: Game -> Maybe Value
+previewPublicGameWireProjection game =
+  canonicalValue <$> either (const Nothing) Just decoded
+ where
+  publicGame = PublicGame ("hidden-information" :: Text) ("Hidden information check" :: Text) [] game
+  decoded = eitherDecode (encode publicGame) :: Either String Value
+
+publicGameHasHandsAndDecks :: [PlayerId] -> Game -> Bool
+publicGameHasHandsAndDecks players game =
+  let gameValue = publicGameWireProjection game
+   in all (\playerId -> investigatorFieldPresent playerId "hand" gameValue && investigatorFieldPresent playerId "deck" gameValue) players
+
+investigatorFieldPresent :: PlayerId -> Text -> Value -> Bool
+investigatorFieldPresent playerId fieldName gameValue = case investigatorForPlayer playerId gameValue of
+  Just (Object investigator) -> isNonEmpty $ KeyMap.lookup (Key.fromText fieldName) investigator
+  _ -> False
+ where
+  isNonEmpty = \case
+    Just (Array xs) -> not $ null xs
+    Just Null -> False
+    Just _ -> True
+    Nothing -> False
+
+investigatorForPlayer :: PlayerId -> Value -> Maybe Value
+investigatorForPlayer playerId = \case
+  Object gameObject -> do
+    Object investigators <- KeyMap.lookup "investigators" gameObject
+    find (belongsToPlayer playerId) $ KeyMap.elems investigators
+  _ -> Nothing
+ where
+  belongsToPlayer pid = \case
+    Object investigator -> KeyMap.lookup "playerId" investigator == Just (toJSON pid)
+    _ -> False
+
+data BotPolicy = SoloBotPolicy | MultiplayerBotPolicy
+  deriving stock Eq
+
 data SelectedAnswer = SelectedAnswer
   { answerValue :: Answer
   , answerMessages :: Maybe [Message]
@@ -419,8 +696,8 @@ drainMessages app = do
     Right Nothing -> Left "message processing timed out after 30 seconds"
     Right (Just ()) -> Right ()
 
-selectAnswer :: InvestigatorSpec -> PlayerId -> Game -> Question Message -> Value -> Int -> Either Text SelectedAnswer
-selectAnswer spec' playerId game question presentation repeatCount = case stripQuestion question of
+selectAnswer :: BotPolicy -> InvestigatorSpec -> PlayerId -> Game -> Question Message -> Value -> Int -> Either Text SelectedAnswer
+selectAnswer botPolicy spec' playerId game question presentation repeatCount = case stripQuestion question of
   ChooseDeck -> Right $ deckListAnswer "starter deck"
   ChooseUpgradeDeck -> Right $ deckListAnswer "continue without upgrading"
   ChooseJoinDeck {} -> Right $ deckListAnswer "join with starter deck"
@@ -451,7 +728,10 @@ selectAnswer spec' playerId game question presentation repeatCount = case stripQ
   choiceAnswer = case selectableIndexes presentation of
     [] -> Left $ "stuck: no selectable choices for " <> fromMaybe "unknown" (questionKind presentation)
     indexes@(firstChoice : _) ->
-      let choice = fromMaybe firstChoice $ indexes !!? (repeatCount `mod` length indexes)
+      let rotatedChoice = fromMaybe firstChoice $ indexes !!? (repeatCount `mod` length indexes)
+          choice = case botPolicy of
+            SoloBotPolicy -> rotatedChoice
+            MultiplayerBotPolicy -> fromMaybe rotatedChoice $ preferredSelectableIndex presentation indexes
        in Right
             SelectedAnswer
               { answerValue = Answer $ QuestionResponse choice (Just playerId) (Just game.gameScenarioSteps)
@@ -505,6 +785,12 @@ choiceKinds = \case
     Just (Array choices) -> nub $ sort [kind | Object choice <- toList choices, Just (String kind) <- [KeyMap.lookup "kind" choice]]
     _ -> []
   _ -> []
+
+preferredSelectableIndex :: Value -> [Int] -> Maybe Int
+preferredSelectableIndex presentation indexes = asum $ map firstKind preferredKinds
+ where
+  preferredKinds = ["applySkillTestResults", "startSkillTest", "skipTriggers", "resolveForcedAbility"]
+  firstKind kind = find (\idx -> choiceKindAt idx presentation == Just kind) indexes
 
 choiceKindAt :: Int -> Value -> Maybe Text
 choiceKindAt choiceIndex = \case
@@ -703,6 +989,22 @@ writeSummary dir results = do
   createDirectoryIfMissing True dir
   BL8.writeFile (dir </> "summary.json") $ BL8.pack $ prettyCanonical $ summaryValue results
 
+writeMultiplayerRecords :: FilePath -> MultiplayerCoverageResult -> IO Integer
+writeMultiplayerRecords dir result@MultiplayerCoverageResult {..} = do
+  createDirectoryIfMissing True dir
+  let bytes = BL8.unlines $ map (encodeCanonical . toJSON) mcrRecords
+      path = dir </> multiplayerRecordFile result
+  BL8.writeFile path bytes
+  pure $ fromIntegral $ BL8.length bytes
+
+writeMultiplayerSummary :: FilePath -> [MultiplayerCoverageResult] -> IO ()
+writeMultiplayerSummary dir results = do
+  createDirectoryIfMissing True dir
+  BL8.writeFile (dir </> "summary.json") $ BL8.pack $ prettyCanonical $ multiplayerSummaryValue results
+
+multiplayerRecordFile :: MultiplayerCoverageResult -> FilePath
+multiplayerRecordFile result = show result.mcrPlayerCount <> "p.jsonl"
+
 summaryValue :: [CoverageResult] -> Value
 summaryValue results =
   object
@@ -728,6 +1030,44 @@ summaryValue results =
       , "stepsByScenario" .= stepsByScenario crRecords
       , "stop" .= crStop
       ]
+
+multiplayerSummaryValue :: [MultiplayerCoverageResult] -> Value
+multiplayerSummaryValue results =
+  object
+    [ "artifactName" .= ("night-of-the-zealot-multiplayer-coverage-jsonl" :: Text)
+    , "botPolicy" .= ("active player first, then the first pending coverage player; answer that player's own prompt through the server answer path; prefer skill-test resolution/start and skip-trigger choices, otherwise rotate selectable choices on repeated per-player question shape; minimum legal amounts; exchange 0; continue with server-provided step" :: Text)
+    , "campaign" .= object ["id" .= ("01" :: Text), "name" .= ("Night of the Zealot" :: Text)]
+    , "difficulty" .= ("Easy" :: Text)
+    , "runs" .= map runSummary results
+    , "schemaVersion" .= (1 :: Int)
+    ]
+ where
+  runSummary result@MultiplayerCoverageResult {..} =
+    object
+      [ "distinctChoiceKinds" .= distinctChoiceKinds mcrRecords
+      , "distinctChosenChoiceKinds" .= distinctChosenChoiceKinds mcrRecords
+      , "distinctQuestionKinds" .= distinctQuestionKinds mcrRecords
+      , "file" .= multiplayerRecordFile result
+      , "jsonlBytes" .= mcrJsonlBytes
+      , "outcomes" .= mcrOutcomes
+      , "playerCount" .= mcrPlayerCount
+      , "players" .= map (playerSummary $ promptCountsByPlayer mcrRecords) mcrPlayers
+      , "recordCount" .= length mcrRecords
+      , "reachedEndOf01142" .= mcrReachedDevourerBelowEnd
+      , "stepsByScenario" .= stepsByScenario mcrRecords
+      , "stop" .= mcrStop
+      , "stopReason" .= mcrStop.stopReason
+      ]
+
+  playerSummary counts (playerId, spec') =
+    object
+      [ "investigator" .= investigatorMetadata spec'
+      , "playerId" .= playerId
+      , "promptCount" .= Map.findWithDefault 0 playerId counts
+      ]
+
+promptCountsByPlayer :: [CoverageRecord] -> Map PlayerId Int
+promptCountsByPlayer = foldl' (\m r -> Map.insertWith (+) r.recordPlayerId 1 m) mempty
 
 stepsByScenario :: [CoverageRecord] -> Map Text Int
 stepsByScenario = foldl' (\m r -> Map.insertWith (+) r.recordScenarioKey 1 m) mempty

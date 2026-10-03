@@ -1,0 +1,443 @@
+{
+  "artifactName": "night-of-the-zealot-multiplayer-coverage-jsonl",
+  "botPolicy": "active player first, then the first pending coverage player; answer that player's own prompt through the server answer path; prefer skill-test resolution/start and skip-trigger choices, otherwise rotate selectable choices on repeated per-player question shape; minimum legal amounts; exchange 0; continue with server-provided step",
+  "campaign": {
+    "id": "01",
+    "name": "Night of the Zealot"
+  },
+  "difficulty": "Easy",
+  "runs": [
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "engage",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "2p.jsonl",
+      "jsonlBytes": 1617909,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "playerCount": 2,
+      "players": [
+        {
+          "investigator": {
+            "basicWeakness": "c01097",
+            "id": "c01001",
+            "name": "Roland Banks",
+            "seed": 12001
+          },
+          "playerId": "00000000-0000-0000-0000-000200000001",
+          "promptCount": 191
+        },
+        {
+          "investigator": {
+            "basicWeakness": "c01098",
+            "id": "c01002",
+            "name": "Daisy Walker",
+            "seed": 12002
+          },
+          "playerId": "00000000-0000-0000-0000-000200000002",
+          "promptCount": 134
+        }
+      ],
+      "reachedEndOf01142": true,
+      "recordCount": 325,
+      "stepsByScenario": {
+        "01104": 180,
+        "01120": 94,
+        "01142": 44,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 3,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 44,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      },
+      "stopReason": "campaign finished"
+    },
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "engage",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseN",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "3p.jsonl",
+      "jsonlBytes": 2012200,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "playerCount": 3,
+      "players": [
+        {
+          "investigator": {
+            "basicWeakness": "c01097",
+            "id": "c01001",
+            "name": "Roland Banks",
+            "seed": 12001
+          },
+          "playerId": "00000000-0000-0000-0000-000300000001",
+          "promptCount": 123
+        },
+        {
+          "investigator": {
+            "basicWeakness": "c01098",
+            "id": "c01002",
+            "name": "Daisy Walker",
+            "seed": 12002
+          },
+          "playerId": "00000000-0000-0000-0000-000300000002",
+          "promptCount": 88
+        },
+        {
+          "investigator": {
+            "basicWeakness": "c01099",
+            "id": "c01003",
+            "name": "Skids O'Toole",
+            "seed": 12003
+          },
+          "playerId": "00000000-0000-0000-0000-000300000003",
+          "promptCount": 169
+        }
+      ],
+      "reachedEndOf01142": true,
+      "recordCount": 380,
+      "stepsByScenario": {
+        "01104": 147,
+        "01120": 128,
+        "01142": 97,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 4,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 97,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      },
+      "stopReason": "campaign finished"
+    },
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "engage",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "4p.jsonl",
+      "jsonlBytes": 2545372,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "playerCount": 4,
+      "players": [
+        {
+          "investigator": {
+            "basicWeakness": "c01097",
+            "id": "c01001",
+            "name": "Roland Banks",
+            "seed": 12001
+          },
+          "playerId": "00000000-0000-0000-0000-000400000001",
+          "promptCount": 101
+        },
+        {
+          "investigator": {
+            "basicWeakness": "c01098",
+            "id": "c01002",
+            "name": "Daisy Walker",
+            "seed": 12002
+          },
+          "playerId": "00000000-0000-0000-0000-000400000002",
+          "promptCount": 135
+        },
+        {
+          "investigator": {
+            "basicWeakness": "c01099",
+            "id": "c01003",
+            "name": "Skids O'Toole",
+            "seed": 12003
+          },
+          "playerId": "00000000-0000-0000-0000-000400000003",
+          "promptCount": 107
+        },
+        {
+          "investigator": {
+            "basicWeakness": "c01100",
+            "id": "c01004",
+            "name": "Agnes Baker",
+            "seed": 12004
+          },
+          "playerId": "00000000-0000-0000-0000-000400000004",
+          "promptCount": 132
+        }
+      ],
+      "reachedEndOf01142": true,
+      "recordCount": 475,
+      "stepsByScenario": {
+        "01104": 180,
+        "01120": 173,
+        "01142": 113,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 5,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 113,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      },
+      "stopReason": "campaign finished"
+    }
+  ],
+  "schemaVersion": 1
+}
