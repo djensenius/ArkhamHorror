@@ -977,6 +977,11 @@ generation metadata rather than server-authenticated claims.
 - `EventChanged` carries no payload and instructs clients to refetch event
   details. `SharedStateUpdate` is a complete versioned shared-state value.
 
+Revision `0.1.48` documents participant-socket answer rejection feedback:
+when an answer is `Unhandled`, only the submitting connection receives a
+`GameError` reason and the authoritative state is unchanged. It does not add a
+new server-message tag or change any JSON payload shape.
+
 The server-message schema and backend assertions cover every `ApiResponse`
 constructor. The `GameUpdate` fixture comes from a deterministic pending
 scenario built by the production `newScenario`, `PublicGame`, and `ApiResponse`
