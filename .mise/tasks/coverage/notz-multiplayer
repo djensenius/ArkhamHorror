@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+#MISE description="Generate deterministic multiplayer Night of the Zealot prompt coverage JSONL and verify the committed summary"
+set -eu
+output_dir="${ARKHAM_NOTZ_MULTIPLAYER_COVERAGE_DIR:-$PWD/contracts/coverage/night-of-the-zealot-multiplayer/generated}"
+mkdir -p "${output_dir}"
+canonical_output_dir="$(cd "${output_dir}" && pwd -P)"
+canonical_root="$(cd / && pwd -P)"
+canonical_home="$(cd "${HOME}" && pwd -P)"
+committed_dir="$PWD/contracts/coverage/night-of-the-zealot-multiplayer"
+canonical_committed_dir="$(cd "${committed_dir}" && pwd -P)"
+case "${canonical_output_dir}" in
+  "${canonical_root}"|"${canonical_home}")
+    printf 'refusing unsafe ARKHAM_NOTZ_MULTIPLAYER_COVERAGE_DIR: %s -> %s\n' "${output_dir}" "${canonical_output_dir}" >&2
+    exit 1
+    ;;
+esac
+if [ "${canonical_output_dir}" = "${canonical_committed_dir}" ]; then
+  printf 'refusing ARKHAM_NOTZ_MULTIPLAYER_COVERAGE_DIR that would overwrite committed summary: %s -> %s\n' "${output_dir}" "${canonical_output_dir}" >&2
+  exit 1
+fi
+rm -f "${canonical_output_dir}"/*.jsonl "${canonical_output_dir}"/summary.json
+(
+  cd backend
+  ARKHAM_NOTZ_MULTIPLAYER_COVERAGE_DIR="${canonical_output_dir}" \
+    stack test arkham-api:spec --system-ghc --test-arguments '--match "Night of the Zealot coverage generator/records deterministic 2-4 investigator WithFriends campaign bot runs"'
+)
+diff -u contracts/coverage/night-of-the-zealot-multiplayer/summary.json "${canonical_output_dir}/summary.json"
