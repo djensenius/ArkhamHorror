@@ -47,6 +47,29 @@
       "additionalProperties": false,
       "required": [
         "tag",
+        "reason",
+        "questionVersion"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AnswerRejected"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "questionVersion": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
         "title",
         "card"
       ],

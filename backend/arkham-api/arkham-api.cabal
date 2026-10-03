@@ -9018,6 +9018,7 @@ test-suite spec
     , persistent
     , random
     , relude
+    , stm
     , text
     , time
     , unix

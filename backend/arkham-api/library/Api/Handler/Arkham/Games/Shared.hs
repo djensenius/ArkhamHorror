@@ -69,7 +69,7 @@ import Arkham.Target (Target (InvestigatorTarget))
 import Arkham.Treachery.Types (treacheryPlacement)
 import Conduit
 import Control.Concurrent.MVar
-import Control.Concurrent.STM.TBQueue (readTBQueue)
+import Control.Concurrent.STM.TBQueue (isFullTBQueue, readTBQueue, writeTBQueue)
 import Control.Lens (view)
 import Control.Monad.Random (mkStdGen)
 import Data.Aeson.Types (parse)
@@ -267,16 +267,32 @@ gameStreamFor role customCards gameId = catchingConnectionException $ withKeepAl
             )
             `catch` (\(_ :: SlowSubscriber) -> pure ())
 
+    let updateAnswer answer = updateGameWithAnswerRejection customCards answer gameId (Just room)
     race_
       sender
-      (runConduit $ sourceWS .| mapM_C (handleData role customCards room broadcast))
- where
-  handleData streamRole customCards room broadcast dataPacket = lift do
-    case decodeGameStreamAnswer streamRole dataPacket of
-      Left err -> $(logWarn) $ tshow err
-      Right Nothing -> pure ()
-      Right (Just answer) ->
-        updateGame customCards answer gameId (Just room) `catch` \(e :: SomeException) -> do
+      (runConduit $ sourceWS .| mapM_C (lift . handleGameStreamFrame role logGameStreamDecodeError updateAnswer sub broadcast))
+
+logGameStreamDecodeError :: String -> Handler ()
+logGameStreamDecodeError err = $(logWarn) $ tshow err
+
+handleGameStreamFrame
+  :: MonadUnliftIO m
+  => GameStreamRole
+  -> (String -> m ())
+  -> (Answer -> m (Maybe Text))
+  -> Subscriber
+  -> Broadcast
+  -> ByteString
+  -> m ()
+handleGameStreamFrame streamRole onDecodeError updateAnswer subscriber broadcast dataPacket =
+  case decodeGameStreamAnswer streamRole dataPacket of
+    Left err -> onDecodeError err
+    Right Nothing -> pure ()
+    Right (Just answer) ->
+      ( updateAnswer answer
+          >>= traverse_ (liftIO . sendAnswerRejection subscriber answer)
+      )
+        `catch` \(e :: SomeException) -> do
           liftIO $ broadcast $ encode $ GameError $ tshow e
 
 data SlowSubscriber = SlowSubscriber
@@ -325,6 +341,32 @@ case messages are silently dropped instead of buffered indefinitely.
 -}
 type Broadcast = BSL.ByteString -> IO ()
 
+sendToSubscriber :: Subscriber -> BSL.ByteString -> IO ()
+sendToSubscriber Subscriber {subQueue, subOverflow} msg = atomically do
+  overflowed <- readTVar subOverflow
+  unless overflowed do
+    full <- isFullTBQueue subQueue
+    if full
+      then writeTVar subOverflow True
+      else writeTBQueue subQueue msg
+
+sendAnswerRejection :: Subscriber -> Answer -> Text -> IO ()
+sendAnswerRejection subscriber answer reason =
+  sendToSubscriber subscriber $ encode $ AnswerRejected reason (answerQuestionVersion answer)
+
+answerQuestionVersion :: Answer -> Maybe Int
+answerQuestionVersion = \case
+  Answer response -> qrQuestionVersion response
+  OrderedAnswer response -> orQuestionVersion response
+  AmountsAnswer response -> arQuestionVersion response
+  PaymentAmountsAnswer response -> parQuestionVersion response
+  _ -> Nothing
+
+answerRejectionReason :: Reply -> Maybe Text
+answerRejectionReason = \case
+  Unhandled reason -> Just reason
+  Handled _ -> Nothing
+
 {- | Hard cap on a single runMessages invocation. If a game's message
 processing exceeds this we kill the action and roll back the surrounding
 DB transaction so the worker (and the FOR UPDATE lock on the game row)
@@ -362,7 +404,10 @@ phaseTransitions oldPhase newPhase entered = go oldPhase (entered <> [newPhase])
     | otherwise = p : go p ps
 
 updateGame :: Map CardCode CustomCard -> Answer -> ArkhamGameId -> Maybe Room -> Handler ()
-updateGame customCards response gameId mRoom = do
+updateGame customCards response gameId mRoom = void $ updateGameWithAnswerRejection customCards response gameId mRoom
+
+updateGameWithAnswerRejection :: Map CardCode CustomCard -> Answer -> ArkhamGameId -> Maybe Room -> Handler (Maybe Text)
+updateGameWithAnswerRejection customCards response gameId mRoom = do
   let broadcast :: Broadcast
       broadcast = case mRoom of
         Nothing -> \_ -> pure ()
@@ -370,7 +415,7 @@ updateGame customCards response gameId mRoom = do
   let rejectOrganizerGate action =
         action `catch` \EpicOrganizerGateBlocked ->
           permissionDenied "This event is waiting for the organizer's clue allocation"
-  (ArkhamGame {..}, oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements, mPhaseChanged) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
+  (ArkhamGame {..}, oldLogEntries, updatedLog, mSharedUpdate, actAdvanced, newAchievements, mPhaseChanged, mAnswerRejection) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
     -- Read the prior log from the per-room cache when it's in sync with
     -- the just-locked game's step; otherwise fall back to the DB. Avoids
     -- the 217-row-avg getGameLog read on every action in the common case.
@@ -397,7 +442,7 @@ updateGame customCards response gameId mRoom = do
     logRef <- newIORef []
     reply <- handleAnswer gameJson playerId response
     case reply of
-      Unhandled _ -> pure (g, oldLogEntries, [], Nothing, False, [], [])
+      Unhandled reason -> pure (g, oldLogEntries, [], Nothing, False, [], [], Just reason)
       Handled answerMessages -> do
         -- Epic Multiplayer: if this game is a group within an event, build an
         -- EpicEnv so Shared* messages emitted during the action are captured as
@@ -594,6 +639,7 @@ updateGame customCards response gameId mRoom = do
           , newAchievements
           , case ge of
               Game {gamePhase = newPhase} -> phaseTransitions oldPhase newPhase enteredPhases
+          , Nothing
           )
 
   -- Update the per-room cache after the DB transaction has committed,
@@ -634,6 +680,8 @@ updateGame customCards response gameId mRoom = do
   -- step so it can't be locally undone (the other groups follow on their own turns
   -- via 'ActAdvanceGen'). 'arkhamGameStep' here is the post-commit (new) step.
   when actAdvanced $ setGameUndoFloor gameId arkhamGameStep
+
+  pure mAnswerRejection
 
 {- | Merge reported checklist items into the user's progress row for a
 cross-playthrough achievement (see 'achievementChecklist'); the row's

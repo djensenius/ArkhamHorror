@@ -141,6 +141,7 @@ interface GameDrewCards {
 // TODO: contents should not be string
 type ServerResult =
   | { tag: 'GameError'; contents: string }
+  | { tag: 'AnswerRejected'; reason: string; questionVersion: number | null }
   | { tag: 'GameMessage'; contents: string }
   | { tag: 'GameTarot'; contents: string }
   | { tag: 'GameAchievement'; contents: string }
@@ -1342,6 +1343,13 @@ const handleResult = (result: ServerResult) => {
       if (props.spectate) return
       storyAnswerPending.value = false
       error.value = result.contents
+      if (game.value && oldQuestion.value) {
+        setGameQuestion(oldQuestion.value)
+      }
+      return
+    case 'AnswerRejected':
+      if (props.spectate) return
+      storyAnswerPending.value = false
       if (game.value && oldQuestion.value) {
         setGameQuestion(oldQuestion.value)
       }

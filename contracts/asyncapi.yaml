@@ -1,7 +1,7 @@
 asyncapi: 3.1.0
 info:
   title: Arkham Horror WebSocket API
-  version: 0.1.6
+  version: 0.1.8
   description: |
     Envelope-level contract for participant, spectator, and Epic Multiplayer
     sockets. The server sends an RFC 6455 ping every 15 seconds and may negotiate
@@ -71,7 +71,17 @@ operations:
       - $ref: "#/channels/game/messages/serverMessage"
   sendGameAnswers:
     action: send
-    description: Send one answer to the authoritative game engine.
+    description: |
+      Send one answer to the authoritative game engine. If the engine rejects
+      the answer as unhandled (for example an illegal amount/payment/exchange
+      allocation, stale question version, wrong question type, or wrong choice
+      id), the server sends one AnswerRejected with the rejection reason and the
+      submitted questionVersion when available to the same participant connection
+      only. It is not broadcast to other participants or spectators, and game
+      state remains unchanged. The unchanged GameUpdate is still published to the
+      room; clients must accept AnswerRejected before or after that GameUpdate.
+      GameError is reserved for room-wide exceptions/errors and may contain
+      internal diagnostic text.
     channel:
       $ref: "#/channels/game"
     messages:
