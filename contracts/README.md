@@ -970,17 +970,26 @@ generation metadata rather than server-authenticated claims.
 - If a participant game socket submits an answer the engine does not handle
   (`Unhandled`), such as an illegal amount/payment/exchange allocation, stale
   question version, wrong question type, or wrong choice id, the server sends a
-  single `GameError` carrying the rejection reason to that same connection only.
-  Other participants and spectators do not receive that rejection error. The
+  single `AnswerRejected` carrying the rejection reason and the submitted
+  `questionVersion` when that answer shape has one. The message is sent only to
+  that same connection; other participants and spectators do not receive it. The
   authoritative game state is unchanged; the room still receives the ordinary
-  `GameUpdate` snapshot for the unchanged state.
+  `GameUpdate` snapshot for the unchanged state. Because `AnswerRejected` is sent
+  directly to the answering socket while `GameUpdate` is published through the
+  room, clients must accept either arrival order.
+- `GameError` remains the room-wide exception/error envelope (including handler
+  exceptions, organizer-gate denials, timeouts, and engine `ClientError`
+  messages). It may be sent to participants and spectators and may contain
+  internal diagnostic text, so clients should not treat `GameError` as ordinary
+  answer-rejection feedback.
 - `EventChanged` carries no payload and instructs clients to refetch event
   details. `SharedStateUpdate` is a complete versioned shared-state value.
 
 Revision `0.1.48` documents participant-socket answer rejection feedback:
-when an answer is `Unhandled`, only the submitting connection receives a
-`GameError` reason and the authoritative state is unchanged. It does not add a
-new server-message tag or change any JSON payload shape.
+when an answer is `Unhandled`, only the submitting connection receives an
+`AnswerRejected` reason (with the submitted `questionVersion` when available)
+and the authoritative state is unchanged. `GameError` remains reserved for
+room-wide exceptions/errors and may include internal diagnostic text.
 
 The server-message schema and backend assertions cover every `ApiResponse`
 constructor. The `GameUpdate` fixture comes from a deterministic pending

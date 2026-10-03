@@ -298,6 +298,10 @@
       "schema": "contracts/schemas/server-message.schema.json"
     },
     {
+      "path": "contracts/fixtures/answer-rejected.json",
+      "schema": "contracts/schemas/server-message.schema.json"
+    },
+    {
       "path": "contracts/fixtures/game-message.json",
       "schema": "contracts/schemas/server-message.schema.json"
     },
@@ -16106,7 +16110,7 @@
     }
   ],
   "artifactHashes": {
-    "contracts/asyncapi.yaml": "3602b542951c60db5e70de55304be09e93ff3eb710dad3109f5bed70021b8c40",
+    "contracts/asyncapi.yaml": "11ef8b1b084346513bad0c990ec0f9aadaf5bdde97df6158e3a36b6f3e90e33c",
     "contracts/fixtures/account.json": "173ee819ff6584f68ee801da3cb1925f8f87cb25ae4262c0826c404be0dfe284",
     "contracts/fixtures/achievements.json": "9323f78e201ced419f3ed843ef3bc3d375db24a2f376a25f7cf3e3a085483b83",
     "contracts/fixtures/act-no-advance-cost.json": "ef6aa891184deafe2166b58b0df9c0818237a50efa93e3aa69db4aea0dc30a01",
@@ -16128,6 +16132,7 @@
     "contracts/fixtures/answer-pick-destiny.json": "711e45c443be781868e7f30fde1d45c8b659bae6a53d9537cc021a5c2eccc8a0",
     "contracts/fixtures/answer-question.json": "b6d6b4d70acadd6d11d7c30fd67d052085384c478a00520d68c5c2f4d1b18fa7",
     "contracts/fixtures/answer-raw.json": "b056412a0b6583c646053fd10de29f23ddeeedcb80c306041695307fc6dcb8a6",
+    "contracts/fixtures/answer-rejected.json": "ad8069b02586f3cfe4677dc6fa25d2297d9f2f6cbd3366c6954845446a0440dc",
     "contracts/fixtures/answer-rejoin-investigator.json": "64bbd1ca25fd88e846056e465279970e22ff911ba316fe732ccb19553813ebb0",
     "contracts/fixtures/answer-retire-investigator.json": "765180a79c83be002b4fd4c2879e6f3b84ad14df44bc986d70043dbd109708c2",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
@@ -16243,7 +16248,7 @@
     "contracts/fixtures/replay-attestation.json": "00f40edb8c4d77337a7a3aa0ea2b658e41d5efbb206724b3c3164bf243bb65fe",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "e004e93b06e882415ff1bb50eaf41ee41ce314e7bed0366f6ee3bbdd5fa1104a",
+    "contracts/manifest.json": "40b1ba5417824d21f34c5c542db667898fb26bf71f60bae5d40d08f65d8032ce",
     "contracts/openapi.yaml": "bd454feb5d64506b590d95380c3cd5229a5f676818534aeba9e35c4de1562d84",
     "contracts/route-inventory.json": "090194fadafe52c853917f0367bce267a70aa99d41bed4fbd958b45b26730f92",
     "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
@@ -16278,7 +16283,7 @@
     "contracts/schemas/question-presentation.schema.json": "a960f4c588c7b44a660ac2c507de3c84c3341499adca18e181166da87a827ff6",
     "contracts/schemas/raw-question-fixture.schema.json": "cdc83061a2631f80942b5608529d5ebe0037e4a40630476fc81d2ac942ddd692",
     "contracts/schemas/replay-attestation.schema.json": "ce0a95eb11996ed95ddc47e92a2071202e6ff01d8ff9cf0d352dd13e24739194",
-    "contracts/schemas/server-message.schema.json": "188b51c9de70ccb4846982adcb68037e6d29a6730d41cd0563355db335c7c580",
+    "contracts/schemas/server-message.schema.json": "400d25776192488aa9b50283988f4373f7168bf33cd35290247441fa01264ee7",
     "contracts/schemas/uuid-entity-map.schema.json": "13d1762d2d3bde5f3a9bc2f70986c42a89f353ed69ca11691783400992bb14f6",
     "contracts/schemas/uuid.schema.json": "40b33cbd961ecec12a03cd163076684b1a8ff2c68785a2e1ba8b3464dc7410c8"
   },

@@ -1680,6 +1680,7 @@ serverMessageFixtures =
     )
   , ("game-message.json", GameMessage "A contract fixture message.")
   , ("game-error.json", GameError "The question changed before this answer arrived.")
+  , ("answer-rejected.json", AnswerRejected "Stale question" (Just 8))
   , ("game-ui.json", GameUI "contract:ui")
   , ("game-audio.json", GameAudio "contract.ogg")
   , ("game-card.json", GameCard "Contract card" fixtureCard)
