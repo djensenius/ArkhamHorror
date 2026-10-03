@@ -71,7 +71,13 @@ operations:
       - $ref: "#/channels/game/messages/serverMessage"
   sendGameAnswers:
     action: send
-    description: Send one answer to the authoritative game engine.
+    description: |
+      Send one answer to the authoritative game engine. If the engine rejects
+      the answer as unhandled (for example an illegal amount/payment/exchange
+      allocation, stale question version, wrong question type, or wrong choice
+      id), the server sends one GameError with the rejection reason to the same
+      participant connection only; it is not broadcast to other participants or
+      spectators, and game state remains unchanged.
     channel:
       $ref: "#/channels/game"
     messages:
