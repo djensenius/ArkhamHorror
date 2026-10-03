@@ -83,7 +83,17 @@ data ApiResponse
   = GameUpdate (PublicGame ArkhamGameId)
   | PhaseChanged Phase.Phase
   | GameMessage Text
-  | GameError Text
+  | {- | A room-wide server exception or engine/client error. Answer rejections
+    use 'AnswerRejected' instead so clients do not present ordinary stale or
+    invalid answers as bug-report-worthy failures.
+    -}
+    GameError Text
+  | {- | The participant socket's answer decoded, but the engine returned
+    @Unhandled@. Sent only to the socket that submitted the answer; room state
+    is unchanged and the usual GameUpdate still carries the authoritative
+    snapshot.
+    -}
+    AnswerRejected {reason :: Text, questionVersion :: Maybe Int}
   | GameUI Text
   | GameAudio Text
   | GameCard {title :: Text, card :: Aeson.Value}

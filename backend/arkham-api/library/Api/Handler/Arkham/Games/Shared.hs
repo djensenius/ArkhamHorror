@@ -267,20 +267,33 @@ gameStreamFor role customCards gameId = catchingConnectionException $ withKeepAl
             )
             `catch` (\(_ :: SlowSubscriber) -> pure ())
 
+    let updateAnswer answer = updateGameWithAnswerRejection customCards answer gameId (Just room)
     race_
       sender
-      (runConduit $ sourceWS .| mapM_C (handleData role room sub broadcast))
- where
-  handleData streamRole room subscriber broadcast dataPacket = lift do
-    case decodeGameStreamAnswer streamRole dataPacket of
-      Left err -> $(logWarn) $ tshow err
-      Right Nothing -> pure ()
-      Right (Just answer) ->
-        ( updateGameWithAnswerRejection customCards answer gameId (Just room)
-            >>= traverse_ (liftIO . sendAnswerRejection subscriber)
-        )
-          `catch` \(e :: SomeException) -> do
-            liftIO $ broadcast $ encode $ GameError $ tshow e
+      (runConduit $ sourceWS .| mapM_C (lift . handleGameStreamFrame role logGameStreamDecodeError updateAnswer sub broadcast))
+
+logGameStreamDecodeError :: String -> Handler ()
+logGameStreamDecodeError err = $(logWarn) $ tshow err
+
+handleGameStreamFrame
+  :: MonadUnliftIO m
+  => GameStreamRole
+  -> (String -> m ())
+  -> (Answer -> m (Maybe Text))
+  -> Subscriber
+  -> Broadcast
+  -> ByteString
+  -> m ()
+handleGameStreamFrame streamRole onDecodeError updateAnswer subscriber broadcast dataPacket =
+  case decodeGameStreamAnswer streamRole dataPacket of
+    Left err -> onDecodeError err
+    Right Nothing -> pure ()
+    Right (Just answer) ->
+      ( updateAnswer answer
+          >>= traverse_ (liftIO . sendAnswerRejection subscriber answer)
+      )
+        `catch` \(e :: SomeException) -> do
+          liftIO $ broadcast $ encode $ GameError $ tshow e
 
 data SlowSubscriber = SlowSubscriber
   deriving stock Show
@@ -337,8 +350,17 @@ sendToSubscriber Subscriber {subQueue, subOverflow} msg = atomically do
       then writeTVar subOverflow True
       else writeTBQueue subQueue msg
 
-sendAnswerRejection :: Subscriber -> Text -> IO ()
-sendAnswerRejection subscriber reason = sendToSubscriber subscriber $ encode $ GameError reason
+sendAnswerRejection :: Subscriber -> Answer -> Text -> IO ()
+sendAnswerRejection subscriber answer reason =
+  sendToSubscriber subscriber $ encode $ AnswerRejected reason (answerQuestionVersion answer)
+
+answerQuestionVersion :: Answer -> Maybe Int
+answerQuestionVersion = \case
+  Answer response -> qrQuestionVersion response
+  OrderedAnswer response -> orQuestionVersion response
+  AmountsAnswer response -> arQuestionVersion response
+  PaymentAmountsAnswer response -> parQuestionVersion response
+  _ -> Nothing
 
 answerRejectionReason :: Reply -> Maybe Text
 answerRejectionReason = \case
