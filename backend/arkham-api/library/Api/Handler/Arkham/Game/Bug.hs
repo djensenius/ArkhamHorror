@@ -12,12 +12,14 @@ module Api.Handler.Arkham.Game.Bug (
   classifyErrorDiagnostic,
   classifyHeadObjectError,
   runBugUploadPolicy,
+  runBugUploadWithEnvDiscovery,
   runHeadObjectAction,
   runPutObjectAction,
   describeBugUploadFailure,
 ) where
 
 import Amazonka (Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
+import Amazonka.Auth (AuthError)
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Amazonka.S3
@@ -90,7 +92,8 @@ data BugUploadOutcome
   deriving stock (Eq, Show)
 
 data BugUploadFailure
-  = HeadCheckFailed AwsErrorDiagnostic
+  = CredentialDiscoveryFailed
+  | HeadCheckFailed AwsErrorDiagnostic
   | PutObjectFailed AwsErrorDiagnostic
   deriving stock (Eq, Show)
 
@@ -119,6 +122,13 @@ runBugUploadPolicy headAction putAction =
       pure $ case putResult of
         Right () -> BugUploadSucceeded
         Left diag -> BugUploadFailed (PutObjectFailed diag)
+
+-- | Fold AWS credential-discovery failures into the same sanitized upload failure path.
+runBugUploadWithEnvDiscovery :: Monad m => m (Either discoveryError env) -> (env -> m BugUploadOutcome) -> m BugUploadOutcome
+runBugUploadWithEnvDiscovery discoverEnv uploadWithEnv =
+  discoverEnv >>= \case
+    Left _ -> pure $ BugUploadFailed CredentialDiscoveryFailed
+    Right env -> uploadWithEnv env
 
 {- | Classify a HeadObject failure using the exact Amazonka SDK error type.
 
@@ -194,6 +204,7 @@ newtype BugUploadError = BugUploadError {message :: Text}
 -- sync with what actually happened.
 describeBugUploadFailure :: ArkhamGameId -> BugUploadFailure -> Text
 describeBugUploadFailure gameId = \case
+  CredentialDiscoveryFailed -> "AWS credential discovery failed for game " <> toPathPiece gameId
   HeadCheckFailed diag -> "HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
   PutObjectFailed diag -> "PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
 
@@ -214,14 +225,15 @@ postApiV1ArkhamGameBugR gameId = do
       let bucket = "arkham-horror-bugs"
           key = ObjectKey $ "exports/" <> filename
 
-      env <- liftIO $ newEnv discover
       outcome <-
-        liftIO $ runResourceT do
-          result <-
-            runBugUploadPolicy
-              (runHeadObjectAction (try @_ @Error (send env (newHeadObject bucket key))))
-              (runPutObjectAction (try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))))
-          liftIO (evaluate result)
+        runBugUploadWithEnvDiscovery
+          (liftIO $ try @_ @AuthError (newEnv discover))
+          \env -> liftIO $ runResourceT do
+            result <-
+              runBugUploadPolicy
+                (runHeadObjectAction (try @_ @Error (send env (newHeadObject bucket key))))
+                (runPutObjectAction (try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))))
+            liftIO (evaluate result)
       case outcome of
         BugUploadSucceeded ->
           pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename

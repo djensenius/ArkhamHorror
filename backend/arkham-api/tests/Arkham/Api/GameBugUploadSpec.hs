@@ -10,6 +10,7 @@ import Api.Handler.Arkham.Game.Bug (
   HeadObjectOutcome (..),
   classifyHeadObjectError,
   runBugUploadPolicy,
+  runBugUploadWithEnvDiscovery,
   runHeadObjectAction,
   runPutObjectAction,
  )
@@ -124,6 +125,10 @@ spec = describe "bug report upload" do
     it "reports failure (never a false success) when PUT itself fails" do
       outcome <- runBugUploadPolicy (pure ObjectAbsent) (pure $ Left (AwsServiceFailure 500 AwsCategoryServerError))
       outcome `shouldBe` BugUploadFailed (PutObjectFailed (AwsServiceFailure 500 AwsCategoryServerError))
+
+    it "sanitizes AWS credential discovery failures before the upload policy runs" do
+      outcome <- runBugUploadWithEnvDiscovery (pure $ Left ()) (\() -> pure BugUploadSucceeded)
+      outcome `shouldBe` BugUploadFailed CredentialDiscoveryFailed
 
     {- | Regression for the async-refresh/lazy-thunk audit: the diagnostic
     used to cross the 'runResourceT IO' -> 'Handler' boundary through a
