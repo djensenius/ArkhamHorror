@@ -17,7 +17,7 @@ import Arkham.Random
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
 import Control.Concurrent.MVar qualified as MVar
-import Control.Exception (throwIO, try)
+import Control.Exception (throwIO)
 import Control.Lens hiding (from)
 import Control.Monad.Catch (MonadCatch, MonadMask, MonadThrow)
 import Control.Monad.Random (MonadRandom (..), StdGen)
@@ -47,6 +47,7 @@ import Entity.Arkham.LogEntry
 import GHC.Records
 import Import hiding (appLogger, (==.), (>=.))
 import UnliftIO.Async qualified as UA
+import UnliftIO.Exception qualified as UE
 
 newtype GameLog = GameLog {gameLogToLogEntries :: [Text]}
   deriving newtype (Monoid, Semigroup)
@@ -336,7 +337,7 @@ currentEpoch = floor <$> getPOSIXTime
 -- Best-effort wrapper: tracking room counts is observability, not
 -- correctness, so we never let a Redis hiccup tear down a live session.
 tryRedis_ :: MonadIO m => IO a -> m ()
-tryRedis_ action = void $ liftIO $ try @SomeException action
+tryRedis_ action = void $ liftIO $ UE.tryAny action
 
 -- Run a best-effort Redis action if a Redis broker is configured.
 withRedis :: (MonadIO m, HasApp m) => (Connection -> IO a) -> m ()
@@ -383,7 +384,7 @@ getRedisRoomCounts = do
     WebSocketBroker -> pure Nothing
     RedisBroker conn _ -> do
       now <- liftIO currentEpoch
-      result <- liftIO $ try @SomeException $ runRedis conn do
+      result <- liftIO $ UE.tryAny $ runRedis conn do
         countsR <- hgetall roomsHashKey
         seenR <- hgetall roomsSeenHashKey
         pure (countsR, seenR)
@@ -418,16 +419,16 @@ keeps active games out of the staleness sweep even when nothing else
 (subscribe / unsubscribe) is writing to Redis. Run once per pod via
 'forkIO' from 'makeFoundation'.
 -}
-roomHeartbeat :: App -> IO ()
-roomHeartbeat app = case appMessageBroker app of
+roomHeartbeat :: MessageBroker -> MVar (Map ArkhamGameId Room) -> IO ()
+roomHeartbeat broker roomsVar = case broker of
   WebSocketBroker -> pure ()
   RedisBroker conn _ -> forever do
     threadDelay (roomHeartbeatSeconds * 1000000)
-    rooms <- MVar.readMVar (appGameRooms app)
+    rooms <- MVar.readMVar roomsVar
     active <- catMaybes <$> traverse keepIfActive (Map.toList rooms)
     unless (null active) do
       now <- currentEpoch
-      void $ try @SomeException $ runRedis conn do
+      void $ UE.tryAny $ runRedis conn do
         for_ active \gid ->
           void $ hset roomsSeenHashKey ((roomField gid, BS8.pack (show now)) :| [])
  where
@@ -506,7 +507,7 @@ pubSubSupervisor healthVar conn ctrl = go 1
     markPubSubAlive healthVar
     startedAt <- getCurrentTime
     outcome <-
-      try @SomeException
+      UE.tryAny
         $ UA.race_ (pubSubForever conn ctrl (markPubSubAlive healthVar)) watchdog
     endedAt <- getCurrentTime
     putStrLn $ case outcome of
