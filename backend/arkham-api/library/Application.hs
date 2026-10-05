@@ -38,7 +38,7 @@ import Data.CaseInsensitive (foldCase, mk)
 import Data.Default.Class (def)
 import Data.List (lookup)
 import Data.Text qualified as T
-import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock (getCurrentTime)
 import Data.X509.CertificateStore (readCertificateStore)
 import Database.Persist.Postgresql (
   SqlBackend,
