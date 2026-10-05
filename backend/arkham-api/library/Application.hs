@@ -32,6 +32,7 @@ import Arkham.Metrics qualified as Metrics
 import Config
 import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.MVar (newMVar)
+import Control.Exception qualified as Exception
 import Control.Monad.Logger (liftLoc, runLoggingT)
 import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.CaseInsensitive (foldCase, mk)
@@ -356,7 +357,9 @@ shutdownApp app = do
 
 -- | Run a handler
 handler :: Handler a -> IO a
-handler h = getAppSettings >>= makeFoundation >>= flip unsafeHandler h
+handler h =
+  Exception.bracket (getAppSettings >>= makeFoundation) shutdownApp \app ->
+    unsafeHandler app h
 
 -- | Run DB queries
 db :: ReaderT SqlBackend Handler a -> IO a
