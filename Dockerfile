@@ -118,8 +118,7 @@ RUN mkdir -p \
   /opt/arkham/src/backend/validate/app \
   /opt/arkham/src/backend/cards-discover/app \
   /opt/arkham/src/backend/cards-discover/library \
-  /opt/arkham/src/backend/ah3e \
-  /opt/arkham/src/backend/devel-store-lock/library
+  /opt/arkham/src/backend/ah3e
 
 WORKDIR /opt/arkham/src/backend
 COPY ./backend/stack.yaml ./backend/stack.yaml.lock /opt/arkham/src/backend/
@@ -127,7 +126,6 @@ COPY ./backend/arkham-api/package.yaml /opt/arkham/src/backend/arkham-api/packag
 COPY ./backend/validate/package.yaml /opt/arkham/src/backend/validate/package.yaml
 COPY ./backend/cards-discover/package.yaml /opt/arkham/src/backend/cards-discover/package.yaml
 COPY ./backend/ah3e/package.yaml /opt/arkham/src/backend/ah3e/package.yaml
-COPY ./backend/devel-store-lock/package.yaml /opt/arkham/src/backend/devel-store-lock/package.yaml
 RUN --mount=type=cache,id=stack-home-${CACHE_ID},target=/root/.stack \
     --mount=type=cache,id=stack-work-shared-${CACHE_ID},target=/opt/arkham/src/backend/.stack-work \
     stack build --system-ghc --dependencies-only --no-terminal --ghc-options '-fno-write-ide-info -j4 +RTS -A128m -n2m -RTS'

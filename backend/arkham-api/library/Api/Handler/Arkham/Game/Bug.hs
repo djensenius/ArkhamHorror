@@ -2,12 +2,14 @@
 
 module Api.Handler.Arkham.Game.Bug (
   postApiV1ArkhamGameBugR,
-  bugUploadAwsReadyWaitMicros,
 
   -- * Exposed for regression tests
+  AwsErrorCategory (..),
+  AwsErrorDiagnostic (..),
   HeadObjectOutcome (..),
   BugUploadOutcome (..),
   BugUploadFailure (..),
+  classifyErrorDiagnostic,
   classifyHeadObjectError,
   runBugUploadPolicy,
   runHeadObjectAction,
@@ -15,13 +17,7 @@ module Api.Handler.Arkham.Game.Bug (
   describeBugUploadFailure,
 ) where
 
-import Amazonka (Error (..), ServiceError (..), ToBody (toBody), runResourceT, send)
-import Api.Arkham.AwsEnvSupervisor (
-  AwsErrorDiagnostic (..),
-  SupervisedEnvState (..),
-  classifyErrorDiagnostic,
-  requestAwsEnvReady,
- )
+import Amazonka (Error (..), SerializeError (..), ServiceError (..), ToBody (toBody), discover, newEnv, runResourceT, send)
 import Api.Arkham.Export
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Amazonka.S3
@@ -33,6 +29,43 @@ import Import hiding ((==.))
 import Network.HTTP.Types.Status (statusCode)
 import Network.HTTP.Types.Status qualified as Status
 import UnliftIO.Exception (try)
+
+{- | Non-secret, structured classification of a per-request AWS error, safe to
+log. Deliberately extracts only the numeric HTTP status, plus a category
+derived purely from that status number, rather than showing the exception
+itself or any text originating in the response.
+-}
+data AwsErrorDiagnostic
+  = AwsTransportFailure
+  | AwsSerializeFailure {awsErrorStatus :: Int, awsErrorCategory :: AwsErrorCategory}
+  | AwsServiceFailure {awsErrorStatus :: Int, awsErrorCategory :: AwsErrorCategory}
+  deriving stock (Eq, Show)
+
+{- | A coarse category derived purely from the numeric HTTP status code --
+never from response body, headers, message text, symbolic error code, or
+request id -- so it can never echo server-provided content.
+-}
+data AwsErrorCategory
+  = AwsCategoryNotFound
+  | AwsCategoryClientError
+  | AwsCategoryThrottled
+  | AwsCategoryServerError
+  | AwsCategoryUnknownStatus
+  deriving stock (Eq, Show)
+
+categorizeAwsStatus :: Int -> AwsErrorCategory
+categorizeAwsStatus 404 = AwsCategoryNotFound
+categorizeAwsStatus 429 = AwsCategoryThrottled
+categorizeAwsStatus s
+  | s >= 500 && s < 600 = AwsCategoryServerError
+  | s >= 400 && s < 500 = AwsCategoryClientError
+  | otherwise = AwsCategoryUnknownStatus
+
+classifyErrorDiagnostic :: Error -> AwsErrorDiagnostic
+classifyErrorDiagnostic = \case
+  TransportError _ -> AwsTransportFailure
+  SerializeError SerializeError' {status = st} -> AwsSerializeFailure (statusCode st) (categorizeAwsStatus (statusCode st))
+  ServiceError e -> let st = statusCode e.status in AwsServiceFailure st (categorizeAwsStatus st)
 
 {- | Result of attempting a HeadObject check for the export before upload.
 Deliberately excludes any AWS response payload -- only the fact of
@@ -108,9 +141,9 @@ Amazonka 'Error' (and, transitively, whatever it wraps: an 'HttpException'
 carrying request headers, or a raw response body) until something else
 happens to force it later. 'evaluate' itself only forces to /weak head
 normal form/ (the outermost constructor), not full normal form -- but
-every type it can bottom out in here ('HeadObjectOutcome', declared in
-this module; 'Api.Arkham.AwsEnvSupervisor.AwsErrorDiagnostic' and
-'Api.Arkham.AwsEnvSupervisor.AwsErrorCategory', declared there; down to
+every type it can bottom out in here ('HeadObjectOutcome',
+'AwsErrorDiagnostic', and 'AwsErrorCategory', all declared in this
+module, down to
 a plain 'Int') is compiled with this package's default 'StrictData'
 extension (a package-wide default, not specific to either module), so
 every field of every nested constructor is itself strict. That single
@@ -164,16 +197,6 @@ describeBugUploadFailure gameId = \case
   HeadCheckFailed diag -> "HeadObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
   PutObjectFailed diag -> "PutObject failed for game " <> toPathPiece gameId <> ": " <> tshow diag
 
-{- | How long this handler waits, at most, for the application's foundation-
-owned AWS 'Env' supervisor (see 'Api.Arkham.AwsEnvSupervisor') to leave
-'SupervisedEnvInitializing' before treating credentials as not yet
-available. Only bounds this request's own wait -- see 'requestAwsEnvReady'
--- and never cancels, or is raced against, the supervisor's own in-flight
-acquisition, which keeps running independently of any one request.
--}
-bugUploadAwsReadyWaitMicros :: Int
-bugUploadAwsReadyWaitMicros = 3 * 1000 * 1000
-
 postApiV1ArkhamGameBugR :: ArkhamGameId -> Handler Text
 postApiV1ArkhamGameBugR gameId = do
   Entity userId user <- getRequestUser
@@ -191,49 +214,17 @@ postApiV1ArkhamGameBugR gameId = do
       let bucket = "arkham-horror-bugs"
           key = ObjectKey $ "exports/" <> filename
 
-      -- Signal demand for, then wait (bounded, request-local) for the
-      -- application's single foundation-owned AWS 'Env' supervisor (see
-      -- 'Api.Arkham.AwsEnvSupervisor') to become ready. This never blocks
-      -- on -- or itself performs -- credential discovery/refresh: only
-      -- the supervisor's own dedicated thread (started once, in
-      -- 'Application.makeFoundation', before Warp accepts any request)
-      -- ever runs 'newEnv'/'discover', so a delayed background refresh
-      -- failure can never target a request worker. Timing out this wait
-      -- never cancels the supervisor's own in-flight acquisition. Any
-      -- non-'Ready' snapshot is already a fully classified/sanitized
-      -- diagnostic (or the absence of one yet).
-      supervisor <- getsYesod appAwsEnvSupervisor
-      snapshot <- liftIO (requestAwsEnvReady supervisor bugUploadAwsReadyWaitMicros)
-      case snapshot of
-        SupervisedEnvInitializing -> do
-          $(logWarn) $ "bug report upload: AWS credential supervisor still initializing for game " <> toPathPiece gameId
+      env <- liftIO $ newEnv discover
+      outcome <-
+        liftIO $ runResourceT do
+          result <-
+            runBugUploadPolicy
+              (runHeadObjectAction (try @_ @Error (send env (newHeadObject bucket key))))
+              (runPutObjectAction (try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))))
+          liftIO (evaluate result)
+      case outcome of
+        BugUploadSucceeded ->
+          pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename
+        BugUploadFailed failure -> do
+          $(logWarn) $ "bug report upload: " <> describeBugUploadFailure gameId failure
           sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
-        SupervisedEnvUnavailable diag -> do
-          $(logWarn) $ "bug report upload: AWS credentials unavailable for game " <> toPathPiece gameId <> ": " <> tshow diag
-          sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
-        SupervisedEnvReady env -> do
-          -- The HeadObject/PutObject actions run inside 'runResourceT IO',
-          -- which has no application-logger access. Rather than logging
-          -- from inside that IO action (which would require an ad-hoc
-          -- stdout/file logger bypassing the normal Yesod logging path),
-          -- any failure is classified into an already-sanitized diagnostic
-          -- and *forced* ('runHeadObjectAction'/'runPutObjectAction' both
-          -- use 'evaluate', not a bare lazy 'pure') before it ever leaves
-          -- 'ResourceT'; the whole 'BugUploadOutcome' is forced again just
-          -- before 'runResourceT' returns, so nothing reachable from
-          -- 'outcome' can retain any part of a raw Amazonka 'Error'/
-          -- response by the time it is logged afterwards back in
-          -- 'Handler' via the normal monad-logger path.
-          outcome <-
-            liftIO $ runResourceT do
-              result <-
-                runBugUploadPolicy
-                  (runHeadObjectAction (try @_ @Error (send env (newHeadObject bucket key))))
-                  (runPutObjectAction (try @_ @Error (send env (newPutObject bucket key (toBody jsonBody)))))
-              liftIO (evaluate result)
-          case outcome of
-            BugUploadSucceeded ->
-              pure $ "https://arkham-horror-bugs.s3.amazonaws.com/exports/" <> filename
-            BugUploadFailed failure -> do
-              $(logWarn) $ "bug report upload: " <> describeBugUploadFailure gameId failure
-              sendStatusJSON Status.status502 $ BugUploadError "Failed to upload bug report"
