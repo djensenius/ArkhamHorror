@@ -152,7 +152,6 @@ EOF
     backend/arkham-api/app-capabilities-probe/Main.hs \
     backend/cards-discover/library/Cards/Discover.hs \
     backend/cards-discover/app/Main.hs \
-    backend/devel-store-lock/library/DevelStoreLock.hs \
     backend/stack.yaml \
     "$ignored_probe" \
     "$untracked_probe"; do
