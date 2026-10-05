@@ -533,9 +533,14 @@ export function resolveLinkedVariables(normalized, defaultLocale) {
  * until a whole round changes nothing.
  */
 export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys, backend) {
-  // Only a `text` slot is filled by the backend: an `icon` name is rendered by
-  // the client from its own icon set, and a `presentation` name only styles.
-  const ROLE_ACCEPTS = { text: new Set(['text', 'integer']) }
+  // Text slots are spoken/written substitutions. Icon slots render through the
+  // same icon vocabulary the Vue client feeds to replaceIcons(); when the
+  // backend sends an icon variable, the registry must prove either a general
+  // icon-name string or a narrower semantic type such as chaosTokenFace.
+  const ROLE_ACCEPTS = {
+    text: new Set(['text', 'integer']),
+    icon: new Set(['text', 'chaosTokenFace']),
+  }
   const defaultEntries = normalized.get(defaultLocale)
   let variableGaps = []
   // Accumulated across rounds: once an entry is downgraded the next round
@@ -555,10 +560,13 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
       const entry = defaultEntries.get(key)
       if (entry === undefined || entry.form === 'unsupported') continue
 
-      const needed = [...entry.variables, ...(entry.linkedVariables ?? [])].filter(
+      const variables = [...entry.variables, ...(entry.linkedVariables ?? [])]
+      const needed = variables.filter(
+        (variable) => variable.source === 'named' && ['text', 'icon'].includes(variable.role),
+      )
+      const missing = variables.filter(
         (variable) => variable.source === 'named' && variable.role === 'text',
       )
-      const missing = needed
         .filter((variable) => !record.variables.has(variable.name))
         .map((variable) => variable.name)
       if (missing.length > 0) {

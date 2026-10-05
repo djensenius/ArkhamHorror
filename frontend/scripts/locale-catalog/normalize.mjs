@@ -695,14 +695,32 @@ function imageNode(attributes, placeholders) {
 function textNodes(value, placeholders, out) {
   const parts = value.split(new RegExp(`${SENTINEL_OPEN}(\\d+)${SENTINEL_CLOSE}`, 'u'))
   for (let index = 0; index < parts.length; index += 1) {
-    const part = parts[index]
+    let part = parts[index]
     if (index % 2 === 0) {
       if (part !== '') out.push({ type: 'text', value: part })
       continue
     }
     const placeholder = placeholders[Number(part)]
     if (placeholder === undefined) throw unsupported('message-syntax-error', 'dangling placeholder')
-    if (placeholder.kind === 'text') {
+    const nextPart = parts[index + 1] ?? ''
+    const isEscapedIconVariable =
+      placeholder.kind === 'variable' &&
+      placeholder.source === 'named' &&
+      out[out.length - 1]?.type === 'text' &&
+      out[out.length - 1].value.endsWith('{') &&
+      nextPart.startsWith('}')
+    if (isEscapedIconVariable) {
+      const previous = out[out.length - 1]
+      previous.value = previous.value.slice(0, -1)
+      if (previous.value === '') out.pop()
+      parts[index + 1] = nextPart.slice(1)
+      out.push({
+        type: 'var',
+        name: placeholder.name,
+        source: placeholder.source,
+        role: 'icon',
+      })
+    } else if (placeholder.kind === 'text') {
       out.push({ type: 'text', value: placeholder.text })
     } else if (placeholder.kind === 'linked') {
       out.push({ type: 'linked', target: placeholder.target, modifier: placeholder.modifier })

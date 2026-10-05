@@ -49,10 +49,14 @@ def keys_of(modules: dict[str, str]) -> set[str]:
 
 
 def variables_of(modules: dict[str, str], key: str) -> set[str]:
+    return set(variable_types_of(modules, key))
+
+
+def variable_types_of(modules: dict[str, str], key: str) -> dict[str, str]:
     for entry in registry_of(modules)["keys"]:
         if entry["key"] == key:
-            return {variable["name"] for variable in entry["variables"]}
-    return set()
+            return {variable["name"]: variable["type"] for variable in entry["variables"]}
+    return {}
 
 
 HELPERS = """module Test.Helpers where
@@ -61,6 +65,36 @@ import Arkham.I18n
 
 campaignI18n :: (HasI18n => a) -> a
 campaignI18n = standaloneI18n "testCampaign"
+"""
+
+
+CHAOS_TOKEN_TYPES = """module Arkham.ChaosToken.Types where
+
+data ChaosTokenFace
+  = PlusOne
+  | Zero
+  | Skull
+  | ElderThing
+  | BlessToken
+  | CustomToken Text
+
+instance ToDisplay ChaosTokenFace where
+  toDisplay = \\case
+    PlusOne -> "+1"
+    Zero -> "0"
+    Skull -> "{skull}"
+    ElderThing -> "{elderThing}"
+    BlessToken -> "{bless}"
+    CustomToken slug -> "{" <> customTokenKey slug <> "}"
+
+allChaosTokenFaces :: [ChaosTokenFace]
+allChaosTokenFaces =
+  [ PlusOne
+  , Zero
+  , Skull
+  , ElderThing
+  , BlessToken
+  ]
 """
 
 
@@ -238,6 +272,45 @@ run xp shelter = campaignI18n $ withVars ["xp" .= xp, "shelterValue" .= shelter]
     check(
         variables == {"xp", "shelterValue"},
         f"withVars binders not modelled: {sorted(variables)}",
+    )
+
+
+def test_withvars_token_literals_are_typed_as_chaos_token_faces() -> None:
+    artifact = registry_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run headedWest = campaignI18n $
+  withVars ["token" .= String (if headedWest then "elderThing" else "skull")] $ story $ p "addToken"
+""",
+        }
+    )
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run headedWest = campaignI18n $
+  withVars ["token" .= String (if headedWest then "elderThing" else "skull")] $ story $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
+        f"token was not typed as a chaos-token face: {variables}",
+    )
+    check(
+        artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE]["values"]
+        == ["+1", "0", "skull", "elderThing", "bless"],
+        f"chaos-token faces were not derived from source: {artifact['variableTypes']}",
     )
 
 
@@ -450,6 +523,37 @@ def test_a_presentation_emitter_keeps_a_module_from_being_waived() -> None:
 def test_committed_registry_properties() -> None:
     artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
     keys = {entry["key"] for entry in artifact["keys"]}
+    by_key = {entry["key"]: entry for entry in artifact["keys"]}
+
+    token_faces = artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE]["values"]
+    for face in (
+        "+1",
+        "0",
+        "-1",
+        "-2",
+        "-3",
+        "-4",
+        "-5",
+        "-6",
+        "-7",
+        "-8",
+        "skull",
+        "cultist",
+        "tablet",
+        "elderThing",
+        "autoFail",
+        "elderSign",
+        "curse",
+        "bless",
+        "frost",
+        "blood",
+    ):
+        check(face in token_faces, f"chaos token face missing from registry: {face}")
+    add_token_types = {variable["name"]: variable["type"] for variable in by_key["addToken"]["variables"]}
+    check(
+        add_token_types.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
+        f"addToken token variable is not typed as {extractor.CHAOS_TOKEN_FACE_TYPE}: {add_token_types}",
+    )
 
     # Keys the review named as reachable but missing from the earlier registry.
     for key in (
@@ -489,6 +593,7 @@ TESTS = (
     test_a_local_helpers_key_parameter_is_read_from_its_call_sites,
     test_presentation_modifiers_keep_the_key_and_shift_validate,
     test_withvars_declares_the_names_the_backend_sends,
+    test_withvars_token_literals_are_typed_as_chaos_token_faces,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,

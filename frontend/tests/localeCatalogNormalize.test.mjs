@@ -259,6 +259,16 @@ test('icon placeholders keep their production role', () => {
   assert.deepEqual(result.variables, [{ name: 'skull', source: 'named', role: 'icon' }])
 })
 
+test('a variable inside escaped icon braces becomes an icon variable', () => {
+  const result = normalize("Add 1 {'{'}{token}{'}'} chaos token")
+  assert.deepEqual(result.nodes, [
+    { type: 'text', value: 'Add 1 ' },
+    { type: 'var', name: 'token', source: 'named', role: 'icon' },
+    { type: 'text', value: ' chaos token' },
+  ])
+  assert.deepEqual(result.variables, [{ name: 'token', source: 'named', role: 'icon' }])
+})
+
 test('literal escapes become text, never emphasis delimiters', () => {
   const result = normalize("{asterisk}not italic{asterisk} and {'{'}braced{'}'}")
   assert.deepEqual(result.nodes, [

@@ -274,7 +274,8 @@
               },
               "role": {
                 "enum": [
-                  "text"
+                  "text",
+                  "icon"
                 ]
               },
               "type": {

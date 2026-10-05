@@ -194,10 +194,19 @@ VARIABLE_BINDERS = {
     "nameVar": [("name", "text")],
     "cardNameVar": [("name", "text"), ("__name", "text")],
     "investigatorNameVar": [("iname", "text"), ("__iname", "text")],
+    # Arkham.I18n.tokenVar names ordinary card/resource tokens ("token.Resource"),
+    # not ChaosTokenFace values. Scenario setup passages that add chaos tokens
+    # use `withVars ["token" .= String "elderThing"]` and are typed from the
+    # chaos-token variable registry below.
     "tokenVar": [("token", "text")],
     "skillVar": [("skill", "text")],
     "skillIconVar": [("skillIcon", "text")],
 }
+
+CHAOS_TOKEN_FACE_TYPE = "chaosTokenFace"
+CHAOS_TOKEN_FACE_SOURCE = "Arkham/ChaosToken/Types.hs"
+CHAOS_TOKEN_FACE_TAGS: set[str] = set()
+CHAOS_TOKEN_FACE_VALUES: list[str] = []
 # numberVar/keyVar/withVar take the name as a literal first argument.
 NAMED_VARIABLE_BINDERS = {
     "numberVar": "integer",
@@ -1530,6 +1539,28 @@ def _contains(candidate, node) -> bool:
     return candidate.start_byte <= node.start_byte and candidate.end_byte >= node.end_byte
 
 
+def _variable_type(variable: str, value, source: bytes, index=None, module: str | None = None) -> str:
+    if variable == "token" and _is_chaos_token_face_value(value, source):
+        return CHAOS_TOKEN_FACE_TYPE
+    return value_type(value, source, index, module)
+
+
+def _is_chaos_token_face_value(node, source: bytes) -> bool:
+    """True when a `withVar(s)` value is proved to carry a chaos-token icon tag."""
+    literals: list[str] = []
+
+    def visit(current) -> None:
+        literal = string_literal(current, source)
+        if literal is not None:
+            literals.append(literal)
+            return
+        for child in significant_children(current):
+            visit(child)
+
+    visit(node)
+    return bool(literals) and all(literal in CHAOS_TOKEN_FACE_TAGS for literal in literals)
+
+
 def _collect_variables(name: str, args, source: bytes, variables: dict[str, str], index=None, module: str | None = None) -> None:
     # `withVars ["xp" .= xp, "shelterValue" .= n]` and `withVar "name" value`
     # bind arbitrary names (Arkham/I18n.hs), and they are how most resolutions
@@ -1537,14 +1568,14 @@ def _collect_variables(name: str, args, source: bytes, variables: dict[str, str]
     # renders a variable the backend never sends.
     if name == "withVars" and args:
         for pair_name, value in _pair_bindings(args[0], source):
-            variables.setdefault(pair_name, value_type(value, source, index, module))
+            variables.setdefault(pair_name, _variable_type(pair_name, value, source, index, module))
         return
     if name == "withVar" and len(args) >= 1:
         variable = string_literal(args[0], source)
         if variable is not None:
             variables.setdefault(
                 variable,
-                value_type(args[1], source, index, module) if len(args) > 1 else "unknown",
+                _variable_type(variable, args[1], source, index, module) if len(args) > 1 else "unknown",
             )
         return
 
@@ -2168,11 +2199,58 @@ def collect_parameter_values(parsed, requests, index: ModuleIndex) -> dict:
     }
 
 
+def _strip_icon_braces(value: str) -> str:
+    if value.startswith("{") and value.endswith("}"):
+        return value[1:-1]
+    return value
+
+
+def _chaos_token_face_values(library: Path) -> list[str]:
+    """Derive official chaos-token icon tags from Arkham.ChaosToken.Types."""
+    path = library / CHAOS_TOKEN_FACE_SOURCE
+    if not path.is_file():
+        return []
+    source = path.read_text(encoding="utf-8")
+    list_match = re.search(r"allChaosTokenFaces\s*=\s*\[(.*?)\]", source, re.S)
+    if list_match is None:
+        return []
+    constructors = re.findall(r"\b[A-Z][A-Za-z0-9]*\b", list_match.group(1))
+
+    display_match = re.search(
+        r"instance\s+ToDisplay\s+ChaosTokenFace\s+where\s+toDisplay\s*=\s+\\case(.*?)(?:\ninstance\s+|\nallChaosTokenFaces\b)",
+        source,
+        re.S,
+    )
+    if display_match is None:
+        return []
+    displays = {
+        constructor: _strip_icon_braces(display)
+        for constructor, display in re.findall(r"\b([A-Z][A-Za-z0-9]*)\s*->\s*\"([^\"]+)\"", display_match.group(1))
+    }
+    return [displays[constructor] for constructor in constructors if constructor in displays]
+
+
+def _variable_type_registry(library: Path) -> dict:
+    values = _chaos_token_face_values(library)
+    return {
+        CHAOS_TOKEN_FACE_TYPE: {
+            "kind": "enum",
+            "values": values,
+            "openCustomFaces": True,
+            "source": CHAOS_TOKEN_FACE_SOURCE,
+        }
+    }
+
+
 def build_artifact(dynamic_report: Path | None = None, library: Path | None = None) -> dict:
     """Reads every module under `library` (the backend by default) and returns
     the registry. Tests pass a synthetic library to exercise one rule at a
     time; production always reads the real thing."""
     library = library or LIBRARY
+    variable_types = _variable_type_registry(library)
+    global CHAOS_TOKEN_FACE_TAGS, CHAOS_TOKEN_FACE_VALUES
+    CHAOS_TOKEN_FACE_VALUES = list(variable_types[CHAOS_TOKEN_FACE_TYPE]["values"])
+    CHAOS_TOKEN_FACE_TAGS = set(CHAOS_TOKEN_FACE_VALUES)
     files = sorted(library.rglob("*.hs"))
     index = ModuleIndex()
     parsed = []
@@ -2333,6 +2411,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
     return {
         "artifactVersion": ARTIFACT_VERSION,
         "generator": "scripts/extract-backend-i18n-keys.py",
+        "variableTypes": variable_types,
         "source": {
             "root": _relative_path(library, library.parent if library != LIBRARY else ROOT),
             "files": len(parsed),
