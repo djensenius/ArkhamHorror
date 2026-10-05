@@ -8545,10 +8545,10 @@ test-suite spec
       Arkham.Api.GameBugUploadSpec
       Arkham.Api.GameDecksSpec
       Arkham.Api.GameImportSpec
-      Arkham.Api.HelpersSpec
       Arkham.Api.GameStreamAuthSpec
       Arkham.Api.GameStreamSpec
       Arkham.Api.GameUtilAccessSpec
+      Arkham.Api.HelpersSpec
       Arkham.Api.JsonContractsSpec
       Arkham.Api.LocaleCatalogCapabilitySpec
       Arkham.Api.LocaleCatalogSettingsPreflightSpec
