@@ -30,13 +30,14 @@ import Api.Arkham.Helpers (
  )
 import Arkham.Metrics qualified as Metrics
 import Config
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.MVar (newMVar)
 import Control.Monad.Logger (liftLoc, runLoggingT)
 import Data.Bugsnag.Settings qualified as Bugsnag
 import Data.CaseInsensitive (foldCase, mk)
 import Data.Default.Class (def)
 import Data.List (lookup)
+import Data.Pool (destroyAllResources)
 import Data.Text qualified as T
 import Data.Time.Clock (getCurrentTime)
 import Data.X509.CertificateStore (readCertificateStore)
@@ -50,6 +51,7 @@ import Database.Redis (
   ConnectAddr (..),
   ConnectInfo (..),
   checkedConnect,
+  disconnect,
   newPubSubController,
   parseConnectInfo,
  )
@@ -140,8 +142,8 @@ makeFoundation appSettings = do
   appThirdEditionRooms <- newMVar mempty
   appPubSubHealth <- newTVarIO =<< getCurrentTime
 
-  appMessageBroker <- case appRedisConnectionInfo appSettings of
-    Nothing -> pure WebSocketBroker
+  (appMessageBroker, appPubSubSupervisorThread) <- case appRedisConnectionInfo appSettings of
+    Nothing -> pure (WebSocketBroker, Nothing)
     Just url -> do
       conn <- checkedConnect =<< fromConnectionUrl url
       -- The health channel is an INITIAL subscription so 'pubSubForever'
@@ -155,8 +157,8 @@ makeFoundation appSettings = do
       -- Supervised, not bare: 'pubSubForever' exits on connection loss and
       -- must be restarted to resubscribe, and it cannot see a half-open
       -- socket at all. See 'pubSubSupervisor'.
-      _ <- forkIO $ pubSubSupervisor appPubSubHealth conn ctrl
-      pure $ RedisBroker conn ctrl
+      thread <- forkIO $ pubSubSupervisor appPubSubHealth conn ctrl
+      pure (RedisBroker conn ctrl, Just thread)
 
   appThirdEditionStore <- case appMessageBroker of
     RedisBroker conn _ -> ThirdEdition.newRedisStore conn
@@ -167,11 +169,11 @@ makeFoundation appSettings = do
   -- logging function. To get out of this loop, we initially create a
   -- temporary foundation without a real connection pool, get a log function
   -- from there, and then create the real foundation.
-  let mkFoundation appConnPool = App {..}
+  let mkFoundation appConnPool appRoomHeartbeatThread = App {..}
       -- The App {..} syntax is an example of record wild cards. For more
       -- information, see:
       -- https://ocharles.org.uk/blog/posts/2014-12-04-record-wildcards.html
-      tempFoundation = mkFoundation $ error "connPool forced in tempFoundation"
+      tempFoundation = mkFoundation (error "connPool forced in tempFoundation") Nothing
       logFunc = messageLoggerSource tempFoundation appLogger
 
   -- Create the database connection pool
@@ -184,15 +186,14 @@ makeFoundation appSettings = do
   -- Perform database migration using our application's logging settings.
   -- runLoggingT (runSqlPool (runMigration migrateAll) pool) logFunc
 
-  let foundation = mkFoundation pool
-
   -- Per-pod heartbeat for the cross-server room registry: refreshes the
   -- 'arkham:rooms:seen' timestamps for any game this pod is still
   -- serving, so admin counts age out automatically when a pod crashes.
-  -- No-op when no Redis broker is configured.
-  _ <- forkIO (roomHeartbeat foundation)
+  appRoomHeartbeatThread <- case appMessageBroker of
+    WebSocketBroker -> pure Nothing
+    RedisBroker {} -> Just <$> forkIO (roomHeartbeat appMessageBroker appGameRooms)
 
-  pure foundation
+  pure $ mkFoundation pool appRoomHeartbeatThread
 
 {- | Convert our foundation to a WAI Application by calling @toWaiAppPlain@ and
  applying some additional middlewares.
@@ -341,7 +342,13 @@ getApplicationRepl = do
   pure (getPort wsettings, foundation, app1)
 
 shutdownApp :: App -> IO ()
-shutdownApp _ = pure ()
+shutdownApp app = do
+  for_ (appRoomHeartbeatThread app) killThread
+  for_ (appPubSubSupervisorThread app) killThread
+  case appMessageBroker app of
+    WebSocketBroker -> pure ()
+    RedisBroker conn _ -> disconnect conn
+  destroyAllResources (appConnPool app)
 
 ---------------------------------------------
 -- Functions for use in development with GHCi

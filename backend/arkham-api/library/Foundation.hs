@@ -32,6 +32,7 @@ import UnliftIO.Exception qualified as UnliftIO
 import Arkham.Card.CardCode
 import Auth.ApiKey qualified as ApiKey
 import Auth.JWT qualified as JWT
+import Control.Concurrent (ThreadId)
 import Control.Monad.Logger (LogSource)
 import Data.Aeson (Result (Success), fromJSON)
 import Data.Bugsnag.Settings qualified as Bugsnag
@@ -169,8 +170,10 @@ access to the data present here.
 data App = App
   { appSettings :: AppSettings
   , appConnPool :: ConnectionPool
-  , appMessageBroker :: MessageBroker
   -- ^ Database connection pool.
+  , appMessageBroker :: MessageBroker
+  , appPubSubSupervisorThread :: !(Maybe ThreadId)
+  , appRoomHeartbeatThread :: !(Maybe ThreadId)
   , appHttpManager :: Manager
   , appLogger :: Logger
   , appGameRooms :: !(MVar (Map ArkhamGameId Room))
