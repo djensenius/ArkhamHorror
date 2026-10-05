@@ -267,10 +267,6 @@ test('production builds consume a previously attested catalog', () => {
   )
   assert.match(
     dockerfile,
-    /COPY \.\/backend\/devel-store-lock\/package\.yaml \/opt\/arkham\/src\/backend\/devel-store-lock\/package\.yaml/,
-  )
-  assert.match(
-    dockerfile,
     /RUN .*\bnode scripts\/locale-catalog\/generator-launcher\.mjs verify-dist\.mjs --publish/,
   )
   assert.match(dockerfile, /COPY --from=mcp \/opt\/arkham\/mcp \/opt\/arkham\/mcp/)

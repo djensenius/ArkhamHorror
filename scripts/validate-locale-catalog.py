@@ -1056,13 +1056,6 @@ def validate_deployment_wiring(manifest: dict) -> None:
         "the container build does not provide the backend emitted-key registry the generator requires",
     )
     require(
-        docker_copies(
-            "backend/devel-store-lock/package.yaml",
-            "/opt/arkham/src/backend/devel-store-lock/package.yaml",
-        ),
-        "the container dependency build does not provide devel-store-lock/package.yaml from stack.yaml",
-    )
-    require(
         re.search(
             r"^\s*RUN\s+env\s+-i\s+HOME=/nonexistent\s+.*?/usr/local/bin/node\s+scripts/locale-catalog/generator-launcher\.mjs\s+generate\.mjs\s*$",
             dockerfile,

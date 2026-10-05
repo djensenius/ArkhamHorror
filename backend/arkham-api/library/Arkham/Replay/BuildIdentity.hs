@@ -182,7 +182,6 @@ compiledSourceRoots =
   , "backend/arkham-api/app-capabilities-probe"
   , "backend/cards-discover/library"
   , "backend/cards-discover/app"
-  , "backend/devel-store-lock/library"
   , "backend/ah3e/library"
   ]
 

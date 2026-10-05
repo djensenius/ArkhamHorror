@@ -2,13 +2,15 @@ module Arkham.Api.GameBugUploadSpec (spec) where
 
 import Amazonka (Error (..))
 import Amazonka.Error (serviceError)
-import Api.Arkham.AwsEnvSupervisor (AwsErrorCategory (..), AwsErrorDiagnostic (..))
 import Api.Handler.Arkham.Game.Bug (
+  AwsErrorCategory (..),
+  AwsErrorDiagnostic (..),
   BugUploadFailure (..),
   BugUploadOutcome (..),
   HeadObjectOutcome (..),
   classifyHeadObjectError,
   runBugUploadPolicy,
+  runBugUploadWithEnvDiscovery,
   runHeadObjectAction,
   runPutObjectAction,
  )
@@ -62,10 +64,8 @@ returning the public success URL regardless of what actually happened.
 
 'classifyHeadObjectError' and 'runBugUploadPolicy' are the exact functions
 the production handler now uses to classify HeadObject failures and to
-sequence the protected PUT. These tests exercise them directly. See
-'Arkham.Api.AwsEnvSupervisorSpec' for the AWS credential-supervisor
-lifecycle (acquisition, refresh-failure isolation, demand-gating) that
-the production handler now consults before ever reaching these actions.
+sequence the protected PUT. These tests exercise them directly. The production handler uses ordinary Amazonka environment discovery before
+running these actions.
 -}
 spec :: Spec
 spec = describe "bug report upload" do
@@ -125,6 +125,10 @@ spec = describe "bug report upload" do
     it "reports failure (never a false success) when PUT itself fails" do
       outcome <- runBugUploadPolicy (pure ObjectAbsent) (pure $ Left (AwsServiceFailure 500 AwsCategoryServerError))
       outcome `shouldBe` BugUploadFailed (PutObjectFailed (AwsServiceFailure 500 AwsCategoryServerError))
+
+    it "sanitizes AWS credential discovery failures before the upload policy runs" do
+      outcome <- runBugUploadWithEnvDiscovery (pure $ Left ()) (\() -> pure BugUploadSucceeded)
+      outcome `shouldBe` BugUploadFailed CredentialDiscoveryFailed
 
     {- | Regression for the async-refresh/lazy-thunk audit: the diagnostic
     used to cross the 'runResourceT IO' -> 'Handler' boundary through a
