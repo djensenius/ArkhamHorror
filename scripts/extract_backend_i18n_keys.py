@@ -2552,13 +2552,15 @@ def _known_string_values(node, source: bytes) -> list[str] | None:
 
 
 def _function_body(function):
-    children = significant_children(function)
-    body = children[-1] if children else None
-    if body is None:
+    matches = [child for child in significant_children(function) if child.type == "match"]
+    if len(matches) != 1:
         return None
-    if body.type == "match":
-        inner = significant_children(body)
-        body = inner[-1] if inner else None
+    children = significant_children(matches[0])
+    if not children or any(child.type == "guards" for child in children[:-1]):
+        return None
+    body = children[-1]
+    if body.type == "guards":
+        return None
     return body
 
 

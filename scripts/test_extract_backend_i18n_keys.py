@@ -625,7 +625,7 @@ def test_skill_var_falls_back_to_text_when_a_branch_does_not_use_withvar() -> No
         {
             "Arkham/I18n.hs": SKILL_I18N.replace(
                 '  SkillAgility -> withVar "skill" (String "agility") a\n',
-                '  SkillAgility -> keyVar "skill" "agility" a\n',
+                '  SkillAgility -> withVar "skill" (String "agility") a\n  SkillWild -> keyVar "skill" "wild" a\n',
             ),
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
@@ -652,7 +652,7 @@ def test_skill_var_falls_back_to_text_when_the_variable_name_is_not_literal() ->
                 'skillName = "skill"\n\nskillVar v a = case v of\n',
             ).replace(
                 '  SkillAgility -> withVar "skill" (String "agility") a\n',
-                '  SkillAgility -> withVar skillName (String "agility") a\n',
+                '  SkillAgility -> withVar "skill" (String "agility") a\n  SkillWild -> withVar skillName (String "wild") a\n',
             ),
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
@@ -668,6 +668,30 @@ run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
     check(
         variables.get("skill") == "text",
         f"skillVar did not fall back to text for a non-literal variable name: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_definition_has_a_guard() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                'skillVar v a = case v of\n',
+                'skillVar v a\n  | otherwise = case v of\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text for a guarded definition: {variables}",
     )
 
 
@@ -966,6 +990,7 @@ TESTS = (
     test_skill_var_falls_back_to_text_for_an_extra_value_without_a_glyph,
     test_skill_var_falls_back_to_text_when_a_branch_does_not_use_withvar,
     test_skill_var_falls_back_to_text_when_the_variable_name_is_not_literal,
+    test_skill_var_falls_back_to_text_when_definition_has_a_guard,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,
