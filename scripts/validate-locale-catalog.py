@@ -578,15 +578,16 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
     require(backend["emittedKeys"] == len(emitted), "the manifest miscounts the backend's emitted keys")
 
     default_locale = manifest["defaultLocale"]
-    entries: dict[str, dict] = {}
+    entries_by_locale: dict[str, dict[str, dict]] = {}
     for locale_entry in manifest["locales"]:
-        if locale_entry["locale"] != default_locale:
-            continue
+        locale_entries: dict[str, dict] = {}
         for descriptor in locale_entry["chunks"]:
             chunk = strict_json.strict_json_loads(
                 files[descriptor["path"][len(manifest["basePath"]) + 1 :]], source=descriptor["path"]
             )
-            entries.update(chunk["entries"])
+            locale_entries.update(chunk["entries"])
+        entries_by_locale[locale_entry["locale"]] = locale_entries
+    entries = entries_by_locale[default_locale]
 
     translated = {key for key in emitted if key in entries}
     untranslated = sorted(key for key in emitted if key not in entries)
@@ -618,13 +619,15 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
 
     gaps = []
     for key in sorted(translated):
-        entry = entries[key]
-        if entry["form"] == "unsupported":
+        if entries[key]["form"] == "unsupported":
             continue
         needed = {
             variable["name"]
-            for variable in entry["variables"]
-            if variable["source"] == "named" and variable["role"] == "text"
+            for locale_entries in entries_by_locale.values()
+            for entry in [locale_entries.get(key)]
+            if entry is not None and entry["form"] != "unsupported"
+            for variable in [*entry["variables"], *entry.get("linkedVariables", [])]
+            if variable["source"] == "named" and variable["role"] in {"text", "iconVariable"}
         }
         missing = sorted(needed - emitted[key])
         if missing:
