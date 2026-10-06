@@ -95,10 +95,11 @@
           ]
         },
         "role": {
-          "description": "text: substituted verbatim. icon: production replaceIcons() renders this name as an icon glyph. presentation: the name only reaches a class/style/data-* attribute, so a client that has no value for it loses styling, never an instruction.",
+          "description": "text: substituted verbatim. icon: production replaceIcons() renders this node's name as an icon glyph. iconVariable: the backend-supplied variable value is a proven icon name and must be rendered as that glyph; clients that do not implement it must treat the entry as unavailable rather than displaying the raw value. presentation: the name only reaches a class/style/data-* attribute, so a client that has no value for it loses styling, never an instruction.",
           "enum": [
             "text",
             "icon",
+            "iconVariable",
             "presentation"
           ]
         }
@@ -262,7 +263,8 @@
             "role": {
               "enum": [
                 "text",
-                "icon"
+                "icon",
+                "iconVariable"
               ]
             }
           }

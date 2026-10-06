@@ -199,14 +199,17 @@ VARIABLE_BINDERS = {
     # use `withVars ["token" .= String "elderThing"]` and are typed from the
     # chaos-token variable registry below.
     "tokenVar": [("token", "text")],
-    "skillVar": [("skill", "text")],
+    "skillVar": [("skill", "skillIcon")],
+    # `skillIconVar` can produce WildMinusIcon, which has no web glyph today,
+    # so generic call sites stay `text` unless a future extractor proves the
+    # specific argument is one of the iconClasses-backed values.
     "skillIconVar": [("skillIcon", "text")],
 }
 
 CHAOS_TOKEN_FACE_TYPE = "chaosTokenFace"
 CHAOS_TOKEN_FACE_SOURCE = "Arkham/ChaosToken/Types.hs"
-CHAOS_TOKEN_FACE_TAGS: set[str] = set()
-CHAOS_TOKEN_FACE_VALUES: list[str] = []
+SKILL_ICON_TYPE = "skillIcon"
+SKILL_ICON_VALUES = ["willpower", "intellect", "combat", "agility"]
 # numberVar/keyVar/withVar take the name as a literal first argument.
 NAMED_VARIABLE_BINDERS = {
     "numberVar": "integer",
@@ -1450,7 +1453,15 @@ def bind_alias_arguments(parameters: list[str], arguments, source: bytes) -> dic
 INTEGER_ARGUMENT = re.compile(r"-?\d+")
 
 
-def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, context=None, stop=None):
+def enclosing_scope(
+    node,
+    source: bytes,
+    index: ModuleIndex,
+    module: str,
+    context=None,
+    stop=None,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+):
     """Walks ancestors, collecting the scope stack in force at `node`."""
     effects: list[dict] = []
     variables: dict[str, str] = {}
@@ -1472,7 +1483,9 @@ def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, contex
                     pass
                 else:
                     effects.append({"name": name, "args": args})
-                    _collect_variables(name, args, source, variables, index, module)
+                    _collect_variables(
+                        name, args, source, variables, index, module, chaos_token_face_tags
+                    )
         elif parent.type == "infix":
             parts = infix_parts(parent, source)
             if parts is not None:
@@ -1483,11 +1496,15 @@ def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, contex
                         if application is not None:
                             name, args = application
                             effects.append({"name": name, "args": args})
-                            _collect_variables(name, args, source, variables, index, module)
+                            _collect_variables(
+                                name, args, source, variables, index, module, chaos_token_face_tags
+                            )
                         elif left.type == "variable":
                             name = text_of(left, source)
                             effects.append({"name": name, "args": []})
-                            _collect_variables(name, [], source, variables, index, module)
+                            _collect_variables(
+                                name, [], source, variables, index, module, chaos_token_face_tags
+                            )
         child = parent
         parent = parent.parent
 
@@ -1539,13 +1556,20 @@ def _contains(candidate, node) -> bool:
     return candidate.start_byte <= node.start_byte and candidate.end_byte >= node.end_byte
 
 
-def _variable_type(variable: str, value, source: bytes, index=None, module: str | None = None) -> str:
-    if variable == "token" and _is_chaos_token_face_value(value, source):
+def _variable_type(
+    variable: str,
+    value,
+    source: bytes,
+    index=None,
+    module: str | None = None,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+) -> str:
+    if variable == "token" and _is_chaos_token_face_value(value, source, chaos_token_face_tags):
         return CHAOS_TOKEN_FACE_TYPE
     return value_type(value, source, index, module)
 
 
-def _is_chaos_token_face_value(node, source: bytes) -> bool:
+def _is_chaos_token_face_value(node, source: bytes, chaos_token_face_tags: frozenset[str]) -> bool:
     """True when a `withVar(s)` value is proved to carry a chaos-token icon tag."""
     literals: list[str] = []
 
@@ -1558,24 +1582,37 @@ def _is_chaos_token_face_value(node, source: bytes) -> bool:
             visit(child)
 
     visit(node)
-    return bool(literals) and all(literal in CHAOS_TOKEN_FACE_TAGS for literal in literals)
+    return bool(literals) and all(literal in chaos_token_face_tags for literal in literals)
 
 
-def _collect_variables(name: str, args, source: bytes, variables: dict[str, str], index=None, module: str | None = None) -> None:
+def _collect_variables(
+    name: str,
+    args,
+    source: bytes,
+    variables: dict[str, str],
+    index=None,
+    module: str | None = None,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+) -> None:
     # `withVars ["xp" .= xp, "shelterValue" .= n]` and `withVar "name" value`
     # bind arbitrary names (Arkham/I18n.hs), and they are how most resolutions
     # supply their numbers. Without them every one of those keys looks like it
     # renders a variable the backend never sends.
     if name == "withVars" and args:
         for pair_name, value in _pair_bindings(args[0], source):
-            variables.setdefault(pair_name, _variable_type(pair_name, value, source, index, module))
+            variables.setdefault(
+                pair_name,
+                _variable_type(pair_name, value, source, index, module, chaos_token_face_tags),
+            )
         return
     if name == "withVar" and len(args) >= 1:
         variable = string_literal(args[0], source)
         if variable is not None:
             variables.setdefault(
                 variable,
-                _variable_type(variable, args[1], source, index, module) if len(args) > 1 else "unknown",
+                _variable_type(variable, args[1], source, index, module, chaos_token_face_tags)
+                if len(args) > 1
+                else "unknown",
             )
         return
 
@@ -1789,6 +1826,7 @@ def extract_module(
     module: str,
     library: Path | None = None,
     context=None,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
 ):
     emitted: dict[str, dict] = {}
     dynamic: list[dict] = []
@@ -1873,7 +1911,13 @@ def extract_module(
     def emit_through_helper(node, name, emitter, helper, keys, call_site_variables, key_node):
         """Emits a local helper's keys once per call site, in that site's scope."""
         inner_stack, inner_variables, inner_dynamic, inner_reset = enclosing_scope(
-            node, source, index, module, context, helper["holder"]
+            node,
+            source,
+            index,
+            module,
+            context,
+            helper["holder"],
+            chaos_token_face_tags,
         )
         if inner_dynamic is not None:
             record_dynamic(node, inner_dynamic, name)
@@ -1909,7 +1953,12 @@ def extract_module(
 
         for call_node, call_arguments in calls:
             call_stack, call_variables, call_dynamic, call_reset = enclosing_scope(
-                call_node, source, index, module, context
+                call_node,
+                source,
+                index,
+                module,
+                context,
+                chaos_token_face_tags=chaos_token_face_tags,
             )
             if call_dynamic is not None:
                 record_dynamic(call_node, call_dynamic, name)
@@ -2029,7 +2078,12 @@ def extract_module(
             return
 
         stack, variables, dynamic_reason, saw_reset = enclosing_scope(
-            node, source, index, module, context
+            node,
+            source,
+            index,
+            module,
+            context,
+            chaos_token_face_tags=chaos_token_face_tags,
         )
         if dynamic_reason is not None:
             record_dynamic(node, dynamic_reason, name)
@@ -2077,7 +2131,12 @@ def _is_top_level(index, key: tuple[str, str]) -> bool:
     return record is not None and key[1] in record["definitions"]
 
 
-def caller_scopes(parsed, index, wanted: set[tuple[str, str]]) -> dict[tuple[str, str], set[tuple]]:
+def caller_scopes(
+    parsed,
+    index,
+    wanted: set[tuple[str, str]],
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+) -> dict[tuple[str, str], set[tuple]]:
     """Scopes in force at every call site of the given helper.
 
     Scenario and campaign modules routinely factor emission into a helper with
@@ -2120,7 +2179,11 @@ def caller_scopes(parsed, index, wanted: set[tuple[str, str]]) -> dict[tuple[str
                         ]
                         if targets:
                             stack, _, dynamic_reason, saw_reset = enclosing_scope(
-                                node, source, index, module
+                                node,
+                                source,
+                                index,
+                                module,
+                                chaos_token_face_tags=chaos_token_face_tags,
                             )
                             # Only an anchored scope (one that began with a
                             # reset such as withI18n/campaignI18n) can define a
@@ -2136,7 +2199,12 @@ def caller_scopes(parsed, index, wanted: set[tuple[str, str]]) -> dict[tuple[str
     return found
 
 
-def collect_parameter_values(parsed, requests, index: ModuleIndex) -> dict:
+def collect_parameter_values(
+    parsed,
+    requests,
+    index: ModuleIndex,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+) -> dict:
     """Literal arguments every call site in the codebase passes, per request.
 
     Top-level helpers such as `campaignFlavorText entry = ... scope entry ...`
@@ -2183,7 +2251,11 @@ def collect_parameter_values(parsed, requests, index: ModuleIndex) -> dict:
                         elif collected[request] is not None:
                             collected[request].extend(resolved)
                             _, site_variables, dynamic_reason, _ = enclosing_scope(
-                                node, source, index, module
+                                node,
+                                source,
+                                index,
+                                module,
+                                chaos_token_face_tags=chaos_token_face_tags,
                             )
                             if dynamic_reason is None:
                                 variables[request].update(site_variables)
@@ -2203,6 +2275,18 @@ def _strip_icon_braces(value: str) -> str:
     if value.startswith("{") and value.endswith("}"):
         return value[1:-1]
     return value
+
+
+def _web_icon_tags() -> set[str]:
+    """Icon placeholder names the web client can turn into glyphs."""
+    path = ROOT / "frontend" / "src" / "arkham" / "icons.ts"
+    if not path.is_file():
+        return set()
+    source = path.read_text(encoding="utf-8")
+    match = re.search(r"iconClasses\s*:\s*Record<string, string>\s*=\s*\{(.*?)\n\}", source, re.S)
+    if match is None:
+        return set()
+    return set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)\s*:", match.group(1)))
 
 
 def _chaos_token_face_values(library: Path) -> list[str]:
@@ -2225,9 +2309,16 @@ def _chaos_token_face_values(library: Path) -> list[str]:
         return []
     displays = {
         constructor: _strip_icon_braces(display)
-        for constructor, display in re.findall(r"\b([A-Z][A-Za-z0-9]*)\s*->\s*\"([^\"]+)\"", display_match.group(1))
+        for constructor, display in re.findall(
+            r"\b([A-Z][A-Za-z0-9]*)\s*->\s*\"([^\"]+)\"", display_match.group(1)
+        )
     }
-    return [displays[constructor] for constructor in constructors if constructor in displays]
+    icon_tags = _web_icon_tags()
+    return [
+        displays[constructor]
+        for constructor in constructors
+        if constructor in displays and displays[constructor] in icon_tags
+    ]
 
 
 def _variable_type_registry(library: Path) -> dict:
@@ -2236,9 +2327,13 @@ def _variable_type_registry(library: Path) -> dict:
         CHAOS_TOKEN_FACE_TYPE: {
             "kind": "enum",
             "values": values,
-            "openCustomFaces": True,
             "source": CHAOS_TOKEN_FACE_SOURCE,
-        }
+        },
+        SKILL_ICON_TYPE: {
+            "kind": "enum",
+            "values": SKILL_ICON_VALUES,
+            "source": "Arkham/I18n.hs",
+        },
     }
 
 
@@ -2248,9 +2343,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
     time; production always reads the real thing."""
     library = library or LIBRARY
     variable_types = _variable_type_registry(library)
-    global CHAOS_TOKEN_FACE_TAGS, CHAOS_TOKEN_FACE_VALUES
-    CHAOS_TOKEN_FACE_VALUES = list(variable_types[CHAOS_TOKEN_FACE_TYPE]["values"])
-    CHAOS_TOKEN_FACE_TAGS = set(CHAOS_TOKEN_FACE_VALUES)
+    chaos_token_face_tags = frozenset(variable_types[CHAOS_TOKEN_FACE_TYPE]["values"])
     files = sorted(library.rglob("*.hs"))
     index = ModuleIndex()
     parsed = []
@@ -2286,18 +2379,36 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
         if module in DSL_MODULES:
             continue
         context.module = module
-        results[module] = extract_module(path, source, tree, index, module, library, context)
+        results[module] = extract_module(
+            path,
+            source,
+            tree,
+            index,
+            module,
+            library,
+            context,
+            chaos_token_face_tags,
+        )
 
     # Pass two answers those requests from every call site in the codebase and
     # re-reads only the modules that asked.
     if context.requests:
-        values = collect_parameter_values(parsed, context.requests, index)
+        values = collect_parameter_values(parsed, context.requests, index, chaos_token_face_tags)
         answered = ParameterContext(values)
         for path, source, tree, module in parsed:
             if module not in context.requested_modules or module in DSL_MODULES:
                 continue
             answered.module = module
-            results[module] = extract_module(path, source, tree, index, module, library, answered)
+            results[module] = extract_module(
+                path,
+                source,
+                tree,
+                index,
+                module,
+                library,
+                answered,
+                chaos_token_face_tags,
+            )
 
     emitted: dict[str, dict] = {}
     dynamic: list[dict] = []
@@ -2313,7 +2424,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
 
     # Resolve helper functions whose scope comes from their call sites.
     wanted = {(site["module"], site["function"]) for site in pending if site["function"]}
-    scopes = caller_scopes(parsed, index, wanted)
+    scopes = caller_scopes(parsed, index, wanted, chaos_token_face_tags)
     for site in pending:
         candidates = scopes.get((site["module"], site["function"]), set())
         if len(candidates) != 1:

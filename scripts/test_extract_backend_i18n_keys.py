@@ -309,8 +309,12 @@ run headedWest = campaignI18n $
     )
     check(
         artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE]["values"]
-        == ["+1", "0", "skull", "elderThing", "bless"],
-        f"chaos-token faces were not derived from source: {artifact['variableTypes']}",
+        == ["skull", "elderThing", "bless"],
+        f"chaos-token icon faces were not derived from source: {artifact['variableTypes']}",
+    )
+    check(
+        "openCustomFaces" not in artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE],
+        "chaos-token icon variable type must not claim custom-face coverage",
     )
 
 
@@ -527,16 +531,6 @@ def test_committed_registry_properties() -> None:
 
     token_faces = artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE]["values"]
     for face in (
-        "+1",
-        "0",
-        "-1",
-        "-2",
-        "-3",
-        "-4",
-        "-5",
-        "-6",
-        "-7",
-        "-8",
         "skull",
         "cultist",
         "tablet",
@@ -548,11 +542,22 @@ def test_committed_registry_properties() -> None:
         "frost",
         "blood",
     ):
-        check(face in token_faces, f"chaos token face missing from registry: {face}")
+        check(face in token_faces, f"chaos token icon face missing from registry: {face}")
+    for numeric_face in ("+1", "0", "-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8"):
+        check(numeric_face not in token_faces, f"numeric chaos token published as an icon: {numeric_face}")
+    check(
+        "openCustomFaces" not in artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE],
+        "chaos-token icon variable type must not claim custom-face coverage",
+    )
     add_token_types = {variable["name"]: variable["type"] for variable in by_key["addToken"]["variables"]}
     check(
         add_token_types.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
         f"addToken token variable is not typed as {extractor.CHAOS_TOKEN_FACE_TYPE}: {add_token_types}",
+    )
+    test_types = {variable["name"]: variable["type"] for variable in by_key["label.test"]["variables"]}
+    check(
+        test_types.get("skill") == extractor.SKILL_ICON_TYPE,
+        f"label.test skill variable is not typed as {extractor.SKILL_ICON_TYPE}: {test_types}",
     )
 
     # Keys the review named as reachable but missing from the earlier registry.

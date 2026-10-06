@@ -718,7 +718,7 @@ function textNodes(value, placeholders, out) {
         type: 'var',
         name: placeholder.name,
         source: placeholder.source,
-        role: 'icon',
+        role: 'iconVariable',
       })
     } else if (placeholder.kind === 'text') {
       out.push({ type: 'text', value: placeholder.text })

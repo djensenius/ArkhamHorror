@@ -263,10 +263,10 @@ test('a variable inside escaped icon braces becomes an icon variable', () => {
   const result = normalize("Add 1 {'{'}{token}{'}'} chaos token")
   assert.deepEqual(result.nodes, [
     { type: 'text', value: 'Add 1 ' },
-    { type: 'var', name: 'token', source: 'named', role: 'icon' },
+    { type: 'var', name: 'token', source: 'named', role: 'iconVariable' },
     { type: 'text', value: ' chaos token' },
   ])
-  assert.deepEqual(result.variables, [{ name: 'token', source: 'named', role: 'icon' }])
+  assert.deepEqual(result.variables, [{ name: 'token', source: 'named', role: 'iconVariable' }])
 })
 
 test('literal escapes become text, never emphasis delimiters', () => {

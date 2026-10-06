@@ -531,7 +531,7 @@ test('a variable the backend cannot type makes the entry unavailable, in every l
 
   // Nothing may be published as renderable while its slot is unproven.
   for (const { key, variable, role, type } of listed) {
-    assert.ok(['text', 'icon'].includes(role), `${key}.${variable} has role ${role}`)
+    assert.ok(['text', 'iconVariable'].includes(role), `${key}.${variable} has role ${role}`)
     assert.notEqual(type, 'integer', `${key}.${variable} is integer and should have been accepted`)
     for (const locale of built.manifest.locales) {
       const entry = chunkFor(built.files, built.manifest, locale.locale, key)?.entries[key]
@@ -574,6 +574,85 @@ test('variable coverage compares role and type, not just the name', async () => 
       `${key} does not declare ${variable}; this should have been a missing-variable gap`,
     )
   }
+})
+
+test('addToken publishes the backend token value as an icon-variable node', async () => {
+  const built = await buildCatalog({})
+  const entry = chunkFor(built.files, built.manifest, built.manifest.defaultLocale, 'addToken')?.entries.addToken
+  assert.equal(entry?.form, 'message')
+  assert.deepEqual(
+    entry.nodes.filter((node) => node.type === 'var'),
+    [{ type: 'var', name: 'token', source: 'named', role: 'iconVariable' }],
+  )
+  assert.deepEqual(entry.variables, [{ name: 'token', source: 'named', role: 'iconVariable' }])
+  assert.ok(
+    !built.manifest.backend.unknownVariableTypes.some((gap) => gap.key === 'addToken'),
+    'addToken must not be reported as an unusable variable type',
+  )
+})
+
+test('label.test-style skill icons keep an explicit icon-variable shape', async () => {
+  const built = await buildCatalog({})
+  for (const key of ['label.test', 'label.testX', 'label.useSkill', 'label.chooseSkill']) {
+    const entry = chunkFor(built.files, built.manifest, built.manifest.defaultLocale, key)?.entries[key]
+    assert.equal(entry?.form, 'message', key)
+    assert.ok(
+      entry.nodes.some(
+        (node) => node.type === 'var' && node.name === 'skill' && node.role === 'iconVariable',
+      ),
+      `${key} must render the backend skill value as an icon variable`,
+    )
+    assert.ok(
+      entry.variables.some((variable) => variable.name === 'skill' && variable.role === 'iconVariable'),
+      `${key} must declare the skill icon variable`,
+    )
+  }
+})
+
+test('icon-variable slots reject unproven text values', () => {
+  const entry = {
+    form: 'message',
+    nodes: [{ type: 'var', name: 'token', source: 'named', role: 'iconVariable' }],
+    variables: [{ name: 'token', source: 'named', role: 'iconVariable' }],
+  }
+  const normalized = new Map([['en', new Map([['addToken', entry]])]])
+  const backend = { keys: new Map([['addToken', { variables: new Map([['token', 'text']]) }]]) }
+
+  const { unknownVariableTypes, variableGaps } = resolveVariablesAndLinks(
+    normalized,
+    'en',
+    new Set(['addToken']),
+    backend,
+  )
+
+  assert.deepEqual(variableGaps, [])
+  assert.deepEqual(unknownVariableTypes, [
+    { key: 'addToken', variable: 'token', role: 'iconVariable', type: 'text' },
+  ])
+  assert.equal(normalized.get('en').get('addToken').form, 'unsupported')
+  assert.equal(normalized.get('en').get('addToken').reason, 'unusable-variable-type')
+})
+
+test('undeclared icon-variable slots are reported as variable gaps', () => {
+  const entry = {
+    form: 'message',
+    nodes: [{ type: 'var', name: 'token', source: 'named', role: 'iconVariable' }],
+    variables: [{ name: 'token', source: 'named', role: 'iconVariable' }],
+  }
+  const normalized = new Map([['en', new Map([['addToken', entry]])]])
+  const backend = { keys: new Map([['addToken', { variables: new Map() }]]) }
+
+  const { unknownVariableTypes, variableGaps } = resolveVariablesAndLinks(
+    normalized,
+    'en',
+    new Set(['addToken']),
+    backend,
+  )
+
+  assert.deepEqual(unknownVariableTypes, [])
+  assert.deepEqual(variableGaps, [
+    { key: 'addToken', missing: ['token'], declared: [], resolved: false },
+  ])
 })
 
 test('an entry that links an unusable one is unusable too, in every locale', async () => {
