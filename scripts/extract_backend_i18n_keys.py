@@ -1571,18 +1571,70 @@ def _variable_type(
 
 def _is_chaos_token_face_value(node, source: bytes, chaos_token_face_tags: frozenset[str]) -> bool:
     """True when a `withVar(s)` value is proved to carry a chaos-token icon tag."""
-    literals: list[str] = []
+    return _known_chaos_token_face_values(node, source, chaos_token_face_tags) is not None
 
-    def visit(current) -> None:
-        literal = string_literal(current, source)
-        if literal is not None:
-            literals.append(literal)
-            return
-        for child in significant_children(current):
-            visit(child)
 
-    visit(node)
-    return bool(literals) and all(literal in chaos_token_face_tags for literal in literals)
+def _known_chaos_token_face_values(
+    node, source: bytes, chaos_token_face_tags: frozenset[str]
+) -> list[str] | None:
+    """All icon-face literals a value can produce, or None when any leaf is dynamic."""
+    if node is None:
+        return None
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _known_chaos_token_face_values(
+            significant_children(node)[0], source, chaos_token_face_tags
+        )
+
+    application = flatten_application(node, source)
+    if application is not None:
+        name, args = application
+        if name == "String" and len(args) == 1:
+            return _known_chaos_token_face_values(args[0], source, chaos_token_face_tags)
+        return None
+
+    literal = string_literal(node, source)
+    if literal is not None:
+        return [literal] if literal in chaos_token_face_tags else None
+
+    if node.type == "conditional":
+        branches = [
+            child
+            for child in significant_children(node)
+            if child.type not in {"if", "then", "else"}
+        ]
+        values: list[str] = []
+        for branch in branches[1:]:
+            resolved = _known_chaos_token_face_values(branch, source, chaos_token_face_tags)
+            if resolved is None:
+                return None
+            values.extend(resolved)
+        return values or None
+
+    if node.type == "case":
+        values: list[str] = []
+        for alternative in node.children:
+            if alternative.type != "alternatives":
+                continue
+            for entry in alternative.children:
+                if entry.type != "alternative":
+                    continue
+                body = significant_children(entry)[-1] if significant_children(entry) else None
+                if body is None:
+                    return None
+                if body.type == "match":
+                    inner = significant_children(body)
+                    body = inner[-1] if inner else None
+                resolved = (
+                    _known_chaos_token_face_values(body, source, chaos_token_face_tags)
+                    if body
+                    else None
+                )
+                if resolved is None:
+                    return None
+                values.extend(resolved)
+        return values or None
+
+    return None
 
 
 def _collect_variables(

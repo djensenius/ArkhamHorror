@@ -318,6 +318,61 @@ run headedWest = campaignI18n $
     )
 
 
+def test_token_face_proof_rejects_dynamic_expressions() -> None:
+    modules = {
+        "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+        "Test/Helpers.hs": HELPERS,
+        "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+tokenName :: Text -> Text
+tokenName face = face
+
+run suffix face dynamicToken = campaignI18n $ story $ do
+  withVar "token" (String ("skull" <> suffix)) $ p "concatToken"
+  withVar "token" (String (tokenName "skull")) $ p "calledToken"
+  withVar "token" (String dynamicToken) $ p "unresolvedToken"
+""",
+    }
+
+    expected_types = {
+        "standalone.testCampaign.concatToken": "unknown",
+        "standalone.testCampaign.calledToken": "unknown",
+        "standalone.testCampaign.unresolvedToken": "unknown",
+    }
+    for key, expected in expected_types.items():
+        variables = variable_types_of(modules, key)
+        check(
+            variables.get("token") == expected,
+            f"dynamic token expression did not fall back to {expected} for {key}: {variables}",
+        )
+
+
+def test_case_token_literals_are_typed_as_chaos_token_faces() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run face = campaignI18n $
+  withVar "token" (String (case face of
+    Skull -> "skull"
+    ElderThing -> "elderThing"
+  )) $ story $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
+        f"case token branches were not typed as chaos-token faces: {variables}",
+    )
+
+
 def test_amount_labels_are_choice_scoped_and_readers_are_ignored() -> None:
     keys = keys_of(
         {
@@ -599,6 +654,8 @@ TESTS = (
     test_presentation_modifiers_keep_the_key_and_shift_validate,
     test_withvars_declares_the_names_the_backend_sends,
     test_withvars_token_literals_are_typed_as_chaos_token_faces,
+    test_token_face_proof_rejects_dynamic_expressions,
+    test_case_token_literals_are_typed_as_chaos_token_faces,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,
