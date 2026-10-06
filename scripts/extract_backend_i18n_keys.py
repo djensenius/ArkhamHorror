@@ -210,6 +210,7 @@ CHAOS_TOKEN_FACE_TYPE = "chaosTokenFace"
 CHAOS_TOKEN_FACE_SOURCE = "Arkham/ChaosToken/Types.hs"
 SKILL_ICON_TYPE = "skillIcon"
 SKILL_ICON_VALUES = ["willpower", "intellect", "combat", "agility"]
+ICON_VARIABLE_TYPES = frozenset({CHAOS_TOKEN_FACE_TYPE, SKILL_ICON_TYPE})
 # numberVar/keyVar/withVar take the name as a literal first argument.
 NAMED_VARIABLE_BINDERS = {
     "numberVar": "integer",
@@ -801,7 +802,7 @@ class ParameterContext:
 
     def offer_variables(self, variables: dict[str, str]) -> None:
         """Variables the answering call sites had in force."""
-        self._variables.update(variables)
+        _merge_variable_types(self._variables, variables)
 
     def take_variables(self) -> dict[str, str]:
         variables, self._variables = self._variables, {}
@@ -1637,6 +1638,20 @@ def _known_chaos_token_face_values(
     return None
 
 
+def _merge_variable_type(existing: str | None, incoming: str) -> str:
+    if existing is None or existing == incoming:
+        return incoming
+    if existing in ICON_VARIABLE_TYPES or incoming in ICON_VARIABLE_TYPES:
+        non_icon = incoming if existing in ICON_VARIABLE_TYPES else existing
+        return non_icon if non_icon in {"text", "unknown"} else "unknown"
+    return incoming
+
+
+def _merge_variable_types(target: dict[str, str], incoming: dict[str, str]) -> None:
+    for variable, kind in incoming.items():
+        target[variable] = _merge_variable_type(target.get(variable), kind)
+
+
 def _collect_variables(
     name: str,
     args,
@@ -1992,7 +2007,7 @@ def extract_module(
         # the key.
         if inner_reset and parameter_index is None:
             variables = dict(inner_variables)
-            variables.update(call_site_variables)
+            _merge_variable_types(variables, call_site_variables)
             for variable, kind in emitter.get("vars", {}).items():
                 variables[variable] = kind
             emit(node, name, emitter, inner_stack, keys, variables)
@@ -2030,8 +2045,8 @@ def extract_module(
                 call_keys = resolved
 
             variables = dict(inner_variables)
-            variables.update(call_variables)
-            variables.update(call_site_variables)
+            _merge_variable_types(variables, call_variables)
+            _merge_variable_types(variables, call_site_variables)
             for variable, kind in emitter.get("vars", {}).items():
                 variables[variable] = kind
 
@@ -2084,7 +2099,7 @@ def extract_module(
                         record_dynamic(node, "partial key (runtime remainder)", name)
                         continue
                     entry = emitted.setdefault(full, {"key": full, "variables": {}, "sites": []})
-                    entry["variables"].update(variables)
+                    _merge_variable_types(entry["variables"], variables)
                     entry["sites"].append(
                         {"file": relative, "line": node.start_point[0] + 1, "emitter": name}
                     )
@@ -2145,7 +2160,7 @@ def extract_module(
             saw_reset = True
         variables = dict(variables)
         if "literal" not in emitter:
-            variables.update(call_site_variables)
+            _merge_variable_types(variables, call_site_variables)
         for variable, kind in emitter.get("vars", {}).items():
             variables[variable] = kind
 
@@ -2310,7 +2325,7 @@ def collect_parameter_values(
                                 chaos_token_face_tags=chaos_token_face_tags,
                             )
                             if dynamic_reason is None:
-                                variables[request].update(site_variables)
+                                _merge_variable_types(variables[request], site_variables)
             for child in node.children:
                 visit(child)
 
@@ -2471,7 +2486,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
         pending.extend(module_pending)
         for key, entry in module_keys.items():
             existing = emitted.setdefault(key, {"key": key, "variables": {}, "sites": []})
-            existing["variables"].update(entry["variables"])
+            _merge_variable_types(existing["variables"], entry["variables"])
             existing["sites"].extend(entry["sites"])
 
     # Resolve helper functions whose scope comes from their call sites.
@@ -2526,7 +2541,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
                     )
                     continue
                 entry = emitted.setdefault(full, {"key": full, "variables": {}, "sites": []})
-                entry["variables"].update(site["variables"])
+                _merge_variable_types(entry["variables"], site["variables"])
                 entry["sites"].append(
                     {"file": site["file"], "line": site["line"], "emitter": site["emitter"]}
                 )

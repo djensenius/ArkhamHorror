@@ -373,6 +373,29 @@ run face = campaignI18n $
     )
 
 
+def test_icon_variable_type_conflicts_downgrade_to_unknown() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run useDynamic dynamicToken = campaignI18n $ story $ do
+  if useDynamic
+    then withVar "token" (String dynamicToken) $ p "addToken"
+    else withVar "token" (String "skull") $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == "unknown",
+        f"conflicting token variable evidence did not fail closed: {variables}",
+    )
+
+
 def test_amount_labels_are_choice_scoped_and_readers_are_ignored() -> None:
     keys = keys_of(
         {
@@ -656,6 +679,7 @@ TESTS = (
     test_withvars_token_literals_are_typed_as_chaos_token_faces,
     test_token_face_proof_rejects_dynamic_expressions,
     test_case_token_literals_are_typed_as_chaos_token_faces,
+    test_icon_variable_type_conflicts_downgrade_to_unknown,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,
