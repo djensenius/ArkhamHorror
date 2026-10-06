@@ -209,6 +209,7 @@ VARIABLE_BINDERS = {
 CHAOS_TOKEN_FACE_TYPE = "chaosTokenFace"
 CHAOS_TOKEN_FACE_SOURCE = "Arkham/ChaosToken/Types.hs"
 SKILL_ICON_TYPE = "skillIcon"
+SKILL_ICON_SOURCE = "Arkham/I18n.hs"
 SKILL_ICON_VALUES = ["willpower", "intellect", "combat", "agility"]
 ICON_VARIABLE_TYPES = frozenset({CHAOS_TOKEN_FACE_TYPE, SKILL_ICON_TYPE})
 # numberVar/keyVar/withVar take the name as a literal first argument.
@@ -2451,9 +2452,110 @@ def _chaos_token_face_values(library: Path) -> list[str]:
     ]
 
 
-def _skill_icon_values(icon_tags: set[str] | None = None) -> list[str]:
+def _skill_var_values(library: Path) -> list[str]:
+    """Derive the icon tags Arkham.I18n.skillVar can emit."""
+    path = library / SKILL_ICON_SOURCE
+    if not path.is_file():
+        return []
+    source = path.read_bytes()
+    tree = parse_module(path, source, library)
+    definition = _top_level_function(tree, source, "skillVar")
+    if definition is None:
+        return []
+
+    values: list[str] = []
+    failed = False
+
+    def visit(node) -> None:
+        nonlocal failed
+        if failed:
+            return
+        application = flatten_application(node, source)
+        if application is not None:
+            name, args = application
+            if name == "withVar" and len(args) >= 2 and string_literal(args[0], source) == "skill":
+                resolved = _known_string_values(args[1], source)
+                if resolved is None:
+                    failed = True
+                    return
+                values.extend(resolved)
+                return
+        for child in node.children:
+            visit(child)
+
+    visit(definition)
+    return [] if failed else list(dict.fromkeys(values))
+
+
+def _known_string_values(node, source: bytes) -> list[str] | None:
+    """All literal strings a value can produce, or None when any leaf is dynamic."""
+    if node is None:
+        return None
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _known_string_values(significant_children(node)[0], source)
+
+    application = flatten_application(node, source)
+    if application is not None:
+        name, args = application
+        if name == "String" and len(args) == 1:
+            return _known_string_values(args[0], source)
+        return None
+
+    literal = string_literal(node, source)
+    if literal is not None:
+        return [literal]
+
+    if node.type == "conditional":
+        branches = [
+            child
+            for child in significant_children(node)
+            if child.type not in {"if", "then", "else"}
+        ]
+        values: list[str] = []
+        for branch in branches[1:]:
+            resolved = _known_string_values(branch, source)
+            if resolved is None:
+                return None
+            values.extend(resolved)
+        return values or None
+
+    if node.type == "case":
+        values: list[str] = []
+        for alternative in node.children:
+            if alternative.type != "alternatives":
+                continue
+            for entry in alternative.children:
+                if entry.type != "alternative":
+                    continue
+                bodies = _case_alternative_result_nodes(entry)
+                if bodies is None:
+                    return None
+                for body in bodies:
+                    resolved = _known_string_values(body, source)
+                    if resolved is None:
+                        return None
+                    values.extend(resolved)
+        return values or None
+
+    return None
+
+
+def _top_level_function(tree, source: bytes, name: str):
+    for child in tree.root_node.children:
+        if child.type != "declarations":
+            continue
+        for declaration in child.children:
+            if declaration.type != "function":
+                continue
+            head = significant_children(declaration)
+            if head and head[0].type == "variable" and text_of(head[0], source) == name:
+                return declaration
+    return None
+
+
+def _skill_icon_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
     icon_tags = _web_icon_tags() if icon_tags is None else icon_tags
-    return [value for value in SKILL_ICON_VALUES if value in icon_tags]
+    return [value for value in _skill_var_values(library) if value in icon_tags]
 
 
 def _skill_icon_variable_type(values: list[str]) -> str:
@@ -2462,7 +2564,7 @@ def _skill_icon_variable_type(values: list[str]) -> str:
 
 def _variable_type_registry(library: Path, icon_tags: set[str] | None = None) -> dict:
     values = _chaos_token_face_values(library)
-    skill_values = _skill_icon_values(icon_tags)
+    skill_values = _skill_icon_values(library, icon_tags)
     return {
         CHAOS_TOKEN_FACE_TYPE: {
             "kind": "enum",
@@ -2472,7 +2574,7 @@ def _variable_type_registry(library: Path, icon_tags: set[str] | None = None) ->
         SKILL_ICON_TYPE: {
             "kind": "enum",
             "values": skill_values,
-            "source": "Arkham/I18n.hs",
+            "source": SKILL_ICON_SOURCE,
         },
     }
 

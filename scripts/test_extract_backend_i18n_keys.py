@@ -100,6 +100,17 @@ allChaosTokenFaces =
 """
 
 
+SKILL_I18N = """module Arkham.I18n where
+
+skillVar :: HasI18n => SkillType -> (HasI18n => a) -> a
+skillVar v a = case v of
+  SkillWillpower -> withVar "skill" (String "willpower") a
+  SkillIntellect -> withVar "skill" (String "intellect") a
+  SkillCombat -> withVar "skill" (String "combat") a
+  SkillAgility -> withVar "skill" (String "agility") a
+"""
+
+
 def test_point_free_alias_through_a_direct_import() -> None:
     keys = keys_of(
         {
@@ -492,21 +503,38 @@ run = campaignI18n $ story $ withVar "token" (String "skull") $ p "addToken"
     )
 
 
-def test_skill_icon_registry_drops_values_without_web_glyphs() -> None:
-    registry = extractor._variable_type_registry(
-        Path(tempfile.gettempdir()), {"willpower", "combat", "agility"}
-    )
-    values = registry[extractor.SKILL_ICON_TYPE]["values"]
+def test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph() -> None:
+    artifact = registry_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
 
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    variables = {
+        entry["key"]: {variable["name"]: variable["type"] for variable in entry["variables"]}
+        for entry in artifact["keys"]
+    }
+    values = artifact["variableTypes"][extractor.SKILL_ICON_TYPE]["values"]
+
+    check(values == extractor.SKILL_ICON_VALUES, f"skill icon registry did not match skillVar: {values}")
     check(
-        values == ["willpower", "combat", "agility"],
-        f"skill icon registry kept a value without a web glyph: {values}",
+        variables.get("standalone.testCampaign.label.test", {}).get("skill")
+        == extractor.SKILL_ICON_TYPE,
+        f"skillVar was not typed as a skill icon: {variables}",
     )
 
 
 def test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete() -> None:
     variables = variable_types_of(
         {
+            "Arkham/I18n.hs": SKILL_I18N,
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
@@ -521,6 +549,50 @@ run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
     check(
         variables.get("skill") == "text",
         f"skillVar did not fall back to text with an incomplete icon registry: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_i18n_source_is_missing() -> None:
+    variables = variable_types_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text when Arkham/I18n.hs was missing: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_emitted_set_mismatches_the_registry() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                '  SkillAgility -> withVar "skill" (String "agility") a\n',
+                "",
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text when its emitted set changed: {variables}",
     )
 
 
@@ -812,8 +884,10 @@ TESTS = (
     test_icon_variable_type_conflicts_downgrade_to_unknown,
     test_icon_variable_type_conflicts_downgrade_to_unknown_when_proven_site_is_first,
     test_icon_variable_type_conflicts_downgrade_across_modules,
-    test_skill_icon_registry_drops_values_without_web_glyphs,
+    test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph,
     test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
+    test_skill_var_falls_back_to_text_when_i18n_source_is_missing,
+    test_skill_var_falls_back_to_text_when_emitted_set_mismatches_the_registry,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,
