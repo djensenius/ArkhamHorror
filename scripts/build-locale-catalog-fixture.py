@@ -253,6 +253,7 @@ DEFAULT_LOCALE = "en"
 SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
     "en": {
         "core": {
+            "addToken": "core.addToken.en",
             "continue": "core.continue.en",
             "label.doneWithMulligan": "core.doneWithMulligan.en",
             "setup": "core.setup.en",
@@ -271,6 +272,25 @@ SOURCE_MESSAGES: dict[str, dict[str, dict[str, str]]] = {
 # A key the registry says the backend emits that no locale translates, so the
 # catalog publishes a real, non-empty `backend.untranslatedKeys` gap.
 UNTRANSLATED_KEY = "nightOfTheZealot.theGathering.setup.setOutOfPlay"
+
+# A key with a proven backend icon variable, so native-client fixtures exercise
+# value-based icon rendering instead of only text substitutions.
+ICON_VARIABLE_KEY = "addToken"
+ICON_VARIABLE_NAME = "token"
+ICON_VARIABLE_TYPE = "chaosTokenFace"
+ICON_VARIABLE_SAMPLE_VALUE = "elderThing"
+CHAOS_TOKEN_FACE_VALUES = [
+    "skull",
+    "cultist",
+    "tablet",
+    "elderThing",
+    "autoFail",
+    "elderSign",
+    "curse",
+    "bless",
+    "frost",
+    "blood",
+]
 
 # A key published as explicitly unavailable, so `unsupportedKeys` is non-zero.
 UNSUPPORTED_KEY = "shuffleRemainder"
@@ -304,6 +324,27 @@ def build_backend_registry() -> bytes:
             "files": len(SOURCE_MESSAGES),
             "sha256": fileset_digest(list(build_sources().items())),
         },
+        "variableTypes": {
+            ICON_VARIABLE_TYPE: {
+                "kind": "enum",
+                "values": CHAOS_TOKEN_FACE_VALUES,
+                "source": "Arkham/ChaosToken/Types.hs",
+            }
+        },
+        "keys": [
+            {
+                "key": key,
+                "variables": [
+                    {"name": ICON_VARIABLE_NAME, "type": ICON_VARIABLE_TYPE}
+                ]
+                if key == ICON_VARIABLE_KEY
+                else [],
+                "emitters": ["syntheticCatalogFixture"],
+                "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+                "sites": 1,
+            }
+            for key in emitted
+        ],
         "dynamicSites": 0,
         "emittedKeys": emitted,
         "requiredKeys": emitted,
@@ -398,6 +439,28 @@ def catalog_constants() -> dict[str, str]:
     }
 
 
+def build_message_entry(key: str, value: str) -> dict:
+    if key == ICON_VARIABLE_KEY:
+        icon_variable = {
+            "name": ICON_VARIABLE_NAME,
+            "source": "named",
+            "role": "iconVariable",
+        }
+        return {
+            "form": "message",
+            "nodes": [
+                {"type": "text", "value": f"{value}."},
+                {"type": "var", **icon_variable},
+            ],
+            "variables": [icon_variable],
+        }
+    return {
+        "form": "message",
+        "nodes": [{"type": "text", "value": value}],
+        "variables": [],
+    }
+
+
 def build_chunks(constants: dict[str, str]) -> tuple[list[dict], dict[str, bytes]]:
     """Render one chunk per (locale, pack), content-addressed by its own bytes."""
     chunk_records: list[dict] = []
@@ -407,11 +470,7 @@ def build_chunks(constants: dict[str, str]) -> tuple[list[dict], dict[str, bytes
         for pack, messages in sorted(SOURCE_MESSAGES[locale].items()):
             entries: dict[str, dict] = {}
             for key, value in sorted(messages.items()):
-                entries[key] = {
-                    "form": "message",
-                    "nodes": [{"type": "text", "value": value}],
-                    "variables": [],
-                }
+                entries[key] = build_message_entry(key, value)
             if locale == DEFAULT_LOCALE and pack == "core":
                 entries[UNSUPPORTED_KEY] = {
                     "form": "unsupported",
@@ -693,6 +752,46 @@ def check_failure(files: dict[str, bytes], found: dict[str, bytes]) -> str | Non
                 "and path in this fixture set is computed, never asserted"
             )
     return None
+
+
+def validate_icon_variable_fixture(files: dict[str, bytes]) -> None:
+    """The native-client fixture must exercise value-based icon rendering."""
+    registry = json.loads(files[f"{FIXTURE_PREFIX}backend-registry.json"])
+    variable_type = registry.get("variableTypes", {}).get(ICON_VARIABLE_TYPE)
+    require(
+        variable_type is not None and ICON_VARIABLE_SAMPLE_VALUE in variable_type.get("values", []),
+        f"{ICON_VARIABLE_TYPE} must advertise sample value {ICON_VARIABLE_SAMPLE_VALUE!r}",
+    )
+    matching_keys = [entry for entry in registry.get("keys", []) if entry.get("key") == ICON_VARIABLE_KEY]
+    require(len(matching_keys) == 1, f"backend registry must describe {ICON_VARIABLE_KEY}")
+    require(
+        matching_keys[0].get("variables")
+        == [{"name": ICON_VARIABLE_NAME, "type": ICON_VARIABLE_TYPE}],
+        f"backend registry must type {ICON_VARIABLE_KEY}.{ICON_VARIABLE_NAME} as {ICON_VARIABLE_TYPE}",
+    )
+
+    icon_variable = {
+        "name": ICON_VARIABLE_NAME,
+        "source": "named",
+        "role": "iconVariable",
+    }
+    found_entry = None
+    for name, data in files.items():
+        if not name.startswith(f"{FIXTURE_PREFIX}chunk-"):
+            continue
+        entry = json.loads(data).get("entries", {}).get(ICON_VARIABLE_KEY)
+        if entry is not None:
+            found_entry = entry
+            break
+    require(found_entry is not None, f"catalog chunks must include {ICON_VARIABLE_KEY}")
+    require(
+        icon_variable in found_entry.get("variables", []),
+        f"{ICON_VARIABLE_KEY} must declare {ICON_VARIABLE_NAME} as an iconVariable",
+    )
+    require(
+        {"type": "var", **icon_variable} in found_entry.get("nodes", []),
+        f"{ICON_VARIABLE_KEY} must contain a var node for {ICON_VARIABLE_NAME}",
+    )
 
 
 def check(files: dict[str, bytes]) -> None:
@@ -1055,6 +1154,7 @@ def main() -> None:
 
     files = build_all()
     validate_against_published_schemas(files)
+    validate_icon_variable_fixture(files)
 
     if arguments.check:
         check(files)
