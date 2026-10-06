@@ -8,6 +8,10 @@ module Api.Handler.Arkham.Decks (
   putApiV1ArkhamGameDecksR,
   postApiV1ArkhamSyncDeckR,
   requireGameDecksAccess,
+  killedOrInsaneInvestigatorIds,
+  killedOrInsaneInvestigatorIdsFromCampaignLog,
+  mustReplaceInvestigatorDeck,
+  replacementDeckRejection,
   putApiV1ArkhamDeckOverlayR,
   deleteApiV1ArkhamDeckOverlayR,
 ) where
@@ -18,6 +22,9 @@ import Import qualified as P
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
+import Arkham.Campaign.Types (campaignLog)
+import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
+import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
 import Arkham.Card.CardCode
 import Arkham.Card.CustomCard (arkhamBuildCustomCardCode, isArkhamBuildCardId, lookupCustomCardDef)
 import Arkham.Classes.Entity (attr)
@@ -27,10 +34,10 @@ import Arkham.Decklist
 import Arkham.Game
 import Arkham.Game.Diff
 import Arkham.Game.State (isChooseDecks)
-import Arkham.Game.Utils (gameInvestigators)
+import Arkham.Game.Utils (gameInvestigators, modeCampaign)
 import Arkham.Id
 import Arkham.Investigator.Cards (allInvestigatorCards)
-import Arkham.Investigator.Types (investigatorDeckUrl, investigatorPlayerId)
+import Arkham.Investigator.Types (investigatorDeckUrl, investigatorDrivenInsane, investigatorKilled, investigatorPlayerId)
 import Arkham.Message
 import Arkham.PlayerCard
 import Arkham.Queue
@@ -39,6 +46,7 @@ import Control.Lens (view)
 import Control.Monad.Random (mkStdGen)
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time.Clock
 import Data.Traversable (for)
@@ -73,6 +81,51 @@ getApiV1ArkhamDecksR = do
 -- Preserved for callers and tests already targeting this name.
 requireGameDecksAccess :: Monad m => Bool -> m Bool -> m () -> m ()
 requireGameDecksAccess = requireGameAccess
+
+-- | True when the decklist upgrades the SAME investigator (an alternate art of them counts)
+-- rather than replacing them with a different one.
+sameInvestigator :: InvestigatorId -> ArkhamDBDecklist -> Bool
+sameInvestigator iid decklist =
+  iid
+    == decklist.investigator
+    || maybe
+      False
+      ((toCardCode iid `elem`) . (.cardCodes))
+      (Map.lookup (toCardCode decklist.investigator) allInvestigatorCards)
+
+killedOrInsaneInvestigatorIdsFromCampaignLog :: CampaignLog -> Set InvestigatorId
+killedOrInsaneInvestigatorIdsFromCampaignLog campaignLog' =
+  let sets = campaignLogRecordedSets campaignLog'
+      killed = recordedCardCodes $ Map.findWithDefault [] KilledInvestigators sets
+      insane = recordedCardCodes $ Map.findWithDefault [] DrivenInsaneInvestigators sets
+   in Set.fromList $ map InvestigatorId (killed <> insane)
+
+mustReplaceInvestigatorDeck :: InvestigatorId -> Bool -> Set InvestigatorId -> Bool
+mustReplaceInvestigatorDeck investigatorId killedOrDrivenInsane killedOrInsane =
+  investigatorId `Set.member` killedOrInsane || killedOrDrivenInsane
+
+killedOrInsaneInvestigatorIds :: Game -> Set InvestigatorId
+killedOrInsaneInvestigatorIds game =
+  let activeKilledOrInsane = Map.keysSet $ Map.filter killedOrDrivenInsane (gameInvestigators game)
+      campaignKilledOrInsane = maybe mempty (killedOrInsaneInvestigatorIdsFromCampaignLog . attr campaignLog) $ modeCampaign game.gameMode
+   in activeKilledOrInsane <> campaignKilledOrInsane
+ where
+  killedOrDrivenInsane investigator =
+    attr investigatorKilled investigator || attr investigatorDrivenInsane investigator
+
+replacementDeckRejection :: InvestigatorId -> Bool -> Set InvestigatorId -> Set InvestigatorId -> Maybe ArkhamDBDecklist -> Maybe Text
+replacementDeckRejection investigatorId mustReplace killedOrInsane takenInvestigators mDecklist = case mDecklist of
+  Nothing
+    | mustReplace -> Just replacementRequiredMessage
+    | otherwise -> Nothing
+  Just decklist
+    | sameInvestigator investigatorId decklist ->
+        if mustReplace then Just replacementRequiredMessage else Nothing
+    | any (`sameInvestigator` decklist) takenInvestigators -> Just "This investigator is already taken"
+    | any (`sameInvestigator` decklist) killedOrInsane -> Just "That investigator was killed or driven insane"
+    | otherwise -> Nothing
+ where
+  replacementRequiredMessage = "That investigator was killed or driven insane and must be replaced"
 
 data CreateDeckPost = CreateDeckPost
   { deckId :: Text
@@ -199,72 +252,83 @@ putApiV1ArkhamGameDecksR gameId = do
           | not (isChooseDecks gameGameState) -> pure $ Right gameEntity
           | not (maybe False isDeckQuestion $ Map.lookup playerId gameQuestion) -> pure $ Right gameEntity
           | otherwise -> do
-              -- The engine can throw (an unimplemented card, an unusable decklist, an
-              -- unexpected game state). Keep the whole run -- including the undo diff, which
-              -- forces the resulting game -- inside the catch, so a failure leaves the row
-              -- exactly as it was rather than persisting a partly-applied upgrade.
-              upgraded <- liftIO $ try @_ @SomeException do
-                gameRef <- newIORef arkhamGameCurrentData
-                queueRef <- newQueue currentQueue
-                genRef <- newIORef $ mkStdGen gameSeed
-                runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing) do
-                  let question' = Map.delete playerId gameQuestion
-                  unless (Map.null question') (push $ AskMap question')
-                  -- No deck at all is the "continue without upgrading" path: push nothing
-                  -- and let the parked continuation run.
-                  for_ mDecklist \decklist ->
-                    push
-                      $ if sameInvestigator investigatorId decklist
-                        then UpgradeDecklist investigatorId decklist
-                        else ReplaceInvestigator investigatorId decklist
-                  runMessages (gameIdToText gameId) Nothing
-                ge <- readIORef gameRef
-                updatedQueue <- readIORef (queueToRef queueRef)
-                diffDown <- evaluate $ diff ge arkhamGameCurrentData
-                pure (ge, updatedQueue, diffDown)
+              let killedOrInsane = killedOrInsaneInvestigatorIds arkhamGameCurrentData
+                  mustReplace =
+                    mustReplaceInvestigatorDeck
+                      investigatorId
+                      (attr investigatorKilled investigatorEntity || attr investigatorDrivenInsane investigatorEntity)
+                      killedOrInsane
+                  takenInvestigators = Set.delete investigatorId $ Map.keysSet $ gameInvestigators arkhamGameCurrentData
+              case replacementDeckRejection investigatorId mustReplace killedOrInsane takenInvestigators mDecklist of
+                Just reason -> pure $ Left (Status.status400, reason)
+                Nothing -> do
+                  -- The engine can throw (an unimplemented card, an unusable decklist, an
+                  -- unexpected game state). Keep the whole run -- including the undo diff, which
+                  -- forces the resulting game -- inside the catch, so a failure leaves the row
+                  -- exactly as it was rather than persisting a partly-applied upgrade.
+                  upgraded <- liftIO $ try @_ @SomeException do
+                    gameRef <- newIORef arkhamGameCurrentData
+                    queueRef <- newQueue currentQueue
+                    genRef <- newIORef $ mkStdGen gameSeed
+                    runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing) do
+                      let question' = Map.delete playerId gameQuestion
+                      unless (Map.null question') (push $ AskMap question')
+                      -- No deck at all is the "continue without upgrading" path: push nothing
+                      -- and let the parked continuation run.
+                      for_ mDecklist \decklist ->
+                        push
+                          $ if sameInvestigator investigatorId decklist
+                            then UpgradeDecklist investigatorId decklist
+                            else ReplaceInvestigator investigatorId decklist
+                      runMessages (gameIdToText gameId) Nothing
+                    ge <- readIORef gameRef
+                    updatedQueue <- readIORef (queueToRef queueRef)
+                    diffDown <- evaluate $ diff ge arkhamGameCurrentData
+                    pure (ge, updatedQueue, diffDown)
 
-              case upgraded of
-                -- First line only: engine `error`s carry a call stack the player cannot use.
-                Left err ->
-                  pure $ Left (Status.status500, "Could not upgrade deck: " <> T.takeWhile (/= '\n') (tshow err))
-                Right (ge, updatedQueue, diffDown) -> do
-                  let g' =
-                        ArkhamGame
-                          arkhamGameName
-                          ge
+                  case upgraded of
+                    -- First line only: engine `error`s carry a call stack the player cannot use.
+                    Left err ->
+                      pure $ Left (Status.status500, "Could not upgrade deck: " <> T.takeWhile (/= '\n') (tshow err))
+                    Right (ge, updatedQueue, diffDown) -> do
+                      let g' =
+                            ArkhamGame
+                              arkhamGameName
+                              ge
+                              (arkhamGameStep + 1)
+                              arkhamGameMultiplayerVariant
+                              arkhamGameCreatedAt
+                              now
+
+                      replace gameId g'
+                      insert_
+                        $ ArkhamStep
+                          gameId
+                          (Choice diffDown updatedQueue)
                           (arkhamGameStep + 1)
-                          arkhamGameMultiplayerVariant
-                          arkhamGameCreatedAt
-                          now
+                          (ActionDiff $ view actionDiffL ge)
 
-                  replace gameId g'
-                  insert_
-                    $ ArkhamStep
-                      gameId
-                      (Choice diffDown updatedQueue)
-                      (arkhamGameStep + 1)
-                      (ActionDiff $ view actionDiffL ge)
+                      {- Keep the player's saved deck in step with the campaign. Without this the
+                      deck page (which renders the arkham_decks row) shows the list as first
+                      imported forever, and its Sync button cannot help: an arkham.build deck url is
+                      a version-pinned share snapshot (#5257). There is no game -> deck foreign key,
+                      so the row is found by owner + the url the game was using; since we move the
+                      row's url forward too, later upgrades keep matching. A deck imported into two
+                      live campaigns therefore tracks whichever upgraded last.
+                      Skipped for a replacement investigator -- that is a different deck, not an
+                      upgrade of this one. -}
+                      for_ mDecklist \decklist ->
+                        when (sameInvestigator investigatorId decklist) do
+                          for_ (attr investigatorDeckUrl investigatorEntity) \oldDeckUrl ->
+                            update \d -> do
+                              set d
+                                $ [ArkhamDeckList =. val decklist, ArkhamDeckLastUsedAt =. val (Just now)]
+                                <> [ArkhamDeckUrl =. val decklist.url | isJust decklist.url]
+                              where_ $ d.userId ==. val userId
+                              where_ $ d.url ==. val (Just oldDeckUrl)
 
-                  {- Keep the player's saved deck in step with the campaign. Without this the
-                  deck page (which renders the arkham_decks row) shows the list as first
-                  imported forever, and its Sync button cannot help: an arkham.build deck url is
-                  a version-pinned share snapshot (#5257). There is no game -> deck foreign key,
-                  so the row is found by owner + the url the game was using; since we move the
-                  row's url forward too, later upgrades keep matching. A deck imported into two
-                  live campaigns therefore tracks whichever upgraded last.
-                  Skipped for a replacement investigator -- that is a different deck, not an
-                  upgrade of this one. -}
-                  for_ mDecklist \decklist ->
-                    when (sameInvestigator investigatorId decklist) do
-                      for_ (attr investigatorDeckUrl investigatorEntity) \oldDeckUrl ->
-                        update \d -> do
-                          set d
-                            $ [ArkhamDeckList =. val decklist, ArkhamDeckLastUsedAt =. val (Just now)]
-                            <> [ArkhamDeckUrl =. val decklist.url | isJust decklist.url]
-                          where_ $ d.userId ==. val userId
-                          where_ $ d.url ==. val (Just oldDeckUrl)
+                      pure $ Right g'
 
-                  pure $ Right g'
 
   case outcome of
     Left (status, message) -> sendStatusJSON status (JSONError message)
@@ -275,17 +339,6 @@ putApiV1ArkhamGameDecksR gameId = do
  where
   deckError :: Text -> Handler a
   deckError = sendStatusJSON Status.status400 . JSONError
-
-  -- True when the decklist upgrades the SAME investigator (an alternate art of them counts)
-  -- rather than replacing them with a different one.
-  sameInvestigator :: InvestigatorId -> ArkhamDBDecklist -> Bool
-  sameInvestigator iid decklist =
-    iid
-      == decklist.investigator
-      || maybe
-        False
-        ((toCardCode iid `elem`) . (.cardCodes))
-        (Map.lookup (toCardCode decklist.investigator) allInvestigatorCards)
 
   resolveDecklist :: UpgradeDeckPost -> Handler (Maybe ArkhamDBDecklist)
   resolveDecklist postData = case udpDeckList postData of
