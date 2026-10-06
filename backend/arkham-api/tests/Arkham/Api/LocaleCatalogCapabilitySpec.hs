@@ -240,9 +240,14 @@ expectedAdvertisedDifferences :: [Text]
 expectedAdvertisedDifferences = expectedDisabledDifferences <> ["localeCatalog"]
 
 revisionComponents :: Text -> Maybe (Int, Int, Int)
-revisionComponents value = case traverse (Read.readMaybe . toString) (T.splitOn "." value) of
-  Just [major, minor, patch] -> Just (major, minor, patch)
+revisionComponents value = case T.splitOn "." value of
+  [majorText, minorText, patchText]
+    | all revisionPartIsDigits [majorText, minorText, patchText] ->
+        (,,) <$> readPart majorText <*> readPart minorText <*> readPart patchText
   _ -> Nothing
+ where
+  revisionPartIsDigits part = not (T.null part) && T.all Char.isDigit part
+  readPart = Read.readMaybe . toString
 
 floorInRange :: Text -> Text -> Text -> Bool
 floorInRange floorRevision schemaRevision baselineRevision =
