@@ -27,8 +27,9 @@ baseline:
 first appeared in 0.1.23), because it describes the whole server contract
 rather than one optional runtime feature. A server that under-reported it would
 lie to every client that negotiates on it. Clients compare the three numeric
-revision components and ignore unknown identifiers, so a client built against
-0.1.22 behaves exactly as it did.
+revision components and ignore unknown identifiers, and clients below
+@nativeClientMinimumRevision@ (currently 0.1.50) must enter update-required
+even when this deployment has no catalog configured.
 @contracts\/manifest.json@'s @legacyCompatibilityChecks@ pins that baseline and
 both this repository's contract validator and
 @Arkham.Api.LocaleCatalogCapabilitySpec@ compare the real response against it.
@@ -62,7 +63,9 @@ semanticQuestionPresentationCapability = "questions.semantic-presentation.v2"
 deployment has configured (see "Base.Api.Types.LocaleCatalog").
 
 The catalog capability string and the @localeCatalog@ object are derived from
-the same 'Maybe', so a client can never be shown one without the other.
+the same 'Maybe', so a client can never be shown one without the other. The
+minimum native-client revision is unconditional: clients older than 0.1.50 are
+update-required even for deployments that omit the catalog fields.
 -}
 serverCapabilities :: Maybe LocaleCatalog -> ServerCapabilities
 serverCapabilities localeCatalog =
