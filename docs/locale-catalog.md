@@ -98,7 +98,7 @@ plural branch, and both declare every variable they reference in `variables`.
 | type | meaning |
 | --- | --- |
 | `text` | literal text (entities already decoded) |
-| `var` | typed placeholder; `source` is `named` (`{name}`) or `list` (`{0}`), `role` is `text`, `icon`, or `presentation` (only ever reaches a `class`/`style`/`data-*` attribute, so a client with no value for it loses styling, never an instruction) |
+| `var` | typed placeholder; `source` is `named` (`{name}`) or `list` (`{0}`), `role` is `text`, `icon`, `iconVariable`, or `presentation` (only ever reaches a `class`/`style`/`data-*` attribute, so a client with no value for it loses styling, never an instruction). A client that sees an unknown future role treats that entry as unavailable rather than rejecting the whole catalog. |
 | `linked` | vue-i18n `@:key` / `@:{var}` reference, with optional `upper`/`lower`/`capitalize` modifier |
 | `paragraph`, `group` | block containers with `styles` presentation hints |
 | `heading` | `level` 1–6 with `styles` |
@@ -145,9 +145,17 @@ fallback locale.
 
 Variables are **never interpolated at generation time**. The backend's
 `I18nEntry.variables` are substituted by the client, exactly as vue-i18n does
-for the web. A `role: "icon"` variable is one production `replaceIcons()` maps
-to an icon glyph (`{skull}`, `{elderThing}`, homebrew icons, …); the catalog
-preserves the placeholder instead of rendering it.
+for the web. A `role: "icon"` node is the existing name-based icon placeholder:
+production `replaceIcons()` renders the node's own name as a glyph (`{skull}`,
+`{elderThing}`, homebrew icons, …), and the catalog preserves that placeholder
+instead of rendering it. A `role: "iconVariable"` node is value-based: the
+backend-supplied variable value names the glyph to render. Only closed backend
+variable types may fill that slot today: `chaosTokenFace` (`skull`, `cultist`,
+`tablet`, `elderThing`, `autoFail`, `elderSign`, `curse`, `bless`, `frost`,
+`blood`) and `skillIcon` (`willpower`, `intellect`, `combat`, `agility`). If the
+backend registry cannot prove the variable has one of those types, or if the
+runtime value is missing or outside the type's advertised values, the client
+must fail closed for that entry rather than displaying the raw value.
 
 Image nodes carry no bytes and no URL. `{setImgPath}/rats.png` becomes
 `{"role": "encounterSet", "assetPath": "encounter-sets/rats.png"}`; relative
