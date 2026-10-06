@@ -2701,10 +2701,10 @@ def run_legacy_compatibility_self_test() -> None:
         "Self-test failure: dropping a legacy capability survived baseline normalization",
     )
     mutated = copy.deepcopy(legacy_baseline)
-    mutated["nativeClientMinimumRevision"] = "9.9.9"
+    mutated["status"] = "changed"
     require(
         normalize_against_baseline(mutated, disabled_allowed) != legacy_expected,
-        "Self-test failure: changing the compatibility floor survived baseline normalization",
+        "Self-test failure: changing a non-additive legacy field survived baseline normalization",
     )
 
 

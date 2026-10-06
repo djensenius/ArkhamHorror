@@ -70,7 +70,7 @@ serverCapabilities localeCatalog =
     { schemaRevision = "0.1.50"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
-    , nativeClientMinimumRevision = "0.1.0"
+    , nativeClientMinimumRevision = "0.1.50"
     , capabilities = List.sort $ baseCapabilities <> catalogCapabilities
     , localeCatalog = localeCatalog
     }

@@ -1778,9 +1778,9 @@ capabilitiesFor environment = case runtimeCapabilities environment of
   Right response -> pure response
 
 {- | Strip exactly the two additive members the locale catalog contributes:
-the @localeCatalog@ object and its capability identifier. Everything else must
-be untouched, which is what makes the field additive for the Vue client and
-for every native client built before it existed.
+the @localeCatalog@ object and its capability identifier. Everything else,
+except governed revision and compatibility-floor changes normalized by
+@contracts/manifest.json@, must be untouched.
 -}
 withoutLocaleCatalog :: Aeson.Value -> Aeson.Value
 withoutLocaleCatalog = \case
