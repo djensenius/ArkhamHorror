@@ -1,7 +1,14 @@
 module Arkham.Api.GameDecksSpec (spec) where
 
-import Api.Handler.Arkham.Decks (replacementDeckRejection, requireGameDecksAccess)
-import Arkham.Card.CardCode (unCardCode)
+import Api.Handler.Arkham.Decks (
+  killedOrInsaneInvestigatorIdsFromCampaignLog,
+  mustReplaceInvestigatorDeck,
+  replacementDeckRejection,
+  requireGameDecksAccess,
+ )
+import Arkham.CampaignLog (mkCampaignLog, setCampaignLogRecorded)
+import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recorded)
+import Arkham.Card.CardCode (CardCode, unCardCode)
 import Arkham.Decklist qualified as Decklist
 import Arkham.Id
 import Arkham.Prelude
@@ -47,37 +54,67 @@ spec = do
       readIORef rejected `shouldReturn` True
 
   describe "replacement deck validation" do
-    let roland = InvestigatorId "c01001"
-        daisy = InvestigatorId "c01002"
+    let roland = InvestigatorId "01001"
+        daisy = InvestigatorId "01002"
+        agnes = InvestigatorId "01004"
+        rolandAlternateArt = InvestigatorId "01501"
         killedOrInsane = Set.singleton roland
+        noTakenInvestigators = mempty
 
     it "rejects continuing without upgrading when the investigator must be replaced" do
-      replacementDeckRejection roland True killedOrInsane Nothing
+      replacementDeckRejection roland True killedOrInsane noTakenInvestigators Nothing
         `shouldBe` Just "That investigator was killed or driven insane and must be replaced"
 
     it "rejects re-choosing the killed or insane investigator's deck as its own replacement" do
-      replacementDeckRejection roland True killedOrInsane (Just $ decklistFor roland)
+      replacementDeckRejection roland True killedOrInsane noTakenInvestigators (Just $ decklistFor roland)
         `shouldBe` Just "That investigator was killed or driven insane and must be replaced"
 
-    it "accepts a replacement deck for a live investigator" do
-      replacementDeckRejection roland True killedOrInsane (Just $ decklistFor daisy)
+    it "rejects an alternate-art deck for the killed or insane investigator as its own replacement" do
+      replacementDeckRejection roland True killedOrInsane noTakenInvestigators (Just $ decklistFor rolandAlternateArt)
+        `shouldBe` Just "That investigator was killed or driven insane and must be replaced"
+
+    it "rejects replacing with a different killed or insane investigator" do
+      replacementDeckRejection roland True (Set.fromList [roland, daisy]) noTakenInvestigators (Just $ decklistFor daisy)
+        `shouldBe` Just "That investigator was killed or driven insane"
+
+    it "rejects replacing with an already-taken investigator" do
+      replacementDeckRejection roland True killedOrInsane (Set.singleton daisy) (Just $ decklistFor daisy)
+        `shouldBe` Just "This investigator is already taken"
+
+    it "rejects switching to a killed or insane investigator even when the answering investigator is alive" do
+      replacementDeckRejection agnes False killedOrInsane noTakenInvestigators (Just $ decklistFor roland)
+        `shouldBe` Just "That investigator was killed or driven insane"
+
+    it "accepts a replacement deck for a live untaken investigator" do
+      replacementDeckRejection roland True killedOrInsane noTakenInvestigators (Just $ decklistFor daisy)
         `shouldBe` Nothing
 
     it "does not block ordinary non-replacement upgrade skips" do
-      replacementDeckRejection roland False killedOrInsane Nothing
+      replacementDeckRejection roland False killedOrInsane noTakenInvestigators Nothing
         `shouldBe` Nothing
+
+    it "detects killed and driven-insane investigators from the campaign log" do
+      let campaignLog =
+            setCampaignLogRecorded KilledInvestigators [recorded ("01001" :: CardCode)]
+              $ setCampaignLogRecorded DrivenInsaneInvestigators [recorded ("01002" :: CardCode)] mkCampaignLog
+          killedOrInsaneFromLog = killedOrInsaneInvestigatorIdsFromCampaignLog campaignLog
+      killedOrInsaneFromLog `shouldBe` Set.fromList [roland, daisy]
+      mustReplaceInvestigatorDeck roland False killedOrInsaneFromLog `shouldBe` True
+      mustReplaceInvestigatorDeck daisy False killedOrInsaneFromLog `shouldBe` True
+      mustReplaceInvestigatorDeck agnes False killedOrInsaneFromLog `shouldBe` False
+      mustReplaceInvestigatorDeck agnes True mempty `shouldBe` True
 
 decklistFor :: InvestigatorId -> Decklist.ArkhamDBDecklist
 decklistFor iid@(InvestigatorId rawId) =
   let investigatorCode = unCardCode rawId
    in Decklist.ArkhamDBDecklist
-      { Decklist.slots = mempty
-      , Decklist.sideSlots = mempty
-      , Decklist.investigator_code = iid
-      , Decklist.investigator_name = investigatorCode
-      , Decklist.meta = Nothing
-      , Decklist.taboo_id = Nothing
-      , Decklist.url = Nothing
-      , Decklist.decklist_id = Nothing
-      , Decklist.decklist_name = Nothing
-      }
+        { Decklist.slots = mempty
+        , Decklist.sideSlots = mempty
+        , Decklist.investigator_code = iid
+        , Decklist.investigator_name = investigatorCode
+        , Decklist.meta = Nothing
+        , Decklist.taboo_id = Nothing
+        , Decklist.url = Nothing
+        , Decklist.decklist_id = Nothing
+        , Decklist.decklist_name = Nothing
+        }

@@ -8,6 +8,9 @@ module Api.Handler.Arkham.Decks (
   putApiV1ArkhamGameDecksR,
   postApiV1ArkhamSyncDeckR,
   requireGameDecksAccess,
+  killedOrInsaneInvestigatorIds,
+  killedOrInsaneInvestigatorIdsFromCampaignLog,
+  mustReplaceInvestigatorDeck,
   replacementDeckRejection,
   putApiV1ArkhamDeckOverlayR,
   deleteApiV1ArkhamDeckOverlayR,
@@ -20,7 +23,7 @@ import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Campaign.Types (campaignLog)
-import Arkham.CampaignLog (campaignLogRecordedSets)
+import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
 import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
 import Arkham.Card.CardCode
 import Arkham.Card.CustomCard (arkhamBuildCustomCardCode, isArkhamBuildCardId, lookupCustomCardDef)
@@ -90,15 +93,37 @@ sameInvestigator iid decklist =
       ((toCardCode iid `elem`) . (.cardCodes))
       (Map.lookup (toCardCode decklist.investigator) allInvestigatorCards)
 
-replacementDeckRejection :: InvestigatorId -> Bool -> Set InvestigatorId -> Maybe ArkhamDBDecklist -> Maybe Text
-replacementDeckRejection investigatorId mustReplace killedOrInsane mDecklist
-  | not mustReplace = Nothing
-  | otherwise = case mDecklist of
-      Nothing -> Just replacementRequiredMessage
-      Just decklist
-        | sameInvestigator investigatorId decklist -> Just replacementRequiredMessage
-        | decklist.investigator `Set.member` killedOrInsane -> Just "That investigator was killed or driven insane"
-        | otherwise -> Nothing
+killedOrInsaneInvestigatorIdsFromCampaignLog :: CampaignLog -> Set InvestigatorId
+killedOrInsaneInvestigatorIdsFromCampaignLog campaignLog' =
+  let sets = campaignLogRecordedSets campaignLog'
+      killed = recordedCardCodes $ Map.findWithDefault [] KilledInvestigators sets
+      insane = recordedCardCodes $ Map.findWithDefault [] DrivenInsaneInvestigators sets
+   in Set.fromList $ map InvestigatorId (killed <> insane)
+
+mustReplaceInvestigatorDeck :: InvestigatorId -> Bool -> Set InvestigatorId -> Bool
+mustReplaceInvestigatorDeck investigatorId killedOrDrivenInsane killedOrInsane =
+  investigatorId `Set.member` killedOrInsane || killedOrDrivenInsane
+
+killedOrInsaneInvestigatorIds :: Game -> Set InvestigatorId
+killedOrInsaneInvestigatorIds game =
+  let activeKilledOrInsane = Map.keysSet $ Map.filter killedOrDrivenInsane (gameInvestigators game)
+      campaignKilledOrInsane = maybe mempty (killedOrInsaneInvestigatorIdsFromCampaignLog . attr campaignLog) $ modeCampaign game.gameMode
+   in activeKilledOrInsane <> campaignKilledOrInsane
+ where
+  killedOrDrivenInsane investigator =
+    attr investigatorKilled investigator || attr investigatorDrivenInsane investigator
+
+replacementDeckRejection :: InvestigatorId -> Bool -> Set InvestigatorId -> Set InvestigatorId -> Maybe ArkhamDBDecklist -> Maybe Text
+replacementDeckRejection investigatorId mustReplace killedOrInsane takenInvestigators mDecklist = case mDecklist of
+  Nothing
+    | mustReplace -> Just replacementRequiredMessage
+    | otherwise -> Nothing
+  Just decklist
+    | sameInvestigator investigatorId decklist ->
+        if mustReplace then Just replacementRequiredMessage else Nothing
+    | decklist.investigator `Set.member` takenInvestigators -> Just "This investigator is already taken"
+    | decklist.investigator `Set.member` killedOrInsane -> Just "That investigator was killed or driven insane"
+    | otherwise -> Nothing
  where
   replacementRequiredMessage = "That investigator was killed or driven insane and must be replaced"
 
@@ -214,27 +239,29 @@ putApiV1ArkhamGameDecksR gameId = do
       Nothing -> pure $ Left (Status.status400, "That investigator is not in this game")
       Just investigatorEntity -> do
         let playerId = attr investigatorPlayerId investigatorEntity
-            killedOrInsane = killedOrInsaneInvestigatorIds arkhamGameCurrentData
-            mustReplace =
-              investigatorId `Set.member` killedOrInsane
-                || attr investigatorKilled investigatorEntity
-                || attr investigatorDrivenInsane investigatorEntity
-        case replacementDeckRejection investigatorId mustReplace killedOrInsane mDecklist of
-          Just reason -> pure $ Left (Status.status400, reason)
-          Nothing -> do
-            -- A seat is owed a deck exactly while its own deck question is parked: answering
-            -- drops it (and re-parks only the seats still waiting). Without this check a
-            -- resubmit -- the client's upgrade buttons come back as soon as the request
-            -- resolves, so a player who misses the websocket update clicks again -- re-ran the
-            -- load against an already-upgraded deck, duplicating every card in it and (before
-            -- the runMessages guard) destroying the campaign's parked question (#5256). Game
-            -- state alone is too coarse: a multiplayer upgrade window stays in IsChooseDecks
-            -- until the last seat answers. Report success either way so the redundant click
-            -- still re-syncs the client from the publish below.
-            if
-              | not (isChooseDecks gameGameState) -> pure $ Right gameEntity
-              | not (maybe False isDeckQuestion $ Map.lookup playerId gameQuestion) -> pure $ Right gameEntity
-              | otherwise -> do
+        -- A seat is owed a deck exactly while its own deck question is parked: answering
+        -- drops it (and re-parks only the seats still waiting). Without this check a
+        -- resubmit -- the client's upgrade buttons come back as soon as the request
+        -- resolves, so a player who misses the websocket update clicks again -- re-ran the
+        -- load against an already-upgraded deck, duplicating every card in it and (before
+        -- the runMessages guard) destroying the campaign's parked question (#5256). Game
+        -- state alone is too coarse: a multiplayer upgrade window stays in IsChooseDecks
+        -- until the last seat answers. Report success either way so the redundant click
+        -- still re-syncs the client from the publish below.
+        if
+          | not (isChooseDecks gameGameState) -> pure $ Right gameEntity
+          | not (maybe False isDeckQuestion $ Map.lookup playerId gameQuestion) -> pure $ Right gameEntity
+          | otherwise -> do
+              let killedOrInsane = killedOrInsaneInvestigatorIds arkhamGameCurrentData
+                  mustReplace =
+                    mustReplaceInvestigatorDeck
+                      investigatorId
+                      (attr investigatorKilled investigatorEntity || attr investigatorDrivenInsane investigatorEntity)
+                      killedOrInsane
+                  takenInvestigators = Set.delete investigatorId $ Map.keysSet $ gameInvestigators arkhamGameCurrentData
+              case replacementDeckRejection investigatorId mustReplace killedOrInsane takenInvestigators mDecklist of
+                Just reason -> pure $ Left (Status.status400, reason)
+                Nothing -> do
                   -- The engine can throw (an unimplemented card, an unusable decklist, an
                   -- unexpected game state). Keep the whole run -- including the undo diff, which
                   -- forces the resulting game -- inside the catch, so a failure leaves the row
@@ -302,6 +329,7 @@ putApiV1ArkhamGameDecksR gameId = do
 
                       pure $ Right g'
 
+
   case outcome of
     Left (status, message) -> sendStatusJSON status (JSONError message)
     Right ArkhamGame {..} ->
@@ -311,21 +339,6 @@ putApiV1ArkhamGameDecksR gameId = do
  where
   deckError :: Text -> Handler a
   deckError = sendStatusJSON Status.status400 . JSONError
-
-  killedOrInsaneInvestigatorIds :: Game -> Set InvestigatorId
-  killedOrInsaneInvestigatorIds game =
-    let activeKilledOrInsane = Map.keysSet $ Map.filter killedOrDrivenInsane (gameInvestigators game)
-        campaignKilledOrInsane = case modeCampaign game.gameMode of
-          Nothing -> mempty
-          Just campaign ->
-            let sets = campaignLogRecordedSets $ attr campaignLog campaign
-                killed = recordedCardCodes $ Map.findWithDefault [] KilledInvestigators sets
-                insane = recordedCardCodes $ Map.findWithDefault [] DrivenInsaneInvestigators sets
-             in Set.fromList $ map InvestigatorId (killed <> insane)
-     in activeKilledOrInsane <> campaignKilledOrInsane
-   where
-    killedOrDrivenInsane investigator =
-      attr investigatorKilled investigator || attr investigatorDrivenInsane investigator
 
   resolveDecklist :: UpgradeDeckPost -> Handler (Maybe ArkhamDBDecklist)
   resolveDecklist postData = case udpDeckList postData of
