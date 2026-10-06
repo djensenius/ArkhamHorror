@@ -194,10 +194,24 @@ VARIABLE_BINDERS = {
     "nameVar": [("name", "text")],
     "cardNameVar": [("name", "text"), ("__name", "text")],
     "investigatorNameVar": [("iname", "text"), ("__iname", "text")],
+    # Arkham.I18n.tokenVar names ordinary card/resource tokens ("token.Resource"),
+    # not ChaosTokenFace values. Scenario setup passages that add chaos tokens
+    # use `withVars ["token" .= String "elderThing"]` and are typed from the
+    # chaos-token variable registry below.
     "tokenVar": [("token", "text")],
-    "skillVar": [("skill", "text")],
+    "skillVar": [("skill", "skillIcon")],
+    # `skillIconVar` can produce WildMinusIcon, which has no web glyph today,
+    # so generic call sites stay `text` unless a future extractor proves the
+    # specific argument is one of the iconClasses-backed values.
     "skillIconVar": [("skillIcon", "text")],
 }
+
+CHAOS_TOKEN_FACE_TYPE = "chaosTokenFace"
+CHAOS_TOKEN_FACE_SOURCE = "Arkham/ChaosToken/Types.hs"
+SKILL_ICON_TYPE = "skillIcon"
+SKILL_ICON_SOURCE = "Arkham/I18n.hs"
+SKILL_ICON_VALUES = ["willpower", "intellect", "combat", "agility"]
+ICON_VARIABLE_TYPES = frozenset({CHAOS_TOKEN_FACE_TYPE, SKILL_ICON_TYPE})
 # numberVar/keyVar/withVar take the name as a literal first argument.
 NAMED_VARIABLE_BINDERS = {
     "numberVar": "integer",
@@ -789,7 +803,7 @@ class ParameterContext:
 
     def offer_variables(self, variables: dict[str, str]) -> None:
         """Variables the answering call sites had in force."""
-        self._variables.update(variables)
+        _merge_variable_types(self._variables, variables)
 
     def take_variables(self) -> dict[str, str]:
         variables, self._variables = self._variables, {}
@@ -1441,7 +1455,16 @@ def bind_alias_arguments(parameters: list[str], arguments, source: bytes) -> dic
 INTEGER_ARGUMENT = re.compile(r"-?\d+")
 
 
-def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, context=None, stop=None):
+def enclosing_scope(
+    node,
+    source: bytes,
+    index: ModuleIndex,
+    module: str,
+    context=None,
+    stop=None,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+    skill_icon_variable_type: str = SKILL_ICON_TYPE,
+):
     """Walks ancestors, collecting the scope stack in force at `node`."""
     effects: list[dict] = []
     variables: dict[str, str] = {}
@@ -1463,7 +1486,16 @@ def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, contex
                     pass
                 else:
                     effects.append({"name": name, "args": args})
-                    _collect_variables(name, args, source, variables, index, module)
+                    _collect_variables(
+                        name,
+                        args,
+                        source,
+                        variables,
+                        index,
+                        module,
+                        chaos_token_face_tags,
+                        skill_icon_variable_type,
+                    )
         elif parent.type == "infix":
             parts = infix_parts(parent, source)
             if parts is not None:
@@ -1474,11 +1506,29 @@ def enclosing_scope(node, source: bytes, index: ModuleIndex, module: str, contex
                         if application is not None:
                             name, args = application
                             effects.append({"name": name, "args": args})
-                            _collect_variables(name, args, source, variables, index, module)
+                            _collect_variables(
+                                name,
+                                args,
+                                source,
+                                variables,
+                                index,
+                                module,
+                                chaos_token_face_tags,
+                                skill_icon_variable_type,
+                            )
                         elif left.type == "variable":
                             name = text_of(left, source)
                             effects.append({"name": name, "args": []})
-                            _collect_variables(name, [], source, variables, index, module)
+                            _collect_variables(
+                                name,
+                                [],
+                                source,
+                                variables,
+                                index,
+                                module,
+                                chaos_token_face_tags,
+                                skill_icon_variable_type,
+                            )
         child = parent
         parent = parent.parent
 
@@ -1530,25 +1580,162 @@ def _contains(candidate, node) -> bool:
     return candidate.start_byte <= node.start_byte and candidate.end_byte >= node.end_byte
 
 
-def _collect_variables(name: str, args, source: bytes, variables: dict[str, str], index=None, module: str | None = None) -> None:
+def _variable_type(
+    variable: str,
+    value,
+    source: bytes,
+    index=None,
+    module: str | None = None,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+) -> str:
+    if variable == "token" and _is_chaos_token_face_value(value, source, chaos_token_face_tags):
+        return CHAOS_TOKEN_FACE_TYPE
+    return value_type(value, source, index, module)
+
+
+def _is_chaos_token_face_value(node, source: bytes, chaos_token_face_tags: frozenset[str]) -> bool:
+    """True when a `withVar(s)` value is proved to carry a chaos-token icon tag."""
+    return _known_chaos_token_face_values(node, source, chaos_token_face_tags) is not None
+
+
+def _known_chaos_token_face_values(
+    node, source: bytes, chaos_token_face_tags: frozenset[str]
+) -> list[str] | None:
+    """All icon-face literals a value can produce, or None when any leaf is dynamic."""
+    if node is None:
+        return None
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _known_chaos_token_face_values(
+            significant_children(node)[0], source, chaos_token_face_tags
+        )
+
+    application = flatten_application(node, source)
+    if application is not None:
+        name, args = application
+        if name == "String" and len(args) == 1:
+            return _known_chaos_token_face_values(args[0], source, chaos_token_face_tags)
+        return None
+
+    literal = string_literal(node, source)
+    if literal is not None:
+        return [literal] if literal in chaos_token_face_tags else None
+
+    if node.type == "conditional":
+        branches = [
+            child
+            for child in significant_children(node)
+            if child.type not in {"if", "then", "else"}
+        ]
+        values: list[str] = []
+        for branch in branches[1:]:
+            resolved = _known_chaos_token_face_values(branch, source, chaos_token_face_tags)
+            if resolved is None:
+                return None
+            values.extend(resolved)
+        return values or None
+
+    if node.type == "case":
+        values: list[str] = []
+        for alternative in node.children:
+            if alternative.type != "alternatives":
+                continue
+            for entry in alternative.children:
+                if entry.type != "alternative":
+                    continue
+                bodies = _case_alternative_result_nodes(entry)
+                if bodies is None:
+                    return None
+                for body in bodies:
+                    resolved = _known_chaos_token_face_values(
+                        body, source, chaos_token_face_tags
+                    )
+                    if resolved is None:
+                        return None
+                    values.extend(resolved)
+        return values or None
+
+    return None
+
+
+CASE_ALTERNATIVE_BIND_CHILDREN = frozenset({"where", "local_binds", "binds"})
+
+
+def _case_alternative_result_nodes(alternative) -> list[object] | None:
+    """Result expressions for every guarded/unguarded match in a case alternative."""
+    saw_pattern = False
+    saw_binds = False
+    bodies = []
+    for child in significant_children(alternative):
+        if child.type == "match":
+            if saw_binds:
+                return None
+            children = significant_children(child)
+            if not children or any(node.type != "guards" for node in children[:-1]):
+                return None
+            body = children[-1]
+            if body.type == "guards":
+                return None
+            bodies.append(body)
+        elif child.type in CASE_ALTERNATIVE_BIND_CHILDREN:
+            saw_binds = True
+        elif not saw_pattern:
+            if bodies or saw_binds:
+                return None
+            saw_pattern = True
+        else:
+            return None
+    if not saw_pattern or not bodies:
+        return None
+    return bodies
+
+
+def _merge_variable_type(existing: str | None, incoming: str) -> str:
+    if existing is None or existing == incoming:
+        return incoming
+    if existing in ICON_VARIABLE_TYPES or incoming in ICON_VARIABLE_TYPES:
+        non_icon = incoming if existing in ICON_VARIABLE_TYPES else existing
+        return non_icon if non_icon in {"text", "unknown"} else "unknown"
+    return incoming
+
+
+def _merge_variable_types(target: dict[str, str], incoming: dict[str, str]) -> None:
+    for variable, kind in incoming.items():
+        target[variable] = _merge_variable_type(target.get(variable), kind)
+
+
+def _collect_variables(
+    name: str,
+    args,
+    source: bytes,
+    variables: dict[str, str],
+    index=None,
+    module: str | None = None,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+    skill_icon_variable_type: str = SKILL_ICON_TYPE,
+) -> None:
     # `withVars ["xp" .= xp, "shelterValue" .= n]` and `withVar "name" value`
     # bind arbitrary names (Arkham/I18n.hs), and they are how most resolutions
     # supply their numbers. Without them every one of those keys looks like it
     # renders a variable the backend never sends.
     if name == "withVars" and args:
         for pair_name, value in _pair_bindings(args[0], source):
-            variables.setdefault(pair_name, value_type(value, source, index, module))
+            variables.setdefault(
+                pair_name,
+                _variable_type(pair_name, value, source, index, module, chaos_token_face_tags),
+            )
         return
     if name == "withVar" and len(args) >= 1:
         variable = string_literal(args[0], source)
         if variable is not None:
             variables.setdefault(
                 variable,
-                value_type(args[1], source, index, module) if len(args) > 1 else "unknown",
+                _variable_type(variable, args[1], source, index, module, chaos_token_face_tags)
+                if len(args) > 1
+                else "unknown",
             )
         return
 
-    binder = VARIABLE_BINDERS.get(name)
+    binder = _variable_binder(name, skill_icon_variable_type)
     if binder is not None:
         for variable, kind in binder:
             variables[variable] = kind
@@ -1558,6 +1745,12 @@ def _collect_variables(name: str, args, source: bytes, variables: dict[str, str]
         variable = string_literal(args[0], source)
         if variable is not None:
             variables[variable] = named
+
+
+def _variable_binder(name: str, skill_icon_variable_type: str) -> list[tuple[str, str]] | None:
+    if name == "skillVar":
+        return [("skill", skill_icon_variable_type)]
+    return VARIABLE_BINDERS.get(name)
 
 
 def _pair_bindings(node, source: bytes) -> list[tuple[str, object]]:
@@ -1758,6 +1951,8 @@ def extract_module(
     module: str,
     library: Path | None = None,
     context=None,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+    skill_icon_variable_type: str = SKILL_ICON_TYPE,
 ):
     emitted: dict[str, dict] = {}
     dynamic: list[dict] = []
@@ -1842,7 +2037,14 @@ def extract_module(
     def emit_through_helper(node, name, emitter, helper, keys, call_site_variables, key_node):
         """Emits a local helper's keys once per call site, in that site's scope."""
         inner_stack, inner_variables, inner_dynamic, inner_reset = enclosing_scope(
-            node, source, index, module, context, helper["holder"]
+            node,
+            source,
+            index,
+            module,
+            context,
+            helper["holder"],
+            chaos_token_face_tags,
+            skill_icon_variable_type,
         )
         if inner_dynamic is not None:
             record_dynamic(node, inner_dynamic, name)
@@ -1865,7 +2067,7 @@ def extract_module(
         # the key.
         if inner_reset and parameter_index is None:
             variables = dict(inner_variables)
-            variables.update(call_site_variables)
+            _merge_variable_types(variables, call_site_variables)
             for variable, kind in emitter.get("vars", {}).items():
                 variables[variable] = kind
             emit(node, name, emitter, inner_stack, keys, variables)
@@ -1878,7 +2080,13 @@ def extract_module(
 
         for call_node, call_arguments in calls:
             call_stack, call_variables, call_dynamic, call_reset = enclosing_scope(
-                call_node, source, index, module, context
+                call_node,
+                source,
+                index,
+                module,
+                context,
+                chaos_token_face_tags=chaos_token_face_tags,
+                skill_icon_variable_type=skill_icon_variable_type,
             )
             if call_dynamic is not None:
                 record_dynamic(call_node, call_dynamic, name)
@@ -1898,8 +2106,8 @@ def extract_module(
                 call_keys = resolved
 
             variables = dict(inner_variables)
-            variables.update(call_variables)
-            variables.update(call_site_variables)
+            _merge_variable_types(variables, call_variables)
+            _merge_variable_types(variables, call_site_variables)
             for variable, kind in emitter.get("vars", {}).items():
                 variables[variable] = kind
 
@@ -1952,7 +2160,7 @@ def extract_module(
                         record_dynamic(node, "partial key (runtime remainder)", name)
                         continue
                     entry = emitted.setdefault(full, {"key": full, "variables": {}, "sites": []})
-                    entry["variables"].update(variables)
+                    _merge_variable_types(entry["variables"], variables)
                     entry["sites"].append(
                         {"file": relative, "line": node.start_point[0] + 1, "emitter": name}
                     )
@@ -1998,7 +2206,13 @@ def extract_module(
             return
 
         stack, variables, dynamic_reason, saw_reset = enclosing_scope(
-            node, source, index, module, context
+            node,
+            source,
+            index,
+            module,
+            context,
+            chaos_token_face_tags=chaos_token_face_tags,
+            skill_icon_variable_type=skill_icon_variable_type,
         )
         if dynamic_reason is not None:
             record_dynamic(node, dynamic_reason, name)
@@ -2008,7 +2222,7 @@ def extract_module(
             saw_reset = True
         variables = dict(variables)
         if "literal" not in emitter:
-            variables.update(call_site_variables)
+            _merge_variable_types(variables, call_site_variables)
         for variable, kind in emitter.get("vars", {}).items():
             variables[variable] = kind
 
@@ -2046,7 +2260,12 @@ def _is_top_level(index, key: tuple[str, str]) -> bool:
     return record is not None and key[1] in record["definitions"]
 
 
-def caller_scopes(parsed, index, wanted: set[tuple[str, str]]) -> dict[tuple[str, str], set[tuple]]:
+def caller_scopes(
+    parsed,
+    index,
+    wanted: set[tuple[str, str]],
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+) -> dict[tuple[str, str], set[tuple]]:
     """Scopes in force at every call site of the given helper.
 
     Scenario and campaign modules routinely factor emission into a helper with
@@ -2089,7 +2308,11 @@ def caller_scopes(parsed, index, wanted: set[tuple[str, str]]) -> dict[tuple[str
                         ]
                         if targets:
                             stack, _, dynamic_reason, saw_reset = enclosing_scope(
-                                node, source, index, module
+                                node,
+                                source,
+                                index,
+                                module,
+                                chaos_token_face_tags=chaos_token_face_tags,
                             )
                             # Only an anchored scope (one that began with a
                             # reset such as withI18n/campaignI18n) can define a
@@ -2105,7 +2328,13 @@ def caller_scopes(parsed, index, wanted: set[tuple[str, str]]) -> dict[tuple[str
     return found
 
 
-def collect_parameter_values(parsed, requests, index: ModuleIndex) -> dict:
+def collect_parameter_values(
+    parsed,
+    requests,
+    index: ModuleIndex,
+    chaos_token_face_tags: frozenset[str] = frozenset(),
+    skill_icon_variable_type: str = SKILL_ICON_TYPE,
+) -> dict:
     """Literal arguments every call site in the codebase passes, per request.
 
     Top-level helpers such as `campaignFlavorText entry = ... scope entry ...`
@@ -2152,10 +2381,15 @@ def collect_parameter_values(parsed, requests, index: ModuleIndex) -> dict:
                         elif collected[request] is not None:
                             collected[request].extend(resolved)
                             _, site_variables, dynamic_reason, _ = enclosing_scope(
-                                node, source, index, module
+                                node,
+                                source,
+                                index,
+                                module,
+                                chaos_token_face_tags=chaos_token_face_tags,
+                                skill_icon_variable_type=skill_icon_variable_type,
                             )
                             if dynamic_reason is None:
-                                variables[request].update(site_variables)
+                                _merge_variable_types(variables[request], site_variables)
             for child in node.children:
                 visit(child)
 
@@ -2168,11 +2402,224 @@ def collect_parameter_values(parsed, requests, index: ModuleIndex) -> dict:
     }
 
 
-def build_artifact(dynamic_report: Path | None = None, library: Path | None = None) -> dict:
+def _strip_icon_braces(value: str) -> str:
+    if value.startswith("{") and value.endswith("}"):
+        return value[1:-1]
+    return value
+
+
+def _web_icon_tags() -> set[str]:
+    """Icon placeholder names the web client can turn into glyphs."""
+    path = ROOT / "frontend" / "src" / "arkham" / "icons.ts"
+    if not path.is_file():
+        return set()
+    source = path.read_text(encoding="utf-8")
+    match = re.search(r"iconClasses\s*:\s*Record<string, string>\s*=\s*\{(.*?)\n\}", source, re.S)
+    if match is None:
+        return set()
+    return set(re.findall(r"\b([A-Za-z][A-Za-z0-9]*)\s*:", match.group(1)))
+
+
+def _chaos_token_face_values(library: Path) -> list[str]:
+    """Derive official chaos-token icon tags from Arkham.ChaosToken.Types."""
+    path = library / CHAOS_TOKEN_FACE_SOURCE
+    if not path.is_file():
+        return []
+    source = path.read_text(encoding="utf-8")
+    list_match = re.search(r"allChaosTokenFaces\s*=\s*\[(.*?)\]", source, re.S)
+    if list_match is None:
+        return []
+    constructors = re.findall(r"\b[A-Z][A-Za-z0-9]*\b", list_match.group(1))
+
+    display_match = re.search(
+        r"instance\s+ToDisplay\s+ChaosTokenFace\s+where\s+toDisplay\s*=\s+\\case(.*?)(?:\ninstance\s+|\nallChaosTokenFaces\b)",
+        source,
+        re.S,
+    )
+    if display_match is None:
+        return []
+    displays = {
+        constructor: _strip_icon_braces(display)
+        for constructor, display in re.findall(
+            r"\b([A-Z][A-Za-z0-9]*)\s*->\s*\"([^\"]+)\"", display_match.group(1)
+        )
+    }
+    icon_tags = _web_icon_tags()
+    return [
+        displays[constructor]
+        for constructor in constructors
+        if constructor in displays and displays[constructor] in icon_tags
+    ]
+
+
+def _skill_var_values(library: Path) -> list[str]:
+    """Derive the icon tags Arkham.I18n.skillVar can emit."""
+    path = library / SKILL_ICON_SOURCE
+    if not path.is_file():
+        return []
+    source = path.read_bytes()
+    tree = parse_module(path, source, library)
+    definition = _top_level_function(tree, source, "skillVar")
+    if definition is None:
+        return []
+    body = _function_body(definition)
+    if body is None or body.type != "case":
+        return []
+
+    values: list[str] = []
+    for alternative in body.children:
+        if alternative.type != "alternatives":
+            continue
+        for entry in alternative.children:
+            if entry.type != "alternative":
+                continue
+            bodies = _case_alternative_result_nodes(entry)
+            if bodies is None:
+                return []
+            for result in bodies:
+                resolved = _skill_var_result_value(result, source)
+                if resolved is None:
+                    return []
+                values.extend(resolved)
+    return list(dict.fromkeys(values)) if values else []
+
+
+def _skill_var_result_value(node, source: bytes) -> list[str] | None:
+    application = flatten_application(node, source)
+    if application is None:
+        return None
+    name, args = application
+    if name != "withVar" or len(args) != 3:
+        return None
+    if string_literal(args[0], source) != "skill":
+        return None
+    if args[2].type != "variable" or text_of(args[2], source) != "a":
+        return None
+    return _known_string_values(args[1], source)
+
+
+def _known_string_values(node, source: bytes) -> list[str] | None:
+    """All literal strings a value can produce, or None when any leaf is dynamic."""
+    if node is None:
+        return None
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _known_string_values(significant_children(node)[0], source)
+
+    application = flatten_application(node, source)
+    if application is not None:
+        name, args = application
+        if name == "String" and len(args) == 1:
+            return _known_string_values(args[0], source)
+        return None
+
+    literal = string_literal(node, source)
+    if literal is not None:
+        return [literal]
+
+    if node.type == "conditional":
+        branches = [
+            child
+            for child in significant_children(node)
+            if child.type not in {"if", "then", "else"}
+        ]
+        values: list[str] = []
+        for branch in branches[1:]:
+            resolved = _known_string_values(branch, source)
+            if resolved is None:
+                return None
+            values.extend(resolved)
+        return values or None
+
+    if node.type == "case":
+        values: list[str] = []
+        for alternative in node.children:
+            if alternative.type != "alternatives":
+                continue
+            for entry in alternative.children:
+                if entry.type != "alternative":
+                    continue
+                bodies = _case_alternative_result_nodes(entry)
+                if bodies is None:
+                    return None
+                for body in bodies:
+                    resolved = _known_string_values(body, source)
+                    if resolved is None:
+                        return None
+                    values.extend(resolved)
+        return values or None
+
+    return None
+
+
+def _function_body(function):
+    matches = [child for child in significant_children(function) if child.type == "match"]
+    if len(matches) != 1:
+        return None
+    children = significant_children(matches[0])
+    if not children or any(child.type == "guards" for child in children[:-1]):
+        return None
+    body = children[-1]
+    if body.type == "guards":
+        return None
+    return body
+
+
+def _top_level_function(tree, source: bytes, name: str):
+    for child in tree.root_node.children:
+        if child.type != "declarations":
+            continue
+        for declaration in child.children:
+            if declaration.type != "function":
+                continue
+            head = significant_children(declaration)
+            if head and head[0].type == "variable" and text_of(head[0], source) == name:
+                return declaration
+    return None
+
+
+def _skill_icon_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
+    raw_values = _skill_var_values(library)
+    icon_tags = _web_icon_tags() if icon_tags is None else icon_tags
+    if raw_values != SKILL_ICON_VALUES or any(value not in icon_tags for value in raw_values):
+        return []
+    return [value for value in raw_values if value in icon_tags]
+
+
+def _skill_icon_variable_type(values: list[str]) -> str:
+    return SKILL_ICON_TYPE if values == SKILL_ICON_VALUES else "text"
+
+
+def _variable_type_registry(library: Path, icon_tags: set[str] | None = None) -> dict:
+    values = _chaos_token_face_values(library)
+    skill_values = _skill_icon_values(library, icon_tags)
+    return {
+        CHAOS_TOKEN_FACE_TYPE: {
+            "kind": "enum",
+            "values": values,
+            "source": CHAOS_TOKEN_FACE_SOURCE,
+        },
+        SKILL_ICON_TYPE: {
+            "kind": "enum",
+            "values": skill_values,
+            "source": SKILL_ICON_SOURCE,
+        },
+    }
+
+
+def build_artifact(
+    dynamic_report: Path | None = None,
+    library: Path | None = None,
+    icon_tags: set[str] | None = None,
+) -> dict:
     """Reads every module under `library` (the backend by default) and returns
     the registry. Tests pass a synthetic library to exercise one rule at a
     time; production always reads the real thing."""
     library = library or LIBRARY
+    variable_types = _variable_type_registry(library, icon_tags)
+    chaos_token_face_tags = frozenset(variable_types[CHAOS_TOKEN_FACE_TYPE]["values"])
+    skill_icon_variable_type = _skill_icon_variable_type(
+        variable_types[SKILL_ICON_TYPE]["values"]
+    )
     files = sorted(library.rglob("*.hs"))
     index = ModuleIndex()
     parsed = []
@@ -2208,18 +2655,44 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
         if module in DSL_MODULES:
             continue
         context.module = module
-        results[module] = extract_module(path, source, tree, index, module, library, context)
+        results[module] = extract_module(
+            path,
+            source,
+            tree,
+            index,
+            module,
+            library,
+            context,
+            chaos_token_face_tags,
+            skill_icon_variable_type,
+        )
 
     # Pass two answers those requests from every call site in the codebase and
     # re-reads only the modules that asked.
     if context.requests:
-        values = collect_parameter_values(parsed, context.requests, index)
+        values = collect_parameter_values(
+            parsed,
+            context.requests,
+            index,
+            chaos_token_face_tags,
+            skill_icon_variable_type,
+        )
         answered = ParameterContext(values)
         for path, source, tree, module in parsed:
             if module not in context.requested_modules or module in DSL_MODULES:
                 continue
             answered.module = module
-            results[module] = extract_module(path, source, tree, index, module, library, answered)
+            results[module] = extract_module(
+                path,
+                source,
+                tree,
+                index,
+                module,
+                library,
+                answered,
+                chaos_token_face_tags,
+                skill_icon_variable_type,
+            )
 
     emitted: dict[str, dict] = {}
     dynamic: list[dict] = []
@@ -2230,12 +2703,12 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
         pending.extend(module_pending)
         for key, entry in module_keys.items():
             existing = emitted.setdefault(key, {"key": key, "variables": {}, "sites": []})
-            existing["variables"].update(entry["variables"])
+            _merge_variable_types(existing["variables"], entry["variables"])
             existing["sites"].extend(entry["sites"])
 
     # Resolve helper functions whose scope comes from their call sites.
     wanted = {(site["module"], site["function"]) for site in pending if site["function"]}
-    scopes = caller_scopes(parsed, index, wanted)
+    scopes = caller_scopes(parsed, index, wanted, chaos_token_face_tags)
     for site in pending:
         candidates = scopes.get((site["module"], site["function"]), set())
         if len(candidates) != 1:
@@ -2285,7 +2758,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
                     )
                     continue
                 entry = emitted.setdefault(full, {"key": full, "variables": {}, "sites": []})
-                entry["variables"].update(site["variables"])
+                _merge_variable_types(entry["variables"], site["variables"])
                 entry["sites"].append(
                     {"file": site["file"], "line": site["line"], "emitter": site["emitter"]}
                 )
@@ -2333,6 +2806,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
     return {
         "artifactVersion": ARTIFACT_VERSION,
         "generator": "scripts/extract-backend-i18n-keys.py",
+        "variableTypes": variable_types,
         "source": {
             "root": _relative_path(library, library.parent if library != LIBRARY else ROOT),
             "files": len(parsed),

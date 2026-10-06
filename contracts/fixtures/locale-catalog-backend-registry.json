@@ -2,10 +2,126 @@
   "artifactVersion": "1.0.0",
   "source": {
     "files": 3,
-    "sha256": "cbb3b9c1ad4bc1710563c0eba5148b7d633999632b354c4f5c6b6d5d399442d9"
+    "sha256": "4eedff6ab67d9ccba6c1c136f053c18ca8572f5159ffc7f5a612b513e9e9903e"
   },
+  "variableTypes": {
+    "chaosTokenFace": {
+      "kind": "enum",
+      "values": [
+        "skull",
+        "cultist",
+        "tablet",
+        "elderThing",
+        "autoFail",
+        "elderSign",
+        "curse",
+        "bless",
+        "frost",
+        "blood"
+      ],
+      "source": "Arkham/ChaosToken/Types.hs"
+    }
+  },
+  "keys": [
+    {
+      "key": "addToken",
+      "variables": [
+        {
+          "name": "token",
+          "type": "chaosTokenFace"
+        }
+      ],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "continue",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "label.doneWithMulligan",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "nightOfTheZealot.theGathering.intro.body",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "nightOfTheZealot.theGathering.intro.title",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "nightOfTheZealot.theGathering.setup.gatherSets",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "nightOfTheZealot.theGathering.setup.placeLocations",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "nightOfTheZealot.theGathering.setup.setOutOfPlay",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "setup",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    },
+    {
+      "key": "shuffleRemainder",
+      "variables": [],
+      "emitters": [
+        "syntheticCatalogFixture"
+      ],
+      "site": "contracts/fixtures/locale-catalog-source-en.json:1",
+      "sites": 1
+    }
+  ],
   "dynamicSites": 0,
   "emittedKeys": [
+    "addToken",
     "continue",
     "label.doneWithMulligan",
     "nightOfTheZealot.theGathering.intro.body",
@@ -17,6 +133,7 @@
     "shuffleRemainder"
   ],
   "requiredKeys": [
+    "addToken",
     "continue",
     "label.doneWithMulligan",
     "nightOfTheZealot.theGathering.intro.body",

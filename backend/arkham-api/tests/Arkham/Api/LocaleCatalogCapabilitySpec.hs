@@ -34,6 +34,7 @@ import Helpers.LocaleCatalog
 import Relude
 import Settings (AppSettings (..))
 import Test.Hspec
+import Text.Read qualified as Read
 
 responseFor :: [(Text, Text)] -> Either Text ServerCapabilities
 responseFor = runtimeCapabilities
@@ -231,6 +232,33 @@ normalizeAgainstBaseline added allowed = \case
         $ filter (`notElem` map Aeson.String added)
         $ toList capabilities
     _ -> Aeson.Null
+
+expectedDisabledDifferences :: [Text]
+expectedDisabledDifferences = ["schemaRevision", "nativeClientMinimumRevision", "capabilities"]
+
+expectedAdvertisedDifferences :: [Text]
+expectedAdvertisedDifferences = expectedDisabledDifferences <> ["localeCatalog"]
+
+revisionComponents :: Text -> Maybe (Int, Int, Int)
+revisionComponents value = case T.splitOn "." value of
+  [majorText, minorText, patchText]
+    | all revisionPartIsDigits [majorText, minorText, patchText] ->
+        (,,) <$> readPart majorText <*> readPart minorText <*> readPart patchText
+  _ -> Nothing
+ where
+  revisionPartIsDigits part = not (T.null part) && T.all Char.isDigit part
+  readPart = Read.readMaybe . toString
+
+floorInRange :: Text -> Text -> Text -> Bool
+floorInRange floorRevision schemaRevision baselineRevision =
+  case (revisionComponents baselineRevision, revisionComponents floorRevision, revisionComponents schemaRevision) of
+    (Just baseline, Just floorValue, Just schema) -> baseline <= floorValue && floorValue <= schema
+    _ -> False
+
+textField :: Text -> Aeson.Object -> Maybe Text
+textField name fields = case AesonKeyMap.lookup (AesonKey.fromText name) fields of
+  Just (Aeson.String value) -> Just value
+  _ -> Nothing
 
 -- | 'T.isInfixOf' with its arguments in the order a test reads them.
 isInfixOf' :: Text -> Text -> Bool
@@ -726,15 +754,32 @@ spec = do
       legacy.globalCapabilities
         `shouldBe` [semanticQuestionPresentationCapability]
 
+    it "pins exactly the legacy fields a current response may differ in" do
+      legacy.allowedDifferences.disabled `shouldBe` expectedDisabledDifferences
+      legacy.allowedDifferences.advertised `shouldBe` expectedAdvertisedDifferences
+      (legacy.allowedDifferences.disabled <> ["status"]) `shouldNotBe` expectedDisabledDifferences
+      (legacy.allowedDifferences.advertised <> ["status"]) `shouldNotBe` expectedAdvertisedDifferences
+
+    it "bounds the native-client compatibility floor numerically" do
+      baselineFloor <- case textField "nativeClientMinimumRevision" legacy.baselineResponse of
+        Just value -> pure value
+        Nothing -> fail "legacy baseline has no nativeClientMinimumRevision"
+      response <- case responseFor [] of
+        Right value -> pure value
+        Left message -> fail $ "capabilities failed: " <> toString message
+      floorInRange response.nativeClientMinimumRevision response.schemaRevision baselineFloor `shouldBe` True
+      floorInRange "9.9.9" response.schemaRevision baselineFloor `shouldBe` False
+      floorInRange "0.0.0" response.schemaRevision baselineFloor `shouldBe` False
+
     it "keeps the exact legacy shape when no catalog is configured" do
       let additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
-          baseline = normalizeAgainstBaseline additiveCapabilities ["schemaRevision"]
+          baseline = normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled
       fmap (normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled . Aeson.toJSON) (responseFor [])
         `shouldBe` Right (baseline (Aeson.Object legacy.baselineResponse))
 
     it "keeps the exact legacy shape underneath the advertised catalog" do
       let additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
-          baseline = normalizeAgainstBaseline additiveCapabilities ["schemaRevision"]
+          baseline = normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.advertised
       fmap
         (normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.advertised . Aeson.toJSON)
         (responseFor fixtureCatalogEnv)
@@ -743,7 +788,7 @@ spec = do
     it "reports this server's real contract revision, not the baseline's" do
       -- schemaRevision identifies the whole contract bundle, so under-reporting
       -- it to look byte-identical would lie to every client that negotiates on
-      -- it. Older clients compare numeric components, so they are unaffected.
+      -- it. Clients below nativeClientMinimumRevision must show Update required.
       fmap (.schemaRevision) (responseFor []) `shouldBe` Right contractRevision
       fmap (.schemaRevision) (responseFor []) `shouldNotBe` Right legacy.baselineRevision
 
@@ -754,4 +799,4 @@ spec = do
               $ legacy.baselineResponse
           additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
       normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled dropped
-        `shouldNotBe` normalizeAgainstBaseline additiveCapabilities ["schemaRevision"] (Aeson.Object legacy.baselineResponse)
+        `shouldNotBe` normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled (Aeson.Object legacy.baselineResponse)

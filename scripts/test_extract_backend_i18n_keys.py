@@ -33,7 +33,7 @@ def check(condition: bool, message: str) -> None:
         FAILURES.append(message)
 
 
-def registry_of(modules: dict[str, str]) -> dict:
+def registry_of(modules: dict[str, str], icon_tags: set[str] | None = None) -> dict:
     """Runs the production extractor over a synthetic module set."""
     with tempfile.TemporaryDirectory() as directory:
         library = Path(directory)
@@ -41,7 +41,7 @@ def registry_of(modules: dict[str, str]) -> dict:
             path = library / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
-        return extractor.build_artifact(library=library)
+        return extractor.build_artifact(library=library, icon_tags=icon_tags)
 
 
 def keys_of(modules: dict[str, str]) -> set[str]:
@@ -49,10 +49,16 @@ def keys_of(modules: dict[str, str]) -> set[str]:
 
 
 def variables_of(modules: dict[str, str], key: str) -> set[str]:
-    for entry in registry_of(modules)["keys"]:
+    return set(variable_types_of(modules, key))
+
+
+def variable_types_of(
+    modules: dict[str, str], key: str, icon_tags: set[str] | None = None
+) -> dict[str, str]:
+    for entry in registry_of(modules, icon_tags)["keys"]:
         if entry["key"] == key:
-            return {variable["name"] for variable in entry["variables"]}
-    return set()
+            return {variable["name"]: variable["type"] for variable in entry["variables"]}
+    return {}
 
 
 HELPERS = """module Test.Helpers where
@@ -61,6 +67,47 @@ import Arkham.I18n
 
 campaignI18n :: (HasI18n => a) -> a
 campaignI18n = standaloneI18n "testCampaign"
+"""
+
+
+CHAOS_TOKEN_TYPES = """module Arkham.ChaosToken.Types where
+
+data ChaosTokenFace
+  = PlusOne
+  | Zero
+  | Skull
+  | ElderThing
+  | BlessToken
+  | CustomToken Text
+
+instance ToDisplay ChaosTokenFace where
+  toDisplay = \\case
+    PlusOne -> "+1"
+    Zero -> "0"
+    Skull -> "{skull}"
+    ElderThing -> "{elderThing}"
+    BlessToken -> "{bless}"
+    CustomToken slug -> "{" <> customTokenKey slug <> "}"
+
+allChaosTokenFaces :: [ChaosTokenFace]
+allChaosTokenFaces =
+  [ PlusOne
+  , Zero
+  , Skull
+  , ElderThing
+  , BlessToken
+  ]
+"""
+
+
+SKILL_I18N = """module Arkham.I18n where
+
+skillVar :: HasI18n => SkillType -> (HasI18n => a) -> a
+skillVar v a = case v of
+  SkillWillpower -> withVar "skill" (String "willpower") a
+  SkillIntellect -> withVar "skill" (String "intellect") a
+  SkillCombat -> withVar "skill" (String "combat") a
+  SkillAgility -> withVar "skill" (String "agility") a
 """
 
 
@@ -238,6 +285,413 @@ run xp shelter = campaignI18n $ withVars ["xp" .= xp, "shelterValue" .= shelter]
     check(
         variables == {"xp", "shelterValue"},
         f"withVars binders not modelled: {sorted(variables)}",
+    )
+
+
+def test_withvars_token_literals_are_typed_as_chaos_token_faces() -> None:
+    artifact = registry_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run headedWest = campaignI18n $
+  withVars ["token" .= String (if headedWest then "elderThing" else "skull")] $ story $ p "addToken"
+""",
+        }
+    )
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run headedWest = campaignI18n $
+  withVars ["token" .= String (if headedWest then "elderThing" else "skull")] $ story $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
+        f"token was not typed as a chaos-token face: {variables}",
+    )
+    check(
+        artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE]["values"]
+        == ["skull", "elderThing", "bless"],
+        f"chaos-token icon faces were not derived from source: {artifact['variableTypes']}",
+    )
+    check(
+        "openCustomFaces" not in artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE],
+        "chaos-token icon variable type must not claim custom-face coverage",
+    )
+
+
+def test_token_face_proof_rejects_dynamic_expressions() -> None:
+    modules = {
+        "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+        "Test/Helpers.hs": HELPERS,
+        "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+tokenName :: Text -> Text
+tokenName face = face
+
+run suffix face dynamicToken = campaignI18n $ story $ do
+  withVar "token" (String ("skull" <> suffix)) $ p "concatToken"
+  withVar "token" (String (tokenName "skull")) $ p "calledToken"
+  withVar "token" (String dynamicToken) $ p "unresolvedToken"
+""",
+    }
+
+    expected_types = {
+        "standalone.testCampaign.concatToken": "unknown",
+        "standalone.testCampaign.calledToken": "unknown",
+        "standalone.testCampaign.unresolvedToken": "unknown",
+    }
+    for key, expected in expected_types.items():
+        variables = variable_types_of(modules, key)
+        check(
+            variables.get("token") == expected,
+            f"dynamic token expression did not fall back to {expected} for {key}: {variables}",
+        )
+
+
+def test_if_token_literals_are_typed_as_chaos_token_faces() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run headedWest = campaignI18n $
+  withVar "token" (String (if headedWest then "elderThing" else "skull")) $ story $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
+        f"if token branches were not typed as chaos-token faces: {variables}",
+    )
+
+
+def test_case_token_literals_are_typed_as_chaos_token_faces() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run face = campaignI18n $
+  withVar "token" (String (case face of
+    Skull -> "skull"
+    ElderThing -> "elderThing"
+  )) $ story $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
+        f"case token branches were not typed as chaos-token faces: {variables}",
+    )
+
+
+def test_guarded_case_token_faces_reject_dynamic_results() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run face dynamicToken = campaignI18n $
+  withVar "token" (String (case face of
+    token | shouldUseDynamic token -> dynamicToken
+          | otherwise -> "skull"
+  )) $ story $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == "unknown",
+        f"guarded case dynamic result did not fail closed: {variables}",
+    )
+
+
+def test_icon_variable_type_conflicts_downgrade_to_unknown() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run useDynamic dynamicToken = campaignI18n $ story $ do
+  if useDynamic
+    then withVar "token" (String dynamicToken) $ p "addToken"
+    else withVar "token" (String "skull") $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == "unknown",
+        f"conflicting token variable evidence did not fail closed: {variables}",
+    )
+
+
+def test_icon_variable_type_conflicts_downgrade_to_unknown_when_proven_site_is_first() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run useStatic dynamicToken = campaignI18n $ story $ do
+  if useStatic
+    then withVar "token" (String "skull") $ p "addToken"
+    else withVar "token" (String dynamicToken) $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == "unknown",
+        f"proven-first token variable conflict did not fail closed: {variables}",
+    )
+
+
+def test_icon_variable_type_conflicts_downgrade_across_modules() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/A.hs": """module Test.A where
+
+import Test.Helpers
+
+run dynamicToken = campaignI18n $ story $ withVar "token" (String dynamicToken) $ p "addToken"
+""",
+            "Test/B.hs": """module Test.B where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ withVar "token" (String "skull") $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == "unknown",
+        f"cross-module token variable conflict did not fail closed: {variables}",
+    )
+
+
+def test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph() -> None:
+    artifact = registry_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    variables = {
+        entry["key"]: {variable["name"]: variable["type"] for variable in entry["variables"]}
+        for entry in artifact["keys"]
+    }
+    values = artifact["variableTypes"][extractor.SKILL_ICON_TYPE]["values"]
+
+    check(values == extractor.SKILL_ICON_VALUES, f"skill icon registry did not match skillVar: {values}")
+    check(
+        variables.get("standalone.testCampaign.label.test", {}).get("skill")
+        == extractor.SKILL_ICON_TYPE,
+        f"skillVar was not typed as a skill icon: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text with an incomplete icon registry: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_i18n_source_is_missing() -> None:
+    variables = variable_types_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text when Arkham/I18n.hs was missing: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_emitted_set_mismatches_the_registry() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                '  SkillAgility -> withVar "skill" (String "agility") a\n',
+                "",
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text when its emitted set changed: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_for_an_extra_value_without_a_glyph() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                '  SkillAgility -> withVar "skill" (String "agility") a\n',
+                '  SkillAgility -> withVar "skill" (String "agility") a\n  SkillWild -> withVar "skill" (String "wild") a\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text for an extra value without a glyph: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_a_branch_does_not_use_withvar() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                '  SkillAgility -> withVar "skill" (String "agility") a\n',
+                '  SkillAgility -> withVar "skill" (String "agility") a\n  SkillWild -> keyVar "skill" "wild" a\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text for a non-withVar branch: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_the_variable_name_is_not_literal() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                'skillVar v a = case v of\n',
+                'skillName = "skill"\n\nskillVar v a = case v of\n',
+            ).replace(
+                '  SkillAgility -> withVar "skill" (String "agility") a\n',
+                '  SkillAgility -> withVar "skill" (String "agility") a\n  SkillWild -> withVar skillName (String "wild") a\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text for a non-literal variable name: {variables}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_definition_has_a_guard() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                'skillVar v a = case v of\n',
+                'skillVar v a\n  | otherwise = case v of\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text for a guarded definition: {variables}",
     )
 
 
@@ -450,6 +904,38 @@ def test_a_presentation_emitter_keeps_a_module_from_being_waived() -> None:
 def test_committed_registry_properties() -> None:
     artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
     keys = {entry["key"] for entry in artifact["keys"]}
+    by_key = {entry["key"]: entry for entry in artifact["keys"]}
+
+    token_faces = artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE]["values"]
+    for face in (
+        "skull",
+        "cultist",
+        "tablet",
+        "elderThing",
+        "autoFail",
+        "elderSign",
+        "curse",
+        "bless",
+        "frost",
+        "blood",
+    ):
+        check(face in token_faces, f"chaos token icon face missing from registry: {face}")
+    for numeric_face in ("+1", "0", "-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8"):
+        check(numeric_face not in token_faces, f"numeric chaos token published as an icon: {numeric_face}")
+    check(
+        "openCustomFaces" not in artifact["variableTypes"][extractor.CHAOS_TOKEN_FACE_TYPE],
+        "chaos-token icon variable type must not claim custom-face coverage",
+    )
+    add_token_types = {variable["name"]: variable["type"] for variable in by_key["addToken"]["variables"]}
+    check(
+        add_token_types.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
+        f"addToken token variable is not typed as {extractor.CHAOS_TOKEN_FACE_TYPE}: {add_token_types}",
+    )
+    test_types = {variable["name"]: variable["type"] for variable in by_key["label.test"]["variables"]}
+    check(
+        test_types.get("skill") == extractor.SKILL_ICON_TYPE,
+        f"label.test skill variable is not typed as {extractor.SKILL_ICON_TYPE}: {test_types}",
+    )
 
     # Keys the review named as reachable but missing from the earlier registry.
     for key in (
@@ -489,6 +975,22 @@ TESTS = (
     test_a_local_helpers_key_parameter_is_read_from_its_call_sites,
     test_presentation_modifiers_keep_the_key_and_shift_validate,
     test_withvars_declares_the_names_the_backend_sends,
+    test_withvars_token_literals_are_typed_as_chaos_token_faces,
+    test_token_face_proof_rejects_dynamic_expressions,
+    test_if_token_literals_are_typed_as_chaos_token_faces,
+    test_case_token_literals_are_typed_as_chaos_token_faces,
+    test_guarded_case_token_faces_reject_dynamic_results,
+    test_icon_variable_type_conflicts_downgrade_to_unknown,
+    test_icon_variable_type_conflicts_downgrade_to_unknown_when_proven_site_is_first,
+    test_icon_variable_type_conflicts_downgrade_across_modules,
+    test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph,
+    test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
+    test_skill_var_falls_back_to_text_when_i18n_source_is_missing,
+    test_skill_var_falls_back_to_text_when_emitted_set_mismatches_the_registry,
+    test_skill_var_falls_back_to_text_for_an_extra_value_without_a_glyph,
+    test_skill_var_falls_back_to_text_when_a_branch_does_not_use_withvar,
+    test_skill_var_falls_back_to_text_when_the_variable_name_is_not_literal,
+    test_skill_var_falls_back_to_text_when_definition_has_a_guard,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,

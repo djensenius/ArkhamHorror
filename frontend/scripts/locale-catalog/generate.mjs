@@ -533,9 +533,14 @@ export function resolveLinkedVariables(normalized, defaultLocale) {
  * until a whole round changes nothing.
  */
 export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys, backend) {
-  // Only a `text` slot is filled by the backend: an `icon` name is rendered by
-  // the client from its own icon set, and a `presentation` name only styles.
-  const ROLE_ACCEPTS = { text: new Set(['text', 'integer']) }
+  // Text slots are spoken/written substitutions. `icon` slots render the node
+  // name itself and need no backend value. `iconVariable` slots render the
+  // backend-supplied value as an icon, so only closed, proven icon-name types
+  // are accepted; arbitrary text would fail open as a literal `{value}`.
+  const ROLE_ACCEPTS = {
+    text: new Set(['text', 'integer']),
+    iconVariable: new Set(['chaosTokenFace', 'skillIcon']),
+  }
   const defaultEntries = normalized.get(defaultLocale)
   let variableGaps = []
   // Accumulated across rounds: once an entry is downgraded the next round
@@ -552,15 +557,27 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
     for (const key of [...requiredKeys].sort()) {
       const record = backend.keys.get(key)
       if (record === undefined) continue
-      const entry = defaultEntries.get(key)
-      if (entry === undefined || entry.form === 'unsupported') continue
 
-      const needed = [...entry.variables, ...(entry.linkedVariables ?? [])].filter(
-        (variable) => variable.source === 'named' && variable.role === 'text',
-      )
-      const missing = needed
-        .filter((variable) => !record.variables.has(variable.name))
-        .map((variable) => variable.name)
+      const localeNeeds = []
+      for (const [locale, entries] of normalized) {
+        const localeEntry = entries.get(key)
+        if (localeEntry === undefined || localeEntry.form === 'unsupported') continue
+        const variables = [...localeEntry.variables, ...(localeEntry.linkedVariables ?? [])]
+        const needed = variables.filter(
+          (variable) => variable.source === 'named' && ['text', 'iconVariable'].includes(variable.role),
+        )
+        if (needed.length > 0) localeNeeds.push({ locale, needed })
+      }
+      if (localeNeeds.length === 0) continue
+
+      const missing = [
+        ...new Set(
+          localeNeeds
+            .flatMap(({ needed }) => needed)
+            .filter((variable) => !record.variables.has(variable.name))
+            .map((variable) => variable.name),
+        ),
+      ].sort()
       if (missing.length > 0) {
         variableGaps.push({
           key,
@@ -570,14 +587,16 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
         })
       }
 
-      const unusable = needed
-        .filter((variable) => record.variables.has(variable.name))
-        .map((variable) => ({ variable, type: record.variables.get(variable.name) }))
-        .filter(({ variable, type }) => !(ROLE_ACCEPTS[variable.role] ?? new Set()).has(type))
+      const unusable = localeNeeds.flatMap(({ locale, needed }) =>
+        needed
+          .filter((variable) => record.variables.has(variable.name))
+          .map((variable) => ({ locale, variable, type: record.variables.get(variable.name) }))
+          .filter(({ variable, type }) => !(ROLE_ACCEPTS[variable.role] ?? new Set()).has(type)),
+      )
       if (unusable.length === 0) continue
 
       for (const { variable, type } of unusable) {
-        unknownVariableTypes.set(`${key}:${variable.name}`, {
+        unknownVariableTypes.set(`${key}:${variable.name}:${variable.role}`, {
           key,
           variable: variable.name,
           role: variable.role,
@@ -587,7 +606,7 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
       // Every locale, not just the default: the entry is unrenderable because
       // of what the backend sends, which does not vary by language.
       const detail = unusable
-        .map(({ variable, type }) => `${variable.name} is ${type} for a ${variable.role} slot`)
+        .map(({ locale, variable, type }) => `${locale}: ${variable.name} is ${type} for a ${variable.role} slot`)
         .join('; ')
       for (const entries of normalized.values()) {
         const localeEntry = entries.get(key)
@@ -609,7 +628,7 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
   return {
     variableGaps,
     unknownVariableTypes: [...unknownVariableTypes.values()].sort((a, b) =>
-      a.key === b.key ? (a.variable < b.variable ? -1 : 1) : a.key < b.key ? -1 : 1,
+      a.key.localeCompare(b.key) || a.variable.localeCompare(b.variable) || a.role.localeCompare(b.role),
     ),
   }
 }

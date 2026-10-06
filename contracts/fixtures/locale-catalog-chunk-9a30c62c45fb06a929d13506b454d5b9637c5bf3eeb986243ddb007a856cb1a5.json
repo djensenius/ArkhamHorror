@@ -4,6 +4,28 @@
   "fallback": null,
   "pack": "core",
   "entries": {
+    "addToken": {
+      "form": "message",
+      "nodes": [
+        {
+          "type": "text",
+          "value": "core.addToken.en."
+        },
+        {
+          "type": "var",
+          "name": "token",
+          "source": "named",
+          "role": "iconVariable"
+        }
+      ],
+      "variables": [
+        {
+          "name": "token",
+          "source": "named",
+          "role": "iconVariable"
+        }
+      ]
+    },
     "continue": {
       "form": "message",
       "nodes": [

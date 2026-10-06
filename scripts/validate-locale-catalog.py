@@ -90,6 +90,10 @@ SEMANTIC_SOURCES = (
 
 MAX_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_CHUNKS_PER_LOCALE = 256
+ROLE_ACCEPTS = {
+    "text": {"text", "integer"},
+    "iconVariable": {"chaosTokenFace", "skillIcon"},
+}
 
 
 def require(condition: bool, message: str) -> None:
@@ -540,6 +544,159 @@ def collect_node_kinds(nodes: list) -> tuple[set[str], list[dict]]:
     return kinds, images
 
 
+def backend_rendered_variables(entry: dict | None) -> set[tuple[str, str]]:
+    if entry is None or entry["form"] == "unsupported":
+        return set()
+    return {
+        (variable["name"], variable["role"])
+        for variable in [*entry["variables"], *entry.get("linkedVariables", [])]
+        if variable["source"] == "named" and variable["role"] in ROLE_ACCEPTS
+    }
+
+
+def backend_variable_reports(
+    entries_by_locale: dict[str, dict[str, dict]],
+    translated: set[str],
+    emitted_types: dict[str, dict[str, str]],
+) -> tuple[list[dict], list[dict]]:
+    gaps = []
+    renderable_unusable = []
+    for key in sorted(translated):
+        needed = {
+            variable
+            for locale_entries in entries_by_locale.values()
+            for variable in backend_rendered_variables(locale_entries.get(key))
+        }
+        missing = sorted({name for name, _role in needed if name not in emitted_types[key]})
+        if missing:
+            gaps.append({"key": key, "missing": missing, "resolved": bool(emitted_types[key])})
+        for name, role in sorted(needed):
+            if name not in emitted_types[key]:
+                continue
+            variable_type = emitted_types[key][name]
+            if variable_type not in ROLE_ACCEPTS[role]:
+                renderable_unusable.append(
+                    {"key": key, "variable": name, "role": role, "type": variable_type}
+                )
+    return gaps, renderable_unusable
+
+
+def validate_unknown_variable_types(
+    entries_by_locale: dict[str, dict[str, dict]],
+    translated: set[str],
+    emitted_types: dict[str, dict[str, str]],
+    records: list[dict],
+) -> None:
+    seen = set()
+    for record in records:
+        identity = (record["key"], record["variable"], record["role"])
+        require(identity not in seen, f"duplicate backend.unknownVariableTypes record for {identity}")
+        seen.add(identity)
+        require(record["key"] in translated, f"{record['key']} is listed in backend.unknownVariableTypes but is not translated")
+        actual_type = emitted_types[record["key"]].get(record["variable"])
+        require(
+            actual_type is not None,
+            f"{record['key']}.{record['variable']} is listed in backend.unknownVariableTypes but the backend does not emit it",
+        )
+        require(
+            record["type"] == actual_type,
+            f"{record['key']}.{record['variable']} records type {record['type']} but the backend emits {actual_type}",
+        )
+        require(record["role"] in ROLE_ACCEPTS, f"{record['key']}.{record['variable']} has unsupported role {record['role']}")
+        require(
+            actual_type not in ROLE_ACCEPTS[record["role"]],
+            f"{record['key']}.{record['variable']} is listed in backend.unknownVariableTypes but {actual_type} is accepted for {record['role']}",
+        )
+
+    for key in sorted({record["key"] for record in records}):
+        found = False
+        for locale, locale_entries in entries_by_locale.items():
+            entry = locale_entries.get(key)
+            if entry is None:
+                continue
+            found = True
+            require(
+                entry["form"] == "unsupported",
+                f"{key} is listed in backend.unknownVariableTypes but {locale} is published as renderable",
+            )
+        require(found, f"{key} is listed in backend.unknownVariableTypes but no locale publishes it")
+
+
+def validate_backend_requirement_self_tests() -> None:
+    translated_with_bad_icon = {
+        "en": {"label.chooseSeal": {"form": "unsupported", "reason": "link-cycle"}},
+        "fr": {
+            "label.chooseSeal": {
+                "form": "message",
+                "variables": [{"name": "seal", "source": "named", "role": "iconVariable"}],
+            }
+        },
+    }
+    emitted_types = {"label.chooseSeal": {"seal": "text"}}
+    gaps, renderable_unusable = backend_variable_reports(
+        translated_with_bad_icon,
+        {"label.chooseSeal"},
+        emitted_types,
+    )
+    require(gaps == [], "backend variable self-test misreported an incompatible type as missing")
+    require(
+        renderable_unusable
+        == [{"key": "label.chooseSeal", "variable": "seal", "role": "iconVariable", "type": "text"}],
+        "backend variable self-test did not scan a supported translation when the default entry was unsupported",
+    )
+
+    mixed_reason = {
+        "en": {"label.chooseSeal": {"form": "unsupported", "reason": "link-cycle"}},
+        "fr": {"label.chooseSeal": {"form": "unsupported", "reason": "unusable-variable-type"}},
+    }
+    validate_unknown_variable_types(
+        mixed_reason,
+        {"label.chooseSeal"},
+        emitted_types,
+        [{"key": "label.chooseSeal", "variable": "seal", "role": "iconVariable", "type": "text"}],
+    )
+
+    all_locale_downgrade_failure = {
+        "en": {"label.chooseSeal": {"form": "unsupported", "reason": "unusable-variable-type"}},
+        "fr": {
+            "label.chooseSeal": {
+                "form": "message",
+                "variables": [{"name": "seal", "source": "named", "role": "iconVariable"}],
+            }
+        },
+    }
+    try:
+        validate_unknown_variable_types(
+            all_locale_downgrade_failure,
+            {"label.chooseSeal"},
+            emitted_types,
+            [{"key": "label.chooseSeal", "variable": "seal", "role": "iconVariable", "type": "text"}],
+        )
+    except SystemExit:
+        pass
+    else:
+        raise SystemExit("locale-catalog: backend variable self-test missed an all-locale downgrade failure")
+
+    missing_variable = {
+        "en": {
+            "label.chooseSeal": {
+                "form": "message",
+                "variables": [{"name": "seal", "source": "named", "role": "iconVariable"}],
+            }
+        }
+    }
+    gaps, renderable_unusable = backend_variable_reports(
+        missing_variable,
+        {"label.chooseSeal"},
+        {"label.chooseSeal": {}},
+    )
+    require(
+        gaps == [{"key": "label.chooseSeal", "missing": ["seal"], "resolved": False}],
+        "backend variable self-test did not preserve missing variable reports",
+    )
+    require(renderable_unusable == [], "backend variable self-test treated a missing variable as an unusable type")
+
+
 def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> None:
     """The catalog must satisfy the backend's machine-derived emitted-key set.
 
@@ -563,7 +720,8 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
     )
 
     artifact = strict_json.strict_json_load_path(ROOT / BACKEND_KEYS)
-    emitted = {entry["key"]: {v["name"] for v in entry["variables"]} for entry in artifact["keys"]}
+    emitted_types = {entry["key"]: {v["name"]: v["type"] for v in entry["variables"]} for entry in artifact["keys"]}
+    emitted = {key: set(variables) for key, variables in emitted_types.items()}
     require(len(emitted) > 1000, f"the backend registry only lists {len(emitted)} keys")
 
     backend = manifest["backend"]
@@ -578,15 +736,16 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
     require(backend["emittedKeys"] == len(emitted), "the manifest miscounts the backend's emitted keys")
 
     default_locale = manifest["defaultLocale"]
-    entries: dict[str, dict] = {}
+    entries_by_locale: dict[str, dict[str, dict]] = {}
     for locale_entry in manifest["locales"]:
-        if locale_entry["locale"] != default_locale:
-            continue
+        locale_entries: dict[str, dict] = {}
         for descriptor in locale_entry["chunks"]:
             chunk = strict_json.strict_json_loads(
                 files[descriptor["path"][len(manifest["basePath"]) + 1 :]], source=descriptor["path"]
             )
-            entries.update(chunk["entries"])
+            locale_entries.update(chunk["entries"])
+        entries_by_locale[locale_entry["locale"]] = locale_entries
+    entries = entries_by_locale[default_locale]
 
     translated = {key for key in emitted if key in entries}
     untranslated = sorted(key for key in emitted if key not in entries)
@@ -602,33 +761,28 @@ def validate_backend_requirements(files: dict[str, bytes], manifest: dict) -> No
     # One deliberate exception: an entry whose slot the backend cannot fill is
     # published as unsupported *and* named in the manifest, so a consumer sees
     # the hole in the schema instead of a broken instruction.
+    validate_unknown_variable_types(
+        entries_by_locale,
+        translated,
+        emitted_types,
+        backend["unknownVariableTypes"],
+    )
     unusable = {entry["key"] for entry in backend["unknownVariableTypes"]}
     for key in sorted(translated):
         entry = entries[key]
         if key in unusable:
-            require(
-                entry["form"] == "unsupported" and entry.get("reason") == "unusable-variable-type",
-                f"{key} is listed in backend.unknownVariableTypes but is published as renderable",
-            )
             continue
         require(
             entry["form"] != "unsupported",
             f"backend-emitted key {key} is unsupported ({entry.get('reason')}): it cannot be optional",
         )
 
-    gaps = []
-    for key in sorted(translated):
-        entry = entries[key]
-        if entry["form"] == "unsupported":
-            continue
-        needed = {
-            variable["name"]
-            for variable in entry["variables"]
-            if variable["source"] == "named" and variable["role"] == "text"
-        }
-        missing = sorted(needed - emitted[key])
-        if missing:
-            gaps.append({"key": key, "missing": missing, "resolved": bool(emitted[key])})
+    gaps, renderable_unusable = backend_variable_reports(entries_by_locale, translated, emitted_types)
+    require(
+        renderable_unusable == [],
+        "renderable locale entries use backend variables with unusable types: "
+        f"{json.dumps(renderable_unusable[:10], sort_keys=True)}",
+    )
     require(
         gaps == manifest["backend"]["variableGaps"],
         "the manifest's variable-gap report does not match the catalog "
@@ -1133,6 +1287,7 @@ def main() -> None:
     strict_json.run_self_tests()
     json_schema_subset.run_self_tests()
     validate_required_key_extraction()
+    validate_backend_requirement_self_tests()
 
     require(GENERATOR.is_file(), "the locale-catalog generator is missing")
     require(

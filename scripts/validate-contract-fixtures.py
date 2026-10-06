@@ -2648,6 +2648,17 @@ require(
 )
 
 
+EXPECTED_DISABLED_LEGACY_DIFFERENCES = [
+    "schemaRevision",
+    "nativeClientMinimumRevision",
+    "capabilities",
+]
+EXPECTED_ADVERTISED_LEGACY_DIFFERENCES = [
+    *EXPECTED_DISABLED_LEGACY_DIFFERENCES,
+    "localeCatalog",
+]
+
+
 def normalize_against_baseline(response: dict, allowed: list[str]) -> dict:
     """Drop exactly the members a revision is allowed to differ in, so what is
     left is the legacy shape and nothing else."""
@@ -2665,16 +2676,44 @@ def normalize_against_baseline(response: dict, allowed: list[str]) -> dict:
     return normalized
 
 
-legacy_expected = {key: value for key, value in legacy_baseline.items() if key != "schemaRevision"}
+def allowed_differences_are_exact(disabled: list[str], advertised: list[str]) -> bool:
+    return disabled == EXPECTED_DISABLED_LEGACY_DIFFERENCES and advertised == EXPECTED_ADVERTISED_LEGACY_DIFFERENCES
+
+
+def parse_revision_components(value: object) -> tuple[int, int, int] | None:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value) is None:
+        return None
+    return tuple(int(part) for part in value.split("."))
+
+
+def floor_is_in_range(floor: object, schema_revision: object, baseline_floor: object) -> bool:
+    floor_components = parse_revision_components(floor)
+    schema_components = parse_revision_components(schema_revision)
+    baseline_components = parse_revision_components(baseline_floor)
+    if floor_components is None or schema_components is None or baseline_components is None:
+        return False
+    return baseline_components <= floor_components <= schema_components
+
+
+def expected_against_baseline(allowed: list[str]) -> dict:
+    return normalize_against_baseline(legacy_baseline, allowed)
+
+
+require(
+    allowed_differences_are_exact(
+        legacy_checks["allowedDifferences"].get("disabled"),
+        legacy_checks["allowedDifferences"].get("advertised"),
+    ),
+    "legacyCompatibilityChecks.allowedDifferences must be exactly "
+    f"disabled={EXPECTED_DISABLED_LEGACY_DIFFERENCES!r} and "
+    f"advertised={EXPECTED_ADVERTISED_LEGACY_DIFFERENCES!r}",
+)
+
 for advertises_catalog, capabilities_path in capabilities_shapes.items():
     response = load_governed_json(capabilities_path)
     allowed = legacy_checks["allowedDifferences"]["advertised" if advertises_catalog else "disabled"]
-    require(
-        isinstance(allowed, list) and "schemaRevision" in allowed,
-        f"legacyCompatibilityChecks.allowedDifferences must allow schemaRevision for "
-        f"{capabilities_path}",
-    )
     normalized = normalize_against_baseline(response, allowed)
+    legacy_expected = expected_against_baseline(allowed)
     require(
         normalized == legacy_expected,
         f"{capabilities_path} changes the legacy response shape beyond {allowed}: "
@@ -2687,6 +2726,15 @@ for advertises_catalog, capabilities_path in capabilities_shapes.items():
         "baseline -- a server that under-reports its contract revision lies to every client that "
         "negotiates on it",
     )
+    require(
+        floor_is_in_range(
+            response.get("nativeClientMinimumRevision"),
+            response.get("schemaRevision"),
+            legacy_baseline.get("nativeClientMinimumRevision"),
+        ),
+        f"{capabilities_path} nativeClientMinimumRevision must be between the baseline floor "
+        "and schemaRevision, compared numerically",
+    )
 
 
 def run_legacy_compatibility_self_test() -> None:
@@ -2694,6 +2742,24 @@ def run_legacy_compatibility_self_test() -> None:
     a field the revision is *not* allowed to differ in.
     """
     disabled_allowed = legacy_checks["allowedDifferences"]["disabled"]
+    advertised_allowed = legacy_checks["allowedDifferences"]["advertised"]
+    legacy_expected = expected_against_baseline(disabled_allowed)
+    require(
+        not allowed_differences_are_exact(disabled_allowed + ["status"], advertised_allowed),
+        "Self-test failure: an extra disabled allowed-difference key was accepted",
+    )
+    require(
+        not allowed_differences_are_exact(disabled_allowed, advertised_allowed + ["status"]),
+        "Self-test failure: an extra advertised allowed-difference key was accepted",
+    )
+    require(
+        not floor_is_in_range("9.9.9", manifest.get("schemaRevision"), legacy_baseline.get("nativeClientMinimumRevision")),
+        "Self-test failure: a compatibility floor above schemaRevision was accepted",
+    )
+    require(
+        not floor_is_in_range("0.0.0", manifest.get("schemaRevision"), legacy_baseline.get("nativeClientMinimumRevision")),
+        "Self-test failure: a compatibility floor below the baseline was accepted",
+    )
     mutated = copy.deepcopy(legacy_baseline)
     mutated["capabilities"] = mutated["capabilities"][:-1]
     require(
@@ -2701,10 +2767,10 @@ def run_legacy_compatibility_self_test() -> None:
         "Self-test failure: dropping a legacy capability survived baseline normalization",
     )
     mutated = copy.deepcopy(legacy_baseline)
-    mutated["nativeClientMinimumRevision"] = "9.9.9"
+    mutated["status"] = "changed"
     require(
         normalize_against_baseline(mutated, disabled_allowed) != legacy_expected,
-        "Self-test failure: changing the compatibility floor survived baseline normalization",
+        "Self-test failure: changing a non-additive legacy field survived baseline normalization",
     )
 
 
