@@ -728,13 +728,13 @@ spec = do
 
     it "keeps the exact legacy shape when no catalog is configured" do
       let additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
-          baseline = normalizeAgainstBaseline additiveCapabilities ["schemaRevision"]
+          baseline = normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled
       fmap (normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled . Aeson.toJSON) (responseFor [])
         `shouldBe` Right (baseline (Aeson.Object legacy.baselineResponse))
 
     it "keeps the exact legacy shape underneath the advertised catalog" do
       let additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
-          baseline = normalizeAgainstBaseline additiveCapabilities ["schemaRevision"]
+          baseline = normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.advertised
       fmap
         (normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.advertised . Aeson.toJSON)
         (responseFor fixtureCatalogEnv)
@@ -743,7 +743,7 @@ spec = do
     it "reports this server's real contract revision, not the baseline's" do
       -- schemaRevision identifies the whole contract bundle, so under-reporting
       -- it to look byte-identical would lie to every client that negotiates on
-      -- it. Older clients compare numeric components, so they are unaffected.
+      -- it. Clients below nativeClientMinimumRevision must show Update required.
       fmap (.schemaRevision) (responseFor []) `shouldBe` Right contractRevision
       fmap (.schemaRevision) (responseFor []) `shouldNotBe` Right legacy.baselineRevision
 
@@ -754,4 +754,4 @@ spec = do
               $ legacy.baselineResponse
           additiveCapabilities = legacy.addedCapability : legacy.globalCapabilities
       normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled dropped
-        `shouldNotBe` normalizeAgainstBaseline additiveCapabilities ["schemaRevision"] (Aeson.Object legacy.baselineResponse)
+        `shouldNotBe` normalizeAgainstBaseline additiveCapabilities legacy.allowedDifferences.disabled (Aeson.Object legacy.baselineResponse)
