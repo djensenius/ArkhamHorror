@@ -2665,7 +2665,10 @@ def normalize_against_baseline(response: dict, allowed: list[str]) -> dict:
     return normalized
 
 
-legacy_expected = {key: value for key, value in legacy_baseline.items() if key != "schemaRevision"}
+def expected_against_baseline(allowed: list[str]) -> dict:
+    return normalize_against_baseline(legacy_baseline, allowed)
+
+
 for advertises_catalog, capabilities_path in capabilities_shapes.items():
     response = load_governed_json(capabilities_path)
     allowed = legacy_checks["allowedDifferences"]["advertised" if advertises_catalog else "disabled"]
@@ -2675,6 +2678,7 @@ for advertises_catalog, capabilities_path in capabilities_shapes.items():
         f"{capabilities_path}",
     )
     normalized = normalize_against_baseline(response, allowed)
+    legacy_expected = expected_against_baseline(allowed)
     require(
         normalized == legacy_expected,
         f"{capabilities_path} changes the legacy response shape beyond {allowed}: "
@@ -2694,6 +2698,7 @@ def run_legacy_compatibility_self_test() -> None:
     a field the revision is *not* allowed to differ in.
     """
     disabled_allowed = legacy_checks["allowedDifferences"]["disabled"]
+    legacy_expected = expected_against_baseline(disabled_allowed)
     mutated = copy.deepcopy(legacy_baseline)
     mutated["capabilities"] = mutated["capabilities"][:-1]
     require(
