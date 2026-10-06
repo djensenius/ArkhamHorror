@@ -2812,7 +2812,7 @@ runGameMessage msg g = case msg of
 
     fastWindow <- checkWindows [mkWhen Window.FastPlayerWindow]
     case investigatorIds of
-      [] -> error "no investigators"
+      [] -> push GameOver
       [iid] ->
         pushAll
           [ phaseStep InvestigationPhaseBeginsStep [phaseBeginsWindow, afterPhaseBeginsWindow]
