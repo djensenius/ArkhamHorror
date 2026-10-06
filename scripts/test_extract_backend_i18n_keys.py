@@ -349,6 +349,27 @@ run suffix face dynamicToken = campaignI18n $ story $ do
         )
 
 
+def test_if_token_literals_are_typed_as_chaos_token_faces() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run headedWest = campaignI18n $
+  withVar "token" (String (if headedWest then "elderThing" else "skull")) $ story $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
+        f"if token branches were not typed as chaos-token faces: {variables}",
+    )
+
+
 def test_case_token_literals_are_typed_as_chaos_token_faces() -> None:
     variables = variable_types_of(
         {
@@ -370,6 +391,30 @@ run face = campaignI18n $
     check(
         variables.get("token") == extractor.CHAOS_TOKEN_FACE_TYPE,
         f"case token branches were not typed as chaos-token faces: {variables}",
+    )
+
+
+def test_guarded_case_token_faces_reject_dynamic_results() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run face dynamicToken = campaignI18n $
+  withVar "token" (String (case face of
+    token | shouldUseDynamic token -> dynamicToken
+          | otherwise -> "skull"
+  )) $ story $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == "unknown",
+        f"guarded case dynamic result did not fail closed: {variables}",
     )
 
 
@@ -687,7 +732,9 @@ TESTS = (
     test_withvars_declares_the_names_the_backend_sends,
     test_withvars_token_literals_are_typed_as_chaos_token_faces,
     test_token_face_proof_rejects_dynamic_expressions,
+    test_if_token_literals_are_typed_as_chaos_token_faces,
     test_case_token_literals_are_typed_as_chaos_token_faces,
+    test_guarded_case_token_faces_reject_dynamic_results,
     test_icon_variable_type_conflicts_downgrade_to_unknown,
     test_skill_icon_registry_drops_values_without_web_glyphs,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,

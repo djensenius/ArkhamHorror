@@ -1619,23 +1619,51 @@ def _known_chaos_token_face_values(
             for entry in alternative.children:
                 if entry.type != "alternative":
                     continue
-                body = significant_children(entry)[-1] if significant_children(entry) else None
-                if body is None:
+                bodies = _case_alternative_result_nodes(entry)
+                if bodies is None:
                     return None
-                if body.type == "match":
-                    inner = significant_children(body)
-                    body = inner[-1] if inner else None
-                resolved = (
-                    _known_chaos_token_face_values(body, source, chaos_token_face_tags)
-                    if body
-                    else None
-                )
-                if resolved is None:
-                    return None
-                values.extend(resolved)
+                for body in bodies:
+                    resolved = _known_chaos_token_face_values(
+                        body, source, chaos_token_face_tags
+                    )
+                    if resolved is None:
+                        return None
+                    values.extend(resolved)
         return values or None
 
     return None
+
+
+CASE_ALTERNATIVE_BIND_CHILDREN = frozenset({"where", "local_binds", "binds"})
+
+
+def _case_alternative_result_nodes(alternative) -> list[object] | None:
+    """Result expressions for every guarded/unguarded match in a case alternative."""
+    saw_pattern = False
+    saw_binds = False
+    bodies = []
+    for child in significant_children(alternative):
+        if child.type == "match":
+            if saw_binds:
+                return None
+            children = significant_children(child)
+            if not children or any(node.type != "guards" for node in children[:-1]):
+                return None
+            body = children[-1]
+            if body.type == "guards":
+                return None
+            bodies.append(body)
+        elif child.type in CASE_ALTERNATIVE_BIND_CHILDREN:
+            saw_binds = True
+        elif not saw_pattern:
+            if bodies or saw_binds:
+                return None
+            saw_pattern = True
+        else:
+            return None
+    if not saw_pattern or not bodies:
+        return None
+    return bodies
 
 
 def _merge_variable_type(existing: str | None, incoming: str) -> str:
