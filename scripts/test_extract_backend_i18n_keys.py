@@ -443,6 +443,55 @@ run useDynamic dynamicToken = campaignI18n $ story $ do
     )
 
 
+def test_icon_variable_type_conflicts_downgrade_to_unknown_when_proven_site_is_first() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run useStatic dynamicToken = campaignI18n $ story $ do
+  if useStatic
+    then withVar "token" (String "skull") $ p "addToken"
+    else withVar "token" (String dynamicToken) $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == "unknown",
+        f"proven-first token variable conflict did not fail closed: {variables}",
+    )
+
+
+def test_icon_variable_type_conflicts_downgrade_across_modules() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Test/Helpers.hs": HELPERS,
+            "Test/A.hs": """module Test.A where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ withVar "token" (String "skull") $ p "addToken"
+""",
+            "Test/B.hs": """module Test.B where
+
+import Test.Helpers
+
+run dynamicToken = campaignI18n $ story $ withVar "token" (String dynamicToken) $ p "addToken"
+""",
+        },
+        "standalone.testCampaign.addToken",
+    )
+    check(
+        variables.get("token") == "unknown",
+        f"cross-module token variable conflict did not fail closed: {variables}",
+    )
+
+
 def test_skill_icon_registry_drops_values_without_web_glyphs() -> None:
     registry = extractor._variable_type_registry(
         Path(tempfile.gettempdir()), {"willpower", "combat", "agility"}
@@ -761,6 +810,8 @@ TESTS = (
     test_case_token_literals_are_typed_as_chaos_token_faces,
     test_guarded_case_token_faces_reject_dynamic_results,
     test_icon_variable_type_conflicts_downgrade_to_unknown,
+    test_icon_variable_type_conflicts_downgrade_to_unknown_when_proven_site_is_first,
+    test_icon_variable_type_conflicts_downgrade_across_modules,
     test_skill_icon_registry_drops_values_without_web_glyphs,
     test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
