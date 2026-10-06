@@ -2388,6 +2388,11 @@ def _chaos_token_face_values(library: Path) -> list[str]:
     ]
 
 
+def _skill_icon_values(icon_tags: set[str] | None = None) -> list[str]:
+    icon_tags = _web_icon_tags() if icon_tags is None else icon_tags
+    return [value for value in SKILL_ICON_VALUES if value in icon_tags]
+
+
 def _variable_type_registry(library: Path) -> dict:
     values = _chaos_token_face_values(library)
     return {
@@ -2398,7 +2403,7 @@ def _variable_type_registry(library: Path) -> dict:
         },
         SKILL_ICON_TYPE: {
             "kind": "enum",
-            "values": SKILL_ICON_VALUES,
+            "values": _skill_icon_values(),
             "source": "Arkham/I18n.hs",
         },
     }

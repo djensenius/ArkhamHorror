@@ -396,6 +396,15 @@ run useDynamic dynamicToken = campaignI18n $ story $ do
     )
 
 
+def test_skill_icon_registry_drops_values_without_web_glyphs() -> None:
+    values = extractor._skill_icon_values({"willpower", "combat", "agility"})
+
+    check(
+        values == ["willpower", "combat", "agility"],
+        f"skill icon registry kept a value without a web glyph: {values}",
+    )
+
+
 def test_amount_labels_are_choice_scoped_and_readers_are_ignored() -> None:
     keys = keys_of(
         {
@@ -680,6 +689,7 @@ TESTS = (
     test_token_face_proof_rejects_dynamic_expressions,
     test_case_token_literals_are_typed_as_chaos_token_faces,
     test_icon_variable_type_conflicts_downgrade_to_unknown,
+    test_skill_icon_registry_drops_values_without_web_glyphs,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,
