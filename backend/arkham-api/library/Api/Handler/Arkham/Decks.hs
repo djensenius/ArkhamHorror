@@ -121,8 +121,8 @@ replacementDeckRejection investigatorId mustReplace killedOrInsane takenInvestig
   Just decklist
     | sameInvestigator investigatorId decklist ->
         if mustReplace then Just replacementRequiredMessage else Nothing
-    | decklist.investigator `Set.member` takenInvestigators -> Just "This investigator is already taken"
-    | decklist.investigator `Set.member` killedOrInsane -> Just "That investigator was killed or driven insane"
+    | any (`sameInvestigator` decklist) takenInvestigators -> Just "This investigator is already taken"
+    | any (`sameInvestigator` decklist) killedOrInsane -> Just "That investigator was killed or driven insane"
     | otherwise -> Nothing
  where
   replacementRequiredMessage = "That investigator was killed or driven insane and must be replaced"

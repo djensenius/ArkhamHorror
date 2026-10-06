@@ -85,6 +85,18 @@ spec = do
       replacementDeckRejection agnes False killedOrInsane noTakenInvestigators (Just $ decklistFor roland)
         `shouldBe` Just "That investigator was killed or driven insane"
 
+    it "rejects alternate art for a killed or insane investigator when chosen by another seat" do
+      replacementDeckRejection agnes False killedOrInsane noTakenInvestigators (Just $ decklistFor rolandAlternateArt)
+        `shouldBe` Just "That investigator was killed or driven insane"
+
+    it "rejects alternate art for another seat's investigator" do
+      replacementDeckRejection agnes False mempty (Set.singleton roland) (Just $ decklistFor rolandAlternateArt)
+        `shouldBe` Just "This investigator is already taken"
+
+    it "accepts a genuinely different investigator when alternate-art collisions are blocked" do
+      replacementDeckRejection agnes False killedOrInsane (Set.singleton roland) (Just $ decklistFor daisy)
+        `shouldBe` Nothing
+
     it "accepts a replacement deck for a live untaken investigator" do
       replacementDeckRejection roland True killedOrInsane noTakenInvestigators (Just $ decklistFor daisy)
         `shouldBe` Nothing
