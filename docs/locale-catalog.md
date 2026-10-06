@@ -945,8 +945,8 @@ revision `0.1.23` therefore adds an optional `localeCatalog` object and the
 ([`contracts/README.md`](../contracts/README.md#locale-catalog-discovery)).
 The backend still never holds, proxies or re-encodes catalog content: it
 publishes six values that describe where *this* server's catalog is and what it
-must hash to. Since catalog revision `0.1.50` adds client-visible render roles
-older native clients cannot decode, the capabilities response also raises
+must hash to. Since contract schema revision `0.1.50` adds client-visible render
+roles older native clients cannot decode, the capabilities response also raises
 `nativeClientMinimumRevision` to `0.1.50`; clients pinned below that floor must
 show their normal update-required state instead of fetching the catalog.
 

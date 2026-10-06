@@ -673,6 +673,34 @@ test('mixed variable roles across locales fail closed', () => {
   }
 })
 
+test('unknown variable types sort same-key same-variable records by role', () => {
+  const entryForRole = (role) => ({
+    form: 'message',
+    nodes: [{ type: 'var', name: 'seal', source: 'named', role }],
+    variables: [{ name: 'seal', source: 'named', role }],
+  })
+  const normalized = new Map([
+    ['en', new Map([['label.chooseSeal', entryForRole('text')]])],
+    ['fr', new Map([['label.chooseSeal', entryForRole('iconVariable')]])],
+  ])
+  const backend = { keys: new Map([['label.chooseSeal', { variables: new Map([['seal', 'unknown']]) }]]) }
+
+  const { unknownVariableTypes, variableGaps } = resolveVariablesAndLinks(
+    normalized,
+    'en',
+    new Set(['label.chooseSeal']),
+    backend,
+  )
+
+  assert.deepEqual(variableGaps, [])
+  assert.deepEqual(unknownVariableTypes, [
+    { key: 'label.chooseSeal', variable: 'seal', role: 'iconVariable', type: 'unknown' },
+    { key: 'label.chooseSeal', variable: 'seal', role: 'text', type: 'unknown' },
+  ])
+  assert.equal(normalized.get('en').get('label.chooseSeal').form, 'unsupported')
+  assert.equal(normalized.get('fr').get('label.chooseSeal').form, 'unsupported')
+})
+
 test('translated entries fail closed when the default entry is already unsupported', () => {
   const defaultEntry = { form: 'unsupported', reason: 'link-cycle', detail: 'cycle' }
   const translatedEntry = {

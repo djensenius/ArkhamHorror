@@ -616,7 +616,7 @@ def validate_unknown_variable_types(
                 continue
             found = True
             require(
-                entry["form"] == "unsupported" and entry.get("reason") == "unusable-variable-type",
+                entry["form"] == "unsupported",
                 f"{key} is listed in backend.unknownVariableTypes but {locale} is published as renderable",
             )
         require(found, f"{key} is listed in backend.unknownVariableTypes but no locale publishes it")
@@ -645,9 +645,29 @@ def validate_backend_requirement_self_tests() -> None:
         "backend variable self-test did not scan a supported translation when the default entry was unsupported",
     )
 
+    mixed_reason = {
+        "en": {"label.chooseSeal": {"form": "unsupported", "reason": "link-cycle"}},
+        "fr": {"label.chooseSeal": {"form": "unsupported", "reason": "unusable-variable-type"}},
+    }
+    validate_unknown_variable_types(
+        mixed_reason,
+        {"label.chooseSeal"},
+        emitted_types,
+        [{"key": "label.chooseSeal", "variable": "seal", "role": "iconVariable", "type": "text"}],
+    )
+
+    all_locale_downgrade_failure = {
+        "en": {"label.chooseSeal": {"form": "unsupported", "reason": "unusable-variable-type"}},
+        "fr": {
+            "label.chooseSeal": {
+                "form": "message",
+                "variables": [{"name": "seal", "source": "named", "role": "iconVariable"}],
+            }
+        },
+    }
     try:
         validate_unknown_variable_types(
-            translated_with_bad_icon,
+            all_locale_downgrade_failure,
             {"label.chooseSeal"},
             emitted_types,
             [{"key": "label.chooseSeal", "variable": "seal", "role": "iconVariable", "type": "text"}],
