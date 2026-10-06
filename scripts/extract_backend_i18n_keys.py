@@ -2462,29 +2462,40 @@ def _skill_var_values(library: Path) -> list[str]:
     definition = _top_level_function(tree, source, "skillVar")
     if definition is None:
         return []
+    body = _function_body(definition)
+    if body is None or body.type != "case":
+        return []
 
     values: list[str] = []
-    failed = False
-
-    def visit(node) -> None:
-        nonlocal failed
-        if failed:
-            return
-        application = flatten_application(node, source)
-        if application is not None:
-            name, args = application
-            if name == "withVar" and len(args) >= 2 and string_literal(args[0], source) == "skill":
-                resolved = _known_string_values(args[1], source)
+    for alternative in body.children:
+        if alternative.type != "alternatives":
+            continue
+        for entry in alternative.children:
+            if entry.type != "alternative":
+                continue
+            bodies = _case_alternative_result_nodes(entry)
+            if bodies is None:
+                return []
+            for result in bodies:
+                resolved = _skill_var_result_value(result, source)
                 if resolved is None:
-                    failed = True
-                    return
+                    return []
                 values.extend(resolved)
-                return
-        for child in node.children:
-            visit(child)
+    return list(dict.fromkeys(values)) if values else []
 
-    visit(definition)
-    return [] if failed else list(dict.fromkeys(values))
+
+def _skill_var_result_value(node, source: bytes) -> list[str] | None:
+    application = flatten_application(node, source)
+    if application is None:
+        return None
+    name, args = application
+    if name != "withVar" or len(args) != 3:
+        return None
+    if string_literal(args[0], source) != "skill":
+        return None
+    if args[2].type != "variable" or text_of(args[2], source) != "a":
+        return None
+    return _known_string_values(args[1], source)
 
 
 def _known_string_values(node, source: bytes) -> list[str] | None:
@@ -2540,6 +2551,17 @@ def _known_string_values(node, source: bytes) -> list[str] | None:
     return None
 
 
+def _function_body(function):
+    children = significant_children(function)
+    body = children[-1] if children else None
+    if body is None:
+        return None
+    if body.type == "match":
+        inner = significant_children(body)
+        body = inner[-1] if inner else None
+    return body
+
+
 def _top_level_function(tree, source: bytes, name: str):
     for child in tree.root_node.children:
         if child.type != "declarations":
@@ -2554,8 +2576,11 @@ def _top_level_function(tree, source: bytes, name: str):
 
 
 def _skill_icon_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
+    raw_values = _skill_var_values(library)
     icon_tags = _web_icon_tags() if icon_tags is None else icon_tags
-    return [value for value in _skill_var_values(library) if value in icon_tags]
+    if raw_values != SKILL_ICON_VALUES or any(value not in icon_tags for value in raw_values):
+        return []
+    return [value for value in raw_values if value in icon_tags]
 
 
 def _skill_icon_variable_type(values: list[str]) -> str:
