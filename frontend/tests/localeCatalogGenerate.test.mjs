@@ -633,6 +633,47 @@ test('icon-variable slots reject unproven text values', () => {
   assert.equal(normalized.get('en').get('addToken').reason, 'unusable-variable-type')
 })
 
+test('mixed variable roles across locales fail closed', () => {
+  const iconEntry = {
+    form: 'message',
+    nodes: [{ type: 'var', name: 'token', source: 'named', role: 'iconVariable' }],
+    variables: [{ name: 'token', source: 'named', role: 'iconVariable' }],
+  }
+  const textEntry = {
+    form: 'message',
+    nodes: [{ type: 'var', name: 'token', source: 'named', role: 'text' }],
+    variables: [{ name: 'token', source: 'named', role: 'text' }],
+  }
+  const normalized = new Map([
+    ['en', new Map([['addToken', iconEntry], ['tokenName', textEntry]])],
+    ['fr', new Map([['addToken', textEntry], ['tokenName', iconEntry]])],
+  ])
+  const backend = {
+    keys: new Map([
+      ['addToken', { variables: new Map([['token', 'chaosTokenFace']]) }],
+      ['tokenName', { variables: new Map([['token', 'text']]) }],
+    ]),
+  }
+
+  const { unknownVariableTypes, variableGaps } = resolveVariablesAndLinks(
+    normalized,
+    'en',
+    new Set(['addToken', 'tokenName']),
+    backend,
+  )
+
+  assert.deepEqual(variableGaps, [])
+  assert.deepEqual(unknownVariableTypes, [
+    { key: 'addToken', variable: 'token', role: 'text', type: 'chaosTokenFace' },
+    { key: 'tokenName', variable: 'token', role: 'iconVariable', type: 'text' },
+  ])
+  for (const entries of normalized.values()) {
+    assert.equal(entries.get('addToken').form, 'unsupported')
+    assert.equal(entries.get('tokenName').form, 'unsupported')
+  }
+})
+
+
 test('undeclared icon-variable slots are reported as variable gaps', () => {
   const entry = {
     form: 'message',

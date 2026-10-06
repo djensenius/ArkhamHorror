@@ -560,13 +560,25 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
       const entry = defaultEntries.get(key)
       if (entry === undefined || entry.form === 'unsupported') continue
 
-      const variables = [...entry.variables, ...(entry.linkedVariables ?? [])]
-      const needed = variables.filter(
-        (variable) => variable.source === 'named' && ['text', 'iconVariable'].includes(variable.role),
-      )
-      const missing = needed
-        .filter((variable) => !record.variables.has(variable.name))
-        .map((variable) => variable.name)
+      const localeNeeds = []
+      for (const [locale, entries] of normalized) {
+        const localeEntry = entries.get(key)
+        if (localeEntry === undefined || localeEntry.form === 'unsupported') continue
+        const variables = [...localeEntry.variables, ...(localeEntry.linkedVariables ?? [])]
+        const needed = variables.filter(
+          (variable) => variable.source === 'named' && ['text', 'iconVariable'].includes(variable.role),
+        )
+        if (needed.length > 0) localeNeeds.push({ locale, needed })
+      }
+
+      const missing = [
+        ...new Set(
+          localeNeeds
+            .flatMap(({ needed }) => needed)
+            .filter((variable) => !record.variables.has(variable.name))
+            .map((variable) => variable.name),
+        ),
+      ].sort()
       if (missing.length > 0) {
         variableGaps.push({
           key,
@@ -576,14 +588,16 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
         })
       }
 
-      const unusable = needed
-        .filter((variable) => record.variables.has(variable.name))
-        .map((variable) => ({ variable, type: record.variables.get(variable.name) }))
-        .filter(({ variable, type }) => !(ROLE_ACCEPTS[variable.role] ?? new Set()).has(type))
+      const unusable = localeNeeds.flatMap(({ locale, needed }) =>
+        needed
+          .filter((variable) => record.variables.has(variable.name))
+          .map((variable) => ({ locale, variable, type: record.variables.get(variable.name) }))
+          .filter(({ variable, type }) => !(ROLE_ACCEPTS[variable.role] ?? new Set()).has(type)),
+      )
       if (unusable.length === 0) continue
 
       for (const { variable, type } of unusable) {
-        unknownVariableTypes.set(`${key}:${variable.name}`, {
+        unknownVariableTypes.set(`${key}:${variable.name}:${variable.role}`, {
           key,
           variable: variable.name,
           role: variable.role,
@@ -593,7 +607,7 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
       // Every locale, not just the default: the entry is unrenderable because
       // of what the backend sends, which does not vary by language.
       const detail = unusable
-        .map(({ variable, type }) => `${variable.name} is ${type} for a ${variable.role} slot`)
+        .map(({ locale, variable, type }) => `${locale}: ${variable.name} is ${type} for a ${variable.role} slot`)
         .join('; ')
       for (const entries of normalized.values()) {
         const localeEntry = entries.get(key)
