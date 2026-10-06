@@ -1462,6 +1462,7 @@ def enclosing_scope(
     context=None,
     stop=None,
     chaos_token_face_tags: frozenset[str] = frozenset(),
+    skill_icon_variable_type: str = SKILL_ICON_TYPE,
 ):
     """Walks ancestors, collecting the scope stack in force at `node`."""
     effects: list[dict] = []
@@ -1485,7 +1486,14 @@ def enclosing_scope(
                 else:
                     effects.append({"name": name, "args": args})
                     _collect_variables(
-                        name, args, source, variables, index, module, chaos_token_face_tags
+                        name,
+                        args,
+                        source,
+                        variables,
+                        index,
+                        module,
+                        chaos_token_face_tags,
+                        skill_icon_variable_type,
                     )
         elif parent.type == "infix":
             parts = infix_parts(parent, source)
@@ -1498,13 +1506,27 @@ def enclosing_scope(
                             name, args = application
                             effects.append({"name": name, "args": args})
                             _collect_variables(
-                                name, args, source, variables, index, module, chaos_token_face_tags
+                                name,
+                                args,
+                                source,
+                                variables,
+                                index,
+                                module,
+                                chaos_token_face_tags,
+                                skill_icon_variable_type,
                             )
                         elif left.type == "variable":
                             name = text_of(left, source)
                             effects.append({"name": name, "args": []})
                             _collect_variables(
-                                name, [], source, variables, index, module, chaos_token_face_tags
+                                name,
+                                [],
+                                source,
+                                variables,
+                                index,
+                                module,
+                                chaos_token_face_tags,
+                                skill_icon_variable_type,
                             )
         child = parent
         parent = parent.parent
@@ -1688,6 +1710,7 @@ def _collect_variables(
     index=None,
     module: str | None = None,
     chaos_token_face_tags: frozenset[str] = frozenset(),
+    skill_icon_variable_type: str = SKILL_ICON_TYPE,
 ) -> None:
     # `withVars ["xp" .= xp, "shelterValue" .= n]` and `withVar "name" value`
     # bind arbitrary names (Arkham/I18n.hs), and they are how most resolutions
@@ -1711,7 +1734,7 @@ def _collect_variables(
             )
         return
 
-    binder = VARIABLE_BINDERS.get(name)
+    binder = _variable_binder(name, skill_icon_variable_type)
     if binder is not None:
         for variable, kind in binder:
             variables[variable] = kind
@@ -1721,6 +1744,12 @@ def _collect_variables(
         variable = string_literal(args[0], source)
         if variable is not None:
             variables[variable] = named
+
+
+def _variable_binder(name: str, skill_icon_variable_type: str) -> list[tuple[str, str]] | None:
+    if name == "skillVar":
+        return [("skill", skill_icon_variable_type)]
+    return VARIABLE_BINDERS.get(name)
 
 
 def _pair_bindings(node, source: bytes) -> list[tuple[str, object]]:
@@ -1922,6 +1951,7 @@ def extract_module(
     library: Path | None = None,
     context=None,
     chaos_token_face_tags: frozenset[str] = frozenset(),
+    skill_icon_variable_type: str = SKILL_ICON_TYPE,
 ):
     emitted: dict[str, dict] = {}
     dynamic: list[dict] = []
@@ -2013,6 +2043,7 @@ def extract_module(
             context,
             helper["holder"],
             chaos_token_face_tags,
+            skill_icon_variable_type,
         )
         if inner_dynamic is not None:
             record_dynamic(node, inner_dynamic, name)
@@ -2054,6 +2085,7 @@ def extract_module(
                 module,
                 context,
                 chaos_token_face_tags=chaos_token_face_tags,
+                skill_icon_variable_type=skill_icon_variable_type,
             )
             if call_dynamic is not None:
                 record_dynamic(call_node, call_dynamic, name)
@@ -2179,6 +2211,7 @@ def extract_module(
             module,
             context,
             chaos_token_face_tags=chaos_token_face_tags,
+            skill_icon_variable_type=skill_icon_variable_type,
         )
         if dynamic_reason is not None:
             record_dynamic(node, dynamic_reason, name)
@@ -2299,6 +2332,7 @@ def collect_parameter_values(
     requests,
     index: ModuleIndex,
     chaos_token_face_tags: frozenset[str] = frozenset(),
+    skill_icon_variable_type: str = SKILL_ICON_TYPE,
 ) -> dict:
     """Literal arguments every call site in the codebase passes, per request.
 
@@ -2351,6 +2385,7 @@ def collect_parameter_values(
                                 index,
                                 module,
                                 chaos_token_face_tags=chaos_token_face_tags,
+                                skill_icon_variable_type=skill_icon_variable_type,
                             )
                             if dynamic_reason is None:
                                 _merge_variable_types(variables[request], site_variables)
@@ -2421,8 +2456,13 @@ def _skill_icon_values(icon_tags: set[str] | None = None) -> list[str]:
     return [value for value in SKILL_ICON_VALUES if value in icon_tags]
 
 
-def _variable_type_registry(library: Path) -> dict:
+def _skill_icon_variable_type(values: list[str]) -> str:
+    return SKILL_ICON_TYPE if values == SKILL_ICON_VALUES else "text"
+
+
+def _variable_type_registry(library: Path, icon_tags: set[str] | None = None) -> dict:
     values = _chaos_token_face_values(library)
+    skill_values = _skill_icon_values(icon_tags)
     return {
         CHAOS_TOKEN_FACE_TYPE: {
             "kind": "enum",
@@ -2431,19 +2471,26 @@ def _variable_type_registry(library: Path) -> dict:
         },
         SKILL_ICON_TYPE: {
             "kind": "enum",
-            "values": _skill_icon_values(),
+            "values": skill_values,
             "source": "Arkham/I18n.hs",
         },
     }
 
 
-def build_artifact(dynamic_report: Path | None = None, library: Path | None = None) -> dict:
+def build_artifact(
+    dynamic_report: Path | None = None,
+    library: Path | None = None,
+    icon_tags: set[str] | None = None,
+) -> dict:
     """Reads every module under `library` (the backend by default) and returns
     the registry. Tests pass a synthetic library to exercise one rule at a
     time; production always reads the real thing."""
     library = library or LIBRARY
-    variable_types = _variable_type_registry(library)
+    variable_types = _variable_type_registry(library, icon_tags)
     chaos_token_face_tags = frozenset(variable_types[CHAOS_TOKEN_FACE_TYPE]["values"])
+    skill_icon_variable_type = _skill_icon_variable_type(
+        variable_types[SKILL_ICON_TYPE]["values"]
+    )
     files = sorted(library.rglob("*.hs"))
     index = ModuleIndex()
     parsed = []
@@ -2488,12 +2535,19 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
             library,
             context,
             chaos_token_face_tags,
+            skill_icon_variable_type,
         )
 
     # Pass two answers those requests from every call site in the codebase and
     # re-reads only the modules that asked.
     if context.requests:
-        values = collect_parameter_values(parsed, context.requests, index, chaos_token_face_tags)
+        values = collect_parameter_values(
+            parsed,
+            context.requests,
+            index,
+            chaos_token_face_tags,
+            skill_icon_variable_type,
+        )
         answered = ParameterContext(values)
         for path, source, tree, module in parsed:
             if module not in context.requested_modules or module in DSL_MODULES:
@@ -2508,6 +2562,7 @@ def build_artifact(dynamic_report: Path | None = None, library: Path | None = No
                 library,
                 answered,
                 chaos_token_face_tags,
+                skill_icon_variable_type,
             )
 
     emitted: dict[str, dict] = {}

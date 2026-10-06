@@ -33,7 +33,7 @@ def check(condition: bool, message: str) -> None:
         FAILURES.append(message)
 
 
-def registry_of(modules: dict[str, str]) -> dict:
+def registry_of(modules: dict[str, str], icon_tags: set[str] | None = None) -> dict:
     """Runs the production extractor over a synthetic module set."""
     with tempfile.TemporaryDirectory() as directory:
         library = Path(directory)
@@ -41,7 +41,7 @@ def registry_of(modules: dict[str, str]) -> dict:
             path = library / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(text, encoding="utf-8")
-        return extractor.build_artifact(library=library)
+        return extractor.build_artifact(library=library, icon_tags=icon_tags)
 
 
 def keys_of(modules: dict[str, str]) -> set[str]:
@@ -52,8 +52,10 @@ def variables_of(modules: dict[str, str], key: str) -> set[str]:
     return set(variable_types_of(modules, key))
 
 
-def variable_types_of(modules: dict[str, str], key: str) -> dict[str, str]:
-    for entry in registry_of(modules)["keys"]:
+def variable_types_of(
+    modules: dict[str, str], key: str, icon_tags: set[str] | None = None
+) -> dict[str, str]:
+    for entry in registry_of(modules, icon_tags)["keys"]:
         if entry["key"] == key:
             return {variable["name"]: variable["type"] for variable in entry["variables"]}
     return {}
@@ -442,11 +444,34 @@ run useDynamic dynamicToken = campaignI18n $ story $ do
 
 
 def test_skill_icon_registry_drops_values_without_web_glyphs() -> None:
-    values = extractor._skill_icon_values({"willpower", "combat", "agility"})
+    registry = extractor._variable_type_registry(
+        Path(tempfile.gettempdir()), {"willpower", "combat", "agility"}
+    )
+    values = registry[extractor.SKILL_ICON_TYPE]["values"]
 
     check(
         values == ["willpower", "combat", "agility"],
         f"skill icon registry kept a value without a web glyph: {values}",
+    )
+
+
+def test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete() -> None:
+    variables = variable_types_of(
+        {
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "combat", "agility"},
+    )
+    check(
+        variables.get("skill") == "text",
+        f"skillVar did not fall back to text with an incomplete icon registry: {variables}",
     )
 
 
@@ -737,6 +762,7 @@ TESTS = (
     test_guarded_case_token_faces_reject_dynamic_results,
     test_icon_variable_type_conflicts_downgrade_to_unknown,
     test_skill_icon_registry_drops_values_without_web_glyphs,
+    test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,
