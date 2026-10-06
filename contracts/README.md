@@ -37,7 +37,8 @@ constructor.
   additive capability identifiers.
 - Clients compare the three numeric revision components, never the strings
   lexically. They ignore unknown capability identifiers and disable optional
-  behavior when its identifier is absent.
+  behavior when its identifier is absent. A client whose pinned revision is
+  below `nativeClientMinimumRevision` must show its update-required state.
 - A `404` means the server predates negotiation. Clients may offer an explicitly
   labeled conservative compatibility mode using `/site-settings`; they must not
   infer capabilities by probing mutation routes.

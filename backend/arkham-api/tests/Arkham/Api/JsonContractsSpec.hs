@@ -1777,10 +1777,10 @@ capabilitiesFor environment = case runtimeCapabilities environment of
   Left message -> fail $ "settings failed to parse: " <> Text.unpack message
   Right response -> pure response
 
-{- | Strip exactly the two additive members the locale catalog contributes:
-the @localeCatalog@ object and its capability identifier. Everything else,
-except governed revision and compatibility-floor changes normalized by
-@contracts/manifest.json@, must be untouched.
+{- | Strip exactly the two additive members the locale catalog contributes from
+the current advertised response. The current revision and compatibility floor
+remain untouched here; the 0.1.22 baseline comparison has its own governed
+normalizer in @contracts/manifest.json@.
 -}
 withoutLocaleCatalog :: Aeson.Value -> Aeson.Value
 withoutLocaleCatalog = \case
