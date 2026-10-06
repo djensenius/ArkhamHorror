@@ -758,10 +758,10 @@ spec = do
     it "bounds the native-client compatibility floor numerically" do
       baselineFloor <- case textField "nativeClientMinimumRevision" legacy.baselineResponse of
         Just value -> pure value
-        Nothing -> expectationFailure "legacy baseline has no nativeClientMinimumRevision"
+        Nothing -> fail "legacy baseline has no nativeClientMinimumRevision"
       response <- case responseFor [] of
         Right value -> pure value
-        Left message -> expectationFailure $ "capabilities failed: " <> toString message
+        Left message -> fail $ "capabilities failed: " <> toString message
       floorInRange response.nativeClientMinimumRevision response.schemaRevision baselineFloor `shouldBe` True
       floorInRange "9.9.9" response.schemaRevision baselineFloor `shouldBe` False
       floorInRange "0.0.0" response.schemaRevision baselineFloor `shouldBe` False
