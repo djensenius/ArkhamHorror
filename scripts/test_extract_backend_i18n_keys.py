@@ -475,13 +475,13 @@ def test_icon_variable_type_conflicts_downgrade_across_modules() -> None:
 
 import Test.Helpers
 
-run = campaignI18n $ story $ withVar "token" (String "skull") $ p "addToken"
+run dynamicToken = campaignI18n $ story $ withVar "token" (String dynamicToken) $ p "addToken"
 """,
             "Test/B.hs": """module Test.B where
 
 import Test.Helpers
 
-run dynamicToken = campaignI18n $ story $ withVar "token" (String dynamicToken) $ p "addToken"
+run = campaignI18n $ story $ withVar "token" (String "skull") $ p "addToken"
 """,
         },
         "standalone.testCampaign.addToken",
