@@ -673,6 +673,34 @@ test('mixed variable roles across locales fail closed', () => {
   }
 })
 
+test('translated entries fail closed when the default entry is already unsupported', () => {
+  const defaultEntry = { form: 'unsupported', reason: 'link-cycle', detail: 'cycle' }
+  const translatedEntry = {
+    form: 'message',
+    nodes: [{ type: 'var', name: 'seal', source: 'named', role: 'iconVariable' }],
+    variables: [{ name: 'seal', source: 'named', role: 'iconVariable' }],
+  }
+  const normalized = new Map([
+    ['en', new Map([['label.chooseSeal', defaultEntry]])],
+    ['fr', new Map([['label.chooseSeal', translatedEntry]])],
+  ])
+  const backend = { keys: new Map([['label.chooseSeal', { variables: new Map([['seal', 'text']]) }]]) }
+
+  const { unknownVariableTypes, variableGaps } = resolveVariablesAndLinks(
+    normalized,
+    'en',
+    new Set(['label.chooseSeal']),
+    backend,
+  )
+
+  assert.deepEqual(variableGaps, [])
+  assert.deepEqual(unknownVariableTypes, [
+    { key: 'label.chooseSeal', variable: 'seal', role: 'iconVariable', type: 'text' },
+  ])
+  assert.equal(normalized.get('en').get('label.chooseSeal').reason, 'link-cycle')
+  assert.equal(normalized.get('fr').get('label.chooseSeal').form, 'unsupported')
+  assert.equal(normalized.get('fr').get('label.chooseSeal').reason, 'unusable-variable-type')
+})
 
 test('undeclared icon-variable slots are reported as variable gaps', () => {
   const entry = {

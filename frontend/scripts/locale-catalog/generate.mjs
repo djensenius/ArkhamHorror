@@ -557,8 +557,6 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
     for (const key of [...requiredKeys].sort()) {
       const record = backend.keys.get(key)
       if (record === undefined) continue
-      const entry = defaultEntries.get(key)
-      if (entry === undefined || entry.form === 'unsupported') continue
 
       const localeNeeds = []
       for (const [locale, entries] of normalized) {
@@ -570,6 +568,7 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
         )
         if (needed.length > 0) localeNeeds.push({ locale, needed })
       }
+      if (localeNeeds.length === 0) continue
 
       const missing = [
         ...new Set(
@@ -629,7 +628,7 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
   return {
     variableGaps,
     unknownVariableTypes: [...unknownVariableTypes.values()].sort((a, b) =>
-      a.key === b.key ? (a.variable < b.variable ? -1 : 1) : a.key < b.key ? -1 : 1,
+      a.key.localeCompare(b.key) || a.variable.localeCompare(b.variable) || a.role.localeCompare(b.role),
     ),
   }
 }
