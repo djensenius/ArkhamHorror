@@ -903,6 +903,22 @@ run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey repla
     )
 
 
+def test_replaced_skill_key_is_typed_inside_the_canonical_skill_type_key_module() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N
+            + '\nrun skillType replaced = withI18n\n  $ skillVar skillType\n  $ keyVar "replacedSkill" (skillTypeKey replaced)\n  $ labeled\' "ignoreUseSkillTypeInsteadOf"\n',
+        },
+        "label.ignoreUseSkillTypeInsteadOf",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("replacedSkill") == extractor.SKILL_ICON_TYPE,
+        f"same-module skillTypeKey call was treated as a shadow: {variables}",
+    )
+
+
 def test_seal_key_is_typed_as_a_seal_icon_when_seal_kind_is_proven() -> None:
     variables = variable_types_of(
         {
@@ -1872,6 +1888,7 @@ TESTS = (
     test_skill_icon_var_falls_back_to_text_when_variable_name_is_not_literal,
     test_skill_icon_var_falls_back_to_text_when_definition_has_a_guard,
     test_replaced_skill_key_is_typed_as_a_skill_icon_when_skill_type_key_is_proven,
+    test_replaced_skill_key_is_typed_inside_the_canonical_skill_type_key_module,
     test_seal_key_is_typed_as_a_seal_icon_when_seal_kind_is_proven,
     test_discard_matching_icons_is_typed_from_literal_skill_icon_call_sites,
     test_discard_matching_icons_is_typed_from_a_qualified_skill_icon_var_call_site,

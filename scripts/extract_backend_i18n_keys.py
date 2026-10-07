@@ -1610,6 +1610,17 @@ def _icon_type_from_map(icon_variable_types, key: str) -> str:
     return icon_variable_types if key == "skillVar" else "text"
 
 
+def _lexical_binding(node, name: str, source: bytes):
+    ancestor = node.parent
+    while ancestor is not None:
+        for candidate in _descendant_binds(ancestor, name, source):
+            scope = lexical_scope_root(candidate)
+            if scope is not None and _contains(scope, node):
+                return candidate
+        ancestor = ancestor.parent
+    return None
+
+
 def _definition_resolves_to(
     index,
     module: str | None,
@@ -1627,7 +1638,7 @@ def _definition_resolves_to(
             unqualified == target_name
             and index.qualified_defining_modules(module, qualifier, target_name) == [target_module]
         )
-    if name != target_name or local_binding(node, target_name, source) is not None:
+    if name != target_name or _lexical_binding(node, target_name, source) is not None:
         return False
     return index.defining_modules(module, target_name) == [target_module]
 
@@ -1656,13 +1667,11 @@ def _is_skill_type_key_value(node, source: bytes, index=None, module: str | None
     if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
         return _is_skill_type_key_value(significant_children(node)[0], source, index, module)
     application = flatten_application(node, source)
-    if application is None or application[0] != "skillTypeKey" or len(application[1]) != 1:
+    if application is None or len(application[1]) != 1:
         return False
-    if index is None or module is None:
-        return False
-    if local_binding(node, "skillTypeKey", source) is not None:
-        return False
-    return index.defining_modules(module, "skillTypeKey") == ["Arkham.Aspect"]
+    return _definition_resolves_to(
+        index, module, application[0], "Arkham.Aspect", "skillTypeKey", source, node
+    )
 
 
 def _is_edge_of_the_earth_seal_value(node, source: bytes) -> bool:

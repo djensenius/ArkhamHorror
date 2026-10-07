@@ -609,10 +609,11 @@ test('label.test-style skill icons keep an explicit icon-variable shape', async 
   }
 })
 
-test('proved skillIconVar and seal labels are supported icon-variable entries', async () => {
+test('proved skillIconVar, replacedSkill, and seal labels are supported icon-variable entries', async () => {
   const built = await buildCatalog({})
   const expected = new Map([
     ['label.discardCardsWithMatchingIcons', ['skillIcon']],
+    ['label.ignoreUseSkillTypeInsteadOf', ['skill', 'replacedSkill']],
     ['label.chooseInvestigatorToTakeSeal', ['seal']],
   ])
 
@@ -637,23 +638,6 @@ test('proved skillIconVar and seal labels are supported icon-variable entries', 
       `${key} must not be reported as an unusable variable type`,
     )
   }
-
-  const replacedSkill = chunkFor(
-    built.files,
-    built.manifest,
-    built.manifest.defaultLocale,
-    'label.ignoreUseSkillTypeInsteadOf',
-  )?.entries['label.ignoreUseSkillTypeInsteadOf']
-  assert.equal(replacedSkill?.form, 'unsupported')
-  assert.ok(
-    built.manifest.backend.unknownVariableTypes.some(
-      (gap) =>
-        gap.key === 'label.ignoreUseSkillTypeInsteadOf' &&
-        gap.variable === 'replacedSkill' &&
-        gap.type === 'text',
-    ),
-    'unproven replacedSkill should fail closed as an unusable text variable',
-  )
 
   const chooseSkillIcon = chunkFor(
     built.files,
