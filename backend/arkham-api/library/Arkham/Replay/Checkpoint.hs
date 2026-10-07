@@ -41,13 +41,11 @@ import Arkham.Json (aesonOptions)
 import Arkham.Message (Message)
 import Arkham.Prelude
 import Arkham.Question (
-  DestinyDrawing (..),
   Question (..),
   ReadChoices (..),
  )
 import Arkham.Question.AnswerValidation
 import Arkham.Replay.BuildIdentity
-import Arkham.Tarot (TarotCard (..), TarotCardFacing (Reversed))
 import Base.Api.Types.Capabilities qualified as Capabilities
 import Control.Monad.Fail (fail)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -508,22 +506,6 @@ replayAnswerMatchesPrompt answer prompt = case answer of
   RejoinInvestigatorAnswer {} -> isContinueCampaignPrompt $ stripPromptWrappers prompt
   ApplyOverlayAnswer {} -> isContinueCampaignPrompt $ stripPromptWrappers prompt
   JoinCampaignAnswer -> isContinueCampaignPrompt $ stripPromptWrappers prompt
-
-replayDestinyAnswerMatches :: [DestinyDrawing] -> [DestinyDrawing] -> Bool
-replayDestinyAnswerMatches drawings answerDrawings =
-  length drawings == length answerDrawings
-    && and (zipWith sameDrawing drawings answerDrawings)
-    && reversedCount == (length drawings + 1) `div` 2
- where
-  sameDrawing
-    (DestinyDrawing expectedScope (TarotCard _ expectedArcana))
-    (DestinyDrawing actualScope (TarotCard _ actualArcana)) =
-      expectedScope == actualScope && expectedArcana == actualArcana
-  reversedCount =
-    length
-      [ ()
-      | DestinyDrawing _ (TarotCard Reversed _) <- answerDrawings
-      ]
 
 replayOrderedChoicesMatch :: [Int] -> Question message -> Bool
 replayOrderedChoicesMatch choices = \case

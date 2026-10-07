@@ -5,6 +5,7 @@ import Arkham.Campaign.Types (campaignStep)
 import Arkham.CampaignStep qualified as CS
 import Arkham.Classes.HasGame (getGame)
 import Arkham.Difficulty
+import Arkham.Tarot (TarotCard (..), TarotCardArcana (..), TarotCardFacing (..))
 import Arkham.Token (Token (Clue, Resource))
 import Data.UUID (fromWords64)
 import Entity.Answer
@@ -305,3 +306,79 @@ spec = do
         , answer minBound
         ]
       expectUnhandled "Wrong question type" noPromptGame pid (answer 1)
+
+  describe "PickDestinyAnswer" do
+    let
+      expectUnhandled expected game pid candidate =
+        liftIO (handleAnswerPure game pid candidate) >>= \case
+          Unhandled reason -> reason `shouldBe` expected
+          Handled messages -> expectationFailure $ "illegal answer emitted messages: " <> show messages
+
+      expectHandled expected game pid candidate =
+        liftIO (handleAnswerPure game pid candidate) >>= \case
+          Unhandled reason -> expectationFailure $ "legal answer rejected: " <> show reason
+          Handled messages -> messages `shouldBe` expected
+
+    it "accepts a matching destiny selection with the required reversed count" . gameTest $ \self -> do
+      pid <- getPlayer (toId self)
+      baseGame <- getGame
+      let
+        drawings =
+          [ DestinyDrawing "first" $ TarotCard Upright TheFool0
+          , DestinyDrawing "second" $ TarotCard Upright TheMagicianI
+          , DestinyDrawing "third" $ TarotCard Upright TheHighPriestessII
+          ]
+        answerDrawings =
+          [ DestinyDrawing "first" $ TarotCard Reversed TheFool0
+          , DestinyDrawing "second" $ TarotCard Reversed TheMagicianI
+          , DestinyDrawing "third" $ TarotCard Upright TheHighPriestessII
+          ]
+        promptedGame = baseGame {gameQuestion = singletonMap pid (PickDestiny drawings)}
+      expectHandled
+        [ SetDestiny
+            $ mapFromList
+              [ ("first", TarotCard Reversed TheFool0)
+              , ("second", TarotCard Reversed TheMagicianI)
+              , ("third", TarotCard Upright TheHighPriestessII)
+              ]
+        ]
+        promptedGame
+        pid
+        (PickDestinyAnswer answerDrawings)
+
+    it "rejects destiny selections that do not match the pending prompt" . gameTest $ \self -> do
+      pid <- getPlayer (toId self)
+      baseGame <- getGame
+      let
+        drawings =
+          [ DestinyDrawing "first" $ TarotCard Upright TheFool0
+          , DestinyDrawing "second" $ TarotCard Upright TheMagicianI
+          , DestinyDrawing "third" $ TarotCard Upright TheHighPriestessII
+          ]
+        matchingAnswer =
+          [ DestinyDrawing "first" $ TarotCard Reversed TheFool0
+          , DestinyDrawing "second" $ TarotCard Reversed TheMagicianI
+          , DestinyDrawing "third" $ TarotCard Upright TheHighPriestessII
+          ]
+        promptedGame = baseGame {gameQuestion = singletonMap pid (PickDestiny drawings)}
+        noPromptGame = baseGame {gameQuestion = mempty}
+      traverse_
+        (expectUnhandled "Illegal destiny selection" promptedGame pid)
+        [ PickDestinyAnswer $ take 2 matchingAnswer
+        , PickDestinyAnswer
+            [ DestinyDrawing "first" $ TarotCard Reversed TheFool0
+            , DestinyDrawing "second" $ TarotCard Reversed TheEmpressIII
+            , DestinyDrawing "third" $ TarotCard Upright TheHighPriestessII
+            ]
+        , PickDestinyAnswer
+            [ DestinyDrawing "first" $ TarotCard Reversed TheFool0
+            , DestinyDrawing "elsewhere" $ TarotCard Reversed TheMagicianI
+            , DestinyDrawing "third" $ TarotCard Upright TheHighPriestessII
+            ]
+        , PickDestinyAnswer
+            [ DestinyDrawing "first" $ TarotCard Reversed TheFool0
+            , DestinyDrawing "second" $ TarotCard Upright TheMagicianI
+            , DestinyDrawing "third" $ TarotCard Upright TheHighPriestessII
+            ]
+        ]
+      expectUnhandled "Wrong question type" noPromptGame pid (PickDestinyAnswer matchingAnswer)

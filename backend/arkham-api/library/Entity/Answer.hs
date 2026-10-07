@@ -606,8 +606,14 @@ handleAnswerPure game@Game {..} playerId = \case
           Just (CS.ContinueCampaignStep {}) -> handled [NextScenarioCampaignStep (Just k)]
           _ -> handled []
       _ -> unhandled "Wrong question type"
-  PickDestinyAnswer choices -> do
-    handled [SetDestiny $ Map.fromList $ map (\(DestinyDrawing scope card) -> (scope, card)) choices]
+  PickDestinyAnswer choices ->
+    case Map.lookup playerId gameQuestion of
+      Just prompt
+        | PickDestiny drawings <- stripPromptWrappers prompt
+        , replayDestinyAnswerMatches drawings choices ->
+            handled [SetDestiny $ Map.fromList $ map (\(DestinyDrawing scope card) -> (scope, card)) choices]
+        | PickDestiny {} <- stripPromptWrappers prompt -> unhandled "Illegal destiny selection"
+      _ -> unhandled "Wrong question type"
   ExchangeAmountsAnswer source fromInvestigator toInvestigator token n -> do
     case Map.lookup playerId gameQuestion of
       Just prompt
