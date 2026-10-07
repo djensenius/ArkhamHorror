@@ -12,7 +12,7 @@ import Arkham.Difficulty
 import Arkham.EncounterSet qualified as Set
 import Arkham.Enemy.CardDefs.TheDreamEaters.DarkSideOfTheMoon qualified as Enemies
 import Arkham.Exception
-import Arkham.Helpers.Campaign (getCampaignStoryCard)
+import Arkham.Helpers.Campaign (getMaybeCampaignStoryCard)
 import Arkham.Helpers.FlavorText (additionalRules, li, setup, ul)
 import Arkham.Helpers.Query (getLead)
 import Arkham.Helpers.Scenario
@@ -84,7 +84,8 @@ instance RunMessage DarkSideOfTheMoon where
       pure s
     PreScenarioSetup -> do
       whenHasRecord RandolphWasCaptured do
-        getCampaignStoryCard Assets.randolphCarterExpertDreamer >>= push . SetAsideCards . pure . toCard
+        mRandolph <- getMaybeCampaignStoryCard Assets.randolphCarterExpertDreamer
+        for_ mRandolph $ push . SetAsideCards . pure . toCard
 
       story $ i18nWithHeading "theDreamEaters.darkSideOfTheMoon.intro"
       captured <- selectAny $ investigatorWithRecord WasCaptured
