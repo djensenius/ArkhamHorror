@@ -1621,6 +1621,8 @@ def _is_skill_type_key_value(node, source: bytes, index=None, module: str | None
         return False
     if index is None or module is None:
         return False
+    if local_binding(node, "skillTypeKey", source) is not None:
+        return False
     return index.defining_modules(module, "skillTypeKey") == ["Arkham.Aspect"]
 
 

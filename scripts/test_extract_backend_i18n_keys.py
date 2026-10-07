@@ -1187,6 +1187,56 @@ run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey repla
     )
 
 
+def test_replaced_skill_falls_back_to_text_for_a_let_bound_skill_type_key_shadow() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Aspect
+import Test.Helpers
+
+run replaced = campaignI18n $ story $ do
+  let skillTypeKey _ = "willpower"
+  keyVar "replacedSkill" (skillTypeKey replaced) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("replacedSkill") == "text",
+        f"replacedSkill did not fall back to text for a let-bound skillTypeKey shadow: {variables}",
+    )
+
+
+def test_replaced_skill_falls_back_to_text_for_a_where_bound_skill_type_key_shadow() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Aspect
+import Test.Helpers
+
+run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey replaced) $ labeled' "test"
+ where
+  skillTypeKey _ = "willpower"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("replacedSkill") == "text",
+        f"replacedSkill did not fall back to text for a where-bound skillTypeKey shadow: {variables}",
+    )
+
+
 def test_replaced_skill_falls_back_to_text_when_a_glyph_is_missing() -> None:
     variables = variable_types_of(
         {
@@ -1680,6 +1730,8 @@ TESTS = (
     test_replaced_skill_falls_back_to_text_for_an_extra_wildcard_skill_type_key_arm,
     test_replaced_skill_falls_back_to_text_for_a_computed_skill_type_key_arm,
     test_replaced_skill_falls_back_to_text_for_a_locally_defined_skill_type_key,
+    test_replaced_skill_falls_back_to_text_for_a_let_bound_skill_type_key_shadow,
+    test_replaced_skill_falls_back_to_text_for_a_where_bound_skill_type_key_shadow,
     test_replaced_skill_falls_back_to_text_when_a_glyph_is_missing,
     test_replaced_skill_keyvar_with_an_unproven_value_stays_text,
     test_seal_falls_back_to_text_when_a_glyph_is_missing,
