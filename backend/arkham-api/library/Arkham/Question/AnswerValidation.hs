@@ -3,6 +3,7 @@ module Arkham.Question.AnswerValidation (
   replayAmountsValid,
   replayPaymentAmountsValid,
   replayExchangeAmountsValid,
+  replayDestinyAnswerMatches,
   replayExchangeAmountWithinBalances,
   replayAmountAllocationValid,
   amountTargetSatisfied,
@@ -10,8 +11,9 @@ module Arkham.Question.AnswerValidation (
 
 import Arkham.Id (InvestigatorId)
 import Arkham.Prelude
-import Arkham.Question (AmountChoice (..), AmountTarget (..), PaymentAmountChoice (..), Question (..))
+import Arkham.Question (AmountChoice (..), AmountTarget (..), DestinyDrawing (..), PaymentAmountChoice (..), Question (..))
 import Arkham.Source (Source)
+import Arkham.Tarot (TarotCard (..), TarotCardFacing (Reversed))
 import Arkham.Token (Token)
 import Data.Map.Strict qualified as Map
 import Data.UUID qualified as UUID
@@ -67,6 +69,22 @@ replayExchangeAmountsValid answerSource answerFrom answerTo answerToken amount p
             answerTo
             amount
     _ -> False
+
+replayDestinyAnswerMatches :: [DestinyDrawing] -> [DestinyDrawing] -> Bool
+replayDestinyAnswerMatches drawings answerDrawings =
+  length drawings == length answerDrawings
+    && and (zipWith sameDrawing drawings answerDrawings)
+    && reversedCount == (length drawings + 1) `div` 2
+ where
+  sameDrawing
+    (DestinyDrawing expectedScope (TarotCard _ expectedArcana))
+    (DestinyDrawing actualScope (TarotCard _ actualArcana)) =
+      expectedScope == actualScope && expectedArcana == actualArcana
+  reversedCount =
+    length
+      [ ()
+      | DestinyDrawing _ (TarotCard Reversed _) <- answerDrawings
+      ]
 
 replayExchangeAmountWithinBalances
   :: InvestigatorId
