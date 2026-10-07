@@ -527,6 +527,23 @@ class ModuleIndex:
             return [module]
         return self._providers_of(module, name, "definitions")
 
+    def qualified_defining_modules(self, module: str, qualifier: str, name: str) -> list[str]:
+        """Where a qualified top-level name used in `module` is defined."""
+        record = self.by_module.get(module)
+        if record is None:
+            return []
+        providers: list[str] = []
+        for entry in record["imports"]:
+            alias = entry["alias"]
+            if alias != qualifier and not (alias is None and entry["module"] == qualifier):
+                continue
+            if entry["only"] is not None and name not in entry["only"]:
+                continue
+            if entry["hiding"] is not None and name in entry["hiding"]:
+                continue
+            providers.extend(self._exporters_of(entry["module"], name, "definitions"))
+        return list(dict.fromkeys(providers))
+
     def resolve_alias(
         self,
         module: str,
@@ -1593,6 +1610,28 @@ def _icon_type_from_map(icon_variable_types, key: str) -> str:
     return icon_variable_types if key == "skillVar" else "text"
 
 
+def _definition_resolves_to(
+    index,
+    module: str | None,
+    name: str,
+    target_module: str,
+    target_name: str,
+    source: bytes,
+    node,
+) -> bool:
+    if index is None or module is None:
+        return False
+    qualifier, separator, unqualified = name.rpartition(".")
+    if separator:
+        return (
+            unqualified == target_name
+            and index.qualified_defining_modules(module, qualifier, target_name) == [target_module]
+        )
+    if name != target_name or local_binding(node, target_name, source) is not None:
+        return False
+    return index.defining_modules(module, target_name) == [target_module]
+
+
 def _variable_type(
     variable: str,
     value,
@@ -1771,16 +1810,21 @@ def _specialized_variables_for_key(
     source: bytes | None = None,
     skill_icon_literal_values: dict[str, str] | None = None,
     proof_nodes: list[object] | None = None,
+    index=None,
+    module: str | None = None,
 ) -> dict[str, str]:
     if not isinstance(icon_variable_types, dict) or key != SKILL_ICON_DISCARD_KEY:
         return variables
     specialized = icon_variable_types.get("discardCardsWithMatchingIcons", "text")
-    if specialized == "text" or variables.get("skillIcon") not in {"text", "unknown"}:
+    current = variables.get("skillIcon")
+    if specialized == "text" or current not in {None, "text", "unknown"}:
         return variables
     if node is None or source is None or skill_icon_literal_values is None:
         return variables
     for proof_node in [node, *(proof_nodes or [])]:
-        site_value = _enclosing_skill_icon_var_value(proof_node, source, skill_icon_literal_values)
+        site_value = _enclosing_skill_icon_var_value(
+            proof_node, source, skill_icon_literal_values, index, module
+        )
         if site_value is None:
             return variables
     adjusted = dict(variables)
@@ -2284,6 +2328,8 @@ def extract_module(
                         source,
                         skill_icon_literal_values,
                         proof_nodes,
+                        index,
+                        module,
                     )
                     _merge_variable_types(entry["variables"], scoped_variables)
                     entry["sites"].append(
@@ -2974,7 +3020,11 @@ def _call_binds_skill_icon(name: str, args, source: bytes, node) -> bool:
 
 
 def _enclosing_skill_icon_var_value(
-    node, source: bytes, skill_icon_literal_values: dict[str, str]
+    node,
+    source: bytes,
+    skill_icon_literal_values: dict[str, str],
+    index=None,
+    module: str | None = None,
 ) -> str | None:
     child = node
     parent = node.parent
@@ -2985,7 +3035,13 @@ def _enclosing_skill_icon_var_value(
                 name, args = application
                 if _call_binds_skill_icon(name, args, source, child):
                     return None
-                if name == "skillIconVar" and args and (child.id == args[-1].id or _contains(args[-1], node)):
+                if (
+                    args
+                    and (child.id == args[-1].id or _contains(args[-1], node))
+                    and _definition_resolves_to(
+                        index, module, name, "Arkham.I18n", "skillIconVar", source, parent
+                    )
+                ):
                     literal = _skill_icon_literal_name(args[0], source)
                     return skill_icon_literal_values.get(literal) if literal is not None else None
         elif parent.type == "infix":
@@ -2998,7 +3054,9 @@ def _enclosing_skill_icon_var_value(
                         name, args = application
                         if name in {"withVar", "keyVar"} and len(args) >= 2 and string_literal(args[0], source) == "skillIcon":
                             return None
-                        if name == "skillIconVar" and args:
+                        if args and _definition_resolves_to(
+                            index, module, name, "Arkham.I18n", "skillIconVar", source, left
+                        ):
                             literal = _skill_icon_literal_name(args[0], source)
                             return skill_icon_literal_values.get(literal) if literal is not None else None
         child = parent
@@ -3015,9 +3073,27 @@ def _skill_icon_discard_values(
     literal_map = skill_icon_literal_values or _skill_icon_literal_value_map(library)
     values: list[str] = []
     saw_site = False
+    index = ModuleIndex()
+    parsed = []
     for path in sorted(library.rglob("*.hs")):
         source = path.read_bytes()
         tree = parse_module(path, source, library)
+        module = module_name_of(tree, source)
+        if module is None:
+            continue
+        index.add(
+            module,
+            {
+                "imports": imports_of(tree, source),
+                "exports": exports_of(tree, source),
+                "aliases": collect_aliases(tree, source),
+                "definitions": top_level_definitions(tree, source),
+                "signatures": top_level_signatures(tree, source),
+            },
+        )
+        parsed.append((source, tree, module))
+
+    for source, tree, module in parsed:
 
         def visit(node) -> bool:
             nonlocal saw_site
@@ -3030,7 +3106,7 @@ def _skill_icon_discard_values(
                     key = string_literal(args[arg_index], source)
                     if key == "discardCardsWithMatchingIcons":
                         saw_site = True
-                        value = _enclosing_skill_icon_var_value(node, source, literal_map)
+                        value = _enclosing_skill_icon_var_value(node, source, literal_map, index, module)
                         if value is None or value not in icon_tags:
                             return False
                         values.append(value)
