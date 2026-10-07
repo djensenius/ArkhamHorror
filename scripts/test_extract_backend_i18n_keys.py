@@ -1028,6 +1028,31 @@ runV icon = withI18n $ skillIconVar icon $ do
     )
 
 
+def test_discard_matching_icons_falls_back_to_text_when_a_helper_literal_is_called_under_a_variable() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
+            "Test/DiscardLiteral.hs": """module Test.DiscardLiteral where
+
+run = withI18n $ skillIconVar #combat $ labeled' "discardCardsWithMatchingIcons"
+""",
+            "Test/DiscardVariable.hs": """module Test.DiscardVariable where
+
+runV icon = withI18n $ skillIconVar #combat $ do
+  let prompt key = labeled' key
+  skillIconVar icon $ prompt "discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat", "wild"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"helper discardCardsWithMatchingIcons did not check the variable call-site skillIconVar: {variables}",
+    )
+
+
 def test_discard_matching_icons_falls_back_to_text_for_an_unknown_literal() -> None:
     variables = variable_types_of(
         {
@@ -1648,6 +1673,7 @@ TESTS = (
     test_discard_matching_icons_falls_back_to_text_without_a_glyph_for_a_literal_site,
     test_discard_matching_icons_falls_back_to_text_for_an_ikey_variable_skill_icon,
     test_discard_matching_icons_falls_back_to_text_for_a_local_helper_forwarded_key,
+    test_discard_matching_icons_falls_back_to_text_when_a_helper_literal_is_called_under_a_variable,
     test_discard_matching_icons_falls_back_to_text_for_an_unknown_literal,
     test_discard_matching_icons_falls_back_to_text_for_mixed_literal_and_variable_sites,
     test_discard_matching_icons_falls_back_to_text_for_an_inner_skill_icon_override,

@@ -1768,6 +1768,7 @@ def _specialized_variables_for_key(
     node=None,
     source: bytes | None = None,
     skill_icon_literal_values: dict[str, str] | None = None,
+    proof_nodes: list[object] | None = None,
 ) -> dict[str, str]:
     if not isinstance(icon_variable_types, dict) or key != SKILL_ICON_DISCARD_KEY:
         return variables
@@ -1776,9 +1777,10 @@ def _specialized_variables_for_key(
         return variables
     if node is None or source is None or skill_icon_literal_values is None:
         return variables
-    site_value = _enclosing_skill_icon_var_value(node, source, skill_icon_literal_values)
-    if site_value is None:
-        return variables
+    for proof_node in [node, *(proof_nodes or [])]:
+        site_value = _enclosing_skill_icon_var_value(proof_node, source, skill_icon_literal_values)
+        if site_value is None:
+            return variables
     adjusted = dict(variables)
     adjusted["skillIcon"] = specialized
     return adjusted
@@ -2226,7 +2228,7 @@ def extract_module(
             if inner_reset:
                 # The helper anchors its own scope; the call site only supplied
                 # the key.
-                emit(node, name, emitter, inner_stack, call_keys, variables)
+                emit(node, name, emitter, inner_stack, call_keys, variables, proof_nodes=[call_node])
                 continue
 
             if not call_reset:
@@ -2248,9 +2250,9 @@ def extract_module(
                 )
                 continue
 
-            emit(node, name, emitter, [*call_stack, *inner_stack], call_keys, variables)
+            emit(node, name, emitter, [*call_stack, *inner_stack], call_keys, variables, proof_nodes=[call_node])
 
-    def emit(node, name, emitter, stack, keys, variables):
+    def emit(node, name, emitter, stack, keys, variables, proof_nodes=None):
         combinations = expand_scope(stack)
         if combinations is None:
             record_dynamic(node, "too many scope alternatives", name)
@@ -2279,6 +2281,7 @@ def extract_module(
                         node,
                         source,
                         skill_icon_literal_values,
+                        proof_nodes,
                     )
                     _merge_variable_types(entry["variables"], scoped_variables)
                     entry["sites"].append(
