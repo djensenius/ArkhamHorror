@@ -2807,7 +2807,30 @@ def _skill_type_key_values(library: Path, icon_tags: set[str] | None = None) -> 
     return _glyph_backed_values(values, SKILL_ICON_VALUES, icon_tags)
 
 
+def _to_scope_single_word_transform_is_lower_first(library: Path) -> bool:
+    path = library / SKILL_ICON_SOURCE
+    if not path.is_file():
+        return False
+    source = path.read_bytes()
+    tree = parse_module(path, source, library)
+    definition = _top_level_function(tree, source, "toScope")
+    if definition is None:
+        return False
+    normalized = re.sub(r"\s+", " ", text_of(definition, source).strip())
+    expected = (
+        'toScope t = case T.words t of [] -> "" '
+        '(x : xs) -> lowerFirst x <> mconcat (map capitalizeFirst xs) '
+        'where lowerFirst txt = case T.uncons txt of '
+        'Just (c, r) -> T.cons (Char.toLower c) r Nothing -> txt '
+        'capitalizeFirst txt = case T.uncons txt of '
+        'Just (c, r) -> T.cons (Char.toUpper c) r Nothing -> txt'
+    )
+    return normalized == expected
+
+
 def _seal_icon_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
+    if not _to_scope_single_word_transform_is_lower_first(library):
+        return []
     path = library / SEAL_ICON_SOURCE
     if not path.is_file():
         return []

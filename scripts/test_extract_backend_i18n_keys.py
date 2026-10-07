@@ -118,6 +118,18 @@ skillIconVar v a = case v of
     SkillAgility -> withVar "skillIcon" (String "agility") a
   WildIcon -> withVar "skillIcon" (String "wild") a
   WildMinusIcon -> withVar "skillIcon" (String "wildMinus") a
+
+toScope :: Text -> Scope
+toScope t = case T.words t of
+  [] -> ""
+  (x : xs) -> lowerFirst x <> mconcat (map capitalizeFirst xs)
+ where
+  lowerFirst txt = case T.uncons txt of
+    Just (c, r) -> T.cons (Char.toLower c) r
+    Nothing -> txt
+  capitalizeFirst txt = case T.uncons txt of
+    Just (c, r) -> T.cons (Char.toUpper c) r
+    Nothing -> txt
 """
 
 ASPECT_I18N = """module Arkham.Aspect where
@@ -1376,6 +1388,31 @@ run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ la
     )
 
 
+def test_seal_falls_back_to_text_when_to_scope_changes_single_word_transform() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                "Just (c, r) -> T.cons (Char.toLower c) r",
+                "Just (c, r) -> T.cons c r",
+            ),
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text when toScope changed: {variables}",
+    )
+
+
 def test_seal_keyvar_with_an_unproven_value_stays_text() -> None:
     variables = variable_types_of(
         {
@@ -1738,6 +1775,7 @@ TESTS = (
     test_seal_falls_back_to_text_for_an_extra_constructor,
     test_seal_falls_back_to_text_for_a_constructor_with_fields,
     test_seal_falls_back_to_text_for_a_custom_show_instance,
+    test_seal_falls_back_to_text_when_to_scope_changes_single_word_transform,
     test_seal_keyvar_with_an_unproven_value_stays_text,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
