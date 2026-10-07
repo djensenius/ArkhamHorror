@@ -1307,6 +1307,27 @@ run = withI18n $ skillIconVar #combat $ withVar "skillIcon" "wild" $ labeled' "d
     )
 
 
+def test_discard_matching_icons_falls_back_to_text_for_nested_skill_icon_var_binders() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
+            "Test/Discard.hs": """module Test.Discard where
+
+import Arkham.I18n
+
+run = withI18n $ skillIconVar #wildMinus $ skillIconVar #combat $ labeled' "discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"discardCardsWithMatchingIcons did not fall back to text for nested skillIconVar binders: {variables}",
+    )
+
+
 def test_discard_matching_icons_falls_back_to_text_for_a_module_level_skill_icon_var_shadow() -> None:
     variables = variable_types_of(
         {
@@ -2038,6 +2059,7 @@ TESTS = (
     test_discard_matching_icons_falls_back_to_text_for_an_unknown_literal,
     test_discard_matching_icons_falls_back_to_text_for_mixed_literal_and_variable_sites,
     test_discard_matching_icons_falls_back_to_text_for_an_inner_skill_icon_override,
+    test_discard_matching_icons_falls_back_to_text_for_nested_skill_icon_var_binders,
     test_discard_matching_icons_falls_back_to_text_for_a_module_level_skill_icon_var_shadow,
     test_discard_matching_icons_falls_back_to_text_for_a_let_bound_skill_icon_var_shadow,
     test_discard_matching_icons_falls_back_to_text_for_a_where_bound_skill_icon_var_shadow,

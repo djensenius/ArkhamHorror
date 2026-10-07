@@ -3052,6 +3052,15 @@ def _enclosing_skill_icon_var_value(
     index=None,
     module: str | None = None,
 ) -> str | None:
+    values: list[str | None] = []
+
+    def record_skill_icon_var(name: str, args, binder_node) -> None:
+        if args and _definition_resolves_to(
+            index, module, name, "Arkham.I18n", "skillIconVar", source, binder_node
+        ):
+            literal = _skill_icon_literal_name(args[0], source)
+            values.append(skill_icon_literal_values.get(literal) if literal is not None else None)
+
     child = node
     parent = node.parent
     while parent is not None:
@@ -3060,16 +3069,9 @@ def _enclosing_skill_icon_var_value(
             if application is not None:
                 name, args = application
                 if _call_binds_skill_icon(name, args, source, child):
-                    return None
-                if (
-                    args
-                    and (child.id == args[-1].id or _contains(args[-1], node))
-                    and _definition_resolves_to(
-                        index, module, name, "Arkham.I18n", "skillIconVar", source, parent
-                    )
-                ):
-                    literal = _skill_icon_literal_name(args[0], source)
-                    return skill_icon_literal_values.get(literal) if literal is not None else None
+                    values.append(None)
+                elif args and (child.id == args[-1].id or _contains(args[-1], node)):
+                    record_skill_icon_var(name, args, parent)
         elif parent.type == "infix":
             parts = infix_parts(parent, source)
             if parts is not None:
@@ -3079,15 +3081,12 @@ def _enclosing_skill_icon_var_value(
                     if application is not None:
                         name, args = application
                         if name in {"withVar", "keyVar"} and len(args) >= 2 and string_literal(args[0], source) == "skillIcon":
-                            return None
-                        if args and _definition_resolves_to(
-                            index, module, name, "Arkham.I18n", "skillIconVar", source, left
-                        ):
-                            literal = _skill_icon_literal_name(args[0], source)
-                            return skill_icon_literal_values.get(literal) if literal is not None else None
+                            values.append(None)
+                        else:
+                            record_skill_icon_var(name, args, left)
         child = parent
         parent = parent.parent
-    return None
+    return values[0] if len(values) == 1 and values[0] is not None else None
 
 
 def _skill_icon_discard_values(
