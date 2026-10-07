@@ -8834,6 +8834,7 @@ test-suite spec
       Arkham.Replay.MessageTimeoutSpec
       Arkham.Replay.OutputSpec
       Arkham.Scenario.DancingMadSpec
+      Arkham.Scenario.Scenarios.DarkSideOfTheMoonSpec
       Arkham.Scenario.Scenarios.DeadHeatSpec
       Arkham.Scenario.Scenarios.DealingsInTheDarkSpec
       Arkham.Scenario.Scenarios.FateOfTheValeSpec
