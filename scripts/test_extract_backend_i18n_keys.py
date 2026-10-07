@@ -853,6 +853,7 @@ def test_replaced_skill_key_is_typed_as_a_skill_icon_when_skill_type_key_is_prov
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
+import Arkham.Aspect
 import Test.Helpers
 
 run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey replaced) $ labeled' "test"
@@ -886,6 +887,283 @@ run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ la
     check(
         variables.get("seal") == extractor.SEAL_ICON_TYPE,
         f"seal was not typed as a seal icon: {variables}",
+    )
+
+
+def test_discard_matching_icons_is_typed_from_literal_skill_icon_call_sites() -> None:
+    artifact = registry_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Test/DiscardA.hs": """module Test.DiscardA where
+
+run = withI18n $ skillIconVar #combat $ labeled' "discardCardsWithMatchingIcons"
+""",
+            "Test/DiscardB.hs": """module Test.DiscardB where
+
+run = withI18n $ skillIconVar #wild $ labeled' "discardCardsWithMatchingIcons"
+""",
+        },
+        icon_tags={"combat", "wild"},
+    )
+    variables = {
+        entry["key"]: {variable["name"]: variable["type"] for variable in entry["variables"]}
+        for entry in artifact["keys"]
+    }
+    values = artifact["variableTypes"][extractor.SKILL_ICON_DISCARD_TYPE]["values"]
+    check(values == ["combat", "wild"], f"discard icon registry did not match call sites: {values}")
+    check(
+        variables.get("label.discardCardsWithMatchingIcons", {}).get("skillIcon")
+        == extractor.SKILL_ICON_DISCARD_TYPE,
+        f"discardCardsWithMatchingIcons was not typed from literal skillIconVar sites: {variables}",
+    )
+
+
+def test_discard_matching_icons_falls_back_to_text_for_a_variable_skill_icon() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Test/Discard.hs": """module Test.Discard where
+
+run icon = withI18n $ skillIconVar icon $ labeled' "discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat", "wild"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"discardCardsWithMatchingIcons did not fall back to text for a variable argument: {variables}",
+    )
+
+
+def test_discard_matching_icons_falls_back_to_text_without_a_glyph_for_a_literal_site() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Test/Discard.hs": """module Test.Discard where
+
+run = withI18n $ skillIconVar #wild $ labeled' "discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"discardCardsWithMatchingIcons did not fall back to text without a glyph: {variables}",
+    )
+
+
+def test_replaced_skill_falls_back_to_text_for_a_wildcard_skill_type_key_arm() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N.replace(
+                '  SkillAgility -> "agility"\n',
+                '  _ -> "agility"\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Aspect
+import Test.Helpers
+
+run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey replaced) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("replacedSkill") == "text",
+        f"replacedSkill did not fall back to text for a wildcard skillTypeKey arm: {variables}",
+    )
+
+
+def test_replaced_skill_falls_back_to_text_for_a_computed_skill_type_key_arm() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N.replace(
+                '  SkillCombat -> "combat"\n',
+                '  SkillCombat -> "com" <> "bat"\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Aspect
+import Test.Helpers
+
+run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey replaced) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("replacedSkill") == "text",
+        f"replacedSkill did not fall back to text for a computed skillTypeKey arm: {variables}",
+    )
+
+
+def test_replaced_skill_falls_back_to_text_when_a_glyph_is_missing() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Aspect
+import Test.Helpers
+
+run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey replaced) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat"},
+    )
+    check(
+        variables.get("replacedSkill") == "text",
+        f"replacedSkill did not fall back to text when a glyph was missing: {variables}",
+    )
+
+
+def test_replaced_skill_keyvar_with_an_unproven_value_stays_text() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run replaced = campaignI18n $ story $ keyVar "replacedSkill" replaced $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("replacedSkill") == "text",
+        f"unproven replacedSkill keyVar did not stay text: {variables}",
+    )
+
+
+def test_seal_falls_back_to_text_when_a_glyph_is_missing() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text when a glyph was missing: {variables}",
+    )
+
+
+def test_seal_falls_back_to_text_for_an_extra_constructor() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N.replace(
+                "data SealKind = SealA | SealB | SealC | SealD | SealE",
+                "data SealKind = SealA | SealB | SealC | SealD | SealE | ElderSeal",
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE", "elderSeal"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text for an extra constructor: {variables}",
+    )
+
+
+def test_seal_falls_back_to_text_for_a_constructor_with_fields() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N.replace(
+                "data SealKind = SealA | SealB | SealC | SealD | SealE",
+                "data SealKind = SealA | SealB | SealC | SealD | SealE Text",
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text for a constructor with fields: {variables}",
+    )
+
+
+def test_seal_falls_back_to_text_for_a_custom_show_instance() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N + '\ninstance Show SealKind where\n  show _ = "custom"\n',
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text for a custom Show instance: {variables}",
+    )
+
+
+def test_seal_keyvar_with_an_unproven_value_stays_text() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow other.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"unproven seal keyVar did not stay text: {variables}",
     )
 
 
@@ -1192,6 +1470,18 @@ TESTS = (
     test_skill_icon_var_falls_back_to_text_when_definition_has_a_guard,
     test_replaced_skill_key_is_typed_as_a_skill_icon_when_skill_type_key_is_proven,
     test_seal_key_is_typed_as_a_seal_icon_when_seal_kind_is_proven,
+    test_discard_matching_icons_is_typed_from_literal_skill_icon_call_sites,
+    test_discard_matching_icons_falls_back_to_text_for_a_variable_skill_icon,
+    test_discard_matching_icons_falls_back_to_text_without_a_glyph_for_a_literal_site,
+    test_replaced_skill_falls_back_to_text_for_a_wildcard_skill_type_key_arm,
+    test_replaced_skill_falls_back_to_text_for_a_computed_skill_type_key_arm,
+    test_replaced_skill_falls_back_to_text_when_a_glyph_is_missing,
+    test_replaced_skill_keyvar_with_an_unproven_value_stays_text,
+    test_seal_falls_back_to_text_when_a_glyph_is_missing,
+    test_seal_falls_back_to_text_for_an_extra_constructor,
+    test_seal_falls_back_to_text_for_a_constructor_with_fields,
+    test_seal_falls_back_to_text_for_a_custom_show_instance,
+    test_seal_keyvar_with_an_unproven_value_stays_text,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,
