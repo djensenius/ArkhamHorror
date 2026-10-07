@@ -985,9 +985,13 @@ def test_discard_matching_icons_falls_back_to_text_for_an_ikey_variable_skill_ic
         {
             "Arkham/I18n.hs": SKILL_I18N,
             "Arkham/SkillType.hs": SKILL_TYPE_I18N,
-            "Test/Discard.hs": """module Test.Discard where
+            "Test/DiscardLiteral.hs": """module Test.DiscardLiteral where
 
-run icon = withI18n $ skillIconVar icon $ ikey' "label.discardCardsWithMatchingIcons"
+run = withI18n $ skillIconVar #combat $ labeled' "discardCardsWithMatchingIcons"
+""",
+            "Test/DiscardVariable.hs": """module Test.DiscardVariable where
+
+runV icon = withI18n $ skillIconVar icon $ ikey' "label.discardCardsWithMatchingIcons"
 """,
         },
         "label.discardCardsWithMatchingIcons",
@@ -1004,9 +1008,13 @@ def test_discard_matching_icons_falls_back_to_text_for_a_local_helper_forwarded_
         {
             "Arkham/I18n.hs": SKILL_I18N,
             "Arkham/SkillType.hs": SKILL_TYPE_I18N,
-            "Test/Discard.hs": """module Test.Discard where
+            "Test/DiscardLiteral.hs": """module Test.DiscardLiteral where
 
-run = withI18n $ skillIconVar #combat $ do
+run = withI18n $ skillIconVar #combat $ labeled' "discardCardsWithMatchingIcons"
+""",
+            "Test/DiscardVariable.hs": """module Test.DiscardVariable where
+
+runV icon = withI18n $ skillIconVar icon $ do
   let prompt key = labeled' key
   prompt "discardCardsWithMatchingIcons"
 """,
