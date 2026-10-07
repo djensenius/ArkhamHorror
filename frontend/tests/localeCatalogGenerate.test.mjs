@@ -609,6 +609,51 @@ test('label.test-style skill icons keep an explicit icon-variable shape', async 
   }
 })
 
+test('proved skillIconVar, replacedSkill, and seal labels are supported icon-variable entries', async () => {
+  const built = await buildCatalog({})
+  const expected = new Map([
+    ['label.discardCardsWithMatchingIcons', ['skillIcon']],
+    ['label.ignoreUseSkillTypeInsteadOf', ['skill', 'replacedSkill']],
+    ['label.chooseInvestigatorToTakeSeal', ['seal']],
+  ])
+
+  for (const [key, variables] of expected) {
+    const entry = chunkFor(built.files, built.manifest, built.manifest.defaultLocale, key)?.entries[key]
+    assert.ok(entry && entry.form !== 'unsupported', key)
+    for (const variable of variables) {
+      let hasIconVariableNode = false
+      for (const nodes of entryNodes(entry)) {
+        walkNodes(nodes, (node) => {
+          hasIconVariableNode ||= node.type === 'var' && node.name === variable && node.role === 'iconVariable'
+        })
+      }
+      assert.ok(hasIconVariableNode, `${key} must render ${variable} as an icon variable`)
+      assert.ok(
+        entry.variables.some((node) => node.name === variable && node.role === 'iconVariable'),
+        `${key} must declare ${variable} as an icon variable`,
+      )
+    }
+    assert.ok(
+      !built.manifest.backend.unknownVariableTypes.some((gap) => gap.key === key),
+      `${key} must not be reported as an unusable variable type`,
+    )
+  }
+
+  const chooseSkillIcon = chunkFor(
+    built.files,
+    built.manifest,
+    built.manifest.defaultLocale,
+    'label.chooseSkillIcon',
+  )?.entries['label.chooseSkillIcon']
+  assert.equal(chooseSkillIcon?.form, 'unsupported')
+  assert.ok(
+    built.manifest.backend.unknownVariableTypes.some(
+      (gap) => gap.key === 'label.chooseSkillIcon' && gap.variable === 'skillIcon' && gap.type === 'text',
+    ),
+    'label.chooseSkillIcon must stay unsupported while skillIconVar can emit wildMinus without a glyph',
+  )
+})
+
 test('icon-variable slots reject unproven text values', () => {
   const entry = {
     form: 'message',
