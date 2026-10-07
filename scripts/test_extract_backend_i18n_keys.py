@@ -132,6 +132,11 @@ toScope t = case T.words t of
     Nothing -> txt
 """
 
+PRELUDE_I18N = """module Arkham.Prelude (module X) where
+
+import ClassyPrelude as X
+"""
+
 ASPECT_I18N = """module Arkham.Aspect where
 
 skillTypeKey :: SkillType -> Text
@@ -923,10 +928,13 @@ def test_seal_key_is_typed_as_a_seal_icon_when_seal_kind_is_proven() -> None:
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
             "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
+import Arkham.I18n
+import Arkham.Prelude
 import Test.Helpers
 
 run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
@@ -938,6 +946,114 @@ run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ la
     check(
         variables.get("seal") == extractor.SEAL_ICON_TYPE,
         f"seal was not typed as a seal icon: {variables}",
+    )
+
+
+def test_seal_falls_back_to_text_for_a_module_level_to_scope_shadow() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.I18n
+import Arkham.Prelude
+import Test.Helpers
+
+toScope _ = "sealA"
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text for a module-level toScope shadow: {variables}",
+    )
+
+
+def test_seal_falls_back_to_text_for_a_module_level_tshow_shadow() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.I18n
+import Arkham.Prelude
+import Test.Helpers
+
+tshow _ = "SealA"
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text for a module-level tshow shadow: {variables}",
+    )
+
+
+def test_seal_falls_back_to_text_for_a_let_bound_to_scope_shadow() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.I18n
+import Arkham.Prelude
+import Test.Helpers
+
+run seal = campaignI18n $ story $ do
+  let toScope _ = "sealA"
+  keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text for a let-bound toScope shadow: {variables}",
+    )
+
+
+def test_seal_falls_back_to_text_for_a_where_bound_tshow_shadow() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.I18n
+import Arkham.Prelude
+import Test.Helpers
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+ where
+  tshow _ = "SealA"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == "text",
+        f"seal did not fall back to text for a where-bound tshow shadow: {variables}",
     )
 
 
@@ -1432,10 +1548,13 @@ def test_seal_falls_back_to_text_when_a_glyph_is_missing() -> None:
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
             "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
+import Arkham.I18n
+import Arkham.Prelude
 import Test.Helpers
 
 run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
@@ -1454,6 +1573,7 @@ def test_seal_falls_back_to_text_for_an_extra_constructor() -> None:
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
             "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N.replace(
                 "data SealKind = SealA | SealB | SealC | SealD | SealE",
                 "data SealKind = SealA | SealB | SealC | SealD | SealE | ElderSeal",
@@ -1461,6 +1581,8 @@ def test_seal_falls_back_to_text_for_an_extra_constructor() -> None:
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
+import Arkham.I18n
+import Arkham.Prelude
 import Test.Helpers
 
 run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
@@ -1479,6 +1601,7 @@ def test_seal_falls_back_to_text_for_a_constructor_with_fields() -> None:
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
             "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N.replace(
                 "data SealKind = SealA | SealB | SealC | SealD | SealE",
                 "data SealKind = SealA | SealB | SealC | SealD | SealE Text",
@@ -1486,6 +1609,8 @@ def test_seal_falls_back_to_text_for_a_constructor_with_fields() -> None:
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
+import Arkham.I18n
+import Arkham.Prelude
 import Test.Helpers
 
 run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
@@ -1504,10 +1629,13 @@ def test_seal_falls_back_to_text_for_a_custom_show_instance() -> None:
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
             "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N + '\ninstance Show SealKind where\n  show _ = "custom"\n',
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
+import Arkham.I18n
+import Arkham.Prelude
 import Test.Helpers
 
 run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
@@ -1529,10 +1657,13 @@ def test_seal_falls_back_to_text_when_to_scope_changes_single_word_transform() -
                 "Just (c, r) -> T.cons (Char.toLower c) r",
                 "Just (c, r) -> T.cons c r",
             ),
+            "Arkham/Prelude.hs": PRELUDE_I18N,
             "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
+import Arkham.I18n
+import Arkham.Prelude
 import Test.Helpers
 
 run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
@@ -1551,10 +1682,13 @@ def test_seal_keyvar_with_an_unproven_value_stays_text() -> None:
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Prelude.hs": PRELUDE_I18N,
             "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
+import Arkham.I18n
+import Arkham.Prelude
 import Test.Helpers
 
 run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow other.kind) $ labeled' "test"
@@ -1890,6 +2024,10 @@ TESTS = (
     test_replaced_skill_key_is_typed_as_a_skill_icon_when_skill_type_key_is_proven,
     test_replaced_skill_key_is_typed_inside_the_canonical_skill_type_key_module,
     test_seal_key_is_typed_as_a_seal_icon_when_seal_kind_is_proven,
+    test_seal_falls_back_to_text_for_a_module_level_to_scope_shadow,
+    test_seal_falls_back_to_text_for_a_module_level_tshow_shadow,
+    test_seal_falls_back_to_text_for_a_let_bound_to_scope_shadow,
+    test_seal_falls_back_to_text_for_a_where_bound_tshow_shadow,
     test_discard_matching_icons_is_typed_from_literal_skill_icon_call_sites,
     test_discard_matching_icons_is_typed_from_a_qualified_skill_icon_var_call_site,
     test_discard_matching_icons_falls_back_to_text_for_a_variable_skill_icon,

@@ -46,6 +46,8 @@ LIBRARY = ROOT / "backend" / "arkham-api" / "library"
 ARTIFACT = ROOT / "backend" / "arkham-api" / "i18n-emitted-keys.json"
 ARTIFACT_VERSION = "1.0.0"
 
+EXTERNAL_DEFINITION_EXPORTS = frozenset({("ClassyPrelude", "tshow")})
+
 # Modules that *define* the i18n DSL. Their bodies emit keys on behalf of a
 # caller whose scope is unknown at the definition site, so their call sites are
 # modelled through WRAPPERS below instead of being scanned for emissions.
@@ -611,7 +613,7 @@ class ModuleIndex:
         visited.add(module)
         record = self.by_module.get(module)
         if record is None:
-            return []
+            return [module] if table == "definitions" and (module, name) in EXTERNAL_DEFINITION_EXPORTS else []
 
         exports = record["exports"]
         found: list[str] = []
@@ -1656,7 +1658,7 @@ def _variable_type(
         return CHAOS_TOKEN_FACE_TYPE
     if variable == "replacedSkill" and _is_skill_type_key_value(value, source, index, module):
         return _icon_type_from_map(icon_variable_types, "replacedSkill")
-    if variable == "seal" and _is_edge_of_the_earth_seal_value(value, source):
+    if variable == "seal" and _is_edge_of_the_earth_seal_value(value, source, index, module):
         return _icon_type_from_map(icon_variable_types, "seal")
     return value_type(value, source, index, module)
 
@@ -1674,29 +1676,44 @@ def _is_skill_type_key_value(node, source: bytes, index=None, module: str | None
     )
 
 
-def _is_edge_of_the_earth_seal_value(node, source: bytes) -> bool:
+def _is_edge_of_the_earth_seal_value(
+    node, source: bytes, index=None, module: str | None = None
+) -> bool:
     if node is None:
         return False
     if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
-        return _is_edge_of_the_earth_seal_value(significant_children(node)[0], source)
+        return _is_edge_of_the_earth_seal_value(
+            significant_children(node)[0], source, index, module
+        )
     parts = infix_parts(node, source) if node.type == "infix" else None
     if parts is not None and parts[1] == "$":
         left, _, right = parts
         application = flatten_application(left, source)
         left_name = application[0] if application is not None else text_of(left, source).strip()
-        return left_name == "toScope" and _is_tshow_seal_kind(right, source)
-    application = flatten_application(node, source)
-    return application is not None and application[0] == "toScope" and len(application[1]) == 1 and _is_tshow_seal_kind(application[1][0], source)
-
-
-def _is_tshow_seal_kind(node, source: bytes) -> bool:
-    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
-        return _is_tshow_seal_kind(significant_children(node)[0], source)
+        return _definition_resolves_to(
+            index, module, left_name, "Arkham.I18n", "toScope", source, left
+        ) and _is_tshow_seal_kind(right, source, index, module)
     application = flatten_application(node, source)
     return (
         application is not None
-        and application[0] == "tshow"
         and len(application[1]) == 1
+        and _definition_resolves_to(
+            index, module, application[0], "Arkham.I18n", "toScope", source, node
+        )
+        and _is_tshow_seal_kind(application[1][0], source, index, module)
+    )
+
+
+def _is_tshow_seal_kind(node, source: bytes, index=None, module: str | None = None) -> bool:
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _is_tshow_seal_kind(significant_children(node)[0], source, index, module)
+    application = flatten_application(node, source)
+    return (
+        application is not None
+        and len(application[1]) == 1
+        and _definition_resolves_to(
+            index, module, application[0], "ClassyPrelude", "tshow", source, node
+        )
         and text_of(application[1][0], source).strip() == "seal.kind"
     )
 
