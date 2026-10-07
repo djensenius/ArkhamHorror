@@ -136,6 +136,29 @@ data SealKind = SealA | SealB | SealC | SealD | SealE
   deriving stock (Show, Eq, Ord, Bounded, Enum, Generic, Data)
 """
 
+SKILL_TYPE_I18N = """module Arkham.SkillType where
+
+data SkillIcon = SkillIcon SkillType | WildIcon | WildMinusIcon
+
+instance IsLabel "willpower" SkillIcon where
+  fromLabel = SkillIcon SkillWillpower
+
+instance IsLabel "intellect" SkillIcon where
+  fromLabel = SkillIcon SkillIntellect
+
+instance IsLabel "combat" SkillIcon where
+  fromLabel = SkillIcon SkillCombat
+
+instance IsLabel "agility" SkillIcon where
+  fromLabel = SkillIcon SkillAgility
+
+instance IsLabel "wild" SkillIcon where
+  fromLabel = WildIcon
+
+instance IsLabel "wildMinus" SkillIcon where
+  fromLabel = WildMinusIcon
+"""
+
 
 def test_point_free_alias_through_a_direct_import() -> None:
     keys = keys_of(
@@ -894,6 +917,7 @@ def test_discard_matching_icons_is_typed_from_literal_skill_icon_call_sites() ->
     artifact = registry_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
             "Test/DiscardA.hs": """module Test.DiscardA where
 
 run = withI18n $ skillIconVar #combat $ labeled' "discardCardsWithMatchingIcons"
@@ -922,6 +946,7 @@ def test_discard_matching_icons_falls_back_to_text_for_a_variable_skill_icon() -
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
             "Test/Discard.hs": """module Test.Discard where
 
 run icon = withI18n $ skillIconVar icon $ labeled' "discardCardsWithMatchingIcons"
@@ -940,6 +965,7 @@ def test_discard_matching_icons_falls_back_to_text_without_a_glyph_for_a_literal
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
             "Test/Discard.hs": """module Test.Discard where
 
 run = withI18n $ skillIconVar #wild $ labeled' "discardCardsWithMatchingIcons"
@@ -954,14 +980,112 @@ run = withI18n $ skillIconVar #wild $ labeled' "discardCardsWithMatchingIcons"
     )
 
 
-def test_replaced_skill_falls_back_to_text_for_a_wildcard_skill_type_key_arm() -> None:
+def test_discard_matching_icons_falls_back_to_text_for_an_ikey_variable_skill_icon() -> None:
     variables = variable_types_of(
         {
             "Arkham/I18n.hs": SKILL_I18N,
-            "Arkham/Aspect.hs": ASPECT_I18N.replace(
-                '  SkillAgility -> "agility"\n',
-                '  _ -> "agility"\n',
-            ),
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
+            "Test/Discard.hs": """module Test.Discard where
+
+run icon = withI18n $ skillIconVar icon $ ikey' "label.discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat", "wild"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"ikey' discardCardsWithMatchingIcons did not fall back to text for a variable argument: {variables}",
+    )
+
+
+def test_discard_matching_icons_falls_back_to_text_for_a_local_helper_forwarded_key() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
+            "Test/Discard.hs": """module Test.Discard where
+
+run = withI18n $ skillIconVar #combat $ do
+  let prompt key = labeled' key
+  prompt "discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat", "wild"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"local-helper discardCardsWithMatchingIcons did not fall back to text: {variables}",
+    )
+
+
+def test_discard_matching_icons_falls_back_to_text_for_an_unknown_literal() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
+            "Test/Discard.hs": """module Test.Discard where
+
+run = withI18n $ skillIconVar #foo $ labeled' "discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat", "wild"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"discardCardsWithMatchingIcons did not fall back to text for an unknown literal: {variables}",
+    )
+
+
+def test_discard_matching_icons_falls_back_to_text_for_mixed_literal_and_variable_sites() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
+            "Test/DiscardA.hs": """module Test.DiscardA where
+
+run = withI18n $ skillIconVar #combat $ labeled' "discardCardsWithMatchingIcons"
+""",
+            "Test/DiscardB.hs": """module Test.DiscardB where
+
+run icon = withI18n $ skillIconVar icon $ labeled' "discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat", "wild"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"discardCardsWithMatchingIcons did not fall back to text for mixed literal and variable sites: {variables}",
+    )
+
+
+def test_discard_matching_icons_falls_back_to_text_for_an_inner_skill_icon_override() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/SkillType.hs": SKILL_TYPE_I18N,
+            "Test/Discard.hs": """module Test.Discard where
+
+run = withI18n $ skillIconVar #combat $ withVar "skillIcon" "wild" $ labeled' "discardCardsWithMatchingIcons"
+""",
+        },
+        "label.discardCardsWithMatchingIcons",
+        icon_tags={"combat", "wild"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"discardCardsWithMatchingIcons did not fall back to text for an inner skillIcon override: {variables}",
+    )
+
+
+def test_replaced_skill_falls_back_to_text_for_an_extra_wildcard_skill_type_key_arm() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N + '  x -> T.toLower (tshow x)\n',
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
 
@@ -976,7 +1100,7 @@ run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey repla
     )
     check(
         variables.get("replacedSkill") == "text",
-        f"replacedSkill did not fall back to text for a wildcard skillTypeKey arm: {variables}",
+        f"replacedSkill did not fall back to text for an extra wildcard skillTypeKey arm: {variables}",
     )
 
 
@@ -986,7 +1110,7 @@ def test_replaced_skill_falls_back_to_text_for_a_computed_skill_type_key_arm() -
             "Arkham/I18n.hs": SKILL_I18N,
             "Arkham/Aspect.hs": ASPECT_I18N.replace(
                 '  SkillCombat -> "combat"\n',
-                '  SkillCombat -> "com" <> "bat"\n',
+                '  SkillCombat -> "combat" <> suffix\n',
             ),
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
@@ -1003,6 +1127,30 @@ run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey repla
     check(
         variables.get("replacedSkill") == "text",
         f"replacedSkill did not fall back to text for a computed skillTypeKey arm: {variables}",
+    )
+
+
+def test_replaced_skill_falls_back_to_text_for_a_locally_defined_skill_type_key() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+skillTypeKey _ = "willpower"
+
+run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey replaced) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("replacedSkill") == "text",
+        f"replacedSkill did not fall back to text for a locally defined skillTypeKey: {variables}",
     )
 
 
@@ -1408,6 +1556,23 @@ def test_committed_registry_properties() -> None:
         test_types.get("skill") == extractor.SKILL_ICON_TYPE,
         f"label.test skill variable is not typed as {extractor.SKILL_ICON_TYPE}: {test_types}",
     )
+    discard_faces = artifact["variableTypes"][extractor.SKILL_ICON_DISCARD_TYPE]["values"]
+    check(
+        discard_faces == ["willpower", "intellect", "combat", "agility", "wild"],
+        f"discardCardsWithMatchingIcons supported labels changed: {discard_faces}",
+    )
+    discard_types = {
+        variable["name"]: variable["type"]
+        for variable in by_key["label.discardCardsWithMatchingIcons"]["variables"]
+    }
+    check(
+        discard_types.get("skillIcon") == extractor.SKILL_ICON_DISCARD_TYPE,
+        f"discardCardsWithMatchingIcons skillIcon variable is not typed as {extractor.SKILL_ICON_DISCARD_TYPE}: {discard_types}",
+    )
+    check(
+        by_key["label.discardCardsWithMatchingIcons"].get("sites") == 5,
+        f"discardCardsWithMatchingIcons should be supported by the five PassengerCar sites: {by_key['label.discardCardsWithMatchingIcons']}",
+    )
 
     # Keys the review named as reachable but missing from the earlier registry.
     for key in (
@@ -1473,8 +1638,14 @@ TESTS = (
     test_discard_matching_icons_is_typed_from_literal_skill_icon_call_sites,
     test_discard_matching_icons_falls_back_to_text_for_a_variable_skill_icon,
     test_discard_matching_icons_falls_back_to_text_without_a_glyph_for_a_literal_site,
-    test_replaced_skill_falls_back_to_text_for_a_wildcard_skill_type_key_arm,
+    test_discard_matching_icons_falls_back_to_text_for_an_ikey_variable_skill_icon,
+    test_discard_matching_icons_falls_back_to_text_for_a_local_helper_forwarded_key,
+    test_discard_matching_icons_falls_back_to_text_for_an_unknown_literal,
+    test_discard_matching_icons_falls_back_to_text_for_mixed_literal_and_variable_sites,
+    test_discard_matching_icons_falls_back_to_text_for_an_inner_skill_icon_override,
+    test_replaced_skill_falls_back_to_text_for_an_extra_wildcard_skill_type_key_arm,
     test_replaced_skill_falls_back_to_text_for_a_computed_skill_type_key_arm,
+    test_replaced_skill_falls_back_to_text_for_a_locally_defined_skill_type_key,
     test_replaced_skill_falls_back_to_text_when_a_glyph_is_missing,
     test_replaced_skill_keyvar_with_an_unproven_value_stays_text,
     test_seal_falls_back_to_text_when_a_glyph_is_missing,
