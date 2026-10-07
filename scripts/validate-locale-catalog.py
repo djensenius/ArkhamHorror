@@ -92,7 +92,7 @@ MAX_CHUNK_BYTES = 8 * 1024 * 1024
 MAX_CHUNKS_PER_LOCALE = 256
 ROLE_ACCEPTS = {
     "text": {"text", "integer"},
-    "iconVariable": {"chaosTokenFace", "skillIcon"},
+    "iconVariable": {"chaosTokenFace", "skillIcon", "skillIconFace", "skillIconDiscardFace", "sealIconFace"},
 }
 
 
