@@ -1471,7 +1471,6 @@ def enclosing_scope(
     stop=None,
     chaos_token_face_tags: frozenset[str] = frozenset(),
     skill_icon_variable_type: str = SKILL_ICON_TYPE,
-    skill_icon_literal_values: dict[str, str] | None = None,
 ):
     """Walks ancestors, collecting the scope stack in force at `node`."""
     effects: list[dict] = []
@@ -2158,7 +2157,6 @@ def extract_module(
             helper["holder"],
             chaos_token_face_tags,
             skill_icon_variable_type,
-            skill_icon_literal_values,
         )
         if inner_dynamic is not None:
             record_dynamic(node, inner_dynamic, name)
@@ -2201,7 +2199,6 @@ def extract_module(
                 context,
                 chaos_token_face_tags=chaos_token_face_tags,
                 skill_icon_variable_type=skill_icon_variable_type,
-                skill_icon_literal_values=skill_icon_literal_values,
             )
             if call_dynamic is not None:
                 record_dynamic(call_node, call_dynamic, name)
