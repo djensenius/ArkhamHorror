@@ -18,7 +18,6 @@ export const iconClasses: Record<string, string> = {
   combat: 'combat-icon',
   agility: 'agility-icon',
   wild: 'wild-icon',
-  wildMinus: 'wild-icon',
   guardian: 'guardian-icon',
   seeker: 'seeker-icon',
   rogue: 'rogue-icon',
