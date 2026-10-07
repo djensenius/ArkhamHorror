@@ -200,18 +200,20 @@ VARIABLE_BINDERS = {
     # chaos-token variable registry below.
     "tokenVar": [("token", "text")],
     "skillVar": [("skill", "skillIcon")],
-    # `skillIconVar` can produce WildMinusIcon, which has no web glyph today,
-    # so generic call sites stay `text` unless a future extractor proves the
-    # specific argument is one of the iconClasses-backed values.
-    "skillIconVar": [("skillIcon", "text")],
 }
 
 CHAOS_TOKEN_FACE_TYPE = "chaosTokenFace"
 CHAOS_TOKEN_FACE_SOURCE = "Arkham/ChaosToken/Types.hs"
 SKILL_ICON_TYPE = "skillIcon"
+SKILL_ICON_FACE_TYPE = "skillIconFace"
 SKILL_ICON_SOURCE = "Arkham/I18n.hs"
+SKILL_TYPE_KEY_SOURCE = "Arkham/Aspect.hs"
+SEAL_ICON_TYPE = "sealIconFace"
+SEAL_ICON_SOURCE = "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs"
 SKILL_ICON_VALUES = ["willpower", "intellect", "combat", "agility"]
-ICON_VARIABLE_TYPES = frozenset({CHAOS_TOKEN_FACE_TYPE, SKILL_ICON_TYPE})
+SKILL_ICON_FACE_VALUES = ["willpower", "intellect", "combat", "agility", "wild", "wildMinus"]
+SEAL_ICON_VALUES = ["sealA", "sealB", "sealC", "sealD", "sealE"]
+ICON_VARIABLE_TYPES = frozenset({CHAOS_TOKEN_FACE_TYPE, SKILL_ICON_TYPE, SKILL_ICON_FACE_TYPE, SEAL_ICON_TYPE})
 # numberVar/keyVar/withVar take the name as a literal first argument.
 NAMED_VARIABLE_BINDERS = {
     "numberVar": "integer",
@@ -1580,6 +1582,12 @@ def _contains(candidate, node) -> bool:
     return candidate.start_byte <= node.start_byte and candidate.end_byte >= node.end_byte
 
 
+def _icon_type_from_map(icon_variable_types, key: str) -> str:
+    if isinstance(icon_variable_types, dict):
+        return icon_variable_types.get(key, "text")
+    return icon_variable_types if key == "skillVar" else "text"
+
+
 def _variable_type(
     variable: str,
     value,
@@ -1587,10 +1595,46 @@ def _variable_type(
     index=None,
     module: str | None = None,
     chaos_token_face_tags: frozenset[str] = frozenset(),
+    icon_variable_types=SKILL_ICON_TYPE,
 ) -> str:
     if variable == "token" and _is_chaos_token_face_value(value, source, chaos_token_face_tags):
         return CHAOS_TOKEN_FACE_TYPE
+    if variable == "replacedSkill" and _is_skill_type_key_value(value, source):
+        return _icon_type_from_map(icon_variable_types, "replacedSkill")
+    if variable == "seal" and _is_edge_of_the_earth_seal_value(value, source):
+        return _icon_type_from_map(icon_variable_types, "seal")
     return value_type(value, source, index, module)
+
+
+def _is_skill_type_key_value(node, source: bytes) -> bool:
+    if node is None:
+        return False
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _is_skill_type_key_value(significant_children(node)[0], source)
+    application = flatten_application(node, source)
+    return application is not None and application[0] == "skillTypeKey" and len(application[1]) == 1
+
+
+def _is_edge_of_the_earth_seal_value(node, source: bytes) -> bool:
+    if node is None:
+        return False
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _is_edge_of_the_earth_seal_value(significant_children(node)[0], source)
+    parts = infix_parts(node, source) if node.type == "infix" else None
+    if parts is not None and parts[1] == "$":
+        left, _, right = parts
+        application = flatten_application(left, source)
+        left_name = application[0] if application is not None else text_of(left, source).strip()
+        return left_name == "toScope" and _is_tshow_seal_kind(right, source)
+    application = flatten_application(node, source)
+    return application is not None and application[0] == "toScope" and len(application[1]) == 1 and _is_tshow_seal_kind(application[1][0], source)
+
+
+def _is_tshow_seal_kind(node, source: bytes) -> bool:
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _is_tshow_seal_kind(significant_children(node)[0], source)
+    application = flatten_application(node, source)
+    return application is not None and application[0] == "tshow" and len(application[1]) == 1 and text_of(application[1][0], source).strip().endswith(".kind")
 
 
 def _is_chaos_token_face_value(node, source: bytes, chaos_token_face_tags: frozenset[str]) -> bool:
@@ -1721,7 +1765,15 @@ def _collect_variables(
         for pair_name, value in _pair_bindings(args[0], source):
             variables.setdefault(
                 pair_name,
-                _variable_type(pair_name, value, source, index, module, chaos_token_face_tags),
+                _variable_type(
+                    pair_name,
+                    value,
+                    source,
+                    index,
+                    module,
+                    chaos_token_face_tags,
+                    skill_icon_variable_type,
+                ),
             )
         return
     if name == "withVar" and len(args) >= 1:
@@ -1729,7 +1781,15 @@ def _collect_variables(
         if variable is not None:
             variables.setdefault(
                 variable,
-                _variable_type(variable, args[1], source, index, module, chaos_token_face_tags)
+                _variable_type(
+                    variable,
+                    args[1],
+                    source,
+                    index,
+                    module,
+                    chaos_token_face_tags,
+                    skill_icon_variable_type,
+                )
                 if len(args) > 1
                 else "unknown",
             )
@@ -1744,12 +1804,26 @@ def _collect_variables(
     if named is not None and args:
         variable = string_literal(args[0], source)
         if variable is not None:
-            variables[variable] = named
+            variables[variable] = (
+                _variable_type(
+                    variable,
+                    args[1],
+                    source,
+                    index,
+                    module,
+                    chaos_token_face_tags,
+                    skill_icon_variable_type,
+                )
+                if name == "keyVar" and variable in {"replacedSkill", "seal"} and len(args) > 1
+                else named
+            )
 
 
-def _variable_binder(name: str, skill_icon_variable_type: str) -> list[tuple[str, str]] | None:
+def _variable_binder(name: str, skill_icon_variable_type) -> list[tuple[str, str]] | None:
     if name == "skillVar":
-        return [("skill", skill_icon_variable_type)]
+        return [("skill", _icon_type_from_map(skill_icon_variable_type, "skillVar"))]
+    if name == "skillIconVar":
+        return [("skillIcon", _icon_type_from_map(skill_icon_variable_type, "skillIconVar"))]
     return VARIABLE_BINDERS.get(name)
 
 
@@ -2452,46 +2526,61 @@ def _chaos_token_face_values(library: Path) -> list[str]:
     ]
 
 
-def _skill_var_values(library: Path) -> list[str]:
-    """Derive the icon tags Arkham.I18n.skillVar can emit."""
+def _i18n_withvar_values(library: Path, function_name: str, variable_name: str) -> list[str]:
+    """Derive the literal strings an Arkham.I18n helper binds through withVar."""
     path = library / SKILL_ICON_SOURCE
     if not path.is_file():
         return []
     source = path.read_bytes()
     tree = parse_module(path, source, library)
-    definition = _top_level_function(tree, source, "skillVar")
+    definition = _top_level_function(tree, source, function_name)
     if definition is None:
         return []
     body = _function_body(definition)
     if body is None or body.type != "case":
         return []
-
-    values: list[str] = []
-    for alternative in body.children:
-        if alternative.type != "alternatives":
-            continue
-        for entry in alternative.children:
-            if entry.type != "alternative":
-                continue
-            bodies = _case_alternative_result_nodes(entry)
-            if bodies is None:
-                return []
-            for result in bodies:
-                resolved = _skill_var_result_value(result, source)
-                if resolved is None:
-                    return []
-                values.extend(resolved)
+    values = _withvar_result_values(body, source, variable_name)
     return list(dict.fromkeys(values)) if values else []
 
 
-def _skill_var_result_value(node, source: bytes) -> list[str] | None:
+def _skill_var_values(library: Path) -> list[str]:
+    """Derive the icon tags Arkham.I18n.skillVar can emit."""
+    return _i18n_withvar_values(library, "skillVar", "skill")
+
+
+def _skill_icon_var_values(library: Path) -> list[str]:
+    """Derive the icon tags Arkham.I18n.skillIconVar can emit."""
+    return _i18n_withvar_values(library, "skillIconVar", "skillIcon")
+
+
+def _withvar_result_values(node, source: bytes, variable_name: str) -> list[str] | None:
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _withvar_result_values(significant_children(node)[0], source, variable_name)
+    if node.type == "case":
+        values: list[str] = []
+        for alternative in node.children:
+            if alternative.type != "alternatives":
+                continue
+            for entry in alternative.children:
+                if entry.type != "alternative":
+                    continue
+                bodies = _case_alternative_result_nodes(entry)
+                if bodies is None:
+                    return None
+                for body in bodies:
+                    resolved = _withvar_result_values(body, source, variable_name)
+                    if resolved is None:
+                        return None
+                    values.extend(resolved)
+        return values or None
+
     application = flatten_application(node, source)
     if application is None:
         return None
     name, args = application
     if name != "withVar" or len(args) != 3:
         return None
-    if string_literal(args[0], source) != "skill":
+    if string_literal(args[0], source) != variable_name:
         return None
     if args[2].type != "variable" or text_of(args[2], source) != "a":
         return None
@@ -2577,21 +2666,69 @@ def _top_level_function(tree, source: bytes, name: str):
     return None
 
 
+def _glyph_backed_values(
+    raw_values: list[str], expected_values: list[str], icon_tags: set[str]
+) -> list[str]:
+    if raw_values != expected_values or any(value not in icon_tags for value in raw_values):
+        return []
+    return list(raw_values)
+
+
 def _skill_icon_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
     raw_values = _skill_var_values(library)
     icon_tags = _web_icon_tags() if icon_tags is None else icon_tags
-    if raw_values != SKILL_ICON_VALUES or any(value not in icon_tags for value in raw_values):
+    return _glyph_backed_values(raw_values, SKILL_ICON_VALUES, icon_tags)
+
+
+def _skill_icon_face_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
+    raw_values = _skill_icon_var_values(library)
+    icon_tags = _web_icon_tags() if icon_tags is None else icon_tags
+    return _glyph_backed_values(raw_values, SKILL_ICON_FACE_VALUES, icon_tags)
+
+
+def _skill_type_key_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
+    path = library / SKILL_TYPE_KEY_SOURCE
+    if not path.is_file():
         return []
-    return [value for value in raw_values if value in icon_tags]
+    source = path.read_text(encoding="utf-8")
+    match = re.search(
+        r"skillTypeKey\s*::.*?\nskillTypeKey\s*=\s*\\case\s*(.*?)(?:\n\n|\n[a-zA-Z].*?::|\Z)",
+        source,
+        re.S,
+    )
+    if match is None:
+        return []
+    values = [
+        value
+        for _, value in re.findall(r"\b(Skill[A-Za-z0-9]+)\s*->\s*\"([^\"]+)\"", match.group(1))
+    ]
+    icon_tags = _web_icon_tags() if icon_tags is None else icon_tags
+    return _glyph_backed_values(values, SKILL_ICON_VALUES, icon_tags)
 
 
-def _skill_icon_variable_type(values: list[str]) -> str:
-    return SKILL_ICON_TYPE if values == SKILL_ICON_VALUES else "text"
+def _seal_icon_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
+    path = library / SEAL_ICON_SOURCE
+    if not path.is_file():
+        return []
+    source = path.read_text(encoding="utf-8")
+    match = re.search(r"data\s+SealKind\s*=\s*(.*?)(?:\n\s+deriving\b|\n\n)", source, re.S)
+    if match is None:
+        return []
+    constructors = re.findall(r"\bSeal[A-Z]\b", match.group(1))
+    values = [constructor[:1].lower() + constructor[1:] for constructor in constructors]
+    icon_tags = _web_icon_tags() if icon_tags is None else icon_tags
+    return _glyph_backed_values(values, SEAL_ICON_VALUES, icon_tags)
+
+
+def _closed_icon_variable_type(values: list[str], expected_values: list[str], type_name: str) -> str:
+    return type_name if values == expected_values else "text"
 
 
 def _variable_type_registry(library: Path, icon_tags: set[str] | None = None) -> dict:
     values = _chaos_token_face_values(library)
     skill_values = _skill_icon_values(library, icon_tags)
+    skill_face_values = _skill_icon_face_values(library, icon_tags)
+    seal_values = _seal_icon_values(library, icon_tags)
     return {
         CHAOS_TOKEN_FACE_TYPE: {
             "kind": "enum",
@@ -2602,6 +2739,16 @@ def _variable_type_registry(library: Path, icon_tags: set[str] | None = None) ->
             "kind": "enum",
             "values": skill_values,
             "source": SKILL_ICON_SOURCE,
+        },
+        SKILL_ICON_FACE_TYPE: {
+            "kind": "enum",
+            "values": skill_face_values,
+            "source": SKILL_ICON_SOURCE,
+        },
+        SEAL_ICON_TYPE: {
+            "kind": "enum",
+            "values": seal_values,
+            "source": SEAL_ICON_SOURCE,
         },
     }
 
@@ -2617,9 +2764,20 @@ def build_artifact(
     library = library or LIBRARY
     variable_types = _variable_type_registry(library, icon_tags)
     chaos_token_face_tags = frozenset(variable_types[CHAOS_TOKEN_FACE_TYPE]["values"])
-    skill_icon_variable_type = _skill_icon_variable_type(
-        variable_types[SKILL_ICON_TYPE]["values"]
-    )
+    skill_icon_variable_type = {
+        "skillVar": _closed_icon_variable_type(
+            variable_types[SKILL_ICON_TYPE]["values"], SKILL_ICON_VALUES, SKILL_ICON_TYPE
+        ),
+        "skillIconVar": _closed_icon_variable_type(
+            variable_types[SKILL_ICON_FACE_TYPE]["values"], SKILL_ICON_FACE_VALUES, SKILL_ICON_FACE_TYPE
+        ),
+        "replacedSkill": _closed_icon_variable_type(
+            _skill_type_key_values(library, icon_tags), SKILL_ICON_VALUES, SKILL_ICON_TYPE
+        ),
+        "seal": _closed_icon_variable_type(
+            variable_types[SEAL_ICON_TYPE]["values"], SEAL_ICON_VALUES, SEAL_ICON_TYPE
+        ),
+    }
     files = sorted(library.rglob("*.hs"))
     index = ModuleIndex()
     parsed = []

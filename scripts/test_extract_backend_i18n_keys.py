@@ -108,6 +108,32 @@ skillVar v a = case v of
   SkillIntellect -> withVar "skill" (String "intellect") a
   SkillCombat -> withVar "skill" (String "combat") a
   SkillAgility -> withVar "skill" (String "agility") a
+
+skillIconVar :: HasI18n => SkillIcon -> (HasI18n => a) -> a
+skillIconVar v a = case v of
+  SkillIcon kind -> case kind of
+    SkillWillpower -> withVar "skillIcon" (String "willpower") a
+    SkillIntellect -> withVar "skillIcon" (String "intellect") a
+    SkillCombat -> withVar "skillIcon" (String "combat") a
+    SkillAgility -> withVar "skillIcon" (String "agility") a
+  WildIcon -> withVar "skillIcon" (String "wild") a
+  WildMinusIcon -> withVar "skillIcon" (String "wildMinus") a
+"""
+
+ASPECT_I18N = """module Arkham.Aspect where
+
+skillTypeKey :: SkillType -> Text
+skillTypeKey = \\case
+  SkillWillpower -> "willpower"
+  SkillIntellect -> "intellect"
+  SkillCombat -> "combat"
+  SkillAgility -> "agility"
+"""
+
+SEAL_I18N = """module Arkham.Campaigns.EdgeOfTheEarth.Seal where
+
+data SealKind = SealA | SealB | SealC | SealD | SealE
+  deriving stock (Show, Eq, Ord, Bounded, Enum, Generic, Data)
 """
 
 
@@ -695,6 +721,174 @@ run = campaignI18n $ story $ skillVar #willpower $ labeled' "test"
     )
 
 
+def test_skill_icon_var_registry_matches_i18n_when_every_value_has_a_glyph() -> None:
+    artifact = registry_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillIconVar #wild $ labeled' "test"
+""",
+        },
+        icon_tags={"willpower", "intellect", "combat", "agility", "wild", "wildMinus"},
+    )
+    variables = {
+        entry["key"]: {variable["name"]: variable["type"] for variable in entry["variables"]}
+        for entry in artifact["keys"]
+    }
+    values = artifact["variableTypes"][extractor.SKILL_ICON_FACE_TYPE]["values"]
+
+    check(values == extractor.SKILL_ICON_FACE_VALUES, f"skillIconVar registry did not match: {values}")
+    check(
+        variables.get("standalone.testCampaign.label.test", {}).get("skillIcon")
+        == extractor.SKILL_ICON_FACE_TYPE,
+        f"skillIconVar was not typed as a skill icon face: {variables}",
+    )
+
+
+def test_skill_icon_var_falls_back_to_text_for_an_extra_value_without_a_glyph() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillIconVar #wild $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility", "wild"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"skillIconVar did not fall back to text when wildMinus had no glyph: {variables}",
+    )
+
+
+def test_skill_icon_var_falls_back_to_text_when_a_branch_does_not_use_withvar() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                '  WildMinusIcon -> withVar "skillIcon" (String "wildMinus") a\n',
+                '  WildMinusIcon -> keyVar "skillIcon" "wildMinus" a\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillIconVar #wild $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility", "wild", "wildMinus"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"skillIconVar did not fall back to text for a non-withVar branch: {variables}",
+    )
+
+
+def test_skill_icon_var_falls_back_to_text_when_variable_name_is_not_literal() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                'skillIconVar v a = case v of\n',
+                'skillIconName = "skillIcon"\n\nskillIconVar v a = case v of\n',
+            ).replace(
+                '  WildMinusIcon -> withVar "skillIcon" (String "wildMinus") a\n',
+                '  WildMinusIcon -> withVar skillIconName (String "wildMinus") a\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillIconVar #wild $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility", "wild", "wildMinus"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"skillIconVar did not fall back to text for a non-literal variable name: {variables}",
+    )
+
+
+def test_skill_icon_var_falls_back_to_text_when_definition_has_a_guard() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N.replace(
+                'skillIconVar v a = case v of\n',
+                'skillIconVar v a\n  | otherwise = case v of\n',
+            ),
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run = campaignI18n $ story $ skillIconVar #wild $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility", "wild", "wildMinus"},
+    )
+    check(
+        variables.get("skillIcon") == "text",
+        f"skillIconVar did not fall back to text for a guarded definition: {variables}",
+    )
+
+
+def test_replaced_skill_key_is_typed_as_a_skill_icon_when_skill_type_key_is_proven() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Aspect.hs": ASPECT_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run replaced = campaignI18n $ story $ keyVar "replacedSkill" (skillTypeKey replaced) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"willpower", "intellect", "combat", "agility"},
+    )
+    check(
+        variables.get("replacedSkill") == extractor.SKILL_ICON_TYPE,
+        f"replacedSkill was not typed as a skill icon: {variables}",
+    )
+
+
+def test_seal_key_is_typed_as_a_seal_icon_when_seal_kind_is_proven() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/I18n.hs": SKILL_I18N,
+            "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs": SEAL_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Test.Helpers
+
+run seal = campaignI18n $ story $ keyVar "seal" (toScope $ tshow seal.kind) $ labeled' "test"
+""",
+        },
+        "standalone.testCampaign.label.test",
+        icon_tags={"sealA", "sealB", "sealC", "sealD", "sealE"},
+    )
+    check(
+        variables.get("seal") == extractor.SEAL_ICON_TYPE,
+        f"seal was not typed as a seal icon: {variables}",
+    )
+
+
 def test_amount_labels_are_choice_scoped_and_readers_are_ignored() -> None:
     keys = keys_of(
         {
@@ -991,6 +1185,13 @@ TESTS = (
     test_skill_var_falls_back_to_text_when_a_branch_does_not_use_withvar,
     test_skill_var_falls_back_to_text_when_the_variable_name_is_not_literal,
     test_skill_var_falls_back_to_text_when_definition_has_a_guard,
+    test_skill_icon_var_registry_matches_i18n_when_every_value_has_a_glyph,
+    test_skill_icon_var_falls_back_to_text_for_an_extra_value_without_a_glyph,
+    test_skill_icon_var_falls_back_to_text_when_a_branch_does_not_use_withvar,
+    test_skill_icon_var_falls_back_to_text_when_variable_name_is_not_literal,
+    test_skill_icon_var_falls_back_to_text_when_definition_has_a_guard,
+    test_replaced_skill_key_is_typed_as_a_skill_icon_when_skill_type_key_is_proven,
+    test_seal_key_is_typed_as_a_seal_icon_when_seal_kind_is_proven,
     test_amount_labels_are_choice_scoped_and_readers_are_ignored,
     test_a_module_that_cannot_be_parsed_but_emits_keys_is_a_hard_failure,
     test_same_named_local_scopes_do_not_share_their_call_sites,

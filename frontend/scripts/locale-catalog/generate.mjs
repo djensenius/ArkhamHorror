@@ -539,7 +539,7 @@ export function resolveVariablesAndLinks(normalized, defaultLocale, requiredKeys
   // are accepted; arbitrary text would fail open as a literal `{value}`.
   const ROLE_ACCEPTS = {
     text: new Set(['text', 'integer']),
-    iconVariable: new Set(['chaosTokenFace', 'skillIcon']),
+    iconVariable: new Set(['chaosTokenFace', 'skillIcon', 'skillIconFace', 'sealIconFace']),
   }
   const defaultEntries = normalized.get(defaultLocale)
   let variableGaps = []
