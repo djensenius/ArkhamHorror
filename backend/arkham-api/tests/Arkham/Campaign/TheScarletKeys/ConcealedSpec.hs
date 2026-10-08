@@ -5,6 +5,7 @@ import Arkham.Campaigns.TheScarletKeys.Concealed (mkConcealedCard)
 import Arkham.Campaigns.TheScarletKeys.Concealed.Kind
 import Arkham.Enemy.CardDefs.TheScarletKeys.CrimsonConspiracy qualified as Enemies
 import Arkham.Enemy.Types (Enemy)
+import Arkham.Location.Grid
 import Arkham.Matcher
 import Arkham.Placement
 import Arkham.Token (Token (Charge))
@@ -91,3 +92,20 @@ spec = describe "Concealed mini-cards" do
       location.clues `shouldReturn` 0
       self.clues `shouldReturn` 1
       assertAny ConcealedCardAny
+
+  context "exposing grid-position concealed cards" do
+    it "resolves an exposed enemy mini-card from its grid position" . gameTest $ \self -> do
+      location <- testLocation
+      self `moveTo` location
+      agent <- testEnemyWithDef Enemies.coterieAgentA id
+      run $ PlaceEnemy (toId agent) InTheShadows
+      card <- mkConcealedCard CoterieAgentA
+      run $ CreateConcealedCard card
+      run $ PlaceConcealedCard (toId self) card.id (InPosition $ Pos 0 0)
+
+      run $ Flip (toId self) (toSource self) (toTarget card.id)
+      chooseTarget card.id
+      skip
+
+      assertNone $ EnemyWithPlacement InTheShadows
+      assertNone ConcealedCardAny
