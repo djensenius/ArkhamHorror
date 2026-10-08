@@ -2958,26 +2958,6 @@ def _chaos_token_face_order(library: Path) -> list[str]:
     return re.findall(r"\b[A-Z][A-Za-z0-9]*\b", list_match.group(1))
 
 
-def _is_custom_token_label_result(node, source: bytes) -> bool:
-    if node is None:
-        return False
-    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
-        return _is_custom_token_label_result(significant_children(node)[0], source)
-    application = flatten_application(node, source)
-    if application is None or application[0] != "capitalizeFirst" or len(application[1]) != 1:
-        return False
-    inner = application[1][0]
-    if inner.type in {"exp", "parens"} and len(significant_children(inner)) == 1:
-        inner = significant_children(inner)[0]
-    inner_application = flatten_application(inner, source)
-    return (
-        inner_application is not None
-        and inner_application[0] == "customTokenKey"
-        and len(inner_application[1]) == 1
-        and text_of(inner_application[1][0], source).strip() == "slug"
-    )
-
-
 UNSAFE_TEXT_VARIABLE_MARKERS = frozenset("{}_*")
 
 
@@ -3004,7 +2984,6 @@ def _chaos_token_label_text_values(library: Path) -> list[str]:
 
     official = _chaos_token_face_order(library)
     labels: dict[str, str] = {}
-    saw_custom_token = False
     for alternatives in body.children:
         if alternatives.type != "alternatives":
             continue
@@ -3019,17 +2998,18 @@ def _chaos_token_label_text_values(library: Path) -> list[str]:
             if bodies is None or len(bodies) != 1:
                 return []
             if pattern == "CustomToken slug":
-                if not _is_custom_token_label_result(bodies[0], source):
-                    return []
-                saw_custom_token = True
-                continue
+                # CustomToken slugs are an open JSON domain: FromJSON maps any unknown
+                # string to CustomToken. customTokenKey/capitalizeFirst preserve markup
+                # metacharacters, and web labels format the interpolated result, so a
+                # TokenKey can produce non-plain text that this registry must not bless.
+                return []
             if not re.fullmatch(r"[A-Z][A-Za-z0-9_']*", pattern) or pattern in labels:
                 return []
             label = _bare_string_literal_value(bodies[0], source)
             if label is None:
                 return []
             labels[pattern] = label
-    if not official or any(constructor not in labels for constructor in official) or not saw_custom_token:
+    if not official or any(constructor not in labels for constructor in official):
         return []
     return _plain_text_variable_values([labels[constructor] for constructor in official])
 

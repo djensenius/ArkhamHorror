@@ -609,26 +609,26 @@ test('label.test-style skill icons keep an explicit icon-variable shape', async 
   }
 })
 
-test('keyName-sourced key text labels are supported in every locale', async () => {
+test('open CustomToken keyName labels leave placeKeyOnTheAmalgam unsupported in every locale', async () => {
   const built = await buildCatalog({})
   const key = 'theInnsmouthConspiracy.thePitOfDespair.label.placeKeyOnTheAmalgam'
 
   assert.ok(
-    !built.manifest.backend.unknownVariableTypes.some((gap) => gap.key === key),
-    'placeKeyOnTheAmalgam must not be reported as an unusable variable type',
+    built.manifest.backend.unknownVariableTypes.some(
+      (gap) =>
+        gap.key === key &&
+        gap.variable === 'key' &&
+        gap.role === 'text' &&
+        gap.type === 'unknown',
+    ),
+    'placeKeyOnTheAmalgam must be reported as an unusable key variable while CustomToken is open',
   )
-  const englishEntry = chunkFor(built.files, built.manifest, 'en', key)?.entries[key]
-  assert.ok(englishEntry, `${key} must be present in en`)
-  assert.equal(englishEntry.form, 'message', `${key} should be renderable in en`)
 
   for (const locale of built.manifest.locales) {
     const entry = chunkFor(built.files, built.manifest, locale.locale, key)?.entries[key]
     if (entry === undefined) continue
-    assert.equal(entry.form, 'message', `${key} should be renderable in ${locale.locale}`)
-    assert.ok(
-      entry.variables.some((variable) => variable.name === 'key' && variable.role === 'text'),
-      `${key} must declare key as a text variable in ${locale.locale}`,
-    )
+    assert.equal(entry.form, 'unsupported', `${key} should be unsupported in ${locale.locale}`)
+    assert.equal(entry.reason, 'unusable-variable-type', `${key} reason in ${locale.locale}`)
   }
 })
 

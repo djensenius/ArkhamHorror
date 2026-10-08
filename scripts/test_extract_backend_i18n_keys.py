@@ -115,6 +115,42 @@ chaosTokenLabel = \\case
 """
 
 
+CLOSED_CHAOS_TOKEN_TYPES = """module Arkham.ChaosToken.Types where
+
+data ChaosTokenFace
+  = PlusOne
+  | Zero
+  | Skull
+  | ElderThing
+  | BlessToken
+
+instance ToDisplay ChaosTokenFace where
+  toDisplay = \\case
+    PlusOne -> "+1"
+    Zero -> "0"
+    Skull -> "{skull}"
+    ElderThing -> "{elderThing}"
+    BlessToken -> "{bless}"
+
+allChaosTokenFaces :: [ChaosTokenFace]
+allChaosTokenFaces =
+  [ PlusOne
+  , Zero
+  , Skull
+  , ElderThing
+  , BlessToken
+  ]
+
+chaosTokenLabel :: ChaosTokenFace -> Text
+chaosTokenLabel = \\case
+  PlusOne -> "+1"
+  Zero -> "0"
+  Skull -> "Skull"
+  ElderThing -> "Elder Thing"
+  BlessToken -> "Bless"
+"""
+
+
 KEY_I18N = """module Arkham.Key where
 
 import Arkham.ChaosToken.Types
@@ -616,7 +652,7 @@ run = campaignI18n $ story $ withVar "token" (String "skull") $ p "addToken"
 def test_key_name_string_wrapped_key_variable_is_text() -> None:
     variables = variable_types_of(
         {
-            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/ChaosToken/Types.hs": CLOSED_CHAOS_TOKEN_TYPES,
             "Arkham/Key.hs": KEY_I18N,
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
@@ -631,14 +667,14 @@ run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled'
     )
     check(
         variables.get("key") == "text",
-        f"String-wrapped keyName variable was not typed as text: {variables}",
+        f"String-wrapped keyName variable was not typed as text for a closed token face: {variables}",
     )
 
 
 def check_key_name_positive_control(context: str) -> None:
     variables = variable_types_of(
         {
-            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/ChaosToken/Types.hs": CLOSED_CHAOS_TOKEN_TYPES,
             "Arkham/Key.hs": KEY_I18N,
             "Test/Helpers.hs": HELPERS,
             "Test/Scenario.hs": """module Test.Scenario where
@@ -662,7 +698,7 @@ def key_name_variables_for_scenario(
     *,
     extra_modules: dict[str, str] | None = None,
     key_source: str = KEY_I18N,
-    chaos_source: str = CHAOS_TOKEN_TYPES,
+    chaos_source: str = CLOSED_CHAOS_TOKEN_TYPES,
 ) -> dict[str, str]:
     modules = {
         "Arkham/ChaosToken/Types.hs": chaos_source,
@@ -811,7 +847,7 @@ run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled'
 def test_key_name_text_registry_rejects_web_markup_in_computed_labels() -> None:
     variables = variable_types_of(
         {
-            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES.replace(
+            "Arkham/ChaosToken/Types.hs": CLOSED_CHAOS_TOKEN_TYPES.replace(
                 '  Skull -> "Skull"', '  Skull -> "{skull}"'
             ),
             "Arkham/Key.hs": KEY_I18N,
@@ -955,14 +991,80 @@ import Test.Helpers
 
 run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
 """,
-        chaos_source=CHAOS_TOKEN_TYPES.replace(
-            "  CustomToken slug -> capitalizeFirst (customTokenKey slug)",
-            "  CustomToken slug -> customTokenKey slug",
+        chaos_source=CLOSED_CHAOS_TOKEN_TYPES.replace(
+            '  Skull -> "Skull"', '  Skull -> tshow Skull'
         ),
     )
     check(
         variables.get("key") == "unknown",
         f"drifted chaosTokenLabel shape left the keyName registry enabled: {variables}",
+    )
+
+
+def test_key_name_text_registry_turns_off_when_token_key_can_reach_open_custom_tokens() -> None:
+    variables = key_name_variables_for_scenario(
+        """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        chaos_source=CHAOS_TOKEN_TYPES,
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"open CustomToken labels left the keyName registry enabled: {variables}",
+    )
+
+
+def test_key_name_text_registry_turns_off_for_an_unsafe_custom_token_literal() -> None:
+    variables = key_name_variables_for_scenario(
+        """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        chaos_source=CHAOS_TOKEN_TYPES,
+        extra_modules={
+            "Test/CustomTokenFactory.hs": """module Test.CustomTokenFactory where
+
+import Arkham.ChaosToken.Types
+
+unsafeFace = CustomToken "{skull}"
+""",
+        },
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"unsafe CustomToken literal left the keyName registry enabled: {variables}",
+    )
+
+
+def test_key_name_text_registry_turns_off_for_a_non_literal_custom_token_slug() -> None:
+    variables = key_name_variables_for_scenario(
+        """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        chaos_source=CHAOS_TOKEN_TYPES,
+        extra_modules={
+            "Test/CustomTokenFactory.hs": """module Test.CustomTokenFactory where
+
+import Arkham.ChaosToken.Types
+
+customFace slug = CustomToken slug
+""",
+        },
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"non-literal CustomToken slug left the keyName registry enabled: {variables}",
     )
 
 
@@ -2439,6 +2541,9 @@ TESTS = (
     test_key_name_text_proof_rejects_qualified_key_name_from_another_module,
     test_key_name_text_registry_turns_off_when_key_name_shape_drifts,
     test_key_name_text_registry_turns_off_when_chaos_token_label_shape_drifts,
+    test_key_name_text_registry_turns_off_when_token_key_can_reach_open_custom_tokens,
+    test_key_name_text_registry_turns_off_for_an_unsafe_custom_token_literal,
+    test_key_name_text_registry_turns_off_for_a_non_literal_custom_token_slug,
     test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph,
     test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
     test_skill_var_falls_back_to_text_when_i18n_source_is_missing,
