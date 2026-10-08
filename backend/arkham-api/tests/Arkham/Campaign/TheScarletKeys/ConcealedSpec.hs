@@ -5,13 +5,13 @@ import Arkham.Act.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Acts
 import Arkham.Act.Types (Act)
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaigns.TheScarletKeys.Concealed (mkConcealedCard)
-import Arkham.Campaigns.TheScarletKeys.Concealed.Helpers (selectConcealedCardIdsInPlay)
 import Arkham.Campaigns.TheScarletKeys.Concealed.Kind
 import Arkham.Card.CardDef
 import Arkham.Enemy.CardDefs.TheScarletKeys.CrimsonConspiracy qualified as Enemies
 import Arkham.Enemy.Types (Enemy)
 import Arkham.Entities qualified as Entities
 import Arkham.Location.CardDefs.TheScarletKeys.BeyondTheBeyond qualified as BeyondLocations
+import Arkham.Location.CardDefs.TheScarletKeys.CongressOfTheKeys qualified as Cards
 import Arkham.Location.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Locations
 import Arkham.Location.Grid
 import Arkham.Location.Types (revealedL)
@@ -129,12 +129,16 @@ spec = describe "Concealed mini-cards" do
       agent.location `shouldReturn` Just (toId location)
 
   context "exposing every concealed card in play" do
-    it "does not offer unplaced flipped mini-cards" . gameTest $ \self -> do
+    it "does not offer unplaced or flipped mini-cards" . gameTest $ \self -> do
       galata <- testLocationWithDef Locations.galata (revealedL .~ True)
       self `moveTo` galata
       live <- mkConcealedCard SinisterAspirantC
       run $ CreateConcealedCard live
       run $ PlaceConcealedCard (toId self) live.id (AtLocation $ toId galata)
+      flippedInPosition <- mkConcealedCard CoterieAgentA
+      run $ CreateConcealedCard flippedInPosition
+      run $ PlaceConcealedCard (toId self) flippedInPosition.id (InPosition $ Pos 0 0)
+      run $ DoStep 0 $ Flip (toId self) (toSource self) (toTarget flippedInPosition.id)
       unplaced <- mkConcealedCard AcolyteAny
       run $ CreateConcealedCard unplaced
       run $ DoStep 0 $ Flip (toId self) (toSource self) (toTarget unplaced.id)
@@ -142,6 +146,7 @@ spec = describe "Concealed mini-cards" do
       run $ UseCardAbility (toId self) (toSource galata) 1 [] NoPayment
 
       assertTarget live.id
+      assertNotTarget flippedInPosition.id
       assertNotTarget unplaced.id
       chooseTarget live.id
       chooseTarget live.id
@@ -171,22 +176,43 @@ spec = describe "Concealed mini-cards" do
 
   context "Gravity-Defying Climb" do
     it "turns every in-play mini-card face-down after a wrong-order exposure" . gameTest $ \self -> do
-      location <- testLocation
+      location <- testLocationWithDef Cards.gravityDefyingClimb (revealedL .~ True)
       self `moveTo` location
-      exposed <- mkConcealedCard CityOfRemnantsM
+      exposed <- mkConcealedCard CityOfRemnantsL
       run $ CreateConcealedCard exposed
       run $ PlaceConcealedCard (toId self) exposed.id (InPosition $ Pos (-1) 1)
       run $ DoStep 0 $ Flip (toId self) (toSource self) (toTarget exposed.id)
-      hidden <- mkConcealedCard CityOfRemnantsL
+      hidden <- mkConcealedCard CityOfRemnantsM
       run $ CreateConcealedCard hidden
       run $ PlaceConcealedCard (toId self) hidden.id (InPosition $ Pos 1 1)
 
-      -- Same reset loop Gravity-Defying Climb uses after a wrong-order exposure.
-      allCards <- selectConcealedCardIdsInPlay
-      for_ allCards \card -> run $ DoStep 1 $ LookAtRevealed (toId self) ScenarioSource (toTarget card)
+      run $ Flip (toId self) (toSource self) (toTarget hidden.id)
+      chooseTarget hidden.id
+      useForcedAbility
 
       assertNone $ ConcealedCardWithId exposed.id <> ExposedConcealedCard
       assertNone $ ConcealedCardWithId hidden.id <> ExposedConcealedCard
+
+    it "offers only hidden mini-cards after a correct-order exposure" . gameTest $ \self -> do
+      location <- testLocationWithDef Cards.gravityDefyingClimb (revealedL .~ True)
+      self `moveTo` location
+      expected <- mkConcealedCard CityOfRemnantsL
+      run $ CreateConcealedCard expected
+      run $ PlaceConcealedCard (toId self) expected.id (InPosition $ Pos (-1) 1)
+      hidden <- mkConcealedCard CityOfRemnantsM
+      run $ CreateConcealedCard hidden
+      run $ PlaceConcealedCard (toId self) hidden.id (InPosition $ Pos 1 1)
+      alreadyFlipped <- mkConcealedCard CityOfRemnantsR
+      run $ CreateConcealedCard alreadyFlipped
+      run $ PlaceConcealedCard (toId self) alreadyFlipped.id (AtLocation $ toId location)
+      run $ DoStep 0 $ Flip (toId self) (toSource self) (toTarget alreadyFlipped.id)
+
+      run $ Flip (toId self) (toSource self) (toTarget expected.id)
+      chooseTarget expected.id
+      useForcedAbility
+
+      assertTarget hidden.id
+      assertNotTarget alreadyFlipped.id
 
   context "Weald of Effigies" do
     it "does not offer unplaced mini-cards for swaps" . gameTest $ \self -> do
