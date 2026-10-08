@@ -39,7 +39,6 @@ import Arkham.Message.Lifted
 import Arkham.Message.Lifted.Choose
 import Arkham.Modifier
 import Arkham.Placement
-import Arkham.Placement qualified as Placement
 import Arkham.Prelude
 import Arkham.Queue
 import Arkham.Source
@@ -79,12 +78,16 @@ turnOverAllConcealed source = do
   selectEach ConcealedCardAny \c -> turnOverConcealed lead source c.id
 
 selectConcealedCardsInPlay :: HasGame m => m [ConcealedCard]
-selectConcealedCardsInPlay = do
-  select ConcealedCardAny <&> filter \card ->
-    not card.flipped && Placement.isInPlayPlacement card.placement
+selectConcealedCardsInPlay = select ConcealedCardInPlay
 
 selectConcealedCardIdsInPlay :: HasGame m => m [ConcealedCardId]
-selectConcealedCardIdsInPlay = map (.id) <$> selectConcealedCardsInPlay
+selectConcealedCardIdsInPlay = selectMap (.id) ConcealedCardInPlay
+
+selectUnexposedConcealedCardsInPlay :: HasGame m => m [ConcealedCard]
+selectUnexposedConcealedCardsInPlay = select UnexposedConcealedCardInPlay
+
+selectUnexposedConcealedCardIdsInPlay :: HasGame m => m [ConcealedCardId]
+selectUnexposedConcealedCardIdsInPlay = selectMap (.id) UnexposedConcealedCardInPlay
 
 chooseExposeConcealed :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> m ()
 chooseExposeConcealed iid source = chooseExposeConcealedAt iid source (LocationWithInvestigator $ InvestigatorWithId iid)

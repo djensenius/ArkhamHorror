@@ -31,7 +31,7 @@ instance HasAbilities WealdOfEffigiesA where
             2
             ( Here
                 <> thisExists a LocationWithoutClues
-                <> oneOf [LocationCount 2 (LocationWithPlacement InTheShadows), ConcealedCardCount 2 ConcealedCardAny]
+                <> oneOf [LocationCount 2 (LocationWithPlacement InTheShadows), ConcealedCardCount 2 ConcealedCardInPlay]
             )
           $ FastAbility Free
       ]
@@ -60,7 +60,7 @@ instance RunMessage WealdOfEffigiesA where
           when (cardMatch card NonWeakness) $ hollow iid card
       pure l
     UseThisAbility iid (isSource attrs -> True) 2 -> do
-      miniCards <- select ConcealedCardAny
+      miniCards <- selectConcealedCardsInPlay
       locations <- select $ LocationWithPlacement InTheShadows
       chooseOneM iid $ campaignI18n do
         labeledValidate (notNull miniCards) "wealdOfEffigies.miniCards" do

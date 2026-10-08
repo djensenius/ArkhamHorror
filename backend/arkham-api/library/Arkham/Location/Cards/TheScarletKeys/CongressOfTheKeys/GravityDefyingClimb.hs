@@ -60,7 +60,7 @@ instance RunMessage GravityDefyingClimb where
   runMessage msg l@(GravityDefyingClimb attrs) = runQueueT $ case msg of
     ScenarioSpecific "exposed[CityOfRemnantsL]" v -> do
       withAdjacentConcealed attrs v CityOfRemnantsL \iid c -> do
-        otherCards <- filter ((/= c.id) . (.id)) <$> selectConcealedCardsInPlay
+        otherCards <- filter ((/= c.id) . (.id)) <$> selectUnexposedConcealedCardsInPlay
         chooseOneM iid do
           for_ otherCards \otherCard ->
             targeting otherCard.id do
@@ -70,7 +70,7 @@ instance RunMessage GravityDefyingClimb where
         pure $ attrs & setMeta CityOfRemnantsM
     ScenarioSpecific "exposed[CityOfRemnantsM]" v -> do
       withAdjacentConcealed attrs v CityOfRemnantsM \iid c -> do
-        otherCards <- filter ((/= c.id) . (.id)) <$> selectConcealedCardsInPlay
+        otherCards <- filter ((/= c.id) . (.id)) <$> selectUnexposedConcealedCardsInPlay
         chooseOneM iid do
           for_ otherCards \otherCard ->
             targeting otherCard.id do

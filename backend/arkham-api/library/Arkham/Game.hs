@@ -3760,6 +3760,8 @@ getConcealedCardsMatching matcher = do
     ConcealedCardWithId cid -> pure $ filter ((== cid) . toId) as
     ConcealedCardMatchAll ms -> foldM filterMatcher as ms
     ConcealedCardWithPlacement placement -> pure $ filter ((== placement) . attr concealedCardPlacement) as
+    ConcealedCardInPlay -> pure $ filter (Placement.isInPlayPlacement . attr concealedCardPlacement) as
+    UnexposedConcealedCardInPlay -> pure $ filter (\c -> not c.flipped && Placement.isInPlayPlacement c.placement) as
     ConcealedCardAny -> pure as
     ConcealedCardOneOf ms -> nub . concat <$> traverse (filterMatcher as) ms
     ExposedConcealedCard -> pure $ filter (attr concealedCardFlipped) as

@@ -1,10 +1,17 @@
 module Arkham.Campaign.TheScarletKeys.ConcealedSpec (spec) where
 
+import Arkham.Act (lookupAct)
+import Arkham.Act.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Acts
+import Arkham.Act.Types (Act)
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaigns.TheScarletKeys.Concealed (mkConcealedCard)
+import Arkham.Campaigns.TheScarletKeys.Concealed.Helpers (selectConcealedCardIdsInPlay)
 import Arkham.Campaigns.TheScarletKeys.Concealed.Kind
+import Arkham.Card.CardDef
 import Arkham.Enemy.CardDefs.TheScarletKeys.CrimsonConspiracy qualified as Enemies
 import Arkham.Enemy.Types (Enemy)
+import Arkham.Entities qualified as Entities
+import Arkham.Location.CardDefs.TheScarletKeys.BeyondTheBeyond qualified as BeyondLocations
 import Arkham.Location.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Locations
 import Arkham.Location.Grid
 import Arkham.Location.Types (revealedL)
@@ -35,6 +42,14 @@ exposeConcealedCard = do
   click "choose concealed card"
   click "flip concealed card"
   skip
+
+realAct :: CardDef -> TestAppT Act
+realAct def = do
+  card <- genCard def
+  let actId' = ActId (toCardCode card)
+      act' = either (error . show) id $ lookupAct actId' 1 (toCardId card)
+  overTest $ entitiesL . Entities.actsL %~ insertEntity act'
+  pure act'
 
 spec :: Spec
 spec = describe "Concealed mini-cards" do
@@ -132,3 +147,63 @@ spec = describe "Concealed mini-cards" do
       chooseTarget live.id
 
       assertNone $ ConcealedCardWithId live.id
+
+    it "offers only unexposed in-play mini-cards when Search for the Talisman advances" . gameTest $ \self -> do
+      location <- testLocation
+      self `moveTo` location
+      act <- realAct Acts.searchForTheTalisman
+      liveAtLocation <- mkConcealedCard SinisterAspirantC
+      run $ CreateConcealedCard liveAtLocation
+      run $ PlaceConcealedCard (toId self) liveAtLocation.id (AtLocation $ toId location)
+      liveInPosition <- mkConcealedCard CoterieAgentA
+      run $ CreateConcealedCard liveInPosition
+      run $ PlaceConcealedCard (toId self) liveInPosition.id (InPosition $ Pos 0 0)
+      unplaced <- mkConcealedCard AcolyteAny
+      run $ CreateConcealedCard unplaced
+
+      run $ AdvanceAct act.id (TestSource mempty) AdvancedWithOther
+      run ClearUI
+      run $ Do $ AdvanceAct act.id (TestSource mempty) AdvancedWithOther
+
+      assertTarget liveAtLocation.id
+      assertTarget liveInPosition.id
+      assertNotTarget unplaced.id
+
+  context "Gravity-Defying Climb" do
+    it "turns every in-play mini-card face-down after a wrong-order exposure" . gameTest $ \self -> do
+      location <- testLocation
+      self `moveTo` location
+      exposed <- mkConcealedCard CityOfRemnantsM
+      run $ CreateConcealedCard exposed
+      run $ PlaceConcealedCard (toId self) exposed.id (InPosition $ Pos (-1) 1)
+      run $ DoStep 0 $ Flip (toId self) (toSource self) (toTarget exposed.id)
+      hidden <- mkConcealedCard CityOfRemnantsL
+      run $ CreateConcealedCard hidden
+      run $ PlaceConcealedCard (toId self) hidden.id (InPosition $ Pos 1 1)
+
+      -- Same reset loop Gravity-Defying Climb uses after a wrong-order exposure.
+      allCards <- selectConcealedCardIdsInPlay
+      for_ allCards \card -> run $ DoStep 1 $ LookAtRevealed (toId self) ScenarioSource (toTarget card)
+
+      assertNone $ ConcealedCardWithId exposed.id <> ExposedConcealedCard
+      assertNone $ ConcealedCardWithId hidden.id <> ExposedConcealedCard
+
+  context "Weald of Effigies" do
+    it "does not offer unplaced mini-cards for swaps" . gameTest $ \self -> do
+      weald <- testLocationWithDef BeyondLocations.wealdOfEffigiesA (revealedL .~ True)
+      self `moveTo` weald
+      firstCard <- mkConcealedCard SinisterAspirantC
+      run $ CreateConcealedCard firstCard
+      run $ PlaceConcealedCard (toId self) firstCard.id (AtLocation $ toId weald)
+      secondCard <- mkConcealedCard CoterieAgentA
+      run $ CreateConcealedCard secondCard
+      run $ PlaceConcealedCard (toId self) secondCard.id (InPosition $ Pos 0 0)
+      unplaced <- mkConcealedCard AcolyteAny
+      run $ CreateConcealedCard unplaced
+
+      run $ UseCardAbility (toId self) (toSource weald) 2 [] NoPayment
+      clickLabel "$theScarletKeys.label.wealdOfEffigies.miniCards"
+
+      assertTarget firstCard.id
+      assertTarget secondCard.id
+      assertNotTarget unplaced.id

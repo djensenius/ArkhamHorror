@@ -84,7 +84,7 @@ instance RunMessage SearchForTheTalisman where
       toDiscard GameSource attrs
       pure a
     Do msg'@(AdvanceAct (isSide B attrs -> True) _ _) -> do
-      concealed <- selectConcealedCardIdsInPlay
+      concealed <- selectUnexposedConcealedCardIdsInPlay
       lead <- getLead
       leadChooseOneM $ targets concealed \card -> do
         exposeConcealed lead attrs card
