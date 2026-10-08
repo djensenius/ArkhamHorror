@@ -657,6 +657,24 @@ run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled'
     )
 
 
+def key_name_variables_for_scenario(
+    scenario: str,
+    *,
+    extra_modules: dict[str, str] | None = None,
+    key_source: str = KEY_I18N,
+    chaos_source: str = CHAOS_TOKEN_TYPES,
+) -> dict[str, str]:
+    modules = {
+        "Arkham/ChaosToken/Types.hs": chaos_source,
+        "Arkham/Key.hs": key_source,
+        "Test/Helpers.hs": HELPERS,
+        "Test/Scenario.hs": scenario,
+    }
+    if extra_modules is not None:
+        modules.update(extra_modules)
+    return variable_types_of(modules, "standalone.testCampaign.label.placeKeyOnTheAmalgam")
+
+
 def test_key_name_text_proof_rejects_another_callee() -> None:
     check_key_name_positive_control("another callee boundary")
     variables = variable_types_of(
@@ -811,6 +829,140 @@ run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled'
     check(
         variables.get("key") == "unknown",
         f"unsafe chaosTokenLabel text enabled the keyName registry: {variables}",
+    )
+
+
+def test_key_name_text_proof_rejects_lexical_key_name_shadows() -> None:
+    check_key_name_positive_control("lexical shadow boundary")
+    scenarios = {
+        "let": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ let keyName _ = "Red" in withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        "where": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+ where
+  keyName _ = "Red"
+""",
+        "lambda": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ (\\keyName -> withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam") (\\_ -> "Red")
+""",
+    }
+    for shadow_kind, scenario in scenarios.items():
+        variables = key_name_variables_for_scenario(scenario)
+        check(
+            variables.get("key") == "unknown",
+            f"{shadow_kind} shadowed keyName was accepted as a key text proof: {variables}",
+        )
+
+
+def test_key_name_text_proof_rejects_key_name_imported_from_another_module() -> None:
+    check_key_name_positive_control("foreign import boundary")
+    variables = key_name_variables_for_scenario(
+        """module Test.Scenario where
+
+import Test.Helpers
+import Test.OtherKey
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        extra_modules={
+            "Test/OtherKey.hs": """module Test.OtherKey (keyName) where
+
+keyName _ = "Red"
+""",
+        },
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"foreign imported keyName was accepted as Arkham.Key.keyName: {variables}",
+    )
+
+
+def test_key_name_text_proof_accepts_qualified_arkham_key_import() -> None:
+    variables = key_name_variables_for_scenario(
+        """module Test.Scenario where
+
+import qualified Arkham.Key as Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ Key.keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+    )
+    check(
+        variables.get("key") == "text",
+        f"qualified Arkham.Key.keyName variable was not typed as text: {variables}",
+    )
+
+
+def test_key_name_text_proof_rejects_qualified_key_name_from_another_module() -> None:
+    check_key_name_positive_control("foreign qualified import boundary")
+    variables = key_name_variables_for_scenario(
+        """module Test.Scenario where
+
+import qualified Test.OtherKey as Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ Key.keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        extra_modules={
+            "Test/OtherKey.hs": """module Test.OtherKey (keyName) where
+
+keyName _ = "Red"
+""",
+        },
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"foreign qualified keyName was accepted as Arkham.Key.keyName: {variables}",
+    )
+
+
+def test_key_name_text_registry_turns_off_when_key_name_shape_drifts() -> None:
+    variables = key_name_variables_for_scenario(
+        """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        key_source=KEY_I18N.replace('  RedKey -> "Red"', '  RedKey -> "Crimson"'),
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"drifted Arkham.Key.keyName shape left the keyName registry enabled: {variables}",
+    )
+
+
+def test_key_name_text_registry_turns_off_when_chaos_token_label_shape_drifts() -> None:
+    variables = key_name_variables_for_scenario(
+        """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        chaos_source=CHAOS_TOKEN_TYPES.replace(
+            "  CustomToken slug -> capitalizeFirst (customTokenKey slug)",
+            "  CustomToken slug -> customTokenKey slug",
+        ),
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"drifted chaosTokenLabel shape left the keyName registry enabled: {variables}",
     )
 
 
@@ -2281,6 +2433,12 @@ TESTS = (
     test_key_name_text_proof_rejects_mixed_call_sites,
     test_key_name_text_proof_rejects_mixed_call_sites_when_unproven_site_is_first,
     test_key_name_text_registry_rejects_web_markup_in_computed_labels,
+    test_key_name_text_proof_rejects_lexical_key_name_shadows,
+    test_key_name_text_proof_rejects_key_name_imported_from_another_module,
+    test_key_name_text_proof_accepts_qualified_arkham_key_import,
+    test_key_name_text_proof_rejects_qualified_key_name_from_another_module,
+    test_key_name_text_registry_turns_off_when_key_name_shape_drifts,
+    test_key_name_text_registry_turns_off_when_chaos_token_label_shape_drifts,
     test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph,
     test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
     test_skill_var_falls_back_to_text_when_i18n_source_is_missing,

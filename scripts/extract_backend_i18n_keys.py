@@ -1614,6 +1614,9 @@ def _icon_type_from_map(icon_variable_types, key: str) -> str:
 
 
 def _lexical_binding(node, name: str, source: bytes):
+    pattern = _lexical_pattern_binding(node, name, source)
+    if pattern is not None:
+        return pattern
     ancestor = node.parent
     while ancestor is not None:
         for candidate in _descendant_binds(ancestor, name, source):
@@ -1621,6 +1624,45 @@ def _lexical_binding(node, name: str, source: bytes):
             if scope is not None and _contains(scope, node):
                 return candidate
         ancestor = ancestor.parent
+    return None
+
+
+def _lexical_pattern_binding(node, name: str, source: bytes):
+    ancestor = node.parent
+    while ancestor is not None:
+        candidate = None
+        if ancestor.type == "lambda":
+            candidate = _patterns_bind_name(ancestor, name, source)
+        elif ancestor.type == "function" and any(
+            child.type == "match" and _contains(child, node) for child in significant_children(ancestor)
+        ):
+            candidate = _patterns_bind_name(ancestor, name, source)
+        elif ancestor.type == "alternative":
+            children = significant_children(ancestor)
+            if children and not _contains(children[0], node):
+                candidate = _first_pattern_binding(children[0], name, source)
+        if candidate is not None:
+            return candidate
+        ancestor = ancestor.parent
+    return None
+
+
+def _patterns_bind_name(node, name: str, source: bytes):
+    for child in significant_children(node):
+        if child.type == "patterns":
+            candidate = _first_pattern_binding(child, name, source)
+            if candidate is not None:
+                return candidate
+    return None
+
+
+def _first_pattern_binding(node, name: str, source: bytes):
+    if node.type == "variable" and text_of(node, source) == name:
+        return node
+    for child in node.children:
+        candidate = _first_pattern_binding(child, name, source)
+        if candidate is not None:
+            return candidate
     return None
 
 
