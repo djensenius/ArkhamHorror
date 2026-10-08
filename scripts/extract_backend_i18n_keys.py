@@ -2936,6 +2936,17 @@ def _is_custom_token_label_result(node, source: bytes) -> bool:
     )
 
 
+UNSAFE_TEXT_VARIABLE_MARKERS = frozenset("{}_*")
+
+
+def _plain_text_variable_values(values: list[str]) -> list[str]:
+    return (
+        []
+        if any(any(marker in value for marker in UNSAFE_TEXT_VARIABLE_MARKERS) for value in values)
+        else values
+    )
+
+
 def _chaos_token_label_text_values(library: Path) -> list[str]:
     path = library / CHAOS_TOKEN_FACE_SOURCE
     if not path.is_file():
@@ -2978,7 +2989,7 @@ def _chaos_token_label_text_values(library: Path) -> list[str]:
             labels[pattern] = label
     if not official or any(constructor not in labels for constructor in official) or not saw_custom_token:
         return []
-    return [labels[constructor] for constructor in official]
+    return _plain_text_variable_values([labels[constructor] for constructor in official])
 
 
 def _is_chaos_token_label_key_name_result(node, source: bytes, index: ModuleIndex) -> bool:
@@ -3065,7 +3076,7 @@ def _key_name_text_values(library: Path) -> list[str]:
     token_labels = _chaos_token_label_text_values(library)
     if not saw_token_key or set(labels) != set(expected_literals) or not token_labels:
         return []
-    return [*token_labels, *[expected_literals[key] for key in expected_literals]]
+    return _plain_text_variable_values([*token_labels, *[expected_literals[key] for key in expected_literals]])
 
 
 def _skill_type_key_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:

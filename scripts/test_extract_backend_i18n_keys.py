@@ -790,6 +790,30 @@ run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled'
     )
 
 
+def test_key_name_text_registry_rejects_web_markup_in_computed_labels() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES.replace(
+                '  Skull -> "Skull"', '  Skull -> "{skull}"'
+            ),
+            "Arkham/Key.hs": KEY_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        },
+        "standalone.testCampaign.label.placeKeyOnTheAmalgam",
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"unsafe chaosTokenLabel text enabled the keyName registry: {variables}",
+    )
+
+
 def test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph() -> None:
     artifact = registry_of(
         {
@@ -2256,6 +2280,7 @@ TESTS = (
     test_key_name_text_proof_requires_the_string_wrapper,
     test_key_name_text_proof_rejects_mixed_call_sites,
     test_key_name_text_proof_rejects_mixed_call_sites_when_unproven_site_is_first,
+    test_key_name_text_registry_rejects_web_markup_in_computed_labels,
     test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph,
     test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
     test_skill_var_falls_back_to_text_when_i18n_source_is_missing,
