@@ -617,6 +617,10 @@ test('keyName-sourced key text labels are supported in every locale', async () =
     !built.manifest.backend.unknownVariableTypes.some((gap) => gap.key === key),
     'placeKeyOnTheAmalgam must not be reported as an unusable variable type',
   )
+  const englishEntry = chunkFor(built.files, built.manifest, 'en', key)?.entries[key]
+  assert.ok(englishEntry, `${key} must be present in en`)
+  assert.equal(englishEntry.form, 'message', `${key} should be renderable in en`)
+
   for (const locale of built.manifest.locales) {
     const entry = chunkFor(built.files, built.manifest, locale.locale, key)?.entries[key]
     if (entry === undefined) continue
