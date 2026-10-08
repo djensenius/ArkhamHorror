@@ -97,6 +97,50 @@ allChaosTokenFaces =
   , ElderThing
   , BlessToken
   ]
+
+customTokenKey :: Text -> Text
+customTokenKey slug = slug
+
+capitalizeFirst :: Text -> Text
+capitalizeFirst slug = slug
+
+chaosTokenLabel :: ChaosTokenFace -> Text
+chaosTokenLabel = \\case
+  PlusOne -> "+1"
+  Zero -> "0"
+  Skull -> "Skull"
+  ElderThing -> "Elder Thing"
+  BlessToken -> "Bless"
+  CustomToken slug -> capitalizeFirst (customTokenKey slug)
+"""
+
+
+KEY_I18N = """module Arkham.Key where
+
+import Arkham.ChaosToken.Types
+
+data ArkhamKey
+  = TokenKey ChaosToken
+  | RedKey
+  | BlueKey
+  | GreenKey
+  | YellowKey
+  | PurpleKey
+  | BlackKey
+  | WhiteKey
+  | UnrevealedKey ArkhamKey
+
+keyName :: ArkhamKey -> Text
+keyName = \\case
+  TokenKey token -> chaosTokenLabel token.face
+  RedKey -> "Red"
+  BlueKey -> "Blue"
+  GreenKey -> "Green"
+  YellowKey -> "Yellow"
+  PurpleKey -> "Purple"
+  BlackKey -> "Black"
+  WhiteKey -> "White"
+  UnrevealedKey _ -> "Unrevealed"
 """
 
 
@@ -566,6 +610,153 @@ run = campaignI18n $ story $ withVar "token" (String "skull") $ p "addToken"
     check(
         variables.get("token") == "unknown",
         f"cross-module token variable conflict did not fail closed: {variables}",
+    )
+
+
+def test_key_name_string_wrapped_key_variable_is_text() -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/Key.hs": KEY_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        },
+        "standalone.testCampaign.label.placeKeyOnTheAmalgam",
+    )
+    check(
+        variables.get("key") == "text",
+        f"String-wrapped keyName variable was not typed as text: {variables}",
+    )
+
+
+def check_key_name_positive_control(context: str) -> None:
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/Key.hs": KEY_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        },
+        "standalone.testCampaign.label.placeKeyOnTheAmalgam",
+    )
+    check(
+        variables.get("key") == "text",
+        f"{context}: positive keyName control was not typed as text: {variables}",
+    )
+
+
+def test_key_name_text_proof_rejects_another_callee() -> None:
+    check_key_name_positive_control("another callee boundary")
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/Key.hs": KEY_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+keyLabel _ = "Red"
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyLabel key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        },
+        "standalone.testCampaign.label.placeKeyOnTheAmalgam",
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"non-keyName callee was accepted as a key text proof: {variables}",
+    )
+
+
+def test_key_name_text_proof_rejects_a_shadowed_key_name() -> None:
+    check_key_name_positive_control("shadowed keyName boundary")
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/Key.hs": KEY_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+keyName _ = "Red"
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        },
+        "standalone.testCampaign.label.placeKeyOnTheAmalgam",
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"shadowed keyName was accepted as a key text proof: {variables}",
+    )
+
+
+def test_key_name_text_proof_requires_the_string_wrapper() -> None:
+    check_key_name_positive_control("non-String wrapper boundary")
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/Key.hs": KEY_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/Scenario.hs": """module Test.Scenario where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        },
+        "standalone.testCampaign.label.placeKeyOnTheAmalgam",
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"bare keyName was accepted without the String wrapper: {variables}",
+    )
+
+
+def test_key_name_text_proof_rejects_mixed_call_sites() -> None:
+    check_key_name_positive_control("mixed call-site boundary")
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/Key.hs": KEY_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/A.hs": """module Test.A where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+            "Test/B.hs": """module Test.B where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        },
+        "standalone.testCampaign.label.placeKeyOnTheAmalgam",
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"mixed proven and unproven keyName call sites did not fail closed: {variables}",
     )
 
 
@@ -2029,6 +2220,11 @@ TESTS = (
     test_icon_variable_type_conflicts_downgrade_to_unknown,
     test_icon_variable_type_conflicts_downgrade_to_unknown_when_proven_site_is_first,
     test_icon_variable_type_conflicts_downgrade_across_modules,
+    test_key_name_string_wrapped_key_variable_is_text,
+    test_key_name_text_proof_rejects_another_callee,
+    test_key_name_text_proof_rejects_a_shadowed_key_name,
+    test_key_name_text_proof_requires_the_string_wrapper,
+    test_key_name_text_proof_rejects_mixed_call_sites,
     test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph,
     test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
     test_skill_var_falls_back_to_text_when_i18n_source_is_missing,

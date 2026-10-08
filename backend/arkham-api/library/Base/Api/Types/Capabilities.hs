@@ -70,7 +70,7 @@ update-required even for deployments that omit the catalog fields.
 serverCapabilities :: Maybe LocaleCatalog -> ServerCapabilities
 serverCapabilities localeCatalog =
   ServerCapabilities
-    { schemaRevision = "0.1.51"
+    { schemaRevision = "0.1.52"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.50"

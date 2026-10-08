@@ -211,6 +211,7 @@ SKILL_ICON_FACE_TYPE = "skillIconFace"
 SKILL_ICON_DISCARD_TYPE = "skillIconDiscardFace"
 SKILL_ICON_SOURCE = "Arkham/I18n.hs"
 SKILL_TYPE_KEY_SOURCE = "Arkham/Aspect.hs"
+KEY_NAME_SOURCE = "Arkham/Key.hs"
 SEAL_ICON_TYPE = "sealIconFace"
 SEAL_ICON_SOURCE = "Arkham/Campaigns/EdgeOfTheEarth/Seal.hs"
 SKILL_ICON_VALUES = ["willpower", "intellect", "combat", "agility"]
@@ -1660,7 +1661,50 @@ def _variable_type(
         return _icon_type_from_map(icon_variable_types, "replacedSkill")
     if variable == "seal" and _is_edge_of_the_earth_seal_value(value, source, index, module):
         return _icon_type_from_map(icon_variable_types, "seal")
+    if variable == "key" and _key_name_text_enabled(icon_variable_types) and _is_key_name_text_value(
+        value, source, index, module
+    ):
+        return "text"
     return value_type(value, source, index, module)
+
+
+def _key_name_text_enabled(icon_variable_types) -> bool:
+    return isinstance(icon_variable_types, dict) and icon_variable_types.get("keyName") == "text"
+
+
+def _is_key_name_text_value(node, source: bytes, index=None, module: str | None = None) -> bool:
+    if node is None:
+        return False
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _is_key_name_text_value(significant_children(node)[0], source, index, module)
+
+    parts = infix_parts(node, source) if node.type == "infix" else None
+    if parts is not None and parts[1] == "$":
+        left, _, right = parts
+        if text_of(left, source).strip() != "String":
+            return False
+        return _is_key_name_call(right, source, index, module)
+
+    application = flatten_application(node, source)
+    return (
+        application is not None
+        and application[0] == "String"
+        and len(application[1]) == 1
+        and _is_key_name_call(application[1][0], source, index, module)
+    )
+
+
+def _is_key_name_call(node, source: bytes, index=None, module: str | None = None) -> bool:
+    if node is None:
+        return False
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _is_key_name_call(significant_children(node)[0], source, index, module)
+    application = flatten_application(node, source)
+    return (
+        application is not None
+        and len(application[1]) == 1
+        and _definition_resolves_to(index, module, application[0], "Arkham.Key", "keyName", source, node)
+    )
 
 
 def _is_skill_type_key_value(node, source: bytes, index=None, module: str | None = None) -> bool:
@@ -1820,7 +1864,9 @@ def _merge_variable_type(existing: str | None, incoming: str) -> str:
     if existing in ICON_VARIABLE_TYPES or incoming in ICON_VARIABLE_TYPES:
         non_icon = incoming if existing in ICON_VARIABLE_TYPES else existing
         return non_icon if non_icon in {"text", "unknown"} else "unknown"
-    return incoming
+    if "unknown" in {existing, incoming}:
+        return "unknown"
+    return "unknown"
 
 
 def _merge_variable_types(target: dict[str, str], incoming: dict[str, str]) -> None:
@@ -2861,6 +2907,169 @@ def _skill_icon_face_values(library: Path, icon_tags: set[str] | None = None) ->
     return _glyph_backed_values(raw_values, SKILL_ICON_FACE_VALUES, icon_tags)
 
 
+def _chaos_token_face_order(library: Path) -> list[str]:
+    path = library / CHAOS_TOKEN_FACE_SOURCE
+    if not path.is_file():
+        return []
+    source = path.read_text(encoding="utf-8")
+    list_match = re.search(r"allChaosTokenFaces\s*=\s*\[(.*?)\]", source, re.S)
+    if list_match is None:
+        return []
+    return re.findall(r"\b[A-Z][A-Za-z0-9]*\b", list_match.group(1))
+
+
+def _is_custom_token_label_result(node, source: bytes) -> bool:
+    if node is None:
+        return False
+    if node.type in {"exp", "parens"} and len(significant_children(node)) == 1:
+        return _is_custom_token_label_result(significant_children(node)[0], source)
+    application = flatten_application(node, source)
+    if application is None or application[0] != "capitalizeFirst" or len(application[1]) != 1:
+        return False
+    inner = application[1][0]
+    if inner.type in {"exp", "parens"} and len(significant_children(inner)) == 1:
+        inner = significant_children(inner)[0]
+    inner_application = flatten_application(inner, source)
+    return (
+        inner_application is not None
+        and inner_application[0] == "customTokenKey"
+        and len(inner_application[1]) == 1
+        and text_of(inner_application[1][0], source).strip() == "slug"
+    )
+
+
+def _chaos_token_label_text_values(library: Path) -> list[str]:
+    path = library / CHAOS_TOKEN_FACE_SOURCE
+    if not path.is_file():
+        return []
+    source = path.read_bytes()
+    tree = parse_module(path, source, library)
+    definition = _top_level_function(tree, source, "chaosTokenLabel")
+    if definition is None:
+        return []
+    body = _function_body(definition)
+    if body is None or body.type not in {"case", "lambda_case"}:
+        return []
+
+    official = _chaos_token_face_order(library)
+    labels: dict[str, str] = {}
+    saw_custom_token = False
+    for alternatives in body.children:
+        if alternatives.type != "alternatives":
+            continue
+        for entry in alternatives.children:
+            if entry.type != "alternative":
+                continue
+            children = significant_children(entry)
+            if not children:
+                return []
+            pattern = text_of(children[0], source).strip()
+            bodies = _case_alternative_result_nodes(entry)
+            if bodies is None or len(bodies) != 1:
+                return []
+            if pattern == "CustomToken slug":
+                if not _is_custom_token_label_result(bodies[0], source):
+                    return []
+                saw_custom_token = True
+                continue
+            if not re.fullmatch(r"[A-Z][A-Za-z0-9_']*", pattern) or pattern in labels:
+                return []
+            label = _bare_string_literal_value(bodies[0], source)
+            if label is None:
+                return []
+            labels[pattern] = label
+    if not official or any(constructor not in labels for constructor in official) or not saw_custom_token:
+        return []
+    return [labels[constructor] for constructor in official]
+
+
+def _is_chaos_token_label_key_name_result(node, source: bytes, index: ModuleIndex) -> bool:
+    application = flatten_application(node, source)
+    return (
+        application is not None
+        and len(application[1]) == 1
+        and _definition_resolves_to(
+            index, "Arkham.Key", application[0], "Arkham.ChaosToken.Types", "chaosTokenLabel", source, node
+        )
+        and text_of(application[1][0], source).strip() == "token.face"
+    )
+
+
+def _key_name_text_values(library: Path) -> list[str]:
+    path = library / KEY_NAME_SOURCE
+    chaos_path = library / CHAOS_TOKEN_FACE_SOURCE
+    if not path.is_file() or not chaos_path.is_file():
+        return []
+    source = path.read_bytes()
+    tree = parse_module(path, source, library)
+    chaos_source = chaos_path.read_bytes()
+    chaos_tree = parse_module(chaos_path, chaos_source, library)
+    index = ModuleIndex()
+    for module, module_tree, module_source in (
+        ("Arkham.Key", tree, source),
+        ("Arkham.ChaosToken.Types", chaos_tree, chaos_source),
+    ):
+        index.add(
+            module,
+            {
+                "imports": imports_of(module_tree, module_source),
+                "exports": exports_of(module_tree, module_source),
+                "aliases": collect_aliases(module_tree, module_source),
+                "definitions": top_level_definitions(module_tree, module_source),
+                "signatures": top_level_signatures(module_tree, module_source),
+            },
+        )
+
+    definition = _top_level_function(tree, source, "keyName")
+    if definition is None:
+        return []
+    body = _function_body(definition)
+    if body is None or body.type not in {"case", "lambda_case"}:
+        return []
+
+    expected_literals = {
+        "RedKey": "Red",
+        "BlueKey": "Blue",
+        "GreenKey": "Green",
+        "YellowKey": "Yellow",
+        "PurpleKey": "Purple",
+        "BlackKey": "Black",
+        "WhiteKey": "White",
+        "UnrevealedKey _": "Unrevealed",
+    }
+    labels: dict[str, str] = {}
+    saw_token_key = False
+    for alternatives in body.children:
+        if alternatives.type != "alternatives":
+            continue
+        for entry in alternatives.children:
+            if entry.type != "alternative":
+                continue
+            children = significant_children(entry)
+            if not children:
+                return []
+            pattern = text_of(children[0], source).strip()
+            bodies = _case_alternative_result_nodes(entry)
+            if bodies is None or len(bodies) != 1:
+                return []
+            if pattern == "TokenKey token":
+                if not _is_chaos_token_label_key_name_result(bodies[0], source, index):
+                    return []
+                saw_token_key = True
+                continue
+            expected = expected_literals.get(pattern)
+            if expected is None or pattern in labels:
+                return []
+            label = _bare_string_literal_value(bodies[0], source)
+            if label != expected:
+                return []
+            labels[pattern] = label
+    token_labels = _chaos_token_label_text_values(library)
+    if not saw_token_key or set(labels) != set(expected_literals) or not token_labels:
+        return []
+    return [*token_labels, *[expected_literals[key] for key in expected_literals]]
+
+
 def _skill_type_key_values(library: Path, icon_tags: set[str] | None = None) -> list[str]:
     path = library / SKILL_TYPE_KEY_SOURCE
     if not path.is_file():
@@ -3225,6 +3434,7 @@ def build_artifact(
         "seal": _closed_icon_variable_type(
             variable_types[SEAL_ICON_TYPE]["values"], SEAL_ICON_VALUES, SEAL_ICON_TYPE
         ),
+        "keyName": "text" if _key_name_text_values(library) else "unknown",
     }
     files = sorted(library.rglob("*.hs"))
     index = ModuleIndex()
