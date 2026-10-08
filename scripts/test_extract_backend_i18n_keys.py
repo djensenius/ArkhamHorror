@@ -760,6 +760,36 @@ run key = campaignI18n $ story $ withVar "key" (keyName key) $ labeled' "placeKe
     )
 
 
+def test_key_name_text_proof_rejects_mixed_call_sites_when_unproven_site_is_first() -> None:
+    check_key_name_positive_control("mixed call-site reverse-order boundary")
+    variables = variable_types_of(
+        {
+            "Arkham/ChaosToken/Types.hs": CHAOS_TOKEN_TYPES,
+            "Arkham/Key.hs": KEY_I18N,
+            "Test/Helpers.hs": HELPERS,
+            "Test/A.hs": """module Test.A where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+            "Test/B.hs": """module Test.B where
+
+import Arkham.Key
+import Test.Helpers
+
+run key = campaignI18n $ story $ withVar "key" (String $ keyName key) $ labeled' "placeKeyOnTheAmalgam"
+""",
+        },
+        "standalone.testCampaign.label.placeKeyOnTheAmalgam",
+    )
+    check(
+        variables.get("key") == "unknown",
+        f"reverse-order mixed keyName call sites did not fail closed: {variables}",
+    )
+
+
 def test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph() -> None:
     artifact = registry_of(
         {
@@ -2225,6 +2255,7 @@ TESTS = (
     test_key_name_text_proof_rejects_a_shadowed_key_name,
     test_key_name_text_proof_requires_the_string_wrapper,
     test_key_name_text_proof_rejects_mixed_call_sites,
+    test_key_name_text_proof_rejects_mixed_call_sites_when_unproven_site_is_first,
     test_skill_icon_registry_matches_skill_var_when_every_value_has_a_glyph,
     test_skill_var_falls_back_to_text_when_icon_registry_is_incomplete,
     test_skill_var_falls_back_to_text_when_i18n_source_is_missing,

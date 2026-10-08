@@ -1864,8 +1864,6 @@ def _merge_variable_type(existing: str | None, incoming: str) -> str:
     if existing in ICON_VARIABLE_TYPES or incoming in ICON_VARIABLE_TYPES:
         non_icon = incoming if existing in ICON_VARIABLE_TYPES else existing
         return non_icon if non_icon in {"text", "unknown"} else "unknown"
-    if "unknown" in {existing, incoming}:
-        return "unknown"
     return "unknown"
 
 
