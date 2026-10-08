@@ -26,7 +26,6 @@ import Arkham.Message.Lifted.Move
 import Arkham.Modifier
 import Arkham.Placement
 import Arkham.Prelude
-import Arkham.Queue (QueueT)
 import Arkham.SkillTest.Base
 import Arkham.Source
 import Arkham.Target
@@ -54,14 +53,6 @@ moveExposedEnemyToConcealedLocation iid c enemy = do
   case mlocation of
     Just location -> enemyMoveToIfInPlay c enemy location
     Nothing -> error "invalid placement for concealed card"
-
-whenConcealedCanBeExposed
-  :: (HasGame m, MonadIO m) => InvestigatorId -> ConcealedCard -> QueueT Message m () -> QueueT Message m ()
-whenConcealedCanBeExposed iid c body = do
-  mlocation <- concealedLocationFor iid c
-  case mlocation of
-    Just _ -> body
-    Nothing -> push $ RemoveFromGame (toTarget c)
 
 {- | Difficulty to fight/evade a concealed card: the location's shroud, plus any @EnemyFight@ /
 @EnemyEvade@ modifiers on the card (e.g. Rambling Route, Cliffs of Insanity).
@@ -124,28 +115,26 @@ instance RunMessage ConcealedCard where
     DoStep 1 msg'@(Flip iid flipSource (isTarget c -> True)) -> do
       case concealedToCardDef c of
         Nothing -> do
-          whenConcealedCanBeExposed iid c do
-            case c.kind of
-              Decoy -> exposedDecoy iid flipSource c Nothing
-              DecoyVoidChimeraFellbeak -> exposedDecoy iid flipSource c (Just "decoyVoidChimeraFellbeak")
-              DecoyVoidChimeraEarsplitter -> exposedDecoy iid flipSource c (Just "decoyVoidChimeraEarsplitter")
-              DecoyVoidChimeraGorefeaster -> exposedDecoy iid flipSource c (Just "decoyVoidChimeraGorefeaster")
-              DecoyVoidChimeraFellhound -> exposedDecoy iid flipSource c (Just "decoyVoidChimeraFellhound")
-              CityOfRemnantsL -> scenarioSpecific "exposed[CityOfRemnantsL]" (iid, c)
-              CityOfRemnantsM -> scenarioSpecific "exposed[CityOfRemnantsM]" (iid, c)
-              CityOfRemnantsR -> scenarioSpecific "exposed[CityOfRemnantsR]" (iid, c)
-              MimeticNemesis -> scenarioSpecific "exposed[MimeticNemesis]" (iid, c)
-              _ -> pure ()
+          case c.kind of
+            Decoy -> exposedDecoy iid flipSource c Nothing
+            DecoyVoidChimeraFellbeak -> exposedDecoy iid flipSource c (Just "decoyVoidChimeraFellbeak")
+            DecoyVoidChimeraEarsplitter -> exposedDecoy iid flipSource c (Just "decoyVoidChimeraEarsplitter")
+            DecoyVoidChimeraGorefeaster -> exposedDecoy iid flipSource c (Just "decoyVoidChimeraGorefeaster")
+            DecoyVoidChimeraFellhound -> exposedDecoy iid flipSource c (Just "decoyVoidChimeraFellhound")
+            CityOfRemnantsL -> scenarioSpecific "exposed[CityOfRemnantsL]" (iid, c)
+            CityOfRemnantsM -> scenarioSpecific "exposed[CityOfRemnantsM]" (iid, c)
+            CityOfRemnantsR -> scenarioSpecific "exposed[CityOfRemnantsR]" (iid, c)
+            MimeticNemesis -> scenarioSpecific "exposed[MimeticNemesis]" (iid, c)
+            _ -> pure ()
           pure c
         Just def -> do
-          whenConcealedCanBeExposed iid c do
-            enemies <- select $ EnemyWithPlacement InTheShadows <> EnemyWithTitle def.title
-            chooseOrRunOneM iid do
-              targets enemies \enemy -> do
-                exposed iid enemy def do
-                  moveExposedEnemyToConcealedLocation iid c enemy
-                  doStep 2 msg'
-            when (null enemies) $ doStep 2 msg' -- recovery
+          enemies <- select $ EnemyWithPlacement InTheShadows <> EnemyWithTitle def.title
+          chooseOrRunOneM iid do
+            targets enemies \enemy -> do
+              exposed iid enemy def do
+                moveExposedEnemyToConcealedLocation iid c enemy
+                doStep 2 msg'
+          when (null enemies) $ doStep 2 msg' -- recovery
           pure $ c {concealedCardPlacement = Unplaced}
     DoStep 2 (Flip _iid _ (isTarget c -> True)) -> do
       removeFromGame (toTarget c)
@@ -153,17 +142,16 @@ instance RunMessage ConcealedCard where
       unless inShadows $ push RemoveAllConcealed
       pure c
     DoStep 3 msg'@(Flip iid _ (isTarget c -> True)) -> do
-      whenConcealedCanBeExposed iid c do
-        case concealedToCardDef c of
-          Nothing -> case c.kind of
-            Decoy -> removeFromGame (toTarget c)
-            _ -> pure ()
-          Just def -> do
-            enemies <- select $ EnemyWithPlacement InTheShadows <> EnemyWithTitle def.title
-            chooseOrRunOneM iid do
-              targets enemies \enemy -> do
-                moveExposedEnemyToConcealedLocation iid c enemy
-                doStep 2 msg'
+      case concealedToCardDef c of
+        Nothing -> case c.kind of
+          Decoy -> removeFromGame (toTarget c)
+          _ -> pure ()
+        Just def -> do
+          enemies <- select $ EnemyWithPlacement InTheShadows <> EnemyWithTitle def.title
+          chooseOrRunOneM iid do
+            targets enemies \enemy -> do
+              moveExposedEnemyToConcealedLocation iid c enemy
+              doStep 2 msg'
       pure $ c {concealedCardPlacement = Unplaced}
     DoStep 0 (Flip _iid _ (isTarget c -> True)) -> do
       pure $ c {concealedCardFlipped = True}
