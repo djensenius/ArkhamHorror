@@ -5,6 +5,7 @@ import Arkham.Campaigns.TheScarletKeys.Concealed.Helpers
 import Arkham.Campaigns.TheScarletKeys.Concealed.Matcher
 import Arkham.Location.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Cards
 import Arkham.Location.Import.Lifted
+import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 
 newtype Galata = Galata LocationAttrs
@@ -18,13 +19,16 @@ instance HasAbilities Galata where
   getAbilities (Galata a) =
     extendRevealed1 a
       $ groupLimit PerRound
-      $ restricted a 1 (Here <> exists ConcealedCardAny <> youExist InvestigatorCanExpose)
+      $ restricted
+        a
+        1
+        (Here <> exists (ConcealedCardAt Anywhere <> not_ ExposedConcealedCard) <> youExist InvestigatorCanExpose)
       $ FastAbility' (ResourceCost 3) #parley
 
 instance RunMessage Galata where
   runMessage msg l@(Galata attrs) = runQueueT $ case msg of
     UseThisAbility iid (isSource attrs -> True) 1 -> do
-      concealed <- selectMap (.id) ConcealedCardAny
+      concealed <- selectConcealedCardIdsInPlay
       chooseTargetM iid concealed $ exposeConcealed iid (attrs.ability 1)
       pure l
     _ -> Galata <$> liftRunMessage msg attrs

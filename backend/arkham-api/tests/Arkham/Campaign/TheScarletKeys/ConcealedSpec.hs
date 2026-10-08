@@ -5,7 +5,9 @@ import Arkham.Campaigns.TheScarletKeys.Concealed (mkConcealedCard)
 import Arkham.Campaigns.TheScarletKeys.Concealed.Kind
 import Arkham.Enemy.CardDefs.TheScarletKeys.CrimsonConspiracy qualified as Enemies
 import Arkham.Enemy.Types (Enemy)
+import Arkham.Location.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Locations
 import Arkham.Location.Grid
+import Arkham.Location.Types (revealedL)
 import Arkham.Matcher
 import Arkham.Placement
 import Arkham.Token (Token (Charge))
@@ -109,3 +111,24 @@ spec = describe "Concealed mini-cards" do
 
       assertNone $ EnemyWithPlacement InTheShadows
       assertNone ConcealedCardAny
+      agent.location `shouldReturn` Just (toId location)
+
+  context "exposing every concealed card in play" do
+    it "does not offer unplaced flipped mini-cards" . gameTest $ \self -> do
+      galata <- testLocationWithDef Locations.galata (revealedL .~ True)
+      self `moveTo` galata
+      live <- mkConcealedCard SinisterAspirantC
+      run $ CreateConcealedCard live
+      run $ PlaceConcealedCard (toId self) live.id (AtLocation $ toId galata)
+      unplaced <- mkConcealedCard AcolyteAny
+      run $ CreateConcealedCard unplaced
+      run $ DoStep 0 $ Flip (toId self) (toSource self) (toTarget unplaced.id)
+
+      run $ UseCardAbility (toId self) (toSource galata) 1 [] NoPayment
+
+      assertTarget live.id
+      assertNotTarget unplaced.id
+      chooseTarget live.id
+      chooseTarget live.id
+
+      assertNone $ ConcealedCardWithId live.id
