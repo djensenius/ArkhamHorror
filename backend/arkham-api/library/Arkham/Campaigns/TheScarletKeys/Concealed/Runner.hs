@@ -46,6 +46,14 @@ concealedLocationFor iid c = case c.placement of
   AtLocation location -> pure $ Just location
   _ -> pure Nothing
 
+moveExposedEnemyToConcealedLocation
+  :: (HasGame m, ReverseQueue m) => InvestigatorId -> ConcealedCard -> EnemyId -> m ()
+moveExposedEnemyToConcealedLocation iid c enemy = do
+  mlocation <- concealedLocationFor iid c
+  case mlocation of
+    Just location -> enemyMoveToIfInPlay c enemy location
+    Nothing -> error "invalid placement for concealed card"
+
 {- | Difficulty to fight/evade a concealed card: the location's shroud, plus any @EnemyFight@ /
 @EnemyEvade@ modifiers on the card (e.g. Rambling Route, Cliffs of Insanity).
 -}
@@ -124,9 +132,7 @@ instance RunMessage ConcealedCard where
           chooseOrRunOneM iid do
             targets enemies \enemy -> do
               exposed iid enemy def do
-                case c.placement of
-                  AtLocation location -> enemyMoveToIfInPlay c enemy location
-                  _ -> error "invalid placement for concealed card"
+                moveExposedEnemyToConcealedLocation iid c enemy
                 doStep 2 msg'
           when (null enemies) $ doStep 2 msg' -- recovery
           pure $ c {concealedCardPlacement = Unplaced}
@@ -144,9 +150,7 @@ instance RunMessage ConcealedCard where
           enemies <- select $ EnemyWithPlacement InTheShadows <> EnemyWithTitle def.title
           chooseOrRunOneM iid do
             targets enemies \enemy -> do
-              case c.placement of
-                AtLocation location -> enemyMoveToIfInPlay c enemy location
-                _ -> error "invalid placement for concealed card"
+              moveExposedEnemyToConcealedLocation iid c enemy
               doStep 2 msg'
       pure $ c {concealedCardPlacement = Unplaced}
     DoStep 0 (Flip _iid _ (isTarget c -> True)) -> do

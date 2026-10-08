@@ -18,13 +18,16 @@ instance HasAbilities Galata where
   getAbilities (Galata a) =
     extendRevealed1 a
       $ groupLimit PerRound
-      $ restricted a 1 (Here <> exists ConcealedCardAny <> youExist InvestigatorCanExpose)
+      $ restricted
+        a
+        1
+        (Here <> exists UnexposedConcealedCardInPlay <> youExist InvestigatorCanExpose)
       $ FastAbility' (ResourceCost 3) #parley
 
 instance RunMessage Galata where
   runMessage msg l@(Galata attrs) = runQueueT $ case msg of
     UseThisAbility iid (isSource attrs -> True) 1 -> do
-      concealed <- selectMap (.id) ConcealedCardAny
+      concealed <- selectUnexposedConcealedCardIdsInPlay
       chooseTargetM iid concealed $ exposeConcealed iid (attrs.ability 1)
       pure l
     _ -> Galata <$> liftRunMessage msg attrs

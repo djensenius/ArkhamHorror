@@ -77,6 +77,18 @@ turnOverAllConcealed source = do
   lead <- getLead
   selectEach ConcealedCardAny \c -> turnOverConcealed lead source c.id
 
+selectConcealedCardsInPlay :: HasGame m => m [ConcealedCard]
+selectConcealedCardsInPlay = select ConcealedCardInPlay
+
+selectConcealedCardIdsInPlay :: HasGame m => m [ConcealedCardId]
+selectConcealedCardIdsInPlay = selectMap (.id) ConcealedCardInPlay
+
+selectUnexposedConcealedCardsInPlay :: HasGame m => m [ConcealedCard]
+selectUnexposedConcealedCardsInPlay = select UnexposedConcealedCardInPlay
+
+selectUnexposedConcealedCardIdsInPlay :: HasGame m => m [ConcealedCardId]
+selectUnexposedConcealedCardIdsInPlay = selectMap (.id) UnexposedConcealedCardInPlay
+
 chooseExposeConcealed :: (ReverseQueue m, Sourceable source) => InvestigatorId -> source -> m ()
 chooseExposeConcealed iid source = chooseExposeConcealedAt iid source (LocationWithInvestigator $ InvestigatorWithId iid)
 

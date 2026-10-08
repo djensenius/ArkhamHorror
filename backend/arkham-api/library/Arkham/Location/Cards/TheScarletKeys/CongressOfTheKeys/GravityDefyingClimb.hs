@@ -50,7 +50,7 @@ withAdjacentConcealed attrs v ckind f = do
         if getLocationMetaDefault CityOfRemnantsL attrs == ckind
           then f iid c
           else do
-            allCards <- selectMap (.id) ConcealedCardAny
+            allCards <- selectConcealedCardIdsInPlay
             for_ allCards $ doStep1 1 . lookAtRevealed iid ScenarioSource
             pure $ attrs & setMeta CityOfRemnantsL
       do_ $ PlaceConcealedCard iid c.id c.placement -- fix concealed placement
@@ -60,7 +60,7 @@ instance RunMessage GravityDefyingClimb where
   runMessage msg l@(GravityDefyingClimb attrs) = runQueueT $ case msg of
     ScenarioSpecific "exposed[CityOfRemnantsL]" v -> do
       withAdjacentConcealed attrs v CityOfRemnantsL \iid c -> do
-        otherCards <- select $ ConcealedCardAny <> NotConcealedCard (ConcealedCardWithId c.id)
+        otherCards <- filter ((/= c.id) . (.id)) <$> selectUnexposedConcealedCardsInPlay
         chooseOneM iid do
           for_ otherCards \otherCard ->
             targeting otherCard.id do
@@ -70,7 +70,7 @@ instance RunMessage GravityDefyingClimb where
         pure $ attrs & setMeta CityOfRemnantsM
     ScenarioSpecific "exposed[CityOfRemnantsM]" v -> do
       withAdjacentConcealed attrs v CityOfRemnantsM \iid c -> do
-        otherCards <- select $ ConcealedCardAny <> NotConcealedCard (ConcealedCardWithId c.id)
+        otherCards <- filter ((/= c.id) . (.id)) <$> selectUnexposedConcealedCardsInPlay
         chooseOneM iid do
           for_ otherCards \otherCard ->
             targeting otherCard.id do
@@ -88,7 +88,7 @@ instance RunMessage GravityDefyingClimb where
       if maybe False (`elem` concealedPositions) c.position
         then do
           chooseOneM iid $ abilityLabeled_ iid (mkAbility attrs (-1) $ forced AnyWindow)
-          allCards <- selectMap (.id) ConcealedCardAny
+          allCards <- selectConcealedCardIdsInPlay
           for_ allCards $ doStep1 1 . lookAtRevealed iid ScenarioSource
           do_ $ PlaceConcealedCard iid c.id c.placement
           pure $ GravityDefyingClimb $ attrs & setMeta CityOfRemnantsL

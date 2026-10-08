@@ -13,6 +13,8 @@ import Data.Aeson.TH
 
 data ConcealedCardMatcher
   = ConcealedCardWithPlacement Placement
+  | ConcealedCardInPlay
+  | UnexposedConcealedCardInPlay
   | ConcealedCardAny
   | NotConcealedCard ConcealedCardMatcher
   | ExposableConcealedCard Source
