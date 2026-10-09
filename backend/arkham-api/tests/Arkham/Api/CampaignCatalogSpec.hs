@@ -16,6 +16,7 @@ import Base.Api.Types.CampaignCatalog (
   campaignCatalogResponseHeaders,
   campaignCatalogValue,
  )
+import Application (corsResponseHeadersForPath)
 import Base.Api.Types.Capabilities (ServerCapabilities (..), serverCapabilities)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -45,6 +46,20 @@ spec = describe "campaign catalog endpoint payload" do
     campaignCatalogResponseHeaders
       `shouldContain` [("Cache-Control", "public, max-age=300, must-revalidate")]
     campaignCatalogETag `shouldBe` "\"" <> campaignCatalogMetadata.catalogRevision <> "\""
+
+  describe "CORS response headers" do
+    let origin = "https://native.example"
+    it "preserves the campaign catalog public cache policy for catalog requests" do
+      corsResponseHeadersForPath ["api", "v1", "arkham", "campaign-catalog"] origin
+        `shouldSatisfy` notElem ("Cache-Control", "no-cache, no-store, max-age=0, private")
+
+    it "keeps the private no-cache default for other CORS responses" do
+      corsResponseHeadersForPath ["api", "v1", "arkham", "games"] origin
+        `shouldContain` [("Cache-Control", "no-cache, no-store, max-age=0, private")]
+
+    it "exposes the catalog ETag header to CORS clients" do
+      corsResponseHeadersForPath ["api", "v1", "arkham", "campaign-catalog"] origin
+        `shouldContain` [("Access-Control-Expose-Headers", "Set-Cookie, Content-Disposition, Link, X-Echo, ETag")]
 
   describe "If-None-Match entity tag matching" do
     let current = encodeUtf8 campaignCatalogETag

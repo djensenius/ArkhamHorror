@@ -12,6 +12,7 @@ module Application (
   makeFoundation,
   makeLogWare,
   getAppSettings,
+  corsResponseHeadersForPath,
 
   -- * for DevelMain
   getApplicationRepl,
@@ -62,7 +63,7 @@ import Network.HTTP.Client.TLS (getGlobalManager)
 import Network.HTTP.Types (ResponseHeaders, status200)
 import Network.TLS (ClientParams (..), Shared (..), Supported (..), defaultParamsClient)
 import Network.TLS.Extra.Cipher (ciphersuite_strong)
-import Network.Wai (Middleware, requestHeaders, requestMethod, responseLBS)
+import Network.Wai (Middleware, pathInfo, requestHeaders, requestMethod, responseLBS)
 import Network.Wai.Handler.Warp (
   Settings,
   defaultSettings,
@@ -224,19 +225,23 @@ skipWebSocketLogging logWare app req sendResponse
     maybe False ((== "websocket") . foldCase)
       $ lookup "Upgrade" (requestHeaders req)
 
-corsResponseHeaders :: ByteString -> [(ByteString, ByteString)]
-corsResponseHeaders origin =
-  [ ("Access-Control-Allow-Origin", validatedOrigin)
-  , ("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE, PATCH")
-  , ("Access-Control-Allow-Credentials", "true")
-  , ("Access-Control-Allow-Headers", "Content-Type, *")
-  ,
-    ( "Access-Control-Expose-Headers"
-    , "Set-Cookie, Content-Disposition, Link, X-Echo"
-    )
-  , ("Cache-Control", "no-cache, no-store, max-age=0, private")
-  ]
+corsResponseHeadersForPath :: [Text] -> ByteString -> [(ByteString, ByteString)]
+corsResponseHeadersForPath requestPath origin =
+  baseHeaders <> cacheHeaders
  where
+  baseHeaders =
+    [ ("Access-Control-Allow-Origin", validatedOrigin)
+    , ("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE, PATCH")
+    , ("Access-Control-Allow-Credentials", "true")
+    , ("Access-Control-Allow-Headers", "Content-Type, *")
+    ,
+      ( "Access-Control-Expose-Headers"
+      , "Set-Cookie, Content-Disposition, Link, X-Echo, ETag"
+      )
+    ]
+  cacheHeaders
+    | requestPath == ["api", "v1", "arkham", "campaign-catalog"] = []
+    | otherwise = [("Cache-Control", "no-cache, no-store, max-age=0, private")]
   validOriginRegex = ".*" :: String
   validatedOrigin = if origin =~ validOriginRegex then origin else "BADORIGIN"
 
@@ -245,7 +250,7 @@ handleOptions app req sendResponse =
   case (requestMethod req, lookup "Origin" (requestHeaders req)) of
     ("OPTIONS", Just origin) ->
       sendResponse
-        $ responseLBS status200 (toHeaders $ corsResponseHeaders origin) mempty
+        $ responseLBS status200 (toHeaders $ corsResponseHeadersForPath (pathInfo req) origin) mempty
     _ -> app req sendResponse
  where
   toHeaders :: [(ByteString, ByteString)] -> ResponseHeaders
@@ -255,7 +260,7 @@ addCORSHeaders :: Middleware
 addCORSHeaders app req sendResponse =
   case lookup "Origin" (requestHeaders req) of
     Nothing -> app req sendResponse
-    Just origin -> addHeaders (corsResponseHeaders origin) app req sendResponse
+    Just origin -> addHeaders (corsResponseHeadersForPath (pathInfo req) origin) app req sendResponse
 
 makeLogWare :: App -> IO Middleware
 makeLogWare foundation =
