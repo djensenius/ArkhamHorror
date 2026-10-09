@@ -211,6 +211,14 @@
             "id",
             "nameKey"
           ],
+          "dependentRequired": {
+            "requiredInvestigator": [
+              "requiredInvestigatorCodes"
+            ],
+            "requiredInvestigatorCodes": [
+              "requiredInvestigator"
+            ]
+          },
           "properties": {
             "id": {
               "$ref": "#/$defs/id"
