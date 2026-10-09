@@ -312,9 +312,33 @@ def scenario_catalog(registry: dict, scenario_paths: list[str]) -> list[dict]:
     return scenarios
 
 
+def summarize_ids(ids: set[str]) -> str:
+    return ", ".join(sorted(ids)) if ids else "<none>"
+
+
+def require_required_investigator_id_consistency(required_investigator_codes: dict[str, list[str]], side_story_ids: set[str]) -> None:
+    deck_restriction_ids = set(required_investigator_codes)
+    missing_from_deck_restrictions = side_story_ids - deck_restriction_ids
+    missing_from_side_stories = deck_restriction_ids - side_story_ids
+    require(
+        not missing_from_deck_restrictions and not missing_from_side_stories,
+        "deckRestrictions.ts challengeScenarioInvestigators ids must match side-stories requiredInvestigator ids "
+        f"(missing from deckRestrictions: {summarize_ids(missing_from_deck_restrictions)}; "
+        f"missing from side-stories: {summarize_ids(missing_from_side_stories)})",
+    )
+
+
 def side_story_catalog(registry: dict, required_investigator_codes: dict[str, list[str]]) -> list[dict]:
     raw = read_json("frontend/src/arkham/data/side-stories.json")
     require(isinstance(raw, list) and raw, "side-stories.json must be a non-empty array")
+    required_investigator_story_ids: set[str] = set()
+    for item in raw:
+        require(isinstance(item, dict), "side-story entries must be objects")
+        sid = validate_id("side story", item.get("id"))
+        if "requiredInvestigator" in item:
+            required_investigator_story_ids.add(sid)
+    require_required_investigator_id_consistency(required_investigator_codes, required_investigator_story_ids)
+
     seen: set[str] = set()
     stories = []
     for item in raw:
@@ -473,10 +497,15 @@ def check_file(path: Path, expected: bytes) -> list[str]:
     return []
 
 
-def expect_system_exit(description: str, action) -> None:
+def expect_system_exit(description: str, action, *, message_contains: str | None = None) -> None:
     try:
         action()
-    except SystemExit:
+    except SystemExit as err:
+        if message_contains is not None and message_contains not in str(err):
+            raise SystemExit(
+                f"campaign-catalog: self-test failure: {description} failed with {err!s}, "
+                f"not expected message fragment {message_contains!r}"
+            )
         return
     raise SystemExit(f"campaign-catalog: self-test failure: {description} was accepted")
 
@@ -551,6 +580,29 @@ def run_self_test() -> None:
     require(suffixed_code_list != deck_restrictions, "self-test could not introduce suffixed challengeScenarioInvestigators code list")
     with with_source_override(deck_restrictions_path, suffixed_code_list.encode("utf-8")):
         expect_system_exit("suffixed challengeScenarioInvestigators code list", parse_required_investigator_codes)
+
+    missing_deck_restriction = deck_restrictions.replace("  '90065': requiredInvestigator('Monterey Jack', ['08007', '90062']),\n", "", 1)
+    require(missing_deck_restriction != deck_restrictions, "self-test could not remove one challengeScenarioInvestigators entry")
+    with with_source_override(deck_restrictions_path, missing_deck_restriction.encode("utf-8")):
+        expect_system_exit(
+            "side-story requiredInvestigator without deck restriction id",
+            build_catalog,
+            message_contains="missing from deckRestrictions: 90065",
+        )
+
+    side_stories_path = "frontend/src/arkham/data/side-stories.json"
+    side_stories_without_required_investigator = copy.deepcopy(read_json(side_stories_path))
+    require(isinstance(side_stories_without_required_investigator, list), "self-test expected side-stories array")
+    relics_of_the_past = next((story for story in side_stories_without_required_investigator if isinstance(story, dict) and story.get("id") == "90065"), None)
+    require(isinstance(relics_of_the_past, dict), "self-test expected side-story 90065")
+    removed_required_investigator = relics_of_the_past.pop("requiredInvestigator", None)
+    require(removed_required_investigator is not None, "self-test could not remove side-story 90065 requiredInvestigator")
+    with with_source_override(side_stories_path, canonical_bytes(side_stories_without_required_investigator)):
+        expect_system_exit(
+            "deck restriction id without side-story requiredInvestigator",
+            build_catalog,
+            message_contains="missing from side-stories: 90065",
+        )
 
 
 def main() -> None:
