@@ -74,6 +74,7 @@ SCRIPTS = ROOT / "scripts"
 EXECUTABLE_SOURCES = frozenset(
     {
         "scripts/analyze-question-presentation-gaps.py",
+        "scripts/build-campaign-catalog.py",
         "scripts/build-locale-catalog-fixture.py",
         "scripts/check-locale-catalog-settings.py",
         "scripts/check-schema-revision-drift.py",
@@ -97,6 +98,7 @@ EXECUTABLE_SOURCES = frozenset(
 ENTRY_POINTS = frozenset(
     {
         "scripts/analyze-question-presentation-gaps.py",
+        "scripts/build-campaign-catalog.py",
         "scripts/build-locale-catalog-fixture.py",
         "scripts/check-locale-catalog-settings.py",
         "scripts/check-schema-revision-drift.py",

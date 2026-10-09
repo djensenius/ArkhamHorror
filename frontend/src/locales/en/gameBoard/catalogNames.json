@@ -1,0 +1,543 @@
+{
+  "catalogNames": {
+    "campaigns": {
+      "01": {
+        "name": "The Night of the Zealot",
+        "returnTo": {
+          "name": "Return to The Night of the Zealot"
+        }
+      },
+      "02": {
+        "name": "The Dunwich Legacy",
+        "returnTo": {
+          "name": "Return to The Dunwich Legacy"
+        }
+      },
+      "03": {
+        "name": "The Path to Carcosa",
+        "returnTo": {
+          "name": "Return to The Path to Carcosa"
+        }
+      },
+      "04": {
+        "name": "The Forgotten Age",
+        "returnTo": {
+          "name": "Return to The Forgotten Age"
+        }
+      },
+      "05": {
+        "name": "The Circle Undone",
+        "returnTo": {
+          "name": "Return to The Circle Undone"
+        }
+      },
+      "06": {
+        "name": "The Dream-Eaters"
+      },
+      "07": {
+        "name": "The Innsmouth Conspiracy"
+      },
+      "08": {
+        "name": "Edge of the Earth"
+      },
+      "09": {
+        "name": "The Scarlet Keys"
+      },
+      "10": {
+        "name": "The Feast of Hemlock Vale"
+      },
+      "11": {
+        "name": "The Drowned City"
+      },
+      "12": {
+        "name": "Brethren of Ash"
+      },
+      "13": {
+        "name": "Children of Blood"
+      }
+    },
+    "scenarios": {
+      "01104": {
+        "name": "The Gathering",
+        "returnTo": {
+          "name": "Return to the Gathering"
+        }
+      },
+      "01120": {
+        "name": "The Midnight Masks",
+        "returnTo": {
+          "name": "Return to The Midnight Masks"
+        }
+      },
+      "01142": {
+        "name": "The Devourer Below",
+        "returnTo": {
+          "name": "Return to The Devourer Below"
+        }
+      },
+      "02041": {
+        "name": "Extracurricular Activity",
+        "returnTo": {
+          "name": "Return to Extracurricular Activities"
+        }
+      },
+      "02062": {
+        "name": "The House Always Wins",
+        "returnTo": {
+          "name": "Return to the House Always Wins"
+        }
+      },
+      "02118": {
+        "name": "The Miskatonic Museum",
+        "returnTo": {
+          "name": "Return to the Miskatonic Museum"
+        }
+      },
+      "02159": {
+        "name": "The Essex County Express",
+        "returnTo": {
+          "name": "Return to the Essex County Express"
+        }
+      },
+      "02195": {
+        "name": "Blood on the Altar",
+        "returnTo": {
+          "name": "Return to Blood on the Altar"
+        }
+      },
+      "02236": {
+        "name": "Undimensioned and Unseen",
+        "returnTo": {
+          "name": "Return to Undimensioned and Unseen"
+        }
+      },
+      "02274": {
+        "name": "Where Doom Awaits",
+        "returnTo": {
+          "name": "Return to Where Doom Awaits"
+        }
+      },
+      "02311": {
+        "name": "Lost in Time and Space",
+        "returnTo": {
+          "name": "Return to Lost in Time and Space"
+        }
+      },
+      "03043": {
+        "name": "Curtain Call",
+        "returnTo": {
+          "name": "Return to Curtain Call"
+        }
+      },
+      "03061": {
+        "name": "The Last King",
+        "returnTo": {
+          "name": "Return to The Last King"
+        }
+      },
+      "03120": {
+        "name": "Echoes of the Past",
+        "returnTo": {
+          "name": "Return to Echoes of the Path"
+        }
+      },
+      "03159": {
+        "name": "The Unspeakable Oath",
+        "returnTo": {
+          "name": "Return to The Unspeakable Oath"
+        }
+      },
+      "03200": {
+        "name": "A Phantom of Truth",
+        "returnTo": {
+          "name": "Return to A Phantom of Truth"
+        }
+      },
+      "03240": {
+        "name": "The Pallid Mask",
+        "returnTo": {
+          "name": "Return to The Pallid Mask"
+        }
+      },
+      "03274": {
+        "name": "Black Stars Rise",
+        "returnTo": {
+          "name": "Return to Black Stars Rise"
+        }
+      },
+      "03316": {
+        "name": "Dim Carcosa",
+        "returnTo": {
+          "name": "Return to Dim Carcosa"
+        }
+      },
+      "04043": {
+        "name": "The Untamed Wilds",
+        "returnTo": {
+          "name": "Return to The Untamed Wilds"
+        }
+      },
+      "04054": {
+        "name": "The Doom of Eztli",
+        "returnTo": {
+          "name": "Return to The Doom of Eztli"
+        }
+      },
+      "04113": {
+        "name": "Threads of Fate",
+        "returnTo": {
+          "name": "Return to Threads of Fate"
+        }
+      },
+      "04161": {
+        "name": "The Boundary Beyond",
+        "returnTo": {
+          "name": "Return to The Boundary Beyond"
+        }
+      },
+      "04205a": {
+        "name": "Heart of the Elders, Part1",
+        "returnTo": {
+          "name": "Return to Heart of the Elders"
+        }
+      },
+      "04205b": {
+        "name": "Heart of the Elders, Part2",
+        "returnTo": {
+          "name": "Return to Heart of the Elders"
+        }
+      },
+      "04237": {
+        "name": "The City of Archives",
+        "returnTo": {
+          "name": "Return to The City of Archives"
+        }
+      },
+      "04277": {
+        "name": "The Depths of Yoth",
+        "returnTo": {
+          "name": "Return to The Depths of Yoth"
+        }
+      },
+      "04314": {
+        "name": "Shattered Aeons",
+        "returnTo": {
+          "name": "Return to Shattered Aeons"
+        }
+      },
+      "04344": {
+        "name": "Turn Back Time",
+        "returnTo": {
+          "name": "Return to Turn Back Time"
+        }
+      },
+      "05043": {
+        "name": "Disappearance at the Twilight Estate",
+        "returnTo": {
+          "name": "Return to Disappearance at the Twilight Estate"
+        }
+      },
+      "05050": {
+        "name": "The Witching Hour",
+        "returnTo": {
+          "name": "Return to The Witching Hour"
+        }
+      },
+      "05065": {
+        "name": "At Death's Doorstep",
+        "returnTo": {
+          "name": "Return to At Death's Doorstep"
+        }
+      },
+      "05120": {
+        "name": "The Secret Name",
+        "returnTo": {
+          "name": "Return to The Secret Name"
+        }
+      },
+      "05161": {
+        "name": "The Wages of Sin",
+        "returnTo": {
+          "name": "Return to The Wages of Sin"
+        }
+      },
+      "05197": {
+        "name": "For the Greater Good",
+        "returnTo": {
+          "name": "Return to For the Greater Good"
+        }
+      },
+      "05238": {
+        "name": "Union and Disillusion",
+        "returnTo": {
+          "name": "Return to Union and Disillusion"
+        }
+      },
+      "05284": {
+        "name": "In the Clutches of Chaos",
+        "returnTo": {
+          "name": "Return to In the Clutches of Chaos"
+        }
+      },
+      "05325": {
+        "name": "Before the Black Throne",
+        "returnTo": {
+          "name": "Return to Before the Black Throne"
+        }
+      },
+      "06039": {
+        "name": "Beyond the Gates of Sleep"
+      },
+      "06063": {
+        "name": "Waking Nightmare"
+      },
+      "06119": {
+        "name": "The Search for Kadath"
+      },
+      "06168": {
+        "name": "A Thousand Shapes of Horror"
+      },
+      "06206": {
+        "name": "Dark Side of the Moon"
+      },
+      "06247": {
+        "name": "Point of No Return"
+      },
+      "06286": {
+        "name": "Where the Gods Dwell"
+      },
+      "06333": {
+        "name": "Weaver of the Cosmos"
+      },
+      "07041": {
+        "name": "The Pit of Despair"
+      },
+      "07056": {
+        "name": "The Vanishing of Elina Harper"
+      },
+      "07123": {
+        "name": "In Too Deep"
+      },
+      "07163": {
+        "name": "Devil Reef"
+      },
+      "07198": {
+        "name": "Horror in High Gear"
+      },
+      "07231": {
+        "name": "A Light in the Fog"
+      },
+      "07274": {
+        "name": "The Lair of Dagon"
+      },
+      "07311": {
+        "name": "Into the Maelstrom"
+      },
+      "08501a": {
+        "name": "Ice and Death, Part I"
+      },
+      "08501b": {
+        "name": "Ice and Death, Part II"
+      },
+      "08501c": {
+        "name": "Ice and Death, Part III"
+      },
+      "08549": {
+        "name": "Fatal Mirage"
+      },
+      "08596": {
+        "name": "To the Forbidden Peaks"
+      },
+      "08621": {
+        "name": "City of the Elder Things"
+      },
+      "08648a": {
+        "name": "The Heart of Madness, Part I"
+      },
+      "08648b": {
+        "name": "The Heart of Madness, Part II"
+      },
+      "09501": {
+        "name": "Riddles and Rain"
+      },
+      "09520": {
+        "name": "Dead Heat"
+      },
+      "09545": {
+        "name": "Sanguine Shadows"
+      },
+      "09566": {
+        "name": "Dealings in the Dark"
+      },
+      "09591": {
+        "name": "Dancing Mad"
+      },
+      "09609": {
+        "name": "On Thin Ice"
+      },
+      "09635": {
+        "name": "Dogs of War"
+      },
+      "09660": {
+        "name": "Shades of Suffering"
+      },
+      "09681": {
+        "name": "Without a Trace"
+      },
+      "09694": {
+        "name": "Congress of the Keys"
+      },
+      "10704": {
+        "name": "Prelude: Welcome to Hemlock Vale"
+      },
+      "10501": {
+        "name": "Written in Rock"
+      },
+      "10523": {
+        "name": "Hemlock House"
+      },
+      "10549": {
+        "name": "The Silent Heath"
+      },
+      "10569": {
+        "name": "The Lost Sister"
+      },
+      "10588": {
+        "name": "The Thing in the Depths"
+      },
+      "10605": {
+        "name": "The Twisted Hollow"
+      },
+      "10677a": {
+        "name": "Prelude: Dawn of the Second Day"
+      },
+      "10626": {
+        "name": "The Longest Night"
+      },
+      "10679a": {
+        "name": "Prelude: Dawn of the Final Day"
+      },
+      "10679b": {
+        "name": "Prelude: The Final Evening"
+      },
+      "10651": {
+        "name": "Fate of the Vale"
+      },
+      "11501": {
+        "name": "One Last Job"
+      },
+      "11517": {
+        "name": "The Western Wall"
+      },
+      "11536": {
+        "name": "The Drowned Quarter"
+      },
+      "11553": {
+        "name": "The Apiary"
+      },
+      "11587": {
+        "name": "The Grand Vault"
+      },
+      "11612": {
+        "name": "Court of the Ancients"
+      },
+      "11639": {
+        "name": "Obsidian Canyons"
+      },
+      "11673": {
+        "name": "Sepulchre of the Sleeper"
+      },
+      "11682": {
+        "name": "The Doom of Arkham Part I"
+      },
+      "11688a": {
+        "name": "The Doom of Arkham Part II"
+      },
+      "12105": {
+        "name": "Spreading Flames"
+      },
+      "12133": {
+        "name": "Smoke and Mirrors"
+      },
+      "12168": {
+        "name": "Queen of Ash"
+      },
+      "13001": {
+        "name": "River of Blood"
+      },
+      "13031": {
+        "name": "New Horizons"
+      },
+      "13068": {
+        "name": "Blood Money"
+      }
+    },
+    "sideStories": {
+      "81001": {
+        "name": "Curse of the Rougarou"
+      },
+      "82001": {
+        "name": "Carnevale of Horrors"
+      },
+      "70001": {
+        "name": "The Labyrinths of Lunacy"
+      },
+      "83001": {
+        "name": "Guardians of the Abyss",
+        "parts": {
+          "83001": {
+            "name": "The Eternal Slumber"
+          },
+          "83016": {
+            "name": "The Night's Usurper"
+          }
+        }
+      },
+      "84001": {
+        "name": "Murder at the Excelsior Hotel"
+      },
+      "85001": {
+        "name": "The Blob That Ate Everything"
+      },
+      "86001": {
+        "name": "War of the Outer Gods"
+      },
+      "87001": {
+        "name": "Machinations Through Time"
+      },
+      "88001": {
+        "name": "Fortune and Folly"
+      },
+      "71001": {
+        "name": "The Midwinter Gala"
+      },
+      "72001": {
+        "name": "Film Fatale"
+      },
+      "90004": {
+        "name": "Read or Die"
+      },
+      "90011": {
+        "name": "All or Nothing"
+      },
+      "90020": {
+        "name": "Bad Blood"
+      },
+      "90032": {
+        "name": "By the Book"
+      },
+      "90041": {
+        "name": "Red Tide Rising"
+      },
+      "90054": {
+        "name": "Laid to Rest"
+      },
+      "90065": {
+        "name": "Relics of the Past"
+      },
+      "90094": {
+        "name": "Enthralling Encore"
+      }
+    }
+  }
+}
