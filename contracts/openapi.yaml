@@ -271,13 +271,43 @@ paths:
         Return-to ids, campaign variants, standalone settings definitions,
         side-story requirements and multi-scenario side-story entries.
       security: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: |
+            Standard entity-tag validator. Send the quoted `catalogRevision`
+            ETag from a previous 200 or 304 response; weak validators and `*`
+            are accepted by the server.
+          schema:
+            type: string
       responses:
         "200":
           description: Generated campaign and scenario catalog
+          headers:
+            ETag:
+              description: Quoted `catalogRevision` for conditional revalidation.
+              schema:
+                type: string
+            Cache-Control:
+              description: Public cache policy for the generated static catalog.
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/CampaignCatalog"
+        "304":
+          description: The supplied `If-None-Match` validator matches the current catalog.
+          headers:
+            ETag:
+              description: Quoted `catalogRevision` for conditional revalidation.
+              schema:
+                type: string
+            Cache-Control:
+              description: Public cache policy for the generated static catalog.
+              schema:
+                type: string
   /arkham/cards:
     get:
       operationId: listCards
