@@ -260,6 +260,24 @@ paths:
           description: Scope or achievement identifier is invalid
         "401":
           description: Token is absent or invalid
+  /arkham/campaign-catalog:
+    get:
+      operationId: getCampaignCatalog
+      summary: Return the generated create-game campaign and scenario catalog
+      description: |
+        Public generated catalog for native clients. The web client continues
+        to use its static data files; this endpoint is generated from those
+        same files and exposes i18n name keys, release flags, difficulties,
+        Return-to ids, campaign variants, standalone settings definitions,
+        side-story requirements and multi-scenario side-story entries.
+      security: []
+      responses:
+        "200":
+          description: Generated campaign and scenario catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignCatalog"
   /arkham/cards:
     get:
       operationId: listCards
@@ -1051,6 +1069,8 @@ components:
           format: uri
     ServerCapabilities:
       $ref: "./schemas/capabilities.schema.json"
+    CampaignCatalog:
+      $ref: "./schemas/campaign-catalog.schema.json"
     NotificationList:
       $ref: "./schemas/account.schema.json#/$defs/notificationList"
     AchievementList:

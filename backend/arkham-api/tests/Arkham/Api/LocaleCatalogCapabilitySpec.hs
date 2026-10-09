@@ -17,6 +17,7 @@ module Arkham.Api.LocaleCatalogCapabilitySpec (spec) where
 
 import Base.Api.Types.Capabilities (
   ServerCapabilities (..),
+  campaignCatalogCapability,
   semanticQuestionPresentationCapability,
  )
 import Base.Api.Types.LocaleCatalog
@@ -270,7 +271,8 @@ rejectionName = show
 
 noCatalogCapabilities :: [Text]
 noCatalogCapabilities =
-  [ "events.shared-state-versioning"
+  [ campaignCatalogCapability
+  , "events.shared-state-versioning"
   , "games.step-probe"
   , semanticQuestionPresentationCapability
   , "websockets.authorization-header"
@@ -330,7 +332,8 @@ spec = do
     it "inserts the capability without disturbing the existing identifiers" do
       capabilitiesFor fixtureCatalogEnv
         `shouldBe` Right
-          [ "events.shared-state-versioning"
+          [ campaignCatalogCapability
+          , "events.shared-state-versioning"
           , "games.step-probe"
           , "i18n.locale-catalog.v1"
           , semanticQuestionPresentationCapability
@@ -750,9 +753,9 @@ spec = do
       reasons `shouldSatisfy` elem "InvalidCatalogRevision"
 
   describe "compatibility with the pre-feature response" do
-    it "governs semantic question presentation as a global additive capability" do
+    it "governs global additive capabilities" do
       legacy.globalCapabilities
-        `shouldBe` [semanticQuestionPresentationCapability]
+        `shouldBe` [campaignCatalogCapability, semanticQuestionPresentationCapability]
 
     it "pins exactly the legacy fields a current response may differ in" do
       legacy.allowedDifferences.disabled `shouldBe` expectedDisabledDifferences

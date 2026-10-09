@@ -220,6 +220,14 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/arkham/campaign-catalog",
+      "resource": "ApiV1ArkhamCampaignCatalogR",
+      "surface": "catalog",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/arkham/cards",
       "resource": "ApiV1ArkhamCardsR",
       "surface": "catalog",

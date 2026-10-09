@@ -35,6 +35,7 @@ library
       Api.Handler.ApiKeys
       Api.Handler.Arkham.Achievements
       Api.Handler.Arkham.Admin.Metrics
+      Api.Handler.Arkham.CampaignCatalog
       Api.Handler.Arkham.Cards
       Api.Handler.Arkham.CustomCards
       Api.Handler.Arkham.CustomCardSets
@@ -8541,6 +8542,7 @@ test-suite spec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
       Arkham.Api.Events.EventCreationSpec
       Arkham.Api.Events.EventListSpec
+      Arkham.Api.CampaignCatalogSpec
       Arkham.Api.Events.EventStreamAuthSpec
       Arkham.Api.GameBugUploadSpec
       Arkham.Api.GameDecksSpec

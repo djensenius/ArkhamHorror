@@ -29,6 +29,7 @@
         /debug ApiV1ThirdEditionDebugR POST
         /undo ApiV1ThirdEditionUndoR POST
     /arkham ApiV1ArkhamP:
+      /campaign-catalog ApiV1ArkhamCampaignCatalogR GET
       /cards ApiV1ArkhamCardsR GET
       /traits ApiV1ArkhamTraitsR GET
       /schema ApiV1ArkhamSchemaR GET

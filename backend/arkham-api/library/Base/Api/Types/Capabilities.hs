@@ -2,6 +2,7 @@
 
 module Base.Api.Types.Capabilities (
   ServerCapabilities (..),
+  campaignCatalogCapability,
   semanticQuestionPresentationCapability,
   serverCapabilities,
 ) where
@@ -56,6 +57,9 @@ instance ToJSON ServerCapabilities where
   toJSON = genericToJSON serverCapabilitiesOptions
   toEncoding = genericToEncoding serverCapabilitiesOptions
 
+campaignCatalogCapability :: Text
+campaignCatalogCapability = "arkham.campaign-catalog.v1"
+
 semanticQuestionPresentationCapability :: Text
 semanticQuestionPresentationCapability = "questions.semantic-presentation.v2"
 
@@ -70,7 +74,7 @@ update-required even for deployments that omit the catalog fields.
 serverCapabilities :: Maybe LocaleCatalog -> ServerCapabilities
 serverCapabilities localeCatalog =
   ServerCapabilities
-    { schemaRevision = "0.1.51"
+    { schemaRevision = "0.1.52"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.50"
@@ -79,7 +83,8 @@ serverCapabilities localeCatalog =
     }
  where
   baseCapabilities =
-    [ "events.shared-state-versioning"
+    [ campaignCatalogCapability
+    , "events.shared-state-versioning"
     , "games.step-probe"
     , semanticQuestionPresentationCapability
     , "websockets.authorization-header"

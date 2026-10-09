@@ -54,6 +54,16 @@
       }
     },
     {
+      "$comment": "The generated campaign/scenario catalog endpoint is globally available for native create-game flows in this contract revision.",
+      "properties": {
+        "capabilities": {
+          "contains": {
+            "const": "arkham.campaign-catalog.v1"
+          }
+        }
+      }
+    },
+    {
       "$comment": "The object and its capability string are produced from one Maybe in Base.Api.Types.Capabilities.serverCapabilities, so neither can appear without the other.",
       "if": {
         "properties": {
