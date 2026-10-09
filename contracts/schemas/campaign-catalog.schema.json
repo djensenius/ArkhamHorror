@@ -21,7 +21,7 @@
     },
     "catalogRevision": {
       "type": "string",
-      "pattern": "^1\\.[0-9a-f]{32}$"
+      "pattern": "^1\\.[0-9a-f]{32}(?![\\s\\S])"
     },
     "endpoint": {
       "const": "/api/v1/arkham/campaign-catalog"
@@ -76,9 +76,26 @@
       ]
     },
     "tokenFace": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 64
+      "enum": [
+        "AutoFail",
+        "BloodToken",
+        "Cultist",
+        "ElderSign",
+        "ElderThing",
+        "FrostToken",
+        "MinusEight",
+        "MinusFive",
+        "MinusFour",
+        "MinusOne",
+        "MinusSeven",
+        "MinusSix",
+        "MinusThree",
+        "MinusTwo",
+        "PlusOne",
+        "Skull",
+        "Tablet",
+        "Zero"
+      ]
     },
     "difficultyLevels": {
       "type": "object",

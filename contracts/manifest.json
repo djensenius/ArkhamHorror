@@ -831,13 +831,13 @@
       "basePointer": "",
       "mutation": {
         "op": "replace",
-        "pointer": "/scenarios/0/standaloneDifficulties/0",
+        "pointer": "/sideStories/0/standaloneDifficulties/0",
         "value": "Story"
       },
       "expectedErrors": [
         {
           "path": [
-            "scenarios",
+            "sideStories",
             "0",
             "standaloneDifficulties",
             "0"
@@ -16228,7 +16228,7 @@
     "contracts/fixtures/answer-retire-investigator.json": "765180a79c83be002b4fd4c2879e6f3b84ad14df44bc986d70043dbd109708c2",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
-    "contracts/fixtures/campaign-catalog.json": "bd0a3fb34822cbe73e8bc1bdfa7d922b770ec2e4a25090ec0e105dddfab5c755",
+    "contracts/fixtures/campaign-catalog.json": "1319f85f8d709c2e7134586621da42cb376048154cc5498e3f24a395c365c250",
     "contracts/fixtures/capabilities-locale-catalog.json": "eaad9b294fe61fe5f939ebec66f9741231056502c500ad40e0f30654214c21cb",
     "contracts/fixtures/capabilities.json": "38effc498e81e1cd5b9138476e4e8b1032663b4d9af4ed6fd9b19834308c7f25",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
@@ -16348,7 +16348,7 @@
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
     "contracts/schemas/basic-choice-question.schema.json": "b545376fafbd9dcc4aa47ad625d91bc96ddd2876ea5be6cbb7a5fc1ca0aa3649",
-    "contracts/schemas/campaign-catalog.schema.json": "f6314c99383459eb77facfa8e928e3c3726a74692fa3021bc12018a8be76fc88",
+    "contracts/schemas/campaign-catalog.schema.json": "8aa5fb64a80c34c46907e8d6d254a36df1fdeb50f3056c0cb3dda849e87e4d5c",
     "contracts/schemas/capabilities.schema.json": "a71638283a94b4e68c29c1a705dba0f007a3b5a28de324fecdcfdbd179430658",
     "contracts/schemas/card-code-entity-map.schema.json": "569bf8004632ed5226ef661a09cbc33fcdc1b73f177005e2e313cd28d126cb18",
     "contracts/schemas/catalog.schema.json": "7b4c692f0e151701b2588e18c51a1ce608fa5c36a77e4d695be4f383f39cecc9",
