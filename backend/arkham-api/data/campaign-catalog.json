@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.68f67c97770c93f922f88f7330b4e5c1",
+  "catalogRevision": "1.6f57bee718d0bbb290e8b67c54240f90",
   "endpoint": "/api/v1/arkham/campaign-catalog",
   "digestAlgorithm": "sha256",
   "campaigns": [
@@ -6952,9 +6952,9 @@
     "generatorVersion": "1.0.0",
     "schemaVersion": "1.0.0",
     "dataSourcesSha256": "84c777cdea51911d2e41ffa84ea8a3a9148a1356ae08c34ed3a09ffc44323383",
-    "generatorSha256": "c93153065aecfa1bf3c8e31a93331db30dfd843e198ae84e4b318878c6398bfc",
+    "generatorSha256": "50a59ef2bab159086c444b314745b027efb71c86fc58fe42bc95872f7597b754",
     "schemasSha256": "a877a35cfecdd8a8e1a5a879474208db460e14d79c91709a73f8a11abbd606ba",
-    "sha256": "68f67c97770c93f922f88f7330b4e5c154ecbacc84ab18346632a0d1c8872ce9",
+    "sha256": "6f57bee718d0bbb290e8b67c54240f9049710334d06b70a2d486a237ba6eae77",
     "sources": [
       {
         "path": "frontend/src/arkham/data/brethrenOfAsh.json",
@@ -7025,6 +7025,6 @@
         "sha256": "544cd7eafbad5f4497e09b5fb3b2ed55e6e1ed27c4f20ccf891746beb2c3c702"
       }
     ],
-    "outputSha256": "aea3391e36f42f8fe9fbdd1eb9958f473123958ca79aec1e91a94117e540e354"
+    "outputSha256": "5edb66d40832a0e60359ada40654b2fad6a05c330ba21ef1295fe6e3e24f702b"
   }
 }
