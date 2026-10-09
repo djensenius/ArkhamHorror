@@ -3,25 +3,25 @@
     "01": {
       "name": "The Night of the Zealot",
       "returnTo": {
-        "name": "Return to The Night of the Zealot"
+        "name": "Return to the Night of the Zealot"
       }
     },
     "02": {
       "name": "The Dunwich Legacy",
       "returnTo": {
-        "name": "Return to The Dunwich Legacy"
+        "name": "Return to the Dunwich Legacy"
       }
     },
     "03": {
       "name": "The Path to Carcosa",
       "returnTo": {
-        "name": "Return to The Path to Carcosa"
+        "name": "Return to the Path to Carcosa"
       }
     },
     "04": {
       "name": "The Forgotten Age",
       "returnTo": {
-        "name": "Return to The Forgotten Age"
+        "name": "Return to the Forgotten Age"
       }
     },
     "05": {

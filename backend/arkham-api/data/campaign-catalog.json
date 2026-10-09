@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.9d1ae4ec1300bcd0cb8253fd8388476b",
+  "catalogRevision": "1.3883b98d3f69daa0386c072ee7e0af14",
   "endpoint": "/api/v1/arkham/campaign-catalog",
   "digestAlgorithm": "sha256",
   "campaigns": [
@@ -6951,11 +6951,31 @@
     "generator": "arkham-campaign-catalog",
     "generatorVersion": "1.0.0",
     "schemaVersion": "1.0.0",
-    "dataSourcesSha256": "84c777cdea51911d2e41ffa84ea8a3a9148a1356ae08c34ed3a09ffc44323383",
-    "generatorSha256": "66ac3239c44fd5f7cf3f926e4ad8917b43db1c08d274a947ac0ff95d01dd59fc",
+    "dataSourcesSha256": "29e45cfd9ff04e9df630171ad8d4f3cef3761421a1cefea2b8be0b301caa5ed3",
+    "generatorSha256": "bc8fa53f3f692deb4b9a4eadc115a5c4d0b7b181106126f51ed82e3ccbeb6feb",
     "schemasSha256": "594a4048056f3fd612ce5cb3485ab00dc37515df09891abf75e1910bc7122a4f",
-    "sha256": "9d1ae4ec1300bcd0cb8253fd8388476b015a0393e360f0bbf513daffe5bb083b",
+    "sha256": "3883b98d3f69daa0386c072ee7e0af14a803954780c4ca72321ca346dd4b9eec",
     "sources": [
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToNightOfTheZealot.hs",
+        "sha256": "99341788ed339258532e6129047ee6c85e3490de4e78b2b773a336e2aab9aab9"
+      },
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheCircleUndone.hs",
+        "sha256": "bc43be156e2a6e07fb0d9b79808ea07ef74933bbadf9a8c1e3f77beb6d8d4c4d"
+      },
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheDunwichLegacy.hs",
+        "sha256": "1dfb5004b4eb75eac409e6b8f572378df7dcbec3a7b058f774b789f8eccc0fb6"
+      },
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheForgottenAge.hs",
+        "sha256": "3602da5cc367c941e55dcea9c8e682039a1e746111521819ede11a365dc4c2e2"
+      },
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToThePathToCarcosa.hs",
+        "sha256": "da0c4f0c4da61c0df7a13a23420d6e236ffff12b99468c2fcb324c04fc2449ff"
+      },
       {
         "path": "frontend/src/arkham/data/brethrenOfAsh.json",
         "sha256": "afe61e0889cadb7db0a979d33dc170d44f27a007e68171592f570155032c723e"
@@ -7025,6 +7045,6 @@
         "sha256": "544cd7eafbad5f4497e09b5fb3b2ed55e6e1ed27c4f20ccf891746beb2c3c702"
       }
     ],
-    "outputSha256": "d55b54eb1fa708186ac62278186aa997b947e9749b4dda1661846e02bc68b40c"
+    "outputSha256": "1f2854fba982c5943b77514b1d5441ee6c0edda2948557894934397121fcbd85"
   }
 }

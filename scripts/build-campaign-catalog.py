@@ -33,11 +33,21 @@ GENERATOR_NAME = "arkham-campaign-catalog"
 GENERATOR_VERSION = "1.0.0"
 ENDPOINT = "/api/v1/arkham/campaign-catalog"
 
+RETURN_TO_CAMPAIGN_SOURCES = (
+    "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToNightOfTheZealot.hs",
+    "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheDunwichLegacy.hs",
+    "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToThePathToCarcosa.hs",
+    "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheForgottenAge.hs",
+    "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheCircleUndone.hs",
+)
+EXPECTED_RETURN_TO_CAMPAIGN_IDS = {"50", "51", "52", "53", "54"}
+
 DATA_SOURCES = (
     "frontend/src/arkham/data/campaigns.json",
     "frontend/src/arkham/data/scenarios.ts",
     "frontend/src/arkham/data/side-stories.json",
     "frontend/src/arkham/deckRestrictions.ts",
+    *RETURN_TO_CAMPAIGN_SOURCES,
 )
 GAME_BOARD_MESSAGES = "frontend/src/locales/en/gameBoard/gameBoard.ts"
 GENERATOR_SOURCES = (
@@ -259,9 +269,30 @@ def parse_required_investigator_codes() -> dict[str, list[str]]:
     return result
 
 
+def parse_return_to_campaign_titles() -> dict[str, str]:
+    result: dict[str, str] = {}
+    title_re = re.compile(r'CampaignId\s+"(?P<id>[0-9]+)"\)\s*\n\s*"(?P<title>(?:[^"\\]|\\.)*)"')
+    for relative in RETURN_TO_CAMPAIGN_SOURCES:
+        text = source_bytes(relative).decode("utf-8")
+        match = title_re.search(text)
+        require(match, f"{relative} does not declare a Return-to CampaignId and title")
+        campaign_id = validate_id("Return-to campaign", match.group("id"))
+        require(campaign_id in EXPECTED_RETURN_TO_CAMPAIGN_IDS, f"unexpected Return-to campaign id {campaign_id} in {relative}")
+        require(campaign_id not in result, f"duplicate Return-to campaign id {campaign_id}")
+        result[campaign_id] = validate_name(f"Return-to campaign {campaign_id}", ast.literal_eval(f'"{match.group("title")}"'))
+    require(
+        set(result) == EXPECTED_RETURN_TO_CAMPAIGN_IDS,
+        "Return-to campaign definitions must cover ids 50-54 "
+        f"(missing: {summarize_ids(EXPECTED_RETURN_TO_CAMPAIGN_IDS - set(result))}; "
+        f"unexpected: {summarize_ids(set(result) - EXPECTED_RETURN_TO_CAMPAIGN_IDS)})",
+    )
+    return result
+
+
 def campaign_catalog(registry: dict) -> list[dict]:
     raw = read_json("frontend/src/arkham/data/campaigns.json")
     require(isinstance(raw, list) and raw, "campaigns.json must be a non-empty array")
+    return_to_campaign_titles = parse_return_to_campaign_titles()
     seen: set[str] = set()
     campaigns = []
     for item in raw:
@@ -278,10 +309,17 @@ def campaign_catalog(registry: dict) -> list[dict]:
         return_to = entry.get("returnTo")
         if return_to is not None:
             require(isinstance(return_to, dict), f"campaign {cid} returnTo must be an object")
-            validate_id(f"campaign {cid} returnTo", return_to.get("id"))
+            return_to_id = validate_id(f"campaign {cid} returnTo", return_to.get("id"))
+            explicit_title = return_to.pop("name", None)
+            return_to_title = (
+                validate_name(f"campaign {cid} returnTo name", explicit_title)
+                if explicit_title is not None
+                else return_to_campaign_titles.get(return_to_id)
+            )
+            require(return_to_title is not None, f"campaign {cid} returnTo {return_to_id} has no title source")
             validate_release_flags(f"campaign {cid} returnTo", return_to)
             rt_key = name_key("campaigns", cid, "returnTo", "name")
-            add_name(registry, rt_key, f"Return to {title}")
+            add_name(registry, rt_key, return_to_title)
             return_to["nameKey"] = rt_key
         campaigns.append(entry)
     return campaigns
@@ -425,13 +463,18 @@ def collect_name_keys(value: object) -> list[str]:
     return keys
 
 
-def resolves_locale_key(messages: dict, key: str) -> bool:
+def resolve_locale_key_value(messages: dict, key: str) -> object | None:
     current: object = messages
     for segment in key.split("."):
         if not isinstance(current, dict) or segment not in current:
-            return False
+            return None
         current = current[segment]
-    return isinstance(current, str) and bool(current)
+    return current
+
+
+def resolves_locale_key(messages: dict, key: str) -> bool:
+    value = resolve_locale_key_value(messages, key)
+    return isinstance(value, str) and bool(value)
 
 
 def assert_game_board_mounts_catalog_names() -> None:
@@ -458,9 +501,30 @@ def assert_name_keys_resolve_in_registry(catalog: dict, registry: dict, *, sourc
     require(not missing, f"generated name keys do not resolve in {source}: " + ", ".join(missing[:10]))
 
 
+def assert_return_to_campaign_titles_match_backend(catalog: dict, registry: dict) -> None:
+    expected = parse_return_to_campaign_titles()
+    messages = {"catalogNames": registry}
+    for campaign in catalog.get("campaigns", []):
+        require(isinstance(campaign, dict), "self-test campaign entries must be objects")
+        return_to = campaign.get("returnTo")
+        if return_to is None:
+            continue
+        require(isinstance(return_to, dict), "self-test returnTo entries must be objects")
+        return_to_id = validate_id("self-test Return-to campaign", return_to.get("id"))
+        require(return_to_id in expected, f"self-test Return-to campaign {return_to_id} has no backend title")
+        name_key = return_to.get("nameKey")
+        require(isinstance(name_key, str), f"self-test Return-to campaign {return_to_id} has no nameKey")
+        actual = resolve_locale_key_value(messages, name_key)
+        require(
+            actual == expected[return_to_id],
+            f"Return-to campaign {return_to_id} title {actual!r} does not match backend definition {expected[return_to_id]!r}",
+        )
+
+
 def assert_generated_name_keys_resolve(catalog: dict, registry: dict) -> None:
     assert_game_board_mounts_catalog_names()
     assert_name_keys_resolve_in_registry(catalog, registry, source=NAME_REGISTRY.relative_to(ROOT).as_posix())
+    assert_return_to_campaign_titles_match_backend(catalog, registry)
 
 
 def assert_committed_name_keys_resolve(catalog: dict) -> None:
