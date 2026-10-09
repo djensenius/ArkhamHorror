@@ -240,7 +240,7 @@ def parse_required_investigator_codes() -> dict[str, list[str]]:
     entry_re = re.compile(
         r"['\"](?P<scenario>[0-9]{5})['\"]\s*:\s*requiredInvestigator\(\s*"
         r"(?P<name>(?:'[^'\\]*(?:\\.[^'\\]*)*')|(?:\"[^\"\\]*(?:\\.[^\"\\]*)*\"))\s*,\s*"
-        r"\[(?P<codes>[^\]]*)\]",
+        r"\[(?P<codes>[^\]]*)\]\s*\)\s*,",
         re.S,
     )
     declared_key_count = len(re.findall(r"['\"][0-9]{5}['\"]\s*:", body))
@@ -546,6 +546,11 @@ def run_self_test() -> None:
     require(spread_code_item != deck_restrictions, "self-test could not introduce spread code list item")
     with with_source_override(deck_restrictions_path, spread_code_item.encode("utf-8")):
         expect_system_exit("spread challengeScenarioInvestigators code list item", parse_required_investigator_codes)
+
+    suffixed_code_list = deck_restrictions.replace("'90065': requiredInvestigator('Monterey Jack', ['08007', '90062'])", "'90065': requiredInvestigator('Monterey Jack', ['08007'].concat(MONTEREY_CODES))", 1)
+    require(suffixed_code_list != deck_restrictions, "self-test could not introduce suffixed challengeScenarioInvestigators code list")
+    with with_source_override(deck_restrictions_path, suffixed_code_list.encode("utf-8")):
+        expect_system_exit("suffixed challengeScenarioInvestigators code list", parse_required_investigator_codes)
 
 
 def main() -> None:
