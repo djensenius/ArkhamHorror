@@ -1,9 +1,10 @@
 {
-  "schemaRevision": "0.1.51",
+  "schemaRevision": "0.1.52",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "nativeClientMinimumRevision": "0.1.50",
   "capabilities": [
+    "arkham.campaign-catalog.v1",
     "events.shared-state-versioning",
     "games.step-probe",
     "i18n.locale-catalog.v1",
@@ -13,7 +14,7 @@
   ],
   "localeCatalog": {
     "manifestUrl": "/locale-catalog/manifest.json",
-    "catalogRevision": "1.e4136e6e101e41f49b8304df2e8c2cd7",
+    "catalogRevision": "1.ce3172a9f8ecc197d437881ad4c7bd53",
     "schemaVersion": "1.0.0",
     "defaultLocale": "en",
     "supportedLocales": [
@@ -21,6 +22,6 @@
       "en",
       "pt-BR"
     ],
-    "manifestSha256": "ec1969b21298c2aa126c4bb1f97062ea267254233015ec51210ec5f1883c652e"
+    "manifestSha256": "188bf6fcb2baf0a3c404847a876380eeb548af682ed51ac334b89117725da771"
   }
 }
