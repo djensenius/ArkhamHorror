@@ -1,4 +1,7 @@
 module Api.Handler.Arkham.CampaignCatalog (
+  CampaignCatalogResponse (..),
+  campaignCatalogResponse,
+  etagMatches,
   getApiV1ArkhamCampaignCatalogR,
 ) where
 
@@ -9,12 +12,44 @@ import Base.Api.Types.CampaignCatalog (
   campaignCatalogETag,
   campaignCatalogResponseHeaders,
  )
+import Data.ByteString.Char8 qualified as BS8
 import Network.HTTP.Types.Status (status304)
+
+data CampaignCatalogResponse
+  = CampaignCatalogNotModified [(Text, Text)]
+  | CampaignCatalogOk [(Text, Text)] ByteString
+  deriving stock (Eq, Show)
+
+etagMatches :: Maybe ByteString -> Bool
+etagMatches Nothing = False
+etagMatches (Just raw) = any matchesToken $ BS8.split ',' raw
+ where
+  expected = encodeUtf8 campaignCatalogETag
+  matchesToken token
+    | trimmed == "*" = True
+    | "W/" `BS8.isPrefixOf` trimmed = stripWeak trimmed == expected
+    | otherwise = isQuoted trimmed && trimmed == expected
+   where
+    trimmed = trimOWS token
+  stripWeak token =
+    let entityTag = BS8.drop 2 token
+     in if isQuoted entityTag then entityTag else ""
+  isQuoted token = BS8.length token >= 2 && BS8.head token == '"' && BS8.last token == '"'
+  trimOWS = BS8.dropWhileEnd isOWS . BS8.dropWhile isOWS
+  isOWS c = c == ' ' || c == '\t'
+
+campaignCatalogResponse :: Maybe ByteString -> CampaignCatalogResponse
+campaignCatalogResponse ifNoneMatch
+  | etagMatches ifNoneMatch = CampaignCatalogNotModified campaignCatalogResponseHeaders
+  | otherwise = CampaignCatalogOk campaignCatalogResponseHeaders campaignCatalogBytes
 
 getApiV1ArkhamCampaignCatalogR :: Handler TypedContent
 getApiV1ArkhamCampaignCatalogR = do
-  traverse_ (uncurry addHeader) campaignCatalogResponseHeaders
   ifNoneMatch <- lookupHeader "If-None-Match"
-  when (ifNoneMatch == Just (encodeUtf8 campaignCatalogETag)) do
-    sendResponseStatus status304 ("" :: Text)
-  pure $ TypedContent typeJson $ toContent campaignCatalogBytes
+  case campaignCatalogResponse ifNoneMatch of
+    CampaignCatalogNotModified headers -> do
+      traverse_ (uncurry addHeader) headers
+      sendResponseStatus status304 ("" :: Text)
+    CampaignCatalogOk headers bytes -> do
+      traverse_ (uncurry addHeader) headers
+      pure $ TypedContent typeJson $ toContent bytes
