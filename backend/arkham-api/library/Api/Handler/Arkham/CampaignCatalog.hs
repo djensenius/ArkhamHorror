@@ -1,23 +1,20 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 module Api.Handler.Arkham.CampaignCatalog (
-  campaignCatalogValue,
   getApiV1ArkhamCampaignCatalogR,
 ) where
 
 import Import
 
-import Data.Aeson qualified as Aeson
-import Data.FileEmbed (embedFile)
+import Base.Api.Types.CampaignCatalog (
+  campaignCatalogBytes,
+  campaignCatalogETag,
+  campaignCatalogResponseHeaders,
+ )
+import Network.HTTP.Types.Status (status304)
 
-campaignCatalogBytes :: ByteString
-campaignCatalogBytes = $(embedFile "../../contracts/fixtures/campaign-catalog.json")
-
-campaignCatalogValue :: Aeson.Value
-campaignCatalogValue =
-  case Aeson.eitherDecodeStrict campaignCatalogBytes of
-    Left err -> error $ "invalid embedded campaign catalog: " <> toText err
-    Right value -> value
-
-getApiV1ArkhamCampaignCatalogR :: Handler Aeson.Value
-getApiV1ArkhamCampaignCatalogR = pure campaignCatalogValue
+getApiV1ArkhamCampaignCatalogR :: Handler TypedContent
+getApiV1ArkhamCampaignCatalogR = do
+  traverse_ (uncurry addHeader) campaignCatalogResponseHeaders
+  ifNoneMatch <- lookupHeader "If-None-Match"
+  when (ifNoneMatch == Just (encodeUtf8 campaignCatalogETag)) do
+    sendResponseStatus status304 ("" :: Text)
+  pure $ TypedContent typeJson $ toContent campaignCatalogBytes

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/campaign-catalog.schema.json",
   "title": "Campaign and scenario catalog",
-  "description": "Generated native-client catalog for create-game campaign and scenario choices. Names are i18n keys resolved through the locale catalog; English source titles from the web data are not exposed in this artifact.",
+  "description": "Generated native-client catalog for create-game campaign and scenario choices. Campaign, scenario, Return-to and side-story titles are i18n keys resolved through the locale catalog. Some web-authored English strings remain in v1 for deckRequirements, setting labels and Record keys where the web data has no typed locale key yet.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -166,13 +166,16 @@
               "$ref": "#/$defs/returnToCampaign"
             },
             "variants": {
-              "type": "array"
+              "type": "array",
+              "description": "Untyped web create-game variant records in v1; label keys use create.fullCampaignOption.*."
             },
             "recommendedOptions": {
-              "type": "array"
+              "type": "array",
+              "description": "Untyped web recommended-option records in v1; label keys use create.recommendedOption.*.title."
             },
             "settings": {
-              "type": "array"
+              "type": "array",
+              "description": "Untyped web create-game setting records in v1; clients should preserve unknown shapes and render only recognized kinds."
             },
             "name": false
           }
@@ -219,7 +222,8 @@
               "$ref": "#/$defs/difficultyLevels"
             },
             "settings": {
-              "type": "array"
+              "type": "array",
+              "description": "Untyped web create-game setting records in v1; clients should preserve unknown shapes and render only recognized kinds."
             },
             "requiredInvestigator": {
               "type": "string",
@@ -232,7 +236,17 @@
                 "minLength": 1
               }
             },
-            "name": false
+            "name": false,
+            "requiredInvestigatorCodes": {
+              "description": "ArkhamDB/player-card codes accepted by the web deck restriction for the required investigator, including parallel and replacement fronts where the web allows them.",
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9]{5}$"
+              }
+            }
           }
         }
       ]
@@ -313,7 +327,6 @@
         "generator",
         "generatorVersion",
         "schemaVersion",
-        "schemaRevision",
         "dataSourcesSha256",
         "generatorSha256",
         "schemasSha256",
@@ -330,10 +343,6 @@
         },
         "schemaVersion": {
           "const": "1.0.0"
-        },
-        "schemaRevision": {
-          "type": "string",
-          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
         },
         "dataSourcesSha256": {
           "$ref": "#/$defs/sha256"

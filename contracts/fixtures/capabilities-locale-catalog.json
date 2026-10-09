@@ -12,9 +12,15 @@
     "websockets.authorization-header",
     "websockets.spectator-read-only"
   ],
+  "campaignCatalog": {
+    "endpoint": "/api/v1/arkham/campaign-catalog",
+    "catalogRevision": "1.0123456789abcdef0123456789abcdef",
+    "schemaVersion": "1.0.0",
+    "digestAlgorithm": "sha256"
+  },
   "localeCatalog": {
     "manifestUrl": "/locale-catalog/manifest.json",
-    "catalogRevision": "1.ce3172a9f8ecc197d437881ad4c7bd53",
+    "catalogRevision": "1.16520d1090e0e3a428dba0b6d2f9faee",
     "schemaVersion": "1.0.0",
     "defaultLocale": "en",
     "supportedLocales": [
@@ -22,6 +28,6 @@
       "en",
       "pt-BR"
     ],
-    "manifestSha256": "188bf6fcb2baf0a3c404847a876380eeb548af682ed51ac334b89117725da771"
+    "manifestSha256": "3b94a37ce09176912711acd34bf258856fd8215029b33183b407a6c219741bee"
   }
 }

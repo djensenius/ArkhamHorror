@@ -60,6 +60,10 @@ run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-locale-catalog
 description = "Re-derive the native campaign/scenario catalog from web data and verify the committed artifacts"
 run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-campaign-catalog.py --check"
 
+[tasks."contracts:campaign-catalog-self-test"]
+description = "Run campaign/scenario catalog generator self-tests"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-campaign-catalog.py --self-test"
+
 [tasks."contracts:campaign-catalog-write"]
 description = "Rewrite the generated native campaign/scenario catalog artifacts"
 run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-campaign-catalog.py"
@@ -81,6 +85,7 @@ description = "Run every native-client contract check"
 depends = [
   "contracts:catalog-fixture",
   "contracts:campaign-catalog",
+  "contracts:campaign-catalog-self-test",
   "contracts:fixtures",
   "contracts:revision-drift-local",
   "contracts:openapi",

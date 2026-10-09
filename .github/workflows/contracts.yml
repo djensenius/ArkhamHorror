@@ -56,6 +56,8 @@ jobs:
           esac
           mise --version | head -1 | grep -Eq '^2026\.8\.14( |$)'
       - run: mise run contracts:catalog-fixture
+      - run: mise run contracts:campaign-catalog
+      - run: mise run contracts:campaign-catalog-self-test
       - run: mise run locale-catalog:python-boundary-test
       - run: mise run contracts:fixtures
       - name: Enforce revision drift against the event's explicit base

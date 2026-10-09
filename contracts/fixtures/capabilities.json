@@ -10,5 +10,11 @@
     "questions.semantic-presentation.v2",
     "websockets.authorization-header",
     "websockets.spectator-read-only"
-  ]
+  ],
+  "campaignCatalog": {
+    "endpoint": "/api/v1/arkham/campaign-catalog",
+    "catalogRevision": "1.0123456789abcdef0123456789abcdef",
+    "schemaVersion": "1.0.0",
+    "digestAlgorithm": "sha256"
+  }
 }

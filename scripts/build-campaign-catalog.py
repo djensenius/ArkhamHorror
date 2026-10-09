@@ -11,6 +11,7 @@ truth.
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import hashlib
 import json
@@ -21,9 +22,8 @@ import strict_json
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DATA = ROOT / "frontend" / "src" / "arkham" / "data"
-CONTRACT_FIXTURE = ROOT / "contracts" / "fixtures" / "campaign-catalog.json"
+BACKEND_CATALOG = ROOT / "backend" / "arkham-api" / "data" / "campaign-catalog.json"
 SCHEMA_PATH = ROOT / "contracts" / "schemas" / "campaign-catalog.schema.json"
-CONTRACT_MANIFEST = ROOT / "contracts" / "manifest.json"
 NAME_REGISTRY = ROOT / "frontend" / "src" / "locales" / "en" / "gameBoard" / "catalogNames.json"
 SCHEMA_VERSION = "1.0.0"
 GENERATOR_NAME = "arkham-campaign-catalog"
@@ -34,6 +34,7 @@ DATA_SOURCES = (
     "frontend/src/arkham/data/campaigns.json",
     "frontend/src/arkham/data/scenarios.ts",
     "frontend/src/arkham/data/side-stories.json",
+    "frontend/src/arkham/deckRestrictions.ts",
 )
 GENERATOR_SOURCES = (
     "scripts/build-campaign-catalog.py",
@@ -44,6 +45,7 @@ _NAME_RE = re.compile(r"^import\s+(\w+)\s+from\s+'@/arkham/data/([^']+\.json)'",
 _SPREAD_RE = re.compile(r"\.\.\.(\w+)")
 _ID_RE = re.compile(r"^[A-Za-z0-9:_-]+$")
 _DIFFICULTIES = {"Easy", "Standard", "Hard", "Expert"}
+_SOURCE_BYTE_OVERRIDES: dict[str, bytes] = {}
 
 
 def require(condition: object, message: str) -> None:
@@ -70,10 +72,12 @@ def fileset_digest(entries: list[tuple[str, bytes]]) -> str:
 
 
 def read_json(relative: str) -> object:
-    return strict_json.strict_json_load_path(ROOT / relative)
+    return strict_json.strict_json_loads(source_bytes(relative), source=relative)
 
 
 def source_bytes(relative: str) -> bytes:
+    if relative in _SOURCE_BYTE_OVERRIDES:
+        return _SOURCE_BYTE_OVERRIDES[relative]
     path = ROOT / relative
     require(path.is_file() and not path.is_symlink(), f"{relative} is not a regular file")
     return path.read_bytes()
@@ -99,6 +103,11 @@ def validate_name(kind: str, value: object) -> str:
 def validate_release_flags(kind: str, item: dict) -> None:
     for flag in ("alpha", "beta", "dev"):
         require(flag not in item or isinstance(item[flag], bool), f"{kind} {item.get('id')} {flag} must be boolean")
+
+
+def validate_card_code(kind: str, value: object) -> str:
+    require(isinstance(value, str) and re.fullmatch(r"[0-9]{5}", value), f"{kind} card code must be a five-digit string, got {value!r}")
+    return value
 
 
 def validate_difficulty_levels(kind: str, item: dict) -> None:
@@ -160,6 +169,29 @@ def parse_scenario_imports() -> list[str]:
     return paths
 
 
+def parse_required_investigator_codes() -> dict[str, list[str]]:
+    text = source_bytes("frontend/src/arkham/deckRestrictions.ts").decode("utf-8")
+    block_match = re.search(r"const\s+challengeScenarioInvestigators\s*:[^{]+\{(?P<body>.*?)\n\}", text, re.S)
+    require(block_match, "deckRestrictions.ts declared no challengeScenarioInvestigators map")
+    body = block_match.group("body")
+    result: dict[str, list[str]] = {}
+    entry_re = re.compile(
+        r"['\"](?P<scenario>[0-9]{5})['\"]\s*:\s*requiredInvestigator\(\s*"
+        r"(?P<name>(?:'[^'\\]*(?:\\.[^'\\]*)*')|(?:\"[^\"\\]*(?:\\.[^\"\\]*)*\"))\s*,\s*"
+        r"\[(?P<codes>[^\]]*)\]",
+        re.S,
+    )
+    for match in entry_re.finditer(body):
+        scenario_id = validate_id("challenge scenario", match.group("scenario"))
+        codes = [validate_card_code(f"challenge scenario {scenario_id}", ast.literal_eval(raw)) for raw in re.findall(r"'[^']+'|\"[^\"]+\"", match.group("codes"))]
+        require(codes, f"challenge scenario {scenario_id} required investigator code list is empty")
+        require(len(codes) == len(set(codes)), f"challenge scenario {scenario_id} required investigator code list has duplicates")
+        require(scenario_id not in result, f"duplicate challenge scenario restriction {scenario_id}")
+        result[scenario_id] = codes
+    require(result, "deckRestrictions.ts challengeScenarioInvestigators yielded no restrictions")
+    return result
+
+
 def campaign_catalog(registry: dict) -> list[dict]:
     raw = read_json("frontend/src/arkham/data/campaigns.json")
     require(isinstance(raw, list) and raw, "campaigns.json must be a non-empty array")
@@ -213,7 +245,7 @@ def scenario_catalog(registry: dict, scenario_paths: list[str]) -> list[dict]:
     return scenarios
 
 
-def side_story_catalog(registry: dict) -> list[dict]:
+def side_story_catalog(registry: dict, required_investigator_codes: dict[str, list[str]]) -> list[dict]:
     raw = read_json("frontend/src/arkham/data/side-stories.json")
     require(isinstance(raw, list) and raw, "side-stories.json must be a non-empty array")
     seen: set[str] = set()
@@ -229,6 +261,10 @@ def side_story_catalog(registry: dict) -> list[dict]:
         key = name_key("sideStories", sid, "name")
         add_name(registry, key, title)
         entry = without_english_name(item, key)
+        if "requiredInvestigator" in entry:
+            codes = required_investigator_codes.get(sid)
+            require(codes is not None, f"side-story {sid} requiredInvestigator has no deck restriction code source")
+            entry["requiredInvestigatorCodes"] = codes
         if "scenarios" in entry:
             require(isinstance(entry["scenarios"], list) and entry["scenarios"], f"side-story {sid} scenarios must be a non-empty array")
             for part in entry["scenarios"]:
@@ -248,20 +284,17 @@ def build_catalog() -> tuple[dict, dict]:
     registry: dict = {}
     campaigns = campaign_catalog(registry)
     scenarios = scenario_catalog(registry, scenario_paths)
-    side_stories = side_story_catalog(registry)
+    required_investigator_codes = parse_required_investigator_codes()
+    side_stories = side_story_catalog(registry, required_investigator_codes)
 
     data_source_paths = sorted({*DATA_SOURCES, *scenario_paths})
     data_entries = [(path, source_bytes(path)) for path in data_source_paths]
     generator_entries = [(path, source_bytes(path)) for path in GENERATOR_SOURCES]
     schema_entries = [("contracts/schemas/campaign-catalog.schema.json", SCHEMA_PATH.read_bytes())]
-    manifest = read_json("contracts/manifest.json")
-    require(isinstance(manifest, dict) and isinstance(manifest.get("schemaRevision"), str), "contracts/manifest.json lacks schemaRevision")
-
     provenance_basis = {
         "generator": GENERATOR_NAME,
         "generatorVersion": GENERATOR_VERSION,
         "schemaVersion": SCHEMA_VERSION,
-        "schemaRevision": manifest["schemaRevision"],
         "dataSourcesSha256": fileset_digest(data_entries),
         "generatorSha256": fileset_digest(generator_entries),
         "schemasSha256": fileset_digest(schema_entries),
@@ -283,7 +316,49 @@ def build_catalog() -> tuple[dict, dict]:
     }
     output_sha = sha256_hex(canonical_bytes(catalog))
     catalog["provenance"]["outputSha256"] = output_sha
-    return catalog, {"catalogNames": registry}
+    return catalog, registry
+
+
+def collect_name_keys(value: object) -> list[str]:
+    keys: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key.endswith("NameKey") or key == "nameKey":
+                require(isinstance(item, str), f"{key} must be a string")
+                keys.append(item)
+            else:
+                keys.extend(collect_name_keys(item))
+    elif isinstance(value, list):
+        for item in value:
+            keys.extend(collect_name_keys(item))
+    return keys
+
+
+def resolves_locale_key(messages: dict, key: str) -> bool:
+    current: object = messages
+    for segment in key.split("."):
+        if not isinstance(current, dict) or segment not in current:
+            return False
+        current = current[segment]
+    return isinstance(current, str) and bool(current)
+
+
+def assert_name_keys_resolve(catalog: dict, registry: dict) -> None:
+    messages = {"catalogNames": registry}
+    missing = sorted(key for key in set(collect_name_keys(catalog)) if not resolves_locale_key(messages, key))
+    require(not missing, "generated name keys do not resolve in frontend/src/locales/en/gameBoard/catalogNames.json: " + ", ".join(missing[:10]))
+
+
+def with_source_override(relative: str, data: bytes):
+    class Override:
+        def __enter__(self):
+            _SOURCE_BYTE_OVERRIDES[relative] = data
+
+        def __exit__(self, exc_type, exc, tb):
+            _SOURCE_BYTE_OVERRIDES.pop(relative, None)
+            return False
+
+    return Override()
 
 
 def write_if_changed(path: Path, data: bytes) -> None:
@@ -304,6 +379,7 @@ def check_file(path: Path, expected: bytes) -> list[str]:
 
 def run_self_test() -> None:
     catalog, registry = build_catalog()
+    assert_name_keys_resolve(catalog, registry)
     require(catalog["campaigns"][0]["nameKey"].startswith("catalogNames.campaigns."), "self-test campaign name key missing")
     require("The Night of the Zealot" in canonical_bytes(registry).decode("utf-8"), "self-test name registry missing source title")
 
@@ -320,12 +396,16 @@ def run_self_test() -> None:
         "self-test failure: a web data name change did not move the source digest",
     )
 
-    try:
-        validate_name("malformed self-test", "")
-    except SystemExit:
-        pass
-    else:
-        raise SystemExit("campaign-catalog: self-test failure: malformed input was accepted")
+    malformed_campaigns = copy.deepcopy(read_json(campaign_path))
+    require(isinstance(malformed_campaigns, list) and malformed_campaigns, "self-test expected campaigns array")
+    malformed_campaigns[0]["name"] = ""
+    with with_source_override(campaign_path, canonical_bytes(malformed_campaigns)):
+        try:
+            build_catalog()
+        except SystemExit:
+            pass
+        else:
+            raise SystemExit("campaign-catalog: self-test failure: malformed input was accepted by build_catalog")
 
 
 def main() -> None:
@@ -340,12 +420,13 @@ def main() -> None:
         return
 
     catalog, registry = build_catalog()
+    assert_name_keys_resolve(catalog, registry)
     catalog_bytes = canonical_bytes(catalog)
     registry_bytes = canonical_bytes(registry)
 
     if args.check:
         failures = []
-        failures.extend(check_file(CONTRACT_FIXTURE, catalog_bytes))
+        failures.extend(check_file(BACKEND_CATALOG, catalog_bytes))
         failures.extend(check_file(NAME_REGISTRY, registry_bytes))
         require(not failures, "generated artifacts are stale: " + ", ".join(failures))
         print(
@@ -356,7 +437,7 @@ def main() -> None:
         )
         return
 
-    write_if_changed(CONTRACT_FIXTURE, catalog_bytes)
+    write_if_changed(BACKEND_CATALOG, catalog_bytes)
     write_if_changed(NAME_REGISTRY, registry_bytes)
     print(f"campaign-catalog: wrote {catalog['catalogRevision']}")
 

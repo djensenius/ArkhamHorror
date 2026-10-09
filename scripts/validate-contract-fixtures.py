@@ -2653,6 +2653,7 @@ EXPECTED_DISABLED_LEGACY_DIFFERENCES = [
     "schemaRevision",
     "nativeClientMinimumRevision",
     "capabilities",
+    "campaignCatalog",
 ]
 EXPECTED_ADVERTISED_LEGACY_DIFFERENCES = [
     *EXPECTED_DISABLED_LEGACY_DIFFERENCES,

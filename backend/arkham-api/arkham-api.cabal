@@ -8,6 +8,7 @@ name:           arkham-api
 version:        0.0.0
 build-type:     Simple
 extra-source-files:
+    data/campaign-catalog.json
     digital-ocean.crt
     tests/fixtures/replay/smoke-current-data.json
 
@@ -8209,6 +8210,7 @@ library
       Base.Api.Handler.Registration
       Base.Api.Handler.Settings
       Base.Api.Types.Account
+      Base.Api.Types.CampaignCatalog
       Base.Api.Types.Capabilities
       Base.Api.Types.LocaleCatalog
       Base.Api.Types.LocaleCatalog.SettingsPreflight

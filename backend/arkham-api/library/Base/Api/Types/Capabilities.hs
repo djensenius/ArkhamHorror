@@ -7,6 +7,7 @@ module Base.Api.Types.Capabilities (
   serverCapabilities,
 ) where
 
+import Base.Api.Types.CampaignCatalog (CampaignCatalog, campaignCatalogCapability, campaignCatalogMetadata)
 import Base.Api.Types.LocaleCatalog (LocaleCatalog, localeCatalogCapability)
 import Data.Aeson
 import Data.List qualified as List
@@ -41,6 +42,7 @@ data ServerCapabilities = ServerCapabilities
   , apiBasePath :: Text
   , nativeClientMinimumRevision :: Text
   , capabilities :: [Text]
+  , campaignCatalog :: CampaignCatalog
   , localeCatalog :: Maybe LocaleCatalog
   }
   deriving stock (Eq, Show, Generic)
@@ -56,9 +58,6 @@ serverCapabilitiesOptions = defaultOptions {omitNothingFields = True}
 instance ToJSON ServerCapabilities where
   toJSON = genericToJSON serverCapabilitiesOptions
   toEncoding = genericToEncoding serverCapabilitiesOptions
-
-campaignCatalogCapability :: Text
-campaignCatalogCapability = "arkham.campaign-catalog.v1"
 
 semanticQuestionPresentationCapability :: Text
 semanticQuestionPresentationCapability = "questions.semantic-presentation.v2"
@@ -79,6 +78,7 @@ serverCapabilities localeCatalog =
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.50"
     , capabilities = List.sort $ baseCapabilities <> catalogCapabilities
+    , campaignCatalog = campaignCatalogMetadata
     , localeCatalog = localeCatalog
     }
  where

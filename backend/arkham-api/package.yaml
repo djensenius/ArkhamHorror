@@ -3,6 +3,7 @@ version: "0.0.0"
 language: GHC2021
 
 extra-source-files:
+- data/campaign-catalog.json
 - digital-ocean.crt
 - tests/fixtures/replay/smoke-current-data.json
 

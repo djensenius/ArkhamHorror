@@ -124,6 +124,7 @@ import Arkham.UltimatumsAndBoons.Types
   )
 import Base.Api.Types.Account
 import Base.Api.Types.Capabilities
+import Base.Api.Types.CampaignCatalog (campaignCatalogMetadata)
 import Base.Api.Types.LocaleCatalog (localeCatalogCapability)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
@@ -1782,6 +1783,17 @@ the current advertised response. The current revision and compatibility floor
 remain untouched here; the 0.1.22 baseline comparison has its own governed
 normalizer in @contracts/manifest.json@.
 -}
+withFixtureCampaignCatalog :: Aeson.Value -> Aeson.Value -> Aeson.Value
+withFixtureCampaignCatalog fixture = \case
+  Aeson.Object fields ->
+    case fixture of
+      Aeson.Object fixtureFields ->
+        case AesonKeyMap.lookup "campaignCatalog" fixtureFields of
+          Just fixtureCampaignCatalog -> Aeson.Object $ AesonKeyMap.insert "campaignCatalog" fixtureCampaignCatalog fields
+          Nothing -> Aeson.Object fields
+      _ -> Aeson.Object fields
+  value -> value
+
 withoutLocaleCatalog :: Aeson.Value -> Aeson.Value
 withoutLocaleCatalog = \case
   Aeson.Object fields ->
@@ -1835,22 +1847,27 @@ answerConstructor = \case
 
 spec :: Spec
 spec = describe "Native client contract fixtures" do
-  it "matches the runtime server-capabilities encoder with no catalog configured" do
+  it "matches the runtime server-capabilities encoder with no locale catalog configured" do
     fixture <- loadFixture "capabilities.json"
     response <- capabilitiesFor []
 
-    Aeson.toJSON response `shouldBe` fixture
-    viaWireEncoding response `shouldBe` fixture
+    response.campaignCatalog `shouldBe` campaignCatalogMetadata
+    withFixtureCampaignCatalog fixture (Aeson.toJSON response) `shouldBe` fixture
+    withFixtureCampaignCatalog fixture (viaWireEncoding response) `shouldBe` fixture
 
   it "matches the runtime server-capabilities encoder when a locale catalog is advertised" do
     fixture <- loadFixture "capabilities-locale-catalog.json"
     -- Configured from the committed synthetic catalog manifest's real bytes,
     -- so this fixture cannot quietly self-attest a revision or digest that no
-    -- artifact in this repository actually has.
+    -- artifact in this repository actually has. campaignCatalog is separately
+    -- asserted against the backend-embedded production artifact, so this
+    -- governed fixture can stay representative and avoid schemaRevision churn
+    -- when only web create-game data changes.
     response <- capabilitiesFor . catalogEnvFor =<< loadSyntheticCatalog
 
-    Aeson.toJSON response `shouldBe` fixture
-    viaWireEncoding response `shouldBe` fixture
+    response.campaignCatalog `shouldBe` campaignCatalogMetadata
+    withFixtureCampaignCatalog fixture (Aeson.toJSON response) `shouldBe` fixture
+    withFixtureCampaignCatalog fixture (viaWireEncoding response) `shouldBe` fixture
 
   it "decodes the replay-attestation fixture with a valid receipt digest" do
     _ <-

@@ -235,7 +235,7 @@ normalizeAgainstBaseline added allowed = \case
     _ -> Aeson.Null
 
 expectedDisabledDifferences :: [Text]
-expectedDisabledDifferences = ["schemaRevision", "nativeClientMinimumRevision", "capabilities"]
+expectedDisabledDifferences = ["schemaRevision", "nativeClientMinimumRevision", "capabilities", "campaignCatalog"]
 
 expectedAdvertisedDifferences :: [Text]
 expectedAdvertisedDifferences = expectedDisabledDifferences <> ["localeCatalog"]
