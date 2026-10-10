@@ -62,13 +62,13 @@ realAct def = do
   pure act'
 
 realAgenda :: CardDef -> TestAppT Agenda
-realAgenda = realAgendaSide 1
+realAgenda = realAgendaInDeck 1
 
-realAgendaSide :: Int -> CardDef -> TestAppT Agenda
-realAgendaSide side def = do
+realAgendaInDeck :: Int -> CardDef -> TestAppT Agenda
+realAgendaInDeck deckId def = do
   card <- genCard def
   let agendaId' = AgendaId (toCardCode card)
-      agenda' = lookupAgenda agendaId' side (toCardId card)
+      agenda' = lookupAgenda agendaId' deckId (toCardId card)
   overTest $ entitiesL . Entities.agendasL %~ insertEntity agenda'
   pure agenda'
 
@@ -377,7 +377,7 @@ spec = describe "Concealed mini-cards" do
     it "Otherworldly Horror disables the shuffle option for only unplaced mini-cards" . gameTest $ \_ -> do
       unplaced <- mkConcealedCard Decoy
       run $ CreateConcealedCard unplaced
-      agenda <- realAgendaSide 2 WithoutATraceAgendas.otherworldlyHorror
+      agenda <- realAgendaInDeck 2 WithoutATraceAgendas.otherworldlyHorror
 
       run $ AdvanceAgendaBy agenda.id AgendaAdvancedWithOther
       chooseTarget agenda
@@ -387,7 +387,7 @@ spec = describe "Concealed mini-cards" do
     it "Otherworldly Lambs disables the shuffle option for only unplaced mini-cards" . gameTest $ \_ -> do
       unplaced <- mkConcealedCard Decoy
       run $ CreateConcealedCard unplaced
-      agenda <- realAgendaSide 2 WithoutATraceAgendas.otherworldlyLambs
+      agenda <- realAgendaInDeck 2 WithoutATraceAgendas.otherworldlyLambs
 
       run $ AdvanceAgendaBy agenda.id AgendaAdvancedWithOther
       chooseTarget agenda
