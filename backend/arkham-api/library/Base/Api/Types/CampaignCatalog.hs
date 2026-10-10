@@ -56,7 +56,7 @@ campaignCatalogMetadata =
     Aeson.Success metadata -> metadata
 
 campaignCatalogETag :: Text
-campaignCatalogETag = "\"" <> campaignCatalogMetadata.catalogRevision <> "\""
+campaignCatalogETag = "W/\"" <> campaignCatalogMetadata.catalogRevision <> "\""
 
 campaignCatalogResponseHeaders :: [(Text, Text)]
 campaignCatalogResponseHeaders =

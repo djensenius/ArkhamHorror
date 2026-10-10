@@ -24,15 +24,14 @@ etagMatches :: Maybe ByteString -> Bool
 etagMatches Nothing = False
 etagMatches (Just raw) = any matchesToken $ BS8.split ',' raw
  where
-  expected = encodeUtf8 campaignCatalogETag
+  expected = stripWeak $ encodeUtf8 campaignCatalogETag
   matchesToken token
     | trimmed == "*" = True
-    | "W/" `BS8.isPrefixOf` trimmed = stripWeak trimmed == expected
-    | otherwise = isQuoted trimmed && trimmed == expected
+    | otherwise = stripWeak trimmed == expected
    where
     trimmed = trimOWS token
   stripWeak token =
-    let entityTag = BS8.drop 2 token
+    let entityTag = if "W/" `BS8.isPrefixOf` token then BS8.drop 2 token else token
      in if isQuoted entityTag then entityTag else ""
   isQuoted token = BS8.length token >= 2 && BS8.head token == '"' && BS8.last token == '"'
   trimOWS = BS8.dropWhileEnd isOWS . BS8.dropWhile isOWS

@@ -276,9 +276,9 @@ paths:
           in: header
           required: false
           description: |
-            Standard entity-tag validator. Send the quoted `catalogRevision`
-            ETag from a previous 200 or 304 response; weak validators and `*`
-            are accepted by the server.
+            Standard entity-tag validator. Send the weak `W/"<catalogRevision>"`
+            ETag from a previous 200 or 304 response; the equivalent strong
+            quoted `catalogRevision` form and `*` are also accepted by the server.
           schema:
             type: string
       responses:
@@ -286,7 +286,7 @@ paths:
           description: Generated campaign and scenario catalog
           headers:
             ETag:
-              description: Quoted `catalogRevision` for conditional revalidation.
+              description: Weak `W/"<catalogRevision>"` validator for conditional revalidation.
               schema:
                 type: string
             Cache-Control:
@@ -307,7 +307,7 @@ paths:
           description: The supplied `If-None-Match` validator matches the current catalog.
           headers:
             ETag:
-              description: Quoted `catalogRevision` for conditional revalidation.
+              description: Weak `W/"<catalogRevision>"` validator for conditional revalidation.
               schema:
                 type: string
             Cache-Control:

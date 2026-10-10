@@ -42,12 +42,13 @@ spec = describe "campaign catalog endpoint payload" do
       _ -> expectationFailure "campaign catalog artifact must be an object"
 
   it "publishes cache headers derived from the catalog revision" do
+    let expectedWeakETag = "W/\"" <> campaignCatalogMetadata.catalogRevision <> "\""
     campaignCatalogResponseHeaders
-      `shouldContain` [("ETag", "\"" <> campaignCatalogMetadata.catalogRevision <> "\"")]
+      `shouldContain` [("ETag", expectedWeakETag)]
     campaignCatalogResponseHeaders
       `shouldContain` [("Cache-Control", "public, max-age=300, must-revalidate")]
     campaignCatalogResponseHeaders `shouldContain` [("Vary", "Origin")]
-    campaignCatalogETag `shouldBe` "\"" <> campaignCatalogMetadata.catalogRevision <> "\""
+    campaignCatalogETag `shouldBe` expectedWeakETag
 
   describe "CORS response headers" do
     let origin = "https://native.example"
@@ -76,14 +77,15 @@ spec = describe "campaign catalog endpoint payload" do
 
   describe "If-None-Match entity tag matching" do
     let current = encodeUtf8 campaignCatalogETag
-    it "matches the exact quoted entity tag" do
+        strongCurrent = encodeUtf8 $ "\"" <> campaignCatalogMetadata.catalogRevision <> "\""
+    it "matches the response weak entity tag" do
       etagMatches (Just current) `shouldBe` True
 
-    it "matches a weak entity tag with the current revision" do
-      etagMatches (Just $ "W/" <> current) `shouldBe` True
+    it "matches a strong entity tag with the current revision" do
+      etagMatches (Just strongCurrent) `shouldBe` True
 
     it "matches the current revision inside a comma-delimited list" do
-      etagMatches (Just $ "\"old\", " <> current <> ", \"new\"") `shouldBe` True
+      etagMatches (Just $ "\"old\", " <> strongCurrent <> ", \"new\"") `shouldBe` True
 
     it "matches the wildcard validator" do
       etagMatches (Just "*") `shouldBe` True
@@ -98,14 +100,16 @@ spec = describe "campaign catalog endpoint payload" do
       etagMatches (Just $ BS8.pack "W/not-quoted") `shouldBe` False
 
   describe "campaign catalog response decision" do
-    it "returns 304 metadata with Vary: Origin when If-None-Match matches" do
+    it "returns 304 metadata with weak ETag and Vary: Origin when If-None-Match matches" do
       let expectedHeaders = campaignCatalogResponseHeaders
+      expectedHeaders `shouldContain` [("ETag", "W/\"" <> campaignCatalogMetadata.catalogRevision <> "\"")]
       expectedHeaders `shouldContain` [("Vary", "Origin")]
       campaignCatalogResponse (Just $ encodeUtf8 campaignCatalogETag)
         `shouldBe` CampaignCatalogNotModified expectedHeaders
 
-    it "returns 200 payload metadata with Vary: Origin when If-None-Match does not match" do
+    it "returns 200 payload metadata with weak ETag and Vary: Origin when If-None-Match does not match" do
       let expectedHeaders = campaignCatalogResponseHeaders
+      expectedHeaders `shouldContain` [("ETag", "W/\"" <> campaignCatalogMetadata.catalogRevision <> "\"")]
       expectedHeaders `shouldContain` [("Vary", "Origin")]
       campaignCatalogResponse (Just "\"stale\"")
         `shouldBe` CampaignCatalogOk expectedHeaders campaignCatalogBytes
