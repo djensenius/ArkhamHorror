@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.3883b98d3f69daa0386c072ee7e0af14",
+  "catalogRevision": "1.203d2dc123b2ddfa2e6a5be958b5a02a",
   "endpoint": "/api/v1/arkham/campaign-catalog",
   "digestAlgorithm": "sha256",
   "campaigns": [
@@ -6953,8 +6953,8 @@
     "schemaVersion": "1.0.0",
     "dataSourcesSha256": "29e45cfd9ff04e9df630171ad8d4f3cef3761421a1cefea2b8be0b301caa5ed3",
     "generatorSha256": "bc8fa53f3f692deb4b9a4eadc115a5c4d0b7b181106126f51ed82e3ccbeb6feb",
-    "schemasSha256": "594a4048056f3fd612ce5cb3485ab00dc37515df09891abf75e1910bc7122a4f",
-    "sha256": "3883b98d3f69daa0386c072ee7e0af14a803954780c4ca72321ca346dd4b9eec",
+    "schemasSha256": "276ae5c0f46dcf6ac18f2257284153e11b2fb58d3098b410207fc653be65a80c",
+    "sha256": "203d2dc123b2ddfa2e6a5be958b5a02a3f0c897c8d25d5f2dfe9dd5756615585",
     "sources": [
       {
         "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToNightOfTheZealot.hs",
@@ -7045,6 +7045,6 @@
         "sha256": "544cd7eafbad5f4497e09b5fb3b2ed55e6e1ed27c4f20ccf891746beb2c3c702"
       }
     ],
-    "outputSha256": "1f2854fba982c5943b77514b1d5441ee6c0edda2948557894934397121fcbd85"
+    "outputSha256": "aa6f65d6a054a90035e4bb7b58d25d76e823f1eea797a2bbf1b6a2d8cadbeaf4"
   }
 }
