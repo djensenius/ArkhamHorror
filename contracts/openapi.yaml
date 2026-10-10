@@ -294,11 +294,9 @@ paths:
               schema:
                 type: string
             Vary:
-              description: Response varies by Origin because CORS reflects validated origins.
+              description: Response varies by Origin because CORS reflects validated origins; middleware or deployments may append other Vary tokens such as Accept-Encoding.
               schema:
                 type: string
-                enum:
-                  - Origin
           content:
             application/json:
               schema:
@@ -315,11 +313,9 @@ paths:
               schema:
                 type: string
             Vary:
-              description: Response varies by Origin because CORS reflects validated origins.
+              description: Response varies by Origin because CORS reflects validated origins; middleware or deployments may append other Vary tokens such as Accept-Encoding.
               schema:
                 type: string
-                enum:
-                  - Origin
   /arkham/cards:
     get:
       operationId: listCards
