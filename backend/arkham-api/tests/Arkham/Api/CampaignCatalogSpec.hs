@@ -16,13 +16,14 @@ import Base.Api.Types.CampaignCatalog (
   campaignCatalogResponseHeaders,
   campaignCatalogValue,
  )
-import Application (corsResponseHeadersForPath)
+import Application (corsResponseHeadersForPath, mergeResponseHeaders)
 import Base.Api.Types.Capabilities (ServerCapabilities (..), serverCapabilities)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.List qualified as List
+import Network.HTTP.Types.Header (hETag, hVary)
 import TestImport
 
 spec :: Spec
@@ -45,6 +46,7 @@ spec = describe "campaign catalog endpoint payload" do
       `shouldContain` [("ETag", "\"" <> campaignCatalogMetadata.catalogRevision <> "\"")]
     campaignCatalogResponseHeaders
       `shouldContain` [("Cache-Control", "public, max-age=300, must-revalidate")]
+    campaignCatalogResponseHeaders `shouldContain` [("Vary", "Origin")]
     campaignCatalogETag `shouldBe` "\"" <> campaignCatalogMetadata.catalogRevision <> "\""
 
   describe "CORS response headers" do
@@ -60,6 +62,17 @@ spec = describe "campaign catalog endpoint payload" do
     it "exposes the catalog ETag header to CORS clients" do
       corsResponseHeadersForPath ["api", "v1", "arkham", "campaign-catalog"] origin
         `shouldContain` [("Access-Control-Expose-Headers", "Set-Cookie, Content-Disposition, Link, X-Echo, ETag")]
+
+    it "varies reflected CORS responses by Origin" do
+      corsResponseHeadersForPath ["api", "v1", "arkham", "campaign-catalog"] origin
+        `shouldContain` [("Vary", "Origin")]
+
+    it "merges reflected CORS Vary with the catalog response Vary without duplicates" do
+      let finalHeaders =
+            mergeResponseHeaders
+              (corsResponseHeadersForPath ["api", "v1", "arkham", "campaign-catalog"] origin)
+              [(hVary, "Accept-Encoding, Origin"), (hETag, encodeUtf8 campaignCatalogETag)]
+      filter ((== hVary) . fst) finalHeaders `shouldBe` [(hVary, "Accept-Encoding, Origin")]
 
   describe "If-None-Match entity tag matching" do
     let current = encodeUtf8 campaignCatalogETag
@@ -85,13 +98,17 @@ spec = describe "campaign catalog endpoint payload" do
       etagMatches (Just $ BS8.pack "W/not-quoted") `shouldBe` False
 
   describe "campaign catalog response decision" do
-    it "returns 304 metadata when If-None-Match matches" do
+    it "returns 304 metadata with Vary: Origin when If-None-Match matches" do
+      let expectedHeaders = campaignCatalogResponseHeaders
+      expectedHeaders `shouldContain` [("Vary", "Origin")]
       campaignCatalogResponse (Just $ encodeUtf8 campaignCatalogETag)
-        `shouldBe` CampaignCatalogNotModified campaignCatalogResponseHeaders
+        `shouldBe` CampaignCatalogNotModified expectedHeaders
 
-    it "returns 200 payload metadata when If-None-Match does not match" do
+    it "returns 200 payload metadata with Vary: Origin when If-None-Match does not match" do
+      let expectedHeaders = campaignCatalogResponseHeaders
+      expectedHeaders `shouldContain` [("Vary", "Origin")]
       campaignCatalogResponse (Just "\"stale\"")
-        `shouldBe` CampaignCatalogOk campaignCatalogResponseHeaders campaignCatalogBytes
+        `shouldBe` CampaignCatalogOk expectedHeaders campaignCatalogBytes
 
   it "advertises the catalog capability and revision in GET /api/v1/capabilities" do
     let capabilities = serverCapabilities Nothing

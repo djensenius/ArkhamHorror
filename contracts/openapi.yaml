@@ -293,6 +293,12 @@ paths:
               description: Public cache policy for the generated static catalog.
               schema:
                 type: string
+            Vary:
+              description: Response varies by Origin because CORS reflects validated origins.
+              schema:
+                type: string
+                enum:
+                  - Origin
           content:
             application/json:
               schema:
@@ -308,6 +314,12 @@ paths:
               description: Public cache policy for the generated static catalog.
               schema:
                 type: string
+            Vary:
+              description: Response varies by Origin because CORS reflects validated origins.
+              schema:
+                type: string
+                enum:
+                  - Origin
   /arkham/cards:
     get:
       operationId: listCards

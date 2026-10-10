@@ -13,6 +13,7 @@ module Application (
   makeLogWare,
   getAppSettings,
   corsResponseHeadersForPath,
+  mergeResponseHeaders,
 
   -- * for DevelMain
   getApplicationRepl,
@@ -36,9 +37,10 @@ import Control.Concurrent.MVar (newMVar)
 import Control.Exception qualified as Exception
 import Control.Monad.Logger (liftLoc, runLoggingT)
 import Data.Bugsnag.Settings qualified as Bugsnag
+import Data.ByteString.Char8 qualified as BS8
 import Data.CaseInsensitive (foldCase, mk)
 import Data.Default.Class (def)
-import Data.List (lookup)
+import Data.List (lookup, partition)
 import Data.Pool (destroyAllResources)
 import Data.Text qualified as T
 import Data.Time.Clock (getCurrentTime)
@@ -60,10 +62,10 @@ import Database.Redis (
 import Import hiding (newMVar, sendResponse)
 import Language.Haskell.TH.Syntax (qLocation)
 import Network.HTTP.Client.TLS (getGlobalManager)
-import Network.HTTP.Types (ResponseHeaders, status200)
+import Network.HTTP.Types (HeaderName, ResponseHeaders, status200)
 import Network.TLS (ClientParams (..), Shared (..), Supported (..), defaultParamsClient)
 import Network.TLS.Extra.Cipher (ciphersuite_strong)
-import Network.Wai (Middleware, pathInfo, requestHeaders, requestMethod, responseLBS)
+import Network.Wai (Middleware, mapResponseHeaders, pathInfo, requestHeaders, requestMethod, responseLBS)
 import Network.Wai.Handler.Warp (
   Settings,
   defaultSettings,
@@ -74,7 +76,6 @@ import Network.Wai.Handler.Warp (
   setOnException,
   setPort,
  )
-import Network.Wai.Middleware.AddHeaders (addHeaders)
 import Network.Wai.Middleware.Gzip (gzip)
 import Network.Wai.Middleware.RequestLogger (
   Destination (Logger),
@@ -238,6 +239,7 @@ corsResponseHeadersForPath requestPath origin =
       ( "Access-Control-Expose-Headers"
       , "Set-Cookie, Content-Disposition, Link, X-Echo, ETag"
       )
+    , ("Vary", "Origin")
     ]
   cacheHeaders
     | requestPath == ["api", "v1", "arkham", "campaign-catalog"] = []
@@ -260,7 +262,41 @@ addCORSHeaders :: Middleware
 addCORSHeaders app req sendResponse =
   case lookup "Origin" (requestHeaders req) of
     Nothing -> app req sendResponse
-    Just origin -> addHeaders (corsResponseHeadersForPath (pathInfo req) origin) app req sendResponse
+    Just origin ->
+      app req
+        $ sendResponse
+        . mapResponseHeaders
+          (mergeResponseHeaders $ corsResponseHeadersForPath (pathInfo req) origin)
+
+mergeResponseHeaders :: [(ByteString, ByteString)] -> ResponseHeaders -> ResponseHeaders
+mergeResponseHeaders addedHeaders existingHeaders =
+  addedRegularHeaders <> existingRegularHeaders <> mergedVaryHeaders
+ where
+  (addedVaryHeaders, addedRegularHeaders) = partition isVaryHeader $ map (first mk) addedHeaders
+  (existingVaryHeaders, existingRegularHeaders) = partition isVaryHeader existingHeaders
+  mergedVaryHeaders =
+    maybe [] (\value -> [(varyHeaderName, value)])
+      $ mergeVaryValues (map snd existingVaryHeaders <> map snd addedVaryHeaders)
+
+isVaryHeader :: (HeaderName, ByteString) -> Bool
+isVaryHeader = (== varyHeaderName) . fst
+
+varyHeaderName :: HeaderName
+varyHeaderName = mk "Vary"
+
+mergeVaryValues :: [ByteString] -> Maybe ByteString
+mergeVaryValues values = case uniqueVaryTokens $ concatMap varyTokens values of
+  [] -> Nothing
+  tokens -> Just $ BS8.intercalate ", " tokens
+ where
+  varyTokens = filter (not . BS8.null) . map trimOWS . BS8.split ','
+  trimOWS = BS8.dropWhileEnd isOWS . BS8.dropWhile isOWS
+  isOWS c = c == ' ' || c == '\t'
+  uniqueVaryTokens = reverse . foldl' addToken []
+  addToken seen token
+    | any (sameHeaderToken token) seen = seen
+    | otherwise = token : seen
+  sameHeaderToken left right = mk left == mk right
 
 makeLogWare :: App -> IO Middleware
 makeLogWare foundation =

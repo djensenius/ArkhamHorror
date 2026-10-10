@@ -62,4 +62,5 @@ campaignCatalogResponseHeaders :: [(Text, Text)]
 campaignCatalogResponseHeaders =
   [ ("ETag", campaignCatalogETag)
   , ("Cache-Control", "public, max-age=300, must-revalidate")
+  , ("Vary", "Origin")
   ]
