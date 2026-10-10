@@ -36,7 +36,7 @@ instance HasAbilities MimeticNemesisInfiltratorOfRealities where
 instance RunMessage MimeticNemesisInfiltratorOfRealities where
   runMessage msg e@(MimeticNemesisInfiltratorOfRealities attrs) = runQueueT $ case msg of
     UseThisAbility iid (isSource attrs -> True) 1 -> do
-      concealedCards <- select $ not_ ExposedConcealedCard
+      concealedCards <- select $ ConcealedCardInPlay <> not_ ExposedConcealedCard
       chooseOneM iid do
         for_ concealedCards \card ->
           targeting card.id do

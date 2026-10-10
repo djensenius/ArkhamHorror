@@ -47,7 +47,7 @@ instance RunMessage OtherworldlyLambs where
             $ basic (NonWeakness <> not_ PermanentCard)
             <> oneOf [inHandOf NotForPlay iid, inPlayAreaOf iid]
 
-      anyConcealed <- selectAny ConcealedCardAny
+      anyConcealed <- selectAny ConcealedCardInPlay
 
       chooseNM lead 2 $ scenarioI18n do
         labeled "otherworldlyLambs.takeDamageAndHorror" do

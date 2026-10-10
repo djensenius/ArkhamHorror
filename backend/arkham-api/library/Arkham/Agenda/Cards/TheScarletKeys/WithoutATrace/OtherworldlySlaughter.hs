@@ -47,7 +47,7 @@ instance RunMessage OtherworldlySlaughter where
       moveTo (attrs.ability 1) iid (getExposedLocation ws)
       pure a
     UseThisAbility iid (isSource attrs -> True) 2 -> do
-      cards <- selectMap toId ConcealedCardAny
+      cards <- selectConcealedCardIdsInPlay
       chooseTargetM iid cards $ revealConcealed iid (attrs.ability 2)
       pure a
     AdvanceAgenda (isSide B attrs -> True) -> do
