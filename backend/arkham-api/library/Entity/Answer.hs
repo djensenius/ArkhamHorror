@@ -20,10 +20,14 @@ import Arkham.Custom.Overlay (DeckOverlay, applyOverlay, decklistCustomCards)
 import Arkham.Decklist
 import Arkham.Entities
 import Arkham.Game
+import Arkham.Game.Utils (modeScenario)
 import Arkham.Id
+import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (InvestigatorAttrs (investigatorPlayerId))
 import Arkham.Message
+import Arkham.Name (hasTitle)
 import Arkham.Question.AnswerValidation
+import Arkham.SideStory (challengeScenarioInvestigator)
 import Arkham.Source
 import Arkham.Target
 import Arkham.Token
@@ -404,6 +408,67 @@ joinDeckRejection g pid iid = case unwrapQuestion <$> Map.lookup pid (gameQuesti
   Just (ChooseJoinDeck used) | iid `elem` used -> Just "That investigator has already played in this campaign"
   _ -> Nothing
 
+{- | Why this deck cannot be seated for the current challenge scenario.
+
+Challenge scenarios require one seat at the table to provide the named
+investigator. Match the scenario-load guard by reading the same scenario table
+and comparing investigator titles after resolving alternate fronts/promos through
+'lookupInvestigator'. A non-required deck is only blocked for the last chooser
+when no other seated player already provides the required investigator.
+-}
+challengeScenarioDeckRejection :: Game -> PlayerId -> ArkhamDBDecklist -> Maybe Text
+challengeScenarioDeckRejection game playerId dl = do
+  question <- answeringSeatQuestion game playerId
+  guard $ isChallengeDeckQuestion question
+  scenario <- modeScenario game.gameMode
+  requiredTitle <- challengeScenarioInvestigator (toId scenario)
+  guard $ not (deckProvidesRequiredInvestigator requiredTitle)
+  guard $ not (anotherSeatProvidesRequiredInvestigator requiredTitle)
+  guard $ isLastChallengeDeckChooser game playerId
+  pure $ "This scenario requires " <> requiredTitle
+ where
+  deckProvidesRequiredInvestigator requiredTitle =
+    lookupInvestigator dl.investigator playerId `hasTitle` requiredTitle
+
+  anotherSeatProvidesRequiredInvestigator requiredTitle =
+    any
+      (\investigator ->
+        attr investigatorPlayerId investigator /= playerId
+          && investigator `hasTitle` requiredTitle
+      )
+      (toList $ entitiesInvestigators game.gameEntities)
+
+answeringSeatQuestion :: Game -> PlayerId -> Maybe (Question Message)
+answeringSeatQuestion game playerId =
+  case barrierSeat playerId game of
+    Just (_, simultaneousAsk) ->
+      Map.lookup playerId (saSlots simultaneousAsk) <|> Map.lookup playerId game.gameQuestion
+    Nothing -> Map.lookup playerId game.gameQuestion
+
+isChallengeDeckQuestion :: Question Message -> Bool
+isChallengeDeckQuestion question = case unwrapQuestion question of
+  ChooseDeck -> True
+  ChooseJoinDeck {} -> True
+  _ -> False
+
+isLastChallengeDeckChooser :: Game -> PlayerId -> Bool
+isLastChallengeDeckChooser game playerId = case barrierSeat playerId game of
+  Just (_, simultaneousAsk) ->
+    null
+      [ pid
+      | pid <- toList $ saPending simultaneousAsk
+      , pid /= playerId
+      , not $ playerHasInvestigator game pid
+      ]
+  Nothing ->
+    Map.null
+      $ Map.filter isDeckQuestion
+      $ Map.delete playerId game.gameQuestion
+
+playerHasInvestigator :: Game -> PlayerId -> Bool
+playerHasInvestigator game playerId =
+  any ((== playerId) . attr investigatorPlayerId) (toList $ entitiesInvestigators game.gameEntities)
+
 {- | The messages that start this seat's deck-setup sub-flow.
 
 Inside a multi-seat barrier the sub-flow is self-contained and ends in
@@ -520,16 +585,17 @@ touchDeck deckId = do
   now <- liftIO getCurrentTime
   update deckId [ArkhamDeckLastUsedAt =. Just now]
 
--- | Seat @playerId@'s chosen deck, unless a mid-campaign join may not play it.
+-- | Seat @playerId@'s chosen deck, unless it violates deck-choice guards.
 loadChosenDeck :: Game -> PlayerId -> ArkhamDBDecklist -> DB Reply
-loadChosenDeck game playerId dl = case joinDeckRejection game playerId dl.investigator of
-  Just reason -> unhandled reason
-  Nothing -> do
-    update (coerce playerId) [ArkhamPlayerInvestigatorId =. coerce (investigator_code dl)]
-    -- Record the deck's custom cards on the game itself; the process registry
-    -- they resolved against is rebuilt from the game, and other clients read
-    -- their art and defs from there.
-    handled $ map DebugRegisterCustomCard (decklistCustomCards dl) <> deckChosen game playerId dl
+loadChosenDeck game playerId dl =
+  case joinDeckRejection game playerId dl.investigator <|> challengeScenarioDeckRejection game playerId dl of
+    Just reason -> unhandled reason
+    Nothing -> do
+      update (coerce playerId) [ArkhamPlayerInvestigatorId =. coerce (investigator_code dl)]
+      -- Record the deck's custom cards on the game itself; the process registry
+      -- they resolved against is rebuilt from the game, and other clients read
+      -- their art and defs from there.
+      handled $ map DebugRegisterCustomCard (decklistCustomCards dl) <> deckChosen game playerId dl
 
 {- | Like 'handleAnswer' but with no DB access. Returns 'Unhandled' for
 'DeckAnswer' / 'DeckListAnswer', which require updating an 'ArkhamPlayer'
