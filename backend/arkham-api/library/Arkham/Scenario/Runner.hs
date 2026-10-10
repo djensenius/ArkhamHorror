@@ -2164,8 +2164,8 @@ runScenarioAttrs msg a@ScenarioAttrs {..} = runQueueT $ case msg of
             if length lids == length (card : cards)
               then for_ (zip (card : cards) lids) \(c, lid) -> push $ PlaceConcealedCard iid c (AtLocation lid)
               else do
-                locations <- select $ Matcher.NearestLocationTo iid (Matcher.mapOneOf Matcher.LocationWithId lids)
-                chooseTargetM iid locations \lid -> do
+                nearest <- select $ Matcher.NearestLocationTo iid (Matcher.mapOneOf Matcher.LocationWithId lids)
+                chooseTargetM iid (if null nearest then lids else nearest) \lid -> do
                   push $ PlaceConcealedCard iid card (AtLocation lid)
                   forTargets original $ PlaceConcealedCards iid cards (deleteFirst lid lids)
     pure a

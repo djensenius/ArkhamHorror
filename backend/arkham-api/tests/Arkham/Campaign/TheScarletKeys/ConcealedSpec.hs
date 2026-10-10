@@ -1,22 +1,28 @@
 module Arkham.Campaign.TheScarletKeys.ConcealedSpec (spec) where
 
 import Arkham.Act (lookupAct)
+import Arkham.Act.CardDefs.TheScarletKeys.DancingMad qualified as DancingActs
 import Arkham.Act.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Acts
 import Arkham.Act.Types (Act)
+import Arkham.Agenda.CardDefs.TheScarletKeys.WithoutATrace qualified as WithoutATraceAgendas
+import Arkham.Agenda.Types (Agenda)
 import Arkham.Asset.Cards qualified as Assets
-import Arkham.Campaigns.TheScarletKeys.Concealed (mkConcealedCard)
+import Arkham.Campaigns.TheScarletKeys.Concealed (Field (..), mkConcealedCard)
 import Arkham.Campaigns.TheScarletKeys.Concealed.Kind
 import Arkham.Card.CardDef
+import Arkham.Enemy.CardDefs.TheScarletKeys.CongressOfTheKeys qualified as CongressEnemies
 import Arkham.Enemy.CardDefs.TheScarletKeys.CrimsonConspiracy qualified as Enemies
 import Arkham.Enemy.Types (Enemy)
 import Arkham.Entities qualified as Entities
 import Arkham.Location.CardDefs.TheScarletKeys.BeyondTheBeyond qualified as BeyondLocations
 import Arkham.Location.CardDefs.TheScarletKeys.CongressOfTheKeys qualified as Cards
 import Arkham.Location.CardDefs.TheScarletKeys.DealingsInTheDark qualified as Locations
+import Arkham.Location.CardDefs.TheScarletKeys.ShadesOfSuffering qualified as ShadesLocations
 import Arkham.Location.Grid
 import Arkham.Location.Types (revealedL)
 import Arkham.Matcher
 import Arkham.Placement
+import Arkham.Projection
 import Arkham.Token (Token (Charge))
 import TestImport.New
 
@@ -50,6 +56,14 @@ realAct def = do
       act' = either (error . show) id $ lookupAct actId' 1 (toCardId card)
   overTest $ entitiesL . Entities.actsL %~ insertEntity act'
   pure act'
+
+realAgenda :: CardDef -> TestAppT Agenda
+realAgenda def = do
+  card <- genCard def
+  let agendaId' = AgendaId (toCardCode card)
+      agenda' = lookupAgenda agendaId' 1 (toCardId card)
+  overTest $ entitiesL . Entities.agendasL %~ insertEntity agenda'
+  pure agenda'
 
 spec :: Spec
 spec = describe "Concealed mini-cards" do
@@ -127,6 +141,26 @@ spec = describe "Concealed mini-cards" do
       assertNone $ EnemyWithPlacement InTheShadows
       assertNone ConcealedCardAny
       agent.location `shouldReturn` Just (toId location)
+
+  context "placing concealed cards" do
+    it "falls back to candidate locations when the investigator is temporarily unplaced" . gameTest $ \self -> do
+      firstLocation <- testLocation
+      secondLocation <- testLocation
+      thirdLocation <- testLocation
+      card <- mkConcealedCard AcolyteAny
+      decoy <- mkConcealedCard Decoy
+      run $ CreateConcealedCard card
+      run $ CreateConcealedCard decoy
+      run $ PlaceInvestigator (toId self) Unplaced
+
+      run $ PlaceConcealedCards (toId self) [card.id, decoy.id] (map toId [firstLocation, secondLocation, thirdLocation])
+
+      assertTarget firstLocation
+      chooseTarget firstLocation
+      assertTarget secondLocation
+      chooseTarget secondLocation
+      field ConcealedCardPlacement card.id `shouldReturn` AtLocation (toId firstLocation)
+      field ConcealedCardPlacement decoy.id `shouldReturn` AtLocation (toId secondLocation)
 
   context "exposing every concealed card in play" do
     it "does not offer unplaced or flipped mini-cards" . gameTest $ \self -> do
@@ -213,6 +247,68 @@ spec = describe "Concealed mini-cards" do
 
       assertTarget hidden.id
       assertNotTarget alreadyFlipped.id
+
+  context "audited concealed-card callers" do
+    it "False Step (v. II) redistributes only in-play mini-cards" . gameTest $ \self -> do
+      firstLocation <- testLocation
+      _secondLocation <- testLocation
+      live <- mkConcealedCard SinisterAspirantC
+      run $ CreateConcealedCard live
+      run $ PlaceConcealedCard (toId self) live.id (AtLocation $ toId firstLocation)
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+      act <- realAct DancingActs.falseStepV2
+
+      run $ Do $ AdvanceAct act.id (TestSource mempty) AdvancedWithOther
+
+      field ConcealedCardPlacement unplaced.id `shouldReturn` Unplaced
+      assertAny $ ConcealedCardWithId live.id
+      assertAny $ ConcealedCardWithId unplaced.id
+
+    it "Melati's Shop only offers in-play mini-cards" . gameTest $ \self -> do
+      melatisShop <- testLocationWithDef ShadesLocations.melatisShop (revealedL .~ True)
+      self `moveTo` melatisShop
+      live <- mkConcealedCard TzuSanNiang
+      run $ CreateConcealedCard live
+      run $ PlaceConcealedCard (toId self) live.id (AtLocation $ toId melatisShop)
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+
+      run $ UseCardAbility (toId self) (toSource melatisShop) 1 [] NoPayment
+
+      assertTarget live.id
+      assertNotTarget unplaced.id
+
+    it "Mimetic Nemesis only turns over in-play mini-cards" . gameTest $ \self -> do
+      location <- testLocation
+      self `moveTo` location
+      mimeticNemesis <- testEnemyWithDef CongressEnemies.mimeticNemesisInfiltratorOfRealities id
+      run $ PlaceEnemy (toId mimeticNemesis) (AtLocation $ toId location)
+      live <- mkConcealedCard MimeticNemesis
+      run $ CreateConcealedCard live
+      run $ PlaceConcealedCard (toId self) live.id (InPosition $ Pos 0 0)
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+
+      run $ UseCardAbility (toId self) (toSource mimeticNemesis) 1 [] NoPayment
+
+      assertTarget live.id
+      assertNotTarget unplaced.id
+
+    it "Otherworldly Slaughter only reveals in-play mini-cards" . gameTest $ \self -> do
+      location <- testLocation
+      self `moveTo` location
+      live <- mkConcealedCard Decoy
+      run $ CreateConcealedCard live
+      run $ PlaceConcealedCard (toId self) live.id (InPosition $ Pos 0 0)
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+      agenda <- realAgenda WithoutATraceAgendas.otherworldlySlaughter
+
+      run $ UseCardAbility (toId self) (toSource agenda) 2 [] NoPayment
+
+      assertTarget live.id
+      assertNotTarget unplaced.id
 
   context "Weald of Effigies" do
     it "does not offer unplaced mini-cards for swaps" . gameTest $ \self -> do

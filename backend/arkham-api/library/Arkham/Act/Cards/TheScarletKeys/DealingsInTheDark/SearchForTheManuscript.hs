@@ -74,7 +74,7 @@ instance RunMessage SearchForTheManuscript where
       lead <- getLead
       continue lead $ returnChaosTokens tkns >> unfocusChaosTokens
 
-      concealed <- shuffle =<< selectMap (.id) ConcealedCardAny
+      concealed <- shuffle =<< selectConcealedCardIdsInPlay
       selectEach Anywhere (push . SetLocationOutOfGame)
       grandBazaars <- fmap (drop 1) . shuffle =<< getSetAsideCardsMatching "Grand Bazaar"
       let

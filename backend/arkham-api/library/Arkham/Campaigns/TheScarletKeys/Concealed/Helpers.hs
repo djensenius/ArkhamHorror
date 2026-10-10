@@ -75,7 +75,7 @@ turnOverConcealed iid source = push . Msg.DoStep 2 . Msg.LookAtRevealed iid (toS
 turnOverAllConcealed :: (ReverseQueue m, Sourceable source) => source -> m ()
 turnOverAllConcealed source = do
   lead <- getLead
-  selectEach ConcealedCardAny \c -> turnOverConcealed lead source c.id
+  selectConcealedCardsInPlay >>= traverse_ \c -> turnOverConcealed lead source c.id
 
 selectConcealedCardsInPlay :: HasGame m => m [ConcealedCard]
 selectConcealedCardsInPlay = select ConcealedCardInPlay

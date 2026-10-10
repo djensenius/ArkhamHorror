@@ -26,7 +26,7 @@ instance RunMessage MelatisShop where
     UseThisAbility iid (isSource attrs -> True) 1 -> do
       remember PeeredBeyond
       geists <- select $ EnemyWithTrait Geist <> NonWeaknessEnemy
-      concealeds <- select ConcealedCardAny
+      concealeds <- select ConcealedCardInPlay
       chooseOneM iid do
         targets geists $ lookAtRevealed iid (attrs.ability 1)
         targets concealeds $ lookAtRevealed iid (attrs.ability 1)

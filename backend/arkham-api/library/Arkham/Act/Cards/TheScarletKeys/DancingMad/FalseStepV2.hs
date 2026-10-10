@@ -54,7 +54,7 @@ instance RunMessage FalseStepV2 where
       pure a
     Do (AdvanceAct (isSide B attrs -> True) _ _) -> do
       -- we need desiderio's concealed cards to be in play
-      concealed <- shuffle =<< selectMap (.id) ConcealedCardAny
+      concealed <- shuffle =<< selectConcealedCardIdsInPlay
       locations <- select $ not_ $ locationIs Locations.cafeLunaCoterieHaunt
       distributeEvenlyBetween concealed locations
       pure a

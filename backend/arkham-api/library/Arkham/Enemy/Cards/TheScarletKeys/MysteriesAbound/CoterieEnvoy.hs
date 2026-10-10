@@ -23,7 +23,7 @@ instance HasModifiersFor CoterieEnvoy where
 instance HasAbilities CoterieEnvoy where
   getAbilities (CoterieEnvoy a) =
     extend1 a
-      $ restricted a 1 (exists ConcealedCardAny)
+      $ restricted a 1 (exists ConcealedCardInPlay)
       $ freeReaction
       $ EnemyDefeated #after You ByAny (be a)
 
