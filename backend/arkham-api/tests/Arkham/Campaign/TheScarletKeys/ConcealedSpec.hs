@@ -314,9 +314,11 @@ spec = describe "Concealed mini-cards" do
 
     it "Search for the Manuscript redistributes only in-play mini-cards" . gameTest $ \self -> do
       location <- testLocation
-      live <- mkConcealedCard SinisterAspirantC
-      run $ CreateConcealedCard live
-      run $ PlaceConcealedCard (toId self) live.id (AtLocation $ toId location)
+      live <- for [SinisterAspirantA, SinisterAspirantB, SinisterAspirantC, CoterieAgentA, CoterieAgentB] \kind -> do
+        card <- mkConcealedCard kind
+        run $ CreateConcealedCard card
+        run $ PlaceConcealedCard (toId self) card.id (AtLocation $ toId location)
+        pure card
       unplaced <- mkConcealedCard Decoy
       run $ CreateConcealedCard unplaced
       setAsideGrandBazaars
@@ -326,7 +328,22 @@ spec = describe "Concealed mini-cards" do
       run $ RequestedChaosTokens (toSource act) Nothing [token]
       clickLabel "$label.continue"
 
-      field ConcealedCardPlacement live.id `shouldNotReturn` Unplaced
+      field ConcealedCardPlacement unplaced.id `shouldReturn` Unplaced
+      bazaarLocations <- select $ mapOneOf locationIs
+        [ Locations.grandBazaarBusyWalkway
+        , Locations.grandBazaarCrowdedShops
+        , Locations.grandBazaarDarkenedAlley
+        , Locations.grandBazaarJewelersRoad
+        , Locations.grandBazaarMarbleFountain
+        , Locations.grandBazaarPublicBaths
+        , Locations.grandBazaarRooftopAccess
+        ]
+      length bazaarLocations `shouldBe` 6
+      for_ (take (length live) bazaarLocations) chooseTarget
+      let placedAtBazaar = \case
+            AtLocation lid -> lid `elem` bazaarLocations
+            _ -> False
+      traverse (field ConcealedCardPlacement . (.id)) live `shouldSatisfyM` all placedAtBazaar
       field ConcealedCardPlacement unplaced.id `shouldReturn` Unplaced
 
     it "False Step (v. II) redistributes only in-play mini-cards" . gameTest $ \self -> do
