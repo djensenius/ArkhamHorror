@@ -364,6 +364,23 @@ spec = describe "Concealed mini-cards" do
       assertAny $ ConcealedCardWithId live.id
       assertAny $ ConcealedCardWithId unplaced.id
 
+    it "False Colors (v. II) offers only in-play mini-cards to move from shadows" . gameTest $ \self -> do
+      location <- testLocation
+      self `moveTo` location
+      live <- mkConcealedCard SinisterAspirantC
+      run $ CreateConcealedCard live
+      run $ PlaceConcealedCard (toId self) live.id (AtLocation $ toId location)
+      unplaced <- mkConcealedCard AcolyteAny
+      run $ CreateConcealedCard unplaced
+      act <- realAct DancingActs.falseColorsV2
+
+      run $ AdvanceAct act.id (TestSource mempty) AdvancedWithOther
+      run ClearUI
+      run $ Do $ AdvanceAct act.id (TestSource mempty) AdvancedWithOther
+
+      assertTarget live.id
+      assertNotTarget unplaced.id
+
     it "Coterie Envoy does not offer its defeat reaction for only unplaced mini-cards" . gameTest $ \self -> do
       location <- testLocation
       self `moveTo` location

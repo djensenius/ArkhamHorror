@@ -101,7 +101,7 @@ instance RunMessage FalseColorsV2 where
       advanceActDeck attrs
       pure a
     Do msg'@(AdvanceAct (isSide B attrs -> True) _ _) -> do
-      concealed <- selectMap (.id) (not_ IsDecoy)
+      concealed <- selectMap (.id) (ConcealedCardInPlay <> not_ IsDecoy)
       lead <- getLead
       leadChooseOneM $ targets concealed \card -> do
         moveFromShadows lead attrs card
