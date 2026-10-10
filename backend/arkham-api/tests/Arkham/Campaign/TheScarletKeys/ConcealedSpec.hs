@@ -356,6 +356,8 @@ spec = describe "Concealed mini-cards" do
       run $ CreateConcealedCard unplaced
       act <- realAct DancingActs.falseStepV2
 
+      run $ AdvanceAct act.id (TestSource mempty) AdvancedWithOther
+      run ClearUI
       run $ Do $ AdvanceAct act.id (TestSource mempty) AdvancedWithOther
 
       field ConcealedCardPlacement unplaced.id `shouldReturn` Unplaced
