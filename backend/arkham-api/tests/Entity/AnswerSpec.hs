@@ -54,7 +54,13 @@ spec = do
       rolandAlternateFront =
         (decklistFor roland) {Decklist.meta = Just "{\"alternate_front\":\"01501\"}"}
       rejected = Just "This scenario requires Roland Banks"
-      withDeckQuestion pid g = g {gameQuestion = singletonMap pid ChooseDeck}
+      withQuestion pid question g = g {gameQuestion = singletonMap pid question}
+      withDeckQuestion pid = withQuestion pid ChooseDeck
+      withOnlyInvestigator investigator g =
+        g
+          { gameEntities =
+              g.gameEntities {entitiesInvestigators = singletonMap (toId investigator) investigator}
+          }
       withOtherInvestigator investigator g =
         g
           { gameEntities =
@@ -63,7 +69,15 @@ spec = do
                     insertMap (toId investigator) investigator g.gameEntities.entitiesInvestigators
                 }
           }
+      withBarrier bid slots g =
+        g
+          { gameQuestion = slots
+          , gameSimultaneousAsks =
+              singletonMap bid $ SimultaneousAsk JoinAll slots [] []
+          }
 
+    -- loadChosenDeck composes this pure guard into the DB-backed seating path;
+    -- exercising that wiring needs persistent ArkhamPlayer rows.
     it "rejects a solo non-required investigator before seating" . scenarioTest "90032" $ \self -> do
       pid <- getPlayer (toId self)
       game <- withDeckQuestion pid <$> getGame
@@ -75,6 +89,11 @@ spec = do
       challengeScenarioDeckRejection game pid (decklistFor roland) `shouldBe` Nothing
       challengeScenarioDeckRejection game pid rolandAlternateFront `shouldBe` Nothing
       challengeScenarioDeckRejection game pid (decklistFor parallelRoland) `shouldBe` Nothing
+
+    it "accepts upgrade and replacement deck prompts in a challenge scenario" . scenarioTest "90032" $ \self -> do
+      pid <- getPlayer (toId self)
+      game <- withQuestion pid ChooseUpgradeDeck <$> getGame
+      challengeScenarioDeckRejection game pid (decklistFor daisy) `shouldBe` Nothing
 
     it "accepts a non-required multiplayer deck when another seat provides the required investigator"
       . scenarioTest "90032"
@@ -95,6 +114,30 @@ spec = do
           <$> getGame
       challengeScenarioDeckRejection game pid (decklistFor daisy) `shouldBe` Nothing
 
+    it "accepts a barrier deck choice while another unloaded seat is pending" . scenarioTest "90032" $ \self -> do
+      pid <- getPlayer (toId self)
+      bid <- getRandom
+      let slots = mapFromList [(pid, ChooseDeck), (otherPlayer, ChooseDeck)]
+      game <- withBarrier bid slots <$> getGame
+      challengeScenarioDeckRejection game pid (decklistFor daisy) `shouldBe` Nothing
+
+    it "rejects a barrier deck choice when it is the only pending seat" . scenarioTest "90032" $ \self -> do
+      pid <- getPlayer (toId self)
+      bid <- getRandom
+      let slots = singletonMap pid ChooseDeck
+      game <- withBarrier bid slots <$> getGame
+      challengeScenarioDeckRejection game pid (decklistFor daisy) `shouldBe` rejected
+
+    it "rejects a barrier deck choice when another pending seat already loaded an investigator"
+      . scenarioTest "90032"
+      $ \self -> do
+        pid <- getPlayer (toId self)
+        bid <- getRandom
+        let slots = mapFromList [(pid, ChooseDeck), (otherPlayer, ChooseDeck)]
+            otherDaisy = lookupInvestigator daisy otherPlayer
+        game <- withBarrier bid slots . withOtherInvestigator otherDaisy <$> getGame
+        challengeScenarioDeckRejection game pid (decklistFor agnes) `shouldBe` rejected
+
     it "rejects the last multiplayer chooser when nobody provides the required investigator"
       . scenarioTest "90032"
       $ \self -> do
@@ -102,6 +145,19 @@ spec = do
         let otherDaisy = lookupInvestigator daisy otherPlayer
         game <- withDeckQuestion pid . withOtherInvestigator otherDaisy <$> getGame
         challengeScenarioDeckRejection game pid (decklistFor agnes) `shouldBe` rejected
+
+    it "does not count the answering player's old required-investigator seat as a provider"
+      . scenarioTest "90032"
+      $ \self -> do
+        pid <- getPlayer (toId self)
+        let oldRoland = lookupInvestigator roland pid
+        game <- withDeckQuestion pid . withOnlyInvestigator oldRoland <$> getGame
+        challengeScenarioDeckRejection game pid (decklistFor daisy) `shouldBe` rejected
+
+    it "does not reject deck choices outside challenge scenarios" . scenarioTest "01104" $ \self -> do
+      pid <- getPlayer (toId self)
+      game <- withDeckQuestion pid <$> getGame
+      challengeScenarioDeckRejection game pid (decklistFor daisy) `shouldBe` Nothing
 
   describe "CampaignStepAnswer" do
     it "rejects a stale campaign answer after a side scenario has started" . gameTest $ \self -> do

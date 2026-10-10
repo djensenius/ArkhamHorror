@@ -36,7 +36,6 @@ import Control.Exception (evaluate, try)
 import Data.Aeson
 import Data.Aeson.Types qualified as Aeson
 import Data.Map.Strict qualified as Map
-import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.These
 import Data.Time.Clock (getCurrentTime)
@@ -419,6 +418,8 @@ when no other seated player already provides the required investigator.
 -}
 challengeScenarioDeckRejection :: Game -> PlayerId -> ArkhamDBDecklist -> Maybe Text
 challengeScenarioDeckRejection game playerId dl = do
+  question <- answeringSeatQuestion game playerId
+  guard $ isChallengeDeckQuestion question
   scenario <- modeScenario game.gameMode
   requiredTitle <- challengeScenarioInvestigator (toId scenario)
   guard $ not (deckProvidesRequiredInvestigator requiredTitle)
@@ -437,19 +438,36 @@ challengeScenarioDeckRejection game playerId dl = do
       )
       (toList $ entitiesInvestigators game.gameEntities)
 
+answeringSeatQuestion :: Game -> PlayerId -> Maybe (Question Message)
+answeringSeatQuestion game playerId =
+  case barrierSeat playerId game of
+    Just (_, simultaneousAsk) ->
+      Map.lookup playerId (saSlots simultaneousAsk) <|> Map.lookup playerId game.gameQuestion
+    Nothing -> Map.lookup playerId game.gameQuestion
+
+isChallengeDeckQuestion :: Question Message -> Bool
+isChallengeDeckQuestion question = case unwrapQuestion question of
+  ChooseDeck -> True
+  ChooseJoinDeck {} -> True
+  _ -> False
+
 isLastChallengeDeckChooser :: Game -> PlayerId -> Bool
 isLastChallengeDeckChooser game playerId = case barrierSeat playerId game of
-  Just (_, simultaneousAsk) -> Set.size (saPending simultaneousAsk) <= 1
+  Just (_, simultaneousAsk) ->
+    null
+      [ pid
+      | pid <- toList $ saPending simultaneousAsk
+      , pid /= playerId
+      , not $ playerHasInvestigator game pid
+      ]
   Nothing ->
     Map.null
-      $ Map.filter isDeckChoice
+      $ Map.filter isDeckQuestion
       $ Map.delete playerId game.gameQuestion
- where
-  isDeckChoice question = case unwrapQuestion question of
-    ChooseDeck -> True
-    ChooseUpgradeDeck -> True
-    ChooseJoinDeck {} -> True
-    _ -> False
+
+playerHasInvestigator :: Game -> PlayerId -> Bool
+playerHasInvestigator game playerId =
+  any ((== playerId) . attr investigatorPlayerId) (toList $ entitiesInvestigators game.gameEntities)
 
 {- | The messages that start this seat's deck-setup sub-flow.
 
