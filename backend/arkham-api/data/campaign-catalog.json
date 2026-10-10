@@ -1,0 +1,7050 @@
+{
+  "schemaVersion": "1.0.0",
+  "catalogRevision": "1.203d2dc123b2ddfa2e6a5be958b5a02a",
+  "endpoint": "/api/v1/arkham/campaign-catalog",
+  "digestAlgorithm": "sha256",
+  "campaigns": [
+    {
+      "id": "01",
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "returnTo": {
+        "id": "50",
+        "nameKey": "catalogNames.campaigns.01.returnTo.name"
+      },
+      "nameKey": "catalogNames.campaigns.01.name"
+    },
+    {
+      "id": "02",
+      "recommendedOptions": [
+        {
+          "type": "toggle",
+          "option": {
+            "tag": "PlayersDoNotControlStoryAssetClues"
+          }
+        }
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "returnTo": {
+        "id": "51",
+        "nameKey": "catalogNames.campaigns.02.returnTo.name"
+      },
+      "settings": [
+        {
+          "key": "Extracurricular Activity",
+          "scenarioId": "02041",
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "ProfessorRice",
+              "content": [
+                {
+                  "key": "ProfessorWarrenRiceWasKidnapped"
+                },
+                {
+                  "key": "TheInvestigatorsRescuedProfessorWarrenRice"
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "TakeWarrenRice",
+              "ckey": "TakeWarrenRice",
+              "ifRecorded": [
+                {
+                  "type": "key",
+                  "key": "TheInvestigatorsRescuedProfessorWarrenRice"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "InvestigatorsWereUnconsciousForSeveralHours",
+              "ckey": "InvestigatorsWereUnconsciousForSeveralHours",
+              "ifRecorded": [
+                {
+                  "type": "key",
+                  "key": "ProfessorWarrenRiceWasKidnapped"
+                }
+              ]
+            },
+            {
+              "type": "ChooseKey",
+              "key": "SchoolResolution",
+              "content": [
+                {
+                  "key": "TheInvestigatorsFailedToSaveTheStudents",
+                  "forceWhen": {
+                    "type": "or",
+                    "content": [
+                      {
+                        "type": "key",
+                        "key": "TheInvestigatorsRescuedProfessorWarrenRice"
+                      },
+                      {
+                        "type": "key",
+                        "key": "InvestigatorsWereUnconsciousForSeveralHours",
+                        "scope": "Extracurricular Activity"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "key": "TheStudentsWereRescued"
+                },
+                {
+                  "key": "TheExperimentWasDefeated"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "The House Always Wins",
+          "scenarioId": "02062",
+          "force": {
+            "scenarioId": "02041"
+          },
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "ProfessorMorgan",
+              "content": [
+                {
+                  "key": "DrFrancisMorganWasKidnapped"
+                },
+                {
+                  "key": "TheInvestigatorsRescuedDrFrancisMorgan"
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "TakeFrancisMorgan",
+              "ckey": "TakeFrancisMorgan",
+              "ifRecorded": [
+                {
+                  "type": "key",
+                  "key": "TheInvestigatorsRescuedDrFrancisMorgan"
+                }
+              ]
+            },
+            {
+              "type": "ChooseKey",
+              "key": "SchoolResolution",
+              "content": [
+                {
+                  "key": "OBannionGangHasABoneToPickWithTheInvestigators",
+                  "forceWhen": {
+                    "type": "key",
+                    "key": "TheInvestigatorsRescuedDrFrancisMorgan"
+                  }
+                },
+                {
+                  "key": "NaomiHasTheInvestigatorsBacks"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "InvestigatorsWereUnconsciousForSeveralHours",
+              "ckey": "InvestigatorsWereUnconsciousForSeveralHours",
+              "ifRecorded": [
+                {
+                  "type": "nor",
+                  "content": [
+                    {
+                      "type": "key",
+                      "key": "NaomiHasTheInvestigatorsBacks"
+                    },
+                    {
+                      "type": "key",
+                      "key": "TheInvestigatorsRescuedDrFrancisMorgan"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "Cheated",
+              "ckey": "Cheated"
+            }
+          ]
+        },
+        {
+          "key": "Interlude I: Armitage's Fate",
+          "settings": [
+            {
+              "type": "ForceKey",
+              "key": "DrHenryArmitageWasKidnapped",
+              "ifRecorded": [
+                {
+                  "type": "key",
+                  "key": "InvestigatorsWereUnconsciousForSeveralHours"
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "key": "TheInvestigatorsRescuedDrHenryArmitage",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "key",
+                    "key": "InvestigatorsWereUnconsciousForSeveralHours"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "TakeArmitage",
+              "ckey": "TakeArmitage",
+              "ifRecorded": [
+                {
+                  "type": "key",
+                  "key": "TheInvestigatorsRescuedDrHenryArmitage"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "The Miskatonic Museum",
+          "scenarioId": "02118",
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "NecronomiconStatus",
+              "content": [
+                {
+                  "key": "TheInvestigatorsFailedToRecoverTheNecronomicon"
+                },
+                {
+                  "key": "TheInvestigatorsDestroyedTheNecronomicon"
+                },
+                {
+                  "key": "TheInvestigatorsTookCustodyOfTheNecronomicon"
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "TakeTheNecronomicon",
+              "ckey": "TakeTheNecronomicon",
+              "ifRecorded": [
+                {
+                  "type": "key",
+                  "key": "TheInvestigatorsTookCustodyOfTheNecronomicon"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "The Essex County Express",
+          "scenarioId": "02159",
+          "settings": [
+            {
+              "type": "Option",
+              "key": "AddAcrossSpaceAndTime",
+              "ckey": "AddAcrossSpaceAndTime"
+            },
+            {
+              "type": "SetKey",
+              "key": "TheNecronomiconWasStolen",
+              "ckey": "TheNecronomiconWasStolen",
+              "ifRecorded": [
+                {
+                  "type": "option",
+                  "key": "TakeTheNecronomicon"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "DrHenryArmitageWasKidnapped",
+              "ckey": "DrHenryArmitageWasKidnapped",
+              "ifRecorded": [
+                {
+                  "type": "option",
+                  "key": "TakeArmitage"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "WarrenRiceWasKidnapped",
+              "ckey": "WarrenRiceWasKidnapped",
+              "ifRecorded": [
+                {
+                  "type": "option",
+                  "key": "TakeWarrenRice"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "DrFrancisMorganWasKidnapped",
+              "ckey": "DrFrancisMorganWasKidnapped",
+              "ifRecorded": [
+                {
+                  "type": "option",
+                  "key": "TakeFrancisMorgan"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "TheInvestigatorsWereDelayedOnTheirWayToDunwich",
+              "ckey": "TheInvestigatorsWereDelayedOnTheirWayToDunwich"
+            }
+          ]
+        },
+        {
+          "key": "Blood on the Altar",
+          "scenarioId": "02195",
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "ChooseYourFate",
+              "content": [
+                {
+                  "key": "TheRitualWasCompleted"
+                },
+                {
+                  "key": "TheInvestigatorsPutSilasBishopOutOfHisMisery"
+                },
+                {
+                  "key": "TheInvestigatorsRestoredSilasBishop"
+                },
+                {
+                  "key": "TheInvestigatorsBanishedSilasBishop"
+                }
+              ]
+            },
+            {
+              "type": "Record",
+              "key": "SacrificedToYogSothoth",
+              "recordable": "RecordableCardCode",
+              "content": [
+                {
+                  "key": "Dr Henry Armitage",
+                  "content": "02040"
+                },
+                {
+                  "key": "Professor Warren Rice",
+                  "content": "02061"
+                },
+                {
+                  "key": "Dr. Francis Morgan",
+                  "content": "02080"
+                },
+                {
+                  "key": "Zebulon Whately",
+                  "content": "02217"
+                },
+                {
+                  "key": "Earl Sawyer",
+                  "content": "02218"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "TheNecronomiconWasStolen",
+              "ckey": "TheNecronomiconWasStolen",
+              "ifRecorded": [
+                {
+                  "type": "option",
+                  "key": "TakeNecronomicon"
+                },
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "key",
+                    "key": "TheNecronomiconWasStolen"
+                  }
+                },
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "key",
+                    "key": "TheInvestigatorsRestoredSilasBishop"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "Interlude II: The Survivors",
+          "scenarioId": "02236",
+          "ifRecorded": [
+            {
+              "type": "not",
+              "content": {
+                "type": "key",
+                "key": "TheRitualWasCompleted"
+              }
+            },
+            {
+              "type": "or",
+              "content": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02040"
+                  }
+                },
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02061"
+                  }
+                },
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02080"
+                  }
+                },
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02217"
+                  }
+                },
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02218"
+                  }
+                }
+              ]
+            }
+          ],
+          "settings": [
+            {
+              "type": "ForceKey",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02040"
+                  }
+                }
+              ],
+              "key": "DrHenryArmitageSurvivedTheDunwichLegacy"
+            },
+            {
+              "type": "Option",
+              "key": "TakeArmitage",
+              "ckey": "TakeArmitage",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02040"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02061"
+                  }
+                }
+              ],
+              "key": "ProfessorWarrenRiceSurvivedTheDunwichLegacy"
+            },
+            {
+              "type": "Option",
+              "key": "TakeWarrenRice",
+              "ckey": "TakeWarrenRice",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02061"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02080"
+                  }
+                }
+              ],
+              "key": "DrFrancisMorganSurvivedTheDunwichLegacy"
+            },
+            {
+              "type": "Option",
+              "key": "TakeFrancisMorgan",
+              "ckey": "TakeFrancisMorgan",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02080"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02217"
+                  }
+                }
+              ],
+              "key": "ZebulonWhateleySurvivedTheDunwichLegacy"
+            },
+            {
+              "type": "Option",
+              "key": "TakeZebulonWhateley",
+              "ckey": "TakeZebulonWhateley",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02217"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02218"
+                  }
+                }
+              ],
+              "key": "EarlSawyerSurvivedTheDunwichLegacy"
+            },
+            {
+              "type": "Option",
+              "key": "TakeEarlSawyer",
+              "ckey": "TakeEarlSawyer",
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "inSet",
+                    "key": "SacrificedToYogSothoth",
+                    "recordable": "RecordableCardCode",
+                    "content": "02218"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "TakePowderOfIbnGhazi",
+              "ckey": "TakePowderOfIbnGhazi",
+              "ifRecorded": [
+                {
+                  "type": "or",
+                  "content": [
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "SacrificedToYogSothoth",
+                        "recordable": "RecordableCardCode",
+                        "content": "02040"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "SacrificedToYogSothoth",
+                        "recordable": "RecordableCardCode",
+                        "content": "02061"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "SacrificedToYogSothoth",
+                        "recordable": "RecordableCardCode",
+                        "content": "02080"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "Undimensioned and Unseen",
+          "scenarioId": "02236",
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "Townsfolk",
+              "content": [
+                {
+                  "key": "YouCalmedTheTownsfolk"
+                },
+                {
+                  "key": "YouWarnedTheTownsfolk"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "NoBroodEscapedIntoTheWild",
+              "ckey": "NoBroodEscapedIntoTheWild"
+            },
+            {
+              "type": "ChooseNum",
+              "key": "BroodEscapedIntoTheWild",
+              "ckey": "BroodEscapedIntoTheWild",
+              "min": 1,
+              "max": 6,
+              "ifRecorded": [
+                {
+                  "type": "not",
+                  "content": {
+                    "type": "key",
+                    "key": "NoBroodEscapedIntoTheWild"
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "Where Doom Awaits",
+          "scenarioId": "02274",
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "WhereDoomAwaitsResolution",
+              "content": [
+                {
+                  "key": "TheInvestigatorsEnteredTheGate",
+                  "forceWhen": {
+                    "type": "always"
+                  }
+                },
+                {
+                  "key": "YogSothothToreApartTheBarrierBetweenWorldsAndBecameOneWithAllReality"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "Lost in Time and Space",
+          "scenarioId": "02311",
+          "settings": []
+        }
+      ],
+      "nameKey": "catalogNames.campaigns.02.name"
+    },
+    {
+      "id": "03",
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "returnTo": {
+        "id": "52",
+        "nameKey": "catalogNames.campaigns.03.returnTo.name"
+      },
+      "nameKey": "catalogNames.campaigns.03.name"
+    },
+    {
+      "id": "04",
+      "recommendedOptions": [
+        {
+          "type": "toggle",
+          "option": {
+            "tag": "PlayersDoNotControlStoryAssetClues"
+          }
+        }
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "Skull",
+          "Skull",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "returnTo": {
+        "id": "53",
+        "nameKey": "catalogNames.campaigns.04.returnTo.name"
+      },
+      "nameKey": "catalogNames.campaigns.04.name"
+    },
+    {
+      "id": "05",
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "returnTo": {
+        "id": "54",
+        "nameKey": "catalogNames.campaigns.05.returnTo.name"
+      },
+      "settings": [
+        {
+          "key": "Disappearance at the Twilight Estate",
+          "scenarioId": "05043",
+          "settings": [
+            {
+              "key": "MissingPersons",
+              "ckey": "MissingPersons",
+              "recordable": "RecordableCardCode",
+              "type": "CrossOut",
+              "content": [
+                {
+                  "key": "Gaveriella Mizrah",
+                  "content": "05046"
+                },
+                {
+                  "key": "Jerome Davids",
+                  "content": "05047"
+                },
+                {
+                  "key": "Valentino Rivas",
+                  "content": "05048"
+                },
+                {
+                  "key": "Penny White",
+                  "content": "05049"
+                }
+              ]
+            },
+            {
+              "type": "Record",
+              "key": "WasTakenByTheWatcher",
+              "recordable": "RecordableCardCode",
+              "content": [
+                {
+                  "key": "Gaveriella Mizrah",
+                  "content": "05046",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05046"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05046"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05046"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05046"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Jerome Davids",
+                  "content": "05047",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05047"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05047"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05047"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05047"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Valentino Rivas",
+                  "content": "05048",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05048"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05048"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05048"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05048"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Penny White",
+                  "content": "05049",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05049"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05049"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05049"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05049"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Record",
+              "key": "WasClaimedBySpecters",
+              "recordable": "RecordableCardCode",
+              "content": [
+                {
+                  "key": "Gaveriella Mizrah",
+                  "content": "05046",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05046"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05046"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05046"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05046"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Jerome Davids",
+                  "content": "05047",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05047"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05047"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05047"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05047"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Valentino Rivas",
+                  "content": "05048",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05048"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05048"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05048"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05048"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Penny White",
+                  "content": "05049",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05049"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05049"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05049"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05049"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Record",
+              "key": "DisappearedIntoTheMist",
+              "recordable": "RecordableCardCode",
+              "content": [
+                {
+                  "key": "Gaveriella Mizrah",
+                  "content": "05046",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05046"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05046"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05046"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05046"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Jerome Davids",
+                  "content": "05047",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05047"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05047"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05047"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05047"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Valentino Rivas",
+                  "content": "05048",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05048"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05048"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05048"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05048"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Penny White",
+                  "content": "05049",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05049"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05049"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05049"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasPulledIntoTheSpectralRealm",
+                        "content": "05049"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "Record",
+              "key": "WasPulledIntoTheSpectralRealm",
+              "recordable": "RecordableCardCode",
+              "content": [
+                {
+                  "key": "Gaveriella Mizrah",
+                  "content": "05046",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05046"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05046"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05046"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05046"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Jerome Davids",
+                  "content": "05047",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05047"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05047"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05047"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05047"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Valentino Rivas",
+                  "content": "05048",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05048"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05048"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05048"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05048"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "key": "Penny White",
+                  "content": "05049",
+                  "ifRecorded": [
+                    {
+                      "type": "inSet",
+                      "key": "MissingPersons",
+                      "content": "05049"
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasTakenByTheWatcher",
+                        "content": "05049"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "WasClaimedBySpecters",
+                        "content": "05049"
+                      }
+                    },
+                    {
+                      "type": "not",
+                      "content": {
+                        "type": "inSet",
+                        "key": "DisappearedIntoTheMist",
+                        "content": "05049"
+                      }
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "key": "PiecesOfEvidenceWereLeftBehind",
+              "ckey": "PiecesOfEvidenceWereLeftBehind",
+              "type": "ChooseNum"
+            }
+          ],
+          "resolutions": [
+            {
+              "resolution": "No Resolution",
+              "settings": [
+                {
+                  "key": "PiecesOfEvidenceWereLeftBehind",
+                  "ckey": "PiecesOfEvidenceWereLeftBehind",
+                  "type": "ChooseNum"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "The Witching Hour",
+          "scenarioId": "05050",
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "ChooseYourFate",
+              "content": [
+                {
+                  "key": "YouHaveAcceptedYourFate"
+                },
+                {
+                  "key": "YouHaveRejectedYourFate"
+                }
+              ]
+            },
+            {
+              "type": "ChooseKey",
+              "key": "WitchingHourResolution",
+              "content": [
+                {
+                  "key": "TheWitches'SpellWasBroken"
+                },
+                {
+                  "key": "TheWitches'SpellWasCast"
+                }
+              ]
+            },
+            {
+              "type": "SetRecordable",
+              "recordable": "RecordableMemento",
+              "ckey": "MementosDiscovered",
+              "key": "DiscoveredMesmerizingFlute",
+              "content": "MesmerizingFlute"
+            },
+            {
+              "type": "ChooseRecordable",
+              "key": "TheWitches'SpellWasBrokenMemento",
+              "ckey": "MementosDiscovered",
+              "recordable": "RecordableMemento",
+              "ifRecorded": [
+                {
+                  "key": "TheWitches'SpellWasBroken",
+                  "type": "key"
+                },
+                {
+                  "key": "MementosDiscovered",
+                  "type": "inSet",
+                  "recordable": "RecordableMemento",
+                  "content": "MesmerizingFlute"
+                }
+              ],
+              "content": [
+                {
+                  "key": "Ritual Components",
+                  "content": "RitualComponents"
+                },
+                {
+                  "key": "Scrap of Torn Shadow",
+                  "content": "ScrapOfTornShadow"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "At Death's Doorstep",
+          "scenarioId": "05065",
+          "settings": [
+            {
+              "type": "SetKey",
+              "key": "TheInvestigatorsAreOnGavriella'sTrail",
+              "ckey": "TheInvestigatorsAreOnGavriella'sTrail",
+              "ifRecorded": [
+                {
+                  "key": "MissingPersons",
+                  "type": "inSet",
+                  "recordable": "RecordableCardCode",
+                  "content": "05046"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "TheInvestigatorsAreOnJerome'sTrail",
+              "ckey": "TheInvestigatorsAreOnJerome'sTrail",
+              "ifRecorded": [
+                {
+                  "key": "MissingPersons",
+                  "type": "inSet",
+                  "recordable": "RecordableCardCode",
+                  "content": "05047"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "TheInvestigatorsAreOnPenny'sTrail",
+              "ckey": "TheInvestigatorsAreOnPenny'sTrail",
+              "ifRecorded": [
+                {
+                  "key": "MissingPersons",
+                  "type": "inSet",
+                  "recordable": "RecordableCardCode",
+                  "content": "05049"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "TheInvestigatorsAreOnValentino'sTrail",
+              "ckey": "TheInvestigatorsAreOnValentino'sTrail",
+              "ifRecorded": [
+                {
+                  "key": "MissingPersons",
+                  "type": "inSet",
+                  "recordable": "RecordableCardCode",
+                  "content": "05048"
+                }
+              ]
+            },
+            {
+              "type": "ChooseKey",
+              "key": "AtDeathsDoorResolution",
+              "content": [
+                {
+                  "key": "TheInvestigatorsEscapedTheSpectralRealm"
+                },
+                {
+                  "key": "TheInvestigatorsLearnedNothingOfTheLodge'sSchemes"
+                },
+                {
+                  "key": "TheInvestigatorsAreNeverSeenOrHeardFromAgain"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "Interlude II: The Price of Progress",
+          "ifRecorded": [
+            {
+              "key": "TheInvestigatorsEscapedTheSpectralRealm",
+              "type": "key"
+            }
+          ],
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "JosefsFate",
+              "content": [
+                {
+                  "key": "JosefDisappearedIntoTheMist"
+                },
+                {
+                  "key": "TheInvestigatorsRescuedJosef"
+                },
+                {
+                  "key": "JosefIsAliveAndWell"
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "ifRecorded": [
+                {
+                  "key": "JosefDisappearedIntoTheMist",
+                  "type": "key"
+                }
+              ],
+              "key": "TheInvestigatorsAreEnemiesOfTheLodge"
+            },
+            {
+              "type": "ChooseKey",
+              "key": "LodgeRelationship",
+              "anyRecorded": [
+                {
+                  "key": "TheInvestigatorsRescuedJosef",
+                  "type": "key"
+                },
+                {
+                  "key": "JosefIsAliveAndWell",
+                  "type": "key"
+                }
+              ],
+              "content": [
+                {
+                  "key": "TheInvestigatorsAreEnemiesOfTheLodge"
+                },
+                {
+                  "key": "TheInvestigatorsAreMembersOfTheLodge"
+                }
+              ]
+            },
+            {
+              "type": "SetKey",
+              "key": "TheInvestigatorsAreDeceivingTheLodge",
+              "ckey": "TheInvestigatorsAreDeceivingTheLodge",
+              "ifRecorded": [
+                {
+                  "key": "TheInvestigatorsAreMembersOfTheLodge",
+                  "type": "key"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "The Secret Name",
+          "scenarioId": "05120",
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "TellTheLodge",
+              "ifRecorded": [
+                {
+                  "key": "TheInvestigatorsAreMembersOfTheLodge",
+                  "type": "key"
+                }
+              ],
+              "content": [
+                {
+                  "key": "TheInvestigatorsToldTheLodgeAboutTheCoven"
+                },
+                {
+                  "key": "TheInvestigatorsHidTheirKnowledgeOfTheCoven"
+                }
+              ]
+            },
+            {
+              "type": "SetRecordable",
+              "recordable": "RecordableMemento",
+              "ckey": "MementosDiscovered",
+              "key": "DiscoveredGilmansJournal",
+              "content": "Gilman'sJournal"
+            },
+            {
+              "type": "SetRecordable",
+              "recordable": "RecordableMemento",
+              "ckey": "MementosDiscovered",
+              "key": "DiscoveredKeziahsFormulae",
+              "content": "Keziah'sFormulae",
+              "ifRecorded": [
+                {
+                  "key": "MementosDiscovered",
+                  "type": "inSet",
+                  "recordable": "RecordableMemento",
+                  "content": "Gilman'sJournal"
+                }
+              ]
+            },
+            {
+              "type": "SetRecordable",
+              "recordable": "RecordableMemento",
+              "ckey": "MementosDiscovered",
+              "key": "DiscoveredWornCrucifix",
+              "content": "WornCrucifix",
+              "ifRecorded": [
+                {
+                  "key": "MementosDiscovered",
+                  "type": "inSet",
+                  "recordable": "RecordableMemento",
+                  "content": "Keziah'sFormulae"
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "TakeBlackBook",
+              "ckey": "TakeBlackBook"
+            }
+          ]
+        },
+        {
+          "key": "The Wages of Sin",
+          "scenarioId": "05161",
+          "settings": [
+            {
+              "key": "HereticsWereUnleashedUntoArkham",
+              "ckey": "HereticsWereUnleashedUntoArkham",
+              "type": "ChooseNum",
+              "max": 4
+            },
+            {
+              "type": "ForceRecorded",
+              "ifRecorded": [
+                {
+                  "key": "HereticsWereUnleashedUntoArkham",
+                  "type": "count",
+                  "predicate": {
+                    "type": "lte",
+                    "value": 3
+                  }
+                }
+              ],
+              "recordable": "RecordableMemento",
+              "ckey": "MementosDiscovered",
+              "key": "DiscoveredWispOfSpectralMist",
+              "content": "WispOfSpectralMist"
+            },
+            {
+              "type": "SetKey",
+              "key": "TheInvestigatorsSurvivedTheWatchersEmbrace",
+              "ckey": "TheInvestigatorsSurvivedTheWatchersEmbrace"
+            }
+          ]
+        },
+        {
+          "key": "For the Greater Good",
+          "scenarioId": "05197",
+          "settings": [
+            {
+              "type": "ChooseKey",
+              "key": "ForTheGreaterGoodResolution",
+              "content": [
+                {
+                  "key": "TheGuardianOfTheTrapEmerged"
+                },
+                {
+                  "key": "TheInvestigatorsDiscoveredHowToOpenThePuzzleBox"
+                },
+                {
+                  "key": "TheGuardianOfTheTrapEmergedAndWasDefeated"
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "TakePuzzleBox",
+              "ckey": "TakePuzzleBox",
+              "ifRecorded": [
+                {
+                  "key": "TheInvestigatorsDiscoveredHowToOpenThePuzzleBox",
+                  "type": "key"
+                }
+              ]
+            },
+            {
+              "type": "Option",
+              "key": "ProceedToInterlude3",
+              "ckey": "ProceedToInterlude3",
+              "ifRecorded": [
+                {
+                  "key": "TheInvestigatorsDiscoveredHowToOpenThePuzzleBox",
+                  "type": "key"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "Interlude III: The Price of Progress",
+          "ifRecorded": [
+            {
+              "key": "ProceedToInterlude3",
+              "type": "option"
+            }
+          ],
+          "settings": [
+            {
+              "type": "ChooseOption",
+              "key": "Interlude3",
+              "content": [
+                {
+                  "key": "GiveMrSanfordEverything"
+                },
+                {
+                  "key": "GiveMrSanfordNothing"
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "key": "TheInvestigatorsWereInductedIntoTheInnerCircle",
+              "ifRecorded": [
+                {
+                  "key": "GiveMrSanfordEverything",
+                  "type": "option"
+                },
+                {
+                  "key": "TheInvestigatorsRescuedJosef",
+                  "type": "key"
+                },
+                {
+                  "key": "TheInvestigatorsToldTheLodgeAboutTheCoven",
+                  "type": "key"
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "key": "TheInvestigatorsKeptTheirMementosHidden",
+              "ifRecorded": [
+                {
+                  "key": "GiveMrSanfordNothing",
+                  "type": "option"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "Union and Disillusion",
+          "scenarioId": "05238",
+          "settings": [
+            {
+              "type": "ChooseOption",
+              "key": "ChooseSide",
+              "content": [
+                {
+                  "key": "SideWithTheLodge"
+                },
+                {
+                  "key": "SideWithTheCoven"
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "key": "TheInvestigatorsSidedWithTheLodge",
+              "ifRecorded": [
+                {
+                  "key": "SideWithTheLodge",
+                  "type": "option"
+                }
+              ]
+            },
+            {
+              "type": "ForceKey",
+              "key": "TheInvestigatorsSidedWithTheCoven",
+              "ifRecorded": [
+                {
+                  "key": "SideWithTheCoven",
+                  "type": "option"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "key": "In the Clutches of Chaos",
+          "scenarioId": "05284",
+          "settings": []
+        },
+        {
+          "key": "Before the Black Throne",
+          "scenarioId": "05325",
+          "settings": []
+        }
+      ],
+      "nameKey": "catalogNames.campaigns.05.name"
+    },
+    {
+      "id": "06",
+      "recommendedOptions": [
+        {
+          "type": "toggle",
+          "default": false,
+          "icon": "bug-ant",
+          "option": {
+            "tag": "UseSwarmPlaceholders"
+          }
+        }
+      ],
+      "variants": [
+        {
+          "key": "theDreamEaters"
+        },
+        {
+          "key": "theDreamQuest",
+          "difficultyLevels": {
+            "Easy": [
+              "PlusOne",
+              "PlusOne",
+              "Zero",
+              "Zero",
+              "Zero",
+              "MinusOne",
+              "MinusOne",
+              "MinusTwo",
+              "MinusTwo",
+              "Cultist",
+              "Tablet",
+              "Tablet",
+              "AutoFail",
+              "ElderSign"
+            ],
+            "Standard": [
+              "PlusOne",
+              "Zero",
+              "Zero",
+              "MinusOne",
+              "MinusOne",
+              "MinusTwo",
+              "MinusTwo",
+              "MinusThree",
+              "MinusFour",
+              "Cultist",
+              "Tablet",
+              "Tablet",
+              "AutoFail",
+              "ElderSign"
+            ],
+            "Hard": [
+              "Zero",
+              "Zero",
+              "MinusOne",
+              "MinusOne",
+              "MinusTwo",
+              "MinusTwo",
+              "MinusThree",
+              "MinusThree",
+              "MinusFour",
+              "MinusFive",
+              "Cultist",
+              "Tablet",
+              "Tablet",
+              "AutoFail",
+              "ElderSign"
+            ],
+            "Expert": [
+              "Zero",
+              "MinusOne",
+              "MinusOne",
+              "MinusTwo",
+              "MinusTwo",
+              "MinusThree",
+              "MinusFour",
+              "MinusFour",
+              "MinusFive",
+              "MinusSix",
+              "MinusEight",
+              "Cultist",
+              "Tablet",
+              "Tablet",
+              "AutoFail",
+              "ElderSign"
+            ]
+          }
+        },
+        {
+          "key": "theWebOfDreams",
+          "difficultyLevels": {
+            "Easy": [
+              "PlusOne",
+              "PlusOne",
+              "Zero",
+              "Zero",
+              "Zero",
+              "MinusOne",
+              "MinusOne",
+              "MinusOne",
+              "MinusTwo",
+              "MinusTwo",
+              "Skull",
+              "Skull",
+              "Cultist",
+              "ElderThing",
+              "ElderThing",
+              "AutoFail",
+              "ElderSign"
+            ],
+            "Standard": [
+              "PlusOne",
+              "Zero",
+              "Zero",
+              "MinusOne",
+              "MinusOne",
+              "MinusOne",
+              "MinusTwo",
+              "MinusTwo",
+              "MinusThree",
+              "MinusFour",
+              "Skull",
+              "Skull",
+              "Cultist",
+              "ElderThing",
+              "ElderThing",
+              "AutoFail",
+              "ElderSign"
+            ],
+            "Hard": [
+              "Zero",
+              "Zero",
+              "Zero",
+              "MinusOne",
+              "MinusOne",
+              "MinusTwo",
+              "MinusTwo",
+              "MinusThree",
+              "MinusThree",
+              "MinusFour",
+              "MinusFive",
+              "Skull",
+              "Skull",
+              "Cultist",
+              "ElderThing",
+              "ElderThing",
+              "AutoFail",
+              "ElderSign"
+            ],
+            "Expert": [
+              "Zero",
+              "MinusOne",
+              "MinusOne",
+              "MinusTwo",
+              "MinusTwo",
+              "MinusThree",
+              "MinusThree",
+              "MinusFour",
+              "MinusFour",
+              "MinusFive",
+              "MinusSix",
+              "MinusEight",
+              "Skull",
+              "Skull",
+              "Cultist",
+              "ElderThing",
+              "ElderThing",
+              "AutoFail",
+              "ElderSign"
+            ]
+          }
+        }
+      ],
+      "nameKey": "catalogNames.campaigns.06.name"
+    },
+    {
+      "id": "07",
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "Tablet",
+          "ElderThing",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "Tablet",
+          "ElderThing",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "Tablet",
+          "ElderThing",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "Tablet",
+          "ElderThing",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "nameKey": "catalogNames.campaigns.07.name"
+    },
+    {
+      "id": "08",
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "FrostToken",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "FrostToken",
+          "FrostToken",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSeven",
+          "FrostToken",
+          "FrostToken",
+          "FrostToken",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "nameKey": "catalogNames.campaigns.08.name"
+    },
+    {
+      "id": "09",
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "nameKey": "catalogNames.campaigns.09.name"
+    },
+    {
+      "id": "10",
+      "additional": [
+        {
+          "title": "theFeastOfHemlockVale.campaignLog.map.title",
+          "body": "theFeastOfHemlockVale.campaignLog.map.body"
+        }
+      ],
+      "logSections": [
+        "motherRachelNotes",
+        "leahAtwoodNotes",
+        "simeonAtwoodNotes",
+        "williamHemlockNotes",
+        "riverHawthorneNotes",
+        "gideonMizrahNotes",
+        "judithParkNotes",
+        "theoPetersNotes",
+        "areasSurveyed"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "Skull",
+          "Skull",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFive",
+          "MinusFive",
+          "MinusSeven",
+          "Skull",
+          "Skull",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "ElderSign"
+        ]
+      },
+      "nameKey": "catalogNames.campaigns.10.name"
+    },
+    {
+      "id": "11",
+      "beta": true,
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "nameKey": "catalogNames.campaigns.11.name"
+    },
+    {
+      "id": "12",
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "ElderThing",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "ElderThing",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "ElderThing",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "ElderThing",
+          "Tablet",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "nameKey": "catalogNames.campaigns.12.name"
+    },
+    {
+      "id": "13",
+      "alpha": true,
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign",
+          "BloodToken"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign",
+          "BloodToken",
+          "BloodToken"
+        ]
+      },
+      "nameKey": "catalogNames.campaigns.13.name"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "01104",
+      "campaign": "01",
+      "returnTo": "50011",
+      "nameKey": "catalogNames.scenarios.01104.name",
+      "returnToNameKey": "catalogNames.scenarios.01104.returnTo.name"
+    },
+    {
+      "id": "01120",
+      "campaign": "01",
+      "returnTo": "50025",
+      "settings": [
+        {
+          "key": "LitaWasForcedToFindOthersToHelpHerCause",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "HouseStatus",
+          "keys": [
+            "YourHouseHasBurnedToTheGround",
+            "YourHouseIsStillStanding"
+          ],
+          "type": "PickKey",
+          "content": "YourHouseHasBurnedToTheGround"
+        },
+        {
+          "key": "GhoulPriestIsStillAlive",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "AddLitaChantler",
+          "type": "ToggleOption",
+          "content": false
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.01120.name",
+      "returnToNameKey": "catalogNames.scenarios.01120.returnTo.name"
+    },
+    {
+      "id": "01142",
+      "campaign": "01",
+      "returnTo": "50032",
+      "settings": [
+        {
+          "key": "ItIsPastMidnight",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "GhoulPriestIsStillAlive",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "CultistsWhoGotAway",
+          "recordable": "RecordableCardCode",
+          "type": "ToggleCrossedOut",
+          "content": [
+            {
+              "label": "\"Wolf-Man\" Drew",
+              "key": "01137",
+              "content": false
+            },
+            {
+              "label": "Herman Collins",
+              "key": "01138",
+              "content": false
+            },
+            {
+              "label": "Peter Warren",
+              "key": "01139",
+              "content": false
+            },
+            {
+              "label": "Victoria Devereux",
+              "key": "01140",
+              "content": false
+            },
+            {
+              "label": "Ruth Turner",
+              "key": "01141",
+              "content": false
+            },
+            {
+              "label": "The Masked Hunter",
+              "key": "01121b",
+              "content": false
+            }
+          ]
+        },
+        {
+          "key": "AddLitaChantler",
+          "type": "ToggleOption",
+          "content": false
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.01142.name",
+      "returnToNameKey": "catalogNames.scenarios.01142.returnTo.name"
+    },
+    {
+      "id": "02041",
+      "campaign": "02",
+      "returnTo": "51012",
+      "nameKey": "catalogNames.scenarios.02041.name",
+      "returnToNameKey": "catalogNames.scenarios.02041.returnTo.name"
+    },
+    {
+      "id": "02062",
+      "campaign": "02",
+      "returnTo": "51015",
+      "nameKey": "catalogNames.scenarios.02062.name",
+      "returnToNameKey": "catalogNames.scenarios.02062.returnTo.name"
+    },
+    {
+      "id": "02118",
+      "campaign": "02",
+      "returnTo": "51020",
+      "nameKey": "catalogNames.scenarios.02118.name",
+      "returnToNameKey": "catalogNames.scenarios.02118.returnTo.name"
+    },
+    {
+      "id": "02159",
+      "campaign": "02",
+      "returnTo": "51025",
+      "nameKey": "catalogNames.scenarios.02159.name",
+      "returnToNameKey": "catalogNames.scenarios.02159.returnTo.name"
+    },
+    {
+      "id": "02195",
+      "campaign": "02",
+      "returnTo": "51032",
+      "nameKey": "catalogNames.scenarios.02195.name",
+      "returnToNameKey": "catalogNames.scenarios.02195.returnTo.name"
+    },
+    {
+      "id": "02236",
+      "campaign": "02",
+      "returnTo": "51041",
+      "nameKey": "catalogNames.scenarios.02236.name",
+      "returnToNameKey": "catalogNames.scenarios.02236.returnTo.name"
+    },
+    {
+      "id": "02274",
+      "campaign": "02",
+      "returnTo": "51047",
+      "nameKey": "catalogNames.scenarios.02274.name",
+      "returnToNameKey": "catalogNames.scenarios.02274.returnTo.name"
+    },
+    {
+      "id": "02311",
+      "campaign": "02",
+      "returnTo": "51053",
+      "nameKey": "catalogNames.scenarios.02311.name",
+      "returnToNameKey": "catalogNames.scenarios.02311.returnTo.name"
+    },
+    {
+      "id": "03043",
+      "campaign": "03",
+      "returnTo": "52014",
+      "nameKey": "catalogNames.scenarios.03043.name",
+      "returnToNameKey": "catalogNames.scenarios.03043.returnTo.name"
+    },
+    {
+      "id": "03061",
+      "campaign": "03",
+      "returnTo": "52021",
+      "nameKey": "catalogNames.scenarios.03061.name",
+      "returnToNameKey": "catalogNames.scenarios.03061.returnTo.name"
+    },
+    {
+      "id": "03120",
+      "campaign": "03",
+      "returnTo": "52028",
+      "nameKey": "catalogNames.scenarios.03120.name",
+      "returnToNameKey": "catalogNames.scenarios.03120.returnTo.name"
+    },
+    {
+      "id": "03159",
+      "campaign": "03",
+      "returnTo": "52034",
+      "nameKey": "catalogNames.scenarios.03159.name",
+      "returnToNameKey": "catalogNames.scenarios.03159.returnTo.name"
+    },
+    {
+      "id": "03200",
+      "campaign": "03",
+      "returnTo": "52040",
+      "nameKey": "catalogNames.scenarios.03200.name",
+      "returnToNameKey": "catalogNames.scenarios.03200.returnTo.name"
+    },
+    {
+      "id": "03240",
+      "campaign": "03",
+      "returnTo": "52048",
+      "nameKey": "catalogNames.scenarios.03240.name",
+      "returnToNameKey": "catalogNames.scenarios.03240.returnTo.name"
+    },
+    {
+      "id": "03274",
+      "campaign": "03",
+      "returnTo": "52054",
+      "nameKey": "catalogNames.scenarios.03274.name",
+      "returnToNameKey": "catalogNames.scenarios.03274.returnTo.name"
+    },
+    {
+      "id": "03316",
+      "campaign": "03",
+      "returnTo": "52059",
+      "nameKey": "catalogNames.scenarios.03316.name",
+      "returnToNameKey": "catalogNames.scenarios.03316.returnTo.name"
+    },
+    {
+      "id": "04043",
+      "campaign": "04",
+      "returnTo": "53016",
+      "nameKey": "catalogNames.scenarios.04043.name",
+      "returnToNameKey": "catalogNames.scenarios.04043.returnTo.name"
+    },
+    {
+      "id": "04054",
+      "campaign": "04",
+      "returnTo": "53017",
+      "nameKey": "catalogNames.scenarios.04054.name",
+      "returnToNameKey": "catalogNames.scenarios.04054.returnTo.name"
+    },
+    {
+      "id": "04113",
+      "campaign": "04",
+      "returnTo": "53028",
+      "nameKey": "catalogNames.scenarios.04113.name",
+      "returnToNameKey": "catalogNames.scenarios.04113.returnTo.name"
+    },
+    {
+      "id": "04161",
+      "campaign": "04",
+      "returnTo": "53038",
+      "nameKey": "catalogNames.scenarios.04161.name",
+      "returnToNameKey": "catalogNames.scenarios.04161.returnTo.name"
+    },
+    {
+      "id": "04205a",
+      "campaign": "04",
+      "returnTo": "53045",
+      "nameKey": "catalogNames.scenarios.04205a.name",
+      "returnToNameKey": "catalogNames.scenarios.04205a.returnTo.name"
+    },
+    {
+      "id": "04205b",
+      "campaign": "04",
+      "returnTo": "53048",
+      "nameKey": "catalogNames.scenarios.04205b.name",
+      "returnToNameKey": "catalogNames.scenarios.04205b.returnTo.name"
+    },
+    {
+      "id": "04237",
+      "campaign": "04",
+      "returnTo": "53053",
+      "nameKey": "catalogNames.scenarios.04237.name",
+      "returnToNameKey": "catalogNames.scenarios.04237.returnTo.name"
+    },
+    {
+      "id": "04277",
+      "campaign": "04",
+      "returnTo": "53059",
+      "nameKey": "catalogNames.scenarios.04277.name",
+      "returnToNameKey": "catalogNames.scenarios.04277.returnTo.name"
+    },
+    {
+      "id": "04314",
+      "campaign": "04",
+      "returnTo": "53061",
+      "nameKey": "catalogNames.scenarios.04314.name",
+      "returnToNameKey": "catalogNames.scenarios.04314.returnTo.name"
+    },
+    {
+      "id": "04344",
+      "campaign": "04",
+      "returnTo": "53066",
+      "show": false,
+      "nameKey": "catalogNames.scenarios.04344.name",
+      "returnToNameKey": "catalogNames.scenarios.04344.returnTo.name"
+    },
+    {
+      "id": "05043",
+      "campaign": "05",
+      "returnTo": "54016",
+      "nameKey": "catalogNames.scenarios.05043.name",
+      "returnToNameKey": "catalogNames.scenarios.05043.returnTo.name"
+    },
+    {
+      "id": "05050",
+      "campaign": "05",
+      "returnTo": "54017",
+      "nameKey": "catalogNames.scenarios.05050.name",
+      "returnToNameKey": "catalogNames.scenarios.05050.returnTo.name"
+    },
+    {
+      "id": "05065",
+      "campaign": "05",
+      "returnTo": "54024",
+      "nameKey": "catalogNames.scenarios.05065.name",
+      "returnToNameKey": "catalogNames.scenarios.05065.returnTo.name"
+    },
+    {
+      "id": "05120",
+      "campaign": "05",
+      "returnTo": "54029",
+      "nameKey": "catalogNames.scenarios.05120.name",
+      "returnToNameKey": "catalogNames.scenarios.05120.returnTo.name"
+    },
+    {
+      "id": "05161",
+      "campaign": "05",
+      "returnTo": "54034",
+      "nameKey": "catalogNames.scenarios.05161.name",
+      "returnToNameKey": "catalogNames.scenarios.05161.returnTo.name"
+    },
+    {
+      "id": "05197",
+      "campaign": "05",
+      "returnTo": "54042",
+      "nameKey": "catalogNames.scenarios.05197.name",
+      "returnToNameKey": "catalogNames.scenarios.05197.returnTo.name"
+    },
+    {
+      "id": "05238",
+      "campaign": "05",
+      "returnTo": "54046",
+      "settings": [
+        {
+          "key": "MissingPersons",
+          "recordable": "RecordableCardCode",
+          "type": "ToggleCrossedOut",
+          "content": [
+            {
+              "label": "Gaveriella Mizrah",
+              "key": "05046",
+              "content": true
+            },
+            {
+              "label": "Jerome Davids",
+              "key": "05047",
+              "content": true
+            },
+            {
+              "label": "Valentino Rivas",
+              "key": "05048",
+              "content": true
+            },
+            {
+              "label": "Penny White",
+              "key": "05049",
+              "content": true
+            }
+          ]
+        },
+        {
+          "type": "ChooseRecord",
+          "recordable": "RecordableCardCode",
+          "label": "Gavriella Mizrah",
+          "key": "05046",
+          "selected": null,
+          "content": [
+            {
+              "key": "WasTakenByTheWatcher"
+            },
+            {
+              "key": "WasClaimedBySpecters"
+            },
+            {
+              "key": "DisappearedIntoTheMist"
+            },
+            {
+              "key": "WasPulledIntoTheSpectralRealm"
+            }
+          ],
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "MissingPersons",
+              "content": "05046"
+            }
+          ]
+        },
+        {
+          "key": "TheInvestigatorsAreOnGavriella'sTrail",
+          "type": "ToggleKey",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "MissingPersons",
+              "content": "05046"
+            }
+          ]
+        },
+        {
+          "type": "ChooseRecord",
+          "recordable": "RecordableCardCode",
+          "label": "Jerome Davids",
+          "key": "05047",
+          "selected": null,
+          "content": [
+            {
+              "key": "WasTakenByTheWatcher"
+            },
+            {
+              "key": "WasClaimedBySpecters"
+            },
+            {
+              "key": "DisappearedIntoTheMist"
+            },
+            {
+              "key": "WasPulledIntoTheSpectralRealm"
+            }
+          ],
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "MissingPersons",
+              "content": "05047"
+            }
+          ]
+        },
+        {
+          "key": "TheInvestigatorsAreOnJerome'sTrail",
+          "type": "ToggleKey",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "MissingPersons",
+              "content": "05047"
+            }
+          ]
+        },
+        {
+          "type": "ChooseRecord",
+          "recordable": "RecordableCardCode",
+          "label": "Valentino Rivas",
+          "key": "05048",
+          "selected": null,
+          "content": [
+            {
+              "key": "WasTakenByTheWatcher"
+            },
+            {
+              "key": "WasClaimedBySpecters"
+            },
+            {
+              "key": "DisappearedIntoTheMist"
+            },
+            {
+              "key": "WasPulledIntoTheSpectralRealm"
+            }
+          ],
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "MissingPersons",
+              "content": "05048"
+            }
+          ]
+        },
+        {
+          "key": "TheInvestigatorsAreOnValentino'sTrail",
+          "type": "ToggleKey",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "MissingPersons",
+              "content": "05048"
+            }
+          ]
+        },
+        {
+          "type": "ChooseRecord",
+          "recordable": "RecordableCardCode",
+          "label": "Penny White",
+          "key": "05049",
+          "selected": null,
+          "content": [
+            {
+              "key": "WasTakenByTheWatcher"
+            },
+            {
+              "key": "WasClaimedBySpecters"
+            },
+            {
+              "key": "DisappearedIntoTheMist"
+            },
+            {
+              "key": "WasPulledIntoTheSpectralRealm"
+            }
+          ],
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "MissingPersons",
+              "content": "05049"
+            }
+          ]
+        },
+        {
+          "key": "TheInvestigatorsWereInductedIntoTheInnerCircle",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "TheInvestigatorsAreDeceivingTheLodge",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "JosefIsAliveAndWell",
+          "type": "ToggleKey",
+          "content": true
+        },
+        {
+          "key": "TheWitches'SpellWasCast",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "TheInvestigatorsAreOnPenny'sTrail",
+          "type": "ToggleKey",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "MissingPersons",
+              "content": "05049"
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.05238.name",
+      "returnToNameKey": "catalogNames.scenarios.05238.returnTo.name"
+    },
+    {
+      "id": "05284",
+      "returnTo": "54049",
+      "campaign": "05",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.05284.name",
+      "returnToNameKey": "catalogNames.scenarios.05284.returnTo.name"
+    },
+    {
+      "id": "05325",
+      "campaign": "05",
+      "returnTo": "54056",
+      "settings": [
+        {
+          "key": "ThePathWindsBeforeYou",
+          "type": "ChooseNum",
+          "max": 6,
+          "content": 0
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.05325.name",
+      "returnToNameKey": "catalogNames.scenarios.05325.returnTo.name"
+    },
+    {
+      "id": "06039",
+      "campaign": "06",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.06039.name"
+    },
+    {
+      "id": "06063",
+      "campaign": "06",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.06063.name"
+    },
+    {
+      "id": "06119",
+      "campaign": "06",
+      "settings": [
+        {
+          "key": "TheInvestigatorsParleyedWithTheZoogs",
+          "type": "ToggleKey",
+          "content": false
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.06119.name"
+    },
+    {
+      "id": "06168",
+      "campaign": "06",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.06168.name"
+    },
+    {
+      "id": "06206",
+      "campaign": "06",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.06206.name"
+    },
+    {
+      "id": "06247",
+      "campaign": "06",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.06247.name"
+    },
+    {
+      "id": "06286",
+      "campaign": "06",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.06286.name"
+    },
+    {
+      "id": "06333",
+      "campaign": "06",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.06333.name"
+    },
+    {
+      "id": "07041",
+      "campaign": "07",
+      "settings": [],
+      "nameKey": "catalogNames.scenarios.07041.name"
+    },
+    {
+      "id": "07056",
+      "campaign": "07",
+      "settings": [
+        {
+          "key": "MemoriesRecovered",
+          "recordable": "RecordableMemory",
+          "type": "ToggleRecords",
+          "content": [
+            {
+              "label": "A Decision to Stick Together",
+              "key": "ADecisionToStickTogether",
+              "content": false
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.07056.name"
+    },
+    {
+      "id": "07123",
+      "campaign": "07",
+      "settings": [
+        {
+          "key": "OutForBlood",
+          "recordable": "RecordableCardCode",
+          "type": "ToggleRecords",
+          "content": [
+            {
+              "label": "Brian Burnham",
+              "key": "07078",
+              "content": false
+            },
+            {
+              "label": "Othera Gilman",
+              "key": "07081",
+              "content": false
+            },
+            {
+              "label": "Joyce Little",
+              "key": "07080",
+              "content": false
+            },
+            {
+              "label": "Barnabas Marsh",
+              "key": "07079",
+              "content": false
+            },
+            {
+              "label": "Zadok Allen",
+              "key": "07077",
+              "content": false
+            },
+            {
+              "label": "Robert Friendly",
+              "key": "07076",
+              "content": false
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.07123.name"
+    },
+    {
+      "id": "07163",
+      "campaign": "07",
+      "settings": [
+        {
+          "key": "MissionStatus",
+          "keys": [
+            "TheMissionFailed",
+            "TheMissionWasSuccessful"
+          ],
+          "type": "PickKey",
+          "content": "TheMissionFailed"
+        },
+        {
+          "key": "MemoriesRecovered",
+          "recordable": "RecordableMemory",
+          "type": "ToggleRecords",
+          "content": [
+            {
+              "label": "A battle with a horrifying devil",
+              "key": "ABattleWithAHorrifyingDevil",
+              "content": false
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.07163.name"
+    },
+    {
+      "id": "07198",
+      "campaign": "07",
+      "settings": [
+        {
+          "key": "TerrorOfDevilReefStatus",
+          "keys": [
+            "TheTerrorOfDevilReefIsStillAlive",
+            "TheTerrorOfDevilReefIsDead"
+          ],
+          "type": "PickKey",
+          "content": "TheTerrorOfDevilReefIsStillAlive"
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.07198.name"
+    },
+    {
+      "id": "07231",
+      "campaign": "07",
+      "settings": [
+        {
+          "key": "ReachingFalconPoint",
+          "keys": [
+            "TheInvestigatorsReachedFalconPointBeforeSunrise",
+            "TheInvestigatorsReachedFalconPointAfterSunrise"
+          ],
+          "type": "PickKey",
+          "content": "TheInvestigatorsReachedFalconPointBeforeSunrise"
+        },
+        {
+          "key": "TheIdolWasBroughtToTheLighthouse",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "TheMantleWasBroughtToTheLighthouse",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "TheHeaddressWasBroughtToTheLighthouse",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "TheTideHasGrownStronger",
+          "type": "ToggleKey",
+          "content": false
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.07231.name"
+    },
+    {
+      "id": "07274",
+      "campaign": "07",
+      "settings": [
+        {
+          "key": "TheMissionFailed",
+          "type": "ToggleKey",
+          "content": true
+        },
+        {
+          "key": "MemoriesRecovered",
+          "recordable": "RecordableMemory",
+          "type": "ToggleRecords",
+          "content": [
+            {
+              "label": "A decision to stick together",
+              "key": "ADecisionToStickTogether",
+              "content": false
+            },
+            {
+              "label": "An encounter with a secret cult",
+              "key": "AnEncounterWithASecretCult",
+              "content": false
+            },
+            {
+              "label": "A jailbreak",
+              "key": "AJailbreak",
+              "content": false
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.07274.name"
+    },
+    {
+      "id": "07311",
+      "campaign": "07",
+      "settings": [
+        {
+          "key": "TheInvestigatorsPossessTheKeyToYhaNthlei",
+          "type": "ToggleKey",
+          "content": true
+        },
+        {
+          "key": "TheInvestigatorsPossessAMapOfYhaNthlei",
+          "type": "ToggleKey",
+          "content": true
+        },
+        {
+          "key": "TheGuardianOfYhanthleiIsDispatched",
+          "type": "ToggleKey",
+          "content": true
+        },
+        {
+          "key": "TheGatewayToYhanthleiRecognizesYouAsTheRightfulKeeper",
+          "type": "ToggleKey",
+          "content": true
+        },
+        {
+          "key": "TheOrdersRitualWasDisrupted",
+          "type": "ToggleKey",
+          "content": false
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.07311.name"
+    },
+    {
+      "id": "08501a",
+      "campaign": "08",
+      "nameKey": "catalogNames.scenarios.08501a.name"
+    },
+    {
+      "id": "08501b",
+      "campaign": "08",
+      "settings": [
+        {
+          "type": "ToggleOption",
+          "key": "ManuallyPickCamp",
+          "content": false
+        },
+        {
+          "type": "PickKey",
+          "ifRecorded": [
+            {
+              "type": "option",
+              "key": "ManuallyPickCamp"
+            }
+          ],
+          "content": "Camp Location",
+          "key": "Camp",
+          "keys": [
+            "Camp_CrystallineCavern",
+            "Camp_BarrierCamp",
+            "Camp_RemnantsOfLakesCamp",
+            "Camp_FrigidCave",
+            "Camp_IcebreakerLanding",
+            "Camp_SnowGraves",
+            "Camp_BroadSnowdrifts",
+            "Camp_IcyWastes",
+            "Camp_RockyCrags",
+            "Camp_FrozenShores",
+            "Camp_PrecariousIceSheet",
+            "Camp_TreacherousPath",
+            "Camp_CrashSite"
+          ]
+        },
+        {
+          "type": "ToggleOption",
+          "key": "ManuallyPickKilledInPlaneCrash",
+          "content": false
+        },
+        {
+          "type": "SetPartnerKilled",
+          "key": "KilledInPlaneCrash",
+          "ifRecorded": [
+            {
+              "type": "option",
+              "key": "ManuallyPickKilledInPlaneCrash"
+            }
+          ],
+          "content": null
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.08501b.name"
+    },
+    {
+      "id": "08501c",
+      "campaign": "08",
+      "settings": [
+        {
+          "key": "PerformIntro",
+          "type": "ToggleOption",
+          "content": false
+        },
+        {
+          "type": "ToggleOption",
+          "key": "ManuallyPickCamp",
+          "content": false
+        },
+        {
+          "type": "PickKey",
+          "ifRecorded": [
+            {
+              "type": "option",
+              "key": "ManuallyPickCamp"
+            }
+          ],
+          "content": "Camp Location",
+          "key": "Camp",
+          "keys": [
+            "Camp_CrystallineCavern",
+            "Camp_BarrierCamp",
+            "Camp_RemnantsOfLakesCamp",
+            "Camp_FrigidCave",
+            "Camp_IcebreakerLanding",
+            "Camp_SnowGraves",
+            "Camp_BroadSnowdrifts",
+            "Camp_IcyWastes",
+            "Camp_RockyCrags",
+            "Camp_FrozenShores",
+            "Camp_PrecariousIceSheet",
+            "Camp_TreacherousPath",
+            "Camp_CrashSite"
+          ]
+        },
+        {
+          "key": "IncludePartners",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "not",
+              "content": {
+                "type": "option",
+                "key": "PerformIntro"
+              }
+            }
+          ]
+        },
+        {
+          "type": "Group",
+          "key": "Partners",
+          "ifRecorded": [
+            {
+              "type": "or",
+              "content": [
+                {
+                  "type": "option",
+                  "key": "IncludePartners"
+                },
+                {
+                  "type": "option",
+                  "key": "PerformIntro"
+                }
+              ]
+            }
+          ],
+          "content": [
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Amy Kensler",
+              "value": "08720",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Prof. William Dyer",
+              "value": "08714",
+              "maxDamage": 0,
+              "maxHorror": 4,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Danforth",
+              "value": "08715",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Roald Ellsworth",
+              "value": "08721",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Takada Hiroko",
+              "value": "08722",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Avery Claypool",
+              "value": "08718",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Mala Sinha",
+              "value": "08717",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "James \"Cookie\" Fredericks",
+              "value": "08719",
+              "maxDamage": 4,
+              "maxHorror": 0,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Eliyah Ashevak",
+              "value": "08716",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.08501c.name"
+    },
+    {
+      "id": "08549",
+      "campaign": "08",
+      "settings": [
+        {
+          "key": "PerformIntro",
+          "type": "ToggleOption",
+          "content": false
+        },
+        {
+          "type": "Group",
+          "key": "Choose who was killed in the plane crash",
+          "ifRecorded": [
+            {
+              "type": "option",
+              "key": "PerformIntro"
+            }
+          ],
+          "content": [
+            {
+              "type": "SetPartnerKilled",
+              "key": "KilledInPlaneCrash",
+              "content": null
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "Dr. Amy Kensler",
+          "value": "08720",
+          "maxDamage": 1,
+          "maxHorror": 3,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08720"
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "Prof. William Dyer",
+          "value": "08714",
+          "maxDamage": 0,
+          "maxHorror": 4,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08714"
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "Danforth",
+          "value": "08715",
+          "maxDamage": 1,
+          "maxHorror": 3,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08715"
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "Roald Ellsworth",
+          "value": "08721",
+          "maxDamage": 3,
+          "maxHorror": 1,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08721"
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "Takada Hiroko",
+          "value": "08722",
+          "maxDamage": 2,
+          "maxHorror": 2,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08722"
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "Avery Claypool",
+          "value": "08718",
+          "maxDamage": 2,
+          "maxHorror": 2,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08718"
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "Dr. Mala Sinha",
+          "value": "08717",
+          "maxDamage": 3,
+          "maxHorror": 1,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08717"
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "James \"Cookie\" Fredericks",
+          "value": "08719",
+          "maxDamage": 4,
+          "maxHorror": 0,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08719"
+            }
+          ]
+        },
+        {
+          "type": "SetPartnerDetails",
+          "key": "Eliyah Ashevak",
+          "value": "08716",
+          "maxDamage": 2,
+          "maxHorror": 2,
+          "content": {
+            "damage": 0,
+            "horror": 0,
+            "status": "Safe"
+          },
+          "ifRecorded": [
+            {
+              "type": "survivedPlaneCrash",
+              "key": "08716"
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.08549.name"
+    },
+    {
+      "id": "08596",
+      "campaign": "08",
+      "settings": [
+        {
+          "key": "PerformIntro",
+          "type": "ToggleOption",
+          "content": false
+        },
+        {
+          "key": "SuppliesRecovered",
+          "recordable": "RecordableGeneric",
+          "type": "ToggleRecords",
+          "content": [
+            {
+              "label": "Green Soapstone",
+              "key": "GreenSoapstone",
+              "content": false
+            },
+            {
+              "label": "Wooden Sledge",
+              "key": "WoodenSledge",
+              "content": false
+            },
+            {
+              "label": "Dynamite",
+              "key": "Dynamite",
+              "content": false
+            },
+            {
+              "label": "Miasmic Crystal",
+              "key": "MiasmicCrystal",
+              "content": false
+            },
+            {
+              "label": "Mineral Specimen",
+              "key": "MineralSpecimen",
+              "content": false
+            },
+            {
+              "label": "Small Radio",
+              "key": "SmallRadio",
+              "content": false
+            },
+            {
+              "label": "Spare Parts",
+              "key": "SpareParts",
+              "content": false
+            }
+          ]
+        },
+        {
+          "key": "TheInvestigatorsScoutedTheMountainPass",
+          "type": "ToggleKey",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "option",
+              "key": "PerformIntro"
+            }
+          ]
+        },
+        {
+          "key": "IncludePartners",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "not",
+              "content": {
+                "type": "option",
+                "key": "PerformIntro"
+              }
+            }
+          ]
+        },
+        {
+          "type": "Group",
+          "key": "Partners",
+          "ifRecorded": [
+            {
+              "type": "or",
+              "content": [
+                {
+                  "type": "option",
+                  "key": "IncludePartners"
+                },
+                {
+                  "type": "option",
+                  "key": "PerformIntro"
+                }
+              ]
+            }
+          ],
+          "content": [
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Amy Kensler",
+              "value": "08720",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Prof. William Dyer",
+              "value": "08714",
+              "maxDamage": 0,
+              "maxHorror": 4,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Danforth",
+              "value": "08715",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Roald Ellsworth",
+              "value": "08721",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Takada Hiroko",
+              "value": "08722",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Avery Claypool",
+              "value": "08718",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Mala Sinha",
+              "value": "08717",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "James \"Cookie\" Fredericks",
+              "value": "08719",
+              "maxDamage": 4,
+              "maxHorror": 0,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Eliyah Ashevak",
+              "value": "08716",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.08596.name"
+    },
+    {
+      "id": "08621",
+      "campaign": "08",
+      "settings": [
+        {
+          "key": "PerformIntro",
+          "type": "ToggleOption",
+          "content": false
+        },
+        {
+          "key": "SuppliesRecovered",
+          "recordable": "RecordableGeneric",
+          "type": "ToggleRecords",
+          "content": [
+            {
+              "label": "Green Soapstone",
+              "key": "GreenSoapstone",
+              "content": false
+            },
+            {
+              "label": "Wooden Sledge",
+              "key": "WoodenSledge",
+              "content": false
+            },
+            {
+              "label": "Dynamite",
+              "key": "Dynamite",
+              "content": false
+            },
+            {
+              "label": "Miasmic Crystal",
+              "key": "MiasmicCrystal",
+              "content": false
+            },
+            {
+              "label": "Mineral Specimen",
+              "key": "MineralSpecimen",
+              "content": false
+            },
+            {
+              "label": "Small Radio",
+              "key": "SmallRadio",
+              "content": false
+            },
+            {
+              "label": "Spare Parts",
+              "key": "SpareParts",
+              "content": false
+            }
+          ]
+        },
+        {
+          "key": "AddGreenSoapstone",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "GreenSoapstone"
+            }
+          ]
+        },
+        {
+          "key": "AddWoodenSledge",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "WoodenSledge"
+            }
+          ]
+        },
+        {
+          "key": "AddDynamite",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "Dynamite"
+            }
+          ]
+        },
+        {
+          "key": "AddMiasmicCrystal",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "MiasmicCrystal"
+            }
+          ]
+        },
+        {
+          "key": "AddMineralSpecimen",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "MineralSpecimen"
+            }
+          ]
+        },
+        {
+          "key": "AddSmallRadio",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "SmallRadio"
+            }
+          ]
+        },
+        {
+          "key": "AddSpareParts",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "SpareParts"
+            }
+          ]
+        },
+        {
+          "key": "TheInvestigatorsScoutedTheCityOutskirts",
+          "type": "ToggleKey",
+          "content": false
+        },
+        {
+          "key": "IncludePartners",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "not",
+              "content": {
+                "type": "option",
+                "key": "PerformIntro"
+              }
+            }
+          ]
+        },
+        {
+          "type": "Group",
+          "key": "Partners",
+          "ifRecorded": [
+            {
+              "type": "or",
+              "content": [
+                {
+                  "type": "option",
+                  "key": "IncludePartners"
+                },
+                {
+                  "type": "option",
+                  "key": "PerformIntro"
+                }
+              ]
+            }
+          ],
+          "content": [
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Amy Kensler",
+              "value": "08720",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Prof. William Dyer",
+              "value": "08714",
+              "maxDamage": 0,
+              "maxHorror": 4,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Danforth",
+              "value": "08715",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Roald Ellsworth",
+              "value": "08721",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Takada Hiroko",
+              "value": "08722",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Avery Claypool",
+              "value": "08718",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Mala Sinha",
+              "value": "08717",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "James \"Cookie\" Fredericks",
+              "value": "08719",
+              "maxDamage": 4,
+              "maxHorror": 0,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Eliyah Ashevak",
+              "value": "08716",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.08621.name"
+    },
+    {
+      "id": "08648a",
+      "campaign": "08",
+      "settings": [
+        {
+          "key": "PerformIntro",
+          "type": "ToggleOption",
+          "content": false
+        },
+        {
+          "key": "SuppliesRecovered",
+          "recordable": "RecordableGeneric",
+          "type": "ToggleRecords",
+          "content": [
+            {
+              "label": "Green Soapstone",
+              "key": "GreenSoapstone",
+              "content": false
+            },
+            {
+              "label": "Wooden Sledge",
+              "key": "WoodenSledge",
+              "content": false
+            },
+            {
+              "label": "Dynamite",
+              "key": "Dynamite",
+              "content": false
+            },
+            {
+              "label": "Miasmic Crystal",
+              "key": "MiasmicCrystal",
+              "content": false
+            },
+            {
+              "label": "Mineral Specimen",
+              "key": "MineralSpecimen",
+              "content": false
+            },
+            {
+              "label": "Small Radio",
+              "key": "SmallRadio",
+              "content": false
+            },
+            {
+              "label": "Spare Parts",
+              "key": "SpareParts",
+              "content": false
+            }
+          ]
+        },
+        {
+          "key": "AddGreenSoapstone",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "GreenSoapstone"
+            }
+          ]
+        },
+        {
+          "key": "AddWoodenSledge",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "WoodenSledge"
+            }
+          ]
+        },
+        {
+          "key": "AddDynamite",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "Dynamite"
+            }
+          ]
+        },
+        {
+          "key": "AddMiasmicCrystal",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "MiasmicCrystal"
+            }
+          ]
+        },
+        {
+          "key": "AddMineralSpecimen",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "MineralSpecimen"
+            }
+          ]
+        },
+        {
+          "key": "AddSmallRadio",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "SmallRadio"
+            }
+          ]
+        },
+        {
+          "key": "AddSpareParts",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "SpareParts"
+            }
+          ]
+        },
+        {
+          "key": "IncludePartners",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "not",
+              "content": {
+                "type": "option",
+                "key": "PerformIntro"
+              }
+            }
+          ]
+        },
+        {
+          "type": "Group",
+          "key": "Partners",
+          "ifRecorded": [
+            {
+              "type": "or",
+              "content": [
+                {
+                  "type": "option",
+                  "key": "IncludePartners"
+                },
+                {
+                  "type": "option",
+                  "key": "PerformIntro"
+                }
+              ]
+            }
+          ],
+          "content": [
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Amy Kensler",
+              "value": "08720",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Prof. William Dyer",
+              "value": "08714",
+              "maxDamage": 0,
+              "maxHorror": 4,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Danforth",
+              "value": "08715",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Roald Ellsworth",
+              "value": "08721",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Takada Hiroko",
+              "value": "08722",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Avery Claypool",
+              "value": "08718",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Mala Sinha",
+              "value": "08717",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "James \"Cookie\" Fredericks",
+              "value": "08719",
+              "maxDamage": 4,
+              "maxHorror": 0,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Eliyah Ashevak",
+              "value": "08716",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.08648a.name"
+    },
+    {
+      "id": "08648b",
+      "campaign": "08",
+      "settings": [
+        {
+          "key": "PerformIntro",
+          "type": "ToggleOption",
+          "content": false
+        },
+        {
+          "key": "SuppliesRecovered",
+          "recordable": "RecordableGeneric",
+          "type": "ToggleRecords",
+          "content": [
+            {
+              "label": "Green Soapstone",
+              "key": "GreenSoapstone",
+              "content": false
+            },
+            {
+              "label": "Wooden Sledge",
+              "key": "WoodenSledge",
+              "content": false
+            },
+            {
+              "label": "Dynamite",
+              "key": "Dynamite",
+              "content": false
+            },
+            {
+              "label": "Miasmic Crystal",
+              "key": "MiasmicCrystal",
+              "content": false
+            },
+            {
+              "label": "Mineral Specimen",
+              "key": "MineralSpecimen",
+              "content": false
+            },
+            {
+              "label": "Small Radio",
+              "key": "SmallRadio",
+              "content": false
+            },
+            {
+              "label": "Spare Parts",
+              "key": "SpareParts",
+              "content": false
+            }
+          ]
+        },
+        {
+          "key": "AddGreenSoapstone",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "GreenSoapstone"
+            }
+          ]
+        },
+        {
+          "key": "AddWoodenSledge",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "WoodenSledge"
+            }
+          ]
+        },
+        {
+          "key": "AddDynamite",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "Dynamite"
+            }
+          ]
+        },
+        {
+          "key": "AddMiasmicCrystal",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "MiasmicCrystal"
+            }
+          ]
+        },
+        {
+          "key": "AddMineralSpecimen",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "MineralSpecimen"
+            }
+          ]
+        },
+        {
+          "key": "AddSmallRadio",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "SmallRadio"
+            }
+          ]
+        },
+        {
+          "key": "AddSpareParts",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "inSet",
+              "key": "SuppliesRecovered",
+              "recordable": "RecordableGeneric",
+              "content": "SpareParts"
+            }
+          ]
+        },
+        {
+          "key": "DrKenslerUnderstandsTheTrueNatureOfTheMiasma",
+          "type": "ToggleKey",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "option",
+              "key": "PerformIntro"
+            }
+          ]
+        },
+        {
+          "key": "IncludePartners",
+          "type": "ToggleOption",
+          "content": false,
+          "ifRecorded": [
+            {
+              "type": "not",
+              "content": {
+                "type": "option",
+                "key": "PerformIntro"
+              }
+            }
+          ]
+        },
+        {
+          "type": "Group",
+          "key": "Partners",
+          "ifRecorded": [
+            {
+              "type": "or",
+              "content": [
+                {
+                  "type": "option",
+                  "key": "IncludePartners"
+                },
+                {
+                  "type": "option",
+                  "key": "PerformIntro"
+                }
+              ]
+            }
+          ],
+          "content": [
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Amy Kensler",
+              "value": "08720",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Prof. William Dyer",
+              "value": "08714",
+              "maxDamage": 0,
+              "maxHorror": 4,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Danforth",
+              "value": "08715",
+              "maxDamage": 1,
+              "maxHorror": 3,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Roald Ellsworth",
+              "value": "08721",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Takada Hiroko",
+              "value": "08722",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Avery Claypool",
+              "value": "08718",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Dr. Mala Sinha",
+              "value": "08717",
+              "maxDamage": 3,
+              "maxHorror": 1,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "James \"Cookie\" Fredericks",
+              "value": "08719",
+              "maxDamage": 4,
+              "maxHorror": 0,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            },
+            {
+              "type": "SetPartnerDetails",
+              "key": "Eliyah Ashevak",
+              "value": "08716",
+              "maxDamage": 2,
+              "maxHorror": 2,
+              "content": {
+                "damage": 0,
+                "horror": 0,
+                "status": "Safe"
+              }
+            }
+          ]
+        }
+      ],
+      "nameKey": "catalogNames.scenarios.08648b.name"
+    },
+    {
+      "id": "09501",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09501.name"
+    },
+    {
+      "id": "09520",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09520.name"
+    },
+    {
+      "id": "09545",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09545.name"
+    },
+    {
+      "id": "09566",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09566.name"
+    },
+    {
+      "id": "09591",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09591.name"
+    },
+    {
+      "id": "09609",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09609.name"
+    },
+    {
+      "id": "09635",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09635.name"
+    },
+    {
+      "id": "09660",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09660.name"
+    },
+    {
+      "id": "09681",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09681.name"
+    },
+    {
+      "id": "09694",
+      "campaign": "09",
+      "nameKey": "catalogNames.scenarios.09694.name"
+    },
+    {
+      "id": "10704",
+      "campaign": "10",
+      "standalone": false,
+      "nameKey": "catalogNames.scenarios.10704.name"
+    },
+    {
+      "id": "10501",
+      "campaign": "10",
+      "nameKey": "catalogNames.scenarios.10501.name"
+    },
+    {
+      "id": "10523",
+      "campaign": "10",
+      "nameKey": "catalogNames.scenarios.10523.name"
+    },
+    {
+      "id": "10549",
+      "campaign": "10",
+      "nameKey": "catalogNames.scenarios.10549.name"
+    },
+    {
+      "id": "10569",
+      "campaign": "10",
+      "nameKey": "catalogNames.scenarios.10569.name"
+    },
+    {
+      "id": "10588",
+      "campaign": "10",
+      "nameKey": "catalogNames.scenarios.10588.name"
+    },
+    {
+      "id": "10605",
+      "campaign": "10",
+      "nameKey": "catalogNames.scenarios.10605.name"
+    },
+    {
+      "id": "10677a",
+      "campaign": "10",
+      "standalone": false,
+      "nameKey": "catalogNames.scenarios.10677a.name"
+    },
+    {
+      "id": "10626",
+      "campaign": "10",
+      "nameKey": "catalogNames.scenarios.10626.name"
+    },
+    {
+      "id": "10679a",
+      "campaign": "10",
+      "standalone": false,
+      "nameKey": "catalogNames.scenarios.10679a.name"
+    },
+    {
+      "id": "10679b",
+      "campaign": "10",
+      "standalone": false,
+      "nameKey": "catalogNames.scenarios.10679b.name"
+    },
+    {
+      "id": "10651",
+      "campaign": "10",
+      "nameKey": "catalogNames.scenarios.10651.name"
+    },
+    {
+      "id": "11501",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11501.name"
+    },
+    {
+      "id": "11517",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11517.name"
+    },
+    {
+      "id": "11536",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11536.name"
+    },
+    {
+      "id": "11553",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11553.name"
+    },
+    {
+      "id": "11587",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11587.name"
+    },
+    {
+      "id": "11612",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11612.name"
+    },
+    {
+      "id": "11639",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11639.name"
+    },
+    {
+      "id": "11673",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11673.name"
+    },
+    {
+      "id": "11682",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11682.name"
+    },
+    {
+      "id": "11688a",
+      "campaign": "11",
+      "nameKey": "catalogNames.scenarios.11688a.name"
+    },
+    {
+      "id": "12105",
+      "campaign": "12",
+      "nameKey": "catalogNames.scenarios.12105.name"
+    },
+    {
+      "id": "12133",
+      "campaign": "12",
+      "nameKey": "catalogNames.scenarios.12133.name"
+    },
+    {
+      "id": "12168",
+      "campaign": "12",
+      "nameKey": "catalogNames.scenarios.12168.name"
+    },
+    {
+      "id": "13001",
+      "campaign": "13",
+      "nameKey": "catalogNames.scenarios.13001.name"
+    },
+    {
+      "id": "13031",
+      "campaign": "13",
+      "nameKey": "catalogNames.scenarios.13031.name"
+    },
+    {
+      "id": "13068",
+      "campaign": "13",
+      "nameKey": "catalogNames.scenarios.13068.name"
+    }
+  ],
+  "sideStories": [
+    {
+      "id": "81001",
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 1,
+      "nameKey": "catalogNames.sideStories.81001.name"
+    },
+    {
+      "id": "82001",
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.82001.name"
+    },
+    {
+      "id": "70001",
+      "epicMultiplayer": true,
+      "miniCampaign": true,
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "PlusOne",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 2,
+      "beta": true,
+      "nameKey": "catalogNames.sideStories.70001.name"
+    },
+    {
+      "id": "83001",
+      "campaign": "83",
+      "scenarios": [
+        {
+          "id": "83001",
+          "box": "83001b",
+          "notAfter": [
+            "83016"
+          ],
+          "nameKey": "catalogNames.sideStories.83001.parts.83001.name"
+        },
+        {
+          "id": "83016",
+          "box": "83001a",
+          "nameKey": "catalogNames.sideStories.83001.parts.83016.name"
+        }
+      ],
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSeven",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 2,
+      "beta": true,
+      "nameKey": "catalogNames.sideStories.83001.name"
+    },
+    {
+      "id": "84001",
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.84001.name"
+    },
+    {
+      "id": "85001",
+      "epicMultiplayer": true,
+      "returnToVariant": true,
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 2,
+      "nameKey": "catalogNames.sideStories.85001.name"
+    },
+    {
+      "id": "86001",
+      "epicMultiplayer": true,
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "beta": true,
+      "nameKey": "catalogNames.sideStories.86001.name"
+    },
+    {
+      "id": "87001",
+      "epicMultiplayer": true,
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 2,
+      "beta": true,
+      "nameKey": "catalogNames.sideStories.87001.name"
+    },
+    {
+      "id": "88001",
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusSix",
+          "MinusSeven",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.88001.name"
+    },
+    {
+      "id": "71001",
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 2,
+      "nameKey": "catalogNames.sideStories.71001.name"
+    },
+    {
+      "id": "72001",
+      "standaloneDifficulties": [
+        "Standard",
+        "Hard"
+      ],
+      "difficultyLevels": {
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.72001.name"
+    },
+    {
+      "id": "90004",
+      "requiredInvestigator": "Daisy Walker",
+      "deckRequirements": [
+        "Daisy Walker's deck must include at least 4 non-weakness Tome assets."
+      ],
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.90004.name",
+      "requiredInvestigatorCodes": [
+        "01002",
+        "01502",
+        "90001"
+      ]
+    },
+    {
+      "id": "90011",
+      "requiredInvestigator": "\"Skids\" O'Toole",
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.90011.name",
+      "requiredInvestigatorCodes": [
+        "01003",
+        "01503",
+        "90008"
+      ]
+    },
+    {
+      "id": "90020",
+      "requiredInvestigator": "Agnes Baker",
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.90020.name",
+      "requiredInvestigatorCodes": [
+        "01004",
+        "01504",
+        "90017"
+      ]
+    },
+    {
+      "id": "90032",
+      "requiredInvestigator": "Roland Banks",
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.90032.name",
+      "requiredInvestigatorCodes": [
+        "01001",
+        "01501",
+        "90024",
+        "98004"
+      ]
+    },
+    {
+      "id": "90041",
+      "requiredInvestigator": "Wendy Adams",
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.90041.name",
+      "requiredInvestigatorCodes": [
+        "01005",
+        "01505",
+        "90037"
+      ]
+    },
+    {
+      "id": "90054",
+      "requiredInvestigator": "Jim Culver",
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusSeven",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.90054.name",
+      "requiredInvestigatorCodes": [
+        "02004",
+        "90049"
+      ]
+    },
+    {
+      "id": "90065",
+      "requiredInvestigator": "Monterey Jack",
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusSix",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 3,
+      "nameKey": "catalogNames.sideStories.90065.name",
+      "requiredInvestigatorCodes": [
+        "08007",
+        "90062"
+      ]
+    },
+    {
+      "id": "90094",
+      "standaloneDifficulties": [
+        "Easy",
+        "Standard",
+        "Hard",
+        "Expert"
+      ],
+      "difficultyLevels": {
+        "Easy": [
+          "PlusOne",
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Standard": [
+          "PlusOne",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusFour",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Hard": [
+          "Zero",
+          "Zero",
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFive",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ],
+        "Expert": [
+          "Zero",
+          "MinusOne",
+          "MinusOne",
+          "MinusTwo",
+          "MinusTwo",
+          "MinusThree",
+          "MinusThree",
+          "MinusFour",
+          "MinusFour",
+          "MinusFive",
+          "MinusSix",
+          "MinusEight",
+          "Skull",
+          "Skull",
+          "Skull",
+          "Cultist",
+          "Cultist",
+          "Tablet",
+          "ElderThing",
+          "AutoFail",
+          "ElderSign"
+        ]
+      },
+      "xp": 2,
+      "deckRequirements": [
+        "Requires investigator with parallel content"
+      ],
+      "nameKey": "catalogNames.sideStories.90094.name"
+    }
+  ],
+  "provenance": {
+    "generator": "arkham-campaign-catalog",
+    "generatorVersion": "1.0.0",
+    "schemaVersion": "1.0.0",
+    "dataSourcesSha256": "29e45cfd9ff04e9df630171ad8d4f3cef3761421a1cefea2b8be0b301caa5ed3",
+    "generatorSha256": "bc8fa53f3f692deb4b9a4eadc115a5c4d0b7b181106126f51ed82e3ccbeb6feb",
+    "schemasSha256": "276ae5c0f46dcf6ac18f2257284153e11b2fb58d3098b410207fc653be65a80c",
+    "sha256": "203d2dc123b2ddfa2e6a5be958b5a02a3f0c897c8d25d5f2dfe9dd5756615585",
+    "sources": [
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToNightOfTheZealot.hs",
+        "sha256": "99341788ed339258532e6129047ee6c85e3490de4e78b2b773a336e2aab9aab9"
+      },
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheCircleUndone.hs",
+        "sha256": "bc43be156e2a6e07fb0d9b79808ea07ef74933bbadf9a8c1e3f77beb6d8d4c4d"
+      },
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheDunwichLegacy.hs",
+        "sha256": "1dfb5004b4eb75eac409e6b8f572378df7dcbec3a7b058f774b789f8eccc0fb6"
+      },
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToTheForgottenAge.hs",
+        "sha256": "3602da5cc367c941e55dcea9c8e682039a1e746111521819ede11a365dc4c2e2"
+      },
+      {
+        "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToThePathToCarcosa.hs",
+        "sha256": "da0c4f0c4da61c0df7a13a23420d6e236ffff12b99468c2fcb324c04fc2449ff"
+      },
+      {
+        "path": "frontend/src/arkham/data/brethrenOfAsh.json",
+        "sha256": "afe61e0889cadb7db0a979d33dc170d44f27a007e68171592f570155032c723e"
+      },
+      {
+        "path": "frontend/src/arkham/data/campaigns.json",
+        "sha256": "9bb53a704eb9913de6c3dfabb7ce6bf79d471a3302d21638e04070e8ce76c0a1"
+      },
+      {
+        "path": "frontend/src/arkham/data/childrenOfBlood.json",
+        "sha256": "8b5e952b63729cdf939545e23447af53321a8e419eb92c9ea66f7570ae16d8be"
+      },
+      {
+        "path": "frontend/src/arkham/data/edgeOfTheEarth.json",
+        "sha256": "a2f43dfb24c3f6677e8602a5ea15dcbed4e1a0968740ee4bfcfe1e45518f9b5e"
+      },
+      {
+        "path": "frontend/src/arkham/data/nightOfTheZealot.json",
+        "sha256": "c8ca716226fb31eddff3df5bf93813cecc9b0651854a2a869685f04d8734a553"
+      },
+      {
+        "path": "frontend/src/arkham/data/scenarios.ts",
+        "sha256": "6dd7326989385307fa0985aa3a68c55e6deb208b1f69b994c3e472b80045633d"
+      },
+      {
+        "path": "frontend/src/arkham/data/side-stories.json",
+        "sha256": "3858bf7c53209d133e8f607ec41c7b2b467d14ad46b16ed5b42164e318e7ed54"
+      },
+      {
+        "path": "frontend/src/arkham/data/theCircleUndone.json",
+        "sha256": "ca1b264141f90b6a0d47d9811ffe8b9c16bc2181b6853d5e46d843a06a05ab81"
+      },
+      {
+        "path": "frontend/src/arkham/data/theDreamEaters.json",
+        "sha256": "3d0769fd851075869599246b1d091f7ca3da3d824fa4649047dd84e2e5764798"
+      },
+      {
+        "path": "frontend/src/arkham/data/theDrownedCity.json",
+        "sha256": "06e0fe5895a1013b28f96c3bc4e2fdaa83f62d794f688bea5cccc7ec11b7a949"
+      },
+      {
+        "path": "frontend/src/arkham/data/theDunwichLegacy.json",
+        "sha256": "8bac8404a524aecc3a945bbde4b8f3b1a4cc05c73e7ae3a3c44d7c69337d7b20"
+      },
+      {
+        "path": "frontend/src/arkham/data/theFeastOfHemlockVale.json",
+        "sha256": "18af93019b7bef95dbf46c2ec68869448ca0d9961c5b5767e57b9570e290ae19"
+      },
+      {
+        "path": "frontend/src/arkham/data/theForgottenAge.json",
+        "sha256": "7e9922c1b876b1dff16141486eff296a3b92606c4520a2d879696734bf28df22"
+      },
+      {
+        "path": "frontend/src/arkham/data/theInnsmouthConspiracy.json",
+        "sha256": "080453de1041d3163759c7ef78ed85f6c114960050456ae36aeba27fb67c9df1"
+      },
+      {
+        "path": "frontend/src/arkham/data/thePathToCarcosa.json",
+        "sha256": "82683f93cbaf6515321f872d9518d2aa785e442739f658ea14598950e1bf6f5a"
+      },
+      {
+        "path": "frontend/src/arkham/data/theScarletKeys.json",
+        "sha256": "8e75cd8452cb0f67f88f53760074cd1da4b4bd709f82bf33750ced056502689a"
+      },
+      {
+        "path": "frontend/src/arkham/deckRestrictions.ts",
+        "sha256": "544cd7eafbad5f4497e09b5fb3b2ed55e6e1ed27c4f20ccf891746beb2c3c702"
+      }
+    ],
+    "outputSha256": "aa6f65d6a054a90035e4bb7b58d25d76e823f1eea797a2bbf1b6a2d8cadbeaf4"
+  }
+}

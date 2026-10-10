@@ -7,7 +7,7 @@
   "trustedSources": {
     "frontend/scripts/locale-catalog/generator-launcher.mjs": "d7dd6e8fa3fb55504213bc349b9a345c48bdc03079b37d5db8534176ee233d5a",
     "scripts/locale-catalog-python-sealed.sh": "956ab7faa84b3dd72fa33bf926b2bd186d270726be52b697b3a301b8519f646b",
-    "scripts/locale_catalog_python_boundary.py": "4c7b8bf496de26e8b53905999f99525560971948cdc3a708aae54f1afed28777",
+    "scripts/locale_catalog_python_boundary.py": "42e9a262b7a1bb5cfa3e5e3cf944a5c4e00d77e8b22c11c834168d19c95f54a3",
     "scripts/locale_catalog_runtime.py": "36f7846071317436c494725103cae61286992ac8f6ad5dd3b997febfaf56b51e",
     "scripts/run-locale-catalog-python.sh": "5969b9f967f037bdd1df394ad99c2794315c7874e226bcebdccd2636f05b749c"
   },

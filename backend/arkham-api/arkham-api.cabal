@@ -8,6 +8,7 @@ name:           arkham-api
 version:        0.0.0
 build-type:     Simple
 extra-source-files:
+    data/campaign-catalog.json
     digital-ocean.crt
     tests/fixtures/replay/smoke-current-data.json
 
@@ -35,6 +36,7 @@ library
       Api.Handler.ApiKeys
       Api.Handler.Arkham.Achievements
       Api.Handler.Arkham.Admin.Metrics
+      Api.Handler.Arkham.CampaignCatalog
       Api.Handler.Arkham.Cards
       Api.Handler.Arkham.CustomCards
       Api.Handler.Arkham.CustomCardSets
@@ -8208,6 +8210,7 @@ library
       Base.Api.Handler.Registration
       Base.Api.Handler.Settings
       Base.Api.Types.Account
+      Base.Api.Types.CampaignCatalog
       Base.Api.Types.Capabilities
       Base.Api.Types.LocaleCatalog
       Base.Api.Types.LocaleCatalog.SettingsPreflight
@@ -8539,6 +8542,7 @@ test-suite spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.CongressOfTheKeys.TheWorldUnbiddenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.CampaignCatalogSpec
       Arkham.Api.Events.EventCreationSpec
       Arkham.Api.Events.EventListSpec
       Arkham.Api.Events.EventStreamAuthSpec

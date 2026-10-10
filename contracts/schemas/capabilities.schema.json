@@ -9,7 +9,8 @@
     "status",
     "apiBasePath",
     "nativeClientMinimumRevision",
-    "capabilities"
+    "capabilities",
+    "campaignCatalog"
   ],
   "properties": {
     "schemaRevision": {
@@ -40,6 +41,9 @@
     },
     "localeCatalog": {
       "$ref": "#/$defs/localeCatalog"
+    },
+    "campaignCatalog": {
+      "$ref": "#/$defs/campaignCatalog"
     }
   },
   "allOf": [
@@ -51,6 +55,39 @@
             "const": "questions.semantic-presentation.v2"
           }
         }
+      }
+    },
+    {
+      "$comment": "The generated campaign/scenario catalog endpoint is globally available for native create-game flows in this contract revision.",
+      "properties": {
+        "capabilities": {
+          "contains": {
+            "const": "arkham.campaign-catalog.v1"
+          }
+        }
+      }
+    },
+    {
+      "$comment": "The global campaign catalog capability and its revision object are advertised together so clients can cache the static endpoint by catalogRevision.",
+      "if": {
+        "required": [
+          "capabilities"
+        ],
+        "properties": {
+          "capabilities": {
+            "contains": {
+              "const": "arkham.campaign-catalog.v1"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "campaignCatalog": {}
+        },
+        "required": [
+          "campaignCatalog"
+        ]
       }
     },
     {
@@ -172,6 +209,36 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[a-z]{2,3}(-(?:[A-Z]{2}|[A-Z][a-z]{3}|(?![a-z]{2}(?:-|$))(?![a-z]{4}(?:-|$))[a-z0-9]{2,8}))*(?![\\s\\S])"
+    },
+    "campaignCatalog": {
+      "title": "Campaign catalog pointer",
+      "description": "Metadata for the same-origin generated campaign/scenario catalog endpoint. The catalog content is backend-owned static JSON and may change without a schemaRevision bump; clients key caches on catalogRevision and validate downloaded bytes against the campaign-catalog schema they support.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint",
+        "catalogRevision",
+        "schemaVersion",
+        "digestAlgorithm"
+      ],
+      "properties": {
+        "endpoint": {
+          "const": "/api/v1/arkham/campaign-catalog"
+        },
+        "catalogRevision": {
+          "description": "The embedded campaign catalog content revision. Two servers reporting the same value serve byte-identical catalog bytes at endpoint.",
+          "type": "string",
+          "pattern": "^1\\.[0-9a-f]{32}(?![\\s\\S])"
+        },
+        "schemaVersion": {
+          "enum": [
+            "1.0.0"
+          ]
+        },
+        "digestAlgorithm": {
+          "const": "sha256"
+        }
+      }
     }
   }
 }

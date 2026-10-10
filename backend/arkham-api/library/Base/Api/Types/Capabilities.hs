@@ -2,10 +2,12 @@
 
 module Base.Api.Types.Capabilities (
   ServerCapabilities (..),
+  campaignCatalogCapability,
   semanticQuestionPresentationCapability,
   serverCapabilities,
 ) where
 
+import Base.Api.Types.CampaignCatalog (CampaignCatalog, campaignCatalogCapability, campaignCatalogMetadata)
 import Base.Api.Types.LocaleCatalog (LocaleCatalog, localeCatalogCapability)
 import Data.Aeson
 import Data.List qualified as List
@@ -40,6 +42,7 @@ data ServerCapabilities = ServerCapabilities
   , apiBasePath :: Text
   , nativeClientMinimumRevision :: Text
   , capabilities :: [Text]
+  , campaignCatalog :: CampaignCatalog
   , localeCatalog :: Maybe LocaleCatalog
   }
   deriving stock (Eq, Show, Generic)
@@ -70,16 +73,18 @@ update-required even for deployments that omit the catalog fields.
 serverCapabilities :: Maybe LocaleCatalog -> ServerCapabilities
 serverCapabilities localeCatalog =
   ServerCapabilities
-    { schemaRevision = "0.1.51"
+    { schemaRevision = "0.1.52"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.50"
     , capabilities = List.sort $ baseCapabilities <> catalogCapabilities
+    , campaignCatalog = campaignCatalogMetadata
     , localeCatalog = localeCatalog
     }
  where
   baseCapabilities =
-    [ "events.shared-state-versioning"
+    [ campaignCatalogCapability
+    , "events.shared-state-versioning"
     , "games.step-probe"
     , semanticQuestionPresentationCapability
     , "websockets.authorization-header"

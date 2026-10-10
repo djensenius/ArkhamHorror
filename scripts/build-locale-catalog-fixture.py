@@ -670,6 +670,12 @@ def build_all() -> dict[str, bytes]:
         "capabilities": sorted(
             [*baseline["capabilities"], *legacy["globalCapabilities"]]
         ),
+        "campaignCatalog": {
+            "endpoint": "/api/v1/arkham/campaign-catalog",
+            "catalogRevision": "1.0123456789abcdef0123456789abcdef",
+            "schemaVersion": "1.0.0",
+            "digestAlgorithm": "sha256",
+        },
     }
     files["capabilities.json"] = canonical_bytes(common_capabilities)
     files["capabilities-locale-catalog.json"] = canonical_bytes(

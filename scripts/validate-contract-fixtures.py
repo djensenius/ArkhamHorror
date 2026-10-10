@@ -101,14 +101,17 @@ capabilities_fixtures = [
 # registered as real Aeson-encoded fixtures: the one a deployment without a
 # locale catalog serves (no `localeCatalog`, no `i18n.locale-catalog.v1`), and
 # the one a deployment that publishes a catalog serves. The semantic question
-# presentation capability is global and must be present in both shapes.
+# presentation and campaign-catalog capabilities are global and must be present
+# in both shapes.
 # Every response must still agree with this manifest's own identity, and must
 # keep the optional locale object and its capability string together -- that
 # pairing is what a client relies on to gate the optional behavior, and in the
 # backend both come from a single `Maybe` (see
 # Base.Api.Types.Capabilities.serverCapabilities).
 LOCALE_CATALOG_CAPABILITY = "i18n.locale-catalog.v1"
+CAMPAIGN_CATALOG_CAPABILITY = "arkham.campaign-catalog.v1"
 SEMANTIC_QUESTION_PRESENTATION_CAPABILITY = "questions.semantic-presentation.v2"
+GLOBAL_CAPABILITIES = [CAMPAIGN_CATALOG_CAPABILITY, SEMANTIC_QUESTION_PRESENTATION_CAPABILITY]
 BASIC_CHOICE_QUESTION_SCHEMA = "contracts/schemas/basic-choice-question.schema.json"
 QUESTION_PRESENTATION_SCHEMA = "contracts/schemas/question-presentation.schema.json"
 Q34_QUESTION_FIXTURE = "contracts/fixtures/question-gathering-act-objective.json"
@@ -206,11 +209,11 @@ for capabilities_fixture in capabilities_fixtures:
         isinstance(capability_strings, list),
         f"{capabilities_path} capabilities must be an array",
     )
-    require(
-        SEMANTIC_QUESTION_PRESENTATION_CAPABILITY in capability_strings,
-        f"{capabilities_path} must advertise the global "
-        f"{SEMANTIC_QUESTION_PRESENTATION_CAPABILITY} capability",
-    )
+    for global_capability in GLOBAL_CAPABILITIES:
+        require(
+            global_capability in capability_strings,
+            f"{capabilities_path} must advertise the global {global_capability} capability",
+        )
     advertises_catalog = LOCALE_CATALOG_CAPABILITY in capability_strings
     has_catalog_object = "localeCatalog" in capabilities
     require(
@@ -2630,10 +2633,8 @@ require(
     "the baseline predates the locale-catalog capability, so it must not advertise it",
 )
 require(
-    legacy_checks["globalCapabilities"]
-    == [SEMANTIC_QUESTION_PRESENTATION_CAPABILITY],
-    "legacyCompatibilityChecks.globalCapabilities must register exactly the "
-    f"{SEMANTIC_QUESTION_PRESENTATION_CAPABILITY} capability",
+    legacy_checks["globalCapabilities"] == GLOBAL_CAPABILITIES,
+    "legacyCompatibilityChecks.globalCapabilities must register exactly the global capabilities",
 )
 require(
     all(
@@ -2652,6 +2653,7 @@ EXPECTED_DISABLED_LEGACY_DIFFERENCES = [
     "schemaRevision",
     "nativeClientMinimumRevision",
     "capabilities",
+    "campaignCatalog",
 ]
 EXPECTED_ADVERTISED_LEGACY_DIFFERENCES = [
     *EXPECTED_DISABLED_LEGACY_DIFFERENCES,

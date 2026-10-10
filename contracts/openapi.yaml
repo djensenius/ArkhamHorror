@@ -260,6 +260,62 @@ paths:
           description: Scope or achievement identifier is invalid
         "401":
           description: Token is absent or invalid
+  /arkham/campaign-catalog:
+    get:
+      operationId: getCampaignCatalog
+      summary: Return the generated create-game campaign and scenario catalog
+      description: |
+        Public generated catalog for native clients. The web client continues
+        to use its static data files; this endpoint is generated from those
+        same files and exposes i18n name keys, release flags, difficulties,
+        Return-to ids, campaign variants, standalone settings definitions,
+        side-story requirements and multi-scenario side-story entries.
+      security: []
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          description: |
+            Standard entity-tag validator. Send the weak `W/"<catalogRevision>"`
+            ETag from a previous 200 or 304 response; the equivalent strong
+            quoted `catalogRevision` form and `*` are also accepted by the server.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Generated campaign and scenario catalog
+          headers:
+            ETag:
+              description: Weak `W/"<catalogRevision>"` validator for conditional revalidation.
+              schema:
+                type: string
+            Cache-Control:
+              description: Public cache policy for the generated static catalog.
+              schema:
+                type: string
+            Vary:
+              description: Response varies by Origin because CORS reflects validated origins; middleware or deployments may append other Vary tokens such as Accept-Encoding.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CampaignCatalog"
+        "304":
+          description: The supplied `If-None-Match` validator matches the current catalog.
+          headers:
+            ETag:
+              description: Weak `W/"<catalogRevision>"` validator for conditional revalidation.
+              schema:
+                type: string
+            Cache-Control:
+              description: Public cache policy for the generated static catalog.
+              schema:
+                type: string
+            Vary:
+              description: Response varies by Origin because CORS reflects validated origins; middleware or deployments may append other Vary tokens such as Accept-Encoding.
+              schema:
+                type: string
   /arkham/cards:
     get:
       operationId: listCards
@@ -1051,6 +1107,8 @@ components:
           format: uri
     ServerCapabilities:
       $ref: "./schemas/capabilities.schema.json"
+    CampaignCatalog:
+      $ref: "./schemas/campaign-catalog.schema.json"
     NotificationList:
       $ref: "./schemas/account.schema.json#/$defs/notificationList"
     AchievementList:

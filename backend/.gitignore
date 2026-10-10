@@ -26,6 +26,8 @@ cabal.sandbox.config
 arkham-horror-backend.cabal
 /tags
 data/
+!arkham-api/data/
+!arkham-api/data/campaign-catalog.json
 errors.err
 *.eventlog
 *.eventlog.html

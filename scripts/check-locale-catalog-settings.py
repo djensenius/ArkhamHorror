@@ -122,6 +122,17 @@ def derive_settings(catalog: dict, catalog_bytes: bytes) -> dict[str, str]:
     }
 
 
+def campaign_catalog_metadata() -> dict:
+    catalog = strict_json.strict_json_load_path(ROOT / "backend" / "arkham-api" / "data" / "campaign-catalog.json")
+    require(isinstance(catalog, dict), "backend/arkham-api/data/campaign-catalog.json is not an object")
+    return {
+        "endpoint": catalog["endpoint"],
+        "catalogRevision": catalog["catalogRevision"],
+        "schemaVersion": catalog["schemaVersion"],
+        "digestAlgorithm": catalog["digestAlgorithm"],
+    }
+
+
 def advertised_from_settings(settings: dict[str, str]) -> dict:
     """The `localeCatalog` object the backend builds from those settings.
 
@@ -228,7 +239,14 @@ def encoded_capabilities(response: dict) -> bytes:
         "apiBasePath",
         "nativeClientMinimumRevision",
         "capabilities",
+        "campaignCatalog",
         "localeCatalog",
+    ]
+    campaign_catalog_order = [
+        "endpoint",
+        "catalogRevision",
+        "schemaVersion",
+        "digestAlgorithm",
     ]
     catalog_order = [
         "manifestUrl",
@@ -242,7 +260,9 @@ def encoded_capabilities(response: dict) -> bytes:
     for key in order:
         if key not in response:
             continue
-        if key == "localeCatalog":
+        if key == "campaignCatalog":
+            ordered[key] = {name: response[key][name] for name in campaign_catalog_order}
+        elif key == "localeCatalog":
             ordered[key] = {name: response[key][name] for name in catalog_order}
         else:
             ordered[key] = response[key]
@@ -327,6 +347,8 @@ def _check_with_probe(
         f"{printed.stderr.decode('utf-8', 'replace').strip()}",
     )
 
+    campaign_catalog = campaign_catalog_metadata()
+
     # Exact bytes first: the wire is toEncoding, and a decode-then-compare would
     # not notice field reordering, added whitespace or a stray newline.
     expected_advertised_bytes = encoded_capabilities(
@@ -340,6 +362,7 @@ def _check_with_probe(
                 + global_capabilities
                 + [LOCALE_CATALOG_CAPABILITY]
             ),
+            "campaignCatalog": campaign_catalog,
             "localeCatalog": advertised,
         }
     )
@@ -362,6 +385,11 @@ def _check_with_probe(
         "the production encoder did not advertise the generated catalog's own metadata: "
         f"{response['localeCatalog']} != {advertised}",
     )
+    require(
+        response["campaignCatalog"] == campaign_catalog,
+        "the production encoder did not advertise the embedded campaign catalog metadata: "
+        f"{response['campaignCatalog']} != {campaign_catalog}",
+    )
 
     disabled = run_probe(command, {})
     require(
@@ -376,6 +404,7 @@ def _check_with_probe(
             "capabilities": sorted(
                 legacy_baseline["capabilities"] + global_capabilities
             ),
+            "campaignCatalog": campaign_catalog,
         }
     )
     require(

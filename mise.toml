@@ -56,6 +56,18 @@ run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/validate-route-inven
 description = "Re-derive the synthetic locale-catalog fixture set from its committed authorities and verify every digest, count, path and provenance value"
 run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-locale-catalog-fixture.py --check"
 
+[tasks."contracts:campaign-catalog"]
+description = "Re-derive the native campaign/scenario catalog from web data and verify the committed artifacts"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-campaign-catalog.py --check"
+
+[tasks."contracts:campaign-catalog-self-test"]
+description = "Run campaign/scenario catalog generator self-tests"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-campaign-catalog.py --self-test"
+
+[tasks."contracts:campaign-catalog-write"]
+description = "Rewrite the generated native campaign/scenario catalog artifacts"
+run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-campaign-catalog.py"
+
 [tasks."contracts:catalog-fixture-write"]
 description = "Rewrite the synthetic locale-catalog fixture set (run after a contract revision bump)"
 run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/build-locale-catalog-fixture.py"
@@ -72,6 +84,8 @@ run = "/bin/sh scripts/run-locale-catalog-python.sh scripts/test_locale_catalog_
 description = "Run every native-client contract check"
 depends = [
   "contracts:catalog-fixture",
+  "contracts:campaign-catalog",
+  "contracts:campaign-catalog-self-test",
   "contracts:fixtures",
   "contracts:revision-drift-local",
   "contracts:openapi",

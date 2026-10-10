@@ -1,9 +1,10 @@
 {
-  "schemaRevision": "0.1.51",
+  "schemaRevision": "0.1.52",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "nativeClientMinimumRevision": "0.1.50",
   "capabilities": [
+    "arkham.campaign-catalog.v1",
     "events.shared-state-versioning",
     "games.step-probe",
     "i18n.locale-catalog.v1",
@@ -11,9 +12,15 @@
     "websockets.authorization-header",
     "websockets.spectator-read-only"
   ],
+  "campaignCatalog": {
+    "endpoint": "/api/v1/arkham/campaign-catalog",
+    "catalogRevision": "1.0123456789abcdef0123456789abcdef",
+    "schemaVersion": "1.0.0",
+    "digestAlgorithm": "sha256"
+  },
   "localeCatalog": {
     "manifestUrl": "/locale-catalog/manifest.json",
-    "catalogRevision": "1.e4136e6e101e41f49b8304df2e8c2cd7",
+    "catalogRevision": "1.fe4ecbc09b514a02495104e72d98a963",
     "schemaVersion": "1.0.0",
     "defaultLocale": "en",
     "supportedLocales": [
@@ -21,6 +28,6 @@
       "en",
       "pt-BR"
     ],
-    "manifestSha256": "ec1969b21298c2aa126c4bb1f97062ea267254233015ec51210ec5f1883c652e"
+    "manifestSha256": "604f6619514e7562f8070977038a3a67fa9b0dc13f22200fb3603d3dc436118d"
   }
 }
