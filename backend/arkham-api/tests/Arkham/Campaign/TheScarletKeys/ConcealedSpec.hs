@@ -8,10 +8,13 @@ import Arkham.Agenda.CardDefs.TheScarletKeys.WithoutATrace qualified as WithoutA
 import Arkham.Agenda.Types (Agenda)
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Campaigns.TheScarletKeys.Concealed (Field (..), mkConcealedCard)
+import Arkham.Campaigns.TheScarletKeys.Concealed.Helpers (turnOverAllConcealed)
 import Arkham.Campaigns.TheScarletKeys.Concealed.Kind
 import Arkham.Card.CardDef
+import Arkham.Classes.HasGame
 import Arkham.Enemy.CardDefs.TheScarletKeys.CongressOfTheKeys qualified as CongressEnemies
 import Arkham.Enemy.CardDefs.TheScarletKeys.CrimsonConspiracy qualified as Enemies
+import Arkham.Enemy.CardDefs.TheScarletKeys.MysteriesAbound qualified as MysteriesEnemies
 import Arkham.Enemy.Types (Enemy)
 import Arkham.Entities qualified as Entities
 import Arkham.Location.CardDefs.TheScarletKeys.BeyondTheBeyond qualified as BeyondLocations
@@ -24,6 +27,7 @@ import Arkham.Matcher
 import Arkham.Placement
 import Arkham.Projection
 import Arkham.Token (Token (Charge))
+import Data.Text qualified as T
 import TestImport.New
 
 {- | Put Coterie Agent (A) in the shadows with its mini-card at @location@, the way resolving its
@@ -58,12 +62,57 @@ realAct def = do
   pure act'
 
 realAgenda :: CardDef -> TestAppT Agenda
-realAgenda def = do
+realAgenda = realAgendaSide 1
+
+realAgendaSide :: Int -> CardDef -> TestAppT Agenda
+realAgendaSide side def = do
   card <- genCard def
   let agendaId' = AgendaId (toCardCode card)
-      agenda' = lookupAgenda agendaId' 1 (toCardId card)
+      agenda' = lookupAgenda agendaId' side (toCardId card)
   overTest $ entitiesL . Entities.agendasL %~ insertEntity agenda'
   pure agenda'
+
+assertLabelDisabled :: HasCallStack => Text -> TestAppT ()
+assertLabelDisabled suffix = do
+  questionMap <- gameQuestion <$> getGame
+  let
+    choicesOf question = case stripQuestionWrappers question of
+      ChooseOne xs -> xs
+      PlayerWindowChooseOne xs -> xs
+      WindowChooseOne xs -> xs
+      ChooseN _ xs -> xs
+      ChooseSome xs -> xs
+      ChooseSome1 _ xs -> xs
+      ChooseUpToN _ xs -> xs
+      ChooseOneAtATime xs -> xs
+      ChooseOneAtATimeWithAuto _ xs -> xs
+      _ -> []
+    labelMatches label = suffix `T.isSuffixOf` label
+    choices = concatMap (choicesOf . snd) (mapToList questionMap)
+    enabled = any (\case Label label _ -> labelMatches label; _ -> False) choices
+    disabled = any (\case InvalidLabel label -> labelMatches label; _ -> False) choices
+  when enabled $ expectationFailure $ "expected label ending in " <> T.unpack suffix <> " to be disabled, but it was enabled"
+  unless disabled
+    $ expectationFailure
+    $ "expected disabled label ending in "
+    <> T.unpack suffix
+    <> " but no matching InvalidLabel was found; choices were: "
+    <> show choices
+
+setAsideGrandBazaars :: TestAppT ()
+setAsideGrandBazaars = do
+  grandBazaars <-
+    traverse
+      genCard
+      [ Locations.grandBazaarBusyWalkway
+      , Locations.grandBazaarCrowdedShops
+      , Locations.grandBazaarDarkenedAlley
+      , Locations.grandBazaarJewelersRoad
+      , Locations.grandBazaarMarbleFountain
+      , Locations.grandBazaarPublicBaths
+      , Locations.grandBazaarRooftopAccess
+      ]
+  run $ SetAsideCards grandBazaars
 
 spec :: Spec
 spec = describe "Concealed mini-cards" do
@@ -249,6 +298,37 @@ spec = describe "Concealed mini-cards" do
       assertNotTarget alreadyFlipped.id
 
   context "audited concealed-card callers" do
+    it "turnOverAllConcealed turns over only in-play mini-cards" . gameTest $ \self -> do
+      location <- testLocation
+      live <- mkConcealedCard SinisterAspirantC
+      run $ CreateConcealedCard live
+      run $ PlaceConcealedCard (toId self) live.id (AtLocation $ toId location)
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+
+      runQueueT $ turnOverAllConcealed (TestSource mempty)
+      runMessages
+
+      assertAny $ ConcealedCardWithId live.id <> ExposedConcealedCard
+      assertNone $ ConcealedCardWithId unplaced.id <> ExposedConcealedCard
+
+    it "Search for the Manuscript redistributes only in-play mini-cards" . gameTest $ \self -> do
+      location <- testLocation
+      live <- mkConcealedCard SinisterAspirantC
+      run $ CreateConcealedCard live
+      run $ PlaceConcealedCard (toId self) live.id (AtLocation $ toId location)
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+      setAsideGrandBazaars
+      act <- realAct Acts.searchForTheManuscript
+      token <- createChaosToken Zero
+
+      run $ RequestedChaosTokens (toSource act) Nothing [token]
+      clickLabel "$label.continue"
+
+      field ConcealedCardPlacement live.id `shouldNotReturn` Unplaced
+      field ConcealedCardPlacement unplaced.id `shouldReturn` Unplaced
+
     it "False Step (v. II) redistributes only in-play mini-cards" . gameTest $ \self -> do
       firstLocation <- testLocation
       _secondLocation <- testLocation
@@ -264,6 +344,38 @@ spec = describe "Concealed mini-cards" do
       field ConcealedCardPlacement unplaced.id `shouldReturn` Unplaced
       assertAny $ ConcealedCardWithId live.id
       assertAny $ ConcealedCardWithId unplaced.id
+
+    it "Coterie Envoy does not offer its defeat reaction for only unplaced mini-cards" . gameTest $ \self -> do
+      location <- testLocation
+      self `moveTo` location
+      envoy <- testEnemyWithDef MysteriesEnemies.coterieEnvoy id
+      envoy `spawnAt` location
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+
+      run $ Defeated (toTarget envoy) (toCardId envoy) (InvestigatorSource $ toId self) []
+
+      assertNoReactionOf envoy
+
+    it "Otherworldly Horror disables the shuffle option for only unplaced mini-cards" . gameTest $ \_ -> do
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+      agenda <- realAgendaSide 2 WithoutATraceAgendas.otherworldlyHorror
+
+      run $ AdvanceAgendaBy agenda.id AgendaAdvancedWithOther
+      chooseTarget agenda
+
+      assertLabelDisabled "otherworldlyHorror.shuffleAllConcealed"
+
+    it "Otherworldly Lambs disables the shuffle option for only unplaced mini-cards" . gameTest $ \_ -> do
+      unplaced <- mkConcealedCard Decoy
+      run $ CreateConcealedCard unplaced
+      agenda <- realAgendaSide 2 WithoutATraceAgendas.otherworldlyLambs
+
+      run $ AdvanceAgendaBy agenda.id AgendaAdvancedWithOther
+      chooseTarget agenda
+
+      assertLabelDisabled "otherworldlyLambs.shuffleAllConcealed"
 
     it "Melati's Shop only offers in-play mini-cards" . gameTest $ \self -> do
       melatisShop <- testLocationWithDef ShadesLocations.melatisShop (revealedL .~ True)
