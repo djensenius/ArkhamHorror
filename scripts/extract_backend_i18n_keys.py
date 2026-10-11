@@ -3484,6 +3484,7 @@ DYNAMIC_REASON_PREFIXES = {
     "caller scope ambiguous": "caller-scope",
     "unknown alias": "caller-scope",
     "ambiguous alias": "caller-scope",
+    "alias ": "caller-scope",
 }
 
 DYNAMIC_REASON_SUFFIXES = {
