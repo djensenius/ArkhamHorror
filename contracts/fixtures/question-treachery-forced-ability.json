@@ -1,236 +1,240 @@
 {
-  "tag": "WindowChooseOne",
   "choices": [
     {
-      "tag": "AbilityLabel",
-      "investigatorId": "c01001",
       "ability": {
-        "source": {
-          "tag": "TreacherySource",
-          "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
-        },
+        "additionalCosts": [],
+        "basic": false,
+        "blocksIn": null,
+        "canBeCancelled": true,
         "cardCode": "c01007",
-        "index": 2,
-        "type": {
-          "tag": "ForcedAbility",
-          "window": {
-            "tag": "OrWindowMatcher",
-            "contents": [
-              {
-                "tag": "GameEnds",
-                "contents": "When"
-              },
-              {
-                "tag": "InvestigatorEliminated",
-                "contents": [
-                  "When",
-                  {
-                    "tag": "InvestigatorWithId",
-                    "contents": "c01001"
-                  }
-                ]
-              }
-            ]
-          }
+        "chaosTokenEffects": [],
+        "criteria": {
+          "contents": {
+            "contents": {
+              "contents": 1,
+              "tag": "Static"
+            },
+            "tag": "GreaterThanOrEqualTo"
+          },
+          "tag": "CluesOnThis"
         },
+        "delayAdditionalCosts": null,
+        "displayAs": null,
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "evadeCriteriaOverride": null,
+        "fightCriteriaOverride": null,
+        "highlightFromWindow": false,
+        "ignoreAllCosts": false,
+        "index": 2,
         "limit": {
-          "tag": "GroupLimit",
           "contents": [
             {
               "tag": "PerWindow"
             },
             1
-          ]
+          ],
+          "tag": "GroupLimit"
         },
+        "metadata": null,
+        "nonBlocking": false,
+        "requestor": {
+          "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5",
+          "tag": "TreacherySource"
+        },
+        "resultLabel": null,
+        "skipForAll": false,
+        "source": {
+          "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5",
+          "tag": "TreacherySource"
+        },
+        "target": null,
+        "tooltip": null,
+        "triggersSkillTest": false,
+        "type": {
+          "tag": "ForcedAbility",
+          "window": {
+            "contents": [
+              {
+                "contents": "When",
+                "tag": "GameEnds"
+              },
+              {
+                "contents": [
+                  "When",
+                  {
+                    "contents": "c01001",
+                    "tag": "InvestigatorWithId"
+                  }
+                ],
+                "tag": "InvestigatorEliminated"
+              }
+            ],
+            "tag": "OrWindowMatcher"
+          }
+        },
+        "wantsSkillTest": null,
         "window": {
-          "tag": "OrWindowMatcher",
           "contents": [
             {
-              "tag": "GameEnds",
-              "contents": "When"
+              "contents": "When",
+              "tag": "GameEnds"
             },
             {
-              "tag": "InvestigatorEliminated",
               "contents": [
                 "When",
                 {
-                  "tag": "InvestigatorWithId",
-                  "contents": "c01001"
+                  "contents": "c01001",
+                  "tag": "InvestigatorWithId"
                 }
-              ]
+              ],
+              "tag": "InvestigatorEliminated"
             }
-          ]
-        },
-        "metadata": null,
-        "criteria": {
-          "tag": "CluesOnThis",
-          "contents": {
-            "tag": "GreaterThanOrEqualTo",
-            "contents": {
-              "tag": "Static",
-              "contents": 1
-            }
-          }
-        },
-        "doesNotProvokeAttacksOfOpportunity": null,
-        "tooltip": null,
-        "canBeCancelled": true,
-        "displayAs": null,
-        "delayAdditionalCosts": null,
-        "basic": false,
-        "additionalCosts": [],
-        "requestor": {
-          "tag": "TreacherySource",
-          "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
-        },
-        "triggersSkillTest": false,
-        "wantsSkillTest": null,
-        "target": null,
-        "highlightFromWindow": false,
-        "skipForAll": false,
-        "ignoreAllCosts": false,
-        "fightCriteriaOverride": null,
-        "evadeCriteriaOverride": null,
-        "nonBlocking": false,
-        "blocksIn": null
-      },
-      "windows": [
-        {
-          "windowTiming": "When",
-          "windowType": {
-            "tag": "EndOfGame"
-          },
-          "windowBatchId": null,
-          "windowConditionTick": null
+          ],
+          "tag": "OrWindowMatcher"
         }
-      ],
+      },
       "before": [],
+      "investigatorId": "c01001",
       "messages": [
         {
-          "tag": "MoveWithSkillTest",
           "contents": {
-            "tag": "ResolveWindowInitiations",
             "contents": [
               "c01001",
               [
                 {
+                  "windowBatchId": null,
+                  "windowConditionTick": null,
                   "windowTiming": "When",
                   "windowType": {
                     "tag": "EndOfGame"
-                  },
-                  "windowBatchId": null,
-                  "windowConditionTick": null
+                  }
                 }
               ],
               [
                 [
                   {
-                    "source": {
-                      "tag": "TreacherySource",
-                      "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
-                    },
+                    "additionalCosts": [],
+                    "basic": false,
+                    "blocksIn": null,
+                    "canBeCancelled": true,
                     "cardCode": "c01007",
-                    "index": 2,
-                    "type": {
-                      "tag": "ForcedAbility",
-                      "window": {
-                        "tag": "OrWindowMatcher",
-                        "contents": [
-                          {
-                            "tag": "GameEnds",
-                            "contents": "When"
-                          },
-                          {
-                            "tag": "InvestigatorEliminated",
-                            "contents": [
-                              "When",
-                              {
-                                "tag": "InvestigatorWithId",
-                                "contents": "c01001"
-                              }
-                            ]
-                          }
-                        ]
-                      }
+                    "chaosTokenEffects": [],
+                    "criteria": {
+                      "contents": {
+                        "contents": {
+                          "contents": 1,
+                          "tag": "Static"
+                        },
+                        "tag": "GreaterThanOrEqualTo"
+                      },
+                      "tag": "CluesOnThis"
                     },
+                    "delayAdditionalCosts": null,
+                    "displayAs": null,
+                    "doesNotProvokeAttacksOfOpportunity": null,
+                    "evadeCriteriaOverride": null,
+                    "fightCriteriaOverride": null,
+                    "highlightFromWindow": false,
+                    "ignoreAllCosts": false,
+                    "index": 2,
                     "limit": {
-                      "tag": "GroupLimit",
                       "contents": [
                         {
                           "tag": "PerWindow"
                         },
                         1
-                      ]
+                      ],
+                      "tag": "GroupLimit"
                     },
+                    "metadata": null,
+                    "nonBlocking": false,
+                    "requestor": {
+                      "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5",
+                      "tag": "TreacherySource"
+                    },
+                    "resultLabel": null,
+                    "skipForAll": false,
+                    "source": {
+                      "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5",
+                      "tag": "TreacherySource"
+                    },
+                    "target": null,
+                    "tooltip": null,
+                    "triggersSkillTest": false,
+                    "type": {
+                      "tag": "ForcedAbility",
+                      "window": {
+                        "contents": [
+                          {
+                            "contents": "When",
+                            "tag": "GameEnds"
+                          },
+                          {
+                            "contents": [
+                              "When",
+                              {
+                                "contents": "c01001",
+                                "tag": "InvestigatorWithId"
+                              }
+                            ],
+                            "tag": "InvestigatorEliminated"
+                          }
+                        ],
+                        "tag": "OrWindowMatcher"
+                      }
+                    },
+                    "wantsSkillTest": null,
                     "window": {
-                      "tag": "OrWindowMatcher",
                       "contents": [
                         {
-                          "tag": "GameEnds",
-                          "contents": "When"
+                          "contents": "When",
+                          "tag": "GameEnds"
                         },
                         {
-                          "tag": "InvestigatorEliminated",
                           "contents": [
                             "When",
                             {
-                              "tag": "InvestigatorWithId",
-                              "contents": "c01001"
+                              "contents": "c01001",
+                              "tag": "InvestigatorWithId"
                             }
-                          ]
+                          ],
+                          "tag": "InvestigatorEliminated"
                         }
-                      ]
-                    },
-                    "metadata": null,
-                    "criteria": {
-                      "tag": "CluesOnThis",
-                      "contents": {
-                        "tag": "GreaterThanOrEqualTo",
-                        "contents": {
-                          "tag": "Static",
-                          "contents": 1
-                        }
-                      }
-                    },
-                    "doesNotProvokeAttacksOfOpportunity": null,
-                    "tooltip": null,
-                    "canBeCancelled": true,
-                    "displayAs": null,
-                    "delayAdditionalCosts": null,
-                    "basic": false,
-                    "additionalCosts": [],
-                    "requestor": {
-                      "tag": "TreacherySource",
-                      "contents": "fef723b4-ae76-4183-9441-b4f3cb8b1eb5"
-                    },
-                    "triggersSkillTest": false,
-                    "wantsSkillTest": null,
-                    "target": null,
-                    "highlightFromWindow": false,
-                    "skipForAll": false,
-                    "ignoreAllCosts": false,
-                    "fightCriteriaOverride": null,
-                    "evadeCriteriaOverride": null,
-                    "nonBlocking": false,
-                    "blocksIn": null
+                      ],
+                      "tag": "OrWindowMatcher"
+                    }
                   },
                   [
                     {
+                      "windowBatchId": null,
+                      "windowConditionTick": null,
                       "windowTiming": "When",
                       "windowType": {
                         "tag": "EndOfGame"
-                      },
-                      "windowBatchId": null,
-                      "windowConditionTick": null
+                      }
                     }
                   ],
                   []
                 ]
               ]
-            ]
+            ],
+            "tag": "ResolveWindowInitiations"
+          },
+          "tag": "MoveWithSkillTest"
+        }
+      ],
+      "tag": "AbilityLabel",
+      "windows": [
+        {
+          "windowBatchId": null,
+          "windowConditionTick": null,
+          "windowTiming": "When",
+          "windowType": {
+            "tag": "EndOfGame"
           }
         }
       ]
     }
-  ]
+  ],
+  "tag": "WindowChooseOne"
 }

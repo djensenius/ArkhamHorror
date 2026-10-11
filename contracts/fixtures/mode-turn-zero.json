@@ -210,7 +210,7 @@
         }
       ],
       "choice": null,
-      "forceDraw": null,
+      "forceDraw": [],
       "pendingRequests": [],
       "revealedChaosTokens": [],
       "setAsideChaosTokens": [],
@@ -513,11 +513,11 @@
     "encounterDeck": [
       {
         "addedPeril": false,
-        "cardCode": "c01118",
+        "cardCode": "c01162",
         "facedown": null,
-        "id": "04972ef0-4040-4c62-9675-a3651bbe3f11",
+        "id": "99b08055-2c9a-40c3-8a92-b5daf18362dd",
         "isFlipped": false,
-        "originalCardCode": "c01118",
+        "originalCardCode": "c01162",
         "owner": null
       },
       {
@@ -533,99 +533,9 @@
         "addedPeril": false,
         "cardCode": "c01168",
         "facedown": null,
-        "id": "83829770-92c1-422c-933b-b9c289bee414",
+        "id": "4a27d0c3-3aef-4f30-b62b-38aa786360b8",
         "isFlipped": false,
         "originalCardCode": "c01168",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01163",
-        "facedown": null,
-        "id": "a8f37ec5-2273-488f-9e0c-58a059702402",
-        "isFlipped": false,
-        "originalCardCode": "c01163",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01160",
-        "facedown": null,
-        "id": "068ee14e-1462-4cac-8959-79256132c80c",
-        "isFlipped": false,
-        "originalCardCode": "c01160",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01160",
-        "facedown": null,
-        "id": "d8f13744-5939-4729-a04d-62db35bf6724",
-        "isFlipped": false,
-        "originalCardCode": "c01160",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01159",
-        "facedown": null,
-        "id": "7482d579-f5a4-4889-b254-587bf247cd0e",
-        "isFlipped": false,
-        "originalCardCode": "c01159",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01162",
-        "facedown": null,
-        "id": "2e908900-c390-439d-88d5-62d1695a9dd8",
-        "isFlipped": false,
-        "originalCardCode": "c01162",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01163",
-        "facedown": null,
-        "id": "89db5132-ab9c-4a70-8ba4-3384faa9b61a",
-        "isFlipped": false,
-        "originalCardCode": "c01163",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01166",
-        "facedown": null,
-        "id": "383140d2-0def-4605-9d59-7e5a3e9588f7",
-        "isFlipped": false,
-        "originalCardCode": "c01166",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01162",
-        "facedown": null,
-        "id": "b63ec5e3-7de1-410b-b2a8-0f1e78fe6f8a",
-        "isFlipped": false,
-        "originalCardCode": "c01162",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01162",
-        "facedown": null,
-        "id": "99b08055-2c9a-40c3-8a92-b5daf18362dd",
-        "isFlipped": false,
-        "originalCardCode": "c01162",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01166",
-        "facedown": null,
-        "id": "5e523351-e8cc-4b39-998a-3397175dd253",
-        "isFlipped": false,
-        "originalCardCode": "c01166",
         "owner": null
       },
       {
@@ -639,11 +549,65 @@
       },
       {
         "addedPeril": false,
+        "cardCode": "c01166",
+        "facedown": null,
+        "id": "00848caf-8b40-49f4-ad6d-7a255ef89bba",
+        "isFlipped": false,
+        "originalCardCode": "c01166",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01160",
+        "facedown": null,
+        "id": "068ee14e-1462-4cac-8959-79256132c80c",
+        "isFlipped": false,
+        "originalCardCode": "c01160",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01166",
+        "facedown": null,
+        "id": "383140d2-0def-4605-9d59-7e5a3e9588f7",
+        "isFlipped": false,
+        "originalCardCode": "c01166",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
         "cardCode": "c01165",
         "facedown": null,
-        "id": "2c8edfb4-bb91-46be-88c6-eacc9abd3ece",
+        "id": "a409897d-57c8-4601-9ef8-cc8a628d1e9f",
         "isFlipped": false,
         "originalCardCode": "c01165",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01162",
+        "facedown": null,
+        "id": "2e908900-c390-439d-88d5-62d1695a9dd8",
+        "isFlipped": false,
+        "originalCardCode": "c01162",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01162",
+        "facedown": null,
+        "id": "b63ec5e3-7de1-410b-b2a8-0f1e78fe6f8a",
+        "isFlipped": false,
+        "originalCardCode": "c01162",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01161",
+        "facedown": null,
+        "id": "53915cdf-0e0a-4789-b648-80efcd09e176",
+        "isFlipped": false,
+        "originalCardCode": "c01161",
         "owner": null
       },
       {
@@ -653,15 +617,6 @@
         "id": "07f42c16-f9e7-4295-b542-9b7099f00194",
         "isFlipped": false,
         "originalCardCode": "c01119",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
-        "cardCode": "c01168",
-        "facedown": null,
-        "id": "4a27d0c3-3aef-4f30-b62b-38aa786360b8",
-        "isFlipped": false,
-        "originalCardCode": "c01168",
         "owner": null
       },
       {
@@ -684,15 +639,6 @@
       },
       {
         "addedPeril": false,
-        "cardCode": "c01165",
-        "facedown": null,
-        "id": "a409897d-57c8-4601-9ef8-cc8a628d1e9f",
-        "isFlipped": false,
-        "originalCardCode": "c01165",
-        "owner": null
-      },
-      {
-        "addedPeril": false,
         "cardCode": "c01160",
         "facedown": null,
         "id": "be86285f-5dbc-4548-82cd-d2d49d83245a",
@@ -702,29 +648,65 @@
       },
       {
         "addedPeril": false,
-        "cardCode": "c01167",
+        "cardCode": "c01163",
         "facedown": null,
-        "id": "65fa101a-e3df-4d2d-8b4b-fa49daf635e8",
+        "id": "89db5132-ab9c-4a70-8ba4-3384faa9b61a",
         "isFlipped": false,
-        "originalCardCode": "c01167",
+        "originalCardCode": "c01163",
         "owner": null
       },
       {
         "addedPeril": false,
-        "cardCode": "c01161",
+        "cardCode": "c01163",
         "facedown": null,
-        "id": "53915cdf-0e0a-4789-b648-80efcd09e176",
+        "id": "a8f37ec5-2273-488f-9e0c-58a059702402",
         "isFlipped": false,
-        "originalCardCode": "c01161",
+        "originalCardCode": "c01163",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01160",
+        "facedown": null,
+        "id": "d8f13744-5939-4729-a04d-62db35bf6724",
+        "isFlipped": false,
+        "originalCardCode": "c01160",
         "owner": null
       },
       {
         "addedPeril": false,
         "cardCode": "c01159",
         "facedown": null,
-        "id": "ac2f6193-82e5-4b07-b7b3-5ae26d597b2a",
+        "id": "7482d579-f5a4-4889-b254-587bf247cd0e",
         "isFlipped": false,
         "originalCardCode": "c01159",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01166",
+        "facedown": null,
+        "id": "5e523351-e8cc-4b39-998a-3397175dd253",
+        "isFlipped": false,
+        "originalCardCode": "c01166",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01165",
+        "facedown": null,
+        "id": "2c8edfb4-bb91-46be-88c6-eacc9abd3ece",
+        "isFlipped": false,
+        "originalCardCode": "c01165",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01168",
+        "facedown": null,
+        "id": "83829770-92c1-422c-933b-b9c289bee414",
+        "isFlipped": false,
+        "originalCardCode": "c01168",
         "owner": null
       },
       {
@@ -738,11 +720,29 @@
       },
       {
         "addedPeril": false,
-        "cardCode": "c01166",
+        "cardCode": "c01118",
         "facedown": null,
-        "id": "00848caf-8b40-49f4-ad6d-7a255ef89bba",
+        "id": "04972ef0-4040-4c62-9675-a3651bbe3f11",
         "isFlipped": false,
-        "originalCardCode": "c01166",
+        "originalCardCode": "c01118",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01159",
+        "facedown": null,
+        "id": "ac2f6193-82e5-4b07-b7b3-5ae26d597b2a",
+        "isFlipped": false,
+        "originalCardCode": "c01159",
+        "owner": null
+      },
+      {
+        "addedPeril": false,
+        "cardCode": "c01167",
+        "facedown": null,
+        "id": "65fa101a-e3df-4d2d-8b4b-fa49daf635e8",
+        "isFlipped": false,
+        "originalCardCode": "c01167",
         "owner": null
       }
     ],
@@ -787,6 +787,7 @@
     "isPrelude": false,
     "isSideStory": false,
     "keys": [],
+    "locationGroups": [],
     "locationLayout": [
       "   .   attic   .     ",
       " study hallway parlor",
@@ -842,7 +843,7 @@
           "addedPeril": false,
           "cardCode": "c01113",
           "facedown": null,
-          "id": "4db426b4-641e-4812-8d10-27fc6470ef6e",
+          "id": "08cede8e-791b-405b-956e-aeac627e77ed",
           "isFlipped": true,
           "originalCardCode": "c01113",
           "owner": null
@@ -854,7 +855,7 @@
           "addedPeril": false,
           "cardCode": "c01114",
           "facedown": null,
-          "id": "782de537-8f5d-4eda-b849-2362e28402e5",
+          "id": "135d3e24-8e3e-462d-89be-8c1e464e4016",
           "isFlipped": true,
           "originalCardCode": "c01114",
           "owner": null
@@ -866,7 +867,7 @@
           "addedPeril": false,
           "cardCode": "c01115",
           "facedown": null,
-          "id": "cd2de9f6-063e-4034-a483-d4491be88feb",
+          "id": "fffd93df-f739-40cf-bcbb-d0d003409306",
           "isFlipped": true,
           "originalCardCode": "c01115",
           "owner": null
@@ -878,7 +879,7 @@
           "addedPeril": false,
           "cardCode": "c01112",
           "facedown": null,
-          "id": "06447993-4309-4a9a-9944-2fb3ee2641fe",
+          "id": "6a3e92a1-d253-4194-9612-53c284a6b2ca",
           "isFlipped": true,
           "originalCardCode": "c01112",
           "owner": null
@@ -898,6 +899,7 @@
     },
     "started": false,
     "storyCards": {},
+    "substitutions": {},
     "tarotCards": [],
     "tarotDeck": [],
     "timesPlayed": 0,

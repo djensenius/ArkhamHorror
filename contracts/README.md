@@ -383,7 +383,7 @@ the `startAt` starting-location `ChooseOne`.
 - `question-choose-one-location.json` is the real `startAt` prompt
   (`Arkham.Scenario.Setup.startAt`) that follows: `ChooseOne` with a single
   `TargetLabel(LocationTarget)` choice for the real starting location
-  ("Study", `d5a66e84-c729-4066-8475-d8a155609025`, matching `get-game.json`).
+  ("Study", `782de537-8f5d-4eda-b849-2362e28402e5`, matching `get-game.json`).
   Along with the mulligan's `CardIdTarget`, the mythos
   `EncounterDeckTarget`, and the isolated enemy-attack `EnemyTarget` below,
   this is a governed

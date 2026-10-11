@@ -12,6 +12,8 @@
   "events": [],
   "exhausted": false,
   "floodLevel": null,
+  "grantedConnections": [],
+  "group": null,
   "id": "00000000-0000-0000-0000-000000000032",
   "investigators": [],
   "keys": [],
