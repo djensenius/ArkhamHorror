@@ -7,6 +7,8 @@ import Control.Concurrent.STM qualified as STM
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
 import Data.ByteString.Lazy qualified as BSL
+import Data.Text qualified as T
+import Data.Text.IO qualified as T
 import Data.UUID (fromWords64)
 import Data.UUID qualified as UUID
 import Entity.Answer (Answer (..), Reply (..), handleAnswerPure)
@@ -104,6 +106,17 @@ spec = do
         drainSubscriber sender `shouldReturn` []
         drainSubscriber otherParticipant `shouldReturn` []
         drainSubscriber spectator `shouldReturn` []
+
+    it "keeps the production stream input path delegated to the tested frame handler" do
+      source <- T.readFile "library/Api/Handler/Arkham/Games/Shared.hs"
+      let normalized = T.unwords $ T.words source
+      normalized
+        `shouldSatisfy` T.isInfixOf
+          "handleData subscriber room broadcast dataPacket = lift $ handleGameStreamFrame"
+      normalized `shouldSatisfy` T.isInfixOf "(updateAnswer room)"
+      normalized
+        `shouldSatisfy` T.isInfixOf
+          "updateGameWithAnswerRejection customCards answer gameId (Just room)"
 
   describe "answer rejection feedback" do
     it "sends a rejected amount answer AnswerRejected only to the answering subscriber and leaves the prompt unchanged" . gameTest $ \self -> do
