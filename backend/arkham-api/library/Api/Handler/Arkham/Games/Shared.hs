@@ -263,21 +263,23 @@ gameStreamFor role mUserId gameId = catchingConnectionException $ withKeepAlive 
       (runSubscriberSender sub)
       (runConduit $ sourceWS .| mapM_C (handleData sub room broadcast))
  where
-  handleData subscriber room broadcast dataPacket = lift do
-    case decodeGameStreamAnswer role dataPacket of
-      Left err -> $(logWarn) $ tshow err
-      Right Nothing -> pure ()
-      Right (Just answer) -> do
-        {- Read per answer, not once per connection. 'registerCustomCards' is
-        left-biased, so a snapshot taken when the socket opened puts itself back
-        over the live library on every action -- a card-builder save was invisible
-        in an open tab until it reconnected, which is the opposite of what the
-        overlay in 'updateGame' is for. -}
-        customCards <- maybe (pure mempty) userCustomCards mUserId
-        ( updateGameWithAnswerRejection customCards answer gameId (Just room)
-            >>= traverse_ (liftIO . sendAnswerRejection subscriber answer)
-          )
-          `catch` \(e :: SomeException) -> liftIO $ broadcast $ encode $ GameError $ tshow e
+  handleData subscriber room broadcast dataPacket = lift $
+    handleGameStreamFrame
+      role
+      (\err -> $(logWarn) $ tshow err)
+      (updateAnswer room)
+      subscriber
+      broadcast
+      dataPacket
+
+  updateAnswer room answer = do
+    {- Read per answer, not once per connection. 'registerCustomCards' is
+    left-biased, so a snapshot taken when the socket opened puts itself back
+    over the live library on every action -- a card-builder save was invisible
+    in an open tab until it reconnected, which is the opposite of what the
+    overlay in 'updateGame' is for. -}
+    customCards <- maybe (pure mempty) userCustomCards mUserId
+    updateGameWithAnswerRejection customCards answer gameId (Just room)
 
 handleGameStreamFrame
   :: MonadUnliftIO m
@@ -1608,7 +1610,7 @@ toGameDetailsEntry (Entity gameId game) playerCount =
             , multiplayerVariant = variant
             , hasOpenSeats = variant == WithFriends && playerCount < length investigators
             }
-    Error e -> FailedGameDetails $ arkhamGameRawName game <> ": " <> T.pack e
+    Error e -> FailedGameDetails (coerce gameId) (arkhamGameRawName game) (T.pack e)
  where
   campaignOtherInvestigators j = case parse (withObject "" (.: "otherCampaignAttrs")) j of
     Error _ -> mempty
