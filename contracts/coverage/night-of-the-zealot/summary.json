@@ -13,6 +13,7 @@
         "applySkillTestResults",
         "assignDamage",
         "assignHorror",
+        "auxiliaryComponentLabel",
         "chooseTarget",
         "componentLabel",
         "drawCard",
@@ -42,6 +43,7 @@
         "gainResource",
         "localizedLabel",
         "resolveForcedAbility",
+        "skipTriggers",
         "startSkillTest",
         "useAbility"
       ],
@@ -61,7 +63,7 @@
         "name": "Roland Banks",
         "seed": 12001
       },
-      "jsonlBytes": 756868,
+      "jsonlBytes": 1110259,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -87,11 +89,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 187,
+      "recordCount": 263,
       "stepsByScenario": {
-        "01104": 93,
-        "01120": 34,
-        "01142": 54,
+        "01104": 150,
+        "01120": 75,
+        "01142": 32,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -102,7 +104,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 54,
+          "questionVersion": 32,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -150,10 +152,8 @@
         "drawCard",
         "drawEncounterCard",
         "endTurn",
-        "evade",
         "gainResource",
         "localizedLabel",
-        "skipTriggers",
         "startSkillTest",
         "useAbility"
       ],
@@ -173,7 +173,7 @@
         "name": "Daisy Walker",
         "seed": 12002
       },
-      "jsonlBytes": 868882,
+      "jsonlBytes": 3771120,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -199,11 +199,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 180,
+      "recordCount": 783,
       "stepsByScenario": {
-        "01104": 46,
-        "01120": 55,
-        "01142": 73,
+        "01104": 44,
+        "01120": 706,
+        "01142": 27,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -214,7 +214,119 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 73,
+          "questionVersion": 27,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      }
+    },
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
+      "file": "01003.jsonl",
+      "investigator": {
+        "basicWeakness": "c01099",
+        "id": "c01003",
+        "name": "Skids O'Toole",
+        "seed": 12003
+      },
+      "jsonlBytes": 644169,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "reachedEndOf01142": true,
+      "recordCount": 118,
+      "stepsByScenario": {
+        "01104": 41,
+        "01120": 41,
+        "01142": 30,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 2,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 30,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -260,124 +372,13 @@
         "assignDamage",
         "assignHorror",
         "chooseTarget",
+        "componentLabel",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
         "gainResource",
         "localizedLabel",
-        "startSkillTest",
-        "useAbility"
-      ],
-      "distinctQuestionKinds": [
-        "chooseDeck",
-        "chooseOne",
-        "chooseOneAtATime",
-        "continueCampaign",
-        "playerWindowChooseOne",
-        "read",
-        "windowChooseOne"
-      ],
-      "file": "01003.jsonl",
-      "investigator": {
-        "basicWeakness": "c01099",
-        "id": "c01003",
-        "name": "Skids O'Toole",
-        "seed": 12003
-      },
-      "jsonlBytes": 885369,
-      "outcomes": {
-        "01104": {
-          "resolution": {
-            "tag": "NoResolution"
-          },
-          "scenario": "01104",
-          "status": "recorded"
-        },
-        "01120": {
-          "resolution": {
-            "contents": 1,
-            "tag": "Resolution"
-          },
-          "scenario": "01120",
-          "status": "recorded"
-        },
-        "01142": {
-          "resolution": {
-            "tag": "NoResolution"
-          },
-          "scenario": "01142",
-          "status": "recorded"
-        }
-      },
-      "reachedEndOf01142": true,
-      "recordCount": 185,
-      "stepsByScenario": {
-        "01104": 44,
-        "01120": 68,
-        "01142": 67,
-        "continue:01104": 1,
-        "continue:01120": 1,
-        "continue:01142": 1,
-        "continue:prologue": 2,
-        "prologue": 1
-      },
-      "stop": {
-        "campaignFinished": true,
-        "lastQuestion": {
-          "questionKind": "read",
-          "questionVersion": 67,
-          "rawQuestionTag": "Read",
-          "scenario": {
-            "code": "01142",
-            "kind": "scenario"
-          },
-          "scenarioKey": "01142"
-        },
-        "reason": "campaign finished",
-        "scenario": {
-          "kind": "campaignStep",
-          "step": {
-            "contents": "c01142",
-            "tag": "ScenarioStep"
-          }
-        },
-        "scenarioKey": "campaign:01142"
-      }
-    },
-    {
-      "distinctChoiceKinds": [
-        "advanceAgenda",
-        "applySkillTestResults",
-        "assignDamage",
-        "assignHorror",
-        "chooseTarget",
-        "drawCard",
-        "drawEncounterCard",
-        "endTurn",
-        "evade",
-        "fight",
-        "gainResource",
-        "investigate",
-        "localizedLabel",
-        "move",
-        "resolveForcedAbility",
         "skipTriggers",
-        "startSkillTest",
-        "useAbility"
-      ],
-      "distinctChosenChoiceKinds": [
-        "advanceAgenda",
-        "applySkillTestResults",
-        "assignDamage",
-        "assignHorror",
-        "chooseTarget",
-        "drawCard",
-        "drawEncounterCard",
-        "endTurn",
-        "gainResource",
-        "investigate",
-        "localizedLabel",
-        "resolveForcedAbility",
         "startSkillTest",
         "useAbility"
       ],
@@ -397,7 +398,7 @@
         "name": "Agnes Baker",
         "seed": 12004
       },
-      "jsonlBytes": 1582177,
+      "jsonlBytes": 759213,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -423,11 +424,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 423,
+      "recordCount": 166,
       "stepsByScenario": {
-        "01104": 300,
-        "01120": 83,
-        "01142": 34,
+        "01104": 39,
+        "01120": 89,
+        "01142": 32,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -438,7 +439,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 34,
+          "questionVersion": 32,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -464,6 +465,7 @@
         "assignDamage",
         "assignHorror",
         "chooseTarget",
+        "componentLabel",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
@@ -484,12 +486,14 @@
         "assignDamage",
         "assignHorror",
         "chooseTarget",
+        "componentLabel",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
         "gainResource",
         "localizedLabel",
         "resolveForcedAbility",
+        "skipTriggers",
         "startSkillTest",
         "useAbility"
       ],
@@ -510,7 +514,7 @@
         "name": "Wendy Adams",
         "seed": 12005
       },
-      "jsonlBytes": 766155,
+      "jsonlBytes": 758691,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -536,11 +540,11 @@
         }
       },
       "reachedEndOf01142": true,
-      "recordCount": 171,
+      "recordCount": 194,
       "stepsByScenario": {
-        "01104": 43,
-        "01120": 73,
-        "01142": 49,
+        "01104": 90,
+        "01120": 74,
+        "01142": 24,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -551,7 +555,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 49,
+          "questionVersion": 24,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",

@@ -14,141 +14,6 @@
         "assignDamage",
         "assignHorror",
         "chooseTarget",
-        "componentLabel",
-        "drawCard",
-        "drawEncounterCard",
-        "endTurn",
-        "engage",
-        "evade",
-        "fight",
-        "gainResource",
-        "investigate",
-        "localizedLabel",
-        "move",
-        "resolveForcedAbility",
-        "skipTriggers",
-        "startSkillTest",
-        "useAbility"
-      ],
-      "distinctChosenChoiceKinds": [
-        "advanceAgenda",
-        "applySkillTestResults",
-        "assignDamage",
-        "assignHorror",
-        "chooseTarget",
-        "componentLabel",
-        "drawCard",
-        "drawEncounterCard",
-        "endTurn",
-        "gainResource",
-        "localizedLabel",
-        "resolveForcedAbility",
-        "skipTriggers",
-        "startSkillTest",
-        "useAbility"
-      ],
-      "distinctQuestionKinds": [
-        "chooseDeck",
-        "chooseOne",
-        "chooseOneAtATime",
-        "continueCampaign",
-        "playerWindowChooseOne",
-        "read",
-        "windowChooseOne"
-      ],
-      "file": "2p.jsonl",
-      "jsonlBytes": 1617909,
-      "outcomes": {
-        "01104": {
-          "resolution": {
-            "tag": "NoResolution"
-          },
-          "scenario": "01104",
-          "status": "recorded"
-        },
-        "01120": {
-          "resolution": {
-            "contents": 1,
-            "tag": "Resolution"
-          },
-          "scenario": "01120",
-          "status": "recorded"
-        },
-        "01142": {
-          "resolution": {
-            "tag": "NoResolution"
-          },
-          "scenario": "01142",
-          "status": "recorded"
-        }
-      },
-      "playerCount": 2,
-      "players": [
-        {
-          "investigator": {
-            "basicWeakness": "c01097",
-            "id": "c01001",
-            "name": "Roland Banks",
-            "weaknessSeed": 12001
-          },
-          "playerId": "00000000-0000-0000-0000-000200000001",
-          "promptCount": 191
-        },
-        {
-          "investigator": {
-            "basicWeakness": "c01098",
-            "id": "c01002",
-            "name": "Daisy Walker",
-            "weaknessSeed": 12002
-          },
-          "playerId": "00000000-0000-0000-0000-000200000002",
-          "promptCount": 134
-        }
-      ],
-      "reachedEndOf01142": true,
-      "recordCount": 325,
-      "seed": 22002,
-      "stepsByScenario": {
-        "01104": 180,
-        "01120": 94,
-        "01142": 44,
-        "continue:01104": 1,
-        "continue:01120": 1,
-        "continue:01142": 1,
-        "continue:prologue": 3,
-        "prologue": 1
-      },
-      "stop": {
-        "campaignFinished": true,
-        "lastQuestion": {
-          "questionKind": "read",
-          "questionVersion": 44,
-          "rawQuestionTag": "Read",
-          "scenario": {
-            "code": "01142",
-            "kind": "scenario"
-          },
-          "scenarioKey": "01142"
-        },
-        "reason": "campaign finished",
-        "scenario": {
-          "kind": "campaignStep",
-          "step": {
-            "contents": "c01142",
-            "tag": "ScenarioStep"
-          }
-        },
-        "scenarioKey": "campaign:01142"
-      },
-      "stopReason": "campaign finished"
-    },
-    {
-      "distinctChoiceKinds": [
-        "advanceAgenda",
-        "applySkillTestResults",
-        "assignDamage",
-        "assignHorror",
-        "chooseTarget",
         "drawCard",
         "drawEncounterCard",
         "endTurn",
@@ -190,8 +55,142 @@
         "read",
         "windowChooseOne"
       ],
+      "file": "2p.jsonl",
+      "jsonlBytes": 911492,
+      "outcomes": {
+        "01104": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01104",
+          "status": "recorded"
+        },
+        "01120": {
+          "resolution": {
+            "contents": 1,
+            "tag": "Resolution"
+          },
+          "scenario": "01120",
+          "status": "recorded"
+        },
+        "01142": {
+          "resolution": {
+            "tag": "NoResolution"
+          },
+          "scenario": "01142",
+          "status": "recorded"
+        }
+      },
+      "playerCount": 2,
+      "players": [
+        {
+          "investigator": {
+            "basicWeakness": "c01097",
+            "id": "c01001",
+            "name": "Roland Banks",
+            "weaknessSeed": 12001
+          },
+          "playerId": "00000000-0000-0000-0000-000200000001",
+          "promptCount": 101
+        },
+        {
+          "investigator": {
+            "basicWeakness": "c01098",
+            "id": "c01002",
+            "name": "Daisy Walker",
+            "weaknessSeed": 12002
+          },
+          "playerId": "00000000-0000-0000-0000-000200000002",
+          "promptCount": 85
+        }
+      ],
+      "reachedEndOf01142": true,
+      "recordCount": 186,
+      "seed": 22002,
+      "stepsByScenario": {
+        "01104": 75,
+        "01120": 49,
+        "01142": 55,
+        "continue:01104": 1,
+        "continue:01120": 1,
+        "continue:01142": 1,
+        "continue:prologue": 3,
+        "prologue": 1
+      },
+      "stop": {
+        "campaignFinished": true,
+        "lastQuestion": {
+          "questionKind": "read",
+          "questionVersion": 55,
+          "rawQuestionTag": "Read",
+          "scenario": {
+            "code": "01142",
+            "kind": "scenario"
+          },
+          "scenarioKey": "01142"
+        },
+        "reason": "campaign finished",
+        "scenario": {
+          "kind": "campaignStep",
+          "step": {
+            "contents": "c01142",
+            "tag": "ScenarioStep"
+          }
+        },
+        "scenarioKey": "campaign:01142"
+      },
+      "stopReason": "campaign finished"
+    },
+    {
+      "distinctChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "componentLabel",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "engage",
+        "evade",
+        "fight",
+        "gainResource",
+        "investigate",
+        "localizedLabel",
+        "move",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctChosenChoiceKinds": [
+        "advanceAgenda",
+        "applySkillTestResults",
+        "assignDamage",
+        "assignHorror",
+        "chooseTarget",
+        "drawCard",
+        "drawEncounterCard",
+        "endTurn",
+        "gainResource",
+        "localizedLabel",
+        "resolveForcedAbility",
+        "skipTriggers",
+        "startSkillTest",
+        "useAbility"
+      ],
+      "distinctQuestionKinds": [
+        "chooseDeck",
+        "chooseOne",
+        "chooseOneAtATime",
+        "continueCampaign",
+        "playerWindowChooseOne",
+        "read",
+        "windowChooseOne"
+      ],
       "file": "3p.jsonl",
-      "jsonlBytes": 2012200,
+      "jsonlBytes": 1710502,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -226,7 +225,7 @@
             "weaknessSeed": 12001
           },
           "playerId": "00000000-0000-0000-0000-000300000001",
-          "promptCount": 123
+          "promptCount": 116
         },
         {
           "investigator": {
@@ -236,7 +235,7 @@
             "weaknessSeed": 12002
           },
           "playerId": "00000000-0000-0000-0000-000300000002",
-          "promptCount": 88
+          "promptCount": 71
         },
         {
           "investigator": {
@@ -246,16 +245,16 @@
             "weaknessSeed": 12003
           },
           "playerId": "00000000-0000-0000-0000-000300000003",
-          "promptCount": 169
+          "promptCount": 128
         }
       ],
       "reachedEndOf01142": true,
-      "recordCount": 380,
+      "recordCount": 315,
       "seed": 22003,
       "stepsByScenario": {
-        "01104": 147,
-        "01120": 128,
-        "01142": 97,
+        "01104": 143,
+        "01120": 102,
+        "01142": 62,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -266,7 +265,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 97,
+          "questionVersion": 62,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
@@ -336,7 +335,7 @@
         "windowChooseOne"
       ],
       "file": "4p.jsonl",
-      "jsonlBytes": 2545372,
+      "jsonlBytes": 2386174,
       "outcomes": {
         "01104": {
           "resolution": {
@@ -371,7 +370,7 @@
             "weaknessSeed": 12001
           },
           "playerId": "00000000-0000-0000-0000-000400000001",
-          "promptCount": 101
+          "promptCount": 83
         },
         {
           "investigator": {
@@ -381,7 +380,7 @@
             "weaknessSeed": 12002
           },
           "playerId": "00000000-0000-0000-0000-000400000002",
-          "promptCount": 135
+          "promptCount": 93
         },
         {
           "investigator": {
@@ -391,7 +390,7 @@
             "weaknessSeed": 12003
           },
           "playerId": "00000000-0000-0000-0000-000400000003",
-          "promptCount": 107
+          "promptCount": 172
         },
         {
           "investigator": {
@@ -401,16 +400,16 @@
             "weaknessSeed": 12004
           },
           "playerId": "00000000-0000-0000-0000-000400000004",
-          "promptCount": 132
+          "promptCount": 111
         }
       ],
       "reachedEndOf01142": true,
-      "recordCount": 475,
+      "recordCount": 459,
       "seed": 22004,
       "stepsByScenario": {
-        "01104": 180,
-        "01120": 173,
-        "01142": 113,
+        "01104": 214,
+        "01120": 103,
+        "01142": 133,
         "continue:01104": 1,
         "continue:01120": 1,
         "continue:01142": 1,
@@ -421,7 +420,7 @@
         "campaignFinished": true,
         "lastQuestion": {
           "questionKind": "read",
-          "questionVersion": 113,
+          "questionVersion": 133,
           "rawQuestionTag": "Read",
           "scenario": {
             "code": "01142",
