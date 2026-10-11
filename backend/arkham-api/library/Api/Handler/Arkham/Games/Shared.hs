@@ -279,6 +279,23 @@ gameStreamFor role mUserId gameId = catchingConnectionException $ withKeepAlive 
           )
           `catch` \(e :: SomeException) -> liftIO $ broadcast $ encode $ GameError $ tshow e
 
+handleGameStreamFrame
+  :: MonadUnliftIO m
+  => GameStreamRole
+  -> (String -> m ())
+  -> (Answer -> m (Maybe Text))
+  -> Subscriber
+  -> Broadcast
+  -> ByteString
+  -> m ()
+handleGameStreamFrame streamRole onDecodeError updateAnswer subscriber broadcast dataPacket =
+  case decodeGameStreamAnswer streamRole dataPacket of
+    Left err -> onDecodeError err
+    Right Nothing -> pure ()
+    Right (Just answer) ->
+      (updateAnswer answer >>= traverse_ (liftIO . sendAnswerRejection subscriber answer))
+        `catch` \(e :: SomeException) -> liftIO $ broadcast $ encode $ GameError $ tshow e
+
 {- | Why a subscriber's sender loop ended.
 
 Either way the socket goes with it: the loop is the only thing feeding the
@@ -1537,7 +1554,7 @@ decode failure produces, so the rest of the list still renders and the broken
 game can be deleted.
 -}
 tryGameDetailsEntry :: MonadIO m => Entity ArkhamGameRaw -> Int -> m GameDetailsEntry
-tryGameDetailsEntry e@(Entity gameId game) playerCount = liftIO do
+tryGameDetailsEntry e@(Entity _ game) playerCount = liftIO do
   let entry = toGameDetailsEntry e playerCount
   result <- try @_ @SomeException $ evaluate $ BSL.length $ Aeson.encode entry
   pure $ case result of

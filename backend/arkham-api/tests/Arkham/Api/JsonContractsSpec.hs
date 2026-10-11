@@ -48,6 +48,7 @@ import Arkham.Enemy.CardDefs.NightOfTheZealot.Ghouls qualified as GhoulCards (gh
 import Arkham.Enemy.CardDefs.NightOfTheZealot.Rats qualified as EnemyCards (swarmOfRats)
 import Arkham.Enemy.Creation (EnemyCreation (..))
 import Arkham.Enemy.Types qualified as Enemy
+import Arkham.Log.Entry (LogRow (LogRowLegacy))
 import Arkham.Placement (Placement (InThreatArea))
 import Arkham.Projection (field)
 import Arkham.Question.Presentation qualified as QuestionPresentation
@@ -1498,7 +1499,7 @@ fixtureInvestigatorNegativeUnhealedHorror = unsafePerformIO $ runAgainstFixtureB
   pushAndRunAll
     [HealHorrorDirectly (InvestigatorTarget $ InvestigatorId "01001") GameSource 3]
   game <- getGame
-  let publicGame = PublicGame fixtureGameId "Contract fixture game" ["Contract fixture log entry."] game
+  let publicGame = PublicGame fixtureGameId "Contract fixture game" [LogRowLegacy "Contract fixture log entry." Nothing] game
   pure $ case Aeson.toJSON publicGame of
     Aeson.Object top -> case AesonKeyMap.lookup "investigators" top of
       Just (Aeson.Object invs) -> case AesonKeyMap.elems invs of
@@ -1557,7 +1558,7 @@ fixtureInvestigatorCardPoolShim = unsafePerformIO $ runAgainstFixtureBoardGame d
   let
     modifiedInvestigator = game ^?! entitiesL . investigatorsL . ix iid
     internalEncoding = Aeson.toJSON modifiedInvestigator
-    publicGame = PublicGame fixtureGameId "Contract fixture game" ["Contract fixture log entry."] game
+    publicGame = PublicGame fixtureGameId "Contract fixture game" [LogRowLegacy "Contract fixture log entry." Nothing] game
     extractInvestigator :: Aeson.Value -> Aeson.Value
     extractInvestigator = \case
       Aeson.Object top -> case AesonKeyMap.lookup "investigators" top of
@@ -1623,7 +1624,7 @@ fixturePublicGame =
   PublicGame
     fixtureGameId
     "Contract fixture game"
-    ["Contract fixture log entry."]
+    [LogRowLegacy "Contract fixture log entry." Nothing]
     fixtureGame
 
 {- | The active CORE prompt built by the deterministic production setup above.

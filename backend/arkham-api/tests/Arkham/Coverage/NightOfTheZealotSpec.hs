@@ -12,7 +12,7 @@ import Arkham.Classes.Entity (toAttrs)
 import Arkham.Classes.HasQueue (newQueue)
 import Arkham.Decklist.Type qualified as Decklist
 import Arkham.Difficulty (Difficulty (Easy))
-import Arkham.Game (Game (..), PublicGame (..), newCampaign, runMessages)
+import Arkham.Game (Game (..), PublicGame (..), newCampaign, noRunObservers, runMessages)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsOver))
 import Arkham.Game.Utils (modeCampaign, modeScenario)
@@ -705,7 +705,7 @@ applySelectedAnswer app defaultPlayer game SelectedAnswer {..} = do
 -- the nightly/manual coverage job indefinitely.
 drainMessages :: GameApp -> IO (Either Text ())
 drainMessages app = do
-  result <- tryAny $ Timeout.timeout (30 * 1000 * 1000) $ runGameApp app (runMessages "notz-coverage" Nothing)
+  result <- tryAny $ Timeout.timeout (30 * 1000 * 1000) $ runGameApp app (runMessages "notz-coverage" noRunObservers)
   pure case result of
     Left err -> Left $ "message processing threw: " <> T.pack (show err)
     Right Nothing -> Left "message processing timed out after 30 seconds"

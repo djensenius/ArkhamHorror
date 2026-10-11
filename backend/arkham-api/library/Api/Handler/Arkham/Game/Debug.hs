@@ -60,7 +60,6 @@ import Data.UUID qualified as UUID
 import Database.Esqueleto.Experimental hiding (update)
 import Database.Persist qualified as Persist
 import Entity.Arkham.CustomCard
-import Entity.Arkham.LogEntry
 import Entity.Arkham.Player
 import Entity.Arkham.ReplayAttestation
 import Entity.Arkham.Step
