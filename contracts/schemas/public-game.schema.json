@@ -671,7 +671,16 @@
     "logAudience": {
       "oneOf": [
         {
-          "const": "Everyone"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "const": "Everyone"
+            }
+          }
         },
         {
           "type": "object",

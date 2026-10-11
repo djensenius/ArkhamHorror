@@ -48,7 +48,20 @@ import Arkham.Enemy.CardDefs.NightOfTheZealot.Ghouls qualified as GhoulCards (gh
 import Arkham.Enemy.CardDefs.NightOfTheZealot.Rats qualified as EnemyCards (swarmOfRats)
 import Arkham.Enemy.Creation (EnemyCreation (..))
 import Arkham.Enemy.Types qualified as Enemy
-import Arkham.Log.Entry (LogRow (LogRowLegacy))
+import Arkham.Log.Entry
+  ( LogAudience (OnlyPlayer)
+  , LogEntry (..)
+  , LogGroup (..)
+  , LogGroupRole (GroupHeader, GroupMember)
+  , LogKind (Chat, Notice, Structure)
+  , LogPart (LogI18n, LogNumber, LogRefPart, LogText)
+  , LogRef (..)
+  , LogRefKind (RefCard)
+  , LogRow (LogRowLegacy, LogRowStructured)
+  , LogTone (Good)
+  , logRef
+  , mkLogEntry
+  )
 import Arkham.Placement (Placement (InThreatArea))
 import Arkham.Projection (field)
 import Arkham.Question.Presentation qualified as QuestionPresentation
@@ -1629,6 +1642,68 @@ fixturePublicGame =
     "Contract fixture game"
     [LogRowLegacy "Contract fixture log entry." Nothing]
     fixtureGame
+
+{- | A focused @PublicGame.log@ fixture that exercises the real tagged
+'LogRowStructured' encoder. The ordinary get-game and game-update fixtures stay
+small with one legacy row, so this sibling keeps the structured log contract
+load-bearing without copying any frontend-only parsing logic into the test.
+-}
+fixturePublicGameWithStructuredLog :: PublicGame ArkhamGame.ArkhamGameId
+fixturePublicGameWithStructuredLog =
+  PublicGame
+    fixtureGameId
+    "Contract fixture game"
+    fixtureStructuredLogRows
+    fixtureGame
+
+fixtureStructuredLogRows :: [LogRow]
+fixtureStructuredLogRows =
+  [ LogRowLegacy "Legacy contract fixture row." (Just 7)
+  , LogRowStructured everyoneEntry
+  , LogRowStructured onlyPlayerEntry
+  ]
+ where
+  cardRef =
+    (logRef RefCard "Contract fixture card")
+      { logRefCardCode = Just "01016"
+      , logRefCardId = Just $ unsafeMakeCardId $ UUID.fromWords 0 0 0 925
+      }
+  logGroupId = "contract-structured-log"
+  childEntry =
+    (mkLogEntry Notice [LogText "Nested contract child."])
+      { logEntrySeq = 0
+      , logEntryStep = Just 8
+      , logEntryGroup = Just $ LogGroup logGroupId GroupMember
+      }
+  everyoneEntry =
+    ( mkLogEntry
+        Structure
+        [ LogText "Everyone sees "
+        , LogRefPart cardRef
+        , LogI18n
+            "contract.log.everyone"
+            ( Map.fromList
+                [ ("count", LogNumber 2)
+                , ("subject", LogRefPart cardRef)
+                ]
+            )
+        ]
+    )
+      { logEntrySeq = 1
+      , logEntryStep = Just 8
+      , logEntryChildren = [childEntry]
+      , logEntryTone = Just Good
+      , logEntryGroup = Just $ LogGroup logGroupId GroupHeader
+      , logEntryTag = Just "contract:everyone"
+      }
+  onlyPlayerEntry =
+    (mkLogEntry Chat [LogText "Private contract row."])
+      { logEntrySeq = 2
+      , logEntryStep = Just 9
+      , logEntryAudience = OnlyPlayer fixturePlayerId
+      , logEntryGroup = Just $ LogGroup logGroupId GroupMember
+      , logEntryTag = Just "contract:only-player"
+      }
 
 {- | The active CORE prompt built by the deterministic production setup above.
 Its choices are reused verbatim for the sibling constructors so every golden
@@ -4818,6 +4893,12 @@ spec = describe "Native client contract fixtures" do
     -- through the identical (toEncoding-driven) real encoder, not merely
     -- through toJSON.
     viaWireEncoding fixtureGetGame `shouldBe` fixture
+
+  it "matches the real PublicGame encoder with structured log rows" do
+    fixture <- loadFixture "public-game-structured-log.json"
+
+    Aeson.toJSON fixturePublicGameWithStructuredLog `shouldBe` fixture
+    viaWireEncoding fixturePublicGameWithStructuredLog `shouldBe` fixture
 
   for_ fixtureBasicChoiceQuestions \(fileName, question) ->
     it ("matches the real basic-choice question encoder for " <> fileName) do
