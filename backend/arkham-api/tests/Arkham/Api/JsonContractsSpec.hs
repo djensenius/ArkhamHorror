@@ -264,6 +264,9 @@ fixtureActiveGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 5
 fixtureCompletedGameId :: ArkhamGame.ArkhamGameId
 fixtureCompletedGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 6
 
+fixtureBrokenGameId :: ArkhamGame.ArkhamGameId
+fixtureBrokenGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 7
+
 fixtureAchievements :: [Persist.Entity AchievementEntity.ArkhamAchievement]
 fixtureAchievements =
   [ Persist.Entity
@@ -1708,6 +1711,7 @@ serverMessageFixtures =
           (Set.fromList ["delta-a", "delta-b"])
     )
   , ("event-changed.json", EventChanged)
+  , ("room-closed.json", RoomClosed "deleted")
   ]
  where
   fixtureCard = Aeson.object ["code" .= ("fixture-card" :: Text)]
@@ -1766,7 +1770,7 @@ fixtureGameList =
         []
         Solo
         False
-  , FailedGameDetails "Contract fixture failed to load."
+  , FailedGameDetails fixtureBrokenGameId "Broken contract fixture" "Contract fixture failed to load."
   ]
 
 {- | The exact response a deployment started with @environment@ would serve,

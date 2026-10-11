@@ -1554,12 +1554,12 @@ decode failure produces, so the rest of the list still renders and the broken
 game can be deleted.
 -}
 tryGameDetailsEntry :: MonadIO m => Entity ArkhamGameRaw -> Int -> m GameDetailsEntry
-tryGameDetailsEntry e@(Entity _ game) playerCount = liftIO do
+tryGameDetailsEntry e@(Entity gameId game) playerCount = liftIO do
   let entry = toGameDetailsEntry e playerCount
   result <- try @_ @SomeException $ evaluate $ BSL.length $ Aeson.encode entry
   pure $ case result of
     Right _ -> entry
-    Left err -> FailedGameDetails $ arkhamGameRawName game <> ": " <> tshow err
+    Left err -> FailedGameDetails (coerce gameId) (arkhamGameRawName game) (tshow err)
 
 toGameDetailsEntry :: Entity ArkhamGameRaw -> Int -> GameDetailsEntry
 toGameDetailsEntry (Entity gameId game) playerCount =

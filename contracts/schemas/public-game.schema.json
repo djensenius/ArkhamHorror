@@ -79,8 +79,11 @@
       "format": "uuid"
     },
     "log": {
-      "description": "Recent game log rows. Upstream now emits structured rows while older rows can remain legacy strings; broad, out of scope for this contract slice.",
-      "type": "array"
+      "description": "Recent game log rows. Upstream emits a tagged LogRow union: legacy rows carry the legacy text and optional step, while structured rows carry the new LogEntry payload.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/logRow"
+      }
     },
     "git": {
       "type": "string"
@@ -439,6 +442,303 @@
         },
         "settingsUltimatumsAndBoonsEnabled": {
           "type": "boolean"
+        }
+      }
+    },
+    "logRow": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/logRowLegacy"
+        },
+        {
+          "$ref": "#/$defs/logRowStructured"
+        }
+      ]
+    },
+    "logRowLegacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "LogRowLegacy"
+        },
+        "contents": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "string"
+            },
+            {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "logRowStructured": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "LogRowStructured"
+        },
+        "contents": {
+          "$ref": "#/$defs/logEntry"
+        }
+      }
+    },
+    "logEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seq",
+        "step",
+        "kind",
+        "body",
+        "source",
+        "children",
+        "audience",
+        "context",
+        "tone",
+        "group",
+        "tag"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "step": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "kind": {
+          "enum": [
+            "Structure",
+            "Action",
+            "Mechanic",
+            "Test",
+            "Narrative",
+            "Record",
+            "Notice",
+            "Problem",
+            "Chat"
+          ]
+        },
+        "body": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/logPart"
+          }
+        },
+        "source": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/logRef"
+            }
+          ]
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/logEntry"
+          }
+        },
+        "audience": {
+          "$ref": "#/$defs/logAudience"
+        },
+        "context": {
+          "$ref": "#/$defs/logContext"
+        },
+        "tone": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "Good",
+            "Bad",
+            null
+          ]
+        },
+        "group": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/logGroup"
+            }
+          ]
+        },
+        "tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "logPart": {
+      "description": "Tagged LogPart union. Payloads intentionally remain broad here because individual rich-text payload details are frontend-owned rendering data.",
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string"
+        }
+      }
+    },
+    "logRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name",
+        "cardCode",
+        "cardId",
+        "entityId",
+        "faceDown"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "RefCard",
+            "RefInvestigator",
+            "RefEnemy",
+            "RefLocation",
+            "RefAsset",
+            "RefEvent",
+            "RefSkill",
+            "RefTreachery",
+            "RefAct",
+            "RefAgenda",
+            "RefStory",
+            "RefScenario",
+            "RefAbility"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "cardCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cardId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "entityId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "faceDown": {
+          "type": "boolean"
+        }
+      }
+    },
+    "logAudience": {
+      "oneOf": [
+        {
+          "const": "Everyone"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tag",
+            "contents"
+          ],
+          "properties": {
+            "tag": {
+              "const": "OnlyPlayer"
+            },
+            "contents": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      ]
+    },
+    "logContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "round",
+        "phase",
+        "turn"
+      ],
+      "properties": {
+        "round": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "phase": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "turn": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "logGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "role"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "GroupHeader",
+            "GroupMember",
+            "GroupSummary"
+          ]
         }
       }
     }

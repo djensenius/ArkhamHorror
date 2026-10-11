@@ -1,12 +1,14 @@
 asyncapi: 3.1.0
 info:
   title: Arkham Horror WebSocket API
-  version: 0.1.8
+  version: 0.1.9
   description: |
     Envelope-level contract for participant, spectator, and Epic Multiplayer
     sockets. The server sends an RFC 6455 ping every 15 seconds and may negotiate
-    permessage-deflate. Disconnected subscribers do not receive buffered
-    updates, so a reconnect must refetch the authoritative REST snapshot.
+    permessage-deflate. When a game room is deleted, the server sends a final
+    RoomClosed message before closing subscribers. Disconnected subscribers do
+    not receive buffered updates, so a reconnect must refetch the authoritative
+    REST snapshot.
 servers:
   production:
     host: arkhamhorror.app

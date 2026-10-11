@@ -109,11 +109,11 @@ newLogEntry gameId step now body =
 
 {- | A structured row.
 
-@body@ is still filled, with 'logEntryToText', for two reasons: the legacy
-@PublicGame@ log is a @[Text]@ and clients that have not switched keep working,
-and a flat rendering is what the replay trace and any server-side error message
-can use. It is lossy -- refs become their names, an i18n key becomes the key --
-so nothing should read it back where @payload@ is available.
+@body@ is still filled with 'logEntryToText' so old database rows, replay
+traces, and server-side error messages have a flat fallback. It is lossy -- refs
+become their names, an i18n key becomes the key -- so clients that read
+@PublicGame.log@ must decode the tagged 'LogRow' payload instead of expecting a
+@[Text]@ row list.
 -}
 newStructuredLogEntry :: ArkhamGameId -> Int -> UTCTime -> LogEntry -> ArkhamLogEntry
 newStructuredLogEntry gameId step now entry =

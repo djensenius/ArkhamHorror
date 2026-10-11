@@ -47,6 +47,22 @@
       "additionalProperties": false,
       "required": [
         "tag",
+        "contents"
+      ],
+      "properties": {
+        "tag": {
+          "const": "RoomClosed"
+        },
+        "contents": {
+          "type": "string"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
         "reason",
         "questionVersion"
       ],
