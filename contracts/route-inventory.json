@@ -355,6 +355,14 @@
       "coverage": "required"
     },
     {
+      "method": "PUT",
+      "path": "/api/v1/arkham/published-card-sets/{ArkhamPublishedCardSetId}",
+      "resource": "ApiV1ArkhamPublishedCardSetR",
+      "surface": "catalog",
+      "scope": "native-client",
+      "coverage": "required"
+    },
+    {
       "method": "DELETE",
       "path": "/api/v1/arkham/published-card-sets/{ArkhamPublishedCardSetId}",
       "resource": "ApiV1ArkhamPublishedCardSetR",
@@ -667,6 +675,22 @@
       "coverage": "required"
     },
     {
+      "method": "PUT",
+      "path": "/api/v1/arkham/games/{ArkhamGameId}/undo/step/{Int}",
+      "resource": "ApiV1ArkhamGameUndoStepR",
+      "surface": "games",
+      "scope": "native-client",
+      "coverage": "required"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/arkham/games/{ArkhamGameId}/log/before/{Int}",
+      "resource": "ApiV1ArkhamGameLogBeforeR",
+      "surface": "games",
+      "scope": "native-client",
+      "coverage": "required"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/arkham/games/{ArkhamGameId}/file-bug",
       "resource": "ApiV1ArkhamGameBugR",
@@ -886,6 +910,54 @@
       "method": "DELETE",
       "path": "/api/v1/admin/rooms/{ArkhamGameId}",
       "resource": "ApiV1AdminRoomR",
+      "surface": "administration",
+      "scope": "administrator",
+      "coverage": "excluded"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/game-stats",
+      "resource": "ApiV1AdminGameStatsR",
+      "surface": "administration",
+      "scope": "administrator",
+      "coverage": "excluded"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/game-stats/refresh",
+      "resource": "ApiV1AdminGameStatsRefreshR",
+      "surface": "administration",
+      "scope": "administrator",
+      "coverage": "excluded"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/card-set-submissions",
+      "resource": "ApiV1AdminCardSetSubmissionsR",
+      "surface": "administration",
+      "scope": "administrator",
+      "coverage": "excluded"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/card-set-submissions/{ArkhamCardSetSubmissionId}",
+      "resource": "ApiV1AdminCardSetSubmissionR",
+      "surface": "administration",
+      "scope": "administrator",
+      "coverage": "excluded"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/card-set-submissions/{ArkhamCardSetSubmissionId}/approve",
+      "resource": "ApiV1AdminCardSetSubmissionApproveR",
+      "surface": "administration",
+      "scope": "administrator",
+      "coverage": "excluded"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/card-set-submissions/{ArkhamCardSetSubmissionId}/deny",
+      "resource": "ApiV1AdminCardSetSubmissionDenyR",
       "surface": "administration",
       "scope": "administrator",
       "coverage": "excluded"
