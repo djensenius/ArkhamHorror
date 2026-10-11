@@ -3478,13 +3478,14 @@ DYNAMIC_REASON_CLASSES = {
     "scope supplied by caller": "caller-scope",
     "recursive alias": "runtime-scope",
     "scope argument not a literal": "runtime-scope",
+    "alias scenarioI18n": "caller-scope",
+    "alias AgesUnwound.scenarioI18n": "caller-scope",
 }
 
 DYNAMIC_REASON_PREFIXES = {
     "caller scope ambiguous": "caller-scope",
     "unknown alias": "caller-scope",
     "ambiguous alias": "caller-scope",
-    "alias ": "caller-scope",
 }
 
 DYNAMIC_REASON_SUFFIXES = {
