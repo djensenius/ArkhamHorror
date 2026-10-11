@@ -808,6 +808,17 @@
         },
         "nonBlocking": {
           "type": "boolean"
+        },
+        "chaosTokenEffects": {
+          "description": "Per-token ability effects. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "resultLabel": {
+          "description": "Optional label for the result produced by this ability. Broad, out of scope for this contract slice.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -1264,6 +1275,17 @@
         },
         "nonBlocking": {
           "type": "boolean"
+        },
+        "chaosTokenEffects": {
+          "description": "Per-token ability effects. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "resultLabel": {
+          "description": "Optional label for the result produced by this ability. Broad, out of scope for this contract slice.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "description": "The complete production Ability payload for Cover Up's first reaction. JSON Schema cannot require source and requestor UUID equality; the production Haskell fixture assertion binds both to the same TreacheryId."
@@ -1412,8 +1434,8 @@
         },
         "contents": {
           "type": "array",
-          "minItems": 4,
-          "maxItems": 4,
+          "minItems": 5,
+          "maxItems": 5,
           "prefixItems": [
             {
               "const": "When"
@@ -1426,9 +1448,24 @@
             },
             {
               "$ref": "#/$defs/coverUpAtLeastOne"
+            },
+            {
+              "$ref": "#/$defs/coverUpAnySource"
             }
           ],
           "items": false
+        }
+      }
+    },
+    "coverUpAnySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag"
+      ],
+      "properties": {
+        "tag": {
+          "const": "AnySource"
         }
       }
     },
@@ -1784,6 +1821,17 @@
         },
         "nonBlocking": {
           "type": "boolean"
+        },
+        "chaosTokenEffects": {
+          "description": "Per-token ability effects. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "resultLabel": {
+          "description": "Optional label for the result produced by this ability. Broad, out of scope for this contract slice.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -2167,6 +2215,17 @@
         },
         "nonBlocking": {
           "type": "boolean"
+        },
+        "chaosTokenEffects": {
+          "description": "Per-token ability effects. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "resultLabel": {
+          "description": "Optional label for the result produced by this ability. Broad, out of scope for this contract slice.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -2748,6 +2807,17 @@
         },
         "nonBlocking": {
           "type": "boolean"
+        },
+        "chaosTokenEffects": {
+          "description": "Per-token ability effects. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "resultLabel": {
+          "description": "Optional label for the result produced by this ability. Broad, out of scope for this contract slice.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "description": "The complete production Ability display payload for Dissonant Voices' first forced ability. JSON Schema cannot require source and requestor UUID equality; the production Haskell fixture assertion binds both to the same TreacheryId."

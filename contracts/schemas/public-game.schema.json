@@ -79,10 +79,8 @@
       "format": "uuid"
     },
     "log": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
+      "description": "Recent game log rows. Upstream now emits structured rows while older rows can remain legacy strings; broad, out of scope for this contract slice.",
+      "type": "array"
     },
     "git": {
       "type": "string"

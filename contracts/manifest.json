@@ -2149,7 +2149,7 @@
       "schema": "contracts/schemas/location.schema.json",
       "schemaBranch": "ordinaryLocation",
       "basePositiveFixture": "contracts/fixtures/get-game.json",
-      "basePointer": "/game/locations/d5a66e84-c729-4066-8475-d8a155609025",
+      "basePointer": "/game/locations/782de537-8f5d-4eda-b849-2362e28402e5",
       "mutation": {
         "op": "remove",
         "pointer": "/shroud"
@@ -2167,7 +2167,7 @@
       "schema": "contracts/schemas/location.schema.json",
       "schemaBranch": "ordinaryLocation",
       "basePositiveFixture": "contracts/fixtures/get-game.json",
-      "basePointer": "/game/locations/d5a66e84-c729-4066-8475-d8a155609025",
+      "basePointer": "/game/locations/782de537-8f5d-4eda-b849-2362e28402e5",
       "mutation": {
         "op": "replace",
         "pointer": "/tokens/0/1",
@@ -2274,7 +2274,7 @@
       "mutation": {
         "op": "replace",
         "pointer": "",
-        "value": "d5a66e84-c729-4066-8475-d8a155609025"
+        "value": "782de537-8f5d-4eda-b849-2362e28402e5"
       },
       "expectedErrors": [
         {
@@ -14592,7 +14592,7 @@
             "contents"
           ],
           "keyword": "maxItems",
-          "messageContains": "['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}, 1, 1] is too long"
+          "messageContains": "['c01001', '782de537-8f5d-4eda-b849-2362e28402e5', '0e642a38-6354-4857-adaf-4c594641e77c', {'contents': [{'contents': 'c01001', 'tag': 'InvestigatorSource'}, 1], 'tag': 'AbilitySource'}, 1, 1] is too long"
         }
       ]
     },
@@ -14617,7 +14617,7 @@
             "contents"
           ],
           "keyword": "minItems",
-          "messageContains": "['c01001', 'd5a66e84-c729-4066-8475-d8a155609025', '0e642a38-6354-4857-adaf-4c594641e77c', {'tag': 'AbilitySource', 'contents': [{'tag': 'InvestigatorSource', 'contents': 'c01001'}, 1]}] is too short"
+          "messageContains": "['c01001', '782de537-8f5d-4eda-b849-2362e28402e5', '0e642a38-6354-4857-adaf-4c594641e77c', {'contents': [{'contents': 'c01001', 'tag': 'InvestigatorSource'}, 1], 'tag': 'AbilitySource'}] is too short"
         }
       ]
     },
@@ -14685,7 +14685,7 @@
             "tag": "WouldDiscoverClues",
             "contents": [
               "c01001",
-              "d5a66e84-c729-4066-8475-d8a155609025",
+              "782de537-8f5d-4eda-b849-2362e28402e5",
               "0e642a38-6354-4857-adaf-4c594641e77c",
               {
                 "tag": "AbilitySource",

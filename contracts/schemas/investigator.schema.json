@@ -47,6 +47,7 @@
     "health",
     "horrorHealed",
     "id",
+    "ignoredPerformedActions",
     "intellect",
     "keys",
     "killed",
@@ -320,8 +321,12 @@
     "movement": {
       "description": "InvestigatorAttrs.investigatorMovement (Maybe Movement): the in-progress move this investigator is currently mid-resolving, if any.",
       "oneOf": [
-        { "$ref": "./movement.schema.json" },
-        { "type": "null" }
+        {
+          "$ref": "./movement.schema.json"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "mulligansTaken": {
@@ -481,6 +486,10 @@
     "xp": {
       "type": "integer",
       "minimum": 0
+    },
+    "ignoredPerformedActions": {
+      "description": "Performed actions intentionally ignored for “first/same action” bookkeeping. Broad, out of scope for this contract slice.",
+      "type": "array"
     }
   }
 }

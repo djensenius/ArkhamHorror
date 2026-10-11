@@ -49,7 +49,13 @@
   "$defs": {
     "campaign": {
       "description": "A Campaign snapshot. Broad, out of scope for this contract slice.",
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "continueOptions": {
+          "description": "Campaign continuation options. Broad, out of scope for this contract slice.",
+          "type": "array"
+        }
+      }
     },
     "scenario": {
       "type": "object",
@@ -85,6 +91,7 @@
         "isPrelude",
         "isSideStory",
         "keys",
+        "locationGroups",
         "locationLayout",
         "log",
         "meta",
@@ -99,6 +106,7 @@
         "search",
         "setAsideCards",
         "setAsideKeys",
+        "substitutions",
         "standaloneCampaignLog",
         "started",
         "storyCards",
@@ -377,6 +385,14 @@
           "description": "Experience-point breakdown shown at scenario resolution. Broad, out of scope for this contract slice."
         },
         "customChaosBags": {
+          "type": "object"
+        },
+        "locationGroups": {
+          "description": "Scenario location-group declarations. Broad, out of scope for this contract slice.",
+          "type": "array"
+        },
+        "substitutions": {
+          "description": "Card-code substitutions active for this scenario, keyed by the replaced card code. Broad, out of scope for this contract slice.",
           "type": "object"
         }
       }

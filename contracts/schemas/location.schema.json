@@ -36,6 +36,7 @@
         "costToEnterUnrevealed",
         "canBeFlipped",
         "investigateSkill",
+        "grantedConnections",
         "placement",
         "keys",
         "seals",
@@ -51,6 +52,7 @@
         "beingRemoved",
         "concealedCards",
         "outOfGame",
+        "group",
         "connectedLocations",
         "investigators",
         "enemies",
@@ -301,6 +303,39 @@
         "modifiers": {
           "description": "Active modifiers targeting this location. Broad and additive, out of scope for this contract slice.",
           "type": "array"
+        },
+        "group": {
+          "description": "Location-group membership for map grouping, or null when the location is not in a group.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "index"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "grantedConnections": {
+          "description": "LocationId (UUID) connections granted by effects rather than printed map topology.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
         }
       }
     },
@@ -327,7 +362,9 @@
         "scarletKeys",
         "cardsUnderneath",
         "modifiers",
+        "group",
         "connectedLocations",
+        "grantedConnections",
         "placement",
         "brazier",
         "breaches",
@@ -508,6 +545,39 @@
         "concealedCards": {
           "description": "Concealed-card ids hidden at this location. Broad, out of scope for this contract slice.",
           "type": "array"
+        },
+        "group": {
+          "description": "Location-group membership for map grouping, or null when the location is not in a group.",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "index"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "grantedConnections": {
+          "description": "LocationId (UUID) connections granted by effects rather than printed map topology.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
         }
       }
     },

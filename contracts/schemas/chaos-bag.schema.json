@@ -42,11 +42,15 @@
       ]
     },
     "forceDraw": {
-      "description": "A forced ChaosTokenFace, when set. Same open string set as ChaosToken.chaosTokenFace.",
+      "description": "Forced ChaosTokenFace value(s), when set. Same open string set as ChaosToken.chaosTokenFace.",
       "type": [
         "string",
+        "array",
         "null"
-      ]
+      ],
+      "items": {
+        "type": "string"
+      }
     },
     "tokenPool": {
       "type": "array",
