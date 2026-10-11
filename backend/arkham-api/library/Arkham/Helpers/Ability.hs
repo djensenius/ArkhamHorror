@@ -8,8 +8,10 @@ import Arkham.ActiveCost.Base (ActiveCostTarget (ForAbility), activeCostTarget)
 import Arkham.Asset.Cards qualified as Assets
 import Arkham.Asset.Types (Field (..))
 import Arkham.Campaign.Types (Field (..))
+import Arkham.Card.CardCode (HasCardCode)
 import Arkham.Classes.HasGame
 import Arkham.Classes.Query
+import Arkham.Constants
 import Arkham.Customization
 import Arkham.ForMovement
 import Arkham.Game.Settings
@@ -22,6 +24,7 @@ import Arkham.Helpers.Query (allInvestigators, getActiveInvestigatorId)
 import Arkham.Helpers.Scenario (getScenarioDeck)
 import Arkham.Helpers.Window (getThatEnemy, getThatInvestigator, windowMatches)
 import Arkham.Homebrew.Defs (homebrewActionAffordability)
+import Arkham.I18n (cardNameVar, ikey', varStr, withI18n)
 import Arkham.Id
 import Arkham.Investigator.Types (Field (..))
 import Arkham.Matcher qualified as Matcher
@@ -37,6 +40,26 @@ import Arkham.Window qualified as Window
 
 getAbility :: HasGame m => AbilityRef -> m (Maybe Ability)
 getAbility ref = selectOne (Matcher.AbilityIs ref.source ref.index)
+
+{- | The label for the choice that resolves a successful investigation of @c@.
+
+It names the location, because that is what a successful investigation normally does to
+it. An ability whose success does something else carries its own key instead (see
+'withI18nResultLabel'); the location's name rides along as @name@ either way. The basic
+investigate action never overrides, so it never pays for the lookup.
+-}
+getInvestigateResultLabel
+  :: (HasGame m, HasCardCode c, Named c) => Source -> c -> m Text
+getInvestigateResultLabel source c = do
+  mLabel <- case source of
+    AbilitySource inner idx -> resultLabelOf inner idx
+    UseAbilitySource _ inner idx -> resultLabelOf inner idx
+    _ -> pure Nothing
+  pure $ withI18n $ cardNameVar c $ maybe (ikey' "label.discoverClueAt") (<> varStr) mLabel
+ where
+  resultLabelOf inner idx
+    | idx == AbilityInvestigate = pure Nothing
+    | otherwise = (>>= (.resultLabel)) <$> getAbility (AbilityRef inner idx)
 
 {- | An ability's window matcher with `ThisLocation` resolved against its source.
 
@@ -71,6 +94,19 @@ abilityCostIsInFlight ability = any isThisAbility <$> getActiveCosts
     ForAbility a -> a.ref == ability.ref
     _ -> False
 
+{- | Fold over an ability's modifiers to apply any 'SetAbilityCriteria' override
+to its printed criteria.
+
+Shared rather than inlined because 'getPreventedActions' reports the abilities
+'getCanPerformAbility' rejected, so the two have to test the same criteria. An
+override visible to only one of them has the log announce an ability that was
+never going to fire.
+-}
+applyCriteriaOverride :: ModifierType -> Criterion -> Criterion
+applyCriteriaOverride = \case
+  SetAbilityCriteria (CriteriaOverride c) -> const c
+  _ -> id
+
 getCanPerformAbility
   :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> m Bool
 getCanPerformAbility !iid !ws !ability = do
@@ -81,11 +117,7 @@ getCanPerformAbility !iid !ws !ability = do
   abilityModifiers <- getModifiers (AbilityTarget iid ability.ref)
 
   let
-    criteria = foldr setCriteria (abilityCriteria ability) abilityModifiers
-    setCriteria :: ModifierType -> Criterion -> Criterion
-    setCriteria = \case
-      SetAbilityCriteria (CriteriaOverride c) -> const c
-      _ -> id
+    criteria = foldr applyCriteriaOverride (abilityCriteria ability) abilityModifiers
     abWindow = abilityWindowFor ability
 
   runValidT do
@@ -185,7 +217,7 @@ explicitlyTargetsForcedAbilities = \case
 
 meetsActionRestrictions
   :: HasGame m => InvestigatorId -> [Window] -> Ability -> m Bool
-meetsActionRestrictions iid _ ab@Ability {..} = go abilityType
+meetsActionRestrictions iid ws ab@Ability {..} = go abilityType
  where
   go = \case
     Haunted -> pure False
@@ -195,13 +227,13 @@ meetsActionRestrictions iid _ ab@Ability {..} = go abilityType
     ForcedWhen _ aType -> go aType
     ActionAbility {actions} ->
       let as = actionsToList actions
-       in if null as then pure True else anyM (canDoAction iid ab) as
+       in if null as then pure True else anyM (canDoAction iid ws ab) as
     FastAbility' _ (AndActions []) -> pure True
-    FastAbility' _ actions -> anyM (canDoAction iid ab) (actionsToList actions)
+    FastAbility' _ actions -> anyM (canDoAction iid ws ab) (actionsToList actions)
     CustomizationReaction {} -> pure True
     ConstantReaction {} -> pure True
     ReactionAbility _ _ actions | null (actionsToList actions) -> pure True
-    ReactionAbility _ _ actions -> anyM (canDoAction iid ab) (actionsToList actions)
+    ReactionAbility _ _ actions -> anyM (canDoAction iid ws ab) (actionsToList actions)
     ForcedAbility _ -> pure True
     SilentForcedAbility _ -> pure True
     ForcedAbilityWithCost _ _ -> pure True
@@ -209,12 +241,13 @@ meetsActionRestrictions iid _ ab@Ability {..} = go abilityType
     ServitorAbility _ -> pure True
     ConstantAbility -> pure False
 
-canDoAction :: (HasCallStack, HasGame m) => InvestigatorId -> Ability -> Action -> m Bool
-canDoAction iid ab a = canDoAction' iid ab a
+canDoAction
+  :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> Action -> m Bool
+canDoAction iid ws ab a = canDoAction' iid ws ab a
 
 canDoAction'
-  :: (HasCallStack, HasGame m) => InvestigatorId -> Ability -> Action -> m Bool
-canDoAction' iid ab@Ability {abilitySource, abilityIndex, abilityCardCode} = \case
+  :: (HasCallStack, HasGame m) => InvestigatorId -> [Window] -> Ability -> Action -> m Bool
+canDoAction' iid ws ab@Ability {abilitySource, abilityIndex, abilityCardCode} = \case
   Action.Fight -> case abilitySource of
     LocationSource _lid -> pure True
     ConcealedCardSource _ -> pure True
@@ -336,8 +369,10 @@ canDoAction' iid ab@Ability {abilitySource, abilityIndex, abilityCardCode} = \ca
       , notNull <$> getScenarioDeck ExplorationDeck
       ]
   Action.Circle -> pure True
+  -- The ability's own windows, not [] -- a window-driven criterion such as
+  -- 'OnLocation' reads them and is unconditionally False without them.
   Action.HomebrewAction t ->
-    maybe (pure True) (passesCriteria iid Nothing abilitySource abilitySource [])
+    maybe (pure True) (passesCriteria iid Nothing abilitySource abilitySource ws)
       $ lookup (Action.HomebrewAction t) homebrewActionAffordability
 
 getCanAffordAbility

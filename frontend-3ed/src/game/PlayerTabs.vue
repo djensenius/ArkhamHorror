@@ -43,6 +43,18 @@ const hasChoices = (iid: string) => {
   const pid = ctx.playerOfInv(iid)
   return pid !== undefined && g.value.questions[pid] !== undefined
 }
+
+/* Holding every seat yourself there is nobody else to switch for, so the tab
+follows whoever is up -- the one being asked, else whose turn it is -- rather
+than being clicked back and forth all game. A tab picked by hand stays put
+until the game moves on to someone else. */
+const soloMultiHanded = computed(
+  () => sorted.value.length > 1 && sorted.value.every((i) => ctx.myInvestigators.value.includes(i.id)),
+)
+const acting = computed(() => sorted.value.find((i) => hasChoices(i.id))?.id ?? g.value.turn ?? null)
+watch([soloMultiHanded, acting], ([solo, who]) => {
+  if (solo && who && sorted.value.some((i) => i.id === who)) ctx.selectedTab.value = who
+})
 const tabClasses = (iid: string, status: string) => {
   const role = ctx.catalog.investigatorDefs?.[iid]?.roles?.[0]
   const pid = ctx.playerOfInv(iid)
@@ -50,15 +62,16 @@ const tabClasses = (iid: string, status: string) => {
     `tab--${ROLE_CLASS[role ?? ''] ?? 'Neutral'}`,
     iid === ctx.selectedTab.value ? 'tab--selected' : '',
     iid === g.value.turn ? 'tab--active-player' : '',
-    pid !== undefined && pid === g.value.leader ? 'tab--lead-player' : '',
     status !== 'Playing' ? 'inactive' : '',
     iid !== ctx.selectedTab.value && hasChoices(iid) ? 'tab--has-actions' : '',
   ]
 }
-const tabTitle = (iid: string) => {
+const tabTitle = (iid: string, delayed: boolean) => {
   const pid = ctx.playerOfInv(iid)
   const u = pid === undefined ? null : ctx.usernameOf(pid)
-  return u ? `Played by ${u}` : undefined
+  const who = u ? `Played by ${u}` : null
+  const wait = delayed ? 'Delayed: they skip their next turn' : null
+  return [who, wait].filter(Boolean).join(' · ') || undefined
 }
 </script>
 
@@ -71,13 +84,19 @@ const tabTitle = (iid: string) => {
           v-for="i in sorted"
           :key="i.id"
           :class="tabClasses(i.id, i.status)"
-          :title="tabTitle(i.id)"
+          :title="tabTitle(i.id, i.delayed)"
           @click="ctx.selectTab(i.id)"
         >
           <i v-if="i.id !== ctx.selectedTab.value && hasChoices(i.id)" class="tab-pulse" aria-hidden="true"></i>
-          <span>{{ ctx.invName(i.id) }}</span>
+          <span
+            >{{ ctx.invName(i.id)
+            }}<i v-if="i.delayed" class="delayed-icon" title="Delayed: they skip their next turn" aria-hidden="true"></i
+          ></span>
           <span v-if="sorted.length > 1 && hasChoices(i.id)" class="waiting-indicator" title="Waiting on this player"
-            ><span class="waiting-spinner">⟳</span></span
+            ><svg class="waiting-spinner" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" opacity=".3" />
+              <path d="M21 12a9 9 0 0 0-9-9" />
+            </svg></span
           >
         </li>
       </ul>

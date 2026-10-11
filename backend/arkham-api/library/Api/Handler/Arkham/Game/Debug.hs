@@ -59,6 +59,7 @@ import Data.Time.Clock
 import Data.UUID qualified as UUID
 import Database.Esqueleto.Experimental hiding (update)
 import Database.Persist qualified as Persist
+import Entity.Arkham.CustomCard
 import Entity.Arkham.LogEntry
 import Entity.Arkham.Player
 import Entity.Arkham.ReplayAttestation
@@ -628,7 +629,10 @@ postApiV1ArkhamGamesImportR = do
       pure
         $ toPublicGame
           importedGame
-          (GameLog $ map arkhamLogEntryBody agedLog)
+          -- An import's rows come straight from the export, so hand them over
+          -- the same way a live read would: structured where the row has a
+          -- payload, legacy text otherwise.
+          (GameLog $ map toLogRow agedLog)
 
 getApiV1ArkhamGameReplayAttestationR
   :: ArkhamGameId

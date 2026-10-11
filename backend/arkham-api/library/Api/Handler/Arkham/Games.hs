@@ -6,6 +6,7 @@
 module Api.Handler.Arkham.Games (
   getApiV1ArkhamGameR,
   getApiV1ArkhamGameSpectateR,
+  getApiV1ArkhamGameLogBeforeR,
   getApiV1ArkhamGameStepR,
   getApiV1ArkhamGamesR,
   postApiV1ArkhamGamesR,
@@ -38,7 +39,8 @@ import Arkham.Game.Settings (
 import Arkham.GameEnv (getCard)
 import Arkham.Helpers.Playable (getPlayabilityChecks)
 import Arkham.Id
-import Arkham.Message (Message (HandleOption))
+import Arkham.Log.Entry (LogRow)
+import Arkham.Message (Message (ChatMessage, HandleOption))
 import Arkham.Queue
 import Arkham.Source
 import Arkham.Window (mkWhen)
@@ -143,7 +145,7 @@ getApiV1ArkhamGameR gameId = do
   userId <- getRequestUserId
   withGameParticipant userId gameId \playerId -> runDB do
     g <- get404 gameId
-    gameLog <- getGameLog gameId Nothing
+    gameLog <- getGameLogTail gameId gameLogTailSize
     let Game {..} = g.currentData
     let
       player =
@@ -158,6 +160,19 @@ getApiV1ArkhamGameR gameId = do
         (PublicGame gameId g.name gameLog.entries g.currentData)
         (entityKey . fst <$> mEvt)
 
+{- | A page of scrollback: the rows immediately older than @before@.
+
+The game payload carries only the newest 'gameLogTailSize' entries, so this is
+how a reader reaches the rest. Membership is checked the same way the game read
+is, because the log can carry entries addressed to one seat.
+-}
+getApiV1ArkhamGameLogBeforeR :: ArkhamGameId -> Int -> Handler [LogRow]
+getApiV1ArkhamGameLogBeforeR gameId before = do
+  userId <- getRequestUserId
+  runDB do
+    void $ getBy404 (UniquePlayer userId gameId)
+    (.entries) <$> getGameLogBefore gameId before gameLogTailSize
+
 getApiV1ArkhamGameSpectateR :: ArkhamGameId -> Handler GetGameJson
 getApiV1ArkhamGameSpectateR gameId = do
   wsOptions <- websocketConnectionOptions
@@ -165,7 +180,7 @@ getApiV1ArkhamGameSpectateR gameId = do
   runDB do
     g <- get404 gameId
     let Game {..} = g.currentData
-    gameLog <- getGameLog gameId Nothing
+    gameLog <- getGameLogTail gameId gameLogTailSize
     let player = gameActivePlayerId
     mEvt <- lookupGameEvent gameId
     pure
@@ -200,8 +215,7 @@ getApiV1ArkhamGamesR = do
     groupBy p.arkhamGameId
     pure (p.arkhamGameId, countRows @Int)
   let countMap = Map.fromList [(gid, n) | (Value gid, Value n) <- playerCounts]
-  pure
-    $ map (\g -> toGameDetailsEntry g (fromMaybe 0 $ Map.lookup (coerce $ entityKey g) countMap)) games
+  traverse (\g -> tryGameDetailsEntry g (fromMaybe 0 $ Map.lookup (coerce $ entityKey g) countMap)) games
 
 -- | New Game
 postApiV1ArkhamGamesR :: Handler (PublicGame ArkhamGameId)
@@ -243,7 +257,7 @@ postApiV1ArkhamGamesR = do
     runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing) do
       for_ pids \pid -> addPlayer (PlayerId $ coerce pid)
       traverse_ (push . HandleOption) (toList options)
-      runMessages (gameIdToText gameId) Nothing
+      runMessages (gameIdToText gameId) noRunObservers
 
     updatedQueue <- liftIO $ readIORef (queueToRef queueRef)
     updatedGame <- liftIO $ readIORef gameRef
@@ -276,7 +290,14 @@ putApiV1ArkhamGameRawR gameId = do
   customCards <- userCustomCards userId
   response <- requireCheckJsonBody @_ @RawGameJsonPut
   mRoom <- lookupRoom gameId
-  updateGame customCards (Raw response.gameMessage) gameId mRoom
+  {- Stamp who is speaking from the session, not from the body: the client sends
+  the investigator and the words, and the name on the line is the authenticated
+  account's, so a line cannot be signed with somebody else's name. -}
+  let
+    attributed = case response.gameMessage of
+      ChatMessage iid _ text -> ChatMessage iid (Just user.username) text
+      other -> other
+  updateGame customCards (Raw attributed) gameId mRoom
 
 deleteApiV1ArkhamGameR :: ArkhamGameId -> Handler ()
 deleteApiV1ArkhamGameR gameId = do

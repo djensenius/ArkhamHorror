@@ -2,12 +2,16 @@
 import { computed } from 'vue'
 import { cardImg, img, isBroken, markBroken } from '@/assets'
 import { useGame } from '@/game/context'
+import ExamineIcon from '@/game/ExamineIcon.vue'
 import MythosTok from '@/game/MythosTok.vue'
 import { zoom, zoomFlip } from '@/game/overlays'
-import { show } from '@/game/util'
+import Tok from '@/game/Tok.vue'
+import { FOCUS, show } from '@/game/util'
 import type { CardId, Tagged } from '@/types'
 
-const props = defineProps<{ label: Tagged }>()
+// compact: an investigator named in passing -- traded with, attacked, chosen to
+// act -- is their standee, not their whole sheet; only the setup pick needs that
+const props = defineProps<{ label: Tagged; compact?: boolean }>()
 const ctx = useGame()
 
 const text = computed((): string | null => {
@@ -28,8 +32,6 @@ const text = computed((): string | null => {
       return 'Monster: ' + ctx.cardName(c)
     case 'CardLabel':
       return ctx.cardName(c)
-    case 'SkillLabel':
-      return 'Skill: ' + c
     case 'DieLabel':
       return `Die ${c[0] + 1} (${c[1]})`
     case 'ScenarioLabel':
@@ -37,7 +39,9 @@ const text = computed((): string | null => {
     case 'SourceLabel':
       return ctx.sourceLabelText(c)
     case 'CardsLabel':
+    case 'CardCodesLabel':
     case 'InvestigatorLabel':
+    case 'SkillLabel':
     case 'TokenLabel':
       return null
     default:
@@ -50,6 +54,13 @@ const cards = computed(() =>
     ? (props.label.contents[1] as CardId[]).map((cid) => ({ cid, src: cardImg(ctx.cardCode(cid)) }))
     : [],
 )
+// a choice may name cards by code rather than by id, for cards that are not on
+// the table yet -- a starting possession is minted only once it is taken
+const codeCards = computed(() =>
+  props.label.tag === 'CardCodesLabel'
+    ? (props.label.contents[1] as string[]).map((code) => ({ code, src: cardImg(code) }))
+    : [],
+)
 // choosing an investigator is easier with the sheet in front of you; the
 // magnifier opens it flippable, since the back carries the starting possessions
 const inv = computed(() => {
@@ -59,12 +70,17 @@ const inv = computed(() => {
     iid,
     front: img(`investigators/${iid}/front.webp`),
     back: img(`investigators/${iid}/back.webp`),
+    standee: img(`investigators/${iid}/standee.webp`),
   }
 })
 </script>
 
 <template>
   <template v-if="text !== null">{{ text }}</template>
+  <!-- a skill is the focus token that sits on it, which says it without the word -->
+  <template v-else-if="label.tag === 'SkillLabel'"
+    ><Tok :name="FOCUS[label.contents] ?? 'focus-lore'" :title="`${label.contents} focus`" :size="30" /></template
+  >
   <template v-else-if="label.tag === 'TokenLabel'"
     ><MythosTok :token="label.contents" :size="24" /> {{ String(label.contents).replace(/Token$/, '') }}</template
   >
@@ -79,10 +95,35 @@ const inv = computed(() => {
           title="Enlarge"
           @click.stop="zoom(c.src)"
           @keydown.enter.stop.prevent="zoom(c.src)"
-          >&#x2315;</span
+          ><ExamineIcon /></span
         ></span
       ></span
     ><span class="label-cards-text">{{ label.contents[0] }}</span></template
+  >
+  <template v-else-if="label.tag === 'CardCodesLabel' && !codeCards.length">{{ label.contents[0] }}</template>
+  <template v-else-if="label.tag === 'CardCodesLabel'"
+    ><span class="label-cards"
+      ><span v-for="c in codeCards" :key="c.code" class="label-card" :class="{ 'no-art': isBroken(c.src) }"
+        ><img v-if="!isBroken(c.src)" :src="c.src" alt="" @error="markBroken(c.src)" /><span
+          class="label-zoom"
+          role="button"
+          tabindex="0"
+          title="Enlarge"
+          @click.stop="zoom(c.src)"
+          @keydown.enter.stop.prevent="zoom(c.src)"
+          ><ExamineIcon /></span
+        ></span
+      ></span
+    ><span class="label-cards-text">{{ label.contents[0] }}</span></template
+  >
+  <template v-else-if="inv && compact"
+    ><img
+      v-if="!isBroken(inv.standee)"
+      class="label-standee"
+      :src="inv.standee"
+      :alt="ctx.invName(inv.iid)"
+      @error="markBroken(inv.standee)"
+    />{{ ctx.invName(inv.iid) }}</template
   >
   <template v-else-if="inv"
     ><span class="label-cards"
@@ -94,7 +135,7 @@ const inv = computed(() => {
           title="Enlarge, then click to flip"
           @click.stop="zoomFlip(inv.front, inv.back, 1126 / 900)"
           @keydown.enter.stop.prevent="zoomFlip(inv.front, inv.back, 1126 / 900)"
-          >&#x2315;</span
+          ><ExamineIcon /></span
         ></span
       ></span
     ><span class="label-cards-text">{{ ctx.invName(inv.iid) }}</span></template

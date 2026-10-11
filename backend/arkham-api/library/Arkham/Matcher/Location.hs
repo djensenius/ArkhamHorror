@@ -16,6 +16,7 @@ import Arkham.Key
 import Arkham.Label
 import Arkham.Location.Brazier
 import Arkham.Location.Grid
+import Arkham.Location.Group
 import Arkham.LocationSymbol
 import {-# SOURCE #-} Arkham.Matcher.Ability
 import {-# SOURCE #-} Arkham.Matcher.Asset
@@ -94,6 +95,7 @@ data LocationMatcher
   | LocationWithClues ValueMatcher
   | LocationWithHorror ValueMatcher
   | LocationWithShroud ValueMatcher
+  | LocationWithPrintedShroud ValueMatcher
   | LocationWithShroudLessThanOrEqualToLessThanEnemyMaybeField EnemyId (Field Enemy (Maybe Int))
   | LocationWithMostClues LocationMatcher
   | LocationWithMostInvestigators LocationMatcher
@@ -184,6 +186,8 @@ data LocationMatcher
   | LocationInRowOf LocationMatcher
   | LocationInColumnOf LocationMatcher
   | LocationInPosition Pos
+  | -- | A member of the group drawn in that box.
+    LocationInGroup LocationGroupKey
   | LocationWhenCriteria Criterion
   | LocationWithAbility AbilityMatcher
   | OutOfGameLocation

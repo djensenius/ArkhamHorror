@@ -6,7 +6,21 @@ import { useGame } from '@/game/context'
 import OutlineFilter from '@/game/OutlineFilter.vue'
 import SpaceChips from '@/game/SpaceChips.vue'
 import Tok from '@/game/Tok.vue'
-import { HUB_R, STREET_H, STREET_W, TILE_H, TILE_W, cssName } from '@/game/util'
+import {
+  CONNECTOR_D,
+  CONNECTOR_W,
+  CORNER_ART_MIDDLE,
+  CORNER_W,
+  HUB_R,
+  PORTAL_W,
+  STREET_H,
+  STREET_W,
+  TILE_ART_H,
+  TILE_ART_W,
+  TILE_H,
+  TILE_W,
+  cssName,
+} from '@/game/util'
 import type { Game, Layout } from '@/types'
 
 const ctx = useGame()
@@ -31,10 +45,60 @@ const geo = computed(() => {
 })
 
 const streetType = (sid: string) => (g.value.board.spaces[sid]?.kind?.contents ?? 'Residential').toLowerCase()
+/* Streets are drawn from streets/, while travel routes, mysteries and thresholds
+-- the pieces that join or hang off the map -- are drawn from connectors/. A
+mystery is named for itself (devil-reef); the rest are named for their type. */
+const CONNECTOR: Record<string, string> = {
+  CountryRoad: 'country-roads',
+  FerryTerminal: 'ferry-terminal',
+  TrainPlatform: 'train-platform',
+  HiddenPath: 'hidden-path',
+  DerelictPortal: 'derelict-portal',
+  WildGateway: 'wild-gateway',
+}
+const connectorArt = (sid: string) => {
+  const kind = g.value.board.spaces[sid]?.kind
+  if (kind?.tag === 'MysterySpace') return sid
+  const connector = kind?.contents && CONNECTOR[kind.contents as string]
+  return connector || null
+}
+/* A derelict portal is laid between two tiles the way a street is, so it is drawn
+like one -- along the join and filling a street's box -- and not like the pieces that
+hang off a single edge. Its art joins at the top and bottom rather than along its
+length, though, so it stands a quarter turn from where a street would. */
+const laidLikeAStreet = (sid: string) =>
+  g.value.board.spaces[sid]?.kind?.contents === 'DerelictPortal'
+/* A hidden path is not laid against anything: it stands in the junction three tiles
+leave between them, and its art reaches out to all three. */
+const standsInAJunction = (sid: string) => g.value.board.spaces[sid]?.kind?.contents === 'HiddenPath'
+const spaceArt = (sid: string) => {
+  const connector = connectorArt(sid)
+  return connector ? img(`connectors/${connector}.webp`) : img(`streets/${streetType(sid)}.webp`)
+}
 const streetAngle = (a: number) => {
   let angle = a % 360
   if (angle > 90 && angle <= 270) angle -= 180
   return angle
+}
+/* A street is a symmetric strip laid along the line joining its two tiles, so
+either way round reads the same and the angle folds to the nearer half turn. A
+connector hangs off a single edge, and the tab it joins by is the bottom of its
+art; the backend gives that edge's outward normal, so the bottom has to come
+round to face back along it. */
+const spaceAngle = (sid: string, a: number) => {
+  /* A street reads the same either way round, so its angle folds to the nearer half
+  turn; a threshold does not -- its icons are printed on one side -- so it keeps the
+  angle it was laid at, which is what says which way round it ended up. */
+  if (laidLikeAStreet(sid)) return a + 90
+  return connectorArt(sid) ? a + 90 : streetAngle(a)
+}
+// a street fills its box; a connector is drawn to fit a smaller square one, keeping its own shape
+const spaceBox = (sid: string) => {
+  if (standsInAJunction(sid)) return { w: CORNER_W, h: CORNER_W, fit: 'xMidYMid meet' }
+  // the portal's art joins top and bottom, so its length is the box's height
+  if (laidLikeAStreet(sid)) return { w: PORTAL_W, h: PORTAL_W, fit: 'xMidYMid meet' }
+  if (connectorArt(sid)) return { w: CONNECTOR_W, h: CONNECTOR_D, fit: 'xMidYMid meet' }
+  return { w: STREET_W, h: STREET_H, fit: 'none' }
 }
 
 interface Shape {
@@ -47,6 +111,7 @@ interface Shape {
   y: number
   w: number
   h: number
+  fit: string
   transform?: string
 }
 // the outline of one space: a location's wedge of its tile, or a street's body between the tiles
@@ -71,31 +136,81 @@ function spaceShape(game: Game, L: Layout, px: (n: number) => number, py: (n: nu
       clipId: id,
       clipD: `M${pt(at(t.x, t.y, HUB_R, c - 60))} L${far.join(' L')} L${pt(at(t.x, t.y, HUB_R, c + 60))} A${hub} ${hub} 0 0 0 ${pt(at(t.x, t.y, HUB_R, c - 60))} Z`,
       href: img(`tiles/${t.neighborhood}.webp`),
-      x: px(t.x) - TILE_W / 2,
-      y: py(t.y) - TILE_H / 2,
-      w: TILE_W,
-      h: TILE_H,
+      x: px(t.x) - TILE_ART_W / 2,
+      y: py(t.y) - TILE_ART_H / 2,
+      w: TILE_ART_W,
+      h: TILE_ART_H,
+      fit: 'none',
     }
   }
   const st = L.streets.find((st) => st.space === sid)
   if (!st) return null
-  const angle = streetAngle(st.angle)
+  const angle = spaceAngle(sid, st.angle)
   const cx = px(st.x),
     cy = py(st.y)
   // the whole tile, letting its own alpha set the border as a neighborhood tile's does
+  const box = spaceBox(sid)
   return {
     sid,
     key,
     clipId: null,
     clipD: null,
-    href: img(`streets/${streetType(sid)}.webp`),
-    x: cx - STREET_W / 2,
-    y: cy - STREET_H / 2,
-    w: STREET_W,
-    h: STREET_H,
+    href: spaceArt(sid),
+    x: cx - box.w / 2,
+    y: cy - box.h / 2,
+    w: box.w,
+    h: box.h,
+    fit: box.fit,
     transform: `rotate(${angle} ${cx} ${cy})`,
   }
 }
+
+/* A junction piece is placed by its own middle, which sits a little off the middle of its
+picture. The piece is hung on its spot and the offset is taken back out inside the turn --
+`rotate() translate()` turns the shift along with the picture -- so one number serves at
+every angle, and a piece that is turning carries its own middle round with it instead of
+drifting while it goes. */
+const artOffset = (sid: string) => {
+  if (!standsInAJunction(sid)) return { dx: 0, dy: 0 }
+  const art = { w: CORNER_W, h: (CORNER_W * 890) / 1000 }
+  return { dx: (CORNER_ART_MIDDLE.x - 0.5) * art.w, dy: (CORNER_ART_MIDDLE.y - 0.5) * art.h }
+}
+
+/* A piece that walks is turned to a new angle, and 300 degrees to 60 is a sixth of a turn
+one way or five sixths the other. CSS animates the number it is given, so the number has to
+carry on from the last one: this keeps the turn the piece has already made and picks the
+reading of the new angle nearest it, which is always the short way round. */
+const spun = new Map<string, number>()
+const continuing = (sid: string, angle: number) => {
+  const was = spun.get(sid)
+  const next = was == null ? angle : angle + 360 * Math.round((was - angle) / 360)
+  spun.set(sid, next)
+  return next
+}
+
+// every street-like space as it is drawn: a street fills its box, a connector fits inside a smaller one
+const streetPieces = computed(() => {
+  const G = geo.value
+  if (!G) return []
+  return G.L.streets.map((st) => {
+    const box = spaceBox(st.space)
+    const walks = standsInAJunction(st.space)
+    const angle = walks ? continuing(st.space, spaceAngle(st.space, st.angle)) : spaceAngle(st.space, st.angle)
+    const off = artOffset(st.space)
+    return {
+      sid: st.space,
+      href: spaceArt(st.space),
+      x: G.px(st.x) - box.w / 2,
+      y: G.py(st.y) - box.h / 2,
+      w: box.w,
+      h: box.h,
+      objectFit: (box.fit === 'none' ? 'fill' : 'contain') as 'fill' | 'contain',
+      angle,
+      off,
+      walks,
+    }
+  })
+})
 
 const outlined = computed(() => {
   const G = geo.value
@@ -203,22 +318,80 @@ function applyView() {
     board = boardEl.value
   if (!vp || !fit || !board) return
   const full = isFull()
+  /* full screen is the window: drop the height we pinned for the band before
+  measuring, or we measure the band we are leaving */
+  if (full) vp.style.height = ''
   const W = board.offsetWidth,
     H = board.offsetHeight,
     vw = vp.clientWidth
   const [We, He] = boxSize(W, H)
-  view.base = full ? Math.min(vw / We, vp.clientHeight / He) : Math.min(1, vw / We)
-  fit.style.height = full ? `${vp.clientHeight}px` : `${He * view.base}px`
-  const vh = full ? vp.clientHeight : He * view.base
+  /* the viewport's own height bounds the map as well as its width, so the band
+  keeps the height the layout gave it rather than growing to the board's own */
+  /* The band bounds the column, and whatever shares it with the map -- the codex --
+  takes its share first; the map has what is left. Read from the CSS bound rather
+  than from our own last height, so the measurement cannot chase itself. */
+  // the map shares a stage with the active card; its column is what the band sizes
+  const col = vp.closest('.map-col')
+  let room = vp.clientHeight
+  if (!full) {
+    /* what bounds the map: the band, or -- where the table fills the window -- the
+    height its own column was given, which does not depend on the map */
+    const capped = parseFloat(getComputedStyle(vp).maxHeight)
+    const cap = Number.isFinite(capped) ? capped : (col?.clientHeight ?? 0)
+    if (col && cap > 0) {
+      const gap = parseFloat(getComputedStyle(col).rowGap) || 0
+      let taken = 0
+      // only the cards under the map share its band; anything else below flows on
+      for (const kid of col.children)
+        if (kid.classList.contains('under-map')) taken += (kid as HTMLElement).offsetHeight + gap
+      /* the cards give way rather than squeeze the map: on a short screen they
+      simply fall past the band instead of taking most of it */
+      const shared = cap - taken
+      room = shared >= cap * 0.6 ? shared : cap
+    }
+  }
+  /* A board narrower than its column leaves dead space either side, so the column
+  asks for only the width the map draws in and the rest of the row gets it. Taken
+  from the height the band allows, so the measurement cannot oscillate. */
+  const sized = (col ?? vp) as HTMLElement
+  if (!full) {
+    /* The column asks for exactly the width the map draws in at the band's height
+    and never for more, so the spare width of the row goes to the sheet beside it.
+    It still gives way, last, when the row is too narrow to hold everything. */
+    /* with the rail beside it the column takes the row's spare width instead of
+    leaving it in the gaps, so the card over the board sits against the rail */
+    sized.style.flexGrow = matchMedia('(min-width: 1801px)').matches ? '1' : '0'
+    sized.style.flexShrink = '1'
+    sized.style.flexBasis = `${Math.ceil(We * (room / He))}px`
+  } else {
+    sized.style.flexGrow = ''
+    sized.style.flexBasis = ''
+    sized.style.flexShrink = ''
+  }
+  const vwNow = full ? vw : vp.clientWidth
+  // the map grows into whatever the band gives it rather than stopping at its own size
+  view.base = full ? Math.min(vw / We, room / He) : Math.min(vwNow / We, room / He)
+  // and a board shorter than the band gives the rest of the band back
+  const vh = full ? room : Math.min(room, Math.round(He * view.base))
+  // full screen is the window's height, not the one we measured for the band
+  vp.style.height = full ? '' : `${vh}px`
+  // the active card rides over the board and reads this to cap its own height
+  const stage = vp.closest('.map-stage') as HTMLElement | null
+  if (stage) {
+    if (full) stage.style.removeProperty('--stage-h')
+    else stage.style.setProperty('--stage-h', `${vh}px`)
+  }
+  fit.style.height = `${vh}px`
   const s = view.base * view.zoom,
     bw = We * s,
     bh = He * s
   if (view.fresh) {
-    view.x = (vw - bw) / 2
+    view.x = (vwNow - bw) / 2
     view.y = (vh - bh) / 2
     view.fresh = false
   }
-  view.x = bw <= vw ? (vw - bw) / 2 : Math.min(0, Math.max(vw - bw, view.x))
+  const vwFinal = full ? vw : vp.clientWidth
+  view.x = bw <= vwFinal ? (vwFinal - bw) / 2 : Math.min(0, Math.max(vwFinal - bw, view.x))
   view.y = bh <= vh ? (vh - bh) / 2 : Math.min(0, Math.max(vh - bh, view.y))
   /* rotate about the board's centre, then bring the turned box back to the origin,
   since the board is laid out from its top left */
@@ -290,6 +463,9 @@ function zoomToTile(bx: number, by: number) {
   view.y = vh / 2 - uy * s
   applyView()
 }
+
+// while a space is being chosen the pieces on the board are not what is being asked for
+const pickingSpace = computed(() => Object.keys(ctx.spaceChoices.value).length > 0)
 
 const hideTokens = ref(!!readPref('ah3e-hide-tokens'))
 function toggleTokens(hide = !hideTokens.value) {
@@ -379,6 +555,7 @@ function keydown(e: KeyboardEvent) {
   else if (e.key === '-' || e.key === '_') zoomBy(1 / 1.4)
   else if (e.key === '0') resetView()
   else if (e.key === 't' || e.key === 'T') toggleTokens()
+  else if (e.key === 'p' || e.key === 'P') ctx.toggleStandees()
 }
 const refit = () => applyView()
 
@@ -404,7 +581,7 @@ onUnmounted(() => {
     id="mapViewport"
     ref="vpEl"
     class="map-wrap"
-    :class="{ 'hide-tokens': hideTokens, zoomed, panning }"
+    :class="{ 'hide-tokens': hideTokens, zoomed, panning, 'picking-space': pickingSpace }"
     @pointerdown="pointerDown"
     @pointermove="pointerMove"
     @pointerup="pointerEnd"
@@ -417,15 +594,17 @@ onUnmounted(() => {
       <div v-if="geo" ref="fitEl" class="board-fit">
         <div ref="boardEl" class="board" :style="{ width: `${geo.width}px`, height: `${geo.height}px` }">
           <img
-            v-for="st in geo.L.streets"
-            :key="`street-${st.space}`"
-            :src="img(`streets/${streetType(st.space)}.webp`)"
+            v-for="st in streetPieces"
+            :key="`street-${st.sid}`"
+            :src="st.href"
+            :class="{ walks: st.walks }"
             :style="{
-              left: `${geo.px(st.x) - STREET_W / 2}px`,
-              top: `${geo.py(st.y) - STREET_H / 2}px`,
-              width: `${STREET_W}px`,
-              height: `${STREET_H}px`,
-              transform: `rotate(${streetAngle(st.angle)}deg)`,
+              left: `${st.x}px`,
+              top: `${st.y}px`,
+              width: `${st.w}px`,
+              height: `${st.h}px`,
+              objectFit: st.objectFit,
+              transform: `rotate(${st.angle}deg) translate(${-st.off.dx}px, ${-st.off.dy}px)`,
             }"
           />
           <img
@@ -433,10 +612,10 @@ onUnmounted(() => {
             :key="`tile-${t.neighborhood}`"
             :src="img(`tiles/${t.neighborhood}.webp`)"
             :style="{
-              left: `${geo.px(t.x) - TILE_W / 2}px`,
-              top: `${geo.py(t.y) - TILE_H / 2}px`,
-              width: `${TILE_W}px`,
-              height: `${TILE_H}px`,
+              left: `${geo.px(t.x) - TILE_ART_W / 2}px`,
+              top: `${geo.py(t.y) - TILE_ART_H / 2}px`,
+              width: `${TILE_ART_W}px`,
+              height: `${TILE_ART_H}px`,
             }"
           />
           <svg
@@ -461,7 +640,7 @@ onUnmounted(() => {
                 :y="s.y"
                 :width="s.w"
                 :height="s.h"
-                preserveAspectRatio="none"
+                :preserveAspectRatio="s.fit"
                 :clip-path="s.clipId ? `url(#${s.clipId})` : undefined"
                 :transform="s.transform"
               />
@@ -487,7 +666,7 @@ onUnmounted(() => {
                 :y="s.y"
                 :width="s.w"
                 :height="s.h"
-                preserveAspectRatio="none"
+                :preserveAspectRatio="s.fit"
                 :clip-path="s.clipId ? `url(#${s.clipId})` : undefined"
                 :transform="s.transform"
               />
@@ -562,6 +741,18 @@ onUnmounted(() => {
           <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" />
           <circle cx="12" cy="12" r="3" />
           <path class="eye-off" d="M4 4l16 16" :style="{ display: hideTokens ? '' : 'none' }" />
+        </svg>
+      </button>
+      <button
+        id="piecesToggle"
+        :title="ctx.standeePieces.value ? 'Show investigators as round markers (P)' : 'Show investigators as standees (P)'"
+        :aria-label="ctx.standeePieces.value ? 'Show round markers' : 'Show standees'"
+        :aria-pressed="ctx.standeePieces.value"
+        @click="ctx.toggleStandees()"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <template v-if="ctx.standeePieces.value"><circle cx="12" cy="12" r="7" /></template>
+          <template v-else><path d="M7 20V9a5 5 0 0 1 10 0v11z" /><path d="M6 20h12" /></template>
         </svg>
       </button>
       <button id="mapFullToggle" title="Full screen map" aria-label="Full screen map" @click="toggleMapFull()">⛶</button>

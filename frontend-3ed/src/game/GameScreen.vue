@@ -3,11 +3,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ActiveSide from '@/game/ActiveSide.vue'
 import BoardMap from '@/game/BoardMap.vue'
 import CodexPanel from '@/game/CodexPanel.vue'
+import MythosPanel from '@/game/MythosPanel.vue'
 import { useGame } from '@/game/context'
 import Decks from '@/game/Decks.vue'
 import LogPanel from '@/game/LogPanel.vue'
-import PlayerTabs from '@/game/PlayerTabs.vue'
+import PlayerAreas from '@/game/PlayerAreas.vue'
 import Questions from '@/game/Questions.vue'
+import UnderMap from '@/game/UnderMap.vue'
 import ScenarioChoice from '@/game/ScenarioChoice.vue'
 import ScenarioSheet from '@/game/ScenarioSheet.vue'
 import SpaceChips from '@/game/SpaceChips.vue'
@@ -18,6 +20,14 @@ const ctx = useGame()
 const g = computed(() => ctx.game.value!)
 const tv = computed(() => ctx.tv.value!)
 const inGame = computed(() => g.value.scenario !== null)
+/* Picking investigators there is nothing on the table to look at, so the board,
+the cup, the codex and the deck row stand down and the choice takes the room. */
+// an investigator label alone is not enough: "Take your turn" wears one too
+const picking = computed(() =>
+  Object.values(g.value.questions).some((q) =>
+    q.choices.some((c) => c.messages?.some((m) => m.tag === 'SelectInvestigator')),
+  ),
+)
 
 // a pill is plain text, or {text, cls, color} when it wants the phase tint
 type Pill = string | { text: string; cls?: string; color?: string }
@@ -105,16 +115,35 @@ onUnmounted(() => {
   document.removeEventListener('transitionend', onTransitionEnd)
   document.body.classList.remove('log-open')
 })
+/* The rail is a column of its own only on a wide screen. Narrower, its two halves
+belong with the columns they answer to: the question under the active card, the
+player areas under the codex, each following its own column rather than waiting
+for the taller one as a grid row would make it. */
+const railQuery = window.matchMedia('(min-width: 1801px)')
+const wideRail = ref(railQuery.matches)
+const onRailQuery = (e: MediaQueryListEvent) => (wideRail.value = e.matches)
+/* Narrower still and the sheet's column has no room for the question either, so it
+goes above the player areas in the map's column, where the eye already is. */
+const stackedQuery = window.matchMedia('(max-width: 1100px)')
+const stacked = ref(stackedQuery.matches)
+const onStackedQuery = (e: MediaQueryListEvent) => (stacked.value = e.matches)
+onMounted(() => {
+  railQuery.addEventListener('change', onRailQuery)
+  stackedQuery.addEventListener('change', onStackedQuery)
+})
+onUnmounted(() => {
+  railQuery.removeEventListener('change', onRailQuery)
+  stackedQuery.removeEventListener('change', onStackedQuery)
+})
+
 const close = () => {
   if (confirm('Close this game for everyone?')) props.onClose()
 }
-// the raw JSON is only stringified while its panel is open
-const rawOpen = ref(false)
 </script>
 
 <template>
   <header>
-    <h1><RouterLink to="/" class="home-link">AH3e</RouterLink> {{ tv.name }}</h1>
+    <h1><RouterLink to="/" class="home-link">AH3e</RouterLink> <span class="table-name">{{ tv.name }}</span></h1>
     <div id="status" class="pills">
       <template v-for="(p, k) in pills" :key="k">
         <span v-if="typeof p === 'string'" class="pill">{{ p }}</span>
@@ -146,8 +175,14 @@ const rawOpen = ref(false)
     >
       Debug
     </button>
-    <button id="logToggle" class="log-toggle" aria-controls="logPanel" @click="ctx.toggleLog()">
-      Log<span v-if="ctx.logUnread.value" id="logUnread" class="log-unread">{{ ctx.logUnread.value > 99 ? '99+' : ctx.logUnread.value }}</span>
+    <button
+      id="logToggle"
+      class="log-toggle"
+      :class="{ unread: ctx.logUnread.value > 0 }"
+      aria-controls="logPanel"
+      @click="ctx.toggleLog()"
+    >
+      Log<span v-if="ctx.logUnread.value" id="logUnread">&nbsp;{{ ctx.logUnread.value > 99 ? '99+' : ctx.logUnread.value }}</span>
     </button>
     <button v-if="ctx.isHost.value" id="abandon" @click="close">Close game</button>
   </header>
@@ -156,10 +191,30 @@ const rawOpen = ref(false)
   <template v-else>
     <section id="mapSection" class="map-section">
       <div class="map-row">
-        <ScenarioSheet />
-        <BoardMap />
+        <div class="sheet-col">
+          <ScenarioSheet />
+          <MythosPanel v-if="!picking" />
+          <!-- with two columns the cards keep the sheet company; otherwise they follow the map -->
+          <UnderMap v-if="!wideRail && !stacked && !picking" />
+          <!-- with three, the display joins the deck row and the codex ends this column -->
+          <CodexPanel v-if="wideRail && !picking" />
+        </div>
+        <div class="map-col">
+          <!-- the active card rides over the board, beside whatever asks about it -->
+          <div v-if="!picking" class="map-stage">
+            <BoardMap />
+            <ActiveSide />
+          </div>
+          <Questions v-if="!wideRail || picking" />
+          <PlayerAreas v-if="!wideRail && !picking" />
+          <UnderMap v-if="stacked && !picking" />
+        </div>
+        <div v-if="wideRail && !picking" class="side-rail">
+          <Questions />
+          <PlayerAreas />
+        </div>
       </div>
-      <div id="otherSpaces">
+      <div v-if="!picking" id="otherSpaces">
         <span
           v-for="s in others"
           :key="s.id"
@@ -169,31 +224,9 @@ const rawOpen = ref(false)
           ><b>{{ s.name }}</b><SpaceChips :sid="s.id"
         /></span>
       </div>
-      <Decks />
+      <div v-if="!picking" class="card-strip">
+        <Decks :part="wideRail ? 'all' : 'decks'" />
+      </div>
     </section>
-    <main id="game">
-      <div>
-        <div class="ask-row">
-          <ActiveSide />
-          <Questions />
-        </div>
-        <section style="margin-top: 12px">
-          <h2>Player areas</h2>
-          <div id="investigators">
-            <PlayerTabs v-if="Object.keys(g.investigators).length" />
-            <em v-else>None yet.</em>
-          </div>
-        </section>
-      </div>
-      <div>
-        <CodexPanel />
-        <section style="margin-top: 12px">
-          <details @toggle="rawOpen = ($event.target as HTMLDetailsElement).open">
-            <summary>Raw game JSON</summary>
-            <pre v-if="rawOpen" id="raw">{{ JSON.stringify(g, null, 1) }}</pre>
-          </details>
-        </section>
-      </div>
-    </main>
   </template>
 </template>

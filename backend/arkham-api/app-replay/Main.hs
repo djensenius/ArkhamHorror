@@ -19,9 +19,11 @@ import Api.Arkham.Export
 import Api.Arkham.Helpers (GameApp (..), runGameApp)
 import Arkham.Classes.GameLogger (ClientMessage (..))
 import Arkham.Classes.HasQueue (newQueue, pushAll)
-import Arkham.Game (Game (..), PublicGame (..), runMessages)
+import Arkham.Game (Game (..), PublicGame (..), RunObservers (..), runMessages)
 import Arkham.Game.Diff (diff, patchValueWithRecovery)
 import Arkham.Game.Runner (handleActionDiff)
+import Arkham.Log.Entry (logEntryToLines)
+import Arkham.Log.Narrator (emptyNarrator, flushNarrator)
 import Arkham.Message (Message (ClearUI, SetActivePlayer))
 import Arkham.Metrics (dumpMetricsTo, enableMetrics, formatMetrics, withMetric)
 import Arkham.Queue (queueToRef)
@@ -82,6 +84,10 @@ instance, and the embedded card 'Value's are enormous, so keep it terse.
 formatClientMessage :: ClientMessage -> String
 formatClientMessage = \case
   ClientText t -> "text " <> T.unpack t
+  -- Multi-line on purpose: nesting is the point of a structured entry, and a
+  -- trace that flattens it cannot show whether the grouping is right.
+  ClientLogEntry e -> "log\n" <> T.unpack (T.intercalate "\n" (map ("  " <>) (logEntryToLines e)))
+  ClientRetractLog tag -> "retract " <> T.unpack tag
   ClientError t -> "error " <> T.unpack t
   ClientCard t v -> "card " <> T.unpack t <> " " <> briefValue v
   ClientCardOnly pid t v -> "cardOnly[" <> show pid <> "] " <> T.unpack t <> " " <> briefValue v
@@ -307,6 +313,13 @@ runReplay opts exportInput scriptInput = do
         | optTrace opts = Just (\m -> hPutStrLn stderr ("> " <> show m))
         | otherwise = Nothing
 
+  -- Narrate while replaying, so --trace shows the derived log beside the
+  -- messages it came from. That pairing is how you tell whether a narration is
+  -- actually right.
+  narratorRef <- newIORef emptyNarrator
+  let observers ref =
+        RunObservers {observeMessage = tracerCallback, observeNarration = Just ref}
+
   gameRef <- newIORef currentData
   queueRef <- newQueue resumeQueue
   genRef <- newIORef (mkStdGen currentData.gameSeed)
@@ -324,7 +337,7 @@ runReplay opts exportInput scriptInput = do
       drainMessages = do
         completed <-
           runReplayMessagesWithTimeout
-            $ runGameApp app (runMessages "headless" tracerCallback)
+            $ runGameApp app (runMessages "headless" (observers narratorRef) >> flushNarrator narratorRef)
         when (isNothing completed)
           $ die
           $ "Replay message processing timed out after "
@@ -348,6 +361,7 @@ runReplay opts exportInput scriptInput = do
         | otherwise -> pure ()
 
   wallStart <- getMonotonicTimeNSec
+
   let drainResumeQueue =
         not (optInspectCheckpoint opts)
           && not (isJust replayPlan)
@@ -375,6 +389,7 @@ runReplay opts exportInput scriptInput = do
         ]
     exitSuccess
 
+
   perStepTimings <-
     if optReplayAll opts
       then do
@@ -386,6 +401,7 @@ runReplay opts exportInput scriptInput = do
                 $ filter ((> targetStep) . arkhamStepStep) agedSteps
         let total = length forwardSteps
         hPutStrLn stderr $ "Replaying " <> show total <> " steps forward..."
+
         let
           go _ timings [] = pure $ reverse timings
           go idx timings (step : rest) = do
@@ -477,6 +493,7 @@ runReplay opts exportInput scriptInput = do
                           <> [SetActivePlayer activePid | activePid /= answerPid]
                   prependAnswerQueue (ClearUI : bracketed)
                   drainMessages
+
         pure []
 
   wallEnd <- getMonotonicTimeNSec

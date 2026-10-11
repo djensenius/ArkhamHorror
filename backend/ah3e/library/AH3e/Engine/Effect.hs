@@ -1,4 +1,4 @@
-module AH3e.Engine.Effect (resolveEffect, payCost, evalPredicate) where
+module AH3e.Engine.Effect (resolveEffect, gain, payCost, evalPredicate) where
 
 import AH3e.Engine.Helpers
 import AH3e.Engine.Hooks
@@ -8,12 +8,14 @@ import AH3e.Game
 import AH3e.Message
 import AH3e.Prelude
 import AH3e.Types.Board
+import AH3e.Types.Card
 import AH3e.Types.Effect
 import AH3e.Types.Ids
 import AH3e.Types.Skill
 import AH3e.Types.State
 import Data.List (nub)
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
 
 resolveEffect :: EffectCtx -> Effect -> GameM ()
 resolveEffect ctx eff0 = do
@@ -61,7 +63,15 @@ resolveEffect ctx eff0 = do
     If p yes no -> do
       ok <- evalPredicate ctx p
       push (again (if ok then yes else no))
-    GainE g -> when playing $ gain ctx g
+    {- A card may want a word before its owner takes cards of a kind (Eye for
+    Appraisal's curios); the gain waits behind that word only when one is offered. -}
+    GainE g -> when playing case acquiring g of
+      Nothing -> gain ctx g
+      Just mtrait -> do
+        offers <- reactionsFor (BeforeAcquiring iid mtrait)
+        if null offers
+          then gain ctx g
+          else pushAll [CheckReactions (BeforeAcquiring iid mtrait) [], GainNow ctx g]
     LoseMoney a -> addMoney iid (negate (amt a))
     BuyFromDisplay mtrait pricing limit ifBought -> when playing $ push (BuyFromDisplayMsg ctx mtrait pricing limit ifBought)
     DiscardAFocus -> when playing do
@@ -77,8 +87,8 @@ resolveEffect ctx eff0 = do
       logText ("Revealed " <> tshow (length revealed) <> " cards")
       push (BuyRevealed ctx kind revealed limit pricing 0)
     PlaceCluesOnSheet a -> do
-      #sheetClues += amt a
-      push CheckStateTriggers
+      instead <- sheetCluesInstead (amt a)
+      pushAll (fromMaybe [AddSheetClues (amt a)] instead)
     DoomOnSheet a -> push (PlaceDoomOnSheet (amt a))
     Focus mskill evenIfExceeds -> when playing do
       i <- getInvestigator iid
@@ -98,31 +108,59 @@ resolveEffect ctx eff0 = do
     RemoveDoomFrom ScenarioSheet a -> #sheetDoom %= max 0 . subtract (amt a)
     -- only spaces holding doom are worth offering
     RemoveDoomFrom w a ->
-      withSpaceWhere ctx w (fmap ((> 0) . (.doom)) . getSpace) (\w' -> RemoveDoomFrom w' a) \sid ->
-        [RemoveDoom sid (amt a), CheckReactions (AfterDoomRemoved iid (amt a)) []]
+      withSpaceWhere
+        ctx
+        w
+        (fmap ((> 0) . (.doom)) . getSpace)
+        "choose a space to take doom from"
+        (\w' -> RemoveDoomFrom w' a)
+        \sid ->
+          [RemoveDoom sid (amt a), CheckReactions (AfterDoomRemoved iid (amt a)) []]
+    {- A card that takes a marker off the board names where, so nothing is asked:
+    the colour is discarded face up first, a marker nobody has turned over being
+    the one a card means when it offers to clear one. -}
+    RemoveMarkerAt w colour -> do
+      spaces <- spacesFor ctx w
+      for_ spaces \sid -> do
+        ms <- markersAt sid
+        let mine m = m.color == colour
+            chosen = listToMaybe (filter (\m -> mine m && m.faceUp) ms <> filter mine ms)
+        for_ chosen \m -> do
+          s <- getSpace sid
+          spaceL sid . #markers %= dropFirstMarker (== m)
+          logText ("A " <> colour <> " marker is discarded from " <> s.name)
     PlaceDoomAt ScenarioSheet a -> push (PlaceDoomOnSheet (amt a))
     PlaceDoomAt EachSpaceInYourNeighborhood a -> do
       spaces <- yourNeighborhoodSpaces iid
       push (PlaceDoomInOrder ctx.source (concatMap (replicate (amt a)) spaces))
-    PlaceDoomAt w a -> withSpace ctx w (\w' -> PlaceDoomAt w' a) \sid -> [PlaceDoomInOrder ctx.source (replicate (amt a) sid)]
+    PlaceDoomAt w a ->
+      withSpace ctx w (doomPrompt (amt a)) (\w' -> PlaceDoomAt w' a) \sid ->
+        [PlaceDoomInOrder ctx.source (replicate (amt a) sid)]
     SpreadDoomOnce -> push SpreadDoom
     SpawnOneClue -> push SpawnClue
     SpawnMonster -> push (SpawnMonsterAt Nothing False)
     SpawnMonsterIn w exhausted ->
-      withSpace ctx w (\w' -> SpawnMonsterIn w' exhausted) \sid -> [SpawnMonsterAt (Just sid) exhausted]
+      withSpace ctx w "choose a space for the monster" (\w' -> SpawnMonsterIn w' exhausted) \sid ->
+        [SpawnMonsterAt (Just sid) exhausted]
     ResolveGateBurst -> push GateBurst
     ReadHeadline -> push (DrawHeadline iid)
     DrawMythosTokens n -> do
       i <- getInvestigator iid
       pushAll (replicate n (DrawMythosToken i.player))
-    BecomeDelayed -> when playing $ investigatorL iid . #delayed .= True
+    BecomeDelayed -> when playing do
+      i <- getInvestigator iid
+      investigatorL iid . #delayed .= True
+      d <- getInvestigatorDef iid
+      unless i.delayed do
+        logText (d.name <> " is delayed")
+        push (CheckReactions (AfterBecomeDelayed iid) [])
     BecomeDevoured -> push (DevourInvestigator iid)
     Retire -> push (RetireInvestigator iid)
     MoveUpTo n -> when playing do
       restricted <- isRestrictedByEngagement iid
       unless restricted $ push (MoveStep (MoveState iid n 0 0 True False))
     MoveUpToIgnoringMonsters n -> when playing $ push (MoveStep (MoveState iid n 0 0 True True))
-    MoveDirectlyTo w -> when playing $ withSpace ctx w MoveDirectlyTo \sid -> [MoveDirectly iid sid]
+    MoveDirectlyTo w -> when playing $ withSpace ctx w "choose where to move" MoveDirectlyTo \sid -> [MoveDirectly iid sid]
     -- the spell picks the monster, not the space, so the spaces only set the reach
     DamageMonsterIn w a -> when playing do
       here <- spacesFor ctx w
@@ -159,6 +197,13 @@ resolveEffect ctx eff0 = do
   optionAffordable = \case
     Pay cost _ -> canPayCost ctx.investigator cost
     _ -> pure True
+
+-- | The kind of card a gain would bring in, for the cards that answer one (446.5).
+acquiring :: Gain -> Maybe (Maybe Trait)
+acquiring = \case
+  AnItem mtrait -> Just mtrait
+  AnItemValued mtrait _ -> Just mtrait
+  _ -> Nothing
 
 countOf :: EffectCtx -> Count -> GameM Int
 countOf ctx c = do
@@ -211,9 +256,14 @@ gain ctx g = do
       amt = evalAmount ctx
   case g of
     Money a -> addMoney iid (amt a)
-    Clues a -> do
-      addClues iid (amt a)
-      when (amt a > 0) $ afterGainClueFor iid >>= pushAll
+    Clues a
+      | amt a > 0 ->
+          investigatorCluesInstead iid (amt a) >>= \case
+            Just instead -> pushAll instead
+            Nothing -> do
+              addClues iid (amt a)
+              afterGainClueFor iid >>= pushAll
+      | otherwise -> addClues iid (amt a)
     Remnants a -> push (GainRemnants iid (amt a))
     ClueFromNeighborhood -> do
       msid <- investigatorSpace iid
@@ -243,10 +293,17 @@ gain ctx g = do
     chooseFor iid "Gain an item"
       $ [Choice (CardLabel cid) [GainFromDisplay iid cid] | cid <- eligible]
       <> [label "Draw from the item deck" [GainItemFromDeck iid ItemDeckKind mtrait mbound]]
-  gained = do
-    addClues ctx.investigator 1
-    #encounter . _Just . #gainedNeighborhoodClue .= True
-    afterGainClueFor ctx.investigator >>= pushAll
+  {- The clue leaves the neighborhood either way; a card that takes it instead
+  says where it lands, and nothing about gaining one has happened. -}
+  gained =
+    investigatorCluesInstead ctx.investigator 1 >>= \case
+      Just instead -> pushAll instead
+      Nothing -> do
+        addClues ctx.investigator 1
+        #encounter . _Just . #gainedNeighborhoodClue .= True
+        answers <- afterGainClueFor ctx.investigator
+        -- where the clue came from is what some cards answer, not merely that one came
+        pushAll (answers <> [CheckReactions (AfterGainNeighborhoodClue ctx.investigator) []])
 
 recover :: EffectCtx -> Recipient -> Int -> Int -> GameM ()
 recover ctx r hp sp = do
@@ -339,18 +396,56 @@ spacesFor ctx w = do
     AnySpaceWithDoom -> do
       spaces <- traverse getSpace =<< allNeighborhoodSpaces
       reachable [s.id | s <- spaces, s.doom > 0]
+    SpaceInAnotherNeighborhood -> do
+      mine <- investigatorNeighborhood iid
+      board <- use #board
+      spaces <- reachable =<< allNeighborhoodSpaces
+      pure [sid | sid <- spaces, spaceNeighborhood sid board /= mine]
     AdjacentStreet -> do
       board <- use #board
       msid <- investigatorSpace iid
       streets <-
         filterM (fmap (isStreetLike . (.kind)) . getSpace) (maybe [] (`adjacentSpaces` board) msid)
       reachable streets
+    AnyStreetSpace -> do
+      streets <- uses (#board . #spaces) (map (.id) . filter (isStreetLike . (.kind)) . Map.elems)
+      reachable streets
     SourceSpace -> case ctx.source of
       SourceMonster mid -> uses #monsters (maybeToList . fmap (.space) . Map.lookup mid)
       _ -> maybeToList <$> investigatorSpace iid
     ScenarioSheet -> pure []
 
-withSpace :: EffectCtx -> Where -> (Where -> Effect) -> (SpaceId -> [Message]) -> GameM ()
+{- | What is asking. A lurking monster placing doom, or a card resolving its own
+text, is not obvious from "Choose a space" alone, so the prompt says whose effect
+this is where it can name it.
+-}
+doomPrompt :: Int -> Text
+doomPrompt n = "choose a space for " <> (if n == 1 then "the doom" else tshow n <> " doom")
+
+askingName :: Source -> GameM (Maybe Text)
+askingName = \case
+  SourceMonster mid -> nameOf mid
+  SourceCard cid -> nameOf cid
+  SourceEncounter cid -> nameOf cid
+  SourceHeadline cid -> nameOf cid
+  SourceCodex n -> pure (Just ("Card " <> tshow (coerce n :: Int)))
+  SourceMythos -> pure (Just "The mythos")
+  _ -> pure Nothing
+ where
+  nameOf cid =
+    uses #cards (Map.member cid) >>= \known -> if known then Just . (.name) <$> getCardDef cid else pure Nothing
+
+{- | @"Grasping Fungus: choose a space for the doom"@, and the instruction alone
+when nothing names the asker.
+-}
+spacePrompt :: EffectCtx -> Text -> GameM Text
+spacePrompt ctx what = do
+  who <- askingName ctx.source
+  pure $ case who of
+    Just n -> n <> ": " <> what
+    Nothing -> T.toUpper (T.take 1 what) <> T.drop 1 what
+
+withSpace :: EffectCtx -> Where -> Text -> (Where -> Effect) -> (SpaceId -> [Message]) -> GameM ()
 withSpace ctx w = withSpaceWhere ctx w (const (pure True))
 
 -- | 'withSpace', offering only the spaces that pass @keep@
@@ -358,25 +453,27 @@ withSpaceWhere
   :: EffectCtx
   -> Where
   -> (SpaceId -> GameM Bool)
+  -> Text
   -> (Where -> Effect)
   -> (SpaceId -> [Message])
   -> GameM ()
-withSpaceWhere ctx w keep rebuild k = do
+withSpaceWhere ctx w keep what rebuild k = do
   let iid = ctx.investigator
   candidates <- filterM keep =<< spacesFor ctx w
+  prompt <- spacePrompt ctx what
   case w of
     EachSpaceInYourNeighborhood -> pushAll (concatMap k candidates)
     DifferentSpaces n excluded
       | n <= 0 -> pure ()
       | otherwise ->
-          chooseFor iid "Choose a space"
+          chooseFor iid prompt
             $ spaceChoices
               candidates
               (\sid -> k sid <> [ResolveEffect ctx (rebuild (DifferentSpaces (n - 1) (sid : excluded)))])
             <> [Choice (DoneLabel "Done") []]
     _ -> case candidates of
       [sid] -> pushAll (k sid)
-      _ -> chooseFor iid "Choose a space" (spaceChoices candidates k)
+      _ -> chooseFor iid prompt (spaceChoices candidates k)
 
 evalPredicate :: EffectCtx -> Predicate -> GameM Bool
 evalPredicate ctx p = do
@@ -387,20 +484,23 @@ evalPredicate ctx p = do
     HasClues n -> pure (i.clues >= n)
     HasRemnants n -> pure (i.remnants >= n)
     HasCondition c -> hasCondition iid c
+    CanGainCondition c -> canGainCondition iid c
     HasCard f -> not . null <$> matchingAssets iid f
     IsDelayed -> pure i.delayed
     CodexHas n -> codexHas n
     Not q -> not <$> evalPredicate ctx q
     CountAtLeast c n -> (>= n) <$> countOf ctx c
-    CustomPredicate key -> do
-      logText ("Missing custom predicate: " <> key)
-      pure False
+    CustomPredicate key -> case customPredicate key of
+      Just f -> f ctx
+      Nothing -> do
+        logText ("Missing custom predicate: " <> key)
+        pure False
 
 payCost :: EffectCtx -> Cost -> GameM ()
 payCost ctx cost = do
   let iid = ctx.investigator
   case cost of
-    SpendMoney n -> addMoney iid (negate n)
+    SpendMoney n -> spendMoney iid n
     SpendRemnants n -> do
       addRemnants iid (negate n)
       when (n > 0) $ push (CheckReactions (AfterSpendRemnant iid) [])
@@ -416,7 +516,10 @@ payCost ctx cost = do
         ]
     CostDamage n -> push (SufferHarm iid ctx.source NormalHarm n 0)
     CostHorror n -> push (SufferHarm iid ctx.source NormalHarm 0 n)
-    CostDelayed -> investigatorL iid . #delayed .= True
+    CostDelayed -> do
+      i <- getInvestigator iid
+      investigatorL iid . #delayed .= True
+      unless i.delayed $ push (CheckReactions (AfterBecomeDelayed iid) [])
     CostCondition c -> push (GainConditionMsg iid c)
     CostDiscard f -> do
       cs <- matchingAssets iid f
