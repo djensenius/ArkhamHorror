@@ -1143,9 +1143,12 @@ both directions.
   version: a client that does not implement it must treat the catalog as
   unavailable rather than guess at the shape.
 - **Compatibility.** The Vue client reads none of it and is unaffected. Native
-  clients must honor `nativeClientMinimumRevision`: revisions before `0.1.50`
-  do not implement the catalog `iconVariable` render role and must update
-  rather than accept a catalog they would render incompletely.
+  clients must honor `nativeClientMinimumRevision`: revisions before `0.1.53`
+  must update before consuming this contract. The floor was raised from
+  `0.1.50` because revision `0.1.53` can publish array-valued
+  `chaosBag.forceDraw` payloads; native clients pinned to `0.1.50`-`0.1.52`
+  decode that field as string-or-null and must take the update-required path
+  rather than fail during board decoding.
 
 Advertising is deployment configuration, not a build-time constant: see the
 `locale-catalog-*` settings in `backend/arkham-api/config/settings.yml` and
