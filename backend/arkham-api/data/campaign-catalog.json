@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0.0",
-  "catalogRevision": "1.203d2dc123b2ddfa2e6a5be958b5a02a",
+  "catalogRevision": "1.28c9c83c2336c0051e214111db8268d4",
   "endpoint": "/api/v1/arkham/campaign-catalog",
   "digestAlgorithm": "sha256",
   "campaigns": [
@@ -2350,6 +2350,7 @@
     },
     {
       "id": "07",
+      "floodRules": true,
       "difficultyLevels": {
         "Easy": [
           "PlusOne",
@@ -2701,7 +2702,7 @@
     },
     {
       "id": "11",
-      "beta": true,
+      "floodRules": true,
       "difficultyLevels": {
         "Easy": [
           "PlusOne",
@@ -2864,7 +2865,7 @@
     },
     {
       "id": "13",
-      "alpha": true,
+      "beta": true,
       "difficultyLevels": {
         "Easy": [
           "PlusOne",
@@ -5668,7 +5669,6 @@
         ]
       },
       "xp": 2,
-      "beta": true,
       "nameKey": "catalogNames.sideStories.70001.name"
     },
     {
@@ -5744,7 +5744,6 @@
         ]
       },
       "xp": 2,
-      "beta": true,
       "nameKey": "catalogNames.sideStories.83001.name"
     },
     {
@@ -5922,7 +5921,6 @@
         ]
       },
       "xp": 3,
-      "beta": true,
       "nameKey": "catalogNames.sideStories.86001.name"
     },
     {
@@ -6014,7 +6012,6 @@
         ]
       },
       "xp": 2,
-      "beta": true,
       "nameKey": "catalogNames.sideStories.87001.name"
     },
     {
@@ -6951,10 +6948,10 @@
     "generator": "arkham-campaign-catalog",
     "generatorVersion": "1.0.0",
     "schemaVersion": "1.0.0",
-    "dataSourcesSha256": "29e45cfd9ff04e9df630171ad8d4f3cef3761421a1cefea2b8be0b301caa5ed3",
+    "dataSourcesSha256": "8befb2556f3277166b6c43d8d7918da7326141385419d1c354d486865016a5a1",
     "generatorSha256": "bc8fa53f3f692deb4b9a4eadc115a5c4d0b7b181106126f51ed82e3ccbeb6feb",
     "schemasSha256": "276ae5c0f46dcf6ac18f2257284153e11b2fb58d3098b410207fc653be65a80c",
-    "sha256": "203d2dc123b2ddfa2e6a5be958b5a02a3f0c897c8d25d5f2dfe9dd5756615585",
+    "sha256": "28c9c83c2336c0051e214111db8268d4c55d8c97830d938605969ab27b36c8d5",
     "sources": [
       {
         "path": "backend/arkham-api/library/Arkham/Campaign/Campaigns/ReturnToNightOfTheZealot.hs",
@@ -6982,7 +6979,7 @@
       },
       {
         "path": "frontend/src/arkham/data/campaigns.json",
-        "sha256": "9bb53a704eb9913de6c3dfabb7ce6bf79d471a3302d21638e04070e8ce76c0a1"
+        "sha256": "a437ab5a86d3447b9c33dfe9964190874daba28e1f86cd58ef86a13872ba9307"
       },
       {
         "path": "frontend/src/arkham/data/childrenOfBlood.json",
@@ -7002,7 +6999,7 @@
       },
       {
         "path": "frontend/src/arkham/data/side-stories.json",
-        "sha256": "3858bf7c53209d133e8f607ec41c7b2b467d14ad46b16ed5b42164e318e7ed54"
+        "sha256": "4b2a278807051a23e1fd8ab8d55b0488af0c28ea307cd9e05520e8abdbc07a34"
       },
       {
         "path": "frontend/src/arkham/data/theCircleUndone.json",
@@ -7045,6 +7042,6 @@
         "sha256": "544cd7eafbad5f4497e09b5fb3b2ed55e6e1ed27c4f20ccf891746beb2c3c702"
       }
     ],
-    "outputSha256": "aa6f65d6a054a90035e4bb7b58d25d76e823f1eea797a2bbf1b6a2d8cadbeaf4"
+    "outputSha256": "f3b2280073360b943ceb8b37fcd9679eee34a350bbbc2ef557c51860c19aacf6"
   }
 }
