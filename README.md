@@ -127,6 +127,11 @@ The app automatically detects whether local images are present:
 - **No local images** (default after install) → images load from the CDN automatically
 - **Local images present** (after running the fetch service) → images served locally
 
+The production image also auto-advertises the built native-client locale catalog
+when none of the `ARKHAM_LOCALE_CATALOG_*` environment variables are set. To opt
+out and let the backend omit `i18n.locale-catalog.v1`, set any one of those
+variables to an empty value, for example `ARKHAM_LOCALE_CATALOG_MANIFEST_URL=`.
+
 To fetch images locally, use the `fetch-images` Docker service.
 Once fetched, restart with `docker compose restart web` and the app will switch to local images.
 

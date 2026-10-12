@@ -18,8 +18,9 @@ fi
 
 # Auto-configure the optional native-client locale catalog pointer from the
 # catalog built into the production frontend. If an operator sets any of the
-# ARKHAM_LOCALE_CATALOG_* variables, leave the whole group alone so the
-# backend's existing all-or-nothing validation remains authoritative.
+# ARKHAM_LOCALE_CATALOG_* variables, even to an empty value, leave the whole
+# group alone so the backend's existing all-or-nothing validation remains
+# authoritative and operators have an explicit opt-out.
 if [ -z "${ARKHAM_LOCALE_CATALOG_MANIFEST_URL+x}" ] && \
    [ -z "${ARKHAM_LOCALE_CATALOG_REVISION+x}" ] && \
    [ -z "${ARKHAM_LOCALE_CATALOG_SCHEMA_VERSION+x}" ] && \
@@ -28,8 +29,7 @@ if [ -z "${ARKHAM_LOCALE_CATALOG_MANIFEST_URL+x}" ] && \
    [ -z "${ARKHAM_LOCALE_CATALOG_MANIFEST_SHA256+x}" ]; then
   catalog_manifest="/opt/arkham/src/frontend/dist/locale-catalog/manifest.json"
   if [ -f "$catalog_manifest" ]; then
-    catalog_env="/tmp/arkham-locale-catalog.env"
-    python3 - "$catalog_manifest" > "$catalog_env" <<'PY'
+    catalog_exports="$(python3 - "$catalog_manifest" <<'PY'
 import hashlib
 import json
 import shlex
@@ -50,8 +50,8 @@ settings = {
 for name, value in settings.items():
     print(f"export {name}={shlex.quote(value)}")
 PY
-    . "$catalog_env"
-    rm -f "$catalog_env"
+)"
+    eval "$catalog_exports"
   fi
 fi
 

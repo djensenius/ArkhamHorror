@@ -12,7 +12,9 @@ on:
         type: string
 
 concurrency:
-  group: publish-image-${{ github.event.inputs.ref || github.ref }}
+  # Serialize packaging publishes. The final push step still re-checks origin/main
+  # before moving :main, so an older main build cannot overwrite a newer one.
+  group: publish-image
   cancel-in-progress: false
 
 permissions:
@@ -26,11 +28,13 @@ defaults:
 env:
   WEB_IMAGE: ghcr.io/djensenius/arkham-horror
   MIGRATE_IMAGE: ghcr.io/djensenius/arkham-horror-migrate
+  POSTGRES_IMAGE: postgres:14.6-alpine@sha256:a0f7890719c3c42b9f78f1ad98b2cd45aa2ee3472da12f9d2d3bfbc07f421146
 
 jobs:
   publish:
     name: Build, smoke test, and publish
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -40,6 +44,7 @@ jobs:
       - name: Compute image metadata
         id: meta
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REQUESTED_REF: ${{ github.event.inputs.ref || '' }}
         run: |
           set -euo pipefail
@@ -55,13 +60,19 @@ jobs:
           PY
           )"
 
+          git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+            fetch --no-tags --depth=1 origin refs/heads/main:refs/remotes/origin/main
+          main_sha="$(git rev-parse refs/remotes/origin/main)"
+
           publish_main="false"
-          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
-            publish_main="true"
-          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
-            case "${REQUESTED_REF}" in
-              ""|main|refs/heads/main) publish_main="true" ;;
-            esac
+          if [[ "${git_sha}" == "${main_sha}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+              publish_main="true"
+            elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+              if [[ -n "${REQUESTED_REF}" || "${GITHUB_REF}" == "refs/heads/main" ]]; then
+                publish_main="true"
+              fi
+            fi
           fi
 
           {
@@ -74,14 +85,8 @@ jobs:
             echo "publish-main=${publish_main}"
           } >> "${GITHUB_OUTPUT}"
 
-          printf 'Publishing commit %s (schemaRevision %s); publish main tag: %s\n' \
-            "${git_sha}" "${schema_revision}" "${publish_main}"
-
-      - name: Prepare buildx
-        run: |
-          set -euo pipefail
-          docker buildx create --name arkham-publisher --driver docker-container --use
-          docker buildx inspect --bootstrap
+          printf 'Publishing commit %s (origin/main %s, schemaRevision %s); publish main tag: %s\n' \
+            "${git_sha}" "${main_sha}" "${schema_revision}" "${publish_main}"
 
       - name: Build images locally for smoke test
         env:
@@ -99,28 +104,24 @@ jobs:
             --label "io.arkhamhorror.schemaRevision=${SCHEMA_REVISION}"
           )
 
-          # linux/amd64 only: the production Haskell image is expensive to build,
-          # and the current self-hosted Portainer deployment target is amd64.
-          # Add arm64 once there is a concrete deployment need for the extra cost.
+          # linux/amd64 only: the current self-hosted Portainer deployment
+          # target is amd64. The default docker buildx driver matches the
+          # existing locale-catalog serving job; no GHA cache is configured
+          # because the Haskell/Stack BuildKit cache mounts are not exported, so
+          # backend changes still pay the cold-build cost.
           docker buildx build \
-            --builder arkham-publisher \
             --platform linux/amd64 \
             --target app \
             --load \
-            --cache-from type=gha,scope=arkham-horror-amd64 \
-            --cache-to type=gha,scope=arkham-horror-amd64,mode=max \
             "${common_labels[@]}" \
             --tag "${WEB_SHA}" \
             --tag "${WEB_MAIN}" \
             .
 
           docker buildx build \
-            --builder arkham-publisher \
             --platform linux/amd64 \
             --file infra/migrate.Dockerfile \
             --load \
-            --cache-from type=gha,scope=arkham-horror-migrate-amd64 \
-            --cache-to type=gha,scope=arkham-horror-migrate-amd64,mode=max \
             "${common_labels[@]}" \
             --tag "${MIGRATE_SHA}" \
             --tag "${MIGRATE_MAIN}" \
@@ -137,18 +138,50 @@ jobs:
           set -euo pipefail
           network="arkham-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           db="arkham-smoke-db-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          compose_db="arkham-smoke-compose-db-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           web="arkham-smoke-web-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup() {
             status=$?
             if [[ ${status} -ne 0 ]]; then
               docker logs "${db}" || true
+              docker logs "${compose_db}" || true
               docker logs "${web}" || true
             fi
-            docker rm -f "${web}" "${db}" >/dev/null 2>&1 || true
+            docker rm -f "${web}" "${db}" "${compose_db}" >/dev/null 2>&1 || true
             docker network rm "${network}" >/dev/null 2>&1 || true
             exit "${status}"
           }
           trap cleanup EXIT
+
+          wait_for_db() {
+            local container=$1
+            for _ in {1..60}; do
+              if docker exec "${container}" pg_isready -U arkham_pg_user -d arkham-horror-backend >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 2
+            done
+            docker exec "${container}" pg_isready -U arkham_pg_user -d arkham-horror-backend
+          }
+
+          run_migrate() {
+            local host=$1
+            docker run --rm \
+              --network "${network}" \
+              -e PGHOST="${host}" \
+              -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+              "${MIGRATE_SHA}"
+          }
+
+          assert_all_migrations() {
+            local container=$1
+            local expected actual
+            expected="$(grep -vE '^[[:space:]]*(%|#|$)' migrations/sqitch.plan | awk '{print $1}' | sort)"
+            actual="$(docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" "${container}" \
+              psql -U arkham_pg_user -d arkham-horror-backend -qtA \
+              -c "SELECT name FROM arkham_schema_migrations ORDER BY name")"
+            diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}")
+          }
 
           docker network create "${network}"
           docker run -d \
@@ -157,21 +190,25 @@ jobs:
             -e POSTGRES_USER=arkham_pg_user \
             -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
             -e POSTGRES_DB=arkham-horror-backend \
-            postgres:14.6-alpine
+            "${POSTGRES_IMAGE}"
 
-          for _ in {1..60}; do
-            if docker exec "${db}" pg_isready -U arkham_pg_user -d arkham-horror-backend >/dev/null 2>&1; then
-              break
-            fi
-            sleep 2
-          done
-          docker exec "${db}" pg_isready -U arkham_pg_user -d arkham-horror-backend
+          wait_for_db "${db}"
+          run_migrate "${db}"
+          run_migrate "${db}"
+          assert_all_migrations "${db}"
 
-          docker run --rm \
+          docker run -d \
+            --name "${compose_db}" \
             --network "${network}" \
-            -e PGHOST="${db}" \
+            -e POSTGRES_USER=arkham_pg_user \
             -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
-            "${MIGRATE_SHA}"
+            -e POSTGRES_DB=arkham-horror-backend \
+            -v "${PWD}/setup.sql:/docker-entrypoint-initdb.d/create_tables.sql:ro" \
+            "${POSTGRES_IMAGE}"
+
+          wait_for_db "${compose_db}"
+          run_migrate "${compose_db}"
+          assert_all_migrations "${compose_db}"
 
           docker run -d \
             --name "${web}" \
@@ -190,9 +227,10 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:3000/health >/dev/null
-          curl -fsS http://127.0.0.1:3000/api/v1/arkham/capabilities -o /tmp/arkham-capabilities.json
+          curl -fsS http://127.0.0.1:3000/api/v1/capabilities -o /tmp/arkham-capabilities.json
 
           python3 - /tmp/arkham-capabilities.json <<'PY'
+          import hashlib
           import json
           import os
           import sys
@@ -203,7 +241,7 @@ jobs:
           base = "http://127.0.0.1:3000"
           expected_schema = os.environ["SCHEMA_REVISION"]
 
-          def fetch_json(path_or_url):
+          def fetch_bytes(path_or_url):
               url = urllib.parse.urljoin(base, path_or_url)
               last_error = None
               for _ in range(30):
@@ -211,11 +249,14 @@ jobs:
                       with urllib.request.urlopen(url, timeout=5) as response:
                           if response.status != 200:
                               raise RuntimeError(f"{url} returned {response.status}")
-                          return json.loads(response.read().decode("utf-8"))
+                          return response.read()
                   except Exception as error:  # noqa: BLE001 - diagnostic for CI logs
                       last_error = error
                       time.sleep(2)
               raise SystemExit(f"failed to fetch {url}: {last_error}")
+
+          def fetch_json(path_or_url):
+              return json.loads(fetch_bytes(path_or_url).decode("utf-8"))
 
           with open(sys.argv[1], encoding="utf-8") as handle:
               capabilities = json.load(handle)
@@ -231,9 +272,20 @@ jobs:
           locale_catalog = capabilities.get("localeCatalog")
           if not isinstance(locale_catalog, dict):
               raise SystemExit("capabilities response did not advertise localeCatalog")
-          manifest = fetch_json(locale_catalog["manifestUrl"])
+          manifest_bytes = fetch_bytes(locale_catalog["manifestUrl"])
+          manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+          if manifest_digest != locale_catalog.get("manifestSha256"):
+              raise SystemExit("advertised locale manifest digest does not match served bytes")
+          manifest = json.loads(manifest_bytes.decode("utf-8"))
           if manifest.get("catalogRevision") != locale_catalog.get("catalogRevision"):
               raise SystemExit("advertised locale catalog revision does not match served manifest")
+          chunks = [chunk for locale in manifest.get("locales", []) for chunk in locale.get("chunks", [])]
+          if not chunks:
+              raise SystemExit("locale manifest lists no catalog chunks")
+          chunk = chunks[0]
+          chunk_bytes = fetch_bytes(chunk["path"])
+          if hashlib.sha256(chunk_bytes).hexdigest() != chunk.get("sha256"):
+              raise SystemExit("served locale catalog chunk digest does not match manifest")
 
           campaign_catalog = capabilities.get("campaignCatalog")
           if not isinstance(campaign_catalog, dict):
@@ -251,10 +303,14 @@ jobs:
           PY
 
       - name: Log in to GHCR
-        run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
       - name: Push images
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_SHA: ${{ steps.meta.outputs.git-sha }}
           WEB_SHA: ${{ steps.meta.outputs.web-sha }}
           WEB_MAIN: ${{ steps.meta.outputs.web-main }}
           MIGRATE_SHA: ${{ steps.meta.outputs.migrate-sha }}
@@ -265,6 +321,13 @@ jobs:
           docker push "${WEB_SHA}"
           docker push "${MIGRATE_SHA}"
           if [[ "${PUBLISH_MAIN}" == "true" ]]; then
+            git -c http.extraheader="AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
+              fetch --no-tags --depth=1 origin refs/heads/main:refs/remotes/origin/main
+            current_main="$(git rev-parse refs/remotes/origin/main)"
+            if [[ "${GIT_SHA}" != "${current_main}" ]]; then
+              echo "Skipping moving :main tags because ${GIT_SHA} is no longer origin/main (${current_main})."
+              exit 0
+            fi
             docker push "${WEB_MAIN}"
             docker push "${MIGRATE_MAIN}"
           else
