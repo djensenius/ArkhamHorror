@@ -6,6 +6,9 @@
 # already-applied migrations are skipped via the arkham_schema_migrations table.
 #
 # Runs in postgres:*-alpine (has psql, pg_isready, busybox awk/grep).
+# A packaged migrations image may also carry /setup.sql; when it connects to a
+# completely empty database, it applies that baseline before seeding the same
+# migration baseline the compose-mounted setup.sql flow uses.
 #
 set -eu
 
@@ -44,10 +47,24 @@ names="$(grep -vE '^[[:space:]]*(%|#|$)' "$PLAN" | awk '{print $1}')"
 [ -n "$names" ] || { echo "migrate: empty plan, nothing to do"; exit 0; }
 
 existed="$(q -c "SELECT to_regclass('public.arkham_schema_migrations') IS NOT NULL")"
+table_count="$(q -c "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")"
+
+bootstrapped_empty=0
+if [ "$existed" != "t" ] && [ "$table_count" = "0" ]; then
+  if [ -f /setup.sql ]; then
+    echo "==> migrate: empty database — applying baseline setup.sql."
+    psql -v ON_ERROR_STOP=1 -q -f /setup.sql
+    bootstrapped_empty=1
+  else
+    echo "migrate: database is empty and /setup.sql is unavailable" >&2
+    exit 1
+  fi
+fi
+
 q -c "CREATE TABLE IF NOT EXISTS arkham_schema_migrations (
   name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());" >/dev/null
 
-if [ "$existed" != "t" ] && [ "${ARKHAM_FORCE_MIGRATIONS:-0}" != "1" ]; then
+if [ "$existed" != "t" ] && { [ "${ARKHAM_FORCE_MIGRATIONS:-0}" != "1" ] || [ "$bootstrapped_empty" = "1" ]; }; then
   echo "==> migrate: no tracking table — seeding baseline through '$BASELINE_THROUGH'."
   vals=""
   for n in $names; do
