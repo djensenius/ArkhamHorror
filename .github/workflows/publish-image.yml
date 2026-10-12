@@ -1,6 +1,19 @@
 name: Publish container images
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/publish-image.yml"
+      - "Dockerfile"
+      - "infra/**"
+      - "migrate.sh"
+      - "web-entrypoint.sh"
+      - "start.sh"
+      - "prod.nginxconf"
+      - "setup.sql"
+      - "migrations/**"
   push:
     branches:
       - main
@@ -12,13 +25,16 @@ on:
         type: string
 
 concurrency:
-  # Serialize packaging publishes. The final push step still re-checks origin/main
+  # PR image checks are isolated and cancel superseded commits. Main publishes
+  # serialize in one group, and the final push step still re-checks origin/main
   # before moving :main, so an older main build cannot overwrite a newer one.
-  group: publish-image
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('publish-image-pr-{0}', github.event.pull_request.number) || 'publish-image-main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+  # Needed only by the non-PR GHCR login/push steps. Pull requests from forks do
+  # not receive a write token, and those steps are skipped for every PR run.
   packages: write
 
 defaults:
@@ -303,11 +319,13 @@ jobs:
           PY
 
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
       - name: Push images
+        if: github.event_name != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GIT_SHA: ${{ steps.meta.outputs.git-sha }}
