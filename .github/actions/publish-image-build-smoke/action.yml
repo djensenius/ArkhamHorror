@@ -1,0 +1,317 @@
+name: Build and smoke test Arkham images
+description: Check out the target ref, compute image metadata, build images, and run the full smoke test.
+
+inputs:
+  checkout-ref:
+    description: Git ref, tag, or SHA to check out for the build.
+    required: true
+  github-token:
+    description: GitHub token with contents read access for resolving the current main SHA.
+    required: true
+  requested-ref:
+    description: Original workflow_dispatch ref input, if any.
+    required: false
+    default: ""
+
+outputs:
+  git-sha:
+    description: Checked-out commit SHA.
+    value: ${{ steps.meta.outputs.git-sha }}
+  schema-revision:
+    description: Arkham API schema revision read from the checked-out source.
+    value: ${{ steps.meta.outputs.schema-revision }}
+  web-sha:
+    description: Immutable web image tag.
+    value: ${{ steps.meta.outputs.web-sha }}
+  web-main:
+    description: Moving web main image tag.
+    value: ${{ steps.meta.outputs.web-main }}
+  migrate-sha:
+    description: Immutable migrations image tag.
+    value: ${{ steps.meta.outputs.migrate-sha }}
+  migrate-main:
+    description: Moving migrations main image tag.
+    value: ${{ steps.meta.outputs.migrate-main }}
+  publish-main:
+    description: Whether the publish job may move the main tags after re-checking main.
+    value: ${{ steps.meta.outputs.publish-main }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check out publish ref
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        persist-credentials: false
+        ref: ${{ inputs.checkout-ref }}
+
+    - name: Compute image metadata
+      id: meta
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        REQUESTED_REF: ${{ inputs.requested-ref }}
+      run: |
+        set -euo pipefail
+        git_sha="$(git rev-parse HEAD)"
+        schema_revision="$(python3 - <<'PY'
+        from pathlib import Path
+        import re
+        source = Path('backend/arkham-api/library/Base/Api/Types/Capabilities.hs').read_text(encoding='utf-8')
+        match = re.search(r'schemaRevision = "([^"]+)"', source)
+        if not match:
+            raise SystemExit('schemaRevision not found')
+        print(match.group(1))
+        PY
+        )"
+
+        main_sha="$(curl -fsSL \
+          -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -H "X-GitHub-Api-Version: 2022-11-28" \
+          "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/main" \
+          | python3 -c 'import json, sys; print(json.load(sys.stdin).get("sha", ""))')"
+        if [[ ! "${main_sha}" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+          echo "GitHub API returned invalid main SHA: ${main_sha}" >&2
+          exit 1
+        fi
+
+        publish_main="false"
+        if [[ "${git_sha}" == "${main_sha}" ]]; then
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            publish_main="true"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ -n "${REQUESTED_REF}" || "${GITHUB_REF}" == "refs/heads/main" ]]; then
+              publish_main="true"
+            fi
+          fi
+        fi
+
+        {
+          echo "git-sha=${git_sha}"
+          echo "schema-revision=${schema_revision}"
+          echo "web-sha=${WEB_IMAGE}:sha-${git_sha}"
+          echo "web-main=${WEB_IMAGE}:main"
+          echo "migrate-sha=${MIGRATE_IMAGE}:sha-${git_sha}"
+          echo "migrate-main=${MIGRATE_IMAGE}:main"
+          echo "publish-main=${publish_main}"
+        } >> "${GITHUB_OUTPUT}"
+
+        printf 'Publishing commit %s (main %s, schemaRevision %s); publish main tag: %s\n' \
+          "${git_sha}" "${main_sha}" "${schema_revision}" "${publish_main}"
+
+    - name: Build images locally for smoke test
+      shell: bash
+      env:
+        GIT_SHA: ${{ steps.meta.outputs.git-sha }}
+        SCHEMA_REVISION: ${{ steps.meta.outputs.schema-revision }}
+        WEB_SHA: ${{ steps.meta.outputs.web-sha }}
+        WEB_MAIN: ${{ steps.meta.outputs.web-main }}
+        MIGRATE_SHA: ${{ steps.meta.outputs.migrate-sha }}
+        MIGRATE_MAIN: ${{ steps.meta.outputs.migrate-main }}
+      run: |
+        set -euo pipefail
+        common_labels=(
+          --label "org.opencontainers.image.source=https://github.com/djensenius/ArkhamHorror"
+          --label "org.opencontainers.image.revision=${GIT_SHA}"
+          --label "io.arkhamhorror.schemaRevision=${SCHEMA_REVISION}"
+        )
+
+        # linux/amd64 only: the current self-hosted Portainer deployment
+        # target is amd64. The default docker buildx driver matches the
+        # existing locale-catalog serving job; no GHA cache is configured
+        # because the Haskell/Stack BuildKit cache mounts are not exported, so
+        # backend changes still pay the cold-build cost.
+        docker buildx build \
+          --platform linux/amd64 \
+          --target app \
+          --load \
+          "${common_labels[@]}" \
+          --tag "${WEB_SHA}" \
+          --tag "${WEB_MAIN}" \
+          .
+
+        docker buildx build \
+          --platform linux/amd64 \
+          --file infra/migrate.Dockerfile \
+          --load \
+          "${common_labels[@]}" \
+          --tag "${MIGRATE_SHA}" \
+          --tag "${MIGRATE_MAIN}" \
+          .
+
+    - name: Smoke test images
+      shell: bash
+      env:
+        POSTGRES_PASSWORD: arkham-smoke-postgres-password
+        JWT_SECRET: arkham-smoke-jwt-secret-arkham-smoke-jwt-secret
+        SCHEMA_REVISION: ${{ steps.meta.outputs.schema-revision }}
+        WEB_SHA: ${{ steps.meta.outputs.web-sha }}
+        MIGRATE_SHA: ${{ steps.meta.outputs.migrate-sha }}
+      run: |
+        set -euo pipefail
+        network="arkham-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        db="arkham-smoke-db-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        compose_db="arkham-smoke-compose-db-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        web="arkham-smoke-web-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+        cleanup() {
+          status=$?
+          if [[ ${status} -ne 0 ]]; then
+            docker logs "${db}" || true
+            docker logs "${compose_db}" || true
+            docker logs "${web}" || true
+          fi
+          docker rm -f "${web}" "${db}" "${compose_db}" >/dev/null 2>&1 || true
+          docker network rm "${network}" >/dev/null 2>&1 || true
+          exit "${status}"
+        }
+        trap cleanup EXIT
+
+        wait_for_db() {
+          local container=$1
+          for _ in {1..60}; do
+            if docker exec "${container}" pg_isready -U arkham_pg_user -d arkham-horror-backend >/dev/null 2>&1; then
+              return 0
+            fi
+            sleep 2
+          done
+          docker exec "${container}" pg_isready -U arkham_pg_user -d arkham-horror-backend
+        }
+
+        run_migrate() {
+          local host=$1
+          docker run --rm \
+            --network "${network}" \
+            -e PGHOST="${host}" \
+            -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+            "${MIGRATE_SHA}"
+        }
+
+        assert_all_migrations() {
+          local container=$1
+          local expected actual
+          expected="$(grep -vE '^[[:space:]]*(%|#|$)' migrations/sqitch.plan | awk '{print $1}' | LC_ALL=C sort)"
+          actual="$(docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" "${container}" \
+            psql -U arkham_pg_user -d arkham-horror-backend -qtA \
+            -c 'SELECT name FROM arkham_schema_migrations ORDER BY name COLLATE "C"')"
+          diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}")
+        }
+
+        docker network create "${network}"
+        docker run -d \
+          --name "${db}" \
+          --network "${network}" \
+          -e POSTGRES_USER=arkham_pg_user \
+          -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+          -e POSTGRES_DB=arkham-horror-backend \
+          "${POSTGRES_IMAGE}"
+
+        wait_for_db "${db}"
+        run_migrate "${db}"
+        run_migrate "${db}"
+        assert_all_migrations "${db}"
+
+        docker run -d \
+          --name "${compose_db}" \
+          --network "${network}" \
+          -e POSTGRES_USER=arkham_pg_user \
+          -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+          -e POSTGRES_DB=arkham-horror-backend \
+          -v "${PWD}/setup.sql:/docker-entrypoint-initdb.d/create_tables.sql:ro" \
+          "${POSTGRES_IMAGE}"
+
+        wait_for_db "${compose_db}"
+        run_migrate "${compose_db}"
+        assert_all_migrations "${compose_db}"
+
+        docker run -d \
+          --name "${web}" \
+          --network "${network}" \
+          -p 127.0.0.1:3000:3000 \
+          -e PGHOST="${db}" \
+          -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+          -e JWT_SECRET="${JWT_SECRET}" \
+          -e IP_FROM_HEADER=true \
+          "${WEB_SHA}"
+
+        for _ in {1..90}; do
+          if curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1; then
+            break
+          fi
+          sleep 2
+        done
+        curl -fsS http://127.0.0.1:3000/health >/dev/null
+        curl -fsS http://127.0.0.1:3000/api/v1/capabilities -o /tmp/arkham-capabilities.json
+
+        python3 - /tmp/arkham-capabilities.json <<'PY'
+        import hashlib
+        import json
+        import os
+        import sys
+        import time
+        import urllib.parse
+        import urllib.request
+
+        base = "http://127.0.0.1:3000"
+        expected_schema = os.environ["SCHEMA_REVISION"]
+
+        def fetch_bytes(path_or_url):
+            url = urllib.parse.urljoin(base, path_or_url)
+            last_error = None
+            for _ in range(30):
+                try:
+                    with urllib.request.urlopen(url, timeout=5) as response:
+                        if response.status != 200:
+                            raise RuntimeError(f"{url} returned {response.status}")
+                        return response.read()
+                except Exception as error:  # noqa: BLE001 - diagnostic for CI logs
+                    last_error = error
+                    time.sleep(2)
+            raise SystemExit(f"failed to fetch {url}: {last_error}")
+
+        def fetch_json(path_or_url):
+            return json.loads(fetch_bytes(path_or_url).decode("utf-8"))
+
+        with open(sys.argv[1], encoding="utf-8") as handle:
+            capabilities = json.load(handle)
+        if capabilities.get("schemaRevision") != expected_schema:
+            raise SystemExit(
+                f"schemaRevision {capabilities.get('schemaRevision')!r} != {expected_schema!r}"
+            )
+        capability_list = set(capabilities.get("capabilities", []))
+        for required in ("i18n.locale-catalog.v1", "arkham.campaign-catalog.v1"):
+            if required not in capability_list:
+                raise SystemExit(f"missing capability {required}: {sorted(capability_list)}")
+
+        locale_catalog = capabilities.get("localeCatalog")
+        if not isinstance(locale_catalog, dict):
+            raise SystemExit("capabilities response did not advertise localeCatalog")
+        manifest_bytes = fetch_bytes(locale_catalog["manifestUrl"])
+        manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+        if manifest_digest != locale_catalog.get("manifestSha256"):
+            raise SystemExit("advertised locale manifest digest does not match served bytes")
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+        if manifest.get("catalogRevision") != locale_catalog.get("catalogRevision"):
+            raise SystemExit("advertised locale catalog revision does not match served manifest")
+        chunks = [chunk for locale in manifest.get("locales", []) for chunk in locale.get("chunks", [])]
+        if not chunks:
+            raise SystemExit("locale manifest lists no catalog chunks")
+        chunk = chunks[0]
+        chunk_bytes = fetch_bytes(chunk["path"])
+        if hashlib.sha256(chunk_bytes).hexdigest() != chunk.get("sha256"):
+            raise SystemExit("served locale catalog chunk digest does not match manifest")
+
+        campaign_catalog = capabilities.get("campaignCatalog")
+        if not isinstance(campaign_catalog, dict):
+            raise SystemExit("capabilities response did not include campaignCatalog metadata")
+        campaign = fetch_json(campaign_catalog["endpoint"])
+        if campaign.get("catalogRevision") != campaign_catalog.get("catalogRevision"):
+            raise SystemExit("advertised campaign catalog revision does not match served catalog")
+
+        print(
+            "smoke ok:",
+            "schemaRevision", capabilities["schemaRevision"],
+            "localeCatalog", locale_catalog["catalogRevision"],
+            "campaignCatalog", campaign_catalog["catalogRevision"],
+        )
+        PY
