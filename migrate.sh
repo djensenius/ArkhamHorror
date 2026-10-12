@@ -47,12 +47,12 @@ names="$(grep -vE '^[[:space:]]*(%|#|$)' "$PLAN" | awk '{print $1}')"
 [ -n "$names" ] || { echo "migrate: empty plan, nothing to do"; exit 0; }
 
 existed="$(q -c "SELECT to_regclass('public.arkham_schema_migrations') IS NOT NULL")"
-table_count="$(q -c "SELECT count(*)
+relation_count="$(q -c "SELECT count(*)
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-WHERE n.nspname = 'public' AND c.relkind = 'r'")"
+WHERE n.nspname = 'public' AND c.relkind IN ('r','p','f','v','m')")"
 
-if [ "$existed" != "t" ] && [ -f /setup.sql ] && [ "$table_count" = "0" ]; then
+if [ "$existed" != "t" ] && [ -f /setup.sql ] && [ "$relation_count" = "0" ]; then
   echo "==> migrate: empty database — applying baseline setup.sql."
   psql -v ON_ERROR_STOP=1 --single-transaction -q -f /setup.sql
 fi
