@@ -381,8 +381,24 @@ jobs:
           PUBLISH_MAIN: ${{ needs.build.outputs.publish-main }}
         run: |
           set -euo pipefail
-          docker push "${WEB_SHA}"
-          docker push "${MIGRATE_SHA}"
+
+          web_sha_already_published=false
+          migrate_sha_already_published=false
+
+          if docker buildx imagetools inspect "${WEB_SHA}" >/dev/null 2>&1; then
+            echo "${WEB_SHA} already published; keeping the existing digest"
+            web_sha_already_published=true
+          else
+            docker push "${WEB_SHA}"
+          fi
+
+          if docker buildx imagetools inspect "${MIGRATE_SHA}" >/dev/null 2>&1; then
+            echo "${MIGRATE_SHA} already published; keeping the existing digest"
+            migrate_sha_already_published=true
+          else
+            docker push "${MIGRATE_SHA}"
+          fi
+
           if [[ "${PUBLISH_MAIN}" == "true" ]]; then
             current_main="$(curl -fsSL \
               -H "Authorization: Bearer ${GITHUB_TOKEN}" \
@@ -398,8 +414,16 @@ jobs:
               echo "Skipping moving :main tags because ${GIT_SHA} is no longer main (${current_main})."
               exit 0
             fi
-            docker push "${WEB_MAIN}"
-            docker push "${MIGRATE_MAIN}"
+            if [[ "${web_sha_already_published}" == "true" ]]; then
+              docker buildx imagetools create -t "${WEB_MAIN}" "${WEB_SHA}"
+            else
+              docker push "${WEB_MAIN}"
+            fi
+            if [[ "${migrate_sha_already_published}" == "true" ]]; then
+              docker buildx imagetools create -t "${MIGRATE_MAIN}" "${MIGRATE_SHA}"
+            else
+              docker push "${MIGRATE_MAIN}"
+            fi
           else
             echo "Skipping moving :main tags; workflow_dispatch publishes sha tags only."
           fi
