@@ -127,6 +127,18 @@ The app automatically detects whether local images are present:
 - **No local images** (default after install) → images load from the CDN automatically
 - **Local images present** (after running the fetch service) → images served locally
 
+The production image also auto-advertises the built native-client locale catalog
+when none of the `ARKHAM_LOCALE_CATALOG_*` environment variables are set. To opt
+out and let the backend omit `i18n.locale-catalog.v1`, set any one of those
+variables to an empty value, for example `ARKHAM_LOCALE_CATALOG_MANIFEST_URL=`.
+
+This fork publishes production images as `ghcr.io/djensenius/arkham-horror` and
+migrations images as `ghcr.io/djensenius/arkham-horror-migrate`. Every publish
+creates immutable `sha-<full commit>` tags. Only a `push` to `main` may move the
+`:main` tags, and the workflow re-checks that `main` still points at the built
+commit immediately before pushing them. Manual `workflow_dispatch` publishes an
+arbitrary requested ref as `sha-<full commit>` only; it never moves `:main`.
+
 To fetch images locally, use the `fetch-images` Docker service.
 Once fetched, restart with `docker compose restart web` and the app will switch to local images.
 

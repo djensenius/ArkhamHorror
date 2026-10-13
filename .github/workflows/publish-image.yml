@@ -1,0 +1,429 @@
+name: Publish container images
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/publish-image.yml"
+      - ".dockerignore"
+      - "Dockerfile"
+      - "backend/arkham-api/config/**"
+      - "infra/**"
+      - "migrate.sh"
+      - "web-entrypoint.sh"
+      - "start.sh"
+      - "prod.nginxconf"
+      - "setup.sql"
+      - "migrations/**"
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref, tag, or SHA to publish instead of the workflow commit"
+        required: false
+        type: string
+
+concurrency:
+  # PR smoke runs are isolated per PR and cancel superseded commits. Pushes to
+  # main serialize in publish-image-main with cancel-in-progress disabled.
+  # Manual dispatches use a separate group per requested ref and only publish
+  # immutable sha-<full commit> tags. Only push runs for main may move :main;
+  # the publish job still re-checks that the built SHA is main's current head
+  # immediately before pushing those moving tags.
+  group: ${{ github.event_name == 'pull_request' && format('publish-image-pr-{0}', github.event.pull_request.number) || github.event_name == 'workflow_dispatch' && format('publish-image-dispatch-{0}', github.event.inputs.ref || github.ref) || 'publish-image-main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  WEB_IMAGE: ghcr.io/djensenius/arkham-horror
+  MIGRATE_IMAGE: ghcr.io/djensenius/arkham-horror-migrate
+  POSTGRES_IMAGE: postgres:14.6-alpine@sha256:a0f7890719c3c42b9f78f1ad98b2cd45aa2ee3472da12f9d2d3bfbc07f421146
+
+jobs:
+  build:
+    name: Build and smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    outputs:
+      git-sha: ${{ steps.meta.outputs.git-sha }}
+      schema-revision: ${{ steps.meta.outputs.schema-revision }}
+      web-sha: ${{ steps.meta.outputs.web-sha }}
+      web-main: ${{ steps.meta.outputs.web-main }}
+      migrate-sha: ${{ steps.meta.outputs.migrate-sha }}
+      migrate-main: ${{ steps.meta.outputs.migrate-main }}
+      publish-main: ${{ steps.meta.outputs.publish-main }}
+    steps:
+      - name: Check out publish ref
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.inputs.ref || github.sha }}
+
+      - name: Compute image metadata
+        id: meta
+        env:
+          REQUESTED_REF: ${{ github.event.inputs.ref || '' }}
+        run: |
+          set -euo pipefail
+          git_sha="$(git rev-parse HEAD)"
+          schema_revision="$(python3 - <<'PY'
+          from pathlib import Path
+          import re
+          source = Path('backend/arkham-api/library/Base/Api/Types/Capabilities.hs').read_text(encoding='utf-8')
+          match = re.search(r'schemaRevision = "([^"]+)"', source)
+          if not match:
+              raise SystemExit('schemaRevision not found')
+          print(match.group(1))
+          PY
+          )"
+
+          publish_main="false"
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            publish_main="true"
+          fi
+
+          {
+            echo "git-sha=${git_sha}"
+            echo "schema-revision=${schema_revision}"
+            echo "web-sha=${WEB_IMAGE}:sha-${git_sha}"
+            echo "web-main=${WEB_IMAGE}:main"
+            echo "migrate-sha=${MIGRATE_IMAGE}:sha-${git_sha}"
+            echo "migrate-main=${MIGRATE_IMAGE}:main"
+            echo "publish-main=${publish_main}"
+          } >> "${GITHUB_OUTPUT}"
+
+          printf 'Built commit %s (schemaRevision %s, requested ref %s); publish main tag: %s\n' \
+            "${git_sha}" "${schema_revision}" "${REQUESTED_REF:-<event sha>}" "${publish_main}"
+
+      - name: Build images locally for smoke test
+        env:
+          GIT_SHA: ${{ steps.meta.outputs.git-sha }}
+          SCHEMA_REVISION: ${{ steps.meta.outputs.schema-revision }}
+          WEB_SHA: ${{ steps.meta.outputs.web-sha }}
+          WEB_MAIN: ${{ steps.meta.outputs.web-main }}
+          MIGRATE_SHA: ${{ steps.meta.outputs.migrate-sha }}
+          MIGRATE_MAIN: ${{ steps.meta.outputs.migrate-main }}
+        run: |
+          set -euo pipefail
+          common_labels=(
+            --label "org.opencontainers.image.source=https://github.com/djensenius/ArkhamHorror"
+            --label "org.opencontainers.image.revision=${GIT_SHA}"
+            --label "io.arkhamhorror.schemaRevision=${SCHEMA_REVISION}"
+          )
+
+          # linux/amd64 only: the current self-hosted Portainer deployment
+          # target is amd64. The default docker buildx driver matches the
+          # existing locale-catalog serving job; no GHA cache is configured
+          # because the Haskell/Stack BuildKit cache mounts are not exported, so
+          # backend changes still pay the cold-build cost.
+          docker buildx build \
+            --platform linux/amd64 \
+            --target app \
+            --load \
+            "${common_labels[@]}" \
+            --tag "${WEB_SHA}" \
+            --tag "${WEB_MAIN}" \
+            .
+
+          docker buildx build \
+            --platform linux/amd64 \
+            --file infra/migrate.Dockerfile \
+            --load \
+            "${common_labels[@]}" \
+            --tag "${MIGRATE_SHA}" \
+            --tag "${MIGRATE_MAIN}" \
+            .
+
+      - name: Smoke test images
+        env:
+          POSTGRES_PASSWORD: arkham-smoke-postgres-password
+          JWT_SECRET: arkham-smoke-jwt-secret-arkham-smoke-jwt-secret
+          SCHEMA_REVISION: ${{ steps.meta.outputs.schema-revision }}
+          WEB_SHA: ${{ steps.meta.outputs.web-sha }}
+          MIGRATE_SHA: ${{ steps.meta.outputs.migrate-sha }}
+        run: |
+          set -euo pipefail
+          network="arkham-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          db="arkham-smoke-db-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          compose_db="arkham-smoke-compose-db-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          web="arkham-smoke-web-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            status=$?
+            if [[ ${status} -ne 0 ]]; then
+              docker logs "${db}" || true
+              docker logs "${compose_db}" || true
+              docker logs "${web}" || true
+            fi
+            docker rm -f "${web}" "${db}" "${compose_db}" >/dev/null 2>&1 || true
+            docker network rm "${network}" >/dev/null 2>&1 || true
+            exit "${status}"
+          }
+          trap cleanup EXIT
+
+          wait_for_db() {
+            local container=$1
+            for _ in {1..60}; do
+              if docker exec "${container}" pg_isready -U arkham_pg_user -d arkham-horror-backend >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 2
+            done
+            docker exec "${container}" pg_isready -U arkham_pg_user -d arkham-horror-backend
+          }
+
+          run_migrate() {
+            local host=$1
+            docker run --rm \
+              --network "${network}" \
+              -e PGHOST="${host}" \
+              -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+              "${MIGRATE_SHA}"
+          }
+
+          assert_all_migrations() {
+            local container=$1
+            local expected actual
+            expected="$(grep -vE '^[[:space:]]*(%|#|$)' migrations/sqitch.plan | awk '{print $1}' | LC_ALL=C sort)"
+            actual="$(docker exec -e PGPASSWORD="${POSTGRES_PASSWORD}" "${container}" \
+              psql -U arkham_pg_user -d arkham-horror-backend -qtA \
+              -c 'SELECT name FROM arkham_schema_migrations ORDER BY name COLLATE "C"')"
+            diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}")
+          }
+
+          docker network create "${network}"
+          docker run -d \
+            --name "${db}" \
+            --network "${network}" \
+            -e POSTGRES_USER=arkham_pg_user \
+            -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+            -e POSTGRES_DB=arkham-horror-backend \
+            "${POSTGRES_IMAGE}"
+
+          wait_for_db "${db}"
+          run_migrate "${db}"
+          run_migrate "${db}"
+          assert_all_migrations "${db}"
+
+          docker run -d \
+            --name "${compose_db}" \
+            --network "${network}" \
+            -e POSTGRES_USER=arkham_pg_user \
+            -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+            -e POSTGRES_DB=arkham-horror-backend \
+            -v "${PWD}/setup.sql:/docker-entrypoint-initdb.d/create_tables.sql:ro" \
+            "${POSTGRES_IMAGE}"
+
+          wait_for_db "${compose_db}"
+          run_migrate "${compose_db}"
+          assert_all_migrations "${compose_db}"
+
+          docker run -d \
+            --name "${web}" \
+            --network "${network}" \
+            -p 127.0.0.1:3000:3000 \
+            -e PGHOST="${db}" \
+            -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
+            -e JWT_SECRET="${JWT_SECRET}" \
+            -e IP_FROM_HEADER=true \
+            "${WEB_SHA}"
+
+          for _ in {1..90}; do
+            if curl -fsS http://127.0.0.1:3000/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:3000/health >/dev/null
+          curl -fsS http://127.0.0.1:3000/api/v1/capabilities -o /tmp/arkham-capabilities.json
+
+          python3 - /tmp/arkham-capabilities.json <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          import time
+          import urllib.parse
+          import urllib.request
+
+          base = "http://127.0.0.1:3000"
+          expected_schema = os.environ["SCHEMA_REVISION"]
+
+          def fetch_bytes(path_or_url):
+              url = urllib.parse.urljoin(base, path_or_url)
+              last_error = None
+              for _ in range(30):
+                  try:
+                      with urllib.request.urlopen(url, timeout=5) as response:
+                          if response.status != 200:
+                              raise RuntimeError(f"{url} returned {response.status}")
+                          return response.read()
+                  except Exception as error:  # noqa: BLE001 - diagnostic for CI logs
+                      last_error = error
+                      time.sleep(2)
+              raise SystemExit(f"failed to fetch {url}: {last_error}")
+
+          def fetch_json(path_or_url):
+              return json.loads(fetch_bytes(path_or_url).decode("utf-8"))
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              capabilities = json.load(handle)
+          if capabilities.get("schemaRevision") != expected_schema:
+              raise SystemExit(
+                  f"schemaRevision {capabilities.get('schemaRevision')!r} != {expected_schema!r}"
+              )
+          capability_list = set(capabilities.get("capabilities", []))
+          for required in ("i18n.locale-catalog.v1", "arkham.campaign-catalog.v1"):
+              if required not in capability_list:
+                  raise SystemExit(f"missing capability {required}: {sorted(capability_list)}")
+
+          locale_catalog = capabilities.get("localeCatalog")
+          if not isinstance(locale_catalog, dict):
+              raise SystemExit("capabilities response did not advertise localeCatalog")
+          manifest_bytes = fetch_bytes(locale_catalog["manifestUrl"])
+          manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+          if manifest_digest != locale_catalog.get("manifestSha256"):
+              raise SystemExit("advertised locale manifest digest does not match served bytes")
+          manifest = json.loads(manifest_bytes.decode("utf-8"))
+          if manifest.get("catalogRevision") != locale_catalog.get("catalogRevision"):
+              raise SystemExit("advertised locale catalog revision does not match served manifest")
+          chunks = [chunk for locale in manifest.get("locales", []) for chunk in locale.get("chunks", [])]
+          if not chunks:
+              raise SystemExit("locale manifest lists no catalog chunks")
+          chunk = chunks[0]
+          chunk_bytes = fetch_bytes(chunk["path"])
+          if hashlib.sha256(chunk_bytes).hexdigest() != chunk.get("sha256"):
+              raise SystemExit("served locale catalog chunk digest does not match manifest")
+
+          campaign_catalog = capabilities.get("campaignCatalog")
+          if not isinstance(campaign_catalog, dict):
+              raise SystemExit("capabilities response did not include campaignCatalog metadata")
+          campaign = fetch_json(campaign_catalog["endpoint"])
+          if campaign.get("catalogRevision") != campaign_catalog.get("catalogRevision"):
+              raise SystemExit("advertised campaign catalog revision does not match served catalog")
+
+          print(
+              "smoke ok:",
+              "schemaRevision", capabilities["schemaRevision"],
+              "localeCatalog", locale_catalog["catalogRevision"],
+              "campaignCatalog", campaign_catalog["catalogRevision"],
+          )
+          PY
+
+      - name: Save images for publish job
+        if: github.event_name != 'pull_request'
+        env:
+          WEB_SHA: ${{ steps.meta.outputs.web-sha }}
+          WEB_MAIN: ${{ steps.meta.outputs.web-main }}
+          MIGRATE_SHA: ${{ steps.meta.outputs.migrate-sha }}
+          MIGRATE_MAIN: ${{ steps.meta.outputs.migrate-main }}
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/arkham-images"
+          rm -rf "${artifact_dir}"
+          mkdir -p "${artifact_dir}"
+          docker save "${WEB_SHA}" "${WEB_MAIN}" | zstd -T0 -3 -o "${artifact_dir}/web-image.tar.zst"
+          docker save "${MIGRATE_SHA}" "${MIGRATE_MAIN}" | zstd -T0 -3 -o "${artifact_dir}/migrate-image.tar.zst"
+
+      - name: Upload images for publish job
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: arkham-images-${{ steps.meta.outputs.git-sha }}
+          path: ${{ runner.temp }}/arkham-images/*.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish images
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download built images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: arkham-images-${{ needs.build.outputs.git-sha }}
+          path: ${{ runner.temp }}/arkham-images
+
+      - name: Load images
+        run: |
+          set -euo pipefail
+          zstd -dc "${RUNNER_TEMP}/arkham-images/web-image.tar.zst" | docker load
+          zstd -dc "${RUNNER_TEMP}/arkham-images/migrate-image.tar.zst" | docker load
+
+      - name: Log in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${GHCR_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Push images
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_SHA: ${{ needs.build.outputs.git-sha }}
+          WEB_SHA: ${{ needs.build.outputs.web-sha }}
+          WEB_MAIN: ${{ needs.build.outputs.web-main }}
+          MIGRATE_SHA: ${{ needs.build.outputs.migrate-sha }}
+          MIGRATE_MAIN: ${{ needs.build.outputs.migrate-main }}
+          PUBLISH_MAIN: ${{ needs.build.outputs.publish-main }}
+        run: |
+          set -euo pipefail
+
+          web_sha_already_published=false
+          migrate_sha_already_published=false
+
+          if docker buildx imagetools inspect "${WEB_SHA}" >/dev/null 2>&1; then
+            echo "${WEB_SHA} already published; keeping the existing digest"
+            web_sha_already_published=true
+          else
+            docker push "${WEB_SHA}"
+          fi
+
+          if docker buildx imagetools inspect "${MIGRATE_SHA}" >/dev/null 2>&1; then
+            echo "${MIGRATE_SHA} already published; keeping the existing digest"
+            migrate_sha_already_published=true
+          else
+            docker push "${MIGRATE_SHA}"
+          fi
+
+          if [[ "${PUBLISH_MAIN}" == "true" ]]; then
+            current_main="$(curl -fsSL \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/main" \
+              | python3 -c 'import json, sys; print(json.load(sys.stdin).get("sha", ""))')"
+            if [[ ! "${current_main}" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+              echo "GitHub API returned invalid main SHA: ${current_main}" >&2
+              exit 1
+            fi
+            if [[ "${GIT_SHA}" != "${current_main}" ]]; then
+              echo "Skipping moving :main tags because ${GIT_SHA} is no longer main (${current_main})."
+              exit 0
+            fi
+            if [[ "${web_sha_already_published}" == "true" ]]; then
+              docker buildx imagetools create -t "${WEB_MAIN}" "${WEB_SHA}"
+            else
+              docker push "${WEB_MAIN}"
+            fi
+            if [[ "${migrate_sha_already_published}" == "true" ]]; then
+              docker buildx imagetools create -t "${MIGRATE_MAIN}" "${MIGRATE_SHA}"
+            else
+              docker push "${MIGRATE_MAIN}"
+            fi
+          else
+            echo "Skipping moving :main tags; workflow_dispatch publishes sha tags only."
+          fi
