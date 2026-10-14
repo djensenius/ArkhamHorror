@@ -1,20 +1,83 @@
 {
-  "tag": "WindowChooseOne",
   "choices": [
     {
-      "tag": "AbilityLabel",
-      "investigatorId": "c01001",
       "ability": {
-        "source": {
-          "tag": "InvestigatorSource",
-          "contents": "c01001"
-        },
+        "additionalCosts": [],
+        "basic": false,
+        "blocksIn": null,
+        "canBeCancelled": true,
         "cardCode": "c01001",
+        "chaosTokenEffects": [],
+        "criteria": {
+          "contents": [
+            {
+              "tag": "Self"
+            },
+            {
+              "contents": {
+                "contents": [
+                  {
+                    "contents": {
+                      "tag": "You"
+                    },
+                    "tag": "LocationWithInvestigator"
+                  },
+                  {
+                    "contents": {
+                      "tag": "You"
+                    },
+                    "tag": "LocationWithDiscoverableCluesBy"
+                  }
+                ],
+                "tag": "LocationMatchAll"
+              },
+              "tag": "LocationExists"
+            }
+          ],
+          "tag": "Criteria"
+        },
+        "delayAdditionalCosts": null,
+        "displayAs": null,
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "evadeCriteriaOverride": null,
+        "fightCriteriaOverride": null,
+        "highlightFromWindow": false,
+        "ignoreAllCosts": false,
         "index": 1,
+        "limit": {
+          "contents": [
+            {
+              "tag": "PerRound"
+            },
+            1
+          ],
+          "tag": "PlayerLimit"
+        },
+        "metadata": null,
+        "nonBlocking": false,
+        "requestor": {
+          "contents": "c01001",
+          "tag": "InvestigatorSource"
+        },
+        "resultLabel": null,
+        "skipForAll": false,
+        "source": {
+          "contents": "c01001",
+          "tag": "InvestigatorSource"
+        },
+        "target": null,
+        "tooltip": null,
+        "triggersSkillTest": false,
         "type": {
+          "actions": {
+            "contents": [],
+            "tag": "AndActions"
+          },
+          "cost": {
+            "tag": "Free"
+          },
           "tag": "ReactionAbility",
           "window": {
-            "tag": "IfEnemyDefeated",
             "contents": [
               "After",
               {
@@ -26,27 +89,12 @@
               {
                 "tag": "AnyEnemy"
               }
-            ]
-          },
-          "cost": {
-            "tag": "Free"
-          },
-          "actions": {
-            "contents": [],
-            "tag": "AndActions"
+            ],
+            "tag": "IfEnemyDefeated"
           }
         },
-        "limit": {
-          "tag": "PlayerLimit",
-          "contents": [
-            {
-              "tag": "PerRound"
-            },
-            1
-          ]
-        },
+        "wantsSkillTest": null,
         "window": {
-          "tag": "IfEnemyDefeated",
           "contents": [
             "After",
             {
@@ -58,93 +106,47 @@
             {
               "tag": "AnyEnemy"
             }
-          ]
-        },
-        "metadata": null,
-        "criteria": {
-          "tag": "Criteria",
-          "contents": [
-            {
-              "tag": "Self"
-            },
-            {
-              "tag": "LocationExists",
-              "contents": {
-                "tag": "LocationMatchAll",
-                "contents": [
-                  {
-                    "tag": "LocationWithInvestigator",
-                    "contents": {
-                      "tag": "You"
-                    }
-                  },
-                  {
-                    "tag": "LocationWithDiscoverableCluesBy",
-                    "contents": {
-                      "tag": "You"
-                    }
-                  }
-                ]
-              }
-            }
-          ]
-        },
-        "doesNotProvokeAttacksOfOpportunity": null,
-        "tooltip": null,
-        "canBeCancelled": true,
-        "displayAs": null,
-        "delayAdditionalCosts": null,
-        "basic": false,
-        "additionalCosts": [],
-        "requestor": {
-          "tag": "InvestigatorSource",
-          "contents": "c01001"
-        },
-        "triggersSkillTest": false,
-        "wantsSkillTest": null,
-        "target": null,
-        "highlightFromWindow": false,
-        "skipForAll": false,
-        "ignoreAllCosts": false,
-        "fightCriteriaOverride": null,
-        "evadeCriteriaOverride": null,
-        "nonBlocking": false,
-        "blocksIn": null
+          ],
+          "tag": "IfEnemyDefeated"
+        }
       },
+      "before": [],
+      "investigatorId": "c01001",
+      "messages": [],
+      "tag": "AbilityLabel",
       "windows": [
         {
+          "windowBatchId": null,
+          "windowConditionTick": null,
           "windowTiming": "After",
           "windowType": {
-            "tag": "IfEnemyDefeated",
             "contents": [
               "c01001",
               {
-                "tag": "DefeatedByDamage",
                 "contents": {
-                  "tag": "UseAbilitySource",
                   "contents": [
                     "c01001",
                     {
-                      "tag": "EnemySource",
-                      "contents": "6420b429-88f1-44b2-9a51-e5eb8ae44598"
+                      "contents": "6420b429-88f1-44b2-9a51-e5eb8ae44598",
+                      "tag": "EnemySource"
                     },
                     100
-                  ]
-                }
+                  ],
+                  "tag": "UseAbilitySource"
+                },
+                "tag": "DefeatedByDamage"
               },
               "6420b429-88f1-44b2-9a51-e5eb8ae44598"
-            ]
-          },
-          "windowBatchId": null,
-          "windowConditionTick": null
+            ],
+            "tag": "IfEnemyDefeated"
+          }
         }
-      ],
-      "before": [],
-      "messages": []
+      ]
     },
     {
-      "tag": "SkipTriggersButton",
-      "investigatorId": "c01001"
+      "investigatorId": "c01001",
+      "tag": "SkipTriggersButton"
     }
-  ]
+  ],
+  "tag": "WindowChooseOne"
 }

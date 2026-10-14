@@ -1,8 +1,8 @@
 {
-  "schemaRevision": "0.1.52",
+  "schemaRevision": "0.1.53",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
-  "nativeClientMinimumRevision": "0.1.50",
+  "nativeClientMinimumRevision": "0.1.53",
   "capabilities": [
     "arkham.campaign-catalog.v1",
     "events.shared-state-versioning",
@@ -20,7 +20,7 @@
   },
   "localeCatalog": {
     "manifestUrl": "/locale-catalog/manifest.json",
-    "catalogRevision": "1.fe4ecbc09b514a02495104e72d98a963",
+    "catalogRevision": "1.6516007c9c106a67b49b9939f2906b5c",
     "schemaVersion": "1.0.0",
     "defaultLocale": "en",
     "supportedLocales": [
@@ -28,6 +28,6 @@
       "en",
       "pt-BR"
     ],
-    "manifestSha256": "604f6619514e7562f8070977038a3a67fa9b0dc13f22200fb3603d3dc436118d"
+    "manifestSha256": "e62edd50ec380abb26841376619194467392fbccedd274f9a02eec977c094da8"
   }
 }

@@ -16,6 +16,7 @@ import Arkham.Classes.HasQueue
 import Arkham.Classes.Query
 import Arkham.Constants
 import Arkham.Cost.Status
+import Arkham.Draw.Types (cardDrawSource)
 import Arkham.Effect.Types (Field (..))
 import Arkham.Enemy.Types (Field (EnemyAttacking))
 import Arkham.Event.Types qualified as Field
@@ -427,6 +428,37 @@ getWindowAsset ((windowType -> Window.ActivateAbility _ _ ability) : xs) =
   (abilitySource ability).asset <|> getWindowAsset xs
 getWindowAsset (_ : xs) = getWindowAsset xs
 
+{- | The asset whose OWN ability was activated in an @ActivateAbility@ window, for
+"a different asset" clauses. The outer 'Maybe' says whether such a window was found
+at all; the inner one, whether it excludes an asset in play.
+
+Unlike 'getWindowAsset' this does NOT look through True Magick (5)'s
+@ProxySource (CardIdSource _)@. A borrowed activation resolves the revealed [Spell],
+which True Magick has become a copy of -- cost, name, text box and traits (FAQ v2.5
+Q69) -- so the asset activated is that copy, and True Magick itself is still "a
+different [Spell] asset" the trigger may point back at. Hence @Just Nothing@:
+a window was found, but it excludes nothing in play.
+-}
+getWindowActivatedAsset :: [Window] -> Maybe (Maybe AssetId)
+getWindowActivatedAsset [] = Nothing
+getWindowActivatedAsset ((windowType -> Window.ActivateAbility _ _ ability) : xs) =
+  case abilitySource ability of
+    ProxySource (CardIdSource _) _ -> Just Nothing
+    src -> maybe (getWindowActivatedAsset xs) (Just . Just) src.asset
+getWindowActivatedAsset (_ : xs) = getWindowActivatedAsset xs
+
+{- | The in-hand card a True Magick (5) borrowed activation revealed, read back out of
+the @ActivateAbility@ window a reaction forwards. That card is the asset the borrowed
+ability belonged to, so a card re-entering True Magick through the same chain must not
+offer it again.
+-}
+getWindowRevealedCardId :: Window -> Maybe CardId
+getWindowRevealedCardId (windowType -> Window.ActivateAbility _ _ ability) =
+  case abilitySource ability of
+    ProxySource (CardIdSource cid) _ -> Just cid
+    _ -> Nothing
+getWindowRevealedCardId _ = Nothing
+
 inFastWindow :: HasGame m => m Bool
 inFastWindow = any (any (\w -> windowType w == Window.FastPlayerWindow)) <$> getWindowStack
 
@@ -584,6 +616,9 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
     Matcher.AnyWindowIfEnemy enemyMatcher -> do
       ok <- selectAny enemyMatcher
       if ok then isMatch' else noMatch
+    Matcher.WouldIncreaseFloodLevel timing whereMatcher -> guardTiming timing \case
+      Window.WouldIncreaseFloodLevel where' _ _ -> locationMatches iid source window' where' whereMatcher
+      _ -> noMatch
     Matcher.FloodLevelChanged timing whereMatcher -> guardTiming timing \case
       Window.FloodLevelChanged where' _ _ -> locationMatches iid source window' where' whereMatcher
       _ -> noMatch
@@ -1713,6 +1748,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               ]
           _ -> noMatch
         _ -> noMatch
+    -- tolerate removed enemies, the attacker can be defeated mid-attack
     Matcher.EnemyAttacks timing whoMatcher enemyAttackMatcher enemyMatcher ->
       guardTiming timing $ \case
         Window.EnemyAttacks details -> case attackTarget details of
@@ -1720,7 +1756,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             andM
               [ not <$> isAttackCancelled details
               , matchWho iid who whoMatcher
-              , matches (attackEnemy details) enemyMatcher
+              , enemyMatches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
           -- An asset attacked "as if it were an engaged investigator" (Dogs of
@@ -1734,7 +1770,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               , aid <=~> AssetAt (locationWithInvestigator iid)
               , not <$> isAttackCancelled details
               , matchWho iid iid whoMatcher
-              , matches (attackEnemy details) enemyMatcher
+              , enemyMatches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
           _ -> noMatch
@@ -1745,7 +1781,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
           SingleAttackTarget (InvestigatorTarget who) ->
             andM
               [ matchWho iid who whoMatcher
-              , matches (attackEnemy details) enemyMatcher
+              , enemyMatches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
           SingleAttackTarget (AssetTarget aid) ->
@@ -1753,17 +1789,18 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               [ not . settingsStrictAsIfAt <$> getSettings
               , aid <=~> AssetAt (locationWithInvestigator iid)
               , matchWho iid iid whoMatcher
-              , matches (attackEnemy details) enemyMatcher
+              , enemyMatches (attackEnemy details) enemyMatcher
               , enemyAttackMatches iid details enemyAttackMatcher
               ]
           _ -> noMatch
         _ -> noMatch
+    -- tolerate removed enemies, your attack often defeats them before the window
     Matcher.EnemyAttacked timing whoMatcher sourceMatcher enemyMatcher ->
       guardTiming timing $ \case
         Window.EnemyAttacked who source' enemyId ->
           andM
             [ matchWho iid who whoMatcher
-            , matches enemyId enemyMatcher
+            , enemyMatches enemyId enemyMatcher
             , sourceMatches source' sourceMatcher
             ]
         _ -> noMatch
@@ -1772,7 +1809,7 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
         Window.SuccessfulAttackEnemy who source' enemyId _ -> do
           andM
             [ matchWho iid who whoMatcher
-            , matches enemyId enemyMatcher
+            , enemyMatches enemyId enemyMatcher
             , sourceMatches source' sourceMatcher
             ]
         _ -> noMatch
@@ -2186,13 +2223,14 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
             , gameValueMatches n valueMatcher
             ]
         _ -> noMatch
-    Matcher.WouldDiscoverClues timing whoMatcher whereMatcher valueMatcher ->
+    Matcher.WouldDiscoverClues timing whoMatcher whereMatcher valueMatcher sourceMatcher ->
       guardTiming timing $ \case
-        Window.WouldDiscoverClues who lid _ _ n ->
+        Window.WouldDiscoverClues who lid _ source' n ->
           andM
             [ matchWho iid who (Matcher.replaceThatLocation lid whoMatcher)
             , locationMatches iid source window' lid whereMatcher
             , gameValueMatches n valueMatcher
+            , sourceMatches source' sourceMatcher
             ]
         _ -> noMatch
     Matcher.GainsClues timing whoMatcher valueMatcher -> guardTiming timing $ \case
@@ -2257,6 +2295,16 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
           andM
             [ matchWho iid who whoMatcher
             , deckMatch iid deck $ Matcher.replaceThatInvestigator who deckMatcher
+            ]
+        _ -> noMatch
+    Matcher.WouldDrawCardFrom timing whoMatcher deckMatcher sourceMatcher ->
+      guardTiming timing $ \case
+        Window.WouldDrawCard who _ deck ->
+          andM
+            [ matchWho iid who whoMatcher
+            , deckMatch iid deck $ Matcher.replaceThatInvestigator who deckMatcher
+            , field InvestigatorDrawing who
+                >>= maybe noMatch ((`sourceMatches` sourceMatcher) . cardDrawSource)
             ]
         _ -> noMatch
     Matcher.WouldDrawExactlyOneCard timing whoMatcher deckMatcher ->

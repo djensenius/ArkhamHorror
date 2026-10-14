@@ -126,10 +126,12 @@ data GameDetails = GameDetails
   deriving stock (Show, Generic)
   deriving anyclass ToJSON
 
-data GameDetailsEntry = FailedGameDetails Text | SuccessGameDetails GameDetails
+data GameDetailsEntry
+  = FailedGameDetails ArkhamGameId Text Text
+  | SuccessGameDetails GameDetails
   deriving stock (Show, Generic)
 
 instance ToJSON GameDetailsEntry where
   toJSON = \case
-    FailedGameDetails message -> object ["error" .= message]
+    FailedGameDetails gameId name message -> object ["id" .= gameId, "name" .= name, "error" .= message]
     SuccessGameDetails details -> toJSON details

@@ -1,69 +1,71 @@
 {
-  "tag": "ChooseOne",
   "choices": [
     {
-      "tag": "CostLabel",
       "cost": {
         "tag": "Free"
       },
-      "messages": []
+      "messages": [],
+      "tag": "CostLabel"
     },
     {
-      "tag": "AbilityLabel",
-      "investigatorId": "c01001",
       "ability": {
-        "source": {
-          "tag": "CardCodeSource",
-          "contents": "c01104"
-        },
+        "additionalCosts": [],
+        "basic": false,
+        "blocksIn": null,
+        "canBeCancelled": true,
         "cardCode": "c01104",
+        "chaosTokenEffects": [],
+        "criteria": {
+          "tag": "NoRestriction"
+        },
+        "delayAdditionalCosts": null,
+        "displayAs": null,
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "evadeCriteriaOverride": null,
+        "fightCriteriaOverride": null,
+        "highlightFromWindow": false,
+        "ignoreAllCosts": false,
         "index": 1,
+        "limit": {
+          "tag": "NoLimit"
+        },
+        "metadata": null,
+        "nonBlocking": false,
+        "requestor": {
+          "contents": "c01104",
+          "tag": "CardCodeSource"
+        },
+        "resultLabel": null,
+        "skipForAll": false,
+        "source": {
+          "contents": "c01104",
+          "tag": "CardCodeSource"
+        },
+        "target": null,
+        "tooltip": null,
+        "triggersSkillTest": false,
         "type": {
-          "tag": "ActionAbility",
           "actions": {
             "contents": [],
             "tag": "AndActions"
           },
-          "skillTypes": null,
           "cost": {
             "tag": "Free"
-          }
+          },
+          "skillTypes": null,
+          "tag": "ActionAbility"
         },
-        "limit": {
-          "tag": "NoLimit"
-        },
+        "wantsSkillTest": null,
         "window": {
           "tag": "AnyWindow"
-        },
-        "metadata": null,
-        "criteria": {
-          "tag": "NoRestriction"
-        },
-        "doesNotProvokeAttacksOfOpportunity": null,
-        "tooltip": null,
-        "canBeCancelled": true,
-        "displayAs": null,
-        "delayAdditionalCosts": null,
-        "basic": false,
-        "additionalCosts": [],
-        "requestor": {
-          "tag": "CardCodeSource",
-          "contents": "c01104"
-        },
-        "triggersSkillTest": false,
-        "wantsSkillTest": null,
-        "target": null,
-        "highlightFromWindow": false,
-        "skipForAll": false,
-        "ignoreAllCosts": false,
-        "fightCriteriaOverride": null,
-        "evadeCriteriaOverride": null,
-        "nonBlocking": false,
-        "blocksIn": null
+        }
       },
-      "windows": [],
       "before": [],
-      "messages": []
+      "investigatorId": "c01001",
+      "messages": [],
+      "tag": "AbilityLabel",
+      "windows": []
     }
-  ]
+  ],
+  "tag": "ChooseOne"
 }

@@ -42,7 +42,7 @@ function spawning(q: Question) {
 </script>
 
 <template>
-  <section>
+  <section class="questions-panel">
     <h2>Questions</h2>
     <div id="questions">
       <TestBox v-if="test && !testPlaced" :test="test" />
@@ -65,7 +65,7 @@ function spawning(q: Question) {
         <QuestionBlock v-else :pid="pid" :question="q" :test="test" :loose="loose" />
       </template>
       <em v-if="!qs.length">No open questions.</em>
+      <div id="error" class="err">{{ ctx.error.value }}</div>
     </div>
-    <div id="error" class="err">{{ ctx.error.value }}</div>
   </section>
 </template>

@@ -6,7 +6,7 @@ import Arkham.Helpers.Act (getCurrentActStep)
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Modifiers (ModifierType (..), modifySelectMapM)
 import Arkham.Helpers.Query (getPlayerCount)
-import Arkham.Helpers.SkillTest (getSkillTestAction, isParley)
+import Arkham.Helpers.SkillTest (isInvestigation, isParley)
 import Arkham.Helpers.Xp (XpBonus (NoBonus))
 import Arkham.Homebrew.CircusExMortis.CardDefs.Acts qualified as Acts
 import Arkham.Homebrew.CircusExMortis.CardDefs.Agendas qualified as Agendas
@@ -23,9 +23,9 @@ import Arkham.Id (InvestigatorId)
 import Arkham.Matcher
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
-import Arkham.Placement
 import Arkham.Resolution
 import Arkham.Scenario.Import.Lifted
+import Arkham.Scenario.Setup qualified as Setup
 import Arkham.Token qualified as Token
 import Arkham.Trait (Trait (SilverTwilight, Socialite))
 import Arkham.Trait qualified as Trait
@@ -124,7 +124,7 @@ instance HasChaosTokenValue Bacchanalia where
       x <- (`divideRoundUp` 2) <$> getViceCount iid
       pure $ toChaosTokenValue attrs Skull x (x + 1)
     Cultist -> do
-      investigating <- (== Just #investigate) <$> getSkillTestAction
+      investigating <- isInvestigation
       pure
         $ if investigating
           then toChaosTokenValue attrs Cultist 4 5
@@ -185,8 +185,10 @@ instance RunMessage Bacchanalia where
 
       n <- getPlayerCount
       shuffled <- shuffle socialites
+      -- assetAt, not createAssetAt: it also pulls the def's copies out of the
+      -- gathered encounter deck, which a bare create would leave behind.
       for_ (zip shuffled others) \(def, lid) -> do
-        aid <- createAssetAt def (AtLocation lid)
+        aid <- Setup.assetAt def lid
         placeTokens attrs aid Token.Clue n
 
       setAside
@@ -208,6 +210,7 @@ instance RunMessage Bacchanalia where
     ScenarioResolution r -> scope "resolutions" do
       case r of
         NoResolution -> do
+          resolution "noResolution"
           act <- getCurrentActStep
           anyResigned <- selectAny ResignedInvestigator
           push $ if not anyResigned && act < 3 then R1 else R2

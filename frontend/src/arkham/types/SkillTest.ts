@@ -1,5 +1,5 @@
 import * as JsonDecoder from 'ts.data.json';
-import { v2Optional } from '@/arkham/parser';
+import { v2Optional, withDefault } from '@/arkham/parser';
 import { ChaosToken, chaosTokenDecoder } from '@/arkham/types/ChaosToken';
 import { Card, cardDecoder} from '@/arkham/types/Card';
 import { SkillType, skillTypeDecoder} from '@/arkham/types/SkillType';
@@ -45,6 +45,67 @@ const baseValueDecoder = JsonDecoder.oneOf<SkillTestBaseValue>(
   'SkillTestBaseValue',
 );
 
+/**
+ * One card acting on one chaos token face, attributed to that card.
+ *
+ * `applied` means the engine has the modifier already, so the value is part of the
+ * entry's `value`; otherwise the card declared the effect ahead of the reveal and the
+ * value is a prediction (also already folded into `value`).
+ */
+export type ChaosTokenFaceEffect = {
+  name: string | null
+  cardCode: string | null
+  value: number | null
+  /** the prose half; may be an i18n key, so `t()` it and fall back to the raw string */
+  text: string | null
+  applied: boolean
+}
+
+export const chaosTokenFaceEffectDecoder = JsonDecoder.object<ChaosTokenFaceEffect>({
+  name: JsonDecoder.nullable(JsonDecoder.string()),
+  cardCode: JsonDecoder.nullable(JsonDecoder.string()),
+  value: JsonDecoder.nullable(JsonDecoder.number()),
+  text: JsonDecoder.nullable(JsonDecoder.string()),
+  applied: JsonDecoder.boolean(),
+}, 'ChaosTokenFaceEffect')
+
+/**
+ * What one card does to a face, as one string: "-1 If you fail, discard a card...".
+ *
+ * `translate` is vue-i18n's `t`. The backend may hand `text` over either as an i18n
+ * key or as literal prose; keys have no spaces, so only those are worth asking about,
+ * and `t` returns the key itself when there is no entry, which is the raw text anyway.
+ */
+export function chaosTokenEffectParts(
+  effect: ChaosTokenFaceEffect,
+  translate: (key: string) => string,
+): { value: string | null, text: string | null } {
+  return {
+    // `null` means the card's number is only known once it resolves, so there is
+    // nothing to show. A real 0 IS shown: a rule that currently contributes
+    // nothing has to be distinguishable from one that contributes what it reads,
+    // or the listed effects do not add up to the token's value.
+    value: effect.value === null
+      ? null
+      : (effect.value > 0 ? `+${effect.value}` : `${effect.value}`),
+    // The backend may hand `text` over either as an i18n key or as literal prose;
+    // keys have no spaces, so only those are worth asking about, and `t` returns
+    // the key itself when there is no entry, which is the raw text anyway.
+    text: effect.text
+      ? (/\s/.test(effect.text) ? effect.text : translate(effect.text))
+      : null,
+  }
+}
+
+/** The same, flattened to one string, for surfaces that can only show text. */
+export function chaosTokenEffectDetail(
+  effect: ChaosTokenFaceEffect,
+  translate: (key: string) => string,
+): string {
+  const { value, text } = chaosTokenEffectParts(effect, translate)
+  return [value, text].filter((p) => p !== null).join(' — ')
+}
+
 /** One distinct face in the chaos bag and what it is worth right now. */
 export type ChaosTokenValueEntry = {
   face: TokenFace
@@ -55,6 +116,8 @@ export type ChaosTokenValueEntry = {
   autoSuccess: boolean
   /** bless/curse/frost draw another token when revealed */
   revealsAnother: boolean
+  /** absent on a game in flight under an older server, hence the default */
+  effects: ChaosTokenFaceEffect[]
 }
 
 export const chaosTokenValueEntryDecoder = JsonDecoder.object<ChaosTokenValueEntry>({
@@ -64,6 +127,7 @@ export const chaosTokenValueEntryDecoder = JsonDecoder.object<ChaosTokenValueEnt
   autoFail: JsonDecoder.boolean(),
   autoSuccess: JsonDecoder.boolean(),
   revealsAnother: JsonDecoder.boolean(),
+  effects: withDefault<ChaosTokenFaceEffect[]>([], JsonDecoder.array(chaosTokenFaceEffectDecoder, 'ChaosTokenFaceEffect[]')),
 }, 'ChaosTokenValueEntry')
 
 /**
@@ -87,6 +151,43 @@ export const skillTestValueBreakdownDecoder = JsonDecoder.object<SkillTestValueB
   autoFailIfSucceedByAtLeast: JsonDecoder.array(JsonDecoder.number(), 'number[]'),
 }, 'SkillTestValueBreakdown')
 
+/** How many chaos tokens the test reveals, and how many of those resolve. */
+export type RevealStrategy
+  = { tag: 'Reveal', contents: number }
+  | { tag: 'RevealAndChoose', contents: [number, number] }
+  | { tag: 'MultiReveal', contents: [RevealStrategy, RevealStrategy] }
+
+export const revealStrategyDecoder: JsonDecoder.Decoder<RevealStrategy> = JsonDecoder.oneOf<RevealStrategy>(
+  [
+    JsonDecoder.object({
+      tag: JsonDecoder.literal('Reveal'),
+      contents: JsonDecoder.number(),
+    }, 'Reveal'),
+    JsonDecoder.object({
+      tag: JsonDecoder.literal('RevealAndChoose'),
+      contents: JsonDecoder.tuple([JsonDecoder.number(), JsonDecoder.number()], '[number, number]'),
+    }, 'RevealAndChoose'),
+    JsonDecoder.object({
+      tag: JsonDecoder.literal('MultiReveal'),
+      contents: JsonDecoder.tuple(
+        [JsonDecoder.lazy(() => revealStrategyDecoder), JsonDecoder.lazy(() => revealStrategyDecoder)],
+        '[RevealStrategy, RevealStrategy]',
+      ),
+    }, 'MultiReveal'),
+  ],
+  'RevealStrategy',
+)
+
+/** `Reveal 2 -> 1`, `2 + 1`, ... as a one-line label. */
+export function describeRevealStrategy(strategy: RevealStrategy): string {
+  switch (strategy.tag) {
+    case 'Reveal': return `${strategy.contents}`
+    case 'RevealAndChoose': return `${strategy.contents[0]} \u2192 ${strategy.contents[1]}`
+    case 'MultiReveal':
+      return `${describeRevealStrategy(strategy.contents[0])} + ${describeRevealStrategy(strategy.contents[1])}`
+  }
+}
+
 export type SkillTest = {
   investigator: string;
   setAsideChaosTokens: ChaosToken[];
@@ -109,6 +210,7 @@ export type SkillTest = {
   resultForced: boolean;
   modifiers?: Modifier[];
   valueBreakdown?: SkillTestValueBreakdown;
+  revealStrategy?: RevealStrategy;
 }
 
 export type SkillTestResults = {
@@ -162,6 +264,7 @@ export const skillTestDecoder = JsonDecoder.object<SkillTest>(
     resultForced: JsonDecoder.fallback(false, JsonDecoder.boolean()),
     modifiers: v2Optional(JsonDecoder.array<Modifier>(modifierDecoder, 'Modifier[]')),
     valueBreakdown: v2Optional(skillTestValueBreakdownDecoder),
+    revealStrategy: v2Optional(revealStrategyDecoder),
   },
   'SkillTest',
 );

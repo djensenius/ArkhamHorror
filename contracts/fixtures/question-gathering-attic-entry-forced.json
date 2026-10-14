@@ -1,96 +1,98 @@
 {
-  "tag": "WindowChooseOne",
   "choices": [
     {
-      "tag": "AbilityLabel",
-      "investigatorId": "c01001",
       "ability": {
-        "source": {
-          "tag": "LocationSource",
-          "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
-        },
+        "additionalCosts": [],
+        "basic": false,
+        "blocksIn": null,
+        "canBeCancelled": true,
         "cardCode": "c01113",
+        "chaosTokenEffects": [],
+        "criteria": {
+          "tag": "NoRestriction"
+        },
+        "delayAdditionalCosts": null,
+        "displayAs": null,
+        "doesNotProvokeAttacksOfOpportunity": null,
+        "evadeCriteriaOverride": null,
+        "fightCriteriaOverride": null,
+        "highlightFromWindow": false,
+        "ignoreAllCosts": false,
         "index": 1,
+        "limit": {
+          "contents": [
+            {
+              "tag": "PerWindow"
+            },
+            1
+          ],
+          "tag": "PlayerLimit"
+        },
+        "metadata": null,
+        "nonBlocking": false,
+        "requestor": {
+          "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+          "tag": "LocationSource"
+        },
+        "resultLabel": null,
+        "skipForAll": false,
+        "source": {
+          "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+          "tag": "LocationSource"
+        },
+        "target": null,
+        "tooltip": null,
+        "triggersSkillTest": false,
         "type": {
           "tag": "ForcedAbility",
           "window": {
-            "tag": "Enters",
             "contents": [
               "After",
               {
                 "tag": "You"
               },
               {
-                "tag": "LocationWithId",
-                "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+                "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+                "tag": "LocationWithId"
               }
-            ]
+            ],
+            "tag": "Enters"
           }
         },
-        "limit": {
-          "tag": "PlayerLimit",
-          "contents": [
-            {
-              "tag": "PerWindow"
-            },
-            1
-          ]
-        },
+        "wantsSkillTest": null,
         "window": {
-          "tag": "Enters",
           "contents": [
             "After",
             {
               "tag": "You"
             },
             {
-              "tag": "LocationWithId",
-              "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
+              "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882",
+              "tag": "LocationWithId"
             }
-          ]
-        },
-        "metadata": null,
-        "criteria": {
-          "tag": "NoRestriction"
-        },
-        "doesNotProvokeAttacksOfOpportunity": null,
-        "tooltip": null,
-        "canBeCancelled": true,
-        "displayAs": null,
-        "delayAdditionalCosts": null,
-        "basic": false,
-        "additionalCosts": [],
-        "requestor": {
-          "tag": "LocationSource",
-          "contents": "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
-        },
-        "triggersSkillTest": false,
-        "wantsSkillTest": null,
-        "target": null,
-        "highlightFromWindow": false,
-        "skipForAll": false,
-        "ignoreAllCosts": false,
-        "fightCriteriaOverride": null,
-        "evadeCriteriaOverride": null,
-        "nonBlocking": false,
-        "blocksIn": null
+          ],
+          "tag": "Enters"
+        }
       },
+      "before": [],
+      "investigatorId": "c01001",
+      "messages": [],
+      "tag": "AbilityLabel",
       "windows": [
         {
+          "windowBatchId": null,
+          "windowConditionTick": null,
           "windowTiming": "After",
           "windowType": {
-            "tag": "Entering",
             "contents": [
               "c01001",
               "dbaa2d2e-4ceb-44b2-a554-e5fa370e7882"
-            ]
-          },
-          "windowBatchId": null,
-          "windowConditionTick": null
+            ],
+            "tag": "Entering"
+          }
         }
-      ],
-      "before": [],
-      "messages": []
+      ]
     }
-  ]
+  ],
+  "tag": "WindowChooseOne"
 }

@@ -114,6 +114,8 @@ import Arkham.Investigator.Types qualified as Attrs
 import Arkham.Key
 import Arkham.Keyword (Keyword (Starting))
 import Arkham.Location.Types (Field (..))
+import Arkham.Log (ikeyPart, investigatorRef, mechanic, (~>))
+import Arkham.Log.Refs (locationRefFor, sendLogInOpenBlock)
 import Arkham.Matcher (
   AssetMatcher (..),
   CardMatcher (..),
@@ -674,7 +676,12 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
                   else u
         )
         <$> filterM filterAbility investigatorUsedAbilities
-    pure $ a & usedAbilitiesL .~ usedAbilities
+    -- a skip belongs to the window that asked it. windowDepth is decremented before
+    -- entities see EndCheckWindow, so depth > 0 means we just unwound into an enclosing
+    -- window whose own Do (CheckWindows ws) is still queued -- it must not inherit the
+    -- skip (#5793). At depth 0 the next CheckWindows clears it as before, which is what
+    -- the PlayerWindow re-ask guard (#5284) relies on.
+    pure $ a & usedAbilitiesL .~ usedAbilities & skippedWindowL %~ (&& depth <= 0)
   ForTarget (isTarget a -> True) (EndOfScenario {}) -> do
     -- eliminated must clear with defeated/resigned, or interludes (and scenarios
     -- with skipInvestigatorSetup, which never run ForInvestigators ResetGame)
@@ -1568,8 +1575,18 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
                  ]
               <> wrapWindows [locationWindowsAfter]
               <> d.discoverThen
-            -- send $ format a <> " discovered " <> pluralize clueCount "clue"
-            send $ format a <> " discovered clue(s)"
+            locRef <- locationRefFor lid
+            -- Inside the test's block when one is open: discovering the clue is
+            -- what the investigation WAS, not a separate thing that happened.
+            sendLogInOpenBlock
+              $ mechanic
+                [ ikeyPart
+                    "log.discoveredCluesAt"
+                    [ "investigator" ~> investigatorRef a.id (toName a)
+                    , "count" ~> clueCount
+                    , "location" ~> locRef
+                    ]
+                ]
 
         -- Investigating and automatically discovering a clue are two separate exposure triggers.
         -- The investigation one is offered up front at ST.7 (see 'withExposeInsteadOfInvestigating'
@@ -1885,7 +1902,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     pure $ a & assignedHealthDamageL +~ max 0 damage & assignedSanityDamageL +~ max 0 horror
   DrivenInsane iid | iid == investigatorId -> handleDrivenInsane a iid
   CheckDefeated source (isTarget a -> True) | not (a ^. defeatedL || a ^. resignedL) -> handleCheckDefeated a source
-  AssignDamage target | isTarget a target -> handleAssignDamage a target
+  AssignDamage target source | isTarget a target -> handleAssignDamage a target source
   CancelAssignedDamage target damageReduction horrorReduction | isTarget a target -> handleCancelAssignedDamage a target damageReduction horrorReduction
   ApplyHealing source -> handleApplyHealing a source msg
   Do (ApplyHealing source) -> handleDoApplyHealing a source
@@ -2171,6 +2188,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       & (usedAdditionalActionsL .~ mempty)
       & (actionsTakenL .~ mempty)
       & (actionsPerformedL .~ mempty)
+      & (ignoredPerformedActionsL .~ mempty)
       & (beganRoundAtL .~ current)
       & (unhealedHorrorThisRoundL .~ 0)
   Begin InvestigationPhase -> do
@@ -2183,6 +2201,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       & (usedAdditionalActionsL .~ mempty)
       & (actionsTakenL .~ mempty)
       & (actionsPerformedL .~ mempty)
+      & (ignoredPerformedActionsL .~ mempty)
   DiscardTopOfDeck iid n source mTarget | iid == investigatorId -> handleDiscardTopOfDeck a iid n source mTarget
   Do (DiscardTopOfDeck iid n source mTarget) | iid == investigatorId -> handleDoDiscardTopOfDeck a iid n source mTarget
   DiscardUntilFirst iid' source (Deck.InvestigatorDeck iid) matcher | iid == investigatorId -> handleDiscardUntilFirst a iid' source iid matcher
@@ -2209,8 +2228,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   DoDrawCards iid | iid == toId a -> handleDoDrawCards a iid
   ReplaceCurrentCardDraw iid drawing | iid == investigatorId -> handleReplaceCurrentCardDraw a iid drawing
   Do (DrawCards iid cardDraw) | iid == toId a && cardDraw.deck == Deck.InvestigatorDeck iid -> handleDoDrawCardsV2 a iid cardDraw
-  InvestigatorDrewPlayerCardFrom iid card mDeck | iid == investigatorId -> handleInvestigatorDrewPlayerCardFrom a iid card mDeck msg
-  Do (InvestigatorDrewPlayerCardFrom iid card mdeck) | iid == investigatorId -> handleDoInvestigatorDrewPlayerCardFrom a iid card mdeck
+  InvestigatorDrewPlayerCardFrom iid card mDeck _ | iid == investigatorId -> handleInvestigatorDrewPlayerCardFrom a iid card mDeck msg
+  Do (InvestigatorDrewPlayerCardFrom iid card mdeck _) | iid == investigatorId -> handleDoInvestigatorDrewPlayerCardFrom a iid card mdeck
   InvestigatorSpendClues iid n | iid == investigatorId -> do
     includeStory <- not <$> hasCampaignOption PlayersDoNotControlStoryAssetClues
     let storyWrapper = if includeStory then id else (<> AssetNonStory)
@@ -2505,8 +2524,10 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     --        | card <- uncommittableCards
     --        ]
     pure a
-  CheckWindows windows | not (investigatorDefeated || investigatorResigned) || Window.hasEliminatedWindow windows -> do
-    pure $ a & skippedWindowL .~ False
+  CheckWindows windows
+    | not (investigatorDefeated || investigatorResigned)
+        || Window.hasOwnEliminatedWindow investigatorId windows -> do
+        pure $ a & skippedWindowL .~ False
   SkippedWindow iid | iid == investigatorId -> do
     pure $ a & skippedWindowL .~ True
   ResolveWindowInitiations iid windows pending | iid == investigatorId -> do
@@ -2520,7 +2541,12 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     -- emptied set cannot be rebuilt by the Do (CheckWindows ws) below. #5764
     remaining <- flip filterM pending \(ability, ws, _) -> initiationIsLive iid ability ws
     if null remaining
-      then push $ Do (CheckWindows windows) -- anything newly available still gets a look
+      then do
+        -- An emptied set must not take the effects it was holding with it: they are the
+        -- only copy (the pop below took them out of the queue), so stranding them loses
+        -- the damage the window stands in front of outright. #5798
+        pushAll [MoveWithSkillTest effect | (_, _, effects) <- pending, effect <- effects]
+        push $ Do (CheckWindows windows) -- anything newly available still gets a look
       else do
         -- capture every initiation's pending effects out of the queue (first round), so
         -- no held effect can resolve before its own initiation has; each one is given
@@ -2535,7 +2561,9 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
     pure a
   Do (CheckWindows windows)
     | not investigatorSkippedWindow
-        && (not (investigatorDefeated || investigatorResigned) || Window.hasEliminatedWindow windows) -> do
+        && ( not (investigatorDefeated || investigatorResigned)
+               || Window.hasOwnEliminatedWindow investigatorId windows
+           ) -> do
         actions <- timedSpan "window/getActions" $ getActions a.id windows
         playableCards <-
           if not (investigatorDefeated || investigatorResigned)
@@ -2557,6 +2585,8 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
   UseEffectAction iid eid _ | iid == investigatorId -> handleUseEffectAction a iid eid
   LoseActions iid source n | iid == investigatorId -> handleLoseActions a iid source n msg
   Do (LoseActions iid _source n) | iid == investigatorId -> handleDoLoseActions a iid n
+  LoseStandardActions iid source n | iid == investigatorId -> handleLoseActions a iid source n msg
+  Do (LoseStandardActions iid _source n) | iid == investigatorId -> handleDoLoseStandardActions a iid n
   SetActions iid _ 0 | iid == investigatorId -> handleSetActions a iid
   SetActions iid _ n | iid == investigatorId -> handleSetActionsV2 a iid n
   SetAsideCards cards -> do
@@ -2962,6 +2992,15 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
       $ a
       & usedAbilitiesL
       %~ filter (\UsedAbility {..} -> abilityLimitType (abilityLimit usedAbility) /= Just PerDepthLevel)
+  EndSetup -> do
+    -- setup is not a round/phase/turn, so a limit spent there must not carry into round 1
+    pure
+      $ a
+      & usedAbilitiesL
+      %~ filter
+        ( \UsedAbility {..} ->
+            abilityLimitType (abilityLimit usedAbility) `notElem` [Just PerRound, Just PerPhase, Just PerTurn]
+        )
   EndUpkeep -> do
     pure
       $ a
@@ -3055,7 +3094,7 @@ runInvestigatorMessage msg a@InvestigatorAttrs {..} = runQueueT $ case msg of
           [ WhenWillEnterLocation iid lid
           , Do (WhenWillEnterLocation iid lid)
           , After (WhenWillEnterLocation iid lid)
-          , EnterLocation iid lid
+          , EnterLocation iid lid Nothing
           , CheckEnemyEngagement iid
           ]
         pure a
@@ -3074,7 +3113,7 @@ takeUpkeepResources a = do
   let additionalAmount =
         sum
           [ n
-          | Modifier s (UpkeepResources n) _ _ <- fullModifiers
+          | Modifier {modifierSource = s, modifierType = UpkeepResources n} <- fullModifiers
           , not cannotGainResourcesFromPlayerCardEffects || sourceToFromSource s /= FromPlayerCardEffect
           ]
   let amount = 1 + additionalAmount

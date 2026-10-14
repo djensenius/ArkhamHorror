@@ -91,6 +91,7 @@ data WindowMatcher
   | VehicleLeaves Timing AssetMatcher LocationMatcher
   | VehicleEnters Timing AssetMatcher LocationMatcher
   | VehicleWouldEnter Timing AssetMatcher LocationMatcher
+  | WouldIncreaseFloodLevel Timing LocationMatcher
   | FloodLevelChanged Timing LocationMatcher
   | FloodLevelIncreased Timing LocationMatcher
   | FirstTimeParleyingThisRound Timing Who
@@ -186,7 +187,7 @@ data WindowMatcher
   | DiscoveringLastClue Timing Who Where
   | LastClueRemovedFromLocation Timing LocationMatcher
   | DiscoverClues Timing Who Where ValueMatcher
-  | WouldDiscoverClues Timing Who Where ValueMatcher
+  | WouldDiscoverClues Timing Who Where ValueMatcher SourceMatcher
   | GainsClues Timing Who ValueMatcher
   | GainsResources Timing Who SourceMatcher ValueMatcher
   | SpendsResources Timing Who ValueMatcher
@@ -289,6 +290,12 @@ data WindowMatcher
   | InvestigatorDealtDamageOrHorror Timing SourceMatcher Who
   | WouldDrawEncounterCard Timing Who PhaseMatcher
   | WouldDrawCard Timing Who DeckMatcher
+  | {- | 'WouldDrawCard', restricted by what caused the draw. The window itself
+    carries no source, so this reads the pending draw off
+    'Arkham.Investigator.Types.InvestigatorDrawing' -- which means it only
+    matches a draw the investigator has been given, never a bare encounter draw.
+    -}
+    WouldDrawCardFrom Timing Who DeckMatcher SourceMatcher
   | WouldDrawExactlyOneCard Timing Who DeckMatcher
   | DrawCard Timing Who ExtendedCardMatcher DeckMatcher
   | DrawsCards Timing Who CardListMatcher ValueMatcher
@@ -431,6 +438,11 @@ instance FromJSON WindowMatcher where
         case econtents of
           Left (a, b, c) -> pure $ EnemySpawns a (PlacementAt b) c
           Right (a, b, c) -> pure $ EnemySpawns a b c
+      "WouldDiscoverClues" -> do
+        econtents <- (Left <$> o .: "contents") <|> (Right <$> o .: "contents")
+        case econtents of
+          Left (a, b, c, d) -> pure $ WouldDiscoverClues a b c d AnySource
+          Right (a, b, c, d, e) -> pure $ WouldDiscoverClues a b c d e
       "WouldAddChaosTokensToChaosBag" -> do
         econtents <- (Left <$> o .: "contents") <|> (Right <$> o .: "contents")
         case econtents of

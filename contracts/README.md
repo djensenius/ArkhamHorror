@@ -383,7 +383,7 @@ the `startAt` starting-location `ChooseOne`.
 - `question-choose-one-location.json` is the real `startAt` prompt
   (`Arkham.Scenario.Setup.startAt`) that follows: `ChooseOne` with a single
   `TargetLabel(LocationTarget)` choice for the real starting location
-  ("Study", `d5a66e84-c729-4066-8475-d8a155609025`, matching `get-game.json`).
+  ("Study", `782de537-8f5d-4eda-b849-2362e28402e5`, matching `get-game.json`).
   Along with the mulligan's `CardIdTarget`, the mythos
   `EncounterDeckTarget`, and the isolated enemy-attack `EnemyTarget` below,
   this is a governed
@@ -1143,9 +1143,12 @@ both directions.
   version: a client that does not implement it must treat the catalog as
   unavailable rather than guess at the shape.
 - **Compatibility.** The Vue client reads none of it and is unaffected. Native
-  clients must honor `nativeClientMinimumRevision`: revisions before `0.1.50`
-  do not implement the catalog `iconVariable` render role and must update
-  rather than accept a catalog they would render incompletely.
+  clients must honor `nativeClientMinimumRevision`: revisions before `0.1.53`
+  must update before consuming this contract. The floor was raised from
+  `0.1.50` because revision `0.1.53` can publish array-valued
+  `chaosBag.forceDraw` payloads; native clients pinned to `0.1.50`-`0.1.52`
+  decode that field as string-or-null and must take the update-required path
+  rather than fail during board decoding.
 
 Advertising is deployment configuration, not a build-time constant: see the
 `locale-catalog-*` settings in `backend/arkham-api/config/settings.yml` and

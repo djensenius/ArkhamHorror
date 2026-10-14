@@ -1930,6 +1930,22 @@ def test_a_presentation_emitter_keeps_a_module_from_being_waived() -> None:
     FAILURES.append("an unparsable module emitting through p.green was accepted")
 
 
+def test_only_known_caller_scope_alias_reasons_are_classified() -> None:
+    check(
+        extractor.classify_dynamic("alias scenarioI18n") == "caller-scope",
+        "unqualified scenarioI18n caller-scope alias reason was not classified",
+    )
+    check(
+        extractor.classify_dynamic("alias AgesUnwound.scenarioI18n") == "caller-scope",
+        "qualified AgesUnwound.scenarioI18n caller-scope alias reason was not classified",
+    )
+    try:
+        extractor.classify_dynamic("alias futureScenarioI18n")
+    except SystemExit:
+        return
+    FAILURES.append("an arbitrary alias reason was silently classified as caller-scope")
+
+
 def test_committed_registry_properties() -> None:
     artifact = json.loads(ARTIFACT.read_text(encoding="utf-8"))
     keys = {entry["key"] for entry in artifact["keys"]}
@@ -2085,6 +2101,7 @@ TESTS = (
     test_a_scope_primitive_does_not_scope_arguments_it_never_takes,
     test_a_wrapper_emits_under_the_scope_it_pushes,
     test_a_presentation_emitter_keeps_a_module_from_being_waived,
+    test_only_known_caller_scope_alias_reasons_are_classified,
     test_committed_registry_properties,
 )
 

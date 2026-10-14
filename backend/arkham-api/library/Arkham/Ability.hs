@@ -19,6 +19,7 @@ import Arkham.Ability.Types qualified
 import Arkham.Action
 import Arkham.Actions
 import Arkham.Card.CardCode
+import Arkham.ChaosToken.Types (ChaosTokenFace, ChaosTokenModifier, ChaosTokenValue (..))
 import Arkham.Constants
 import Arkham.I18n
 import Arkham.Matcher
@@ -54,6 +55,15 @@ inDiscardAbility = inDiscardCriteria . abilityCriteria
     InYourDiscard -> True
     Criteria xs -> any inDiscardCriteria xs
     AnyCriterion xs -> any inDiscardCriteria xs
+    _ -> False
+
+committedAbility :: Ability -> Bool
+committedAbility = committedCriteria . abilityCriteria
+ where
+  committedCriteria = \case
+    IsCommitted -> True
+    Criteria xs -> any committedCriteria xs
+    AnyCriterion xs -> any committedCriteria xs
     _ -> False
 
 abilityCost :: Ability -> Cost
@@ -153,11 +163,36 @@ onlyOnce = groupLimit PerGame
 withTooltip :: Text -> Ability -> Ability
 withTooltip t a = a & abilityTooltipL ?~ t
 
+{- | Declare which chaos token faces this ability affects, so the skill test
+window can show it before a token is revealed.
+
+Replaces whatever was declared before rather than appending, so a shared helper
+may publish a face-only declaration ('NoModifier') that an individual card then
+restates with its own value. Purely informational -- see
+'abilityChaosTokenEffects'.
+-}
+affectsChaosTokens :: [ChaosTokenValue] -> Ability -> Ability
+affectsChaosTokens vs a = a & abilityChaosTokenEffectsL .~ vs
+
+-- | 'affectsChaosTokens' for the common one-face case.
+affectsChaosToken :: ChaosTokenFace -> ChaosTokenModifier -> Ability -> Ability
+affectsChaosToken face modifier = affectsChaosTokens [ChaosTokenValue face modifier]
+
 withI18nTooltip :: HasI18n => Text -> Ability -> Ability
 withI18nTooltip t a = a & abilityTooltipL ?~ scope "tooltips" (toI18n t)
 
 tooltip :: HasI18n => Text -> Ability -> Ability
 tooltip = withI18nTooltip
+
+{- | Name what succeeding at this ability actually does, for the choice that resolves it.
+
+The default label for a successful investigation says "Discover Clue at <location>", which
+is wrong for an ability that does something else instead -- Base of the Hill puts a
+Diverging Path into play. The key is taken under the scope in effect here, so the text
+sits in the scenario's locale beside the tooltip it paraphrases.
+-}
+withI18nResultLabel :: HasI18n => Text -> Ability -> Ability
+withI18nResultLabel t a = a & abilityResultLabelL ?~ ("$" <> labelKey t)
 
 selfAbility :: (HasCardCode a, Sourceable a) => a -> Int -> Criterion -> AbilityType -> Ability
 selfAbility a n c = restrictedAbility a n (Self <> c)
@@ -167,11 +202,7 @@ selfAbility_ a n = restrictedAbility a n Self
 
 restrictedAbility
   :: (HasCardCode a, Sourceable a) => a -> Int -> Criterion -> AbilityType -> Ability
-restrictedAbility entity idx restriction type' =
-  (mkAbility entity idx type')
-    { abilityCriteria = restriction
-    , abilityWantsSkillTest = wantsSkillTestFromCriteria restriction
-    }
+restrictedAbility entity idx restriction type' = restrict restriction (mkAbility entity idx type')
 
 wantsSkillTestFromCriteria :: Criterion -> Maybe SkillTestMatcher
 wantsSkillTestFromCriteria c = case toListOf (Lens.cosmos . _DuringSkillTest) c of
@@ -347,6 +378,7 @@ mkAbility entity idx type' =
     , abilityCriteria = NoRestriction
     , abilityDoesNotProvokeAttacksOfOpportunity = Nothing
     , abilityTooltip = Nothing
+    , abilityResultLabel = Nothing
     , abilityCanBeCancelled = True
     , abilityDisplayAs = Nothing
     , abilityDelayAdditionalCosts = Nothing
@@ -361,6 +393,7 @@ mkAbility entity idx type' =
     , abilityEvadeCriteriaOverride = Nothing
     , abilityNonBlocking = False
     , abilityBlocksIn = Nothing
+    , abilityChaosTokenEffects = []
     }
 
 applyAbilityModifiers :: Ability -> [ModifierType] -> Ability

@@ -13,11 +13,12 @@ import cycles from '@/arkham/data/cycles.json'
 import { shallowRef } from 'vue';
 import { useDbCardStore, ArkhamDBCard } from '@/stores/dbCards'
 import { storeToRefs } from 'pinia'
-import { isDevBuild } from '@/arkham/displayRules'
-import { homebrewCampaigns } from '@/arkham/homebrewData'
+import { filterDisplayable, isDevBuild } from '@/arkham/displayRules'
+import { homebrewCampaigns, homebrewStandaloneScenarios } from '@/arkham/homebrewData'
 import { useSettings } from '@/stores/settings'
+import { useUserStore } from '@/stores/user'
 import { byPrintedNumber, hasLibraryCards, libraryCards, librarySets, loadLibrary } from '@/arkham/customCardLibrary'
-import { imgsrc, isTypingTarget } from '@/arkham/helpers'
+import { campaignSetIcon, isTypingTarget, scenarioSetIcon } from '@/arkham/helpers'
 import { cardGroupKey, groupCards } from '@/arkham/cardDetails'
 
 const { t } = useI18n()
@@ -47,6 +48,26 @@ const isExtraSetFilter = (set: string | null) =>
   (set?.startsWith(CUSTOM_SET_PREFIX) ?? false)
 
 const dev = isDevBuild()
+// Homebrew is gated the same way as on the new-campaign screen: beta users see
+// the beta boxes, dev builds also see the dev ones.
+const displayOptions = { alpha: dev, beta: !!useUserStore().currentUser?.beta, dev }
+
+/* One entry per homebrew box: every campaign this build ships, plus every
+ * standalone scenario, which is a box of its own rather than part of a
+ * campaign. Both namespace their cards the same way (`:<box>:NNN` art), so each
+ * is a single card set. */
+const homebrewBoxes: { id: string; name: string; icon: string }[] = [
+  ...filterDisplayable(homebrewCampaigns, displayOptions).map((campaign) => ({
+    id: campaign.id,
+    name: campaign.name,
+    icon: campaignSetIcon(campaign.id),
+  })),
+  ...filterDisplayable(homebrewStandaloneScenarios, displayOptions).map((scenario) => ({
+    id: scenario.campaign ?? scenario.id,
+    name: scenario.name,
+    icon: scenarioSetIcon(scenario.id),
+  })),
+].sort((a, b) => a.name.localeCompare(b.name))
 const { customCardsEnabled } = storeToRefs(useSettings())
 if (customCardsEnabled.value) loadLibrary()
 
@@ -127,7 +148,7 @@ const query = ref<string>(queryText)
 const view = ref(route.query.view? toView(route.query.view) : View.List)
 const routeChapter = route.query.chapter ? parseInt(route.query.chapter.toString()) : 1
 const activeChapter = ref<number>(
-  routeChapter === EXTRAS_CHAPTER && !dev && !customCardsEnabled.value ? 1 : routeChapter,
+  routeChapter === EXTRAS_CHAPTER && !homebrewBoxes.length && !customCardsEnabled.value ? 1 : routeChapter,
 )
 
 // Pressing `f` flips every card currently shown in image view. CardImage picks
@@ -256,7 +277,7 @@ const fetchData = async () => {
   }
 
   const officialCards = await fetchCards('both')
-  const homebrewCards = dev ? await fetchHomebrewCards() : []
+  const homebrewCards = homebrewBoxes.length ? await fetchHomebrewCards() : []
   const sorted = sortCards([
     ...officialCards,
     ...revisedCorePrintings(officialCards),
@@ -283,9 +304,11 @@ interface CardSet {
   max: number
   code: string
   cycle: number
-  // A homebrew campaign's cards, or a set from your own card library, rather
-  // than a printed set.
+  // A homebrew box's cards, or a set from your own card library, rather than a
+  // printed set. A homebrew box brings its own icon, since where that lives
+  // differs between a campaign and a standalone scenario.
   homebrew?: boolean
+  iconSrc?: string
   custom?: boolean
   // Show every card code in [min, max] in image view, greying out the ones the
   // engine hasn't implemented yet. For sets still being built out.
@@ -305,7 +328,11 @@ interface CardSearchIndex {
   set?: CardSet
   setCode?: string
   cycle?: number
-  nameLower: string
+  // Every name the card answers to: the one it is displaying plus, in a
+  // non-English view, both the translated and the untranslated name -- the
+  // translation is applied asynchronously, so the displayed one may still be
+  // either.
+  namesLower: string[]
   codeLower: string
   typeLower: string
   classSymbolsLower: string[]
@@ -314,21 +341,17 @@ interface CardSearchIndex {
 }
 
 const homebrewCycle: CardCycle = { name: 'Homebrew', cycle: HOMEBREW_CYCLE, code: 'homebrew' }
-const homebrewSets: CardSet[] = dev
-  ? homebrewCampaigns.map((campaign) => {
-      const id = campaign.id.replace(/^:/, '')
-      return {
-        name: campaign.name,
-        min: 0,
-        max: 0,
-        code: `${HOMEBREW_SET_PREFIX}${id}`,
-        cycle: HOMEBREW_CYCLE,
-        homebrew: true,
-      }
-    })
-  : []
-const allCycles: CardCycle[] = dev ? [...cycles, homebrewCycle] : cycles
-const allSets: CardSet[] = dev ? [...(sets as CardSet[]), ...homebrewSets] : (sets as CardSet[])
+const homebrewSets: CardSet[] = homebrewBoxes.map((box) => ({
+  name: box.name,
+  min: 0,
+  max: 0,
+  code: `${HOMEBREW_SET_PREFIX}${box.id.replace(/^:/, '')}`,
+  cycle: HOMEBREW_CYCLE,
+  homebrew: true,
+  iconSrc: box.icon,
+}))
+const allCycles: CardCycle[] = homebrewSets.length ? [...cycles, homebrewCycle] : cycles
+const allSets: CardSet[] = [...(sets as CardSet[]), ...homebrewSets]
 
 const customCycle: CardCycle = { name: 'Custom', cycle: CUSTOM_CYCLE, code: 'custom' }
 
@@ -484,7 +507,9 @@ const cardSearchIndex = computed(() => {
       set,
       setCode: customCode ?? set?.code,
       cycle: customCode ? CUSTOM_CYCLE : set?.cycle,
-      nameLower: cardName(card).toLowerCase(),
+      namesLower: [cardName(card), match?.name, match?.real_name]
+        .filter((name): name is string => !!name)
+        .map((name) => name.toLowerCase()),
       codeLower: card.cardCode.toLowerCase(),
       typeLower: cardType(card).toLowerCase().trim(),
       classSymbolsLower: card.classSymbols.map((cs) => cs.toLowerCase()),
@@ -529,7 +554,9 @@ const filteredCardsIgnoringPool = computed(() => {
     }
 
     if (textLower.length > 0) {
-      const cardNameMatches = textLower.some((term) => meta.nameLower.includes(term))
+      const cardNameMatches = textLower.some((term) =>
+        meta.namesLower.some((name) => name.includes(term)),
+      )
       const cardCodeMatches = codeText.some((term) => meta.codeLower === term)
       if (!cardNameMatches && !cardCodeMatches) return false
     }
@@ -760,11 +787,6 @@ const cycleIconCode = (cycle: CardCycle): string => {
   return cycleSets(cycle)[0]?.code ?? ''
 }
 
-function homebrewSetImagePath(code: string) {
-  const homebrewId = code.replace(new RegExp(`^${HOMEBREW_SET_PREFIX}`), '')
-  return imgsrc(`homebrew/${homebrewId}/sets/${homebrewId}.png`)
-}
-
 // Sets whose icon ships as an SVG rather than the usual PNG.
 const SVG_SET_ICONS = new Set(['cob'])
 
@@ -772,7 +794,7 @@ const setIconPath = (code: string) =>
   `/img/arkham/encounter-sets/${code}.${SVG_SET_ICONS.has(code) ? 'svg' : 'png'}`
 
 function setIconSrc(set: CardSet) {
-  return set.homebrew ? homebrewSetImagePath(set.code) : setIconPath(set.code)
+  return set.iconSrc ?? setIconPath(set.code)
 }
 
 function cycleIconSrc(cycle: CardCycle) {

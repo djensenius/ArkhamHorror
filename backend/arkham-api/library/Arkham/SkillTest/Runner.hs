@@ -1,6 +1,6 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 
-module Arkham.SkillTest.Runner (module X, totalModifiedSkillValue) where
+module Arkham.SkillTest.Runner (module X, totalModifiedSkillValue, withSkillTestCards) where
 
 import Arkham.SkillTest as X
 
@@ -8,7 +8,6 @@ import Arkham.Ability
 import Arkham.Action qualified as Action
 import Arkham.Calculation
 import Arkham.Card
-import Arkham.ChaosBag.RevealStrategy
 import Arkham.ChaosToken
 import Arkham.ChaosToken.Types
 import Arkham.Classes hiding (matches)
@@ -66,6 +65,29 @@ skillTestSourceToMaybeCard (toSource -> source) = case source of
   PaymentSource inner -> skillTestSourceToMaybeCard inner
   s -> sourceToMaybeCard s
 
+{- | Fill in the cards the client renders for a test: its source and its target.
+
+Called where the test is installed, not just at declaration. A revelation test opens a
+@WouldPerformRevelationSkillTest@ window, and a skill test with two or more available
+skills asks which to use, both before 'BeginSkillTestAfterFast' runs -- so a test that
+only learned its cards at declaration sat on screen with no card at all.
+
+The ability source is unwrapped first so an ability's own card wins over the card the
+ability happens to be printed on.
+-}
+withSkillTestCards :: (HasCallStack, HasGame m) => SkillTest -> m SkillTest
+withSkillTestCards s = do
+  mAbilityCardId <- case s.source of
+    AbilitySource src _ -> fmap toCardId <$> skillTestSourceToMaybeCard src
+    UseAbilitySource _ src _ -> fmap toCardId <$> skillTestSourceToMaybeCard src
+    t -> fmap toCardId <$> skillTestSourceToMaybeCard t
+  mTargetCardId <- fmap toCardId <$> skillTestTargetToMaybeCard s.target
+  mSourceCardId <- fmap toCardId <$> skillTestSourceToMaybeCard s.source
+  pure
+    $ s
+    & (targetCardL .~ mTargetCardId)
+    & (sourceCardL .~ (mAbilityCardId <|> mSourceCardId))
+
 totalModifiedSkillValue :: HasGame m => SkillTest -> m Int
 totalModifiedSkillValue s = do
   results <- calculateSkillTestResultsData s
@@ -109,23 +131,40 @@ instance RunMessage SkillTest where
       -- A repeat is not the declaring card's own test, so it is deferred here rather than
       -- by 'handleSkillTestNesting': the card's tail must not ride along with it, or an
       -- event that repeats a test (Live and Learn) discards only after the repeat ends.
+      --
+      -- The window it was declared in is after ST.8, outside the test's own steps, so the
+      -- repeat nests inside that window: it runs to completion and then the window
+      -- continues, where a second copy can answer the same failure again. Carry the ask
+      -- across rather than re-emitting it, and re-seat this test for its duration -- it has
+      -- torn down by then, and the window's cards still read it.
+      let
+        isThisWindowAsk = \case
+          Do (CheckWindows ws) -> flip any ws \w -> case windowType w of
+            Window.SkillTestEnded st -> st.id == skillTestId
+            _ -> False
+          _ -> False
+      let
+        -- the declaring card still has a tail in the queue, so the repeat goes where the
+        -- ask sat (after that tail) and the window resumes behind it
+        withResume windowAsk =
+          BeginSkillTestWithPreMessages' [] repeated
+            : concat
+              [ [RestoreSkillTestForWindow (Just s), a, RestoreSkillTestForWindow Nothing]
+              | a <- windowAsk
+              ]
       inSkillTestWindow <- fromQueue $ elem EndSkillTestWindow
       if inSkillTestWindow
         then do
-          -- the test is performed again, not responded to twice, so the window it was
-          -- declared in is over: drop the re-check 'WindowAsk' queued behind the ask, or a
-          -- second Live and Learn is offered against a test that is already being repeated
-          let
-            endedThisTest w = case windowType w of
-              Window.SkillTestEnded st -> st.id == skillTestId
-              _ -> False
-          removeAllMessagesMatching \case
-            Do (CheckWindows ws) -> any endedThisTest ws
-            _ -> False
+          windowAsk <- popMessagesMatching isThisWindowAsk
           -- while this test is still current, so 'EffectNextSkillTestWindow' re-points
           push $ NextSkillTest sid
-          insertAfterMatching [BeginSkillTestWithPreMessages' [] repeated] (== EndSkillTestWindow)
-        else push $ BeginSkillTestWithPreMessages' [] repeated
+          insertAfterMatching (withResume windowAsk) (== EndSkillTestWindow)
+        else
+          -- this test has already torn down and been re-seated for its own window, so there
+          -- is no sentinel left to defer behind
+          findFromQueue isThisWindowAsk >>= \case
+            Just _ -> replaceMessageMatching isThisWindowAsk (withResume . pure)
+            Nothing -> push $ BeginSkillTestWithPreMessages' [] repeated
       pure s
     IncreaseSkillTestDifficulty n -> do
       -- see: faqs/drawing-thin
@@ -175,12 +214,7 @@ instance RunMessage SkillTest where
         $ windows'
         <> ignoreWindows
         <> [Do BeginSkillTestAfterFast, windowMsg, BeforeSkillTest s.id, EndSkillTestWindow]
-      mAbilityCardId <- case skillTestSource of
-        AbilitySource src _ -> fmap toCardId <$> skillTestSourceToMaybeCard src
-        UseAbilitySource _ src _ -> fmap toCardId <$> skillTestSourceToMaybeCard src
-        t -> fmap toCardId <$> skillTestSourceToMaybeCard t
-      mTargetCardId <- fmap toCardId <$> skillTestTargetToMaybeCard skillTestTarget
-      mSourceCardId <- fmap toCardId <$> skillTestSourceToMaybeCard skillTestSource
+      withCards <- withSkillTestCards s
 
       updatedSkillTestType <- case skillTestType of
         SkillSkillTest stype -> SkillSkillTest <$> getAlternateSkill s stype
@@ -210,9 +244,7 @@ instance RunMessage SkillTest where
                   $ foldr applyModifiers (mapToList skillTestIconValues) mods
 
       pure
-        $ s
-        & (targetCardL .~ mTargetCardId)
-        & (sourceCardL .~ (mAbilityCardId <|> mSourceCardId))
+        $ withCards
         & (skillTestTypeL .~ updatedSkillTestType)
         & (iconValuesL .~ icons)
         & (baseValueL .~ updatedBaseValue)
@@ -284,21 +316,7 @@ instance RunMessage SkillTest where
                   pushAll
                     $ resolve (RevealChaosToken (toSource s) iid (ChaosToken t chaosTokenFace (Just iid) False False))
         | otherwise -> do
-            let
-              applyRevealStategyModifier (MultiReveal _ b) (ChangeRevealStrategy n) = MultiReveal n b
-              applyRevealStategyModifier _ (ChangeRevealStrategy n) = n
-              applyRevealStategyModifier n RevealAnotherChaosToken = MultiReveal n (Reveal 1)
-              applyRevealStategyModifier n (DrawAdditionalChaosTokens m) =
-                let
-                  go = \case
-                    Reveal x -> RevealAndChoose (x + m) 1
-                    RevealAndChoose x z -> RevealAndChoose (x + m) z
-                    other -> other
-                 in
-                  go n
-              applyRevealStategyModifier n _ = n
-              revealStrategy =
-                foldl' applyRevealStategyModifier (Reveal 1) (modifiers' <> modifiers'')
+            revealStrategy <- getSkillTestRevealStrategy s
             hasRun <- fromQueue (elem (RunSkillTest iid))
             lockCommits <-
               if RevealChaosTokensBeforeCommittingCards `notElem` modifiers''

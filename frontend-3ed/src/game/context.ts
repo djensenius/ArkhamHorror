@@ -1,6 +1,6 @@
 import { computed, inject, nextTick, provide, ref, shallowRef, type InjectionKey } from 'vue'
 import * as api from '@/api'
-import { cardArtPaths, cardImg, img } from '@/assets'
+import { cardArtPaths, cardImg, firstGood, img } from '@/assets'
 import { readPref, writePref } from '@/prefs'
 import { user } from '@/session'
 import type { Catalog, CardId, Game, Monster, Tagged, TableView } from '@/types'
@@ -38,7 +38,7 @@ export function createGameContext(tableId: string, catalog: Catalog) {
   const cardName = (cid: CardId | string) => cardNameRaw(cid) ?? `#${cid}`
   const invName = (iid: string) => catalog.investigatorNames[iid] ?? iid
   const spaceName = (sid: string) => game.value?.board.spaces[sid]?.name ?? sid
-  const cardCode = (cid: CardId | string) => view.value?.cardCodes?.[cid] ?? slug(cardNameRaw(cid) ?? cid)
+  const cardCode = (cid: CardId | string, v = view.value) => v?.cardCodes?.[cid] ?? slug(cardNameRaw(cid) ?? cid)
   /* A handful of cards sit in the archive rather than in a deck -- Feast of
   Umordhoth's cards 13 to 19, which the codex deals out -- so their art is the
   archive's, numbered, not the card deck's. Cards 13 to 17 wait in the archive with
@@ -46,13 +46,13 @@ export function createGameContext(tableId: string, catalog: Catalog) {
   faces read the other way round from a codex card's. */
   const NUMBER_FACING_OUT = new Set([13, 14, 15, 16, 17])
   const archiveArt = (code: string, flipped: boolean) => {
-    const m = /^(feast|echoes|vot|sot|sitd)-(\d{1,2})$/.exec(code)
+    const m = /^(feast|echoes|vot|sot|sitd|archive)-(\d{1,3})$/.exec(code)
     if (!m) return null
     const n = +m[2]
     return archiveImage(n, m[1] === 'feast' && NUMBER_FACING_OUT.has(n) ? !flipped : flipped)
   }
-  const cardFace = (cid: CardId, flipped: boolean) => {
-    const code = cardCode(cid)
+  const cardFace = (cid: CardId, flipped: boolean, v = view.value) => {
+    const code = cardCode(cid, v)
     return archiveArt(code, flipped) ?? cardImg(code, flipped)
   }
   const initials = (iid: string) =>
@@ -62,7 +62,9 @@ export function createGameContext(tableId: string, catalog: Catalog) {
       .map((w) => w[0])
       .join('')
   const scenarioName = (code: string) => catalog.scenarios.find((sc) => sc.code === code)?.name ?? code
-  // each scenario's event art lives in its own folder, keyed by the code's prefix
+  /* Each scenario's event art lives in its own folder. The core and Dead of Night codes
+  abbreviate their scenario, so those need naming; a code that already carries the whole
+  scenario code (Secrets of the Order's do) is its own folder name. */
   const EVENT_ART: Record<string, string> = {
     aoa: 'approach-of-azathoth',
     echoes: 'echoes-of-the-deep',
@@ -70,25 +72,36 @@ export function createGameContext(tableId: string, catalog: Catalog) {
     sitd: 'shots-in-the-dark',
     sot: 'silence-of-tsathoggua',
     vot: 'veil-of-twilight',
+    tyrants: 'tyrants-of-ruin',
+    lantern: 'the-pale-lantern',
+    ithaqua: 'ithaquas-children',
+    rlyeh: 'dreams-of-rlyeh',
   }
-  const eventImage = (cid: CardId | null | undefined) => {
+  const eventImage = (cid: CardId | null | undefined, v = view.value) => {
     if (cid == null) return null
-    const m = /^([a-z]+)-event-(\d{2})$/.exec(view.value?.cardCodes?.[cid] ?? '')
-    const dir = m ? EVENT_ART[m[1]] : undefined
+    // the prefix may be hyphenated, so it runs up to the last "-event-" in the code
+    const m = /^(.+)-event-(\d{2})$/.exec(v?.cardCodes?.[cid] ?? '')
+    const dir = m ? (EVENT_ART[m[1]] ?? m[1]) : undefined
     return dir ? img(`events/${dir}/${m![2]}.avif`) : null
   }
-  // anomaly art is filed under anomalies/, every other encounter under encounters/
-  const encounterImage = (cid: CardId) => {
-    const code = view.value?.cardCodes?.[cid] ?? ''
+  /* Where a card of a numbered set is filed. The core and Dead of Night decks sit by set
+  and number under encounters/, anomaly sets the same under anomalies/; everything filed
+  since -- the two decks Secrets of the Order brings, the pair it adds to each Arkham
+  deck, mysteries, thresholds, terror cards -- sits by card code under cards/, which is
+  what the catalog names. Both namings are in use, so ask for the catalog's and let the
+  picture's own failure send us to the other. */
+  const encounterImage = (cid: CardId, v = view.value) => {
+    const code = v?.cardCodes?.[cid] ?? ''
     const m = /^(.+)-(\d{2})$/.exec(code)
     if (!m) return null
-    const dir = cardArtPaths.value[code]?.startsWith('anomalies/') ? 'anomalies' : 'encounters'
-    return img(`${dir}/${m[1]}/${m[2]}.avif`)
+    const path = cardArtPaths.value[code]
+    const dir = path?.startsWith('anomalies/') ? 'anomalies' : 'encounters'
+    return firstGood(path ? img(`cards/${path}.webp`) : null, img(`${dir}/${m[1]}/${m[2]}.avif`))
   }
   /* the archive check comes before the encounter one, whose pattern would other-
   wise read "feast-15" as card 15 of a "feast" encounter set */
-  const activeCardImage = (cid: CardId) =>
-    eventImage(cid) ?? archiveArt(cardCode(cid), false) ?? encounterImage(cid) ?? cardFace(cid, false)
+  const activeCardImage = (cid: CardId, v = view.value) =>
+    eventImage(cid, v) ?? archiveArt(cardCode(cid, v), false) ?? encounterImage(cid, v) ?? cardFace(cid, false, v)
   // 428.2: an engaged monster sits in the play area of the investigator it is engaged with;
   // a massive one stays in its space (451.3)
   const inPlayerArea = (m: Monster) => m.state?.tag === 'Engaged' && !(view.value?.massive ?? []).includes(m.card)
@@ -162,6 +175,30 @@ export function createGameContext(tableId: string, catalog: Catalog) {
       }
     return out
   })
+  /* The monster an open question is about -- the one being moved, activated or
+  attacking -- so the board keeps saying which one you are answering for. */
+  const MONSTER_MESSAGES = new Set([
+    'MoveMonsterTo',
+    'MonsterStep',
+    'MonsterEngagesIn',
+    'ActivateMonster',
+    'DoActivateMonster',
+    'MonsterAttacks',
+    'ExhaustMonster',
+    'ReadyMonster',
+    'DefeatMonster',
+  ])
+  const acting = computed(() => {
+    const out = new Set<string>()
+    for (const q of Object.values(game.value?.questions ?? {}))
+      for (const c of q.choices ?? [])
+        for (const m of c.messages ?? []) {
+          if (!MONSTER_MESSAGES.has(m.tag)) continue
+          const cid = Array.isArray(m.contents) ? m.contents[0] : m.contents
+          if (typeof cid === 'number') out.add(`mon:${cid}`)
+        }
+    return out
+  })
   // class bindings for a piece carrying these data-* identities
   type Mark = [string, string | number | null | undefined]
   const marks = (...pairs: Mark[]) => {
@@ -169,6 +206,7 @@ export function createGameContext(tableId: string, catalog: Catalog) {
     return {
       hl: highlighted.value !== null && keys.includes(highlighted.value),
       'reckoning-pending': keys.some((k) => reckonings.value.has(k)),
+      acting: keys.some((k) => acting.value.has(k)),
     }
   }
 
@@ -183,12 +221,20 @@ export function createGameContext(tableId: string, catalog: Catalog) {
     debugMode.value = on
     writePref('ah3e-debug', on ? '1' : '0')
   }
-  // the server refuses debug actions unless the table was opened with it, and to anyone not seated
-  const debugAllowed = computed(() => !!tv.value?.options.debug && seated.value)
+  // the server refuses debug actions from anyone not seated
+  const debugAllowed = computed(() => seated.value)
   const dbgOn = computed(() => debugMode.value && debugAllowed.value && !!game.value)
   const dbgIid = () => {
     const invs = game.value?.investigators ?? {}
     return selectedTab.value && invs[selectedTab.value] ? selectedTab.value : Object.keys(invs)[0]
+  }
+
+  /* Investigators stand on the map either as the round marker or as the whole
+  standee, which is the same art the player area shows. */
+  const standeePieces = ref(readPref('ah3e-standees') === '1')
+  const toggleStandees = (on = !standeePieces.value) => {
+    standeePieces.value = on
+    writePref('ah3e-standees', on ? '1' : '0')
   }
 
   const logOpen = ref(readPref('ah3e-log-open') === '1')
@@ -216,8 +262,11 @@ export function createGameContext(tableId: string, catalog: Catalog) {
     return DECK_KEYS.find((k) => d[k]?.includes(cid)) ?? null
   }
 
-  // a card reaching the event discard travels there; one that was never shown turns face up on the way
-  function flyDiscardedEvent(g: Game, before: EventRects, fly: boolean): CardId | null {
+  /* a card reaching the event discard travels there; one that was never shown turns
+  face up on the way. `wasUnstable` is the unstable space the board showed before it
+  left: the outline is only taken down and re-lit when the card lands on a different
+  one, so an encounter going to the discard does not blink the space it did not move. */
+  function flyDiscardedEvent(g: Game, before: EventRects, fly: boolean, wasUnstable: string): CardId | null {
     const discard = g.decks.eventDiscard,
       prev = lastEvents
     lastEvents = { discard, revealed: g.revealedEvent }
@@ -230,9 +279,13 @@ export function createGameContext(tableId: string, catalog: Catalog) {
     const target = document.querySelector<HTMLElement>('[data-deck="eventDiscard"] .deck-stack > img')
     if (!face || !from || !target) return null
     const under = prev.discard.length ? eventImage(prev.discard[0]) : null
-    unstableHeld.value = true
-    unstableReveal.value = false
+    const moved = (view.value?.unstable ?? []).join() !== wasUnstable
+    if (moved) {
+      unstableHeld.value = true
+      unstableReveal.value = false
+    }
     flyCard(from, target, face, shown ? null : img(`backs/${nid}.webp`), 0, under).finally(() => {
+      if (!moved) return
       unstableHeld.value = false
       unstableReveal.value = true
     })
@@ -259,6 +312,36 @@ export function createGameContext(tableId: string, catalog: Catalog) {
     })
   }
 
+  /* Pictures the next moment needs, before it arrives. A view transition photographs the
+  page the instant the new state is in place and a flying card shows the one it lands on
+  top of, so a picture the browser has not fetched yet is a broken image in both -- and the
+  swap happens too early to wait for it there. One that never arrives must not hold the
+  table up, hence the short wait rather than none. */
+  const artAsked = new Set<string>()
+  async function artInHand(next: TableView) {
+    const g = next.view?.game
+    const coming = g?.encounter?.card ?? g?.activeCard
+    const wanted = [
+      // the card about to land in the active slot, which the transition tweens into place
+      coming == null ? null : activeCardImage(coming, next.view),
+      /* and the event the discard pile is showing now, since the card flying onto it
+      uncovers that one for the length of the flight */
+      eventImage(view.value?.game?.decks?.eventDiscard?.[0]),
+    ].filter((src): src is string => !!src && !artAsked.has(src))
+    if (!wanted.length) return
+    for (const src of wanted) artAsked.add(src)
+    await Promise.race([
+      Promise.all(
+        wanted.map((src) => {
+          const im = new Image()
+          im.src = src
+          return im.decode().catch(() => {})
+        }),
+      ),
+      new Promise((done) => setTimeout(done, 500)),
+    ])
+  }
+
   async function doApply(next: TableView, mode: ApplyMode) {
     const cur = tv.value
     // keep whichever copy is newest; the socket and our own replies both deliver it
@@ -270,6 +353,7 @@ export function createGameContext(tableId: string, catalog: Catalog) {
     const run = async () => {
       const drawBefore = drawRects()
       const eventBefore = eventRects()
+      const unstableBefore = (view.value?.unstable ?? []).join()
       if (!unstableHeld.value) unstableReveal.value = false
       tv.value = next
       await nextTick()
@@ -279,11 +363,12 @@ export function createGameContext(tableId: string, catalog: Catalog) {
         lastDrawGame = null
         return
       }
-      const discarded = flyDiscardedEvent(g, eventBefore, live)
+      const discarded = flyDiscardedEvent(g, eventBefore, live, unstableBefore)
       if (animate) flyDrawnCards(g, drawBefore, discarded)
       else lastDrawGame = g
     }
     // cards and tokens tween between their old and new positions
+    await artInHand(next)
     const hadGame = !!cur?.view
     if (document.startViewTransition && hadGame && mode !== 'initial') {
       try {
@@ -491,6 +576,8 @@ export function createGameContext(tableId: string, catalog: Catalog) {
     debugAllowed,
     dbgOn,
     dbgIid,
+    standeePieces,
+    toggleStandees,
     logOpen,
     logSeen,
     toggleLog,
@@ -516,3 +603,5 @@ export const useGame = () => {
   if (!ctx) throw new Error('useGame outside a table')
   return ctx
 }
+// for the few pieces that are shown in the lobby as well, where there is no table
+export const useGameOrNull = () => inject(key, null)

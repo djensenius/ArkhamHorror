@@ -48,6 +48,20 @@ import Arkham.Enemy.CardDefs.NightOfTheZealot.Ghouls qualified as GhoulCards (gh
 import Arkham.Enemy.CardDefs.NightOfTheZealot.Rats qualified as EnemyCards (swarmOfRats)
 import Arkham.Enemy.Creation (EnemyCreation (..))
 import Arkham.Enemy.Types qualified as Enemy
+import Arkham.Log.Entry
+  ( LogAudience (OnlyPlayer)
+  , LogEntry (..)
+  , LogGroup (..)
+  , LogGroupRole (GroupHeader, GroupMember)
+  , LogKind (Chat, Notice, Structure)
+  , LogPart (LogI18n, LogNumber, LogRefPart, LogText)
+  , LogRef (..)
+  , LogRefKind (RefCard)
+  , LogRow (LogRowLegacy, LogRowStructured)
+  , LogTone (Good)
+  , logRef
+  , mkLogEntry
+  )
 import Arkham.Placement (Placement (InThreatArea))
 import Arkham.Projection (field)
 import Arkham.Question.Presentation qualified as QuestionPresentation
@@ -263,6 +277,9 @@ fixtureActiveGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 5
 fixtureCompletedGameId :: ArkhamGame.ArkhamGameId
 fixtureCompletedGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 6
 
+fixtureBrokenGameId :: ArkhamGame.ArkhamGameId
+fixtureBrokenGameId = ArkhamGame.ArkhamGameKey $ UUID.fromWords 0 0 0 7
+
 fixtureAchievements :: [Persist.Entity AchievementEntity.ArkhamAchievement]
 fixtureAchievements =
   [ Persist.Entity
@@ -434,7 +451,7 @@ setup flow presents them, rather than being reconstructed in parallel.
 - The second is 'startAt's own 'chooseOneM lead $ targeting lid $ reveal lid
   >> placeAllAt lid' (Scenario\/Setup.hs), reached only once the first
   question is dismissed, revealing/entering the single starting location
-  ("Study", the real 'd5a66e84-c729-4066-8475-d8a155609025' from
+  ("Study", the real '782de537-8f5d-4eda-b849-2362e28402e5' from
   get-game.json).
 -}
 buildFixtureOpeningQuestions :: IO (Question Message, Question Message)
@@ -1498,7 +1515,7 @@ fixtureInvestigatorNegativeUnhealedHorror = unsafePerformIO $ runAgainstFixtureB
   pushAndRunAll
     [HealHorrorDirectly (InvestigatorTarget $ InvestigatorId "01001") GameSource 3]
   game <- getGame
-  let publicGame = PublicGame fixtureGameId "Contract fixture game" ["Contract fixture log entry."] game
+  let publicGame = PublicGame fixtureGameId "Contract fixture game" [LogRowLegacy "Contract fixture log entry." Nothing] game
   pure $ case Aeson.toJSON publicGame of
     Aeson.Object top -> case AesonKeyMap.lookup "investigators" top of
       Just (Aeson.Object invs) -> case AesonKeyMap.elems invs of
@@ -1557,7 +1574,7 @@ fixtureInvestigatorCardPoolShim = unsafePerformIO $ runAgainstFixtureBoardGame d
   let
     modifiedInvestigator = game ^?! entitiesL . investigatorsL . ix iid
     internalEncoding = Aeson.toJSON modifiedInvestigator
-    publicGame = PublicGame fixtureGameId "Contract fixture game" ["Contract fixture log entry."] game
+    publicGame = PublicGame fixtureGameId "Contract fixture game" [LogRowLegacy "Contract fixture log entry." Nothing] game
     extractInvestigator :: Aeson.Value -> Aeson.Value
     extractInvestigator = \case
       Aeson.Object top -> case AesonKeyMap.lookup "investigators" top of
@@ -1623,8 +1640,70 @@ fixturePublicGame =
   PublicGame
     fixtureGameId
     "Contract fixture game"
-    ["Contract fixture log entry."]
+    [LogRowLegacy "Contract fixture log entry." Nothing]
     fixtureGame
+
+{- | A focused @PublicGame.log@ fixture that exercises the real tagged
+'LogRowStructured' encoder. The ordinary get-game and game-update fixtures stay
+small with one legacy row, so this sibling keeps the structured log contract
+load-bearing without copying any frontend-only parsing logic into the test.
+-}
+fixturePublicGameWithStructuredLog :: PublicGame ArkhamGame.ArkhamGameId
+fixturePublicGameWithStructuredLog =
+  PublicGame
+    fixtureGameId
+    "Contract fixture game"
+    fixtureStructuredLogRows
+    fixtureGame
+
+fixtureStructuredLogRows :: [LogRow]
+fixtureStructuredLogRows =
+  [ LogRowLegacy "Legacy contract fixture row." (Just 7)
+  , LogRowStructured everyoneEntry
+  , LogRowStructured onlyPlayerEntry
+  ]
+ where
+  cardRef =
+    (logRef RefCard "Contract fixture card")
+      { logRefCardCode = Just "01016"
+      , logRefCardId = Just $ unsafeMakeCardId $ UUID.fromWords 0 0 0 925
+      }
+  logGroupId = "contract-structured-log"
+  childEntry =
+    (mkLogEntry Notice [LogText "Nested contract child."])
+      { logEntrySeq = 0
+      , logEntryStep = Just 8
+      , logEntryGroup = Just $ LogGroup logGroupId GroupMember
+      }
+  everyoneEntry =
+    ( mkLogEntry
+        Structure
+        [ LogText "Everyone sees "
+        , LogRefPart cardRef
+        , LogI18n
+            "contract.log.everyone"
+            ( Map.fromList
+                [ ("count", LogNumber 2)
+                , ("subject", LogRefPart cardRef)
+                ]
+            )
+        ]
+    )
+      { logEntrySeq = 1
+      , logEntryStep = Just 8
+      , logEntryChildren = [childEntry]
+      , logEntryTone = Just Good
+      , logEntryGroup = Just $ LogGroup logGroupId GroupHeader
+      , logEntryTag = Just "contract:everyone"
+      }
+  onlyPlayerEntry =
+    (mkLogEntry Chat [LogText "Private contract row."])
+      { logEntrySeq = 2
+      , logEntryStep = Just 9
+      , logEntryAudience = OnlyPlayer fixturePlayerId
+      , logEntryGroup = Just $ LogGroup logGroupId GroupMember
+      , logEntryTag = Just "contract:only-player"
+      }
 
 {- | The active CORE prompt built by the deterministic production setup above.
 Its choices are reused verbatim for the sibling constructors so every golden
@@ -1707,6 +1786,7 @@ serverMessageFixtures =
           (Set.fromList ["delta-a", "delta-b"])
     )
   , ("event-changed.json", EventChanged)
+  , ("room-closed.json", RoomClosed "deleted")
   ]
  where
   fixtureCard = Aeson.object ["code" .= ("fixture-card" :: Text)]
@@ -1765,7 +1845,7 @@ fixtureGameList =
         []
         Solo
         False
-  , FailedGameDetails "Contract fixture failed to load."
+  , FailedGameDetails fixtureBrokenGameId "Broken contract fixture" "Contract fixture failed to load."
   ]
 
 {- | The exact response a deployment started with @environment@ would serve,
@@ -2721,7 +2801,7 @@ spec = describe "Native client contract fixtures" do
     Aeson.toJSON fixtureRolandDefeatReactionQuestion `shouldBe` fixture
     viaWireEncoding fixtureRolandDefeatReactionQuestion `shouldBe` fixture
     canonicalQuestionSha256 fixtureRolandDefeatReactionQuestion
-      `shouldBe` "d237ea70ec79548ed42220c53323ba876aede5a5f0823141a98c128125106302"
+      `shouldBe` "f06ba031a44da3d6cc927f53d2e1c10834fd13e7c4d59a22de65985b6c52cb14"
 
   it "binds Roland's optional reaction and skip control to their exact source indices" do
     let
@@ -2820,7 +2900,7 @@ spec = describe "Native client contract fixtures" do
     Aeson.toJSON fixtureCoverUpReactionQuestion `shouldBe` fixture
     viaWireEncoding fixtureCoverUpReactionQuestion `shouldBe` fixture
     canonicalQuestionSha256 fixtureCoverUpReactionQuestion
-      `shouldBe` "847b294d81b9ccfa22266c7d4cbcc5c99754df7ab497d2e5650ff51079af045d"
+      `shouldBe` "a9940db51e30d5e562ad9eeac259f8246b1fa104d52baa8b0c7a179ec518676c"
 
   it "binds Cover Up's optional reaction and skip control to their exact source indices" do
     let
@@ -2971,7 +3051,7 @@ spec = describe "Native client contract fixtures" do
     Aeson.toJSON fixtureCoverUpForcedQuestion `shouldBe` rawFixture
     viaWireEncoding fixtureCoverUpForcedQuestion `shouldBe` rawFixture
     canonicalQuestionSha256 fixtureCoverUpForcedQuestion
-      `shouldBe` "5dc29802cedb7348a1d9c57d3339ab7feb08aee05956b1b952db34c78174bb44"
+      `shouldBe` "f7abdfd889a2df391defa07c86c671427459d2a0d5ca915d0be0ab48fb8a8ac5"
     presentation `shouldBe` expectedPresentation
     Aeson.toJSON presentation `shouldBe` presentationFixture
     viaWireEncoding presentation `shouldBe` presentationFixture
@@ -3001,7 +3081,7 @@ spec = describe "Native client contract fixtures" do
     Aeson.toJSON fixtureGatheringActObjectiveQuestion `shouldBe` fixture
     viaWireEncoding fixtureGatheringActObjectiveQuestion `shouldBe` fixture
     canonicalQuestionSha256 fixtureGatheringActObjectiveQuestion
-      `shouldBe` "d4c750eeffa0f73c4000664f56c399ff241d9ecb591b7624405b738ec680150b"
+      `shouldBe` "4c2873c90752d95243b9918719464add2d153e62e105b1a208bf931f59223f2e"
 
   it "projects every Gathering act-objective choice with exact source alignment and metadata" do
     fixture <- loadFixture "question-presentation-gathering-act-objective.json"
@@ -3066,17 +3146,17 @@ spec = describe "Native client contract fixtures" do
         [ ( "question-gathering-movement.json"
           , "question-presentation-gathering-movement.json"
           , 36
-          , "97ac10a983dfb82090dc27ee406611e57186b9c40bc8d02ac64df33e71e9f0ed"
+          , "bc11d0bf4397e28c0b147fbafbe28ab659b30957f1d51e54a5d5030fc95ca891"
           )
         , ( "question-gathering-attic-entry-forced.json"
           , "question-presentation-gathering-attic-entry-forced.json"
           , 37
-          , "6fd4ac416f3e0d2ccbcff05df9339558434c3a6a347cb1720ba3cadd832f2128"
+          , "8c8b2790497bc773222566317e797d0b06cf326d8e168489b37bdb7ce4e2867e"
           )
         , ( "question-gathering-cellar-entry-forced.json"
           , "question-presentation-gathering-cellar-entry-forced.json"
           , 37
-          , "21f3cb78ef0d3829effa4489fd4517424e05aff37e1d8756b00ce0e98cd4a393"
+          , "00a77fae72c79824b4dc4e10b5570e37e9062303c67eef10604d48fa5514a108"
           )
         , ( "question-gathering-attic-horror-assignment.json"
           , "question-presentation-gathering-attic-horror-assignment.json"
@@ -3921,7 +4001,7 @@ spec = describe "Native client contract fixtures" do
     locationAfterAdvance `shouldNotBe` locationBefore
     finalVersion `shouldBe` 36
 
-  it "executes Gathering Q39 actions through their exact Q42 successor windows" do
+  it "executes Gathering Q39 actions through their exact Q42 successor prompt" do
     let
       iid = InvestigatorId "01001"
       -- Source indexes are scoped to one question. This fixed-seed board's
@@ -4389,9 +4469,9 @@ spec = describe "Native client contract fixtures" do
               liftIO do
                 q41AnswerVersion `shouldBe` 41
                 gameScenarioSteps q42Game `shouldBe` 42
-                gamePhase q42Game `shouldBe` InvestigationPhase
+                gamePhase q42Game `shouldBe` MythosPhase
                 gamePhaseStep q42Game
-                  `shouldBe` Just (InvestigationPhaseStep InvestigatorTakesActionStep)
+                  `shouldBe` Just (MythosPhaseStep EachInvestigatorDrawsEncounterCardStep)
                 q42Location `shouldBe` Just hallwayId
                 q42Actions `shouldBe` 3
                 case
@@ -4404,39 +4484,39 @@ spec = describe "Native client contract fixtures" do
                         )
                     )
                   of
-                    ( Just (PlayerWindowChooseOne rawChoices)
+                    ( Just (ChooseOne rawChoices)
                       , Just
-                          ( QuestionPresentation.QuestionPresentation
+                          ( QuestionPresentation.QuestionPresentationV2
                               42
-                              "playerWindowChooseOne"
-                              12
+                              "chooseOne"
+                              2
                               presentationChoices
+                              _metadata
                             )
                       ) -> do
-                        length rawChoices `shouldBe` 12
+                        length rawChoices `shouldBe` 2
+                        case rawChoices of
+                          [TargetLabel (CardIdTarget _) _, StartSkillTestButton startIid] ->
+                            startIid `shouldBe` iid
+                          otherRaw ->
+                            expectationFailure
+                              $ "Expected Attic route Q42 commit/start prompt, got "
+                              <> show otherRaw
                         map
-                          ( \(QuestionPresentation.ChoicePresentation sourceIndex _ _ _ _ _ _) ->
+                          ( \(QuestionPresentation.ChoicePresentationV2 sourceIndex _ _ _ _ _ _ _) ->
                               sourceIndex
                           )
                           presentationChoices
-                          `shouldBe` [0 .. 11]
+                          `shouldBe` [0, 1]
                         map
-                          ( \(QuestionPresentation.ChoicePresentation _ kind _ _ _ _ _) ->
+                          ( \(QuestionPresentation.ChoicePresentationV2 _ kind _ _ _ _ _ _) ->
                               kind
                           )
                           presentationChoices
-                          `shouldBe` [ QuestionPresentation.GainResource
-                                     , QuestionPresentation.DrawCard
-                                     ]
-                            <> replicate 6 QuestionPresentation.ChooseTarget
-                            <> [ QuestionPresentation.EndTurn
-                               , QuestionPresentation.Move
-                               , QuestionPresentation.Investigate
-                               , QuestionPresentation.Move
-                               ]
+                          `shouldBe` [QuestionPresentation.ChooseTarget, QuestionPresentation.StartSkillTest]
                     other ->
                       expectationFailure
-                        $ "Expected Attic route Q42 player action window, got "
+                        $ "Expected Attic route Q42 mythos commit/start prompt, got "
                         <> show other
             other ->
               liftIO $ expectationFailure $ "Unknown Gathering branch " <> other
@@ -4446,7 +4526,7 @@ spec = describe "Native client contract fixtures" do
       fixtures =
         [ ( "question-round-end-forced-ability.json"
           , fixtureRoundEndForcedQuestion
-          , "d2a3eed857b8101814655ed0688c3a145b5faf46ea3bed90cfc5125e6e4a565b"
+          , "17dae51c7f66823e0aea00bf060959c24ed8c5a250cf1be8e0a15e17429982f2"
           )
         , ( "question-agenda-advance.json"
           , fixtureAgendaAdvanceQuestion
@@ -4778,7 +4858,7 @@ spec = describe "Native client contract fixtures" do
   it "keeps startAt's single real Study location choice and its zero-based answer index stable" do
     case fixtureStartAtChooseOneQuestion of
       ChooseOne [TargetLabel (LocationTarget lid) _] ->
-        Aeson.toJSON lid `shouldBe` Aeson.String "d5a66e84-c729-4066-8475-d8a155609025"
+        Aeson.toJSON lid `shouldBe` Aeson.String "782de537-8f5d-4eda-b849-2362e28402e5"
       other -> expectationFailure $ "Expected a single TargetLabel(LocationTarget) choice, got " <> show other
 
   it "preserves backend order and zero-based answer indices across multiple LocationTarget choices (high-risk: reindexing)" do
@@ -4813,6 +4893,12 @@ spec = describe "Native client contract fixtures" do
     -- through the identical (toEncoding-driven) real encoder, not merely
     -- through toJSON.
     viaWireEncoding fixtureGetGame `shouldBe` fixture
+
+  it "matches the real PublicGame encoder with structured log rows" do
+    fixture <- loadFixture "public-game-structured-log.json"
+
+    Aeson.toJSON fixturePublicGameWithStructuredLog `shouldBe` fixture
+    viaWireEncoding fixturePublicGameWithStructuredLog `shouldBe` fixture
 
   for_ fixtureBasicChoiceQuestions \(fileName, question) ->
     it ("matches the real basic-choice question encoder for " <> fileName) do
