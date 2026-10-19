@@ -93,6 +93,7 @@ import Text.Regex.Posix ((=~))
 
 import Api.Handler.ApiKeys
 import Api.Handler.Arkham.Achievements
+import Api.Handler.Arkham.ArkhamDB
 import Api.Handler.Arkham.Admin.GameStats
 import Api.Handler.Arkham.Admin.Metrics
 import Api.Handler.Arkham.CampaignCatalog

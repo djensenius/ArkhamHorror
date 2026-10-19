@@ -53,6 +53,14 @@
       /homebrew/cards ApiV1ArkhamHomebrewCardsR GET
       /card/#CardCode ApiV1ArkhamCardR GET
       /investigators ApiV1ArkhamInvestigatorsR GET
+      /arkhamdb ApiV1ArkhamArkhamDBP:
+        /link/start ApiV1ArkhamArkhamDBLinkStartR POST
+        /callback ApiV1ArkhamArkhamDBCallbackR GET
+        /status ApiV1ArkhamArkhamDBStatusR GET
+        /link ApiV1ArkhamArkhamDBLinkR DELETE
+        /decks ApiV1ArkhamArkhamDBDecksR GET
+        /decks/import ApiV1ArkhamArkhamDBDeckImportR POST
+        /decks/#ArkhamDeckId/sync ApiV1ArkhamArkhamDBDeckSyncR POST
       /decks ApiV1ArkhamDecksP:
         / ApiV1ArkhamDecksR GET POST
         !/fetch ApiV1ArkhamDecksFetchR POST

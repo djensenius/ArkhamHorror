@@ -4,10 +4,12 @@ module Base.Api.Types.Capabilities (
   ServerCapabilities (..),
   campaignCatalogCapability,
   semanticQuestionPresentationCapability,
+  arkhamDBAccountLinkingCapability,
   serverCapabilities,
 ) where
 
 import Base.Api.Types.CampaignCatalog (CampaignCatalog, campaignCatalogCapability, campaignCatalogMetadata)
+import Arkham.ArkhamDB (arkhamDBAccountLinkingCapability)
 import Base.Api.Types.LocaleCatalog (LocaleCatalog, localeCatalogCapability)
 import Data.Aeson
 import Data.List qualified as List
@@ -70,14 +72,14 @@ the same 'Maybe', so a client can never be shown one without the other. The
 minimum native-client revision is unconditional: clients older than 0.1.53 are
 update-required even for deployments that omit the catalog fields.
 -}
-serverCapabilities :: Maybe LocaleCatalog -> ServerCapabilities
-serverCapabilities localeCatalog =
+serverCapabilities :: Maybe LocaleCatalog -> Bool -> ServerCapabilities
+serverCapabilities localeCatalog arkhamDBEnabled =
   ServerCapabilities
-    { schemaRevision = "0.1.53"
+    { schemaRevision = "0.1.54"
     , status = "baseline-incomplete"
     , apiBasePath = "/api/v1"
     , nativeClientMinimumRevision = "0.1.53"
-    , capabilities = List.sort $ baseCapabilities <> catalogCapabilities
+    , capabilities = List.sort $ baseCapabilities <> catalogCapabilities <> arkhamDBCapabilities
     , campaignCatalog = campaignCatalogMetadata
     , localeCatalog = localeCatalog
     }
@@ -91,3 +93,4 @@ serverCapabilities localeCatalog =
     , "websockets.spectator-read-only"
     ]
   catalogCapabilities = [localeCatalogCapability | isJust localeCatalog]
+  arkhamDBCapabilities = [arkhamDBAccountLinkingCapability | arkhamDBEnabled]

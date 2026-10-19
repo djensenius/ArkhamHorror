@@ -14,7 +14,7 @@ the exact bytes a deployment would serve can be asserted directly from a
 parsed 'AppSettings' (see @Arkham.Api.JsonContractsSpec@).
 -}
 capabilitiesResponse :: AppSettings -> ServerCapabilities
-capabilitiesResponse = serverCapabilities . appLocaleCatalog
+capabilitiesResponse settings = serverCapabilities (appLocaleCatalog settings) (isJust $ appArkhamDB settings)
 
 capabilitiesResponseHeaders :: [(Text, Text)]
 capabilitiesResponseHeaders =

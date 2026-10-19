@@ -35,6 +35,7 @@ library
       Api.Arkham.Types.MultiplayerVariant
       Api.Handler.ApiKeys
       Api.Handler.Arkham.Achievements
+      Api.Handler.Arkham.ArkhamDB
       Api.Handler.Arkham.Admin.GameStats
       Api.Handler.Arkham.Admin.Metrics
       Api.Handler.Arkham.CampaignCatalog
@@ -2489,6 +2490,7 @@ library
       Arkham.Debug
       Arkham.Debug.CardDestination
       Arkham.Deck
+      Arkham.ArkhamDB
       Arkham.DeckBuilding.Adjustment
       Arkham.Decklist
       Arkham.Decklist.CardPool
@@ -8997,6 +8999,7 @@ library
       Entity.Answer
       Entity.Arkham.Achievement
       Entity.Arkham.ApiKey
+      Entity.Arkham.ArkhamDBAccount
       Entity.Arkham.ArkhamDBDecklist
       Entity.Arkham.CustomCard
       Entity.Arkham.CustomCardSet
@@ -9082,6 +9085,7 @@ library
     , constraints-extras
     , containers
     , cryptohash-sha256
+    , crypton
     , crypton-x509-store
     , data-default-class
     , dependent-map
@@ -9111,6 +9115,7 @@ library
     , monad-logger
     , monad-time
     , monoidal-containers
+    , memory
     , mtl >=2.3.1
     , parsec
     , path-pieces

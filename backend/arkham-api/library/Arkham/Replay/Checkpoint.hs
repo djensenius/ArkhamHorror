@@ -264,7 +264,7 @@ data CheckpointStatus
   deriving stock (Eq, Show)
 
 replayContractSchemaRevision :: Text
-replayContractSchemaRevision = (Capabilities.serverCapabilities Nothing).schemaRevision
+replayContractSchemaRevision = (Capabilities.serverCapabilities Nothing False).schemaRevision
 
 sha256Strict :: BS.ByteString -> Text
 sha256Strict = decodeUtf8 . Base16.encode . SHA256.hash
