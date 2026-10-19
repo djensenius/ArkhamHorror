@@ -1,5 +1,3 @@
-{-# LANGUAGE NoFieldSelectors #-}
-
 module Api.Handler.Arkham.ArkhamDB (
   getApiV1ArkhamArkhamDBCallbackR,
   getApiV1ArkhamArkhamDBDecksR,
@@ -13,236 +11,174 @@ module Api.Handler.Arkham.ArkhamDB (
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Decks (postApiV1ArkhamSyncDeckR, toDeckErrors)
 import Arkham.ArkhamDB
-import Arkham.Decklist (ArkhamDBDecklist (..))
+import Arkham.ArkhamDB.Service
 import Crypto.Random (getRandomBytes)
-import Data.Aeson (Value, toJSON)
 import Data.ByteString.Base64.URL qualified as B64Url
-import Data.Map.Strict qualified as Map
-import Data.Text qualified as T
-import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
-import Database.Esqueleto.Experimental hiding (Value, delete, from, get, isNothing, on, update, (=.), (==.))
+import Data.Time.Clock (getCurrentTime)
 import Database.Persist qualified as P
-import Database.Persist.Sql (SqlBackend)
-import Import hiding (delete, on, update, (=.), (==.))
+import Database.Persist.Sql (rawSql, updateWhereCount)
+import Import hiding (state)
 import Network.HTTP.Types.Status qualified as Status
 
-newtype JSONError = JSONError {errorMsg :: Text}
-  deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON, FromJSON)
+runArkhamDB :: ArkhamDBAction Handler a -> Handler a
+runArkhamDB action = runExceptT action >>= either sendArkhamDBError pure
+
+sendArkhamDBError :: ArkhamDBError -> Handler a
+sendArkhamDBError err = sendStatusJSON status err
+ where
+  status = case arkhamDBErrorCode err of
+    "disabled" -> Status.status501
+    "oauthCallbackInvalidState" -> Status.status400
+    "notLinked" -> Status.status401
+    "tokenExpired" -> Status.status401
+    "notFound" -> Status.status404
+    "storageFailure" -> Status.status500
+    _ -> Status.status502
 
 requireConfigured :: Handler ArkhamDBSettings
-requireConfigured = getsYesod (appArkhamDB . appSettings) >>= \case
-  Just settings -> pure settings
-  Nothing -> sendStatusJSON Status.status501 (JSONError "ArkhamDB account linking is not configured")
+requireConfigured = runArkhamDB . configuredSettings =<< getsYesod (appArkhamDB . appSettings)
 
-arkhamDBRedirectUri :: ArkhamDBSettings -> Text
-arkhamDBRedirectUri settings = T.dropWhileEnd (== '/') settings.arkhamDBPublicServerBase <> "/api/v1/arkham/arkhamdb/callback"
+configuredClient :: Handler (ArkhamDBClient Handler)
+configuredClient = getsYesod appArkhamDBClient >>= maybe
+  (sendArkhamDBError $ ArkhamDBError "disabled" "ArkhamDB account linking is not configured")
+  (pure . hoistArkhamDBClient liftIO)
 
-configuredClient :: ArkhamDBSettings -> Handler (ArkhamDBClient Handler)
-configuredClient settings = do
-  manager <- getsYesod appHttpManager
-  pure $ httpArkhamDBClient manager settings.arkhamDBBaseUrl settings.arkhamDBClientId settings.arkhamDBClientSecret
+-- | Each runDB action is a transaction, including nonce consumption and the
+-- paired local deck/link writes. Claiming prevents concurrent callbacks from
+-- exchanging a state twice; finalizing refuses a claim removed by unlink.
+persistentStore :: ArkhamDBStore Handler
+persistentStore = ArkhamDBStore
+  { saveLinkState = \state -> runDB do
+      deleteWhere [ArkhamDBLinkStateExpiresAt P.<=. arkhamDBLinkStateCreatedAt state]
+      deleteWhere [ArkhamDBLinkStateUserId P.==. arkhamDBLinkStateUserId state]
+      insert_ state
+  , claimLinkState = \now nonce -> runDB do
+      rows <- rawSql "UPDATE arkhamdb_link_states SET claimed_at = ? WHERE nonce = ? AND claimed_at IS NULL AND expires_at > ? RETURNING ??"
+        [PersistUTCTime now, PersistText nonce, PersistUTCTime now]
+      pure $ viaNonEmpty head rows
+  , findAccount = \userId -> fmap entityVal <$> runDB (getBy $ UniqueArkhamDBAccountUser userId)
+  , finalizeLink = \nonce account -> runDB do
+      claimed <- rawSql "DELETE FROM arkhamdb_link_states WHERE nonce = ? AND user_id = ? AND claimed_at IS NOT NULL RETURNING ??"
+        [PersistText nonce, toPersistValue $ arkhamDBAccountUserId account]
+      if null (claimed :: [Entity ArkhamDBLinkState])
+        then pure False
+        else do
+          let userId = arkhamDBAccountUserId account
+          deckIds <- selectKeysList [ArkhamDeckUserId P.==. userId] []
+          unless (null deckIds) $ deleteWhere [ArkhamDBDeckLinkDeckId P.<-. deckIds]
+          deleteWhere [ArkhamDBLinkStateUserId P.==. userId]
+          void $ upsert account (accountUpdates account)
+          pure True
+  , updateAccount = \old updated -> runDB do
+      affected <- updateWhereCount
+        [ ArkhamDBAccountUserId P.==. arkhamDBAccountUserId old
+        , ArkhamDBAccountEncryptedAccessToken P.==. arkhamDBAccountEncryptedAccessToken old
+        ] (accountUpdates updated)
+      pure $ affected == 1
+  , unlinkAccount = \userId -> runDB do
+      deckIds <- selectKeysList [ArkhamDeckUserId P.==. userId] []
+      unless (null deckIds) $ deleteWhere [ArkhamDBDeckLinkDeckId P.<-. deckIds]
+      deleteWhere [ArkhamDBLinkStateUserId P.==. userId]
+      deleteBy $ UniqueArkhamDBAccountUser userId
+  , findDeckLinks = \userId -> runDB do
+      deckIds <- selectKeysList [ArkhamDeckUserId P.==. userId] []
+      links <- if null deckIds then pure [] else selectList [ArkhamDBDeckLinkDeckId P.<-. deckIds] []
+      pure [(arkhamDBDeckLinkDeckId link, link) | Entity _ link <- links]
+  , findDeck = \deckId -> runDB do
+      P.get deckId >>= \case
+        Just deck -> do
+          link <- fmap entityVal <$> getBy (UniqueArkhamDBDeckLinkDeck deckId)
+          pure $ Just (deck, link)
+        _ -> pure Nothing
+  , saveImportedDeck = \deck remote now -> runDB do
+      entity@(Entity deckId _) <- insertEntity deck
+      insert_ $ ArkhamDBDeckLink deckId remote.remoteDeckId remote.dateUpdate remote.deckVersion False Nothing now now
+      pure entity
+  , saveSyncedDeck = \deckId deck remote now -> runDB do
+      P.update deckId
+        [ ArkhamDeckList P.=. arkhamDeckList deck
+        , ArkhamDeckUrl P.=. arkhamDeckUrl deck
+        , ArkhamDeckName P.=. arkhamDeckName deck
+        , ArkhamDeckInvestigatorName P.=. arkhamDeckInvestigatorName deck
+        ]
+      updateWhere [ArkhamDBDeckLinkDeckId P.==. deckId]
+        [ ArkhamDBDeckLinkLastSyncedDateUpdate P.=. remote.dateUpdate
+        , ArkhamDBDeckLinkLastSyncedVersion P.=. remote.deckVersion
+        , ArkhamDBDeckLinkLastError P.=. Nothing
+        , ArkhamDBDeckLinkUpdatedAt P.=. now
+        ]
+  , validateDeck = \decklist -> case toDeckErrors decklist of
+      [] -> pure ()
+      errors -> sendStatusJSON Status.status400 errors
+  }
 
-randomNonce :: MonadIO m => m Text
-randomNonce = decodeUtf8 . B64Url.encodeUnpadded <$> liftIO (getRandomBytes 32)
+accountUpdates :: ArkhamDBAccount -> [Update ArkhamDBAccount]
+accountUpdates account =
+  [ ArkhamDBAccountRemoteUserId P.=. arkhamDBAccountRemoteUserId account
+  , ArkhamDBAccountRemoteUserName P.=. arkhamDBAccountRemoteUserName account
+  , ArkhamDBAccountEncryptedAccessToken P.=. arkhamDBAccountEncryptedAccessToken account
+  , ArkhamDBAccountEncryptedRefreshToken P.=. arkhamDBAccountEncryptedRefreshToken account
+  , ArkhamDBAccountExpiresAt P.=. arkhamDBAccountExpiresAt account
+  , ArkhamDBAccountUpdatedAt P.=. arkhamDBAccountUpdatedAt account
+  ]
 
 postApiV1ArkhamArkhamDBLinkStartR :: Handler ArkhamDBLinkStartResponse
 postApiV1ArkhamArkhamDBLinkStartR = do
   settings <- requireConfigured
   userId <- getRequestUserId
   now <- liftIO getCurrentTime
-  nonce <- randomNonce
-  let expiresAt = addUTCTime (10 * 60) now
-      redirectUri = arkhamDBRedirectUri settings
-      authorizeUrl = arkhamDBAuthorizeUrl settings.arkhamDBBaseUrl settings.arkhamDBClientId redirectUri nonce
-  runDB $ insert_ $ ArkhamDBLinkState nonce userId expiresAt now
-  pure ArkhamDBLinkStartResponse {..}
+  nonce <- decodeUtf8 . B64Url.encodeUnpadded <$> liftIO (getRandomBytes 32)
+  runArkhamDB $ startLink persistentStore settings now userId nonce
 
 getApiV1ArkhamArkhamDBCallbackR :: Handler Html
 getApiV1ArkhamArkhamDBCallbackR = do
-  settings <- getsYesod (appArkhamDB . appSettings) >>= maybe (sendStatus Status.status404 ("ArkhamDB account linking is not configured" :: Text)) pure
-  state <- requireGetParam "state"
+  settings <- requireConfigured
+  nonce <- requireGetParam "state"
   code <- requireGetParam "code"
-  appRedirect <- lookupGetParam "appRedirect"
+  client <- configuredClient
   now <- liftIO getCurrentTime
-  mState <- runDB $ getBy $ UniqueArkhamDBLinkStateNonce state
-  userId <- case validateLinkState now state mState of
-    Left err -> renderCallbackError appRedirect err
-    Right uid -> do
-      runDB $ deleteBy $ UniqueArkhamDBLinkStateNonce state
-      pure uid
-  client <- configuredClient settings
-  tokens <- exchangeCode client code (arkhamDBRedirectUri settings) >>= either (renderCallbackError appRedirect . clientErrorMessage) pure
-  storeTokens settings now userId tokens
-  renderCallbackSuccess appRedirect
+  runExceptT (completeLink persistentStore client settings now nonce code) >>= \case
+    Left _ -> sendResponseStatus Status.status400 $ toHtml ("ArkhamDB linking failed. Please start again in the app." :: Text)
+    Right () -> pure $ toHtml ("ArkhamDB account linked. You may close this window." :: Text)
 
 getApiV1ArkhamArkhamDBStatusR :: Handler ArkhamDBLinkStatusResponse
 getApiV1ArkhamArkhamDBStatusR = do
   _ <- requireConfigured
   userId <- getRequestUserId
-  mAccount <- runDB $ getBy $ UniqueArkhamDBAccountUser userId
-  case mAccount of
-    Nothing -> pure $ ArkhamDBLinkStatusResponse False Nothing Nothing Nothing Nothing 0
-    Just (Entity _ account) -> do
-      count <- runDB $ countWriteBackDecks userId
-      pure $ ArkhamDBLinkStatusResponse True (Just account.remoteUserId) account.remoteUserName account.expiresAt (Just account.createdAt) count
+  runArkhamDB $ linkStatus persistentStore userId
 
 deleteApiV1ArkhamArkhamDBLinkR :: Handler ()
 deleteApiV1ArkhamArkhamDBLinkR = do
   _ <- requireConfigured
   userId <- getRequestUserId
-  runDB do
-    deckIds <- selectKeysList [ArkhamDeckUserId P.==. userId] []
-    unless (null deckIds) $ deleteWhere [ArkhamDBDeckLinkDeckId P.<-. deckIds]
-    deleteBy $ UniqueArkhamDBAccountUser userId
+  runArkhamDB $ unlinkLinkedAccount persistentStore userId
 
 getApiV1ArkhamArkhamDBDecksR :: Handler [ArkhamDBDeckSummary]
 getApiV1ArkhamArkhamDBDecksR = do
   settings <- requireConfigured
   userId <- getRequestUserId
-  client <- configuredClient settings
-  accessToken <- requireAccessToken settings client userId
-  summaries <- listDecksWithRefresh settings client userId accessToken
-  deckIds <- runDB $ selectKeysList [ArkhamDeckUserId P.==. userId] []
-  links <- runDB $ if null deckIds then pure [] else selectList [ArkhamDBDeckLinkDeckId P.<-. deckIds] []
-  let byRemote = Map.fromList [(arkhamDBDeckLinkRemoteDeckId link, deckId) | Entity _ link <- links, let deckId = arkhamDBDeckLinkDeckId link]
-      attachLocal summary = summary {linkedLocalDeckId = Map.lookup summary.id byRemote}
-  pure $ map attachLocal summaries
+  client <- configuredClient
+  now <- liftIO getCurrentTime
+  runArkhamDB $ listRemoteDecks persistentStore client settings now userId
 
 postApiV1ArkhamArkhamDBDeckImportR :: Handler (Entity ArkhamDeck)
 postApiV1ArkhamArkhamDBDeckImportR = do
   settings <- requireConfigured
   userId <- getRequestUserId
-  ArkhamDBImportRequest remoteDeckId <- requireCheckJsonBody
+  ArkhamDBImportRequest remoteId <- requireCheckJsonBody
   registerUserCustomCards userId
-  client <- configuredClient settings
-  accessToken <- requireAccessToken settings client userId
-  remote <- loadDeckWithRefresh settings client userId accessToken remoteDeckId
+  client <- configuredClient
   now <- liftIO getCurrentTime
-  let decklist = remote.deck {url = remote.deck.url <|> Just (settings.arkhamDBBaseUrl <> "/deck/view/" <> remoteDeckId)}
-      deck = ArkhamDeck userId decklist.url (fromMaybe (tshow decklist.investigator_name) decklist.decklist_name) (tshow decklist.investigator_name) decklist Nothing Nothing
-  case toDeckErrors decklist of
-    [] -> runDB do
-      deckEntity@(Entity deckId _) <- insertEntity deck
-      insert_ $ ArkhamDBDeckLink deckId remote.remoteDeckId remote.dateUpdate remote.version False Nothing now now
-      pure deckEntity
-    err -> sendStatusJSON Status.status400 err
+  runArkhamDB $ importRemoteDeck persistentStore client settings now userId remoteId
 
-postApiV1ArkhamArkhamDBDeckSyncR :: ArkhamDeckId -> Handler Value
+postApiV1ArkhamArkhamDBDeckSyncR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
 postApiV1ArkhamArkhamDBDeckSyncR deckId = do
   settings <- requireConfigured
   userId <- getRequestUserId
-  deck <- runDB $ get404 deckId
-  unless (arkhamDeckUserId deck == userId) $ sendStatusJSON Status.status400 (JSONError "Deck does not belong to this user")
-  runDB (getBy $ UniqueArkhamDBDeckLinkDeck deckId) >>= \case
-    Nothing -> toJSON <$> postApiV1ArkhamSyncDeckR deckId
-    Just (Entity linkId link) -> do
-      client <- configuredClient settings
-      accessToken <- requireAccessToken settings client userId
-      remote <- loadDeckWithRefresh settings client userId accessToken link.remoteDeckId
-      registerUserCustomCards userId
-      case toDeckErrors remote.deck of
-        [] -> do
-          now <- liftIO getCurrentTime
-          let updated = deck {arkhamDeckList = remote.deck, arkhamDeckUrl = remote.deck.url <|> arkhamDeckUrl deck}
-          runDB do
-            P.update deckId [ArkhamDeckList P.=. remote.deck, ArkhamDeckUrl P.=. arkhamDeckUrl updated]
-            P.update linkId
-              [ ArkhamDBDeckLinkLastSyncedDateUpdate P.=. remote.dateUpdate
-              , ArkhamDBDeckLinkLastSyncedVersion P.=. remote.version
-              , ArkhamDBDeckLinkLastError P.=. Nothing
-              , ArkhamDBDeckLinkUpdatedAt P.=. now
-              ]
-          pure $ toJSON $ ArkhamDBSyncResult deckId remote.remoteDeckId now remote.version remote.dateUpdate
-        err -> sendStatusJSON Status.status400 err
-
-storeTokens :: ArkhamDBSettings -> UTCTime -> UserId -> ArkhamDBOAuthTokens -> Handler ()
-storeTokens settings now userId tokens = do
-  encryptedAccessToken <- unTokenCiphertext <$> encryptToken settings.arkhamDBTokenKey tokens.accessToken
-  encryptedRefreshToken <- traverse (fmap unTokenCiphertext . encryptToken settings.arkhamDBTokenKey) tokens.refreshToken
-  runDB do
-    deleteBy $ UniqueArkhamDBAccountUser userId
-    insert_ $ ArkhamDBAccount userId tokens.remoteUserId tokens.remoteUserName encryptedAccessToken encryptedRefreshToken tokens.expiresAt now now
-
-requireAccessToken :: ArkhamDBSettings -> ArkhamDBClient Handler -> UserId -> Handler Text
-requireAccessToken settings client userId = do
+  registerUserCustomCards userId
+  client <- configuredClient
   now <- liftIO getCurrentTime
-  account <- runDB (getBy $ UniqueArkhamDBAccountUser userId) >>= maybe (sendStatusJSON Status.status401 $ JSONError "ArkhamDB account is not linked") pure
-  let accountVal = entityVal account
-  if isTokenExpired now accountVal.expiresAt
-    then refreshAccount settings client (entityKey account) accountVal
-    else decryptStoredToken settings.arkhamDBTokenKey accountVal.encryptedAccessToken
-
-refreshAccount :: ArkhamDBSettings -> ArkhamDBClient Handler -> ArkhamDBAccountId -> ArkhamDBAccount -> Handler Text
-refreshAccount settings client accountId account = case account.encryptedRefreshToken of
-  Nothing -> sendStatusJSON Status.status401 (JSONError "ArkhamDB access token expired; relink required")
-  Just encrypted -> do
-    refreshToken <- decryptStoredToken settings.arkhamDBTokenKey encrypted
-    refreshTokens client refreshToken >>= \case
-      Left err -> sendClientError err
-      Right tokens -> do
-        now <- liftIO getCurrentTime
-        encryptedAccessToken <- unTokenCiphertext <$> encryptToken settings.arkhamDBTokenKey tokens.accessToken
-        encryptedRefreshToken <- traverse (fmap unTokenCiphertext . encryptToken settings.arkhamDBTokenKey) (tokens.refreshToken <|> Just refreshToken)
-        runDB $ P.update accountId
-          [ ArkhamDBAccountEncryptedAccessToken P.=. encryptedAccessToken
-          , ArkhamDBAccountEncryptedRefreshToken P.=. encryptedRefreshToken
-          , ArkhamDBAccountExpiresAt P.=. tokens.expiresAt
-          , ArkhamDBAccountRemoteUserId P.=. tokens.remoteUserId
-          , ArkhamDBAccountRemoteUserName P.=. tokens.remoteUserName
-          , ArkhamDBAccountUpdatedAt P.=. now
-          ]
-        pure tokens.accessToken
-
-listDecksWithRefresh :: ArkhamDBSettings -> ArkhamDBClient Handler -> UserId -> Text -> Handler [ArkhamDBDeckSummary]
-listDecksWithRefresh settings client userId accessToken =
-  listDecks client accessToken >>= \case
-    Right decks -> pure decks
-    Left ArkhamDBUnauthorized -> do
-      account <- runDB (getBy $ UniqueArkhamDBAccountUser userId) >>= maybe (sendStatusJSON Status.status401 $ JSONError "ArkhamDB account is not linked") pure
-      fresh <- refreshAccount settings client (entityKey account) (entityVal account)
-      listDecks client fresh >>= either sendClientError pure
-    Left err -> sendClientError err
-
-loadDeckWithRefresh :: ArkhamDBSettings -> ArkhamDBClient Handler -> UserId -> Text -> Text -> Handler ArkhamDBRemoteDeck
-loadDeckWithRefresh settings client userId accessToken remoteDeckId =
-  loadDeck client accessToken remoteDeckId >>= \case
-    Right deck -> pure deck
-    Left ArkhamDBUnauthorized -> do
-      account <- runDB (getBy $ UniqueArkhamDBAccountUser userId) >>= maybe (sendStatusJSON Status.status401 $ JSONError "ArkhamDB account is not linked") pure
-      fresh <- refreshAccount settings client (entityKey account) (entityVal account)
-      loadDeck client fresh remoteDeckId >>= either sendClientError pure
-    Left err -> sendClientError err
-
-sendClientError :: ArkhamDBClientError -> Handler a
-sendClientError = sendStatusJSON Status.status502 . JSONError . clientErrorMessage
-
-clientErrorMessage :: ArkhamDBClientError -> Text
-clientErrorMessage = \case
-  ArkhamDBUnauthorized -> "ArkhamDB rejected the stored token; relink required"
-  ArkhamDBRemoteError message -> "ArkhamDB request failed: " <> message
-  ArkhamDBDecodeError message -> "ArkhamDB returned an unexpected response: " <> message
-
-decryptStoredToken :: Text -> Text -> Handler Text
-decryptStoredToken key token = either (sendStatusJSON Status.status500 . JSONError) pure $ decryptToken key (TokenCiphertext token)
-
-countWriteBackDecks :: UserId -> ReaderT SqlBackend Handler Int
-countWriteBackDecks userId = do
-  deckIds <- selectKeysList [ArkhamDeckUserId P.==. userId] []
-  if null deckIds then pure 0 else count [ArkhamDBDeckLinkDeckId P.<-. deckIds, ArkhamDBDeckLinkWriteBack P.==. True]
+  runArkhamDB $ syncRemoteDeck persistentStore client settings now userId deckId postApiV1ArkhamSyncDeckR
 
 requireGetParam :: Text -> Handler Text
-requireGetParam name = lookupGetParam name >>= maybe (sendStatus Status.status400 ("Missing required query parameter" :: Text)) pure
-
-renderCallbackSuccess :: Maybe Text -> Handler Html
-renderCallbackSuccess appRedirect = case appRedirect >>= whitelistedAppRedirect of
-  Just target -> redirect target
-  Nothing -> sendResponseStatus Status.status200 (toHtml ("<html><body>ArkhamDB account linked. You may close this window.</body></html>" :: Text))
-
-renderCallbackError :: Maybe Text -> Text -> Handler a
-renderCallbackError appRedirect message = case appRedirect >>= whitelistedAppRedirect of
-  Just target -> redirect $ target <> "?error=" <> message
-  Nothing -> sendResponseStatus Status.status400 (toHtml $ "<html><body>ArkhamDB linking failed: " <> message <> "</body></html>")
-
-whitelistedAppRedirect :: Text -> Maybe Text
-whitelistedAppRedirect target = guard ("arkhamhorror://arkhamdb-linked" `T.isPrefixOf` target) $> target
+requireGetParam name = lookupGetParam name >>= maybe (invalidArgs ["Missing query parameter: " <> name]) pure

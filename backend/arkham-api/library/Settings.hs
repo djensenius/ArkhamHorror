@@ -21,7 +21,8 @@ import Base.Api.Types.LocaleCatalog
   )
 import Control.Exception qualified as Exception
 import Data.Aeson
-  (FromJSON(..), Key, Object, Parser, Result(..), Value, fromJSON, withObject, (.!=), (.:), (.:?))
+  (FromJSON(..), Key, Object, Result(..), Value, fromJSON, withObject, (.!=), (.:), (.:?))
+import Data.Aeson.Types (Parser)
 import Data.ByteString.Char8 qualified as BS8
 import Data.FileEmbed (embedFile)
 import Data.String.Conversions.Monomorphic (toStrictByteString)
@@ -78,9 +79,6 @@ data ArkhamDBSettings = ArkhamDBSettings
     , arkhamDBPublicServerBase :: Text
     }
     deriving stock (Eq, Show)
-
-arkhamDBSettingsConfigured :: AppSettings -> Maybe ArkhamDBSettings
-arkhamDBSettingsConfigured = appArkhamDB
 
 parseOptionalText :: Object -> Key -> Parser (Maybe Text)
 parseOptionalText o key = do

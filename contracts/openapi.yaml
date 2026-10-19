@@ -408,6 +408,172 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InvestigatorArtwork"
+  /arkham/arkhamdb/link/start:
+    post:
+      operationId: startArkhamDBLink
+      summary: Start linking the current user's ArkhamDB account
+      description: |
+        Requires the arkhamdb.account-linking.v1 capability. Open authorizeUrl
+        in a browser, then refresh status after the callback HTML page completes.
+        State is unpredictable, user-bound, expires in ten minutes and is single-use.
+        The client secret and user tokens never leave the server.
+      responses:
+        "200":
+          description: Authorization URL and expiry
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/linkStart"
+        "401":
+          description: Authentication required
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/callback:
+    get:
+      operationId: completeArkhamDBLink
+      summary: Complete ArkhamDB OAuth authorization in the browser
+      security: []
+      description: |
+        Consumes the user-bound state before exchanging the code. No app token
+        is required in the browser. Renders a static completion page, not a
+        token response or an arbitrary redirect. Relinking discards previous
+        account deck mappings but preserves the local decks.
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Account linked; close the browser and refresh status
+          content:
+            text/html:
+              schema:
+                type: string
+        "400":
+          description: State missing, wrong, expired or reused, or authorization failed
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/status:
+    get:
+      operationId: getArkhamDBLinkStatus
+      summary: Inspect the current user's ArkhamDB account link without exposing tokens
+      responses:
+        "200":
+          description: Linked or unlinked status
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/linkStatus"
+        "401":
+          description: Authentication required
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/link:
+    delete:
+      operationId: unlinkArkhamDB
+      summary: Delete stored ArkhamDB credentials and remote deck mappings
+      description: |
+        Idempotent. Local decks are preserved. Pending authorizations are
+        invalidated. ArkhamDB does not currently expose a documented revocation
+        endpoint; revoke the application on ArkhamDB too if needed.
+      responses:
+        "200":
+          description: Unlinked
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 0
+        "401":
+          description: Authentication required
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/decks:
+    get:
+      operationId: listArkhamDBDecks
+      summary: List the linked account's decks, including private decks
+      description: |
+        Uses OAuth, refreshing expired or rejected access tokens once. Version
+        is normalized to text; date_update is preserved as lastUpdatedAt.
+      responses:
+        "200":
+          description: Remote deck summaries with this user's local mappings
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/deckList"
+        "401":
+          $ref: "#/components/responses/ArkhamDBNotLinked"
+        "500":
+          description: Stored credentials could not be decrypted
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+        "502":
+          $ref: "#/components/responses/ArkhamDBRemoteUnavailable"
+  /arkham/arkhamdb/decks/import:
+    post:
+      operationId: importArkhamDBDeck
+      summary: Import a private deck through the linked account's OAuth authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/arkhamdb.schema.json#/$defs/importRequest"
+      responses:
+        "200":
+          description: Imported saved deck; remote date_update and version are stored server-side
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deck"
+        "400":
+          description: Invalid input or unimplemented cards
+        "401":
+          $ref: "#/components/responses/ArkhamDBNotLinked"
+        "500":
+          description: Stored credentials could not be decrypted
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+        "502":
+          $ref: "#/components/responses/ArkhamDBRemoteUnavailable"
+  /arkham/arkhamdb/decks/{deckId}/sync:
+    post:
+      operationId: syncArkhamDBDeck
+      summary: Sync an owned deck through OAuth when mapped, otherwise its public URL
+      description: |
+        OAuth reads replace the list, name and investigator name after card
+        validation, preserve the overlay, and update date_update/version sync
+        markers. Unmapped decks use the existing public-URL sync semantics.
+        Both paths return the same saved Deck entity shape. No write-back runs.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      responses:
+        "200":
+          description: Synchronized saved deck
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deck"
+        "400":
+          description: Unimplemented cards or public URL sync failed
+        "401":
+          $ref: "#/components/responses/ArkhamDBNotLinked"
+        "404":
+          description: Deck not found or not owned by the caller
+        "500":
+          description: Stored credentials could not be decrypted or public URL transport failed
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+        "502":
+          $ref: "#/components/responses/ArkhamDBRemoteUnavailable"
   /arkham/decks:
     get:
       operationId: listDecks
@@ -993,6 +1159,25 @@ paths:
         "404":
           description: Game does not exist
 components:
+  responses:
+    ArkhamDBDisabled:
+      description: ArkhamDB credentials or redirect base are not configured
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
+    ArkhamDBNotLinked:
+      description: Authentication required, account not linked, or token requires relinking
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
+    ArkhamDBRemoteUnavailable:
+      description: ArkhamDB transport, response status or payload failed
+      content:
+        application/json:
+          schema:
+            $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
   securitySchemes:
     TokenAuth:
       type: apiKey

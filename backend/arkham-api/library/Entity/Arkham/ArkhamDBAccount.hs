@@ -19,7 +19,7 @@ share
 ArkhamDBAccount sql=arkhamdb_accounts
   Id UUID default=uuid_generate_v4()
   userId UserId OnDeleteCascade
-  remoteUserId Text
+  remoteUserId Text Maybe
   remoteUserName Text Maybe
   encryptedAccessToken Text
   encryptedRefreshToken Text Maybe
@@ -34,6 +34,7 @@ ArkhamDBLinkState sql=arkhamdb_link_states
   userId UserId OnDeleteCascade
   expiresAt UTCTime
   createdAt UTCTime
+  claimedAt UTCTime Maybe
   UniqueArkhamDBLinkStateNonce nonce
   deriving Generic Show
 ArkhamDBDeckLink sql=arkhamdb_deck_links
@@ -41,7 +42,7 @@ ArkhamDBDeckLink sql=arkhamdb_deck_links
   deckId ArkhamDeckId OnDeleteCascade
   remoteDeckId Text
   lastSyncedDateUpdate Text Maybe
-  lastSyncedVersion Int Maybe
+  lastSyncedVersion Text Maybe
   writeBack Bool default=False
   lastError Text Maybe
   createdAt UTCTime

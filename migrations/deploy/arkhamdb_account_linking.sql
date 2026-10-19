@@ -9,14 +9,14 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS arkhamdb_accounts (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id bigint REFERENCES users (id) ON DELETE CASCADE NOT NULL,
-  remote_user_id varchar NOT NULL,
+  remote_user_id varchar,
   remote_user_name varchar,
   encrypted_access_token varchar NOT NULL,
   encrypted_refresh_token varchar,
   expires_at timestamptz,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  CONSTRAINT unique_arkhamdb_account_user UNIQUE (user_id)
+  CONSTRAINT unique_arkham_d_b_account_user UNIQUE (user_id)
 );
 
 CREATE TABLE IF NOT EXISTS arkhamdb_link_states (
@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS arkhamdb_link_states (
   user_id bigint REFERENCES users (id) ON DELETE CASCADE NOT NULL,
   expires_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL,
-  CONSTRAINT unique_arkhamdb_link_state_nonce UNIQUE (nonce)
+  claimed_at timestamptz,
+  CONSTRAINT unique_arkham_d_b_link_state_nonce UNIQUE (nonce)
 );
 
 CREATE TABLE IF NOT EXISTS arkhamdb_deck_links (
@@ -33,12 +34,12 @@ CREATE TABLE IF NOT EXISTS arkhamdb_deck_links (
   deck_id uuid REFERENCES arkham_decks (id) ON DELETE CASCADE NOT NULL,
   remote_deck_id varchar NOT NULL,
   last_synced_date_update varchar,
-  last_synced_version int,
+  last_synced_version varchar,
   write_back boolean NOT NULL DEFAULT false,
   last_error varchar,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  CONSTRAINT unique_arkhamdb_deck_link_deck UNIQUE (deck_id)
+  CONSTRAINT unique_arkham_d_b_deck_link_deck UNIQUE (deck_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_arkhamdb_deck_links_remote

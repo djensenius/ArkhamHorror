@@ -7,7 +7,7 @@ SELECT id, user_id, remote_user_id, remote_user_name, encrypted_access_token,
   FROM arkhamdb_accounts
  WHERE FALSE;
 
-SELECT id, nonce, user_id, expires_at, created_at
+SELECT id, nonce, user_id, expires_at, created_at, claimed_at
   FROM arkhamdb_link_states
  WHERE FALSE;
 

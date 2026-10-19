@@ -419,6 +419,62 @@
       "coverage": "documented"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/arkham/arkhamdb/link/start",
+      "resource": "ApiV1ArkhamArkhamDBLinkStartR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/arkham/arkhamdb/callback",
+      "resource": "ApiV1ArkhamArkhamDBCallbackR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/arkham/arkhamdb/status",
+      "resource": "ApiV1ArkhamArkhamDBStatusR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/arkham/arkhamdb/link",
+      "resource": "ApiV1ArkhamArkhamDBLinkR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/arkham/arkhamdb/decks",
+      "resource": "ApiV1ArkhamArkhamDBDecksR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/arkham/arkhamdb/decks/import",
+      "resource": "ApiV1ArkhamArkhamDBDeckImportR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/arkham/arkhamdb/decks/{ArkhamDeckId}/sync",
+      "resource": "ApiV1ArkhamArkhamDBDeckSyncR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/arkham/decks",
       "resource": "ApiV1ArkhamDecksR",

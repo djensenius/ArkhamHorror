@@ -109,7 +109,7 @@ library:
     - monad-logger
     - monad-time
     - monoidal-containers
-    - memory
+    - ram
     - mtl >= 2.3.1
     - parsec
     - path-pieces
@@ -245,8 +245,6 @@ tests:
       - random
       - base16-bytestring
       - cryptohash-sha256
-      - crypton
-      - memory
       - relude
       - stm
       - text

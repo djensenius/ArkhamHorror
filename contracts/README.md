@@ -1066,6 +1066,50 @@ required key set is extracted from `fixtures/question-read.json`,
 fixtures' SHA-256 digests together with this manifest's `schemaRevision`, so a
 catalog can always be traced to the contract revision it was generated for.
 
+### ArkhamDB account linking (fork-only, optional)
+
+Revision `0.1.54` adds `arkhamdb.account-linking.v1` and the
+`/arkham/arkhamdb` read-side endpoints documented in OpenAPI and
+`arkhamdb.schema.json`. It does not raise the native-client minimum revision.
+The capability is absent and the endpoints return 501 unless all of
+`ARKHAMDB_CLIENT_ID`, `ARKHAMDB_CLIENT_SECRET`, `ARKHAMDB_TOKEN_KEY` and
+`ARKHAMDB_PUBLIC_SERVER_BASE` are configured. `ARKHAMDB_BASE_URL` defaults to
+`https://arkhamdb.com`. Set the public base to the server's externally reachable
+HTTPS origin; register its `/api/v1/arkham/arkhamdb/callback` URL with ArkhamDB.
+Use a dedicated high-entropy token key (at least 32 random bytes), not the
+session-cookie key. Changing it makes existing credentials require relinking.
+Access and refresh tokens are AES-256-GCM encrypted at rest, never included in
+responses. Preserve this secret across server restarts.
+
+Start linking with the authenticated POST, open `authorizeUrl` in a browser,
+and refresh status after the static HTML callback page. The nonce is bound to
+the initiating local user, expires after ten minutes, and is consumed atomically
+before code exchange; browser callbacks need no app authentication header. OAuth account identity fields are nullable when the token response omits them;
+no identity is invented and no additional profile request is assumed. A
+claimed nonce is retained until the account is saved atomically. Unlink removes
+that claim as well, so neither an in-flight callback nor an in-flight refresh
+can recreate credentials after unlink (refresh uses compare-and-update only).
+Unlink deletes credentials, pending nonces and deck mappings, but not imported
+local decks. Relinking also drops previous account mappings. Revoke the app on
+ArkhamDB separately if needed (no documented revocation endpoint is assumed).
+
+List, import and sync use the linked account's OAuth API, so private decks do
+not require public sharing. Expired tokens (including a 60-second safety window)
+are refreshed before use, and rejected tokens are refreshed/retried once. If no
+refresh token was issued, expiry requires relinking. OAuth imports record
+`date_update` as the primary future conflict marker, and remote version as text
+(strings such as `1.0` are retained; JSON numbers are normalized to JSON text).
+The OAuth sync endpoint returns the same saved Deck entity as ordinary public
+sync and falls back to that existing path for unmapped decks. This revision does
+not implement write-back, version upgrades or conflict resolution (task-2.45).
+`writeBackEnabledDeckCount` therefore remains zero for newly imported decks.
+
+Clients opting into these endpoints must update their pinned backend commit and
+schemaRevision to this revision after merge: Apple `ContractPin.swift`; Linux
+`src/ContractPin.cpp`, `contracts/contract-pin.json` and vendored fixtures. Existing
+clients satisfying the unchanged `0.1.53` minimum can keep using public decks.
+The enabled and disabled capabilities fixtures illustrate feature negotiation.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`

@@ -1,0 +1,373 @@
+module Arkham.Api.ArkhamDBSpec (spec) where
+
+import Arkham.ArkhamDB
+import Arkham.ArkhamDB.Service
+import Arkham.Decklist (ArkhamDBDecklist (..))
+import Base.Api.Types.Capabilities qualified as Capabilities
+import Data.Aeson
+import Data.Aeson qualified as Aeson
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Map.Strict qualified as Map
+import Data.Text qualified as T
+import Data.Time.Clock (UTCTime, addUTCTime)
+import Data.UUID qualified as UUID
+import Database.Persist (Entity (..))
+import Entity.Arkham.ArkhamDBAccount
+import Entity.Arkham.Deck
+import Entity.User
+import Relude hiding (modify, second, state)
+import Settings (ArkhamDBSettings (..), parseArkhamDBSettings)
+import Data.Aeson.Types (parseEither)
+import Text.Read (read)
+import System.Directory (doesFileExist)
+import Test.Hspec
+
+now :: UTCTime
+now = read "2026-10-19 12:00:00 UTC"
+
+userId, otherUserId :: UserId
+userId = UserKey 1
+otherUserId = UserKey 2
+
+deckId :: ArkhamDeckId
+deckId = ArkhamDeckKey $ UUID.fromWords 0 0 0 23
+
+settings :: ArkhamDBSettings
+settings = ArkhamDBSettings "client" "server-secret" "test-only-encryption-key-with-32-bytes" "https://arkhamdb.example" "https://server.example"
+
+tokens :: ArkhamDBOAuthTokens
+tokens = ArkhamDBOAuthTokens "private-access-token" (Just "private-refresh-token") (Just $ addUTCTime 3600 now) (Just "42") (Just "Investigator")
+
+remote :: ArkhamDBRemoteDeck
+remote = ArkhamDBRemoteDeck
+  (ArkhamDBDecklist mempty mempty "01001" "Roland Banks" Nothing Nothing Nothing (Just "123") (Just "Private deck"))
+  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0")
+
+stubClient :: ArkhamDBClient IO
+stubClient = ArkhamDBClient
+  { exchangeCode = \code uri -> do
+      code `shouldBe` "authorization-code"
+      uri `shouldBe` "https://server.example/api/v1/arkham/arkhamdb/callback"
+      pure $ Right tokens
+  , refreshTokens = \token -> do
+      token `shouldBe` "private-refresh-token"
+      pure $ Right tokens {accessToken = "refreshed-token", refreshToken = Nothing}
+  , listDecks = \token -> do
+      token `shouldBe` "private-access-token"
+      pure $ Right [ArkhamDBDeckSummary "123" "Private deck" Nothing (Just "Roland Banks") remote.dateUpdate remote.deckVersion Nothing]
+  , loadDeck = \token remoteId -> do
+      token `shouldBe` "private-access-token"
+      remoteId `shouldBe` "123"
+      pure $ Right remote
+  }
+
+-- The same service used by the handlers, with an in-memory transactional store
+-- and a strict stub transport. No test can reach an ArkhamDB network endpoint.
+data Stored = Stored
+  { storedStates :: Map Text (Entity ArkhamDBLinkState)
+  , storedAccounts :: Map UserId ArkhamDBAccount
+  , storedDecks :: Map ArkhamDeckId ArkhamDeck
+  , storedLinks :: Map ArkhamDeckId ArkhamDBDeckLink
+  }
+
+newStore :: IO (ArkhamDBStore IO, IORef Stored)
+newStore = do
+  ref <- newIORef $ Stored mempty mempty mempty mempty
+  let modify = modifyIORef' ref
+      saveLinkState state = modify \s -> s {storedStates = Map.insert (arkhamDBLinkStateNonce state) (Entity (ArkhamDBLinkStateKey UUID.nil) state) s.storedStates}
+      claimLinkState time nonce = atomicModifyIORef' ref \s -> case Map.lookup nonce s.storedStates of
+        Just (Entity key value) | isNothing (arkhamDBLinkStateClaimedAt value) && arkhamDBLinkStateExpiresAt value > time ->
+          let claimed = Entity key value {arkhamDBLinkStateClaimedAt = Just time}
+           in (s {storedStates = Map.insert nonce claimed s.storedStates}, Just claimed)
+        _ -> (s, Nothing)
+      findAccount uid = Map.lookup uid . storedAccounts <$> readIORef ref
+      finalizeLink nonce account = atomicModifyIORef' ref \s -> case Map.lookup nonce s.storedStates of
+        Just (Entity _ value) | isJust (arkhamDBLinkStateClaimedAt value) && arkhamDBLinkStateUserId value == arkhamDBAccountUserId account ->
+          let uid = arkhamDBAccountUserId account
+           in (s
+              { storedAccounts = Map.insert uid account s.storedAccounts
+              , storedStates = Map.filter ((/= uid) . arkhamDBLinkStateUserId . entityValue) s.storedStates
+              , storedLinks = Map.filterWithKey (\key _ -> maybe False ((/= uid) . arkhamDeckUserId) $ Map.lookup key s.storedDecks) s.storedLinks
+              }, True)
+        _ -> (s, False)
+      updateAccount old updated = atomicModifyIORef' ref \s -> case Map.lookup (arkhamDBAccountUserId old) s.storedAccounts of
+        Just current | arkhamDBAccountEncryptedAccessToken current == arkhamDBAccountEncryptedAccessToken old ->
+          (s {storedAccounts = Map.insert (arkhamDBAccountUserId old) updated s.storedAccounts}, True)
+        _ -> (s, False)
+      unlinkAccount uid = modify \s -> s
+        { storedAccounts = Map.delete uid s.storedAccounts
+        , storedStates = Map.filter ((/= uid) . arkhamDBLinkStateUserId . entityValue) s.storedStates
+        , storedLinks = Map.filterWithKey (\key _ -> maybe False ((/= uid) . arkhamDeckUserId) $ Map.lookup key s.storedDecks) s.storedLinks
+        }
+      findDeckLinks uid = do
+        s <- readIORef ref
+        pure [(key, link) | (key, link) <- Map.toList s.storedLinks, maybe False ((== uid) . arkhamDeckUserId) $ Map.lookup key s.storedDecks]
+      findDeck key = do
+        s <- readIORef ref
+        pure do
+          deck <- Map.lookup key s.storedDecks
+          pure (deck, Map.lookup key s.storedLinks)
+      saveImportedDeck deck remoteDeck time = do
+        let link = ArkhamDBDeckLink deckId remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing time time
+        modify \s -> s {storedDecks = Map.insert deckId deck s.storedDecks, storedLinks = Map.insert deckId link s.storedLinks}
+        pure $ Entity deckId deck
+      saveSyncedDeck key deck remoteDeck time = modify \s -> s
+        { storedDecks = Map.insert key deck s.storedDecks
+        , storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key s.storedLinks
+        }
+      validateDeck _ = pure ()
+  pure (ArkhamDBStore {..}, ref)
+ where
+  entityValue (Entity _ value) = value
+
+linkAccount :: ArkhamDBStore IO -> IO ()
+linkAccount store = do
+  runExceptT (startLink store settings now userId "nonce") >>= (`shouldSatisfy` isRight)
+  runExceptT (completeLink store stubClient settings now "nonce" "authorization-code") `shouldReturn` Right ()
+
+expectCode :: Text -> Either ArkhamDBError a -> Expectation
+expectCode code = \case
+  Left err -> arkhamDBErrorCode err `shouldBe` code
+  Right _ -> expectationFailure $ "Expected ArkhamDB error " <> toString code
+
+spec :: Spec
+spec = describe "ArkhamDB account linking and private decks" do
+  it "rejects a wrong nonce without exchanging a code" do
+    (store, _) <- newStore
+    _ <- runExceptT $ startLink store settings now userId "nonce"
+    result <- runExceptT $ completeLink store stubClient settings now "wrong" "must-not-exchange"
+    expectCode "oauthCallbackInvalidState" result
+
+  it "rejects an expired nonce without exchanging a code" do
+    (store, _) <- newStore
+    _ <- runExceptT $ startLink store settings (addUTCTime (-601) now) userId "nonce"
+    let expired = Entity (ArkhamDBLinkStateKey UUID.nil) $ ArkhamDBLinkState "nonce" userId now (addUTCTime (-600) now) Nothing
+    validateLinkState now "nonce" (Just expired) `shouldSatisfy` isLeft
+    result <- runExceptT $ completeLink store stubClient settings now "nonce" "must-not-exchange"
+    expectCode "oauthCallbackInvalidState" result
+
+  it "rejects a reused nonce without exchanging a second code" do
+    (store, _) <- newStore
+    linkAccount store
+    result <- runExceptT $ completeLink store stubClient settings now "nonce" "must-not-exchange"
+    expectCode "oauthCallbackInvalidState" result
+
+  it "rejects a mismatched stored nonce as well as an absent nonce" do
+    let state = Entity (ArkhamDBLinkStateKey UUID.nil) $ ArkhamDBLinkState "stored" userId (addUTCTime 600 now) now Nothing
+    validateLinkState now "different" (Just state) `shouldSatisfy` isLeft
+
+  it "stores encrypted access and refresh tokens, with authenticated randomized ciphertext" do
+    (store, ref) <- newStore
+    linkAccount store
+    s <- readIORef ref
+    let account = fromMaybe (error "missing account") $ Map.lookup userId s.storedAccounts
+        access = arkhamDBAccountEncryptedAccessToken account
+        refresh = fromMaybe (error "missing refresh") $ arkhamDBAccountEncryptedRefreshToken account
+    access `shouldSatisfy` (not . T.isInfixOf "private-access-token")
+    refresh `shouldSatisfy` (not . T.isInfixOf "private-refresh-token")
+    decryptToken settings.arkhamDBTokenKey (TokenCiphertext access) `shouldBe` Right "private-access-token"
+    decryptToken settings.arkhamDBTokenKey (TokenCiphertext refresh) `shouldBe` Right "private-refresh-token"
+    second <- encryptToken settings.arkhamDBTokenKey "private-access-token"
+    second `shouldNotBe` TokenCiphertext access
+    decryptToken "wrong-key" (TokenCiphertext access) `shouldSatisfy` isLeft
+    decryptToken settings.arkhamDBTokenKey (TokenCiphertext $ access <> "A") `shouldSatisfy` isLeft
+
+  it "refreshes an expired access token before listing and retains an unrotated refresh token" do
+    (store, ref) <- newStore
+    linkAccount store
+    modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now}) userId s.storedAccounts}
+    received <- newIORef Nothing
+    let client = stubClient {listDecks = \token -> writeIORef received (Just token) $> Right []}
+    runExceptT (listRemoteDecks store client settings now userId) `shouldReturn` Right []
+    readIORef received `shouldReturn` Just "refreshed-token"
+    account <- store.findAccount userId >>= maybe (fail "missing account") pure
+    decryptToken settings.arkhamDBTokenKey . TokenCiphertext <$> arkhamDBAccountEncryptedRefreshToken account
+      `shouldBe` Just (Right "private-refresh-token")
+
+  it "retries a rejected bearer token once with a refresh" do
+    (store, _) <- newStore
+    linkAccount store
+    calls <- newIORef ([] :: [Text])
+    let client = stubClient {listDecks = \token -> do
+          modifyIORef' calls (<> [token])
+          pure $ if token == "private-access-token" then Left ArkhamDBUnauthorized else Right []}
+    runExceptT (listRemoteDecks store client settings now userId) `shouldReturn` Right []
+    readIORef calls `shouldReturn` ["private-access-token", "refreshed-token"]
+
+  it "requires relinking when expired credentials have no refresh token" do
+    (store, ref) <- newStore
+    linkAccount store
+    modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now, arkhamDBAccountEncryptedRefreshToken = Nothing}) userId s.storedAccounts}
+    runExceptT (listRemoteDecks store stubClient settings now userId) >>= expectCode "tokenExpired"
+
+  it "unlinks credentials, pending states and remote mappings but keeps local decks" do
+    (store, ref) <- newStore
+    linkAccount store
+    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123"
+    _ <- runExceptT $ startLink store settings now userId "pending"
+    runExceptT (unlinkLinkedAccount store userId) `shouldReturn` Right ()
+    s <- readIORef ref
+    Map.null s.storedAccounts `shouldBe` True
+    Map.null s.storedStates `shouldBe` True
+    Map.null s.storedLinks `shouldBe` True
+    Map.member deckId s.storedDecks `shouldBe` True
+    runExceptT (listRemoteDecks store stubClient settings now userId) >>= expectCode "notLinked"
+
+  it "does not recreate credentials when unlink races an in-flight refresh" do
+    (store, ref) <- newStore
+    linkAccount store
+    modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now}) userId s.storedAccounts}
+    let client = stubClient {refreshTokens = \_ -> do
+          runExceptT (unlinkLinkedAccount store userId) `shouldReturn` Right ()
+          pure $ Right tokens {accessToken = "refreshed-token"}}
+    runExceptT (accessTokenFor store client settings now userId) >>= expectCode "notLinked"
+    s <- readIORef ref
+    Map.null s.storedAccounts `shouldBe` True
+
+  it "does not recreate credentials when unlink races an in-flight callback" do
+    (store, ref) <- newStore
+    _ <- runExceptT $ startLink store settings now userId "nonce"
+    let client = stubClient {exchangeCode = \_ _ -> do
+          runExceptT (unlinkLinkedAccount store userId) `shouldReturn` Right ()
+          pure $ Right tokens}
+    runExceptT (completeLink store client settings now "nonce" "authorization-code") >>= expectCode "oauthCallbackInvalidState"
+    s <- readIORef ref
+    Map.null s.storedAccounts `shouldBe` True
+    Map.null s.storedStates `shouldBe` True
+
+  it "lists private remote decks and attaches only this user's local mapping" do
+    (store, _) <- newStore
+    linkAccount store
+    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123"
+    result <- runExceptT $ listRemoteDecks store stubClient settings now userId
+    fmap (map (.linkedLocalDeckId)) result `shouldBe` Right [Just deckId]
+    runExceptT (listRemoteDecks store stubClient settings now otherUserId) >>= expectCode "notLinked"
+
+  it "imports a private OAuth deck and persists date_update and dotted version markers" do
+    (store, ref) <- newStore
+    linkAccount store
+    result <- runExceptT $ importRemoteDeck store stubClient settings now userId "123"
+    fmap (arkhamDeckName . entityValue) result `shouldBe` Right "Private deck"
+    s <- readIORef ref
+    let mapping = fromMaybe (error "missing link") $ Map.lookup deckId s.storedLinks
+    arkhamDBDeckLinkRemoteDeckId mapping `shouldBe` "123"
+    arkhamDBDeckLinkLastSyncedDateUpdate mapping `shouldBe` remote.dateUpdate
+    arkhamDBDeckLinkLastSyncedVersion mapping `shouldBe` Just "1.0"
+    arkhamDBDeckLinkWriteBack mapping `shouldBe` False
+
+  it "syncs linked decks through OAuth without invoking the public fallback" do
+    (store, ref) <- newStore
+    linkAccount store
+    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123"
+    let changed = remote {deck = remote.deck {decklist_name = Just "Changed private deck"}, dateUpdate = Just "2026-10-19T12:00:00Z", deckVersion = Just "2.0"}
+        client = stubClient {loadDeck = \token remoteId -> do
+          token `shouldBe` "private-access-token"
+          remoteId `shouldBe` "123"
+          pure $ Right changed}
+        forbidden _ = expectationFailure "public fallback used for a private linked deck" >> fail "public fallback"
+    result <- runExceptT $ syncRemoteDeck store client settings now userId deckId forbidden
+    fmap (arkhamDeckName . entityValue) result `shouldBe` Right "Changed private deck"
+    s <- readIORef ref
+    (arkhamDBDeckLinkLastSyncedDateUpdate <$> Map.lookup deckId s.storedLinks) `shouldBe` Just changed.dateUpdate
+    (arkhamDBDeckLinkLastSyncedVersion <$> Map.lookup deckId s.storedLinks) `shouldBe` Just (Just "2.0")
+    runExceptT (syncRemoteDeck store client settings now otherUserId deckId forbidden) >>= expectCode "notFound"
+
+  it "retains public sync for a deck without an OAuth mapping" do
+    (store, ref) <- newStore
+    let deck = ArkhamDeck userId (Just "https://arkhamdb.example/deck/view/123") "Public deck" "Roland Banks" remote.deck Nothing Nothing
+    modifyIORef' ref \s -> s {storedDecks = Map.singleton deckId deck}
+    called <- newIORef False
+    let public key = do
+          key `shouldBe` deckId
+          writeIORef called True
+          pure $ Entity key deck
+    result <- runExceptT $ syncRemoteDeck store stubClient settings now userId deckId public
+    fmap (arkhamDeckName . entityValue) result `shouldBe` Right "Public deck"
+    readIORef called `shouldReturn` True
+
+  it "does not save an import or a sync when ArkhamDB fails" do
+    (store, ref) <- newStore
+    linkAccount store
+    let client = stubClient {loadDeck = \_ _ -> pure $ Left $ ArkhamDBRemoteError "stub outage"}
+    runExceptT (importRemoteDeck store client settings now userId "123") >>= expectCode "remoteUnavailable"
+    s <- readIORef ref
+    Map.null s.storedDecks `shouldBe` True
+    Map.null s.storedLinks `shouldBe` True
+
+  it "disables the integration and capability unless all required settings exist" do
+    runExceptT (configuredSettings Nothing :: ArkhamDBAction IO ArkhamDBSettings) >>= expectCode "disabled"
+    let fields = ["arkhamdb-client-id" .= String "id", "arkhamdb-client-secret" .= String "secret", "arkhamdb-token-key" .= String "key", "arkhamdb-public-server-base" .= String "https://server.example"]
+        parse value = parseEither (withObject "settings" parseArkhamDBSettings) value
+    parse (object []) `shouldBe` Right Nothing
+    for_ [0 .. 3] \index -> parse (object $ take index fields <> drop (index + 1) fields) `shouldBe` Right Nothing
+    configured <- either fail pure $ parse $ object fields
+    isJust configured `shouldBe` True
+    (Capabilities.serverCapabilities Nothing (isJust configured)).capabilities `shouldContain` [arkhamDBAccountLinkingCapability]
+    (Capabilities.serverCapabilities Nothing False).capabilities `shouldNotContain` [arkhamDBAccountLinkingCapability]
+
+  it "matches the enabled capability fixture without changing the compatibility floor" do
+    fixture <- loadNamedFixture "capabilities-arkhamdb.json"
+    let response = toJSON $ Capabilities.serverCapabilities Nothing True
+        normalized = case response of
+          Object value -> Object $ KeyMap.insert "campaignCatalog" (field fixture "campaignCatalog") value
+          value -> value
+    normalized `shouldBe` fixture
+
+  it "stores and reports a missing OAuth account identity as null, not an invented identifier" do
+    parsed <- either (fail . show) pure $ parseTokenResponse now "{\"access_token\":\"access\",\"expires_in\":3600}"
+    parsed.remoteUserId `shouldBe` Nothing
+    parsed.remoteUserName `shouldBe` Nothing
+    (store, ref) <- newStore
+    _ <- runExceptT $ startLink store settings now userId "nonce"
+    let client = stubClient {exchangeCode = \_ _ -> pure $ Right parsed}
+    runExceptT (completeLink store client settings now "nonce" "authorization-code") `shouldReturn` Right ()
+    status <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
+    status.linked `shouldBe` True
+    field (toJSON status) "remoteAccountId" `shouldBe` Null
+    field (toJSON status) "remoteAccountName" `shouldBe` Null
+    stored <- readIORef ref
+    fmap arkhamDBAccountRemoteUserId (Map.lookup userId stored.storedAccounts) `shouldBe` Just Nothing
+
+  it "decodes string and numeric remote versions without losing dotted string values" do
+    for_ [(String "1.0", "1.0"), (Number 2, "2")] \(version, expected) -> do
+      let raw = object ["id" .= (123 :: Int), "name" .= String "Private deck", "slots" .= object [], "investigator_code" .= String "01001", "investigator_name" .= String "Roland Banks", "version" .= version]
+      fmap (.deckVersion) (fromJSON raw :: Result ArkhamDBRemoteDeck) `shouldBe` Success (Just expected)
+      fmap (.remoteDeckId) (fromJSON raw :: Result ArkhamDBRemoteDeck) `shouldBe` Success "123"
+      fmap (.deck.decklist_id) (fromJSON raw :: Result ArkhamDBRemoteDeck) `shouldBe` Success (Just "123")
+      fmap (.version) (fromJSON raw :: Result ArkhamDBDeckSummary) `shouldBe` Success (Just expected)
+
+  it "rejects a remote import identifier containing path or query components" do
+    (fromJSON (object ["deckId" .= String "123/../../other?token=bad"]) :: Result ArkhamDBImportRequest) `shouldSatisfy` \case
+      Error _ -> True
+      _ -> False
+
+  it "matches the public ArkhamDB fixtures using the production encoders" do
+    fixture <- loadFixture
+    (store, _) <- newStore
+    start <- runExceptT (startLink store settings now userId "nonce") >>= either (fail . show) pure
+    field fixture "linkStart" `shouldBe` toJSON start
+    status <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
+    field fixture "unlinkedStatus" `shouldBe` toJSON status
+    runExceptT (completeLink store stubClient settings now "nonce" "authorization-code") `shouldReturn` Right ()
+    linked <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
+    field fixture "linkedStatus" `shouldBe` toJSON linked
+    summaries <- runExceptT (listRemoteDecks store stubClient settings now userId) >>= either (fail . show) pure
+    field fixture "decks" `shouldBe` toJSON summaries
+    field fixture "error" `shouldBe` toJSON (ArkhamDBError "notLinked" "ArkhamDB account is not linked")
+    fromJSON (field fixture "importRequest") `shouldBe` Success (ArkhamDBImportRequest "123")
+ where
+  entityValue (Entity _ value) = value
+
+field :: Value -> Aeson.Key -> Value
+field (Object value) key = fromMaybe (error "missing fixture field") $ KeyMap.lookup key value
+field _ _ = error "fixture is not an object"
+
+loadFixture :: IO Value
+loadFixture = loadNamedFixture "arkhamdb.json"
+
+loadNamedFixture :: FilePath -> IO Value
+loadNamedFixture name = do
+  let candidates = [prefix <> name | prefix <- ["../contracts/fixtures/", "../../contracts/fixtures/", "contracts/fixtures/"]]
+  paths <- filterM doesFileExist candidates
+  path <- maybe (fail "ArkhamDB contract fixture not found") pure $ viaNonEmpty head paths
+  eitherDecodeFileStrict' path >>= either fail pure

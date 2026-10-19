@@ -93,6 +93,7 @@ import Text.Regex.Posix ((=~))
 
 import Api.Handler.ApiKeys
 import Api.Handler.Arkham.Achievements
+import Arkham.ArkhamDB (httpArkhamDBClient)
 import Api.Handler.Arkham.ArkhamDB
 import Api.Handler.Arkham.Admin.GameStats
 import Api.Handler.Arkham.Admin.Metrics
@@ -141,6 +142,7 @@ makeFoundation appSettings = do
   -- Some basic initializations: HTTP connection manager, logger, and static
   -- subsite.
   appHttpManager <- getGlobalManager
+  let appArkhamDBClient = fmap (\settings -> httpArkhamDBClient appHttpManager settings.arkhamDBBaseUrl settings.arkhamDBClientId settings.arkhamDBClientSecret) (appArkhamDB appSettings)
   appLogger <- newStdoutLoggerSet defaultBufSize >>= makeYesodLogger
   let appBugsnag = Bugsnag.defaultSettings (appBugsnagApiKey appSettings)
 
