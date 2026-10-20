@@ -254,7 +254,10 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
     let form = [(encodeUtf8 k, encodeUtf8 v) | (k, v) <- fields <> [("client_id", clientId), ("client_secret", clientSecret)]]
         req = urlEncodedBody form req0 {method = "POST", requestHeaders = [(hAccept, "application/json")], redirectCount = 0, checkResponse = \_ _ -> pure ()}
     response <- httpLbs req manager
-    pure $ if responseStatus response `elem` [status400, status401]
+    let invalidGrant = do
+          value <- eitherDecode (responseBody response)
+          parseEither (withObject "OAuth error" (.: "error")) value :: Either String Text
+    pure $ if responseStatus response == status401 || (responseStatus response == status400 && invalidGrant == Right "invalid_grant")
       then Left ArkhamDBUnauthorized
       else if statusCode (responseStatus response) < 200 || statusCode (responseStatus response) >= 300
         then Left $ ArkhamDBRemoteError "Unexpected HTTP status"

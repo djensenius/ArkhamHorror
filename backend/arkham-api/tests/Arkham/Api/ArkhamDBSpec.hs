@@ -428,6 +428,20 @@ spec = describe "ArkhamDB account linking and private decks" do
       let client = httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
       runExceptT (listRemoteDecks store client settings now userId) >>= expectCode "tokenExpired"
 
+  for_ ["invalid_client", "invalid_request", "malformed"] \errorName ->
+    it ("keeps HTTP 400 " <> BS8.unpack errorName <> " a remote error, not tokenExpired") do
+      (store, ref) <- newStore
+      linkAccount store
+      modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now}) userId s.storedAccounts}
+      let body = if errorName == "malformed" then "{not-json" else "{\"error\":\"" <> errorName <> "\"}"
+      incoming <- newIORef $ "HTTP/1.1 400 Bad Request\r\nContent-Length: " <> BS8.pack (show $ BS.length body) <> "\r\nConnection: close\r\n\r\n" <> body
+      manager <- newManager defaultManagerSettings
+        { managerRawConnection = pure $ \_ _ _ -> makeConnection (atomicModifyIORef' incoming (\bytes -> (mempty, bytes))) (const $ pure ()) (pure ())
+        , managerProxyInsecure = noProxy
+        }
+      let client = httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
+      runExceptT (accessTokenFor store client settings now userId) >>= expectCode "remoteUnavailable"
+
   it "keeps token endpoint failures remote errors without deleting mappings or public fallback" do
     for_ ["302 Found", "403 Forbidden", "404 Not Found", "500 Internal Server Error"] \status -> do
       (store, ref) <- newStore
