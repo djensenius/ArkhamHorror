@@ -453,23 +453,11 @@ paths:
           in: query
           schema:
             type: string
-        - name: web
-          in: query
-          description: Set to 1 for a static return-to-app page without a completion secret
-          schema:
-            type: string
-            enum: ["1"]
       responses:
         "302":
           description: Fixed app-scheme pending or error redirect
           headers:
             Location:
-              schema:
-                type: string
-        "200":
-          description: Static return-to-app HTML when web=1 (no secret)
-          content:
-            text/html:
               schema:
                 type: string
         "501":
