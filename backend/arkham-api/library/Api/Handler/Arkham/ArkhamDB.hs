@@ -25,17 +25,7 @@ runArkhamDB :: ArkhamDBAction Handler a -> Handler a
 runArkhamDB action = runExceptT action >>= either sendArkhamDBError pure
 
 sendArkhamDBError :: ArkhamDBError -> Handler a
-sendArkhamDBError err = sendStatusJSON status err
- where
-  status = case arkhamDBErrorCode err of
-    "disabled" -> Status.status501
-    "oauthCallbackInvalidState" -> Status.status400
-    "oauthCompletionInvalid" -> Status.status403
-    "notLinked" -> Status.status401
-    "tokenExpired" -> Status.status401
-    "notFound" -> Status.status404
-    "storageFailure" -> Status.status500
-    _ -> Status.status502
+sendArkhamDBError err = sendStatusJSON (arkhamDBErrorStatus err) err
 
 requireConfigured :: Handler ArkhamDBSettings
 requireConfigured = runArkhamDB . configuredSettings =<< getsYesod (appArkhamDB . appSettings)
@@ -238,5 +228,3 @@ postApiV1ArkhamArkhamDBDeckSyncR deckId = do
   now <- liftIO getCurrentTime
   runArkhamDB $ syncRemoteDeck persistentStore client settings now userId deckId postApiV1ArkhamSyncDeckR
 
-requireGetParam :: Text -> Handler Text
-requireGetParam name = lookupGetParam name >>= maybe (invalidArgs ["Missing query parameter: " <> name]) pure

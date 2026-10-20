@@ -16,6 +16,7 @@ import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.User
 import Network.HTTP.Client
+import Network.HTTP.Types.Status (status409)
 import Network.HTTP.Client.Internal (makeConnection, managerProxyInsecure)
 import Relude hiding (modify, second, state)
 import Settings (ArkhamDBSettings (..), parseArkhamDBSettings)
@@ -473,6 +474,12 @@ spec = describe "ArkhamDB account linking and private decks" do
       for_ (leftToMaybe result) \message -> message `shouldBe` "Error in $: ARKHAMDB_TOKEN_KEY must be base64 encoding exactly 32 bytes"
     parse (object ["arkhamdb-base-url" .= String ""]) `shouldSatisfy` isLeft
     parse (object ["arkhamdb-base-url" .= String "   "]) `shouldSatisfy` isLeft
+
+  it "returns HTTP 409 rather than expiring the app session for ArkhamDB auth states" do
+    for_ ["notLinked", "tokenExpired"] \code -> do
+      let err = ArkhamDBError code "relink required"
+      arkhamDBErrorStatus err `shouldBe` status409
+      field (toJSON err) "code" `shouldBe` String code
 
   it "matches the enabled capability fixture without changing the compatibility floor" do
     fixture <- loadNamedFixture "capabilities-arkhamdb.json"

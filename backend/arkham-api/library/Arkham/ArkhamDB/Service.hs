@@ -5,6 +5,7 @@ import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
 import Control.Monad.Except
 import Data.Aeson (ToJSON (..), object, (.=), encode, eitherDecodeStrict')
+import Network.HTTP.Types.Status qualified as Status
 import Data.Time.Clock (UTCTime, addUTCTime)
 import Database.Persist (Entity (..))
 import Entity.Arkham.ArkhamDBAccount
@@ -43,6 +44,19 @@ data ArkhamDBError = ArkhamDBError
 
 instance ToJSON ArkhamDBError where
   toJSON err = object ["code" .= arkhamDBErrorCode err, "error" .= arkhamDBErrorMessage err]
+
+-- ArkhamDB authorization is separate from the app session: never return 401
+-- for an expired or absent remote account link.
+arkhamDBErrorStatus :: ArkhamDBError -> Status.Status
+arkhamDBErrorStatus err = case arkhamDBErrorCode err of
+  "disabled" -> Status.status501
+  "oauthCallbackInvalidState" -> Status.status400
+  "oauthCompletionInvalid" -> Status.status403
+  "notLinked" -> Status.status409
+  "tokenExpired" -> Status.status409
+  "notFound" -> Status.status404
+  "storageFailure" -> Status.status500
+  _ -> Status.status502
 
 type ArkhamDBAction m = ExceptT ArkhamDBError m
 
