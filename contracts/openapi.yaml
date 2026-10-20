@@ -414,7 +414,8 @@ paths:
       summary: Start linking the current user's ArkhamDB account
       description: |
         Requires the arkhamdb.account-linking.v1 capability. Open authorizeUrl
-        in a browser, then refresh status after the callback HTML page completes.
+        in an app authentication browser. Complete the pending link with the
+        completion secret returned through the fixed app scheme, then refresh status.
         State is unpredictable, user-bound, expires in ten minutes and is single-use.
         The client secret and user tokens never leave the server.
       responses:
@@ -430,34 +431,81 @@ paths:
           $ref: "#/components/responses/ArkhamDBDisabled"
   /arkham/arkhamdb/callback:
     get:
-      operationId: completeArkhamDBLink
-      summary: Complete ArkhamDB OAuth authorization in the browser
+      operationId: stageArkhamDBLink
+      summary: Stage encrypted OAuth credentials pending authenticated app completion
       security: []
       description: |
-        Consumes the user-bound state before exchanging the code. No app token
-        is required in the browser. Renders a static completion page, not a
-        token response or an arbitrary redirect. Relinking discards previous
-        account deck mappings but preserves the local decks.
+        Claims the user-bound state before exchanging the code. Does not link an
+        account. Redirects only to arkhamhorror://arkhamdb-link with result=pending
+        and a fresh completion secret, or result=error and a fixed reason enum
+        (access_denied or link_failed). No ArkhamDB token is returned. Pending
+        credentials expire with the nonce. Relink preserves deck mappings.
       parameters:
         - name: state
           in: query
-          required: true
           schema:
             type: string
         - name: code
           in: query
-          required: true
           schema:
             type: string
+        - name: error
+          in: query
+          schema:
+            type: string
+        - name: web
+          in: query
+          description: Set to 1 for a static return-to-app page without a completion secret
+          schema:
+            type: string
+            enum: ["1"]
       responses:
+        "302":
+          description: Fixed app-scheme pending or error redirect
+          headers:
+            Location:
+              schema:
+                type: string
         "200":
-          description: Account linked; close the browser and refresh status
+          description: Static return-to-app HTML when web=1 (no secret)
           content:
             text/html:
               schema:
                 type: string
-        "400":
-          description: State missing, wrong, expired or reused, or authorization failed
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/link/complete:
+    post:
+      operationId: completeArkhamDBLink
+      summary: Finalize a pending link as the authenticated initiating app user
+      description: |
+        Atomically consumes the hashed completion secret only for its initiating
+        user, before nonce expiry. A wrong caller, expired, wrong or replayed
+        secret never links an account. Relink preserves existing deck mappings.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/arkhamdb.schema.json#/$defs/completionRequest"
+      responses:
+        "200":
+          description: Account linked
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 0
+        "401":
+          description: App authentication required
+        "403":
+          description: Invalid, expired, consumed or other-user completion (oauthCompletionInvalid)
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
+        "500":
+          description: Pending credentials could not be decrypted
         "501":
           $ref: "#/components/responses/ArkhamDBDisabled"
   /arkham/arkhamdb/status:
@@ -510,6 +558,8 @@ paths:
               schema:
                 $ref: "./schemas/arkhamdb.schema.json#/$defs/deckList"
         "401":
+          description: App authentication required
+        "409":
           $ref: "#/components/responses/ArkhamDBNotLinked"
         "500":
           description: Stored credentials could not be decrypted
@@ -529,7 +579,7 @@ paths:
               $ref: "./schemas/arkhamdb.schema.json#/$defs/importRequest"
       responses:
         "200":
-          description: Imported saved deck; remote date_update and version are stored server-side
+          description: Imported or already-imported saved deck; remote date_update and version are stored server-side
           content:
             application/json:
               schema:
@@ -537,7 +587,11 @@ paths:
         "400":
           description: Invalid input or unimplemented cards
         "401":
+          description: App authentication required
+        "409":
           $ref: "#/components/responses/ArkhamDBNotLinked"
+        "404":
+          description: Remote deck not found or not accessible to the linked account
         "500":
           description: Stored credentials could not be decrypted
         "501":
@@ -552,6 +606,8 @@ paths:
         OAuth reads replace the list, name and investigator name after card
         validation, preserve the overlay, and update date_update/version sync
         markers. Unmapped decks use the existing public-URL sync semantics.
+        If a preserved mapping is inaccessible (remote 403/404), it is removed
+        and the public URL is used. Persistence requires the same account generation.
         Both paths return the same saved Deck entity shape. No write-back runs.
       parameters:
         - $ref: "#/components/parameters/DeckId"
@@ -565,6 +621,8 @@ paths:
         "400":
           description: Unimplemented cards or public URL sync failed
         "401":
+          description: App authentication required
+        "409":
           $ref: "#/components/responses/ArkhamDBNotLinked"
         "404":
           description: Deck not found or not owned by the caller
@@ -1167,7 +1225,7 @@ components:
           schema:
             $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
     ArkhamDBNotLinked:
-      description: Authentication required, account not linked, or token requires relinking
+      description: ArkhamDB account not linked, link generation changed, or token requires relinking (notLinked or tokenExpired); app session remains valid
       content:
         application/json:
           schema:

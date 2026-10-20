@@ -1,35 +1,22 @@
 {
-  "linkStart": {
-    "authorizeUrl": "https://arkhamdb.example/oauth/v2/auth?response_type=code&client_id=client&redirect_uri=https%3A%2F%2Fserver.example%2Fapi%2Fv1%2Farkham%2Farkhamdb%2Fcallback&state=nonce",
-    "expiresAt": "2026-10-19T12:10:00Z"
-  },
-  "linkedStatus": {
-    "linked": true,
-    "remoteAccountId": "42",
-    "remoteAccountName": "Investigator",
-    "tokenExpiry": "2026-10-19T13:00:00Z",
-    "linkedAt": "2026-10-19T12:00:00Z",
-    "writeBackEnabledDeckCount": 0
-  },
-  "unlinkedStatus": {
-    "linked": false,
-    "remoteAccountId": null,
-    "remoteAccountName": null,
-    "tokenExpiry": null,
-    "linkedAt": null,
-    "writeBackEnabledDeckCount": 0
+  "completionRequest": {
+    "completion": "completion-secret"
   },
   "decks": [
     {
       "id": "123",
-      "name": "Private deck",
-      "url": null,
       "investigatorName": "Roland Banks",
       "lastUpdatedAt": "2026-10-19T11:00:00Z",
-      "version": "1.0",
-      "linkedLocalDeckId": null
+      "linkedLocalDeckId": null,
+      "name": "Private deck",
+      "url": null,
+      "version": "1.0"
     }
   ],
+  "error": {
+    "code": "notLinked",
+    "error": "ArkhamDB account is not linked"
+  },
   "importRequest": {
     "deckId": "123"
   },
@@ -38,77 +25,85 @@
     "investigatorName": "Roland Banks",
     "lastUsedAt": null,
     "list": {
-      "id": "4242.0",
+      "id": "123",
       "investigator_code": "c01001",
       "investigator_name": "Roland Banks",
-      "meta": "{\"alternate_front\":\"c90001\"}",
-      "name": "Contract deck",
+      "meta": null,
+      "name": "Private deck",
       "sideSlots": {},
-      "slots": {
-        "c01016": 2,
-        "c01018": 1
-      },
+      "slots": {},
       "taboo_id": null,
-      "url": "https://arkhamdb.com/decklist/view/4242"
+      "url": "https://arkhamdb.example/api/public/deck/123"
     },
-    "name": "Contract deck",
+    "name": "Private deck",
     "overlay": null,
     "playList": {
-      "id": "4242.0",
+      "id": "123",
       "investigator_code": "c01001",
       "investigator_name": "Roland Banks",
-      "meta": "{\"alternate_front\":\"c90001\"}",
-      "name": "Contract deck",
+      "meta": null,
+      "name": "Private deck",
       "sideSlots": {},
-      "slots": {
-        "c01016": 2,
-        "c01018": 1
-      },
+      "slots": {},
       "taboo_id": null,
-      "url": "https://arkhamdb.com/decklist/view/4242"
+      "url": "https://arkhamdb.example/api/public/deck/123"
     },
-    "url": "https://arkhamdb.com/decklist/view/4242",
-    "userId": 7
+    "url": "https://arkhamdb.example/api/public/deck/123",
+    "userId": 1
+  },
+  "linkStart": {
+    "authorizeUrl": "https://arkhamdb.example/oauth/v2/auth?response_type=code&client_id=client&redirect_uri=https%3A%2F%2Fserver.example%2Fapi%2Fv1%2Farkham%2Farkhamdb%2Fcallback&state=nonce",
+    "expiresAt": "2026-10-19T12:10:00Z"
+  },
+  "linkedStatus": {
+    "linked": true,
+    "linkedAt": "2026-10-19T12:00:00Z",
+    "remoteAccountId": "42",
+    "remoteAccountName": "Investigator",
+    "tokenExpiry": "2026-10-19T13:00:00Z",
+    "writeBackEnabledDeckCount": 0
   },
   "syncedDeck": {
     "id": "00000000-0000-0000-0000-000000000017",
     "investigatorName": "Roland Banks",
     "lastUsedAt": null,
     "list": {
-      "id": "4242.0",
+      "id": "123",
       "investigator_code": "c01001",
       "investigator_name": "Roland Banks",
-      "meta": "{\"alternate_front\":\"c90001\"}",
-      "name": "Contract deck",
+      "meta": null,
+      "name": "Private deck",
       "sideSlots": {},
-      "slots": {
-        "c01016": 2,
-        "c01018": 1
-      },
+      "slots": {},
       "taboo_id": null,
-      "url": "https://arkhamdb.com/decklist/view/4242"
+      "url": "https://arkhamdb.example/api/public/deck/123"
     },
-    "name": "Contract deck",
+    "name": "Private deck",
     "overlay": null,
     "playList": {
-      "id": "4242.0",
+      "id": "123",
       "investigator_code": "c01001",
       "investigator_name": "Roland Banks",
-      "meta": "{\"alternate_front\":\"c90001\"}",
-      "name": "Contract deck",
+      "meta": null,
+      "name": "Private deck",
       "sideSlots": {},
-      "slots": {
-        "c01016": 2,
-        "c01018": 1
-      },
+      "slots": {},
       "taboo_id": null,
-      "url": "https://arkhamdb.com/decklist/view/4242"
+      "url": "https://arkhamdb.example/api/public/deck/123"
     },
-    "url": "https://arkhamdb.com/decklist/view/4242",
-    "userId": 7
+    "url": "https://arkhamdb.example/api/public/deck/123",
+    "userId": 1
   },
-  "error": {
-    "code": "notLinked",
-    "error": "ArkhamDB account is not linked"
+  "tokenExpiredError": {
+    "code": "tokenExpired",
+    "error": "ArkhamDB rejected the token; relink required"
+  },
+  "unlinkedStatus": {
+    "linked": false,
+    "linkedAt": null,
+    "remoteAccountId": null,
+    "remoteAccountName": null,
+    "tokenExpiry": null,
+    "writeBackEnabledDeckCount": 0
   }
 }

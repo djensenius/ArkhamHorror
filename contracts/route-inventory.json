@@ -427,6 +427,14 @@
       "coverage": "documented"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/arkham/arkhamdb/link/complete",
+      "resource": "ApiV1ArkhamArkhamDBLinkCompleteR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/arkham/arkhamdb/callback",
       "resource": "ApiV1ArkhamArkhamDBCallbackR",

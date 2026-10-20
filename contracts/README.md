@@ -1076,22 +1076,43 @@ The capability is absent and the endpoints return 501 unless all of
 `ARKHAMDB_PUBLIC_SERVER_BASE` are configured. `ARKHAMDB_BASE_URL` defaults to
 `https://arkhamdb.com`. Set the public base to the server's externally reachable
 HTTPS origin; register its `/api/v1/arkham/arkhamdb/callback` URL with ArkhamDB.
-Use a dedicated high-entropy token key (at least 32 random bytes), not the
-session-cookie key. Changing it makes existing credentials require relinking.
+Use a dedicated base64-encoded key decoding to exactly 32 bytes, generated with
+`openssl rand -base64 32`, not the session-cookie key. Invalid keys and an empty
+`ARKHAMDB_BASE_URL` fail settings parsing without echoing the secret. Changing it makes existing credentials require relinking.
 Access and refresh tokens are AES-256-GCM encrypted at rest, never included in
 responses. Preserve this secret across server restarts.
 
-Start linking with the authenticated POST, open `authorizeUrl` in a browser,
-and refresh status after the static HTML callback page. The nonce is bound to
-the initiating local user, expires after ten minutes, and is consumed atomically
-before code exchange; browser callbacks need no app authentication header. OAuth account identity fields are nullable when the token response omits them;
-no identity is invented and no additional profile request is assumed. A
-claimed nonce is retained until the account is saved atomically. Unlink removes
-that claim as well, so neither an in-flight callback nor an in-flight refresh
-can recreate credentials after unlink (refresh uses compare-and-update only).
-Unlink deletes credentials, pending nonces and deck mappings, but not imported
-local decks. Relinking also drops previous account mappings. Revoke the app on
-ArkhamDB separately if needed (no documented revocation endpoint is assumed).
+Start linking with authenticated `POST /arkham/arkhamdb/link/start` and open
+`authorizeUrl` in an app authentication browser. The callback claims the nonce
+and stores encrypted pending tokens; it **does not** link the account. It sends
+HTTP 302 only to `arkhamhorror://arkhamdb-link?result=pending&completion=<secret>`.
+The app submits `{completion}` to authenticated `POST /arkham/arkhamdb/link/complete`.
+Only the initiating local user can finalize, before the ten-minute nonce expiry;
+completion is single-use and only its SHA-256 hash is stored. An authorization
+URL transferred to another user's browser cannot finalize in that user's app.
+Error callbacks redirect to the same fixed scheme with `result=error` and fixed
+`reason=access_denied` or `reason=link_failed`. Callback `web=1` instead displays
+a static return-to-app page with no completion secret. No caller-selected
+redirect URL is accepted. OAuth account identity fields remain nullable when
+omitted; no identity is invented and no profile request is assumed.
+
+Unlink deletes credentials, pending nonces and mappings, but not imported local
+decks. Relink preserves mappings and replaces the account row (its id is the
+link generation). Import/sync persistence checks that generation in the same
+transaction as deck writes, under the user-row lock shared with unlink/relink.
+Stale operations return HTTP 409 `notLinked`. All ArkhamDB `notLinked` and
+`tokenExpired` states return 409, **not 401**; 401 means app authentication failed.
+Concurrent refresh losers re-read and use the winner's token, provided the
+account generation is unchanged. Revoke the app on ArkhamDB separately if needed
+(no documented revocation endpoint is assumed).
+
+The committed test suite and `.github/workflows/haskell.yml` do not provision a
+PostgreSQL test database. ArkhamDB specs therefore use the production service
+with an in-memory transactional store and HTTP-connection stubs. They do not
+execute `persistentStore` SQL or prove PostgreSQL concurrency behavior. The
+claim/finalize, refresh compare-and-update, generation locks and unique mapping
+constraint need database-backed integration coverage when a test DB harness is
+available; this is a known test-coverage gap, not a claim of SQL integration coverage.
 
 List, import and sync use the linked account's OAuth API, so private decks do
 not require public sharing. Expired tokens (including a 60-second safety window)
@@ -1100,7 +1121,11 @@ refresh token was issued, expiry requires relinking. OAuth imports record
 `date_update` as the primary future conflict marker, and remote version as text
 (strings such as `1.0` are retained; JSON numbers are normalized to JSON text).
 The OAuth sync endpoint returns the same saved Deck entity as ordinary public
-sync and falls back to that existing path for unmapped decks. This revision does
+sync and falls back to that existing path for unmapped decks. Stored deck and
+list URLs consistently use `<base>/api/public/deck/<id>`. A relinked account that
+cannot load a preserved mapping (remote 403/404) drops that mapping and tries
+the public URL, including on a repeat-import check. Import is unique per local
+user and remote deck id; repeat imports return the existing Deck (HTTP 200). This revision does
 not implement write-back, version upgrades or conflict resolution (task-2.45).
 `writeBackEnabledDeckCount` therefore remains zero for newly imported decks.
 

@@ -7,6 +7,7 @@ import Base.Api.Types.Capabilities qualified as Capabilities
 import Data.Aeson
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Types (parseEither)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime)
@@ -20,10 +21,9 @@ import Network.HTTP.Types.Status (status409)
 import Network.HTTP.Client.Internal (makeConnection, managerProxyInsecure)
 import Relude hiding (modify, second, state)
 import Settings (ArkhamDBSettings (..), parseArkhamDBSettings)
-import Data.Aeson.Types (parseEither)
-import Text.Read (read)
 import System.Directory (doesFileExist)
-import Test.Hspec
+import Test.Hspec hiding (pending)
+import Text.Read (read)
 
 now :: UTCTime
 now = read "2026-10-19 12:00:00 UTC"
@@ -195,12 +195,16 @@ spec = describe "ArkhamDB account linking and private decks" do
       _ -> False
     runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
 
-  it "rejects wrong and replayed completion secrets" do
+  it "rejects wrong completion secrets" do
     (store, _) <- newStore
     _ <- runExceptT $ startLink store settings now userId "nonce"
     runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
     runExceptT (finalizePendingLink store settings now userId "wrong") >>= expectCode "oauthCompletionInvalid"
     runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
+
+  it "rejects replayed completion secrets" do
+    (store, _) <- newStore
+    linkAccount store
     runExceptT (finalizePendingLink store settings now userId "completion-secret") >>= expectCode "oauthCompletionInvalid"
 
   it "rejects an expired pending completion" do
@@ -303,6 +307,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     linkAccount store
     _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
     _ <- runExceptT $ startLink store settings now userId "pending"
+    runExceptT (completeLink store stubClient settings now "pending" "authorization-code" "pending-secret") `shouldReturn` Right ()
     runExceptT (unlinkLinkedAccount store userId) `shouldReturn` Right ()
     s <- readIORef ref
     Map.null s.storedAccounts `shouldBe` True
@@ -310,6 +315,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     Map.null s.storedLinks `shouldBe` True
     Map.member deckId s.storedDecks `shouldBe` True
     runExceptT (listRemoteDecks store stubClient settings now userId) >>= expectCode "notLinked"
+    runExceptT (finalizePendingLink store settings now userId "pending-secret") >>= expectCode "oauthCompletionInvalid"
 
   it "does not recreate credentials when unlink races an in-flight refresh" do
     (store, ref) <- newStore
@@ -402,9 +408,9 @@ spec = describe "ArkhamDB account linking and private decks" do
   it "returns an existing imported deck without duplicates" do
     (store, ref) <- newStore
     linkAccount store
-    first <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
+    firstImport <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
     second <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
-    fmap entityKey first `shouldBe` fmap entityKey second
+    fmap entityKey firstImport `shouldBe` fmap entityKey second
     s <- readIORef ref
     Map.size s.storedDecks `shouldBe` 1
     Map.size s.storedLinks `shouldBe` 1
@@ -466,12 +472,14 @@ spec = describe "ArkhamDB account linking and private decks" do
     (Capabilities.serverCapabilities Nothing (isJust configured)).capabilities `shouldContain` [arkhamDBAccountLinkingCapability]
     (Capabilities.serverCapabilities Nothing False).capabilities `shouldNotContain` [arkhamDBAccountLinkingCapability]
 
-  it "rejects invalid encryption keys and an empty ArkhamDB base without exposing secrets" do
+  it "rejects invalid encryption keys without exposing secrets" do
     let parse = parseEither (withObject "settings" parseArkhamDBSettings)
     for_ ["", "key", "   ", "not-base64-secret!", "MDEyMzQ1Njc4OWFiY2RlZg==", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWZh"] \key -> do
       let result = parse $ object ["arkhamdb-token-key" .= String key]
       result `shouldSatisfy` isLeft
       for_ (leftToMaybe result) \message -> message `shouldBe` "Error in $: ARKHAMDB_TOKEN_KEY must be base64 encoding exactly 32 bytes"
+  it "rejects an empty ArkhamDB base URL" do
+    let parse = parseEither (withObject "settings" parseArkhamDBSettings)
     parse (object ["arkhamdb-base-url" .= String ""]) `shouldSatisfy` isLeft
     parse (object ["arkhamdb-base-url" .= String "   "]) `shouldSatisfy` isLeft
 
@@ -518,23 +526,39 @@ spec = describe "ArkhamDB account linking and private decks" do
       Error _ -> True
       _ -> False
 
-  it "matches the public ArkhamDB fixtures using the production encoders" do
+  it "matches the ArkhamDB fixtures generated by the real service and encoders" do
     fixture <- loadFixture
-    (store, _) <- newStore
-    start <- runExceptT (startLink store settings now userId "nonce") >>= either (fail . show) pure
-    field fixture "linkStart" `shouldBe` toJSON start
-    status <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
-    field fixture "unlinkedStatus" `shouldBe` toJSON status
-    runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
-    runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
-    linked <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
-    field fixture "linkedStatus" `shouldBe` toJSON linked
-    summaries <- runExceptT (listRemoteDecks store stubClient settings now userId) >>= either (fail . show) pure
-    field fixture "decks" `shouldBe` toJSON summaries
-    field fixture "error" `shouldBe` toJSON (ArkhamDBError "notLinked" "ArkhamDB account is not linked")
-    fromJSON (field fixture "importRequest") `shouldBe` Success (ArkhamDBImportRequest "123")
+    generated <- arkhamDBFixture
+    generated `shouldBe` fixture
+
  where
   entityValue (Entity _ value) = value
+
+-- The fixture is constructed from real link/list/import/sync responses, not a
+-- public-deck fixture copied into an OAuth envelope.
+arkhamDBFixture :: IO Value
+arkhamDBFixture = do
+  (store, _) <- newStore
+  start <- runExceptT (startLink store settings now userId "nonce") >>= either (fail . show) pure
+  unlinked <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
+  runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
+  runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
+  linked <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
+  summaries <- runExceptT (listRemoteDecks store stubClient settings now userId) >>= either (fail . show) pure
+  imported <- runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= either (fail . show) pure
+  synced <- runExceptT (syncRemoteDeck store stubClient settings now userId deckId forbiddenPublic) >>= either (fail . show) pure
+  pure $ object
+    [ "linkStart" .= start
+    , "linkedStatus" .= linked
+    , "unlinkedStatus" .= unlinked
+    , "decks" .= summaries
+    , "completionRequest" .= ArkhamDBLinkCompleteRequest "completion-secret"
+    , "importRequest" .= object ["deckId" .= String "123"]
+    , "importedDeck" .= imported
+    , "syncedDeck" .= synced
+    , "error" .= ArkhamDBError "notLinked" "ArkhamDB account is not linked"
+    , "tokenExpiredError" .= ArkhamDBError "tokenExpired" "ArkhamDB rejected the token; relink required"
+    ]
 
 field :: Value -> Aeson.Key -> Value
 field (Object value) key = fromMaybe (error "missing fixture field") $ KeyMap.lookup key value

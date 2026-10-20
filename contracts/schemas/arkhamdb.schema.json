@@ -12,7 +12,9 @@
     "importRequest",
     "error",
     "importedDeck",
-    "syncedDeck"
+    "syncedDeck",
+    "completionRequest",
+    "tokenExpiredError"
   ],
   "properties": {
     "linkStart": {
@@ -38,6 +40,12 @@
     },
     "syncedDeck": {
       "$ref": "./decks.schema.json#/$defs/deck"
+    },
+    "completionRequest": {
+      "$ref": "#/$defs/completionRequest"
+    },
+    "tokenExpiredError": {
+      "$ref": "#/$defs/error"
     }
   },
   "$defs": {
@@ -193,11 +201,25 @@
             "tokenExpired",
             "notFound",
             "storageFailure",
-            "remoteUnavailable"
+            "remoteUnavailable",
+            "oauthCompletionInvalid"
           ]
         },
         "error": {
           "type": "string"
+        }
+      }
+    },
+    "completionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completion"
+      ],
+      "properties": {
+        "completion": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }
