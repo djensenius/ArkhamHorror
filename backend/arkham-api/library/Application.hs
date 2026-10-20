@@ -85,7 +85,7 @@ import Network.Wai.Middleware.RequestLogger (
   mkRequestLogger,
   outputFormat,
  )
-import System.Log.FastLogger (defaultBufSize, newStdoutLoggerSet, toLogStr)
+import System.Log.FastLogger (LoggerSet, defaultBufSize, newStdoutLoggerSet, toLogStr)
 import Text.Regex.Posix ((=~))
 
 -- Import all relevant handler modules here.
@@ -213,7 +213,7 @@ makeApplication foundation =
 
 makeMiddleware :: App -> IO Middleware
 makeMiddleware foundation = do
-  logWare <- makeLogWare foundation
+  logWare <- makeLogWare (appSettings foundation) (loggerSet $ appLogger foundation)
   pure $ gzip def . skipWebSocketLogging logWare . handleOptions . addCORSHeaders
 
 {- | Don't run the access logger for websocket upgrades. 'mkRequestLogger' logs
@@ -303,21 +303,28 @@ mergeVaryValues values = case uniqueVaryTokens $ concatMap varyTokens values of
     | otherwise = token : seen
   sameHeaderToken left right = mk left == mk right
 
-makeLogWare :: App -> IO Middleware
-makeLogWare foundation =
-  mkRequestLogger
+makeLogWare :: AppSettings -> LoggerSet -> IO Middleware
+makeLogWare settings requestLogger =
+  skipArkhamDBLogging <$> mkRequestLogger
     def
       { outputFormat =
-          if appDetailedRequestLogging $ appSettings foundation
+          if appDetailedRequestLogging settings
             then Detailed True
             else
               Apache
-                ( if appIpFromHeader $ appSettings foundation
+                ( if appIpFromHeader settings
                     then FromFallback
                     else FromSocket
                 )
-      , destination = Logger $ loggerSet $ appLogger foundation
+      , destination = Logger requestLogger
       }
+
+-- OAuth query parameters and completion JSON are credentials. Detailed logging
+-- captures both, so never pass these routes through the request logger.
+skipArkhamDBLogging :: Middleware -> Middleware
+skipArkhamDBLogging logWare app req sendResponse
+  | ["api", "v1", "arkham", "arkhamdb"] `isPrefixOf` pathInfo req = app req sendResponse
+  | otherwise = logWare app req sendResponse
 
 -- | Warp settings for the given foundation value.
 warpSettings :: App -> Settings

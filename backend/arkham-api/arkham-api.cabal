@@ -9781,6 +9781,7 @@ test-suite spec
     , cryptohash-sha256
     , directory
     , exceptions
+    , fast-logger
     , filepath
     , hspec
     , hspec-expectations-lifted
@@ -9799,5 +9800,8 @@ test-suite spec
     , unix
     , unordered-containers
     , uuid
+    , wai
+    , wai-extra
     , yaml
+    , yesod-core
   default-language: GHC2021

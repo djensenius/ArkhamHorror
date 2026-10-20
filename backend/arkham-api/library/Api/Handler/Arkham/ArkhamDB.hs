@@ -1,5 +1,6 @@
 module Api.Handler.Arkham.ArkhamDB (
   getApiV1ArkhamArkhamDBCallbackR,
+  arkhamDBCallback,
   getApiV1ArkhamArkhamDBDecksR,
   getApiV1ArkhamArkhamDBStatusR,
   postApiV1ArkhamArkhamDBDeckImportR,
@@ -129,9 +130,10 @@ persistentStore = ArkhamDBStore
   }
 
 -- All account lifecycle and deck writes take the same user lock, including
--- when no account exists. A relink inserts a fresh account id (generation).
+-- when no account exists. NO KEY UPDATE allows unrelated foreign-key inserts.
+-- A relink inserts a fresh account id (generation).
 lockArkhamDBUser :: UserId -> ReaderT SqlBackend Handler ()
-lockArkhamDBUser userId = void (rawSql "SELECT id FROM users WHERE id = ? FOR UPDATE" [toPersistValue userId] :: ReaderT SqlBackend Handler [Single Int64])
+lockArkhamDBUser userId = void (rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE" [toPersistValue userId] :: ReaderT SqlBackend Handler [Single Int64])
 
 sameAccountGeneration :: UserId -> ArkhamDBAccountId -> ReaderT SqlBackend Handler Bool
 sameAccountGeneration userId generation = do
@@ -160,23 +162,26 @@ postApiV1ArkhamArkhamDBLinkStartR = do
 getApiV1ArkhamArkhamDBCallbackR :: Handler Html
 getApiV1ArkhamArkhamDBCallbackR = do
   settings <- requireConfigured
+  arkhamDBCallback persistentStore configuredClient settings
+
+-- | The production callback, with persistence and transport supplied explicitly
+-- so its HTTP response can be tested without a PostgreSQL connection.
+arkhamDBCallback :: MonadHandler m => ArkhamDBStore m -> m (ArkhamDBClient m) -> ArkhamDBSettings -> m Html
+arkhamDBCallback store getClient settings = do
   nonce <- lookupGetParam "state"
   code <- lookupGetParam "code"
   oauthError <- lookupGetParam "error"
-  web <- (== Just "1") <$> lookupGetParam "web"
   result <- case (oauthError, nonce, code) of
     (Just "access_denied", _, _) -> pure $ Left "access_denied"
     (Nothing, Just state, Just authorizationCode) -> do
-      client <- configuredClient
+      client <- getClient
       now <- liftIO getCurrentTime
       secret <- randomSecret
-      runExceptT (completeLink persistentStore client settings now state authorizationCode secret) <&> \case
+      runExceptT (completeLink store client settings now state authorizationCode secret) <&> \case
         Left _ -> Left "link_failed"
         Right () -> Right secret
     _ -> pure $ Left "link_failed"
-  if web
-    then pure $ toHtml ("Return to the Arkham Horror app to continue linking." :: Text)
-    else redirectWith Status.status302 $ callbackLocation result
+  redirectWith Status.status302 $ callbackLocation result
 
 postApiV1ArkhamArkhamDBLinkCompleteR :: Handler ()
 postApiV1ArkhamArkhamDBLinkCompleteR = do
@@ -186,7 +191,7 @@ postApiV1ArkhamArkhamDBLinkCompleteR = do
   now <- liftIO getCurrentTime
   runArkhamDB $ finalizePendingLink persistentStore settings now userId secret
 
-randomSecret :: Handler Text
+randomSecret :: MonadIO m => m Text
 randomSecret = decodeUtf8 . B64Url.encodeUnpadded <$> liftIO (getRandomBytes 32)
 
 getApiV1ArkhamArkhamDBStatusR :: Handler ArkhamDBLinkStatusResponse

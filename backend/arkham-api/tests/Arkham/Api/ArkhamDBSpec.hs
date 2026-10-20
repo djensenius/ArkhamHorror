@@ -1,29 +1,97 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -Wno-orphans -Wno-missing-deriving-strategies #-}
+
 module Arkham.Api.ArkhamDBSpec (spec) where
 
+import Api.Handler.Arkham.ArkhamDB (arkhamDBCallback)
+import Application (makeLogWare)
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Base.Api.Types.Capabilities qualified as Capabilities
+import Control.Exception (bracket)
 import Data.Aeson
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseEither)
+import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BS8
+import Data.List (lookup)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Data.Time.Clock (UTCTime, addUTCTime)
+import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.User
+import Helpers.AppSettings (loadAppSettings)
 import Network.HTTP.Client
-import Network.HTTP.Types.Status (status409)
 import Network.HTTP.Client.Internal (managerProxyInsecure)
+import Network.HTTP.Types (hLocation, status200, status302, status409)
+import Network.Wai qualified as Wai
+import Network.Wai.Test qualified as WaiTest
 import Relude hiding (modify, second, state)
-import Settings (ArkhamDBSettings (..), parseArkhamDBSettings)
-import System.Directory (doesFileExist)
+import Settings (AppSettings (..), ArkhamDBSettings (..), compileTimeAppSettings, parseArkhamDBSettings)
+import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
+import System.IO (hClose, openTempFile)
+import System.Log.FastLogger (defaultBufSize, flushLogStr, newFileLoggerSet, rmLoggerSet)
 import Test.Hspec hiding (pending)
 import Text.Read (read)
+import Yesod.Core qualified as Yesod
+
+-- Dispatch the same callback body as the production route through Yesod/WAI.
+-- Only persistence and remote HTTP are replaced; redirects are not simulated.
+data CallbackSite = CallbackSite (ArkhamDBStore IO) (ArkhamDBClient IO)
+Yesod.mkYesod "CallbackSite" [Yesod.parseRoutes|
+/api/v1/arkham/arkhamdb/callback CallbackR GET
+|]
+
+instance Yesod.Yesod CallbackSite where
+  makeSessionBackend _ = pure Nothing
+
+getCallbackR :: Yesod.HandlerFor CallbackSite Yesod.Html
+getCallbackR = do
+  CallbackSite store client <- Yesod.getYesod
+  arkhamDBCallback (handlerStore store) (pure $ hoistArkhamDBClient liftIO client) settings
+
+handlerStore :: ArkhamDBStore IO -> ArkhamDBStore (Yesod.HandlerFor CallbackSite)
+handlerStore store = ArkhamDBStore
+  { saveLinkState = liftIO . store.saveLinkState
+  , claimLinkState = \time nonce -> liftIO $ store.claimLinkState time nonce
+  , findAccountGeneration = liftIO . store.findAccountGeneration
+  , findAccount = liftIO . store.findAccount
+  , stagePendingLink = \time nonce digest encrypted -> liftIO $ store.stagePendingLink time nonce digest encrypted
+  , findPendingLink = \time uid digest -> liftIO $ store.findPendingLink time uid digest
+  , finalizeLink = \time uid digest account -> liftIO $ store.finalizeLink time uid digest account
+  , updateAccount = \old updated -> liftIO $ store.updateAccount old updated
+  , unlinkAccount = liftIO . store.unlinkAccount
+  , findDeckLinks = liftIO . store.findDeckLinks
+  , findDeck = liftIO . store.findDeck
+  , saveImportedDeck = \generation deck remoteDeck time -> liftIO $ store.saveImportedDeck generation deck remoteDeck time
+  , saveSyncedDeck = \generation key deck remoteDeck time -> liftIO $ store.saveSyncedDeck generation key deck remoteDeck time
+  , dropDeckLink = \generation uid key -> liftIO $ store.dropDeckLink generation uid key
+  , validateDeck = liftIO . store.validateDeck
+  }
+
+-- The real logger configuration, including Detailed True and its destination.
+-- Reading the JSON body here exercises the logger's body-capture path.
+captureRequestLog :: WaiTest.SRequest -> IO ByteString
+captureRequestLog request = do
+  directory <- getTemporaryDirectory
+  bracket (openTempFile directory "arkhamdb-request.log") (removeFile . fst) \(path, handle) -> do
+    hClose handle
+    bracket (newFileLoggerSet defaultBufSize path) rmLoggerSet \logger -> do
+      middleware <- makeLogWare compileTimeAppSettings {appDetailedRequestLogging = True} logger
+      let application req respond = do
+            body <- Wai.strictRequestBody req
+            body `shouldBe` WaiTest.simpleRequestBody request
+            respond $ Wai.responseLBS status200 [] "ok"
+      _ <- WaiTest.runSession (WaiTest.srequest request) $ middleware application
+      flushLogStr logger
+    BS.readFile path
 
 now :: UTCTime
 now = read "2026-10-19 12:00:00 UTC"
@@ -71,13 +139,14 @@ data Stored = Stored
   , storedAccounts :: Map UserId ArkhamDBAccount
   , storedGenerations :: Map UserId ArkhamDBAccountId
   , storedNextGeneration :: Word32
+  , storedNextDeck :: Word32
   , storedDecks :: Map ArkhamDeckId ArkhamDeck
   , storedLinks :: Map ArkhamDeckId ArkhamDBDeckLink
   }
 
 newStore :: IO (ArkhamDBStore IO, IORef Stored)
 newStore = do
-  ref <- newIORef $ Stored mempty mempty mempty 1 mempty mempty
+  ref <- newIORef $ Stored mempty mempty mempty 1 23 mempty mempty
   let modify = modifyIORef' ref
       saveLinkState state = modify \s -> s {storedStates = Map.insert (arkhamDBLinkStateNonce state) (Entity (ArkhamDBLinkStateKey UUID.nil) state) s.storedStates}
       claimLinkState time nonce = atomicModifyIORef' ref \s -> case Map.lookup nonce s.storedStates of
@@ -122,11 +191,12 @@ newStore = do
           pure (deck, Map.lookup key s.storedLinks)
       saveImportedDeck generation deck remoteDeck time = atomicModifyIORef' ref \s ->
         if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation then (s, Nothing) else
-        case find ((== remoteDeck.remoteDeckId) . arkhamDBDeckLinkRemoteDeckId . snd) $ Map.toList s.storedLinks of
+        case find (\(_, link) -> arkhamDBDeckLinkUserId link == arkhamDeckUserId deck && arkhamDBDeckLinkRemoteDeckId link == remoteDeck.remoteDeckId) $ Map.toList s.storedLinks of
           Just (key, _) -> (s, Entity key <$> Map.lookup key s.storedDecks)
           Nothing ->
-            let link = ArkhamDBDeckLink deckId (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing time time
-             in (s {storedDecks = Map.insert deckId deck s.storedDecks, storedLinks = Map.insert deckId link s.storedLinks}, Just $ Entity deckId deck)
+            let key = ArkhamDeckKey $ UUID.fromWords 0 0 0 s.storedNextDeck
+                link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing time time
+             in (s {storedNextDeck = s.storedNextDeck + 1, storedDecks = Map.insert key deck s.storedDecks, storedLinks = Map.insert key link s.storedLinks}, Just $ Entity key deck)
       saveSyncedDeck generation key deck remoteDeck time = atomicModifyIORef' ref \s ->
         if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation || Map.notMember key s.storedLinks then (s, False) else
         (s
@@ -157,6 +227,68 @@ expectCode code = \case
 
 spec :: Spec
 spec = describe "ArkhamDB account linking and private decks" do
+  it "keeps the completion secret out of the real callback 302 body" do
+    (store, ref) <- newStore
+    time <- getCurrentTime
+    _ <- runExceptT $ startLink store settings time userId "nonce"
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest
+      "/api/v1/arkham/arkhamdb/callback?state=nonce&code=authorization-code") application
+    WaiTest.simpleStatus response `shouldBe` status302
+    location <- maybe (fail "missing Location") pure $ lookup hLocation $ WaiTest.simpleHeaders response
+    let prefix = "arkhamhorror://arkhamdb-link?result=pending&completion="
+    location `shouldSatisfy` BS.isPrefixOf prefix
+    let secret = BS.drop (BS.length prefix) location
+    BS.length secret `shouldBe` 43
+    secret `shouldSatisfy` BS.all (\c -> c >= 65 && c <= 90 || c >= 97 && c <= 122 || c >= 48 && c <= 57 || c == 45 || c == 95)
+    toStrict (WaiTest.simpleBody response) `shouldSatisfy` (not . BS.isInfixOf secret)
+    stored <- readIORef ref
+    Map.null stored.storedAccounts `shouldBe` True
+    fmap (arkhamDBLinkStateCompletionHash . entityValue) (Map.lookup "nonce" stored.storedStates)
+      `shouldBe` Just (Just $ completionHash $ decodeUtf8 secret)
+
+  it "ignores web=1 and always returns the fixed app-scheme callback redirect" do
+    (store, _) <- newStore
+    time <- getCurrentTime
+    _ <- runExceptT $ startLink store settings time userId "nonce"
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest
+      "/api/v1/arkham/arkhamdb/callback?state=nonce&code=authorization-code&web=1") application
+    WaiTest.simpleStatus response `shouldBe` status302
+    fromMaybe "" (lookup hLocation $ WaiTest.simpleHeaders response)
+      `shouldSatisfy` BS.isPrefixOf "arkhamhorror://arkhamdb-link?result=pending&completion="
+
+  it "uses only fixed callback errors and never exchanges error callbacks through Yesod" do
+    for_ [("access_denied", "access_denied"), ("https://evil.example/?secret=reflected", "link_failed")] \(oauthError, reason) -> do
+      (store, _) <- newStore
+      time <- getCurrentTime
+      _ <- runExceptT $ startLink store settings time userId "nonce"
+      let client = stubClient {exchangeCode = \_ _ -> expectationFailure "error callback exchanged OAuth code" >> pure (Right tokens)}
+      application <- Yesod.toWaiAppPlain $ CallbackSite store client
+      response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest $
+        "/api/v1/arkham/arkhamdb/callback?state=nonce&code=must-not-exchange&error=" <> oauthError) application
+      WaiTest.simpleStatus response `shouldBe` status302
+      lookup hLocation (WaiTest.simpleHeaders response) `shouldBe` Just ("arkhamhorror://arkhamdb-link?result=error&reason=" <> reason)
+      toStrict (WaiTest.simpleBody response) `shouldSatisfy` (not . BS.isInfixOf "reflected")
+
+  it "does not log the completion JSON or callback OAuth query with Detailed True" do
+    let complete = WaiTest.SRequest
+          (WaiTest.setPath WaiTest.defaultRequest {Wai.requestMethod = "POST", Wai.requestHeaders = [("Content-Type", "application/json")]} "/api/v1/arkham/arkhamdb/link/complete")
+          "{\"completion\":\"probe-completion-secret\"}"
+        callback = WaiTest.SRequest
+          (WaiTest.setPath WaiTest.defaultRequest "/api/v1/arkham/arkhamdb/callback?code=probe-oauth-code&state=probe-oauth-state") ""
+    outputs <- forM [("completion", complete), ("callback", callback)] \(label, request) -> do
+      output <- captureRequestLog request
+      BS8.putStrLn $ "Detailed True " <> label <> " probe: " <> output
+      pure output
+    for_ outputs \output ->
+      for_ ["probe-completion-secret", "probe-oauth-code", "probe-oauth-state"] \secret ->
+        output `shouldSatisfy` (not . BS.isInfixOf secret)
+    -- An exclusion must not accidentally switch off unrelated request logging.
+    control <- captureRequestLog $ complete {WaiTest.simpleRequest = WaiTest.setPath (WaiTest.simpleRequest complete) "/api/v1/arkham/arkhamdb-other"}
+    control `shouldSatisfy` BS.isInfixOf "arkhamdb-other"
+    control `shouldSatisfy` BS.isInfixOf "probe-completion-secret"
+
   it "rejects a wrong nonce without exchanging a code" do
     (store, _) <- newStore
     _ <- runExceptT $ startLink store settings now userId "nonce"
@@ -296,6 +428,22 @@ spec = describe "ArkhamDB account linking and private decks" do
       let client = httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
       runExceptT (listRemoteDecks store client settings now userId) >>= expectCode "tokenExpired"
 
+  it "keeps token endpoint failures remote errors without deleting mappings or public fallback" do
+    for_ ["302 Found", "403 Forbidden", "404 Not Found", "500 Internal Server Error"] \status -> do
+      (store, ref) <- newStore
+      linkAccount store
+      _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
+      modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now}) userId s.storedAccounts}
+      incoming <- newIORef $ "HTTP/1.1 " <> status <> "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+      manager <- newManager defaultManagerSettings
+        { managerRawConnection = pure $ \_ _ _ -> makeConnection (atomicModifyIORef' incoming (\bytes -> (mempty, bytes))) (const $ pure ()) (pure ())
+        , managerProxyInsecure = noProxy
+        }
+      let client = httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
+      runExceptT (syncRemoteDeck store client settings now userId deckId forbiddenPublic) >>= expectCode "remoteUnavailable"
+      stored <- readIORef ref
+      Map.member deckId stored.storedLinks `shouldBe` True
+
   it "requires relinking when expired credentials have no refresh token" do
     (store, ref) <- newStore
     linkAccount store
@@ -405,6 +553,29 @@ spec = describe "ArkhamDB account linking and private decks" do
         }
       (httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret").loadDeck "token" "123" `shouldReturn` Left ArkhamDBNotFound
 
+  it "keeps imports of the same remote deck separate and owned by each local user" do
+    (store, ref) <- newStore
+    linkAccount store
+    _ <- runExceptT $ startLink store settings now otherUserId "other-nonce"
+    runExceptT (completeLink store stubClient settings now "other-nonce" "authorization-code" "other-secret") `shouldReturn` Right ()
+    runExceptT (finalizePendingLink store settings now otherUserId "other-secret") `shouldReturn` Right ()
+    firstImport <- runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= either (fail . show) pure
+    otherImport <- runExceptT (importRemoteDeck store stubClient settings now otherUserId "123" forbiddenPublic) >>= either (fail . show) pure
+    entityKey firstImport `shouldNotBe` entityKey otherImport
+    arkhamDeckUserId (entityValue firstImport) `shouldBe` userId
+    arkhamDeckUserId (entityValue otherImport) `shouldBe` otherUserId
+    for_ [(userId, firstImport), (otherUserId, otherImport)] \(uid, imported) -> do
+      repeated <- runExceptT $ importRemoteDeck store stubClient settings now uid "123" forbiddenPublic
+      fmap entityKey repeated `shouldBe` Right (entityKey imported)
+      links <- store.findDeckLinks uid
+      map fst links `shouldBe` [entityKey imported]
+      map (arkhamDBDeckLinkUserId . snd) links `shouldBe` [uid]
+    runExceptT (syncRemoteDeck store stubClient settings now userId (entityKey otherImport) forbiddenPublic) >>= expectCode "notFound"
+    runExceptT (syncRemoteDeck store stubClient settings now otherUserId (entityKey firstImport) forbiddenPublic) >>= expectCode "notFound"
+    stored <- readIORef ref
+    Map.size stored.storedDecks `shouldBe` 2
+    Map.size stored.storedLinks `shouldBe` 2
+
   it "returns an existing imported deck without duplicates" do
     (store, ref) <- newStore
     linkAccount store
@@ -474,14 +645,37 @@ spec = describe "ArkhamDB account linking and private decks" do
 
   it "rejects invalid encryption keys without exposing secrets" do
     let parse = parseEither (withObject "settings" parseArkhamDBSettings)
-    for_ ["", "key", "   ", "not-base64-secret!", "MDEyMzQ1Njc4OWFiY2RlZg==", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWZh"] \key -> do
+    for_ ["key", "   ", "not-base64-secret!", "MDEyMzQ1Njc4OWFiY2RlZg==", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWZh"] \key -> do
       let result = parse $ object ["arkhamdb-token-key" .= String key]
       result `shouldSatisfy` isLeft
       for_ (leftToMaybe result) \message -> message `shouldBe` "Error in $: ARKHAMDB_TOKEN_KEY must be base64 encoding exactly 32 bytes"
-  it "rejects an empty ArkhamDB base URL" do
+
+  it "treats an empty token key and base URL as absent in settings JSON" do
     let parse = parseEither (withObject "settings" parseArkhamDBSettings)
-    parse (object ["arkhamdb-base-url" .= String ""]) `shouldSatisfy` isLeft
+    parse (object ["arkhamdb-token-key" .= String ""]) `shouldBe` Right Nothing
+    parse (object ["arkhamdb-base-url" .= String ""]) `shouldBe` Right Nothing
     parse (object ["arkhamdb-base-url" .= String "   "]) `shouldSatisfy` isLeft
+
+  it "rejects non-empty invalid environment token keys" do
+    for_ ["invalid-nonempty-key", "false", "[]"] \key ->
+      isLeft (loadAppSettings [("ARKHAMDB_TOKEN_KEY", key)]) `shouldBe` True
+
+  it "treats empty ArkhamDB environment values as unset without failing startup" do
+    let environment =
+          [ ("ARKHAMDB_CLIENT_ID", "client")
+          , ("ARKHAMDB_CLIENT_SECRET", "secret")
+          , ("ARKHAMDB_TOKEN_KEY", settings.arkhamDBTokenKey)
+          , ("ARKHAMDB_PUBLIC_SERVER_BASE", "https://server.example")
+          , ("ARKHAMDB_BASE_URL", "https://arkhamdb.example")
+          ]
+    for_ environment \(name, _) -> do
+      let overridden = map (\(key, value) -> (key, if key == name then "" else value)) environment
+      parsed <- either (fail . toString) pure $ loadAppSettings overridden
+      if name == "ARKHAMDB_BASE_URL"
+        then fmap arkhamDBBaseUrl parsed.appArkhamDB `shouldBe` Just "https://arkhamdb.com"
+        else parsed.appArkhamDB `shouldBe` Nothing
+    allEmpty <- either (fail . toString) pure $ loadAppSettings $ map (\(key, _) -> (key, "")) environment
+    allEmpty.appArkhamDB `shouldBe` Nothing
 
   it "returns HTTP 409 rather than expiring the app session for ArkhamDB auth states" do
     for_ ["notLinked", "tokenExpired"] \code -> do

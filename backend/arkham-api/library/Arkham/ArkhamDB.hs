@@ -256,7 +256,9 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
     response <- httpLbs req manager
     pure $ if responseStatus response `elem` [status400, status401]
       then Left ArkhamDBUnauthorized
-      else responseResult response >>= parseTokenResponse now
+      else if statusCode (responseStatus response) < 200 || statusCode (responseStatus response) >= 300
+        then Left $ ArkhamDBRemoteError "Unexpected HTTP status"
+        else parseTokenResponse now $ responseBody response
 
   authedGet :: FromJSON a => Text -> Text -> m (Either ArkhamDBClientError a)
   authedGet accessToken path = safeRequest do

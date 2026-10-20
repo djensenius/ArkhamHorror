@@ -236,6 +236,10 @@ tests:
       - hspec-expectations-lifted
       - http-client
       - http-types
+      - fast-logger
+      - wai
+      - wai-extra
+      - yesod-core
       - jose
       - lens
       - monad-time
