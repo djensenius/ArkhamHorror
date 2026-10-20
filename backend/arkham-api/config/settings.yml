@@ -12,7 +12,7 @@ bugsnag-api-token: "_env:BUGSNAG_API_TOKEN:empty"
 asset-host: "_env:ASSET_HOST:"
 arkhamdb-client-id: "_env:ARKHAMDB_CLIENT_ID:"
 arkhamdb-client-secret: "_env:ARKHAMDB_CLIENT_SECRET:"
-arkhamdb-token-key: "_env:ARKHAMDB_TOKEN_KEY:"
+arkhamdb-token-key: "_env:ARKHAMDB_TOKEN_KEY:null"
 arkhamdb-base-url: "_env:ARKHAMDB_BASE_URL:https://arkhamdb.com"
 arkhamdb-public-server-base: "_env:ARKHAMDB_PUBLIC_SERVER_BASE:"
 # permessage-deflate on the game/event websockets. Kill switch, so a suspected

@@ -35,6 +35,7 @@ import Crypto.Random (getRandomBytes)
 import Data.Aeson
 import Data.Aeson.Types (Parser, parseEither, typeMismatch)
 import Data.ByteArray qualified as BA
+import Data.ByteString.Base64 qualified as B64
 import Data.ByteString.Base64.URL qualified as B64Url
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BSL
@@ -170,8 +171,10 @@ hoistArkhamDBClient transform client = ArkhamDBClient
 newtype TokenCiphertext = TokenCiphertext {unTokenCiphertext :: Text}
   deriving stock (Eq, Show)
 
-keyBytes :: Text -> ByteString
-keyBytes = SHA256.hash . encodeUtf8
+keyBytes :: Text -> Either String ByteString
+keyBytes key = do
+  bytes <- B64.decode $ encodeUtf8 key
+  if BS8.length bytes == 32 then Right bytes else Left "Invalid ArkhamDB token key"
 
 encryptToken :: MonadIO m => Text -> Text -> m TokenCiphertext
 encryptToken key plaintext = liftIO do
@@ -202,9 +205,11 @@ decryptToken key (TokenCiphertext encoded) = case T.splitOn ":" encoded of
   decodePart label = first (const $ "invalid token " <> label) . B64Url.decodeUnpadded . encodeUtf8
 
 initAES :: Text -> Either String AES256
-initAES key = case cipherInit (keyBytes key) of
-  CryptoPassed cipher -> Right cipher
-  CryptoFailed err -> Left $ show err
+initAES key = do
+  bytes <- keyBytes key
+  case cipherInit bytes of
+    CryptoPassed cipher -> Right cipher
+    CryptoFailed err -> Left $ show err
 
 isTokenExpired :: UTCTime -> Maybe UTCTime -> Bool
 isTokenExpired _ Nothing = False

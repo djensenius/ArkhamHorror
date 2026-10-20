@@ -35,7 +35,7 @@ deckId :: ArkhamDeckId
 deckId = ArkhamDeckKey $ UUID.fromWords 0 0 0 23
 
 settings :: ArkhamDBSettings
-settings = ArkhamDBSettings "client" "server-secret" "test-only-encryption-key-with-32-bytes" "https://arkhamdb.example" "https://server.example"
+settings = ArkhamDBSettings "client" "server-secret" "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=" "https://arkhamdb.example" "https://server.example"
 
 tokens :: ArkhamDBOAuthTokens
 tokens = ArkhamDBOAuthTokens "private-access-token" (Just "private-refresh-token") (Just $ addUTCTime 3600 now) (Just "42") (Just "Investigator")
@@ -456,7 +456,7 @@ spec = describe "ArkhamDB account linking and private decks" do
 
   it "disables the integration and capability unless all required settings exist" do
     runExceptT (configuredSettings Nothing :: ArkhamDBAction IO ArkhamDBSettings) >>= expectCode "disabled"
-    let fields = ["arkhamdb-client-id" .= String "id", "arkhamdb-client-secret" .= String "secret", "arkhamdb-token-key" .= String "key", "arkhamdb-public-server-base" .= String "https://server.example"]
+    let fields = ["arkhamdb-client-id" .= String "id", "arkhamdb-client-secret" .= String "secret", "arkhamdb-token-key" .= String settings.arkhamDBTokenKey, "arkhamdb-public-server-base" .= String "https://server.example"]
         parse value = parseEither (withObject "settings" parseArkhamDBSettings) value
     parse (object []) `shouldBe` Right Nothing
     for_ [0 .. 3] \index -> parse (object $ take index fields <> drop (index + 1) fields) `shouldBe` Right Nothing
@@ -464,6 +464,15 @@ spec = describe "ArkhamDB account linking and private decks" do
     isJust configured `shouldBe` True
     (Capabilities.serverCapabilities Nothing (isJust configured)).capabilities `shouldContain` [arkhamDBAccountLinkingCapability]
     (Capabilities.serverCapabilities Nothing False).capabilities `shouldNotContain` [arkhamDBAccountLinkingCapability]
+
+  it "rejects invalid encryption keys and an empty ArkhamDB base without exposing secrets" do
+    let parse = parseEither (withObject "settings" parseArkhamDBSettings)
+    for_ ["", "key", "   ", "not-base64-secret!", "MDEyMzQ1Njc4OWFiY2RlZg==", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWZh"] \key -> do
+      let result = parse $ object ["arkhamdb-token-key" .= String key]
+      result `shouldSatisfy` isLeft
+      for_ (leftToMaybe result) \message -> message `shouldBe` "Error in $: ARKHAMDB_TOKEN_KEY must be base64 encoding exactly 32 bytes"
+    parse (object ["arkhamdb-base-url" .= String ""]) `shouldSatisfy` isLeft
+    parse (object ["arkhamdb-base-url" .= String "   "]) `shouldSatisfy` isLeft
 
   it "matches the enabled capability fixture without changing the compatibility floor" do
     fixture <- loadNamedFixture "capabilities-arkhamdb.json"
