@@ -5,7 +5,7 @@
 
 module Arkham.Api.ArkhamDBSpec (spec) where
 
-import Api.Handler.Arkham.ArkhamDB (arkhamDBCallback)
+import Api.Handler.Arkham.ArkhamDB (arkhamDBCallback, runArkhamDB)
 import Api.Handler.Arkham.Decks (toDeckErrors)
 import Application (makeLogWare)
 import Arkham.ArkhamDB
@@ -13,7 +13,8 @@ import Arkham.ArkhamDB.Service
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Base.Api.Types.Capabilities qualified as Capabilities
-import Control.Concurrent (modifyMVar, newEmptyMVar, newMVar, putMVar, takeMVar, tryPutMVar, withMVar)
+import Codec.Compression.GZip qualified as GZip
+import Control.Concurrent (threadDelay, modifyMVar, newEmptyMVar, newMVar, putMVar, takeMVar, tryPutMVar, withMVar)
 import Control.Exception (bracket, throwIO)
 import Data.Aeson
 import Data.Aeson qualified as Aeson
@@ -21,19 +22,22 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (parseEither)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Lazy qualified as BSL
 import Data.List (lookup)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..))
+import Database.PostgreSQL.Simple (SqlError (..), ExecStatus (FatalError))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.User
 import Helpers.AppSettings (loadAppSettings)
 import Network.HTTP.Client
 import Network.HTTP.Client.Internal (managerProxyInsecure)
-import Network.HTTP.Types (hLocation, status200, status302, status409)
+import Network.HTTP.Types (hLocation, status200, status302, status409, status502)
+import Numeric (showHex)
 import Network.Wai qualified as Wai
 import Network.Wai.Test qualified as WaiTest
 import Relude hiding (modify, newEmptyMVar, newMVar, putMVar, second, state, takeMVar, tryPutMVar)
@@ -41,6 +45,7 @@ import Settings (AppSettings (..), ArkhamDBSettings (..), compileTimeAppSettings
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openTempFile)
 import System.IO.Error (userError)
+import System.IO.Unsafe (unsafeInterleaveIO)
 import System.Log.FastLogger (defaultBufSize, flushLogStr, newFileLoggerSet, rmLoggerSet)
 import System.Timeout (timeout)
 import Test.Hspec hiding (pending)
@@ -54,6 +59,7 @@ import Yesod.Core qualified as Yesod
 data CallbackSite = CallbackSite (ArkhamDBStore IO) (ArkhamDBClient IO)
 Yesod.mkYesod "CallbackSite" [Yesod.parseRoutes|
 /api/v1/arkham/arkhamdb/callback CallbackR GET
+/lock-timeout LockTimeoutR GET
 |]
 
 instance Yesod.Yesod CallbackSite where
@@ -63,6 +69,11 @@ getCallbackR :: Yesod.HandlerFor CallbackSite Yesod.Html
 getCallbackR = do
   CallbackSite store client <- Yesod.getYesod
   arkhamDBCallback (handlerStore store) (pure $ hoistArkhamDBClient liftIO client) settings
+
+-- Exercise the real handler boundary after PostgreSQL aborts a transaction.
+getLockTimeoutR :: Yesod.HandlerFor CallbackSite ()
+getLockTimeoutR = runArkhamDB $ liftIO $ throwIO $
+  SqlError "55P03" FatalError "private-access-token" "server-secret" "private-refresh-token"
 
 handlerStore :: ArkhamDBStore IO -> ArkhamDBStore (Yesod.HandlerFor CallbackSite)
 handlerStore store = ArkhamDBStore
@@ -243,8 +254,75 @@ expectCode code = \case
   Left err -> arkhamDBErrorCode err `shouldBe` code
   Right _ -> expectationFailure $ "Expected ArkhamDB error " <> toString code
 
+-- Deliberately omit Content-Length and deliver wire chunks separately. This is
+-- the real http-client parser/decompressor, not a stubbed ArkhamDBClient.
+chunkedClient :: ByteString -> BSL.ByteString -> IO (ArkhamDBClient IO)
+chunkedClient headers body = do
+  let frame chunk = BS8.pack (showHex (BS.length chunk) "") <> "\r\n" <> chunk <> "\r\n"
+      wireChunks = ("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n" <> headers <> "\r\n")
+        : map frame (BSL.toChunks body) <> ["0\r\n\r\n"]
+  incoming <- newIORef wireChunks
+  manager <- newManager defaultManagerSettings
+    { managerRawConnection = pure $ \_ _ _ -> makeConnection
+        (atomicModifyIORef' incoming \case [] -> ([], mempty); chunk : rest -> (rest, chunk))
+        (const $ pure ()) (pure ())
+    , managerProxyInsecure = noProxy
+    }
+  pure $ httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
+
+paddedResponse :: Int -> BSL.ByteString -> BSL.ByteString
+paddedResponse size body = body <> BSL.replicate (fromIntegral size - BSL.length body) 32
+
 spec :: Spec
 spec = describe "ArkhamDB account linking and private decks" do
+  it "sanitizes PostgreSQL lock timeout as retryable remoteUnavailable" do
+    (store, _) <- newStore
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest "/lock-timeout") application
+    WaiTest.simpleStatus response `shouldBe` status502
+    eitherDecode @Value (WaiTest.simpleBody response) `shouldBe` Right (object
+      ["code" .= ("remoteUnavailable" :: Text), "error" .= ("ArkhamDB request failed" :: Text)])
+
+  it "bounds oversized chunked token responses without Content-Length" do
+    client <- chunkedClient "" $ paddedResponse (1024 * 1024 + 1) "{\"access_token\":\"private-access-token\"}"
+    client.refreshTokens "refresh-secret" `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
+
+  it "bounds oversized chunked API list responses without Content-Length" do
+    client <- chunkedClient "" $ paddedResponse (1024 * 1024 + 1) "[]"
+    client.listDecks "bearer-secret" `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
+
+  it "bounds oversized chunked API deck responses without Content-Length" do
+    client <- chunkedClient "" $ paddedResponse (1024 * 1024 + 1) $ encode remote.deck
+    client.loadDeck "bearer-secret" "123" `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
+
+  it "bounds decompressed chunked token responses rather than compressed wire bytes" do
+    let body = GZip.compress $ paddedResponse (1024 * 1024 + 1) "{\"access_token\":\"private-access-token\"}"
+    BSL.length body `shouldSatisfy` (< 1024 * 1024)
+    client <- chunkedClient "Content-Encoding: gzip\r\n" body
+    client.refreshTokens "refresh-secret" `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
+
+  it "accepts token and API responses exactly at the decoded byte cap" do
+    tokenClient <- chunkedClient "" $ paddedResponse (1024 * 1024) "{\"access_token\":\"private-access-token\"}"
+    result <- tokenClient.refreshTokens "refresh-secret"
+    fmap (.accessToken) result `shouldBe` Right "private-access-token"
+    apiClient <- chunkedClient "" $ paddedResponse (1024 * 1024) "[]"
+    apiClient.listDecks "bearer-secret" `shouldReturn` Right []
+
+  -- Delayed thunks make evaluation boundaries deterministic without depending
+  -- on CPU speed or allocating attacker-sized integers. Use the same timed
+  -- request runner as the real HTTP client with a short test-only deadline.
+  it "times out lazy OAuth classification inside the request deadline" do
+    classification <- unsafeInterleaveIO $ threadDelay 1000000 >> pure (Left ArkhamDBUnauthorized :: Either ArkhamDBClientError ArkhamDBOAuthTokens)
+    runArkhamDBRequest 20000 (pure classification) `shouldReturn` Left (ArkhamDBRemoteError "Transport timed out")
+
+  it "times out lazy malformed token decoding inside the request deadline" do
+    body <- unsafeInterleaveIO $ threadDelay 1000000 >> pure "{malformed-private-body"
+    runArkhamDBRequest 20000 (pure $ parseTokenResponse now body) `shouldReturn` Left (ArkhamDBRemoteError "Transport timed out")
+
+  it "times out lazy decoded token fields inside the request deadline" do
+    name <- unsafeInterleaveIO $ threadDelay 1000000 >> pure "private-account-name"
+    runArkhamDBRequest 20000 (pure $ Right tokens {remoteUserName = Just name}) `shouldReturn` Left (ArkhamDBRemoteError "Transport timed out")
+
   it "keeps the completion secret out of the real callback 302 body" do
     (store, ref) <- newStore
     time <- getCurrentTime

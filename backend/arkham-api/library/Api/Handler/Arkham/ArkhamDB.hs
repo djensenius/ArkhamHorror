@@ -1,6 +1,7 @@
 module Api.Handler.Arkham.ArkhamDB (
   getApiV1ArkhamArkhamDBCallbackR,
   arkhamDBCallback,
+  runArkhamDB,
   getApiV1ArkhamArkhamDBDecksR,
   getApiV1ArkhamArkhamDBStatusR,
   postApiV1ArkhamArkhamDBDeckImportR,
@@ -18,14 +19,20 @@ import Crypto.Random (getRandomBytes)
 import Data.ByteString.Base64.URL qualified as B64Url
 import Data.Time.Clock (getCurrentTime)
 import Database.Persist qualified as P
-import Database.Persist.Sql (Single, SqlBackend, rawSql, updateWhereCount)
+import Database.PostgreSQL.Simple (sqlState)
+import Database.Persist.Sql (Single, SqlBackend, rawExecute, rawSql, updateWhereCount)
 import Import hiding (state)
 import Network.HTTP.Types.Status qualified as Status
+import UnliftIO (MonadUnliftIO)
+import UnliftIO.Exception (catch, throwIO)
 
-runArkhamDB :: ArkhamDBAction Handler a -> Handler a
-runArkhamDB action = runExceptT action >>= either sendArkhamDBError pure
+runArkhamDB :: (MonadHandler m, MonadUnliftIO m) => ArkhamDBAction m a -> m a
+runArkhamDB action = (runExceptT action >>= either sendArkhamDBError pure) `catch` \err ->
+  if sqlState err == "55P03"
+    then sendArkhamDBError $ ArkhamDBError "remoteUnavailable" "ArkhamDB request failed"
+    else throwIO err
 
-sendArkhamDBError :: ArkhamDBError -> Handler a
+sendArkhamDBError :: MonadHandler m => ArkhamDBError -> m a
 sendArkhamDBError err = sendStatusJSON (arkhamDBErrorStatus err) err
 
 requireConfigured :: Handler ArkhamDBSettings
@@ -47,6 +54,9 @@ persistentStore = persistentStoreWith runDB
 persistentStoreWith :: (forall a. ReaderT SqlBackend Handler a -> Handler a) -> ArkhamDBStore Handler
 persistentStoreWith database = ArkhamDBStore
   { withRefreshLock = \userId action -> database do
+      -- Bound cross-process contention before waiting on the user row. This
+      -- setting is transaction-local and is reset before pool reuse.
+      rawExecute "SET LOCAL lock_timeout = '5s'" []
       lockArkhamDBUser userId
       connection <- ask
       lift $ action $ persistentStoreWith (`runReaderT` connection)

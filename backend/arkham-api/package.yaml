@@ -115,6 +115,7 @@ library:
     - path-pieces
     - persistent
     - persistent-postgresql
+    - postgresql-simple
     - pretty-simple
     - process
     - typed-process
@@ -246,6 +247,8 @@ tests:
       - uuid
       - mtl
       - persistent
+      - postgresql-simple
+      - zlib
       - random
       - base16-bytestring
       - cryptohash-sha256

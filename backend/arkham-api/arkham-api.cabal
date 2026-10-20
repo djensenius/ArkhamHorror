@@ -9121,6 +9121,7 @@ library
     , path-pieces
     , persistent
     , persistent-postgresql
+    , postgresql-simple
     , pretty-simple
     , process
     , ram
@@ -9792,6 +9793,7 @@ test-suite spec
     , monad-time
     , mtl
     , persistent
+    , postgresql-simple
     , random
     , relude
     , stm
@@ -9805,4 +9807,5 @@ test-suite spec
     , wai-extra
     , yaml
     , yesod-core
+    , zlib
   default-language: GHC2021

@@ -1110,6 +1110,10 @@ Stale operations return HTTP 409 `notLinked`. All ArkhamDB `notLinked` and
 Concurrent refresh losers re-read and use the winner's token, provided the
 account generation is unchanged. Revoke the app on ArkhamDB separately if needed
 (no documented revocation endpoint is assumed).
+Refresh transactions set a transaction-local five-second database lock deadline;
+lock contention returns sanitized HTTP 502 `remoteUnavailable` for retry.
+ArkhamDB HTTP calls have a ten-second deadline including decoding and fully
+evaluated results, and a 1 MiB decoded response limit (also for gzip/chunked bodies).
 
 Expired pending token rows cannot be finalized, but are only purged when a
 subsequent link-start request runs expired-state cleanup. Periodic cleanup of
@@ -1125,6 +1129,8 @@ execute `persistentStore` SQL or prove PostgreSQL concurrency behavior. The
 claim/finalize, refresh compare-and-update, generation locks and unique mapping
 constraint need database-backed integration coverage when a test DB harness is
 available; this is a known test-coverage gap, not a claim of SQL integration coverage.
+Real-PostgreSQL small-pool concurrency coverage (refresh failures, lock deadlines,
+unlink/finalization ordering and connection reuse) is tracked in Backlog task-2.46.
 
 List, import and sync use the linked account's OAuth API, so private decks do
 not require public sharing. Expired tokens (including a 60-second safety window)

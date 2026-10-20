@@ -21,6 +21,7 @@ module Arkham.ArkhamDB (
   hoistArkhamDBClient,
   isTokenExpired,
   parseTokenResponse,
+  runArkhamDBRequest,
   validateLinkState,
 ) where
 
@@ -60,7 +61,8 @@ data ArkhamDBClientError
   | ArkhamDBNotFound
   | ArkhamDBRemoteError Text
   | ArkhamDBDecodeError Text
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFData)
 
 data ArkhamDBOAuthTokens = ArkhamDBOAuthTokens
   { accessToken :: Text
@@ -70,7 +72,7 @@ data ArkhamDBOAuthTokens = ArkhamDBOAuthTokens
   , remoteUserName :: Maybe Text
   }
   deriving stock (Eq, Show, Generic)
-  deriving anyclass (ToJSON, FromJSON)
+  deriving anyclass (ToJSON, FromJSON, NFData)
 
 data ArkhamDBDeckSummary = ArkhamDBDeckSummary
   { id :: Text
@@ -82,6 +84,10 @@ data ArkhamDBDeckSummary = ArkhamDBDeckSummary
   , linkedLocalDeckId :: Maybe ArkhamDeckId
   }
   deriving stock (Eq, Show, Generic)
+
+-- Force every decoded field without requiring NFData for persistent keys.
+instance NFData ArkhamDBDeckSummary where
+  rnf = rnf . toJSON
 
 instance ToJSON ArkhamDBDeckSummary where
   toJSON = genericToJSON defaultOptions
@@ -104,6 +110,9 @@ data ArkhamDBRemoteDeck = ArkhamDBRemoteDeck
   , deckVersion :: Maybe Text
   }
   deriving stock (Eq, Show, Generic)
+
+instance NFData ArkhamDBRemoteDeck where
+  rnf ArkhamDBRemoteDeck {..} = rnf (toJSON deck, remoteDeckId, dateUpdate, deckVersion)
 
 instance FromJSON ArkhamDBRemoteDeck where
   parseJSON value = do
@@ -249,37 +258,27 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
   loadDeck accessToken deckId = authedGet accessToken $ "/api/oauth2/deck/load/" <> deckId
 
   tokenRequest :: [(Text, Text)] -> m (Either ArkhamDBClientError ArkhamDBOAuthTokens)
-  tokenRequest fields = safeRequest do
+  tokenRequest fields = liftIO $ runArkhamDBRequest 10000000 do
     req0 <- parseRequest $ T.unpack $ normalizeBase baseUrl <> "/oauth/v2/token"
     now <- Clock.getCurrentTime
     let form = [(encodeUtf8 k, encodeUtf8 v) | (k, v) <- fields <> [("client_id", clientId), ("client_secret", clientSecret)]]
         req = urlEncodedBody form req0 {method = "POST", requestHeaders = [(hAccept, "application/json")], redirectCount = 0, checkResponse = \_ _ -> pure ()}
-    response <- httpLbs req manager
-    let invalidGrant = do
-          value <- eitherDecode (responseBody response)
-          parseEither (withObject "OAuth error" (.: "error")) value :: Either String Text
-    pure $ if responseStatus response == status401 || (responseStatus response == status400 && invalidGrant == Right "invalid_grant")
-      then Left ArkhamDBUnauthorized
-      else if statusCode (responseStatus response) < 200 || statusCode (responseStatus response) >= 300
-        then Left $ ArkhamDBRemoteError "Unexpected HTTP status"
-        else parseTokenResponse now $ responseBody response
+    withBoundedResponse req manager \response -> do
+      let invalidGrant = do
+            value <- eitherDecode (responseBody response)
+            parseEither (withObject "OAuth error" (.: "error")) value :: Either String Text
+      pure $ if responseStatus response == status401 || (responseStatus response == status400 && invalidGrant == Right "invalid_grant")
+        then Left ArkhamDBUnauthorized
+        else if statusCode (responseStatus response) < 200 || statusCode (responseStatus response) >= 300
+          then Left $ ArkhamDBRemoteError "Unexpected HTTP status"
+          else parseTokenResponse now $ responseBody response
 
-  authedGet :: FromJSON a => Text -> Text -> m (Either ArkhamDBClientError a)
-  authedGet accessToken path = safeRequest do
+  authedGet :: (FromJSON a, NFData a) => Text -> Text -> m (Either ArkhamDBClientError a)
+  authedGet accessToken path = liftIO $ runArkhamDBRequest 10000000 do
     req0 <- parseRequest $ T.unpack $ normalizeBase baseUrl <> path
     let req = req0 {requestHeaders = [(hAuthorization, "Bearer " <> encodeUtf8 accessToken), (hAccept, "application/json")], redirectCount = 0, checkResponse = \_ _ -> pure ()}
-    response <- httpLbs req manager
-    pure $ responseResult response >>= first (const $ ArkhamDBDecodeError "Invalid response") . eitherDecode
-
-  -- Do not include HTTP exception bodies/requests in public errors: they may
-  -- contain the client secret, authorization code, or bearer token.
-  -- Bound the entire transport, including connection setup, since refresh
-  -- holds the user transaction lock until this request finishes.
-  safeRequest :: IO (Either ArkhamDBClientError a) -> m (Either ArkhamDBClientError a)
-  safeRequest action = liftIO $ timeout 10000000 (E.try @HttpException action) >>= \case
-    Nothing -> pure $ Left $ ArkhamDBRemoteError "Transport timed out"
-    Just (Left _) -> pure $ Left $ ArkhamDBRemoteError "Transport failed"
-    Just (Right result) -> pure result
+    withBoundedResponse req manager \response ->
+      pure $ responseResult response >>= first (const $ ArkhamDBDecodeError "Invalid response") . eitherDecode
 
   responseResult :: Response BSL.ByteString -> Either ArkhamDBClientError BSL.ByteString
   responseResult response
@@ -287,6 +286,29 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
     | responseStatus response `elem` [status403, status404] = Left ArkhamDBNotFound
     | statusCode (responseStatus response) < 200 || statusCode (responseStatus response) >= 300 = Left $ ArkhamDBRemoteError "Unexpected HTTP status"
     | otherwise = Right $ responseBody response
+
+-- http-client's BodyReader yields decompressed bytes. Count these, not wire
+-- Content-Length, so gzip and chunked responses have the same 1 MiB bound.
+withBoundedResponse :: Request -> Manager -> (Response BSL.ByteString -> IO (Either ArkhamDBClientError a)) -> IO (Either ArkhamDBClientError a)
+withBoundedResponse request manager action = withResponse request manager \response -> do
+  let readBody remaining chunks = do
+        chunk <- brReadSome (responseBody response) (min 32768 $ remaining + 1)
+        let size = fromIntegral $ BSL.length chunk
+        if size > remaining
+          then pure $ Left $ ArkhamDBRemoteError "Response too large"
+          else if BSL.null chunk
+            then action response {responseBody = BSL.concat $ reverse chunks}
+            else readBody (remaining - size) (chunk : chunks)
+  readBody (1024 * 1024 :: Int) []
+
+-- Include classification, JSON decoding and all decoded fields in the deadline,
+-- not just transport IO. Do not expose exception requests/bodies: they can hold
+-- client secrets, authorization codes or bearer tokens.
+runArkhamDBRequest :: NFData a => Int -> IO (Either ArkhamDBClientError a) -> IO (Either ArkhamDBClientError a)
+runArkhamDBRequest timeoutMicros action = timeout timeoutMicros (E.try @HttpException $ action >>= E.evaluate . force) >>= \case
+  Nothing -> pure $ Left $ ArkhamDBRemoteError "Transport timed out"
+  Just (Left _) -> pure $ Left $ ArkhamDBRemoteError "Transport failed"
+  Just (Right result) -> pure result
 
 parseTokenResponse :: UTCTime -> BSL.ByteString -> Either ArkhamDBClientError ArkhamDBOAuthTokens
 parseTokenResponse now body = first (const $ ArkhamDBDecodeError "Invalid token response") do
