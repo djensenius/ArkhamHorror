@@ -13,11 +13,8 @@ import Arkham.ArkhamDB.Service
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Base.Api.Types.Capabilities qualified as Capabilities
-import Control.Concurrent (modifyMVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
+import Control.Concurrent (modifyMVar, newEmptyMVar, newMVar, putMVar, takeMVar, tryPutMVar, withMVar)
 import Control.Exception (bracket, throwIO)
-import UnliftIO (withRunInIO)
-import UnliftIO.Async (wait, withAsync)
-import System.Timeout (timeout)
 import Data.Aeson
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -39,14 +36,17 @@ import Network.HTTP.Client.Internal (managerProxyInsecure)
 import Network.HTTP.Types (hLocation, status200, status302, status409)
 import Network.Wai qualified as Wai
 import Network.Wai.Test qualified as WaiTest
-import Relude hiding (modify, newEmptyMVar, newMVar, putMVar, second, state, takeMVar)
+import Relude hiding (modify, newEmptyMVar, newMVar, putMVar, second, state, takeMVar, tryPutMVar)
 import Settings (AppSettings (..), ArkhamDBSettings (..), compileTimeAppSettings, parseArkhamDBSettings)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openTempFile)
 import System.IO.Error (userError)
 import System.Log.FastLogger (defaultBufSize, flushLogStr, newFileLoggerSet, rmLoggerSet)
+import System.Timeout (timeout)
 import Test.Hspec hiding (pending)
 import Text.Read (read)
+import UnliftIO (withRunInIO)
+import UnliftIO.Async (wait, withAsync)
 import Yesod.Core qualified as Yesod
 
 -- Dispatch the same callback body as the production route through Yesod/WAI.
@@ -427,6 +427,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now}) userId s.storedAccounts}
     beforePersist <- newEmptyMVar
     allowPersist <- newEmptyMVar
+    loserRead <- newEmptyMVar
     calls <- newIORef (0 :: Int)
     let client = stubClient {refreshTokens = \_ -> do
           call <- atomicModifyIORef' calls (\n -> (n + 1, n))
@@ -439,9 +440,14 @@ spec = describe "ArkhamDB account linking and private decks" do
           { withRefreshLock = \uid action -> withRefreshLock store uid (action . delayPersistence)
           , updateAccount = (delayPersistence store).updateAccount
           }
+        loserStore = store {findAccount = \uid -> do
+          account <- store.findAccount uid
+          void $ tryPutMVar loserRead ()
+          pure account}
     withAsync (runExceptT $ accessTokenFor winnerStore client settings now userId) \winner -> do
       timeout 2000000 (takeMVar beforePersist) `shouldReturn` Just ()
-      withAsync (runExceptT $ accessTokenFor store client settings now userId) \loser -> do
+      withAsync (runExceptT $ accessTokenFor loserStore client settings now userId) \loser -> do
+        timeout 2000000 (takeMVar loserRead) `shouldReturn` Just ()
         -- On the old service there is no lock callback, but it completes the
         -- rejected stale refresh immediately, before the winner can persist.
         timeout 100000 (wait loser) `shouldReturn` Nothing
@@ -604,14 +610,14 @@ spec = describe "ArkhamDB account linking and private decks" do
       _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
       let overlay = DeckOverlay Nothing (Map.singleton "01016" "unimplemented-card") mempty mempty
       modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
-      (before, _) <- store.findDeck deckId >>= maybe (fail "missing deck") pure
-      toDeckErrors (arkhamDeckPlayList before) `shouldBe` []
+      (existingDeck, _) <- store.findDeck deckId >>= maybe (fail "missing deck") pure
+      toDeckErrors (arkhamDeckPlayList existingDeck) `shouldBe` []
       let changed = remote {deck = remote.deck {slots = Map.singleton "01016" 1}, deckVersion = Just "2.0"}
           client = stubClient {loadDeck = \_ _ -> pure $ Right changed}
       toDeckErrors changed.deck `shouldBe` []
       runExceptT (update (validating store) client) `shouldThrow` anyIOException
       stored <- readIORef ref
-      fmap arkhamDeckList (Map.lookup deckId stored.storedDecks) `shouldBe` Just (arkhamDeckList before)
+      fmap arkhamDeckList (Map.lookup deckId stored.storedDecks) `shouldBe` Just (arkhamDeckList existingDeck)
       fmap arkhamDBDeckLinkLastSyncedVersion (Map.lookup deckId stored.storedLinks) `shouldBe` Just remote.deckVersion
 
     it ("accepts an unsupported remote card removed by the overlay through " <> entryPoint) do

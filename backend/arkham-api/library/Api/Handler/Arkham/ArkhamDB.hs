@@ -42,6 +42,8 @@ configuredClient = getsYesod appArkhamDBClient >>= maybe
 persistentStore :: ArkhamDBStore Handler
 persistentStore = persistentStoreWith runDB
 
+-- The locked callback reuses this connection, never borrowing another pool
+-- connection (which could deadlock behind waiting refresh transactions).
 persistentStoreWith :: (forall a. ReaderT SqlBackend Handler a -> Handler a) -> ArkhamDBStore Handler
 persistentStoreWith database = ArkhamDBStore
   { withRefreshLock = \userId action -> database do

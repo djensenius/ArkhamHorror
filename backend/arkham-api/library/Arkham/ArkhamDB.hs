@@ -273,6 +273,8 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
 
   -- Do not include HTTP exception bodies/requests in public errors: they may
   -- contain the client secret, authorization code, or bearer token.
+  -- Bound the entire transport, including connection setup, since refresh
+  -- holds the user transaction lock until this request finishes.
   safeRequest :: IO (Either ArkhamDBClientError a) -> m (Either ArkhamDBClientError a)
   safeRequest action = liftIO $ timeout 10000000 (E.try @HttpException action) >>= \case
     Nothing -> pure $ Left $ ArkhamDBRemoteError "Transport timed out"
