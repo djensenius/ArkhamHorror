@@ -18,7 +18,7 @@ import Entity.Arkham.Deck
 import Entity.User
 import Network.HTTP.Client
 import Network.HTTP.Types.Status (status409)
-import Network.HTTP.Client.Internal (makeConnection, managerProxyInsecure)
+import Network.HTTP.Client.Internal (managerProxyInsecure)
 import Relude hiding (modify, second, state)
 import Settings (ArkhamDBSettings (..), parseArkhamDBSettings)
 import System.Directory (doesFileExist)

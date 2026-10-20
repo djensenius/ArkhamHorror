@@ -227,4 +227,3 @@ postApiV1ArkhamArkhamDBDeckSyncR deckId = do
   client <- configuredClient
   now <- liftIO getCurrentTime
   runArkhamDB $ syncRemoteDeck persistentStore client settings now userId deckId postApiV1ArkhamSyncDeckR
-
