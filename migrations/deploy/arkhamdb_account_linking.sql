@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS arkhamdb_link_states (
   expires_at timestamptz NOT NULL,
   created_at timestamptz NOT NULL,
   claimed_at timestamptz,
+  completion_hash varchar,
+  encrypted_pending_tokens varchar,
   CONSTRAINT unique_arkham_d_b_link_state_nonce UNIQUE (nonce)
 );
 

@@ -81,14 +81,18 @@ newStore = do
            in (s {storedStates = Map.insert nonce claimed s.storedStates}, Just claimed)
         _ -> (s, Nothing)
       findAccount uid = Map.lookup uid . storedAccounts <$> readIORef ref
-      finalizeLink nonce account = atomicModifyIORef' ref \s -> case Map.lookup nonce s.storedStates of
-        Just (Entity _ value) | isJust (arkhamDBLinkStateClaimedAt value) && arkhamDBLinkStateUserId value == arkhamDBAccountUserId account ->
-          let uid = arkhamDBAccountUserId account
-           in (s
-              { storedAccounts = Map.insert uid account s.storedAccounts
-              , storedStates = Map.filter ((/= uid) . arkhamDBLinkStateUserId . entityValue) s.storedStates
-              , storedLinks = Map.filterWithKey (\key _ -> maybe False ((/= uid) . arkhamDeckUserId) $ Map.lookup key s.storedDecks) s.storedLinks
-              }, True)
+      stagePendingLink time nonce digest encrypted = atomicModifyIORef' ref \s -> case Map.lookup nonce s.storedStates of
+        Just (Entity key value) | isJust (arkhamDBLinkStateClaimedAt value) && arkhamDBLinkStateExpiresAt value > time ->
+          (s {storedStates = Map.insert nonce (Entity key value {arkhamDBLinkStateCompletionHash = Just digest, arkhamDBLinkStateEncryptedPendingTokens = Just encrypted}) s.storedStates}, True)
+        _ -> (s, False)
+      findPendingLink time uid digest = do
+        s <- readIORef ref
+        pure $ find (pendingMatches time uid digest) $ map entityValue $ Map.elems s.storedStates
+      finalizeLink time uid digest account = atomicModifyIORef' ref \s -> case find (pendingMatches time uid digest . entityValue) $ Map.elems s.storedStates of
+        Just _ -> (s
+          { storedAccounts = Map.insert uid account s.storedAccounts
+          , storedStates = Map.filter ((/= uid) . arkhamDBLinkStateUserId . entityValue) s.storedStates
+          }, True)
         _ -> (s, False)
       updateAccount old updated = atomicModifyIORef' ref \s -> case Map.lookup (arkhamDBAccountUserId old) s.storedAccounts of
         Just current | arkhamDBAccountEncryptedAccessToken current == arkhamDBAccountEncryptedAccessToken old ->
@@ -119,11 +123,13 @@ newStore = do
   pure (ArkhamDBStore {..}, ref)
  where
   entityValue (Entity _ value) = value
+  pendingMatches time uid digest value = arkhamDBLinkStateUserId value == uid && arkhamDBLinkStateCompletionHash value == Just digest && arkhamDBLinkStateExpiresAt value > time && isJust (arkhamDBLinkStateEncryptedPendingTokens value)
 
 linkAccount :: ArkhamDBStore IO -> IO ()
 linkAccount store = do
   runExceptT (startLink store settings now userId "nonce") >>= (`shouldSatisfy` isRight)
-  runExceptT (completeLink store stubClient settings now "nonce" "authorization-code") `shouldReturn` Right ()
+  runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
+  runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
 
 expectCode :: Text -> Either ArkhamDBError a -> Expectation
 expectCode code = \case
@@ -135,26 +141,73 @@ spec = describe "ArkhamDB account linking and private decks" do
   it "rejects a wrong nonce without exchanging a code" do
     (store, _) <- newStore
     _ <- runExceptT $ startLink store settings now userId "nonce"
-    result <- runExceptT $ completeLink store stubClient settings now "wrong" "must-not-exchange"
+    result <- runExceptT $ completeLink store stubClient settings now "wrong" "must-not-exchange" "completion-secret"
     expectCode "oauthCallbackInvalidState" result
 
   it "rejects an expired nonce without exchanging a code" do
     (store, _) <- newStore
     _ <- runExceptT $ startLink store settings (addUTCTime (-601) now) userId "nonce"
-    let expired = Entity (ArkhamDBLinkStateKey UUID.nil) $ ArkhamDBLinkState "nonce" userId now (addUTCTime (-600) now) Nothing
+    let expired = Entity (ArkhamDBLinkStateKey UUID.nil) $ ArkhamDBLinkState "nonce" userId now (addUTCTime (-600) now) Nothing Nothing Nothing
     validateLinkState now "nonce" (Just expired) `shouldSatisfy` isLeft
-    result <- runExceptT $ completeLink store stubClient settings now "nonce" "must-not-exchange"
+    result <- runExceptT $ completeLink store stubClient settings now "nonce" "must-not-exchange" "completion-secret"
     expectCode "oauthCallbackInvalidState" result
 
   it "rejects a reused nonce without exchanging a second code" do
     (store, _) <- newStore
     linkAccount store
-    result <- runExceptT $ completeLink store stubClient settings now "nonce" "must-not-exchange"
+    result <- runExceptT $ completeLink store stubClient settings now "nonce" "must-not-exchange" "completion-secret"
     expectCode "oauthCallbackInvalidState" result
 
   it "rejects a mismatched stored nonce as well as an absent nonce" do
-    let state = Entity (ArkhamDBLinkStateKey UUID.nil) $ ArkhamDBLinkState "stored" userId (addUTCTime 600 now) now Nothing
+    let state = Entity (ArkhamDBLinkStateKey UUID.nil) $ ArkhamDBLinkState "stored" userId (addUTCTime 600 now) now Nothing Nothing Nothing
     validateLinkState now "different" (Just state) `shouldSatisfy` isLeft
+
+  it "rejects a transferred completion from a different app user without linking either account" do
+    (store, ref) <- newStore
+    _ <- runExceptT $ startLink store settings now userId "nonce"
+    runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
+    runExceptT (finalizePendingLink store settings now otherUserId "completion-secret") >>= expectCode "oauthCompletionInvalid"
+    s <- readIORef ref
+    Map.null s.storedAccounts `shouldBe` True
+    let pending = entityValue <$> Map.lookup "nonce" s.storedStates
+    fmap arkhamDBLinkStateCompletionHash pending `shouldBe` Just (Just $ completionHash "completion-secret")
+    fmap arkhamDBLinkStateEncryptedPendingTokens pending `shouldSatisfy` \case
+      Just (Just encrypted) -> not $ T.isInfixOf "private-access-token" encrypted
+      _ -> False
+    runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
+
+  it "rejects wrong and replayed completion secrets" do
+    (store, _) <- newStore
+    _ <- runExceptT $ startLink store settings now userId "nonce"
+    runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
+    runExceptT (finalizePendingLink store settings now userId "wrong") >>= expectCode "oauthCompletionInvalid"
+    runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
+    runExceptT (finalizePendingLink store settings now userId "completion-secret") >>= expectCode "oauthCompletionInvalid"
+
+  it "rejects an expired pending completion" do
+    (store, ref) <- newStore
+    _ <- runExceptT $ startLink store settings now userId "nonce"
+    runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
+    runExceptT (finalizePendingLink store settings (addUTCTime 600 now) userId "completion-secret") >>= expectCode "oauthCompletionInvalid"
+    s <- readIORef ref
+    Map.null s.storedAccounts `shouldBe` True
+
+  it "rechecks pending completion expiry atomically at finalization" do
+    (store, ref) <- newStore
+    _ <- runExceptT $ startLink store settings now userId "nonce"
+    runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
+    let racing = store {findPendingLink = \time uid digest -> do
+          pending <- store.findPendingLink time uid digest
+          modifyIORef' ref \s -> s {storedStates = fmap (\(Entity key value) -> Entity key value {arkhamDBLinkStateExpiresAt = now}) s.storedStates}
+          pure pending}
+    runExceptT (finalizePendingLink racing settings now userId "completion-secret") >>= expectCode "oauthCompletionInvalid"
+    s <- readIORef ref
+    Map.null s.storedAccounts `shouldBe` True
+
+  it "returns only the fixed app scheme and fixed callback error reasons" do
+    callbackLocation (Right "secret") `shouldBe` "arkhamhorror://arkhamdb-link?result=pending&completion=secret"
+    callbackLocation (Left "access_denied") `shouldBe` "arkhamhorror://arkhamdb-link?result=error&reason=access_denied"
+    callbackLocation (Left "https://evil.example") `shouldBe` "arkhamhorror://arkhamdb-link?result=error&reason=link_failed"
 
   it "stores encrypted access and refresh tokens, with authenticated randomized ciphertext" do
     (store, ref) <- newStore
@@ -230,7 +283,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     let client = stubClient {exchangeCode = \_ _ -> do
           runExceptT (unlinkLinkedAccount store userId) `shouldReturn` Right ()
           pure $ Right tokens}
-    runExceptT (completeLink store client settings now "nonce" "authorization-code") >>= expectCode "oauthCallbackInvalidState"
+    runExceptT (completeLink store client settings now "nonce" "authorization-code" "completion-secret") >>= expectCode "oauthCallbackInvalidState"
     s <- readIORef ref
     Map.null s.storedAccounts `shouldBe` True
     Map.null s.storedStates `shouldBe` True
@@ -320,7 +373,8 @@ spec = describe "ArkhamDB account linking and private decks" do
     (store, ref) <- newStore
     _ <- runExceptT $ startLink store settings now userId "nonce"
     let client = stubClient {exchangeCode = \_ _ -> pure $ Right parsed}
-    runExceptT (completeLink store client settings now "nonce" "authorization-code") `shouldReturn` Right ()
+    runExceptT (completeLink store client settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
+    runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
     status <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
     status.linked `shouldBe` True
     field (toJSON status) "remoteAccountId" `shouldBe` Null
@@ -348,7 +402,8 @@ spec = describe "ArkhamDB account linking and private decks" do
     field fixture "linkStart" `shouldBe` toJSON start
     status <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
     field fixture "unlinkedStatus" `shouldBe` toJSON status
-    runExceptT (completeLink store stubClient settings now "nonce" "authorization-code") `shouldReturn` Right ()
+    runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
+    runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
     linked <- runExceptT (linkStatus store userId) >>= either (fail . show) pure
     field fixture "linkedStatus" `shouldBe` toJSON linked
     summaries <- runExceptT (listRemoteDecks store stubClient settings now userId) >>= either (fail . show) pure

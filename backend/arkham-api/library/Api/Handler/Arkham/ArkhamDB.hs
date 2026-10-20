@@ -5,6 +5,7 @@ module Api.Handler.Arkham.ArkhamDB (
   postApiV1ArkhamArkhamDBDeckImportR,
   postApiV1ArkhamArkhamDBDeckSyncR,
   postApiV1ArkhamArkhamDBLinkStartR,
+  postApiV1ArkhamArkhamDBLinkCompleteR,
   deleteApiV1ArkhamArkhamDBLinkR,
 ) where
 
@@ -29,6 +30,7 @@ sendArkhamDBError err = sendStatusJSON status err
   status = case arkhamDBErrorCode err of
     "disabled" -> Status.status501
     "oauthCallbackInvalidState" -> Status.status400
+    "oauthCompletionInvalid" -> Status.status403
     "notLinked" -> Status.status401
     "tokenExpired" -> Status.status401
     "notFound" -> Status.status404
@@ -57,15 +59,19 @@ persistentStore = ArkhamDBStore
         [PersistUTCTime now, PersistText nonce, PersistUTCTime now]
       pure $ viaNonEmpty head rows
   , findAccount = \userId -> fmap entityVal <$> runDB (getBy $ UniqueArkhamDBAccountUser userId)
-  , finalizeLink = \nonce account -> runDB do
-      claimed <- rawSql "DELETE FROM arkhamdb_link_states WHERE nonce = ? AND user_id = ? AND claimed_at IS NOT NULL RETURNING ??"
-        [PersistText nonce, toPersistValue $ arkhamDBAccountUserId account]
+  , stagePendingLink = \now nonce digest encrypted -> runDB do
+      affected <- updateWhereCount
+        [ArkhamDBLinkStateNonce P.==. nonce, ArkhamDBLinkStateClaimedAt P.!=. Nothing, ArkhamDBLinkStateExpiresAt P.>. now]
+        [ArkhamDBLinkStateCompletionHash P.=. Just digest, ArkhamDBLinkStateEncryptedPendingTokens P.=. Just encrypted]
+      pure $ affected == 1
+  , findPendingLink = \now userId digest -> fmap entityVal <$> runDB (selectFirst
+      [ArkhamDBLinkStateUserId P.==. userId, ArkhamDBLinkStateCompletionHash P.==. Just digest, ArkhamDBLinkStateExpiresAt P.>. now] [])
+  , finalizeLink = \now userId digest account -> runDB do
+      claimed <- rawSql "DELETE FROM arkhamdb_link_states WHERE user_id = ? AND completion_hash = ? AND encrypted_pending_tokens IS NOT NULL AND claimed_at IS NOT NULL AND expires_at > ? RETURNING ??"
+        [toPersistValue userId, PersistText digest, PersistUTCTime now]
       if null (claimed :: [Entity ArkhamDBLinkState])
         then pure False
         else do
-          let userId = arkhamDBAccountUserId account
-          deckIds <- selectKeysList [ArkhamDeckUserId P.==. userId] []
-          unless (null deckIds) $ deleteWhere [ArkhamDBDeckLinkDeckId P.<-. deckIds]
           deleteWhere [ArkhamDBLinkStateUserId P.==. userId]
           void $ upsert account (accountUpdates account)
           pure True
@@ -127,19 +133,40 @@ postApiV1ArkhamArkhamDBLinkStartR = do
   settings <- requireConfigured
   userId <- getRequestUserId
   now <- liftIO getCurrentTime
-  nonce <- decodeUtf8 . B64Url.encodeUnpadded <$> liftIO (getRandomBytes 32)
+  nonce <- randomSecret
   runArkhamDB $ startLink persistentStore settings now userId nonce
 
 getApiV1ArkhamArkhamDBCallbackR :: Handler Html
 getApiV1ArkhamArkhamDBCallbackR = do
   settings <- requireConfigured
-  nonce <- requireGetParam "state"
-  code <- requireGetParam "code"
-  client <- configuredClient
+  nonce <- lookupGetParam "state"
+  code <- lookupGetParam "code"
+  oauthError <- lookupGetParam "error"
+  web <- (== Just "1") <$> lookupGetParam "web"
+  result <- case (oauthError, nonce, code) of
+    (Just "access_denied", _, _) -> pure $ Left "access_denied"
+    (Nothing, Just state, Just authorizationCode) -> do
+      client <- configuredClient
+      now <- liftIO getCurrentTime
+      secret <- randomSecret
+      runExceptT (completeLink persistentStore client settings now state authorizationCode secret) <&> \case
+        Left _ -> Left "link_failed"
+        Right () -> Right secret
+    _ -> pure $ Left "link_failed"
+  if web
+    then pure $ toHtml ("Return to the Arkham Horror app to continue linking." :: Text)
+    else redirectWith Status.status302 $ callbackLocation result
+
+postApiV1ArkhamArkhamDBLinkCompleteR :: Handler ()
+postApiV1ArkhamArkhamDBLinkCompleteR = do
+  settings <- requireConfigured
+  userId <- getRequestUserId
+  ArkhamDBLinkCompleteRequest secret <- requireCheckJsonBody
   now <- liftIO getCurrentTime
-  runExceptT (completeLink persistentStore client settings now nonce code) >>= \case
-    Left _ -> sendResponseStatus Status.status400 $ toHtml ("ArkhamDB linking failed. Please start again in the app." :: Text)
-    Right () -> pure $ toHtml ("ArkhamDB account linked. You may close this window." :: Text)
+  runArkhamDB $ finalizePendingLink persistentStore settings now userId secret
+
+randomSecret :: Handler Text
+randomSecret = decodeUtf8 . B64Url.encodeUnpadded <$> liftIO (getRandomBytes 32)
 
 getApiV1ArkhamArkhamDBStatusR :: Handler ArkhamDBLinkStatusResponse
 getApiV1ArkhamArkhamDBStatusR = do

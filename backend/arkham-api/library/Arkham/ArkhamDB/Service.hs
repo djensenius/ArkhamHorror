@@ -4,7 +4,7 @@ import Arkham.ArkhamDB
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
 import Control.Monad.Except
-import Data.Aeson (ToJSON (..), object, (.=))
+import Data.Aeson (ToJSON (..), object, (.=), encode, eitherDecodeStrict')
 import Data.Time.Clock (UTCTime, addUTCTime)
 import Database.Persist (Entity (..))
 import Entity.Arkham.ArkhamDBAccount
@@ -21,7 +21,9 @@ data ArkhamDBStore m = ArkhamDBStore
   { saveLinkState :: ArkhamDBLinkState -> m ()
   , claimLinkState :: UTCTime -> Text -> m (Maybe (Entity ArkhamDBLinkState))
   , findAccount :: UserId -> m (Maybe ArkhamDBAccount)
-  , finalizeLink :: Text -> ArkhamDBAccount -> m Bool
+  , stagePendingLink :: UTCTime -> Text -> Text -> Text -> m Bool
+  , findPendingLink :: UTCTime -> UserId -> Text -> m (Maybe ArkhamDBLinkState)
+  , finalizeLink :: UTCTime -> UserId -> Text -> ArkhamDBAccount -> m Bool
   , updateAccount :: ArkhamDBAccount -> ArkhamDBAccount -> m Bool
   , unlinkAccount :: UserId -> m ()
   , findDeckLinks :: UserId -> m [(ArkhamDeckId, ArkhamDBDeckLink)]
@@ -52,20 +54,33 @@ startLink :: Monad m => ArkhamDBStore m -> ArkhamDBSettings -> UTCTime -> UserId
 startLink store settings now userId nonce = do
   let expiresAt = addUTCTime 600 now
       authorizeUrl = arkhamDBAuthorizeUrl settings.arkhamDBBaseUrl settings.arkhamDBClientId (redirectUri settings) nonce
-  lift $ store.saveLinkState $ ArkhamDBLinkState nonce userId expiresAt now Nothing
+  lift $ store.saveLinkState $ ArkhamDBLinkState nonce userId expiresAt now Nothing Nothing Nothing
   pure ArkhamDBLinkStartResponse {..}
 
-completeLink :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> Text -> Text -> ArkhamDBAction m ()
-completeLink store client settings now nonce code = do
+-- Callback claims state and stages encrypted credentials, but cannot link an account.
+completeLink :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> Text -> Text -> Text -> ArkhamDBAction m ()
+completeLink store client settings now nonce code secret = do
   state <- lift $ store.claimLinkState now nonce
-  userId <- either (throwError . ArkhamDBError "oauthCallbackInvalidState") pure $ validateLinkState now nonce state
+  _ <- either (throwError . ArkhamDBError "oauthCallbackInvalidState") pure $ validateLinkState now nonce state
   tokens <- remoteResult =<< lift (client.exchangeCode code $ redirectUri settings)
-  existing <- lift $ store.findAccount userId
-  account <- encryptedAccount settings now userId tokens
-  -- Relinking invalidates old deck associations: they belong to the previous
-  -- remote account, not necessarily to the account just authorized.
-  saved <- lift $ store.finalizeLink nonce account {arkhamDBAccountCreatedAt = maybe now arkhamDBAccountCreatedAt existing}
+  encrypted <- encryptToken settings.arkhamDBTokenKey $ decodeUtf8 $ toStrict $ encode tokens
+  saved <- lift $ store.stagePendingLink now nonce (completionHash secret) encrypted.unTokenCiphertext
   unless saved $ throwError $ ArkhamDBError "oauthCallbackInvalidState" "Link authorization is no longer active"
+
+-- Completion must be authenticated as the initiating local user, independently
+-- of the browser callback. The store rechecks expiry and consumes atomically.
+finalizePendingLink :: MonadIO m => ArkhamDBStore m -> ArkhamDBSettings -> UTCTime -> UserId -> Text -> ArkhamDBAction m ()
+finalizePendingLink store settings now userId secret = do
+  let digest = completionHash secret
+      invalid = ArkhamDBError "oauthCompletionInvalid" "Link completion is invalid or expired"
+  pending <- lift (store.findPendingLink now userId digest) >>= maybe (throwError invalid) pure
+  encrypted <- maybe (throwError invalid) pure $ arkhamDBLinkStateEncryptedPendingTokens pending
+  plaintext <- decryptStored settings encrypted
+  tokens <- either (const $ throwError $ ArkhamDBError "storageFailure" "Pending credentials could not be decrypted") pure $ eitherDecodeStrict' $ encodeUtf8 plaintext
+  account <- encryptedAccount settings now userId tokens
+  existing <- lift $ store.findAccount userId
+  saved <- lift $ store.finalizeLink now userId digest account {arkhamDBAccountCreatedAt = maybe now arkhamDBAccountCreatedAt existing}
+  unless saved $ throwError invalid
 
 encryptedAccount :: MonadIO m => ArkhamDBSettings -> UTCTime -> UserId -> ArkhamDBOAuthTokens -> m ArkhamDBAccount
 encryptedAccount settings now userId tokens = do

@@ -35,6 +35,8 @@ ArkhamDBLinkState sql=arkhamdb_link_states
   expiresAt UTCTime
   createdAt UTCTime
   claimedAt UTCTime Maybe
+  completionHash Text Maybe
+  encryptedPendingTokens Text Maybe
   UniqueArkhamDBLinkStateNonce nonce
   deriving Generic Show
 ArkhamDBDeckLink sql=arkhamdb_deck_links

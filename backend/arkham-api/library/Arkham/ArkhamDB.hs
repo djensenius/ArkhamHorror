@@ -5,6 +5,9 @@ module Arkham.ArkhamDB (
   ArkhamDBClientError (..),
   ArkhamDBDeckSummary (..),
   ArkhamDBImportRequest (..),
+  ArkhamDBLinkCompleteRequest (..),
+  completionHash,
+  callbackLocation,
   ArkhamDBLinkStartResponse (..),
   ArkhamDBLinkStatusResponse (..),
   ArkhamDBOAuthTokens (..),
@@ -65,6 +68,7 @@ data ArkhamDBOAuthTokens = ArkhamDBOAuthTokens
   , remoteUserName :: Maybe Text
   }
   deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON, FromJSON)
 
 data ArkhamDBDeckSummary = ArkhamDBDeckSummary
   { id :: Text
@@ -114,6 +118,19 @@ newtype ArkhamDBImportRequest = ArkhamDBImportRequest {arkhamdbDeckId :: Text}
 
 instance FromJSON ArkhamDBImportRequest where
   parseJSON = withObject "ArkhamDBImportRequest" \o -> ArkhamDBImportRequest <$> (parseTextId =<< o .: "deckId")
+
+newtype ArkhamDBLinkCompleteRequest = ArkhamDBLinkCompleteRequest {completion :: Text}
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- Only a digest is persisted; the bearer secret is returned to the fixed app scheme.
+completionHash :: Text -> Text
+completionHash = decodeUtf8 . B64Url.encodeUnpadded . SHA256.hash . encodeUtf8
+
+callbackLocation :: Either Text Text -> Text
+callbackLocation result = "arkhamhorror://arkhamdb-link?" <> decodeUtf8 (renderQuery False $ case result of
+  Right secret -> [("result", Just "pending"), ("completion", Just $ encodeUtf8 secret)]
+  Left reason -> [("result", Just "error"), ("reason", Just $ encodeUtf8 $ if reason == "access_denied" then reason else "link_failed")])
 
 -- | Returned by POST /link/start. The nonce stays server-side in the URL state;
 -- clients only need the URL and expiry.
