@@ -255,6 +255,17 @@ spec = describe "ArkhamDB account linking and private decks" do
     decryptToken settings.arkhamDBTokenKey . TokenCiphertext <$> arkhamDBAccountEncryptedRefreshToken account
       `shouldBe` Just (Right "private-refresh-token")
 
+  it "uses the concurrent refresh winner instead of reporting notLinked or tokenExpired" do
+    for_ [False, True] \revokedLoser -> do
+      (store, ref) <- newStore
+      linkAccount store
+      modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now}) userId s.storedAccounts}
+      let client = stubClient {refreshTokens = \_ -> do
+            winner <- encryptedAccount settings now userId tokens {accessToken = "winner-token"}
+            modifyIORef' ref \s -> s {storedAccounts = Map.insert userId winner s.storedAccounts}
+            pure $ if revokedLoser then Left ArkhamDBUnauthorized else Right tokens {accessToken = "loser-token"}}
+      runExceptT (accessTokenFor store client settings now userId) `shouldReturn` Right "winner-token"
+
   it "retries a rejected bearer token once with a refresh" do
     (store, _) <- newStore
     linkAccount store

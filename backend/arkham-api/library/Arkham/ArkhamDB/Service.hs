@@ -105,17 +105,27 @@ decryptStored settings = either (const $ throwError $ ArkhamDBError "storageFail
 
 refreshAccount :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> ArkhamDBAccount -> ArkhamDBAction m Text
 refreshAccount store client settings now account = do
-  encrypted <- maybe (throwError $ ArkhamDBError "tokenExpired" "ArkhamDB token expired; relink required") pure (arkhamDBAccountEncryptedRefreshToken account)
-  refresh <- decryptStored settings encrypted
-  tokens <- remoteResult =<< lift (client.refreshTokens refresh)
-  updated <- encryptedAccount settings now (arkhamDBAccountUserId account) tokens {refreshToken = tokens.refreshToken <|> Just refresh}
-  saved <- lift $ store.updateAccount account updated
-    { arkhamDBAccountRemoteUserId = arkhamDBAccountRemoteUserId account
-    , arkhamDBAccountRemoteUserName = arkhamDBAccountRemoteUserName account
-    , arkhamDBAccountCreatedAt = arkhamDBAccountCreatedAt account
-    }
-  unless saved $ throwError $ ArkhamDBError "notLinked" "ArkhamDB account link changed during refresh"
-  pure tokens.accessToken
+  generation <- accountGeneration store (arkhamDBAccountUserId account)
+  let useConcurrentRefresh failure = do
+        currentGeneration <- lift $ store.findAccountGeneration (arkhamDBAccountUserId account)
+        current <- lift $ store.findAccount (arkhamDBAccountUserId account)
+        case current of
+          Just value | currentGeneration == Just generation
+            && arkhamDBAccountEncryptedAccessToken value /= arkhamDBAccountEncryptedAccessToken account
+            && not (isTokenExpired now $ arkhamDBAccountExpiresAt value) -> decryptStored settings $ arkhamDBAccountEncryptedAccessToken value
+          _ -> throwError failure
+      refreshCurrent = do
+        encrypted <- maybe (throwError $ ArkhamDBError "tokenExpired" "ArkhamDB token expired; relink required") pure (arkhamDBAccountEncryptedRefreshToken account)
+        refresh <- decryptStored settings encrypted
+        tokens <- remoteResult =<< lift (client.refreshTokens refresh)
+        updated <- encryptedAccount settings now (arkhamDBAccountUserId account) tokens {refreshToken = tokens.refreshToken <|> Just refresh}
+        saved <- lift $ store.updateAccount account updated
+          { arkhamDBAccountRemoteUserId = arkhamDBAccountRemoteUserId account
+          , arkhamDBAccountRemoteUserName = arkhamDBAccountRemoteUserName account
+          , arkhamDBAccountCreatedAt = arkhamDBAccountCreatedAt account
+          }
+        if saved then pure tokens.accessToken else useConcurrentRefresh linkChanged
+  refreshCurrent `catchError` \err -> if arkhamDBErrorCode err == "tokenExpired" then useConcurrentRefresh err else throwError err
 
 withAccessToken :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> UserId -> (Text -> m (Either ArkhamDBClientError a)) -> ArkhamDBAction m a
 withAccessToken store client settings now userId action = do
