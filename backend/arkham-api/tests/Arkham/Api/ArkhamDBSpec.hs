@@ -15,6 +15,8 @@ import Database.Persist (Entity (..))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.User
+import Network.HTTP.Client
+import Network.HTTP.Client.Internal (makeConnection, managerProxyInsecure)
 import Relude hiding (modify, second, state)
 import Settings (ArkhamDBSettings (..), parseArkhamDBSettings)
 import Data.Aeson.Types (parseEither)
@@ -246,6 +248,21 @@ spec = describe "ArkhamDB account linking and private decks" do
           pure $ if token == "private-access-token" then Left ArkhamDBUnauthorized else Right []}
     runExceptT (listRemoteDecks store client settings now userId) `shouldReturn` Right []
     readIORef calls `shouldReturn` ["private-access-token", "refreshed-token"]
+
+  it "maps refresh HTTP 400 invalid_grant and 401 to tokenExpired using the real HTTP client" do
+    for_ ["400 Bad Request", "401 Unauthorized"] \status -> do
+      (store, ref) <- newStore
+      linkAccount store
+      modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now}) userId s.storedAccounts}
+      let body = "{\"error\":\"invalid_grant\"}"
+          response = "HTTP/1.1 " <> status <> "\r\nContent-Length: 25\r\nConnection: close\r\n\r\n" <> body
+      incoming <- newIORef response
+      manager <- newManager defaultManagerSettings
+        { managerRawConnection = pure $ \_ _ _ -> makeConnection (atomicModifyIORef' incoming (\bytes -> (mempty, bytes))) (const $ pure ()) (pure ())
+        , managerProxyInsecure = noProxy
+        }
+      let client = httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
+      runExceptT (listRemoteDecks store client settings now userId) >>= expectCode "tokenExpired"
 
   it "requires relinking when expired credentials have no refresh token" do
     (store, ref) <- newStore

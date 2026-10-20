@@ -46,7 +46,7 @@ import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.User
 import Network.HTTP.Client
-import Network.HTTP.Types (hAccept, hAuthorization, status401, status404, statusCode)
+import Network.HTTP.Types (hAccept, hAuthorization, status400, status401, status403, status404, statusCode)
 import Network.HTTP.Types.URI (renderQuery)
 import Relude hiding (id, state)
 
@@ -249,7 +249,9 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
     let form = [(encodeUtf8 k, encodeUtf8 v) | (k, v) <- fields <> [("client_id", clientId), ("client_secret", clientSecret)]]
         req = urlEncodedBody form req0 {method = "POST", requestHeaders = [(hAccept, "application/json")], redirectCount = 0, checkResponse = \_ _ -> pure ()}
     response <- httpLbs req manager
-    pure $ responseResult response >>= parseTokenResponse now
+    pure $ if responseStatus response `elem` [status400, status401]
+      then Left ArkhamDBUnauthorized
+      else responseResult response >>= parseTokenResponse now
 
   authedGet :: FromJSON a => Text -> Text -> m (Either ArkhamDBClientError a)
   authedGet accessToken path = safeRequest do
@@ -268,7 +270,7 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
   responseResult :: Response BSL.ByteString -> Either ArkhamDBClientError BSL.ByteString
   responseResult response
     | responseStatus response == status401 = Left ArkhamDBUnauthorized
-    | responseStatus response == status404 = Left ArkhamDBNotFound
+    | responseStatus response `elem` [status403, status404] = Left ArkhamDBNotFound
     | statusCode (responseStatus response) < 200 || statusCode (responseStatus response) >= 300 = Left $ ArkhamDBRemoteError "Unexpected HTTP status"
     | otherwise = Right $ responseBody response
 
