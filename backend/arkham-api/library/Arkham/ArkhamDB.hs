@@ -24,9 +24,9 @@ module Arkham.ArkhamDB (
   validateLinkState,
 ) where
 
-import Control.Exception qualified as E
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
+import Control.Exception qualified as E
 import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.Types (AEADMode (AEAD_GCM), AuthTag (..), aeadInit, aeadSimpleDecrypt, aeadSimpleEncrypt, cipherInit)
 import Crypto.Error (CryptoFailable (..))

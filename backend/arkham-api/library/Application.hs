@@ -93,7 +93,6 @@ import Text.Regex.Posix ((=~))
 
 import Api.Handler.ApiKeys
 import Api.Handler.Arkham.Achievements
-import Arkham.ArkhamDB (httpArkhamDBClient)
 import Api.Handler.Arkham.ArkhamDB
 import Api.Handler.Arkham.Admin.GameStats
 import Api.Handler.Arkham.Admin.Metrics
@@ -115,6 +114,7 @@ import Api.Handler.Arkham.PendingGames
 import Api.Handler.Arkham.Replay
 import Api.Handler.Arkham.Undo
 import Api.Handler.ThirdEdition
+import Arkham.ArkhamDB (httpArkhamDBClient)
 import Base.Api.Handler.Account
 import Base.Api.Handler.Authentication
 import Base.Api.Handler.Capabilities
