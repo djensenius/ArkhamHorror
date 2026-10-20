@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS arkhamdb_link_states (
 CREATE TABLE IF NOT EXISTS arkhamdb_deck_links (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
   deck_id uuid REFERENCES arkham_decks (id) ON DELETE CASCADE NOT NULL,
+  user_id bigint REFERENCES users (id) ON DELETE CASCADE NOT NULL,
   remote_deck_id varchar NOT NULL,
   last_synced_date_update varchar,
   last_synced_version varchar,
@@ -41,7 +42,8 @@ CREATE TABLE IF NOT EXISTS arkhamdb_deck_links (
   last_error varchar,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
-  CONSTRAINT unique_arkham_d_b_deck_link_deck UNIQUE (deck_id)
+  CONSTRAINT unique_arkham_d_b_deck_link_deck UNIQUE (deck_id),
+  CONSTRAINT unique_arkham_d_b_deck_link_user_remote UNIQUE (user_id, remote_deck_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_arkhamdb_deck_links_remote

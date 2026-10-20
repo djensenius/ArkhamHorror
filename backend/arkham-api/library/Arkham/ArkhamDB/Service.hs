@@ -20,6 +20,7 @@ import Settings (ArkhamDBSettings (..))
 data ArkhamDBStore m = ArkhamDBStore
   { saveLinkState :: ArkhamDBLinkState -> m ()
   , claimLinkState :: UTCTime -> Text -> m (Maybe (Entity ArkhamDBLinkState))
+  , findAccountGeneration :: UserId -> m (Maybe ArkhamDBAccountId)
   , findAccount :: UserId -> m (Maybe ArkhamDBAccount)
   , stagePendingLink :: UTCTime -> Text -> Text -> Text -> m Bool
   , findPendingLink :: UTCTime -> UserId -> Text -> m (Maybe ArkhamDBLinkState)
@@ -28,8 +29,9 @@ data ArkhamDBStore m = ArkhamDBStore
   , unlinkAccount :: UserId -> m ()
   , findDeckLinks :: UserId -> m [(ArkhamDeckId, ArkhamDBDeckLink)]
   , findDeck :: ArkhamDeckId -> m (Maybe (ArkhamDeck, Maybe ArkhamDBDeckLink))
-  , saveImportedDeck :: ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m (Entity ArkhamDeck)
-  , saveSyncedDeck :: ArkhamDeckId -> ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m ()
+  , saveImportedDeck :: ArkhamDBAccountId -> ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m (Maybe (Entity ArkhamDeck))
+  , saveSyncedDeck :: ArkhamDBAccountId -> ArkhamDeckId -> ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m Bool
+  , dropDeckLink :: ArkhamDBAccountId -> UserId -> ArkhamDeckId -> m Bool
   , validateDeck :: ArkhamDBDecklist -> m ()
   }
 
@@ -138,15 +140,34 @@ listRemoteDecks store client settings now userId = do
   links <- lift $ store.findDeckLinks userId
   pure [summary {linkedLocalDeckId = fst <$> find ((== summary.id) . arkhamDBDeckLinkRemoteDeckId . snd) links} | summary <- summaries]
 
-importRemoteDeck :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> UserId -> Text -> ArkhamDBAction m (Entity ArkhamDeck)
-importRemoteDeck store client settings now userId remoteId = do
-  remote <- withAccessToken store client settings now userId (\token -> client.loadDeck token remoteId)
-  lift $ store.validateDeck remote.deck
-  let decklist = remote.deck {Decklist.url = remote.deck.url <|> Just (settings.arkhamDBBaseUrl <> "/deck/view/" <> remoteId)}
-      deck = ArkhamDeck userId decklist.url (fromMaybe decklist.investigator_name decklist.decklist_name) decklist.investigator_name decklist Nothing Nothing
-  lift $ store.saveImportedDeck deck remote now
+-- The account row id is a generation: relink replaces that row, refresh does not.
+-- Persistence checks it under the same transaction lock used by unlink/relink.
+accountGeneration :: Monad m => ArkhamDBStore m -> UserId -> ArkhamDBAction m ArkhamDBAccountId
+accountGeneration store userId = lift (store.findAccountGeneration userId) >>= maybe (throwError linkChanged) pure
 
--- | A missing mapping keeps the pre-existing public URL sync path intact.
+linkChanged :: ArkhamDBError
+linkChanged = ArkhamDBError "notLinked" "ArkhamDB account link changed; retry after linking"
+
+publicDeckUrl :: ArkhamDBSettings -> Text -> Text
+publicDeckUrl settings remoteId = T.dropWhileEnd (== '/') settings.arkhamDBBaseUrl <> "/api/public/deck/" <> remoteId
+
+remoteDecklist :: ArkhamDBSettings -> ArkhamDBRemoteDeck -> ArkhamDBDecklist
+remoteDecklist settings remote = remote.deck {Decklist.url = Just $ publicDeckUrl settings remote.remoteDeckId}
+
+importRemoteDeck :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> UserId -> Text -> (ArkhamDeckId -> m (Entity ArkhamDeck)) -> ArkhamDBAction m (Entity ArkhamDeck)
+importRemoteDeck store client settings now userId remoteId publicSync = do
+  links <- lift $ store.findDeckLinks userId
+  case find ((== remoteId) . arkhamDBDeckLinkRemoteDeckId . snd) links of
+    Just (deckId, _) -> syncRemoteDeck store client settings now userId deckId publicSync
+    Nothing -> do
+      generation <- accountGeneration store userId
+      remote <- withAccessToken store client settings now userId (\token -> client.loadDeck token remoteId)
+      lift $ store.validateDeck remote.deck
+      let decklist = remoteDecklist settings remote
+          deck = ArkhamDeck userId decklist.url (fromMaybe decklist.investigator_name decklist.decklist_name) decklist.investigator_name decklist Nothing Nothing
+      lift (store.saveImportedDeck generation deck remote now) >>= maybe (throwError linkChanged) pure
+
+-- | Missing or inaccessible mappings use the existing public URL sync path.
 -- Both paths return the same local deck response and never expose tokens.
 syncRemoteDeck :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> UserId -> ArkhamDeckId -> (ArkhamDeckId -> m (Entity ArkhamDeck)) -> ArkhamDBAction m (Entity ArkhamDeck)
 syncRemoteDeck store client settings now userId deckId publicSync = do
@@ -155,16 +176,26 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
   case link of
     Nothing -> lift $ publicSync deckId
     Just mapping -> do
-      remote <- withAccessToken store client settings now userId (\token -> client.loadDeck token (arkhamDBDeckLinkRemoteDeckId mapping))
-      lift $ store.validateDeck remote.deck
-      let updated = deck
-            { arkhamDeckList = remote.deck
-            , arkhamDeckUrl = remote.deck.url <|> arkhamDeckUrl deck
-            , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
-            , arkhamDeckInvestigatorName = remote.deck.investigator_name
-            }
-      lift $ store.saveSyncedDeck deckId updated remote now
-      pure $ Entity deckId updated
+      generation <- accountGeneration store userId
+      loaded <- (Right <$> withAccessToken store client settings now userId (\token -> client.loadDeck token (arkhamDBDeckLinkRemoteDeckId mapping))) `catchError` (pure . Left)
+      case loaded of
+        Left err | arkhamDBErrorCode err == "notFound" -> do
+          dropped <- lift $ store.dropDeckLink generation userId deckId
+          unless dropped $ throwError linkChanged
+          lift $ publicSync deckId
+        Left err -> throwError err
+        Right remote -> do
+          lift $ store.validateDeck remote.deck
+          let decklist = remoteDecklist settings remote
+              updated = deck
+                { arkhamDeckList = decklist
+                , arkhamDeckUrl = decklist.url
+                , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
+                , arkhamDeckInvestigatorName = remote.deck.investigator_name
+                }
+          saved <- lift $ store.saveSyncedDeck generation deckId updated remote now
+          unless saved $ throwError linkChanged
+          pure $ Entity deckId updated
 
 linkStatus :: Monad m => ArkhamDBStore m -> UserId -> ArkhamDBAction m ArkhamDBLinkStatusResponse
 linkStatus store userId = do

@@ -42,6 +42,7 @@ ArkhamDBLinkState sql=arkhamdb_link_states
 ArkhamDBDeckLink sql=arkhamdb_deck_links
   Id UUID default=uuid_generate_v4()
   deckId ArkhamDeckId OnDeleteCascade
+  userId UserId OnDeleteCascade
   remoteDeckId Text
   lastSyncedDateUpdate Text Maybe
   lastSyncedVersion Text Maybe
@@ -50,5 +51,6 @@ ArkhamDBDeckLink sql=arkhamdb_deck_links
   createdAt UTCTime
   updatedAt UTCTime
   UniqueArkhamDBDeckLinkDeck deckId
+  UniqueArkhamDBDeckLinkUserRemote userId remoteDeckId
   deriving Generic Show
 |]

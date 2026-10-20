@@ -68,13 +68,15 @@ stubClient = ArkhamDBClient
 data Stored = Stored
   { storedStates :: Map Text (Entity ArkhamDBLinkState)
   , storedAccounts :: Map UserId ArkhamDBAccount
+  , storedGenerations :: Map UserId ArkhamDBAccountId
+  , storedNextGeneration :: Word32
   , storedDecks :: Map ArkhamDeckId ArkhamDeck
   , storedLinks :: Map ArkhamDeckId ArkhamDBDeckLink
   }
 
 newStore :: IO (ArkhamDBStore IO, IORef Stored)
 newStore = do
-  ref <- newIORef $ Stored mempty mempty mempty mempty
+  ref <- newIORef $ Stored mempty mempty mempty 1 mempty mempty
   let modify = modifyIORef' ref
       saveLinkState state = modify \s -> s {storedStates = Map.insert (arkhamDBLinkStateNonce state) (Entity (ArkhamDBLinkStateKey UUID.nil) state) s.storedStates}
       claimLinkState time nonce = atomicModifyIORef' ref \s -> case Map.lookup nonce s.storedStates of
@@ -82,6 +84,7 @@ newStore = do
           let claimed = Entity key value {arkhamDBLinkStateClaimedAt = Just time}
            in (s {storedStates = Map.insert nonce claimed s.storedStates}, Just claimed)
         _ -> (s, Nothing)
+      findAccountGeneration uid = Map.lookup uid . storedGenerations <$> readIORef ref
       findAccount uid = Map.lookup uid . storedAccounts <$> readIORef ref
       stagePendingLink time nonce digest encrypted = atomicModifyIORef' ref \s -> case Map.lookup nonce s.storedStates of
         Just (Entity key value) | isJust (arkhamDBLinkStateClaimedAt value) && arkhamDBLinkStateExpiresAt value > time ->
@@ -93,6 +96,8 @@ newStore = do
       finalizeLink time uid digest account = atomicModifyIORef' ref \s -> case find (pendingMatches time uid digest . entityValue) $ Map.elems s.storedStates of
         Just _ -> (s
           { storedAccounts = Map.insert uid account s.storedAccounts
+          , storedGenerations = Map.insert uid (ArkhamDBAccountKey $ UUID.fromWords 0 0 0 s.storedNextGeneration) s.storedGenerations
+          , storedNextGeneration = s.storedNextGeneration + 1
           , storedStates = Map.filter ((/= uid) . arkhamDBLinkStateUserId . entityValue) s.storedStates
           }, True)
         _ -> (s, False)
@@ -102,6 +107,7 @@ newStore = do
         _ -> (s, False)
       unlinkAccount uid = modify \s -> s
         { storedAccounts = Map.delete uid s.storedAccounts
+        , storedGenerations = Map.delete uid s.storedGenerations
         , storedStates = Map.filter ((/= uid) . arkhamDBLinkStateUserId . entityValue) s.storedStates
         , storedLinks = Map.filterWithKey (\key _ -> maybe False ((/= uid) . arkhamDeckUserId) $ Map.lookup key s.storedDecks) s.storedLinks
         }
@@ -113,14 +119,21 @@ newStore = do
         pure do
           deck <- Map.lookup key s.storedDecks
           pure (deck, Map.lookup key s.storedLinks)
-      saveImportedDeck deck remoteDeck time = do
-        let link = ArkhamDBDeckLink deckId remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing time time
-        modify \s -> s {storedDecks = Map.insert deckId deck s.storedDecks, storedLinks = Map.insert deckId link s.storedLinks}
-        pure $ Entity deckId deck
-      saveSyncedDeck key deck remoteDeck time = modify \s -> s
-        { storedDecks = Map.insert key deck s.storedDecks
-        , storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key s.storedLinks
-        }
+      saveImportedDeck generation deck remoteDeck time = atomicModifyIORef' ref \s ->
+        if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation then (s, Nothing) else
+        case find ((== remoteDeck.remoteDeckId) . arkhamDBDeckLinkRemoteDeckId . snd) $ Map.toList s.storedLinks of
+          Just (key, _) -> (s, Entity key <$> Map.lookup key s.storedDecks)
+          Nothing ->
+            let link = ArkhamDBDeckLink deckId (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing time time
+             in (s {storedDecks = Map.insert deckId deck s.storedDecks, storedLinks = Map.insert deckId link s.storedLinks}, Just $ Entity deckId deck)
+      saveSyncedDeck generation key deck remoteDeck time = atomicModifyIORef' ref \s ->
+        if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation || Map.notMember key s.storedLinks then (s, False) else
+        (s
+          { storedDecks = Map.insert key deck s.storedDecks
+          , storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key s.storedLinks
+          }, True)
+      dropDeckLink generation uid key = atomicModifyIORef' ref \s ->
+        if Map.lookup uid s.storedGenerations /= Just generation then (s, False) else (s {storedLinks = Map.delete key s.storedLinks}, True)
       validateDeck _ = pure ()
   pure (ArkhamDBStore {..}, ref)
  where
@@ -132,6 +145,9 @@ linkAccount store = do
   runExceptT (startLink store settings now userId "nonce") >>= (`shouldSatisfy` isRight)
   runExceptT (completeLink store stubClient settings now "nonce" "authorization-code" "completion-secret") `shouldReturn` Right ()
   runExceptT (finalizePendingLink store settings now userId "completion-secret") `shouldReturn` Right ()
+
+forbiddenPublic :: ArkhamDeckId -> IO (Entity ArkhamDeck)
+forbiddenPublic _ = expectationFailure "unexpected public fallback" >> fail "public fallback"
 
 expectCode :: Text -> Either ArkhamDBError a -> Expectation
 expectCode code = \case
@@ -273,7 +289,7 @@ spec = describe "ArkhamDB account linking and private decks" do
   it "unlinks credentials, pending states and remote mappings but keeps local decks" do
     (store, ref) <- newStore
     linkAccount store
-    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123"
+    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
     _ <- runExceptT $ startLink store settings now userId "pending"
     runExceptT (unlinkLinkedAccount store userId) `shouldReturn` Right ()
     s <- readIORef ref
@@ -308,7 +324,7 @@ spec = describe "ArkhamDB account linking and private decks" do
   it "lists private remote decks and attaches only this user's local mapping" do
     (store, _) <- newStore
     linkAccount store
-    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123"
+    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
     result <- runExceptT $ listRemoteDecks store stubClient settings now userId
     fmap (map (.linkedLocalDeckId)) result `shouldBe` Right [Just deckId]
     runExceptT (listRemoteDecks store stubClient settings now otherUserId) >>= expectCode "notLinked"
@@ -316,7 +332,7 @@ spec = describe "ArkhamDB account linking and private decks" do
   it "imports a private OAuth deck and persists date_update and dotted version markers" do
     (store, ref) <- newStore
     linkAccount store
-    result <- runExceptT $ importRemoteDeck store stubClient settings now userId "123"
+    result <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
     fmap (arkhamDeckName . entityValue) result `shouldBe` Right "Private deck"
     s <- readIORef ref
     let mapping = fromMaybe (error "missing link") $ Map.lookup deckId s.storedLinks
@@ -324,11 +340,12 @@ spec = describe "ArkhamDB account linking and private decks" do
     arkhamDBDeckLinkLastSyncedDateUpdate mapping `shouldBe` remote.dateUpdate
     arkhamDBDeckLinkLastSyncedVersion mapping `shouldBe` Just "1.0"
     arkhamDBDeckLinkWriteBack mapping `shouldBe` False
+    (arkhamDeckUrl <$> Map.lookup deckId s.storedDecks) `shouldBe` Just (Just "https://arkhamdb.example/api/public/deck/123")
 
   it "syncs linked decks through OAuth without invoking the public fallback" do
     (store, ref) <- newStore
     linkAccount store
-    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123"
+    _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
     let changed = remote {deck = remote.deck {decklist_name = Just "Changed private deck"}, dateUpdate = Just "2026-10-19T12:00:00Z", deckVersion = Just "2.0"}
         client = stubClient {loadDeck = \token remoteId -> do
           token `shouldBe` "private-access-token"
@@ -337,14 +354,76 @@ spec = describe "ArkhamDB account linking and private decks" do
         forbidden _ = expectationFailure "public fallback used for a private linked deck" >> fail "public fallback"
     result <- runExceptT $ syncRemoteDeck store client settings now userId deckId forbidden
     fmap (arkhamDeckName . entityValue) result `shouldBe` Right "Changed private deck"
+    fmap (url . arkhamDeckList . entityValue) result `shouldBe` Right (Just "https://arkhamdb.example/api/public/deck/123")
     s <- readIORef ref
     (arkhamDBDeckLinkLastSyncedDateUpdate <$> Map.lookup deckId s.storedLinks) `shouldBe` Just changed.dateUpdate
     (arkhamDBDeckLinkLastSyncedVersion <$> Map.lookup deckId s.storedLinks) `shouldBe` Just (Just "2.0")
     runExceptT (syncRemoteDeck store client settings now otherUserId deckId forbidden) >>= expectCode "notFound"
 
+  it "retains mappings across relink and drops inaccessible mappings before public fallback" do
+    for_ [False, True] \importCheck -> do
+      (store, ref) <- newStore
+      linkAccount store
+      _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
+      linkAccount store
+      s <- readIORef ref
+      Map.member deckId s.storedLinks `shouldBe` True
+      let client = stubClient {loadDeck = \_ _ -> pure $ Left ArkhamDBNotFound}
+          public key = do
+            current <- readIORef ref
+            Map.member key current.storedLinks `shouldBe` False
+            deck <- maybe (fail "missing deck") pure $ Map.lookup key current.storedDecks
+            arkhamDeckUrl deck `shouldBe` Just "https://arkhamdb.example/api/public/deck/123"
+            pure $ Entity key deck
+      result <- runExceptT $ if importCheck then importRemoteDeck store client settings now userId "123" public else syncRemoteDeck store client settings now userId deckId public
+      result `shouldSatisfy` isRight
+
+  it "maps remote HTTP 403 and 404 to inaccessible decks" do
+    for_ ["403 Forbidden", "404 Not Found"] \status -> do
+      incoming <- newIORef $ "HTTP/1.1 " <> status <> "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+      manager <- newManager defaultManagerSettings
+        { managerRawConnection = pure $ \_ _ _ -> makeConnection (atomicModifyIORef' incoming (\bytes -> (mempty, bytes))) (const $ pure ()) (pure ())
+        , managerProxyInsecure = noProxy
+        }
+      (httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret").loadDeck "token" "123" `shouldReturn` Left ArkhamDBNotFound
+
+  it "returns an existing imported deck without duplicates" do
+    (store, ref) <- newStore
+    linkAccount store
+    first <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
+    second <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
+    fmap entityKey first `shouldBe` fmap entityKey second
+    s <- readIORef ref
+    Map.size s.storedDecks `shouldBe` 1
+    Map.size s.storedLinks `shouldBe` 1
+
+  for_ [False, True] \relink -> do
+    it ("rejects import persistence after in-flight " <> if relink then "relink" else "unlink") do
+      (store, ref) <- newStore
+      linkAccount store
+      let client = stubClient {loadDeck = \_ _ -> do
+            if relink then linkAccount store else runExceptT (unlinkLinkedAccount store userId) >>= (`shouldBe` Right ())
+            pure $ Right remote}
+      runExceptT (importRemoteDeck store client settings now userId "123" forbiddenPublic) >>= expectCode "notLinked"
+      s <- readIORef ref
+      Map.null s.storedDecks `shouldBe` True
+      Map.null s.storedLinks `shouldBe` True
+
+    it ("rejects sync persistence after in-flight " <> if relink then "relink" else "unlink") do
+      (store, ref) <- newStore
+      linkAccount store
+      _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
+      let client = stubClient {loadDeck = \_ _ -> do
+            if relink then linkAccount store else runExceptT (unlinkLinkedAccount store userId) >>= (`shouldBe` Right ())
+            pure $ Right remote {deck = remote.deck {decklist_name = Just "Must not save"}}}
+      runExceptT (syncRemoteDeck store client settings now userId deckId forbiddenPublic) >>= expectCode "notLinked"
+      s <- readIORef ref
+      fmap arkhamDeckName (Map.lookup deckId s.storedDecks) `shouldBe` Just "Private deck"
+      Map.null s.storedLinks `shouldBe` not relink
+
   it "retains public sync for a deck without an OAuth mapping" do
     (store, ref) <- newStore
-    let deck = ArkhamDeck userId (Just "https://arkhamdb.example/deck/view/123") "Public deck" "Roland Banks" remote.deck Nothing Nothing
+    let deck = ArkhamDeck userId (Just "https://arkhamdb.example/api/public/deck/123") "Public deck" "Roland Banks" remote.deck Nothing Nothing
     modifyIORef' ref \s -> s {storedDecks = Map.singleton deckId deck}
     called <- newIORef False
     let public key = do
@@ -359,7 +438,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     (store, ref) <- newStore
     linkAccount store
     let client = stubClient {loadDeck = \_ _ -> pure $ Left $ ArkhamDBRemoteError "stub outage"}
-    runExceptT (importRemoteDeck store client settings now userId "123") >>= expectCode "remoteUnavailable"
+    runExceptT (importRemoteDeck store client settings now userId "123" forbiddenPublic) >>= expectCode "remoteUnavailable"
     s <- readIORef ref
     Map.null s.storedDecks `shouldBe` True
     Map.null s.storedLinks `shouldBe` True
