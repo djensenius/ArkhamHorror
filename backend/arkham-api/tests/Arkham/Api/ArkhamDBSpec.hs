@@ -6,13 +6,15 @@
 module Arkham.Api.ArkhamDBSpec (spec) where
 
 import Api.Handler.Arkham.ArkhamDB (arkhamDBCallback)
+import Api.Handler.Arkham.Decks (toDeckErrors)
 import Application (makeLogWare)
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
+import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Base.Api.Types.Capabilities qualified as Capabilities
 import Control.Concurrent (modifyMVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
-import Control.Exception (bracket)
+import Control.Exception (bracket, throwIO)
 import UnliftIO (withRunInIO)
 import UnliftIO.Async (wait, withAsync)
 import System.Timeout (timeout)
@@ -41,6 +43,7 @@ import Relude hiding (modify, newEmptyMVar, newMVar, putMVar, second, state, tak
 import Settings (AppSettings (..), ArkhamDBSettings (..), compileTimeAppSettings, parseArkhamDBSettings)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openTempFile)
+import System.IO.Error (userError)
 import System.Log.FastLogger (defaultBufSize, flushLogStr, newFileLoggerSet, rmLoggerSet)
 import Test.Hspec hiding (pending)
 import Text.Read (read)
@@ -586,6 +589,46 @@ spec = describe "ArkhamDB account linking and private decks" do
     (arkhamDBDeckLinkLastSyncedDateUpdate <$> Map.lookup deckId s.storedLinks) `shouldBe` Just changed.dateUpdate
     (arkhamDBDeckLinkLastSyncedVersion <$> Map.lookup deckId s.storedLinks) `shouldBe` Just (Just "2.0")
     runExceptT (syncRemoteDeck store client settings now otherUserId deckId forbidden) >>= expectCode "notFound"
+
+  for_ [False, True] \viaImport -> do
+    let entryPoint = if viaImport then "import" else "sync"
+        update store client = if viaImport
+          then importRemoteDeck store client settings now userId "123" forbiddenPublic
+          else syncRemoteDeck store client settings now userId deckId forbiddenPublic
+        validating store = store {validateDeck = \decklist ->
+          unless (null $ toDeckErrors decklist) $ throwIO $ userError "unimplemented effective deck"}
+
+    it ("rejects a newly activated unsupported overlay swap through " <> entryPoint) do
+      (store, ref) <- newStore
+      linkAccount store
+      _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
+      let overlay = DeckOverlay Nothing (Map.singleton "01016" "unimplemented-card") mempty mempty
+      modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
+      (before, _) <- store.findDeck deckId >>= maybe (fail "missing deck") pure
+      toDeckErrors (arkhamDeckPlayList before) `shouldBe` []
+      let changed = remote {deck = remote.deck {slots = Map.singleton "01016" 1}, deckVersion = Just "2.0"}
+          client = stubClient {loadDeck = \_ _ -> pure $ Right changed}
+      toDeckErrors changed.deck `shouldBe` []
+      runExceptT (update (validating store) client) `shouldThrow` anyIOException
+      stored <- readIORef ref
+      fmap arkhamDeckList (Map.lookup deckId stored.storedDecks) `shouldBe` Just (arkhamDeckList before)
+      fmap arkhamDBDeckLinkLastSyncedVersion (Map.lookup deckId stored.storedLinks) `shouldBe` Just remote.deckVersion
+
+    it ("accepts an unsupported remote card removed by the overlay through " <> entryPoint) do
+      (store, ref) <- newStore
+      linkAccount store
+      _ <- runExceptT $ importRemoteDeck store stubClient settings now userId "123" forbiddenPublic
+      let overlay = DeckOverlay Nothing mempty mempty (Map.singleton "unimplemented-card" 1)
+      modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
+      let changed = remote {deck = remote.deck {slots = Map.singleton "unimplemented-card" 1}, deckVersion = Just "2.0"}
+          client = stubClient {loadDeck = \_ _ -> pure $ Right changed}
+      toDeckErrors changed.deck `shouldSatisfy` (not . null)
+      result <- runExceptT (update (validating store) client) >>= either (fail . show) pure
+      slots (arkhamDeckList $ entityValue result) `shouldBe` Map.singleton "unimplemented-card" 1
+      slots (arkhamDeckPlayList $ entityValue result) `shouldBe` mempty
+      stored <- readIORef ref
+      fmap arkhamDeckOverlay (Map.lookup deckId stored.storedDecks) `shouldBe` Just (Just overlay)
+      fmap arkhamDBDeckLinkLastSyncedVersion (Map.lookup deckId stored.storedLinks) `shouldBe` Just changed.deckVersion
 
   it "retains mappings across relink and drops inaccessible mappings before public fallback" do
     for_ [False, True] \importCheck -> do

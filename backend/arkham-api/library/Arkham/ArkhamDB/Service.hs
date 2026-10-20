@@ -201,9 +201,9 @@ importRemoteDeck store client settings now userId remoteId publicSync = do
     Nothing -> do
       generation <- accountGeneration store userId
       remote <- withAccessToken store client settings now userId (\token -> client.loadDeck token remoteId)
-      lift $ store.validateDeck remote.deck
       let decklist = remoteDecklist settings remote
           deck = ArkhamDeck userId decklist.url (fromMaybe decklist.investigator_name decklist.decklist_name) decklist.investigator_name decklist Nothing Nothing
+      lift $ store.validateDeck $ arkhamDeckPlayList deck
       lift (store.saveImportedDeck generation deck remote now) >>= maybe (throwError linkChanged) pure
 
 -- | Missing or inaccessible mappings use the existing public URL sync path.
@@ -224,7 +224,6 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
           lift $ publicSync deckId
         Left err -> throwError err
         Right remote -> do
-          lift $ store.validateDeck remote.deck
           let decklist = remoteDecklist settings remote
               updated = deck
                 { arkhamDeckList = decklist
@@ -232,6 +231,7 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
                 , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
                 , arkhamDeckInvestigatorName = remote.deck.investigator_name
                 }
+          lift $ store.validateDeck $ arkhamDeckPlayList updated
           saved <- lift $ store.saveSyncedDeck generation deckId updated remote now
           unless saved $ throwError linkChanged
           pure $ Entity deckId updated
