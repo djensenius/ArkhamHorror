@@ -17,9 +17,12 @@ import Settings (ArkhamDBSettings (..))
 
 -- | Persistence operations are supplied by the handler. Claiming a nonce,
 -- finalizing its account/link changes, and paired deck/link writes must each
--- be atomic. Account refresh compares the old ciphertext and never inserts.
+-- be atomic. Refresh holds a per-user transaction lock from the re-read through
+-- remote refresh and persistence; the callback must use the supplied store so
+-- all its database operations share that transaction/connection.
 data ArkhamDBStore m = ArkhamDBStore
-  { saveLinkState :: ArkhamDBLinkState -> m ()
+  { withRefreshLock :: forall a. UserId -> (ArkhamDBStore m -> m a) -> m a
+  , saveLinkState :: ArkhamDBLinkState -> m ()
   , claimLinkState :: UTCTime -> Text -> m (Maybe (Entity ArkhamDBLinkState))
   , findAccountGeneration :: UserId -> m (Maybe ArkhamDBAccountId)
   , findAccount :: UserId -> m (Maybe ArkhamDBAccount)
@@ -118,7 +121,16 @@ decryptStored :: Monad m => ArkhamDBSettings -> Text -> ArkhamDBAction m Text
 decryptStored settings = either (const $ throwError $ ArkhamDBError "storageFailure" "Stored ArkhamDB credentials could not be decrypted") pure . decryptToken settings.arkhamDBTokenKey . TokenCiphertext
 
 refreshAccount :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> ArkhamDBAccount -> ArkhamDBAction m Text
-refreshAccount store client settings now account = do
+refreshAccount store client settings now previous = ExceptT $
+  withRefreshLock store (arkhamDBAccountUserId previous) \locked -> runExceptT do
+    current <- linkedAccount locked (arkhamDBAccountUserId previous)
+    if arkhamDBAccountEncryptedAccessToken current /= arkhamDBAccountEncryptedAccessToken previous
+      && not (isTokenExpired now $ arkhamDBAccountExpiresAt current)
+      then decryptStored settings $ arkhamDBAccountEncryptedAccessToken current
+      else refreshLockedAccount locked client settings now current
+
+refreshLockedAccount :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> ArkhamDBAccount -> ArkhamDBAction m Text
+refreshLockedAccount store client settings now account = do
   generation <- accountGeneration store (arkhamDBAccountUserId account)
   let useConcurrentRefresh failure = do
         currentGeneration <- lift $ store.findAccountGeneration (arkhamDBAccountUserId account)
@@ -148,7 +160,10 @@ withAccessToken store client settings now userId action = do
     Right result -> pure result
     Left ArkhamDBUnauthorized -> do
       account <- linkedAccount store userId
-      fresh <- refreshAccount store client settings now account
+      current <- decryptStored settings $ arkhamDBAccountEncryptedAccessToken account
+      fresh <- if current /= token && not (isTokenExpired now $ arkhamDBAccountExpiresAt account)
+        then pure current
+        else refreshAccount store client settings now account
       remoteResult =<< lift (action fresh)
     Left err -> remoteResult $ Left err
 

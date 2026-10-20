@@ -50,6 +50,7 @@ import Network.HTTP.Client
 import Network.HTTP.Types (hAccept, hAuthorization, status400, status401, status403, status404, statusCode)
 import Network.HTTP.Types.URI (renderQuery)
 import Relude hiding (id, state)
+import System.Timeout (timeout)
 
 arkhamDBAccountLinkingCapability :: Text
 arkhamDBAccountLinkingCapability = "arkhamdb.account-linking.v1"
@@ -273,9 +274,10 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
   -- Do not include HTTP exception bodies/requests in public errors: they may
   -- contain the client secret, authorization code, or bearer token.
   safeRequest :: IO (Either ArkhamDBClientError a) -> m (Either ArkhamDBClientError a)
-  safeRequest action = liftIO $ E.try @HttpException action >>= \case
-    Left _ -> pure $ Left $ ArkhamDBRemoteError "Transport failed"
-    Right result -> pure result
+  safeRequest action = liftIO $ timeout 10000000 (E.try @HttpException action) >>= \case
+    Nothing -> pure $ Left $ ArkhamDBRemoteError "Transport timed out"
+    Just (Left _) -> pure $ Left $ ArkhamDBRemoteError "Transport failed"
+    Just (Right result) -> pure result
 
   responseResult :: Response BSL.ByteString -> Either ArkhamDBClientError BSL.ByteString
   responseResult response

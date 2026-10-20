@@ -40,26 +40,33 @@ configuredClient = getsYesod appArkhamDBClient >>= maybe
 -- paired local deck/link writes. Claiming prevents concurrent callbacks from
 -- exchanging a state twice; finalizing refuses a claim removed by unlink.
 persistentStore :: ArkhamDBStore Handler
-persistentStore = ArkhamDBStore
-  { saveLinkState = \state -> runDB do
+persistentStore = persistentStoreWith runDB
+
+persistentStoreWith :: (forall a. ReaderT SqlBackend Handler a -> Handler a) -> ArkhamDBStore Handler
+persistentStoreWith database = ArkhamDBStore
+  { withRefreshLock = \userId action -> database do
+      lockArkhamDBUser userId
+      connection <- ask
+      lift $ action $ persistentStoreWith (`runReaderT` connection)
+  , saveLinkState = \state -> database do
       lockArkhamDBUser $ arkhamDBLinkStateUserId state
       deleteWhere [ArkhamDBLinkStateExpiresAt P.<=. arkhamDBLinkStateCreatedAt state]
       deleteWhere [ArkhamDBLinkStateUserId P.==. arkhamDBLinkStateUserId state]
       insert_ state
-  , claimLinkState = \now nonce -> runDB do
+  , claimLinkState = \now nonce -> database do
       rows <- rawSql "UPDATE arkhamdb_link_states SET claimed_at = ? WHERE nonce = ? AND claimed_at IS NULL AND expires_at > ? RETURNING ??"
         [PersistUTCTime now, PersistText nonce, PersistUTCTime now]
       pure $ viaNonEmpty head rows
-  , findAccountGeneration = \userId -> fmap entityKey <$> runDB (getBy $ UniqueArkhamDBAccountUser userId)
-  , findAccount = \userId -> fmap entityVal <$> runDB (getBy $ UniqueArkhamDBAccountUser userId)
-  , stagePendingLink = \now nonce digest encrypted -> runDB do
+  , findAccountGeneration = \userId -> fmap entityKey <$> database (getBy $ UniqueArkhamDBAccountUser userId)
+  , findAccount = \userId -> fmap entityVal <$> database (getBy $ UniqueArkhamDBAccountUser userId)
+  , stagePendingLink = \now nonce digest encrypted -> database do
       affected <- updateWhereCount
         [ArkhamDBLinkStateNonce P.==. nonce, ArkhamDBLinkStateClaimedAt P.!=. Nothing, ArkhamDBLinkStateExpiresAt P.>. now]
         [ArkhamDBLinkStateCompletionHash P.=. Just digest, ArkhamDBLinkStateEncryptedPendingTokens P.=. Just encrypted]
       pure $ affected == 1
-  , findPendingLink = \now userId digest -> fmap entityVal <$> runDB (selectFirst
+  , findPendingLink = \now userId digest -> fmap entityVal <$> database (selectFirst
       [ArkhamDBLinkStateUserId P.==. userId, ArkhamDBLinkStateCompletionHash P.==. Just digest, ArkhamDBLinkStateExpiresAt P.>. now] [])
-  , finalizeLink = \now userId digest account -> runDB do
+  , finalizeLink = \now userId digest account -> database do
       lockArkhamDBUser userId
       claimed <- rawSql "DELETE FROM arkhamdb_link_states WHERE user_id = ? AND completion_hash = ? AND encrypted_pending_tokens IS NOT NULL AND claimed_at IS NOT NULL AND expires_at > ? RETURNING ??"
         [toPersistValue userId, PersistText digest, PersistUTCTime now]
@@ -70,30 +77,30 @@ persistentStore = ArkhamDBStore
           deleteBy $ UniqueArkhamDBAccountUser userId
           insert_ account
           pure True
-  , updateAccount = \old updated -> runDB do
+  , updateAccount = \old updated -> database do
       lockArkhamDBUser $ arkhamDBAccountUserId old
       affected <- updateWhereCount
         [ ArkhamDBAccountUserId P.==. arkhamDBAccountUserId old
         , ArkhamDBAccountEncryptedAccessToken P.==. arkhamDBAccountEncryptedAccessToken old
         ] (accountUpdates updated)
       pure $ affected == 1
-  , unlinkAccount = \userId -> runDB do
+  , unlinkAccount = \userId -> database do
       lockArkhamDBUser userId
       deckIds <- selectKeysList [ArkhamDeckUserId P.==. userId] []
       unless (null deckIds) $ deleteWhere [ArkhamDBDeckLinkDeckId P.<-. deckIds]
       deleteWhere [ArkhamDBLinkStateUserId P.==. userId]
       deleteBy $ UniqueArkhamDBAccountUser userId
-  , findDeckLinks = \userId -> runDB do
+  , findDeckLinks = \userId -> database do
       deckIds <- selectKeysList [ArkhamDeckUserId P.==. userId] []
       links <- if null deckIds then pure [] else selectList [ArkhamDBDeckLinkDeckId P.<-. deckIds] []
       pure [(arkhamDBDeckLinkDeckId link, link) | Entity _ link <- links]
-  , findDeck = \deckId -> runDB do
+  , findDeck = \deckId -> database do
       P.get deckId >>= \case
         Just deck -> do
           link <- fmap entityVal <$> getBy (UniqueArkhamDBDeckLinkDeck deckId)
           pure $ Just (deck, link)
         _ -> pure Nothing
-  , saveImportedDeck = \generation deck remote now -> runDB do
+  , saveImportedDeck = \generation deck remote now -> database do
       active <- sameAccountGeneration (arkhamDeckUserId deck) generation
       if not active then pure Nothing else do
         existing <- getBy $ UniqueArkhamDBDeckLinkUserRemote (arkhamDeckUserId deck) remote.remoteDeckId
@@ -103,7 +110,7 @@ persistentStore = ArkhamDBStore
             entity@(Entity deckId _) <- insertEntity deck
             insert_ $ ArkhamDBDeckLink deckId (arkhamDeckUserId deck) remote.remoteDeckId remote.dateUpdate remote.deckVersion False Nothing now now
             pure $ Just entity
-  , saveSyncedDeck = \generation deckId deck remote now -> runDB do
+  , saveSyncedDeck = \generation deckId deck remote now -> database do
       active <- sameAccountGeneration (arkhamDeckUserId deck) generation
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
       if not active || isNothing mapping then pure False else do
@@ -120,7 +127,7 @@ persistentStore = ArkhamDBStore
           , ArkhamDBDeckLinkUpdatedAt P.=. now
           ]
         pure True
-  , dropDeckLink = \generation userId deckId -> runDB do
+  , dropDeckLink = \generation userId deckId -> database do
       active <- sameAccountGeneration userId generation
       when active $ deleteBy $ UniqueArkhamDBDeckLinkDeck deckId
       pure active

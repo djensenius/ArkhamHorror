@@ -254,5 +254,6 @@ tests:
       - text
       - time
       - unordered-containers
+      - unliftio
       - unix
       - yaml

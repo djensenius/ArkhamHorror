@@ -11,7 +11,11 @@ import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Base.Api.Types.Capabilities qualified as Capabilities
+import Control.Concurrent (modifyMVar, newEmptyMVar, newMVar, putMVar, takeMVar, withMVar)
 import Control.Exception (bracket)
+import UnliftIO (withRunInIO)
+import UnliftIO.Async (wait, withAsync)
+import System.Timeout (timeout)
 import Data.Aeson
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -33,7 +37,7 @@ import Network.HTTP.Client.Internal (managerProxyInsecure)
 import Network.HTTP.Types (hLocation, status200, status302, status409)
 import Network.Wai qualified as Wai
 import Network.Wai.Test qualified as WaiTest
-import Relude hiding (modify, second, state)
+import Relude hiding (modify, newEmptyMVar, newMVar, putMVar, second, state, takeMVar)
 import Settings (AppSettings (..), ArkhamDBSettings (..), compileTimeAppSettings, parseArkhamDBSettings)
 import System.Directory (doesFileExist, getTemporaryDirectory, removeFile)
 import System.IO (hClose, openTempFile)
@@ -59,7 +63,8 @@ getCallbackR = do
 
 handlerStore :: ArkhamDBStore IO -> ArkhamDBStore (Yesod.HandlerFor CallbackSite)
 handlerStore store = ArkhamDBStore
-  { saveLinkState = liftIO . store.saveLinkState
+  { withRefreshLock = \uid action -> withRunInIO \run -> withRefreshLock store uid (run . action . handlerStore)
+  , saveLinkState = liftIO . store.saveLinkState
   , claimLinkState = \time nonce -> liftIO $ store.claimLinkState time nonce
   , findAccountGeneration = liftIO . store.findAccountGeneration
   , findAccount = liftIO . store.findAccount
@@ -147,7 +152,17 @@ data Stored = Stored
 newStore :: IO (ArkhamDBStore IO, IORef Stored)
 newStore = do
   ref <- newIORef $ Stored mempty mempty mempty 1 23 mempty mempty
-  let modify = modifyIORef' ref
+  refreshLocks <- newMVar Map.empty
+  let withRefreshLock :: UserId -> (ArkhamDBStore IO -> IO a) -> IO a
+      withRefreshLock uid action = do
+        lock <- modifyMVar refreshLocks \locks -> case Map.lookup uid locks of
+          Just lock -> pure (locks, lock)
+          Nothing -> do
+            lock <- newMVar ()
+            pure (Map.insert uid lock locks, lock)
+        withMVar lock $ const $ action store
+      store = ArkhamDBStore {..}
+      modify = modifyIORef' ref
       saveLinkState state = modify \s -> s {storedStates = Map.insert (arkhamDBLinkStateNonce state) (Entity (ArkhamDBLinkStateKey UUID.nil) state) s.storedStates}
       claimLinkState time nonce = atomicModifyIORef' ref \s -> case Map.lookup nonce s.storedStates of
         Just (Entity key value) | isNothing (arkhamDBLinkStateClaimedAt value) && arkhamDBLinkStateExpiresAt value > time ->
@@ -206,7 +221,7 @@ newStore = do
       dropDeckLink generation uid key = atomicModifyIORef' ref \s ->
         if Map.lookup uid s.storedGenerations /= Just generation then (s, False) else (s {storedLinks = Map.delete key s.storedLinks}, True)
       validateDeck _ = pure ()
-  pure (ArkhamDBStore {..}, ref)
+  pure (store, ref)
  where
   entityValue (Entity _ value) = value
   pendingMatches time uid digest value = arkhamDBLinkStateUserId value == uid && arkhamDBLinkStateCompletionHash value == Just digest && arkhamDBLinkStateExpiresAt value > time && isJust (arkhamDBLinkStateEncryptedPendingTokens value)
@@ -402,6 +417,38 @@ spec = describe "ArkhamDB account linking and private decks" do
             modifyIORef' ref \s -> s {storedAccounts = Map.insert userId winner s.storedAccounts}
             pure $ if revokedLoser then Left ArkhamDBUnauthorized else Right tokens {accessToken = "loser-token"}}
       runExceptT (accessTokenFor store client settings now userId) `shouldReturn` Right "winner-token"
+
+  it "serializes refreshes while the remote winner is waiting to persist" do
+    (store, ref) <- newStore
+    linkAccount store
+    modifyIORef' ref \s -> s {storedAccounts = Map.adjust (\a -> a {arkhamDBAccountExpiresAt = Just now}) userId s.storedAccounts}
+    beforePersist <- newEmptyMVar
+    allowPersist <- newEmptyMVar
+    calls <- newIORef (0 :: Int)
+    let client = stubClient {refreshTokens = \_ -> do
+          call <- atomicModifyIORef' calls (\n -> (n + 1, n))
+          pure $ if call == 0 then Right tokens {accessToken = "winner-token", refreshToken = Just "rotated-refresh"} else Left ArkhamDBUnauthorized}
+        delayPersistence locked = locked {updateAccount = \old updated -> do
+          putMVar beforePersist ()
+          takeMVar allowPersist
+          locked.updateAccount old updated}
+        winnerStore = store
+          { withRefreshLock = \uid action -> withRefreshLock store uid (action . delayPersistence)
+          , updateAccount = (delayPersistence store).updateAccount
+          }
+    withAsync (runExceptT $ accessTokenFor winnerStore client settings now userId) \winner -> do
+      timeout 2000000 (takeMVar beforePersist) `shouldReturn` Just ()
+      withAsync (runExceptT $ accessTokenFor store client settings now userId) \loser -> do
+        -- On the old service there is no lock callback, but it completes the
+        -- rejected stale refresh immediately, before the winner can persist.
+        timeout 100000 (wait loser) `shouldReturn` Nothing
+        putMVar allowPersist ()
+        timeout 2000000 (wait winner) `shouldReturn` Just (Right "winner-token")
+        timeout 2000000 (wait loser) `shouldReturn` Just (Right "winner-token")
+    readIORef calls `shouldReturn` 1
+    account <- store.findAccount userId >>= maybe (fail "missing account") pure
+    fmap (decryptToken settings.arkhamDBTokenKey . TokenCiphertext) (arkhamDBAccountEncryptedRefreshToken account)
+      `shouldBe` Just (Right "rotated-refresh")
 
   it "retries a rejected bearer token once with a refresh" do
     (store, _) <- newStore

@@ -9798,6 +9798,7 @@ test-suite spec
     , text
     , time
     , unix
+    , unliftio
     , unordered-containers
     , uuid
     , wai
