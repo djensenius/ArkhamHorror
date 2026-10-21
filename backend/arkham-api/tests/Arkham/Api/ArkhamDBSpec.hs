@@ -865,6 +865,18 @@ spec = describe "ArkhamDB account linking and private decks" do
     allEmpty <- either (fail . toString) pure $ loadAppSettings $ map (\(key, _) -> (key, "")) environment
     allEmpty.appArkhamDB `shouldBe` Nothing
 
+  it "disables account linking for a whitespace-only public server base in environment settings" do
+    for_ ["   ", "\t", " \t\r\n "] \publicServerBase -> do
+      parsed <- either (fail . toString) pure $ loadAppSettings
+        [ ("ARKHAMDB_CLIENT_ID", "client")
+        , ("ARKHAMDB_CLIENT_SECRET", "secret")
+        , ("ARKHAMDB_TOKEN_KEY", settings.arkhamDBTokenKey)
+        , ("ARKHAMDB_PUBLIC_SERVER_BASE", publicServerBase)
+        ]
+      parsed.appArkhamDB `shouldBe` Nothing
+      (Capabilities.serverCapabilities Nothing (isJust parsed.appArkhamDB)).capabilities
+        `shouldNotContain` [arkhamDBAccountLinkingCapability]
+
   it "returns HTTP 409 rather than expiring the app session for ArkhamDB auth states" do
     for_ ["notLinked", "tokenExpired"] \code -> do
       let err = ArkhamDBError code "relink required"

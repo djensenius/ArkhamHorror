@@ -94,7 +94,7 @@ parseArkhamDBSettings o = do
     for_ tokenKey \key -> case B64.decode (encodeUtf8 key) of
         Right bytes | BS8.length bytes == 32 -> pure ()
         _ -> fail "ARKHAMDB_TOKEN_KEY must be base64 encoding exactly 32 bytes"
-    publicServerBase <- parseOptionalText o "arkhamdb-public-server-base"
+    publicServerBase <- mfilter (not . T.null . T.strip) <$> parseOptionalText o "arkhamdb-public-server-base"
     baseUrl <- fromMaybe "https://arkhamdb.com" <$> parseOptionalText o "arkhamdb-base-url"
     when (T.null $ T.strip baseUrl) $ fail "ARKHAMDB_BASE_URL must not be empty"
     pure $ ArkhamDBSettings <$> clientId <*> clientSecret <*> tokenKey <*> Just baseUrl <*> publicServerBase
