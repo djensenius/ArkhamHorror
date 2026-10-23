@@ -20,6 +20,7 @@ module Api.Handler.Arkham.Decks (
 import Import hiding (delete, on, update, (=.), (==.))
 import Import qualified as P
 
+import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
@@ -334,12 +335,14 @@ putApiV1ArkhamGameDecksR gameId = do
                               where_ $ d.userId ==. val userId
                               where_ $ d.url ==. val (Just oldDeckUrl)
 
+                      queueCampaignWriteBack gameId (arkhamGameStep + 1) now ge
                       pure $ Right g'
 
 
   case outcome of
     Left (status, message) -> sendStatusJSON status (JSONError message)
-    Right ArkhamGame {..} ->
+    Right ArkhamGame {..} -> do
+      dispatchCampaignWriteBack
       publishToRoom gameId
         $ GameUpdate
         $ PublicGame gameId arkhamGameName mempty arkhamGameCurrentData

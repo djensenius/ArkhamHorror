@@ -1,0 +1,293 @@
+{-# LANGUAGE NoFieldSelectors #-}
+
+module Arkham.ArkhamDB.WriteBack where
+
+import Arkham.ArkhamDB
+import Arkham.ArkhamDB.Service
+import Arkham.Decklist (ArkhamDBDecklist)
+import Arkham.Decklist qualified as Decklist
+import Control.Monad.Except
+import Data.Aeson
+import Data.Aeson.KeyMap qualified as KM
+import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
+import Data.UUID qualified as UUID
+import Database.Persist (Entity (..))
+import Entity.Arkham.ArkhamDBAccount
+import Entity.Arkham.Deck
+import Entity.User
+import Relude
+import Settings (ArkhamDBSettings)
+
+-- Claim serializes a deck's oldest outstanding push. Each checkpoint commits
+-- independently, BEFORE its remote side effect. A crashed creation is recovered,
+-- never repeated. Every write checks account generation and the claim's version.
+data ArkhamDBWriteBackStore m = ArkhamDBWriteBackStore
+  { claimPush :: UTCTime -> Bool -> UserId -> ArkhamDeckId -> m (Maybe (Entity ArkhamDBPush))
+  , checkpointPush :: Entity ArkhamDBPush -> ArkhamDBPush -> m Bool
+  , finishPush :: Entity ArkhamDBPush -> ArkhamDBRemoteDeck -> m (Maybe ArkhamDeckId)
+  , keepRemoteDeck :: Entity ArkhamDBPush -> ArkhamDBRemoteDeck -> m Bool
+  , resolvePush :: UTCTime -> UserId -> ArkhamDeckId -> Text -> m Bool
+  , toggleWriteBack :: UTCTime -> UserId -> ArkhamDeckId -> Bool -> m Bool
+  , deckWriteBackStatus :: UserId -> m [ArkhamDBDeckWriteBackStatus]
+  , campaignXpBaseline :: Text -> m Int
+  }
+
+data ArkhamDBConflict = ArkhamDBConflict
+  { reason :: Text
+  , lastSyncedDateUpdate :: Maybe Text
+  , lastSyncedVersion :: Maybe Text
+  , remoteDateUpdate :: Maybe Text
+  , remoteVersion :: Maybe Text
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON)
+
+data ArkhamDBDeckWriteBackStatus = ArkhamDBDeckWriteBackStatus
+  { localDeckId :: ArkhamDeckId
+  , remoteDeckId :: Text
+  , enabled :: Bool
+  , state :: Text
+  , pushId :: Maybe ArkhamDBPushId
+  , campaignKey :: Maybe Text
+  , error :: Maybe Text
+  , conflict :: Maybe ArkhamDBConflict
+  , resultingLocalDeckId :: Maybe ArkhamDeckId
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON)
+
+data ArkhamDBStatusResponse = ArkhamDBStatusResponse ArkhamDBLinkStatusResponse [ArkhamDBDeckWriteBackStatus]
+
+instance ToJSON ArkhamDBStatusResponse where
+  toJSON (ArkhamDBStatusResponse account decks) = case toJSON account of
+    Object value -> Object $ KM.insert "deckLinks" (toJSON decks) value
+    value -> value
+
+newtype ArkhamDBWriteBackToggleRequest = ArkhamDBWriteBackToggleRequest {enabled :: Bool}
+  deriving stock (Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+data ArkhamDBResolveRequest = ArkhamDBResolveRequest {resolution :: Text, confirmed :: Bool}
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (ToJSON)
+
+instance FromJSON ArkhamDBResolveRequest where
+  parseJSON = withObject "ArkhamDBResolveRequest" \o -> do
+    resolution <- o .: "resolution"
+    unless (resolution `elem` ["keepRemote", "overwrite", "saveAsNew"]) $ fail "Unknown conflict resolution"
+    confirmed <- o .:? "confirmed" .!= False
+    when (resolution /= "keepRemote" && not confirmed) $ fail "Explicit confirmation required"
+    pure ArkhamDBResolveRequest {..}
+
+pushStatus :: ArkhamDeckId -> ArkhamDBDeckLink -> Maybe (Entity ArkhamDBPush) -> Maybe ArkhamDeckId -> ArkhamDBDeckWriteBackStatus
+pushStatus deckId link pending resulting = ArkhamDBDeckWriteBackStatus
+  { localDeckId = deckId
+  , remoteDeckId = arkhamDBDeckLinkRemoteDeckId link
+  , enabled = arkhamDBDeckLinkWriteBack link
+  , state = maybe "idle" (arkhamDBPushStatus . entityVal) pending
+  , pushId = entityKey <$> pending
+  , campaignKey = arkhamDBPushCampaignKey . entityVal <$> pending
+  , error = pending >>= arkhamDBPushError . entityVal
+  , conflict = do
+      Entity _ job <- pending
+      guard $ arkhamDBPushStatus job == "conflict"
+      pure $ ArkhamDBConflict (fromMaybe "remoteChanged" $ arkhamDBPushError job)
+        (arkhamDBPushExpectedDateUpdate job) (arkhamDBPushExpectedVersion job)
+        (arkhamDBPushRemoteDateUpdate job) (arkhamDBPushRemoteVersion job)
+  , resultingLocalDeckId = resulting
+  }
+
+pushCanRun :: UTCTime -> Bool -> ArkhamDBPush -> Bool
+pushCanRun now retry job = arkhamDBPushStatus job == "pending" || retry &&
+  (arkhamDBPushStatus job == "failed" || arkhamDBPushStatus job == "running" && arkhamDBPushUpdatedAt job < addUTCTime (-60) now)
+
+campaignCopyDeck :: ArkhamDeck -> ArkhamDBRemoteDeck -> ArkhamDeck
+campaignCopyDeck deck remote = deck
+  { arkhamDeckName = arkhamDeckName deck <> " (campaign copy)"
+  , arkhamDeckList = remote.deck
+  }
+
+needsCampaignCopy :: ArkhamDBDeckLink -> ArkhamDBPush -> Bool
+needsCampaignCopy link job = arkhamDBPushMode job == "new" &&
+  maybe False (/= arkhamDBPushCampaignKey job) (arkhamDBDeckLinkCampaignKey link)
+
+encodePushDeck :: ArkhamDBDecklist -> Text
+encodePushDeck = decodeUtf8 . toStrict . encode
+
+pushMarker :: ArkhamDBPushId -> Text
+pushMarker = UUID.toText . coerce
+
+-- Preserve every existing metadata key. A non-object meta is not silently lost.
+markedDeck :: ArkhamDBPushId -> ArkhamDBDecklist -> Either ArkhamDBError ArkhamDBDecklist
+markedDeck key deck = do
+  metadata <- case Decklist.meta deck of
+    Nothing -> Right KM.empty
+    Just text -> case eitherDecodeStrict' $ encodeUtf8 text of
+      Right (Object value) -> Right value
+      _ -> Left $ ArkhamDBError "validationFailed" "Deck metadata must be a JSON object"
+  pure deck {Decklist.meta = Just $ encodePushDeckMeta $ Object $ KM.insert "ahn_push" (String $ pushMarker key) metadata}
+ where
+  encodePushDeckMeta = decodeUtf8 . toStrict . encode
+
+hasPushMarker :: ArkhamDBPushId -> ArkhamDBRemoteDeck -> Bool
+hasPushMarker key remote = do
+  let metadata = Decklist.meta remote.deck >>= decodeStrict' . encodeUtf8
+  case metadata of
+    Just (Object value) -> KM.lookup "ahn_push" value == Just (String $ pushMarker key)
+    _ -> False
+
+sameMarkers :: Maybe Text -> Maybe Text -> ArkhamDBRemoteDeck -> Bool
+sameMarkers date version remote = date == remote.dateUpdate && version == remote.deckVersion
+
+unmarkedDeck :: ArkhamDBDecklist -> ArkhamDBDecklist
+unmarkedDeck deck = deck {Decklist.meta = case deck.meta >>= decodeStrict' . encodeUtf8 of
+  Just (Object value) -> let clean = KM.delete "ahn_push" value
+    in if KM.null clean then Nothing else Just $ decodeUtf8 $ toStrict $ encode $ Object clean
+  _ -> deck.meta}
+
+samePushedDeck :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
+samePushedDeck desired remote =
+  desired.slots == remote.deck.slots && desired.sideSlots == remote.deck.sideSlots
+    && desired.taboo_id == remote.deck.taboo_id && desired.investigator_code == remote.deck.investigator_code
+    && (decodeStrict' . encodeUtf8 =<< desired.meta :: Maybe Value) == (decodeStrict' . encodeUtf8 =<< remote.deck.meta)
+    && maybe True (\name -> Just name == remote.deck.decklist_name) desired.decklist_name
+
+-- A single durable job, with no network work in the game transaction. Errors
+-- become sanitized per-deck state; the caller never needs to fail a game answer.
+runWriteBack :: MonadIO m => ArkhamDBStore m -> ArkhamDBWriteBackStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> Bool -> UserId -> ArkhamDeckId -> m ()
+runWriteBack store writes client settings now retry userId deckId = do
+  claimed <- writes.claimPush now retry userId deckId
+  for_ claimed \initial -> do
+    latest <- newIORef initial
+    let checkpoint entity proposed = do
+          checkpointTime <- liftIO getCurrentTime
+          let updated = proposed {arkhamDBPushUpdatedAt = checkpointTime}
+          saved <- lift $ writes.checkpointPush entity updated
+          unless saved $ throwError linkChanged
+          let next = Entity (entityKey entity) updated
+          writeIORef latest next
+          pure next
+        ensureGenerationUsing currentStore job = do
+          generation <- accountGeneration currentStore userId
+          unless (generation == arkhamDBPushGeneration job) $ throwError linkChanged
+          (deck, mapping) <- lift (currentStore.findDeck deckId) >>= maybe (throwError linkChanged) pure
+          unless (arkhamDeckUserId deck == userId) $ throwError linkChanged
+          link <- maybe (throwError linkChanged) pure mapping
+          unless (arkhamDBDeckLinkWriteBack link) $ throwError $ ArkhamDBError "writeBackDisabled" "Deck write-back is disabled"
+          pure link
+        ensureGeneration = ensureGenerationUsing store
+        request job action = ExceptT $ store.withRefreshLock userId \locked -> runExceptT do
+          -- Bind token selection and transport to this generation. Otherwise a
+          -- relink between the preflight and token read could write to a NEW
+          -- account using an OLD deck intent. Checkpoints still commit outside
+          -- this short per-request transaction so lost replies are recoverable.
+          _ <- ensureGenerationUsing locked job
+          let requestStore = locked {withRefreshLock = \_ run -> run requestStore}
+          withAccessToken requestStore client settings now userId action
+        load job remoteId = request job (\token -> client.loadDeck token remoteId)
+        conflict entity remote why = void $ checkpoint entity (entityVal entity)
+          { arkhamDBPushStatus = "conflict"
+          , arkhamDBPushError = Just why
+          , arkhamDBPushRemoteDateUpdate = remote.dateUpdate
+          , arkhamDBPushRemoteVersion = remote.deckVersion
+          }
+        latestVersion job seen remote = case remote.nextDeckId of
+          Nothing -> pure remote
+          Just next | next `elem` seen || length seen >= 100 -> throwError $ ArkhamDBError "remoteUnavailable" "ArkhamDB version chain is invalid"
+          Just next -> load job next >>= latestVersion job (next : seen)
+        recover entity desired = do
+          let job = entityVal entity
+              key = entityKey entity
+          chainCandidate <- case arkhamDBPushSourceId job of
+            Nothing -> pure Nothing
+            Just source -> do
+              original <- load job source
+              case original.nextDeckId of
+                Nothing -> pure Nothing
+                Just next -> do
+                  candidate <- load job next
+                  pure $ if hasPushMarker key candidate then Just candidate else Nothing
+          recovered <- case chainCandidate of
+            Just value -> pure $ Just value
+            Nothing -> do
+              summaries <- request job client.listDecks
+              -- Recovery is deliberately bounded. If the result is ambiguous or
+              -- not discoverable, keep an uncertain failure rather than create twice.
+              candidates <- for (take 100 summaries) \summary -> load job summary.id
+              pure $ case filter (hasPushMarker key) candidates of
+                [value] -> Just value
+                _ -> Nothing
+          case recovered of
+            Nothing -> throwError $ ArkhamDBError "pushUncertain" "ArkhamDB creation outcome is uncertain; no creation was retried"
+            Just remote -> do
+              next <- checkpoint entity job {arkhamDBPushStage = "created", arkhamDBPushTargetId = Just remote.remoteDeckId}
+              saveVersion next desired
+        saveVersion entity desired = do
+          let job = entityVal entity
+          target <- maybe (throwError $ ArkhamDBError "storageFailure" "Missing push target") pure $ arkhamDBPushTargetId job
+          remote <- load job target
+          if not (hasPushMarker (entityKey entity) remote) || isJust remote.nextDeckId
+            then conflict entity remote "remoteChanged"
+            else if samePushedDeck desired remote
+              then finish entity remote
+              else if arkhamDBPushStage job == "saving" && not (sameMarkers (arkhamDBPushExpectedDateUpdate job) (arkhamDBPushExpectedVersion job) remote)
+                then conflict entity remote "remoteChanged"
+                else do
+                  next <- checkpoint entity job
+                    { arkhamDBPushStage = "saving", arkhamDBPushExpectedDateUpdate = remote.dateUpdate, arkhamDBPushExpectedVersion = remote.deckVersion }
+                  _ <- request (entityVal next) (\token -> client.saveDeck token target desired)
+                  verified <- load (entityVal next) target
+                  if samePushedDeck desired verified && isNothing verified.nextDeckId
+                    then finish next verified
+                    else conflict next verified "remoteChanged"
+        finish entity remote = do
+          _ <- ensureGeneration $ entityVal entity
+          saved <- lift $ writes.finishPush entity remote
+          when (isNothing saved) $ throwError linkChanged
+        process entity = do
+          let job = entityVal entity
+          link <- ensureGeneration job
+          if arkhamDBPushMode job == "keep" then do
+            remote <- load job (arkhamDBDeckLinkRemoteDeckId link) >>= latestVersion job [arkhamDBDeckLinkRemoteDeckId link]
+            saved <- lift $ writes.keepRemoteDeck entity remote
+            unless saved $ throwError linkChanged
+          else processDeck entity link
+        processDeck entity link = do
+          let job = entityVal entity
+          unmarked <- either (const $ throwError $ ArkhamDBError "storageFailure" "Invalid pending deck") pure $ eitherDecodeStrict' $ encodeUtf8 $ arkhamDBPushPayload job
+          desired <- either throwError pure $ markedDeck (entityKey entity) unmarked
+          case arkhamDBPushStage job of
+            "creating" -> recover entity desired
+            "created" -> saveVersion entity desired
+            "saving" -> saveVersion entity desired
+            _ -> do
+              baseline <- lift $ writes.campaignXpBaseline (arkhamDBPushCampaignKey job)
+              original <- load job $ arkhamDBDeckLinkRemoteDeckId link
+              let otherCampaign = maybe False (/= arkhamDBPushCampaignKey job) $ arkhamDBDeckLinkCampaignKey link
+              if otherCampaign && arkhamDBPushMode job /= "new"
+                then conflict entity original "campaignChanged"
+                else if arkhamDBPushMode job == "normal" &&
+                  ((isNothing (arkhamDBDeckLinkLastSyncedDateUpdate link) && isNothing (arkhamDBDeckLinkLastSyncedVersion link)) || not (sameMarkers (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link) original) || isJust original.nextDeckId)
+                  then conflict entity original "remoteChanged"
+                  else if arkhamDBPushMode job == "normal" && arkhamDBPushTotalXp job == baseline &&
+                    samePushedDeck (unmarkedDeck desired) original {deck = unmarkedDeck original.deck}
+                    then finish entity original
+                  else do
+                    source <- if arkhamDBPushMode job == "overwrite" then latestVersion job [original.remoteDeckId] original else pure original
+                    next <- checkpoint entity job
+                      { arkhamDBPushStage = "creating"
+                      , arkhamDBPushSourceId = if arkhamDBPushMode job == "new" then Nothing else Just source.remoteDeckId
+                      , arkhamDBPushExpectedDateUpdate = source.dateUpdate
+                      , arkhamDBPushExpectedVersion = source.deckVersion
+                      }
+                    target <- request (entityVal next) \token ->
+                      if arkhamDBPushMode job == "new" then client.createDeck token desired
+                      else client.upgradeDeck token source.remoteDeckId (max 0 $ arkhamDBPushTotalXp job - baseline) desired.meta
+                    created <- checkpoint next (entityVal next) {arkhamDBPushStage = "created", arkhamDBPushTargetId = Just target}
+                    saveVersion created desired
+    result <- runExceptT $ process initial
+    case result of
+      Left err -> do
+        current@(Entity _ job) <- readIORef latest
+        void $ writes.checkpointPush current job {arkhamDBPushStatus = "failed", arkhamDBPushError = Just $ arkhamDBErrorCode err}
+      Right () -> runWriteBack store writes client settings now False userId deckId

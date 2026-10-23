@@ -3,12 +3,13 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -Wno-orphans -Wno-missing-deriving-strategies #-}
 
-module Arkham.Api.ArkhamDBSpec (spec) where
+module Arkham.Api.ArkhamDBSpec where
 
 import Api.Handler.Arkham.ArkhamDB (arkhamDBCallback, runArkhamDB)
 import Api.Handler.Arkham.Decks (toDeckErrors)
 import Application (makeLogWare)
 import Arkham.ArkhamDB
+import Arkham.ArkhamDB.WriteBack (ArkhamDBStatusResponse (..))
 import Arkham.ArkhamDB.Service
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
@@ -299,7 +300,7 @@ spec = describe "ArkhamDB account linking and private decks" do
       request `shouldSatisfy` BS8.isInfixOf fieldName
 
   it "sanitizes a rejected HTTP write envelope and enforces the decoded write-body cap" do
-    rejected <- chunkedClient "" "{\"success\":false,\"msg\":\"private-access-token\"}"
+    rejected <- chunkedClient "" "{\"success\":false,\"msg\":124,\"error\":\"private-access-token\"}"
     rejected.upgradeDeck "token" "123" 5 Nothing `shouldReturn` Left (ArkhamDBRemoteError "Write rejected")
     oversized <- chunkedClient "" $ paddedResponse (1024 * 1024 + 1) "{\"success\":true,\"msg\":124}"
     oversized.saveDeck "token" "124" remote.deck `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
@@ -972,8 +973,8 @@ arkhamDBFixture = do
   synced <- runExceptT (syncRemoteDeck store stubClient settings now userId deckId forbiddenPublic) >>= either (fail . show) pure
   pure $ object
     [ "linkStart" .= start
-    , "linkedStatus" .= linked
-    , "unlinkedStatus" .= unlinked
+    , "linkedStatus" .= ArkhamDBStatusResponse linked []
+    , "unlinkedStatus" .= ArkhamDBStatusResponse unlinked []
     , "decks" .= summaries
     , "completionRequest" .= ArkhamDBLinkCompleteRequest "completion-secret"
     , "importRequest" .= object ["deckId" .= String "123"]
