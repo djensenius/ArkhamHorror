@@ -224,7 +224,7 @@ newStore = do
           Just (key, _) -> (s, Entity key <$> Map.lookup key s.storedDecks)
           Nothing ->
             let key = ArkhamDeckKey $ UUID.fromWords 0 0 0 s.storedNextDeck
-                link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing time time
+                link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing Nothing time time
              in (s {storedNextDeck = s.storedNextDeck + 1, storedDecks = Map.insert key deck s.storedDecks, storedLinks = Map.insert key link s.storedLinks}, Just $ Entity key deck)
       saveSyncedDeck generation key deck remoteDeck time = atomicModifyIORef' ref \s ->
         if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation || Map.notMember key s.storedLinks then (s, False) else

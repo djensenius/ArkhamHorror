@@ -36,3 +36,4 @@ add_payload_to_log_entries [add_urls_to_card_sets] 2026-10-05T02:00:00Z Claude <
 add_key_to_log_entries [add_payload_to_log_entries] 2026-10-05T03:00:00Z Claude <noreply@anthropic.com> # A stable identity for a log entry that is revised in place
 log_entry_group [add_key_to_log_entries] 2026-10-06T00:00:00Z Claude <noreply@anthropic.com> # Group id on a log entry, replacing the revisable-row key
 arkhamdb_account_linking [users arkham_decks] 2026-10-19T00:00:00Z David Jensenius <david@jensenius.com> # ArkhamDB OAuth accounts and private deck sync links
+arkhamdb_write_back [arkhamdb_account_linking] 2026-10-23T00:00:00Z David Jensenius <david@jensenius.com> # Durable opt-in campaign deck write-back

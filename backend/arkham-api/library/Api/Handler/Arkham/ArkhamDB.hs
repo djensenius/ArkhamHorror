@@ -120,7 +120,7 @@ persistentStoreWith database = ArkhamDBStore
           Just (Entity _ link) -> fmap (Entity $ arkhamDBDeckLinkDeckId link) <$> P.get (arkhamDBDeckLinkDeckId link)
           Nothing -> do
             entity@(Entity deckId _) <- insertEntity deck
-            insert_ $ ArkhamDBDeckLink deckId (arkhamDeckUserId deck) remote.remoteDeckId remote.dateUpdate remote.deckVersion False Nothing now now
+            insert_ $ ArkhamDBDeckLink deckId (arkhamDeckUserId deck) remote.remoteDeckId remote.dateUpdate remote.deckVersion False Nothing Nothing now now
             pure $ Just entity
   , saveSyncedDeck = \generation deckId deck remote now -> database do
       active <- sameAccountGeneration (arkhamDeckUserId deck) generation
