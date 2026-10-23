@@ -274,7 +274,9 @@ startCampaignWriteBack foundation =
     let executor = appArkhamDBWriteBackExecutor foundation
     start <- wakeArkhamDBExecutor executor
     when start $ void $ forkIO $
-      runArkhamDBExecutor executor (unsafeHandler foundation $ sweep settings transport Nothing)
+      runArkhamDBExecutor executor (unsafeHandler foundation do
+        result <- try @_ @SomeException $ sweep settings transport Nothing
+        when (isLeft result) $ $logWarn "ArkhamDB write-back sweep failed; pending work will be retried")
         `finally` resetArkhamDBExecutor executor
  where
   sweep settings transport cursor = do
