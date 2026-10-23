@@ -148,8 +148,9 @@ pushStatus deckId link pending resulting = ArkhamDBDeckWriteBackStatus
   }
 
 pushCanRun :: UTCTime -> Bool -> ArkhamDBPush -> Bool
-pushCanRun now retry job = arkhamDBPushStatus job == "pending" || retry &&
-  (arkhamDBPushStatus job == "failed" || arkhamDBPushStatus job == "running" && arkhamDBPushUpdatedAt job < addUTCTime (-60) now)
+pushCanRun now retry job = arkhamDBPushStatus job == "pending" ||
+  (retry && arkhamDBPushStatus job == "failed") ||
+  (arkhamDBPushStatus job == "running" && arkhamDBPushUpdatedAt job < addUTCTime (-60) now)
 
 ownsCampaignDeck :: UserId -> ArkhamDeck -> ArkhamDBDeckLink -> Bool
 ownsCampaignDeck uid deck link = arkhamDeckUserId deck == uid && arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link

@@ -15,7 +15,7 @@ import Arkham.Game.Utils (gameInvestigators, modeCampaign)
 import Arkham.Investigator.Types (InvestigatorAttrs (..))
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
-import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), rawSql, rawExecute, updateWhereCount)
@@ -267,10 +267,11 @@ startCampaignWriteBack foundation =
         `finally` resetArkhamDBExecutor executor
  where
   sweep settings transport cursor = do
+    sweepTime <- liftIO getCurrentTime
     rows <- runDB $ rawSql
-      ("SELECT user_id, deck_id, id FROM arkhamdb_pushes WHERE status = 'pending' " <>
+      ("SELECT user_id, deck_id, id FROM arkhamdb_pushes WHERE (status = 'pending' OR (status = 'running' AND updated_at < ?)) " <>
         maybe "" (const "AND id > ? ") cursor <> "ORDER BY id LIMIT 32")
-      (maybe [] (pure . toPersistValue) cursor) :: Handler [(Single UserId, Single ArkhamDeckId, Single ArkhamDBPushId)]
+      (toPersistValue (addUTCTime (-60) sweepTime) : maybe [] (pure . toPersistValue) cursor) :: Handler [(Single UserId, Single ArkhamDeckId, Single ArkhamDBPushId)]
     for_ rows \(Single uid, Single deckId, _) -> do
       now <- liftIO getCurrentTime
       void $ try @_ @SomeException $ runWriteBack (persistentStore $ const $ pure ()) writeBackStore

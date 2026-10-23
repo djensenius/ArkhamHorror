@@ -240,6 +240,39 @@ spec = describe "ArkhamDB campaign write-back" do
     writeBackAdmissionReady (addUTCTime 59 Linking.now) attempted {arkhamDBAccountWriteBackFailures = 1} `shouldBe` False
     map writeBackRetryDelay [0,1,2,3,4,10] `shouldBe` [30,60,120,240,300,300]
 
+  it "automatically recovers an expired running claim after a crash before processing" do
+    h <- newHarness
+    claimed <- h.writes.claimPush Linking.now False Linking.userId Linking.deckId
+    claimed `shouldSatisfy` isJust
+    -- The process died after committing the claim. Polling before lease expiry
+    -- cannot steal it, but the next sweep after expiry must make progress.
+    runWriteBack h.store h.writes h.client Linking.settings (addUTCTime 60 Linking.now) False Linking.userId Linking.deckId
+    assertState h "running"
+    readIORef h.calls `shouldReturn` []
+    runWriteBack h.store h.writes h.client Linking.settings (addUTCTime 61 Linking.now) False Linking.userId Linking.deckId
+    assertState h "succeeded"
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+
+  it "automatically resumes a staged running claim without creating a second version" do
+    h <- newHarness
+    runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"} False
+    claimTime <- getCurrentTime
+    claimed <- h.writes.claimPush claimTime True Linking.userId Linking.deckId
+    claimed `shouldSatisfy` isJust
+    -- Crash after reclaiming the persisted saving stage.
+    runWriteBack h.store h.writes h.client Linking.settings (addUTCTime 61 claimTime) False Linking.userId Linking.deckId
+    assertState h "succeeded"
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124"]
+
+  it "does not automatically retry failed or conflicted jobs" do
+    h <- newHarness
+    for_ ["failed", "conflict"] \status -> do
+      modifyIORef' h.job \job -> job {arkhamDBPushStatus = status}
+      runWriteBack h.store h.writes h.client Linking.settings (addUTCTime 1000 Linking.now) False Linking.userId Linking.deckId
+      assertState h status
+    readIORef h.calls `shouldReturn` []
+
   it "does not queue another seat owner's associated deck" do
     h <- newHarness
     state <- readIORef h.linked
