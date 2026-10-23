@@ -4000,7 +4000,7 @@
       "mutation": {
         "op": "replace",
         "pointer": "/localeCatalog/manifestSha256",
-        "value": "000000000000000000000000000000000000000000000000000000000000000٠"
+        "value": "000000000000000000000000000000000000000000000000000000000000000\u0660"
       },
       "expectedErrors": [
         {
@@ -4021,7 +4021,7 @@
       "mutation": {
         "op": "replace",
         "pointer": "/localeCatalog/defaultLocale",
-        "value": "en-００"
+        "value": "en-\uff10\uff10"
       },
       "expectedErrors": [
         {
@@ -4042,7 +4042,7 @@
       "mutation": {
         "op": "replace",
         "pointer": "/localeCatalog/supportedLocales/0",
-        "value": "dа"
+        "value": "d\u0430"
       },
       "expectedErrors": [
         {
@@ -16584,7 +16584,7 @@
     "contracts/fixtures/room-closed.json": "fabfe52fd38ab86c7c210c681205d6aa2c992200a798063b982ba0a0aefcfae6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "b3cdaefc5fe48c626dfe05a854f738e91a59992eb4bc82c40f1fba00aaa6b2de",
+    "contracts/manifest.json": "789df9f2b82af86ce7d5b60a7e6907e27e233338b5bdf7257502b17aa5baf5c8",
     "contracts/openapi.yaml": "0c281430cdae8f87de3c6d970414f03a10863c81aede019dc9572a93b0950162",
     "contracts/route-inventory.json": "1dc766c6e8650278d14d28ba53cae72a36f4165c3fb33bb4aa8fb3a1a5e4a85d",
     "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
@@ -16728,7 +16728,7 @@
         "reason": "ManifestUrlControlCharacter"
       },
       {
-        "configured": "/locale-catalog/manifèst.json",
+        "configured": "/locale-catalog/manif\u00e8st.json",
         "reason": "ManifestUrlNonAscii"
       },
       {
@@ -16868,19 +16868,19 @@
         "reason": "ManifestUrlInvalidPort"
       },
       {
-        "configured": "https://Kelvin.example/locale-catalog/manifest.json",
+        "configured": "https://\u212aelvin.example/locale-catalog/manifest.json",
         "reason": "ManifestUrlNonAscii"
       },
       {
-        "configured": "https://cdn.exаmple.com/locale-catalog/manifest.json",
+        "configured": "https://cdn.ex\u0430mple.com/locale-catalog/manifest.json",
         "reason": "ManifestUrlNonAscii"
       },
       {
-        "configured": "https://cdn.example.com:٠٠٠٠/locale-catalog/manifest.json",
+        "configured": "https://cdn.example.com:\u0660\u0660\u0660\u0660/locale-catalog/manifest.json",
         "reason": "ManifestUrlNonAscii"
       },
       {
-        "configured": "/locale-catalog/manifest０.json",
+        "configured": "/locale-catalog/manifest\uff10.json",
         "reason": "ManifestUrlNonAscii"
       }
     ]
@@ -16987,19 +16987,19 @@
         "reason": "InvalidCatalogRevision"
       },
       {
-        "configured": "1.0123456789abcdef0123456789abcde٠",
+        "configured": "1.0123456789abcdef0123456789abcde\u0660",
         "reason": "NonAsciiSettingValue"
       },
       {
-        "configured": "1.００００００００００００００００００００００００００００００００",
+        "configured": "1.\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10\uff10",
         "reason": "NonAsciiSettingValue"
       },
       {
-        "configured": "٠.0123456789abcdef0123456789abcdef",
+        "configured": "\u0660.0123456789abcdef0123456789abcdef",
         "reason": "NonAsciiSettingValue"
       },
       {
-        "configured": "1.0123456789abcdef0123456789abcdаf",
+        "configured": "1.0123456789abcdef0123456789abcd\u0430f",
         "reason": "NonAsciiSettingValue"
       }
     ]
