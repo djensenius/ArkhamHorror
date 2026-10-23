@@ -118,9 +118,7 @@ writeBackStore = ArkhamDBWriteBackStore
       case (mapping, pending) of
         (Just (Entity _ link), Just (Entity key job))
           | arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
-          , arkhamDBPushStatus job == "conflict" || arkhamDBPushStatus job == "failed"
-          , mode `elem` ["overwrite", "new", "keep"]
-          , mode /= "overwrite" || arkhamDBPushStage job /= "creating" -> do
+          , canResolvePush mode job -> do
               active <- sameAccountGeneration uid $ arkhamDBPushGeneration job
               if not active then pure False else do
                 -- Never discard an uncertain creation intent and create again.

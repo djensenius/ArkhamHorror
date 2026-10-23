@@ -128,7 +128,11 @@ newHarness = do
               }
             writeIORef job value {arkhamDBPushStatus = "cancelled"}
             pure True
-        , resolvePush = \_ _ _ mode -> modifyIORef' job (\value -> value {arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = mode}) >> pure True
+        , resolvePush = \_ _ _ mode -> do
+            value <- readIORef job
+            if not (canResolvePush mode value) then pure False else do
+              writeIORef job value {arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = mode, arkhamDBPushTargetId = Nothing}
+              pure True
         , toggleWriteBack = \_ _ _ enabled -> modifyIORef' linked (\s -> s
             {Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkWriteBack = enabled}) Linking.deckId s.storedLinks}) >> pure True
         , deckWriteBackStatus = \_ -> do
@@ -362,6 +366,7 @@ spec = describe "ArkhamDB campaign write-back" do
 
   it "save-as-new creates and saves an independent deck and reuses the single-campaign local link" do
     h <- newHarness
+    modifyIORef' h.job \job -> job {arkhamDBPushStatus = "conflict"}
     _ <- h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new"
     h.run False
     assertState h "succeeded"
@@ -381,6 +386,7 @@ spec = describe "ArkhamDB campaign write-back" do
     h.run False
     assertState h "conflict"
     arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "campaignChanged"
+    h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
     assertNoPush h
     _ <- h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new"
     h.run False
@@ -397,6 +403,14 @@ spec = describe "ArkhamDB campaign write-back" do
     fmap arkhamDeckOverlay (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just (Just overlay)
     fmap arkhamDeckUrl copy `shouldBe` Just canonicalUrl
     fmap (Decklist.url . arkhamDeckList) copy `shouldBe` Just canonicalUrl
+
+  it "rejects overwrite of an already created target instead of sending earned XP twice" do
+    h <- newHarness
+    runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"} False
+    h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
+    h.run True
+    assertState h "succeeded"
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
 
   it "does not overwrite edits after the first created-target load failed" do
     h <- newHarness

@@ -104,6 +104,10 @@ pushCanRun :: UTCTime -> Bool -> ArkhamDBPush -> Bool
 pushCanRun now retry job = arkhamDBPushStatus job == "pending" || retry &&
   (arkhamDBPushStatus job == "failed" || arkhamDBPushStatus job == "running" && arkhamDBPushUpdatedAt job < addUTCTime (-60) now)
 
+canResolvePush :: Text -> ArkhamDBPush -> Bool
+canResolvePush mode job = arkhamDBPushStatus job `elem` ["conflict", "failed"] && mode `elem` ["overwrite", "new", "keep"] &&
+  (mode /= "overwrite" || (arkhamDBPushStage job /= "creating" && isNothing (arkhamDBPushTargetId job) && arkhamDBPushError job /= Just "campaignChanged"))
+
 campaignCopyDeck :: ArkhamDeck -> ArkhamDBRemoteDeck -> ArkhamDeck
 campaignCopyDeck deck remote = deck
   { arkhamDeckName = arkhamDeckName deck <> " (campaign copy)"
