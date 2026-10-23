@@ -30,7 +30,7 @@ import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
 import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
 import Arkham.Card.CardCode
 import Arkham.Card.CustomCard (arkhamBuildCustomCardCode, isArkhamBuildCardId, lookupCustomCardDef)
-import Arkham.Classes.Entity (attr)
+import Arkham.Classes.Entity (attr, toAttrs)
 import Arkham.Classes.HasQueue
 import Arkham.Custom.Overlay (DeckOverlay)
 import Arkham.Decklist
