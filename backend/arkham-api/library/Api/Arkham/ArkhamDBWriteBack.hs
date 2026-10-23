@@ -225,9 +225,13 @@ queueCampaignWriteBack gameId step now game = for_ (modeCampaign $ gameMode game
             selectFirst [ArkhamDeckUserId P.==. uid, ArkhamDeckUrl P.==. Just url, ArkhamDeckId P.<-. map (arkhamDBDeckLinkDeckId . entityVal) links] [Asc ArkhamDeckId]
       for_ saved \(Entity deckId deck) -> do
         mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
-        generation <- getBy $ UniqueArkhamDBAccountUser uid
+        -- Lock only the generation's key, not the user/refresh lock. An unlink
+        -- either wins first (skip obsolete work) or waits until this INSERT's
+        -- transaction commits; it cannot turn gameplay into a FK violation.
+        generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
+        let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
         case (mapping, generation, Map.lookup iid $ campaignDecks attrs) of
-          (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | arkhamDBDeckLinkWriteBack link -> do
+          (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
             when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
             let story = Map.findWithDefault [] iid $ campaignStoryCards attrs
                 list = campaignDeckSnapshot (arkhamDeckList deck) cards story (investigatorSideDeck ia) (investigatorTaboo ia)

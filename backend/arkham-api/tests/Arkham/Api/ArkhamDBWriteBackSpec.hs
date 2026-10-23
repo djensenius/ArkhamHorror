@@ -26,6 +26,7 @@ import Control.Concurrent.STM.TBQueue
 
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..))
+import Database.Persist.Sql (toSqlKey)
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Relude hiding (state)
@@ -222,6 +223,15 @@ spec = describe "ArkhamDB campaign write-back" do
     writeBackAdmissionReady (addUTCTime 30 Linking.now) attempted `shouldBe` True
     writeBackAdmissionReady (addUTCTime 59 Linking.now) attempted {arkhamDBAccountWriteBackFailures = 1} `shouldBe` False
     map writeBackRetryDelay [0,1,2,3,4,10] `shouldBe` [30,60,120,240,300,300]
+
+  it "does not queue another seat owner's associated deck" do
+    h <- newHarness
+    state <- readIORef h.linked
+    deck <- maybe (fail "Missing deck") pure $ Map.lookup Linking.deckId state.storedDecks
+    link <- maybe (fail "Missing link") pure $ Map.lookup Linking.deckId state.storedLinks
+    ownsCampaignDeck Linking.userId deck link `shouldBe` True
+    ownsCampaignDeck Linking.userId deck {arkhamDeckUserId = toSqlKey 999} link `shouldBe` False
+    ownsCampaignDeck Linking.userId deck link {arkhamDBDeckLinkUserId = toSqlKey 999} `shouldBe` False
 
   it "snapshots campaign story cards and weaknesses by identity, not the investigator draw pile" do
     let card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
