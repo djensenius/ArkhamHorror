@@ -147,12 +147,12 @@ putApiV1ArkhamArkhamDBWriteBackR deckId = do
 
 postApiV1ArkhamArkhamDBWriteBackRetryR :: ArkhamDeckId -> Handler [ArkhamDBDeckWriteBackStatus]
 postApiV1ArkhamArkhamDBWriteBackRetryR deckId = do
-  settings <- requireConfigured
+  _ <- requireConfigured
   userId <- getRequestUserId
-  client <- configuredClient
   now <- liftIO getCurrentTime
   ownedWriteBackDeck userId deckId
-  forkHandler (const $ pure ()) $ runWriteBack persistentStore writeBackStore client settings now True userId deckId
+  writeBackStore.requestPushRetry now userId deckId
+  dispatchCampaignWriteBack
   writeBackStore.deckWriteBackStatus userId
 
 postApiV1ArkhamArkhamDBResolveConflictR :: ArkhamDeckId -> Handler [ArkhamDBDeckWriteBackStatus]

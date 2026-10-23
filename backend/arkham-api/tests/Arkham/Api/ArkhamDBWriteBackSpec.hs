@@ -21,7 +21,9 @@ import Data.Aeson
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (addUTCTime, getCurrentTime)
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, killThread)
+import Control.Concurrent.STM.TBQueue
+
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..))
 import Entity.Arkham.ArkhamDBAccount
@@ -92,6 +94,7 @@ newHarness = do
                 writeIORef job next
                 pure $ Just $ Entity pushKey next
             else pure Nothing
+        , requestPushRetry = \_ _ _ -> pure ()
         , checkpointPush = \(Entity _ previous) next -> do
             active <- valid previous
             current <- readIORef job
@@ -186,6 +189,40 @@ assertNoPush h = do
 
 spec :: Spec
 spec = describe "ArkhamDB campaign write-back" do
+  it "coalesces saturated dispatch admission and leaves an unrelated small-pool connection available" do
+    executor <- newArkhamDBExecutor
+    pool <- newTBQueueIO 2
+    atomically $ writeTBQueue pool () >> writeTBQueue pool ()
+    started <- newEmptyMVar
+    release <- newEmptyMVar
+    workers <- newIORef (0 :: Int)
+    let sweep = do
+          atomically $ readTBQueue pool
+          modifyIORef' workers (+1)
+          void $ tryPutMVar started ()
+          takeMVar release
+          atomically $ writeTBQueue pool ()
+        signal = do
+          launch <- wakeArkhamDBExecutor executor
+          when launch $ void $ forkIO $ runArkhamDBExecutor executor sweep
+    signal
+    timeout 2000000 (takeMVar started) `shouldReturn` Just ()
+    replicateM_ 10000 signal
+    readIORef workers `shouldReturn` 1
+    timeout 100000 (atomically $ readTBQueue pool) `shouldReturn` Just ()
+    tid <- readMVar executor.executorThread
+    traverse_ killThread tid
+
+  it "throttles per-user write-back attempts and backs off repeated failures" do
+    (store, _) <- Linking.newStore
+    Linking.linkAccount store
+    account <- store.findAccount Linking.userId >>= maybe (fail "Missing account") pure
+    let attempted = account {arkhamDBAccountLastWriteBackAttemptAt = Just Linking.now}
+    writeBackAdmissionReady (addUTCTime 29 Linking.now) attempted `shouldBe` False
+    writeBackAdmissionReady (addUTCTime 30 Linking.now) attempted `shouldBe` True
+    writeBackAdmissionReady (addUTCTime 59 Linking.now) attempted {arkhamDBAccountWriteBackFailures = 1} `shouldBe` False
+    map writeBackRetryDelay [0,1,2,3,4,10] `shouldBe` [30,60,120,240,300,300]
+
   it "snapshots campaign story cards and weaknesses by identity, not the investigator draw pile" do
     let card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
         first = card 1 "01006"

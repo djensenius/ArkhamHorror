@@ -30,6 +30,7 @@ import Api.Arkham.Helpers (
   pubSubSupervisor,
   roomHeartbeat,
  )
+import Arkham.ArkhamDB.WriteBack (newArkhamDBExecutor, executorThread)
 import Arkham.Metrics qualified as Metrics
 import Config
 import Control.Concurrent (forkIO, killThread)
@@ -141,6 +142,7 @@ makeFoundation :: AppSettings -> IO App
 makeFoundation appSettings = do
   -- Some basic initializations: HTTP connection manager, logger, and static
   -- subsite.
+  appArkhamDBWriteBackExecutor <- newArkhamDBExecutor
   appHttpManager <- getGlobalManager
   let appArkhamDBClient = fmap (\settings -> httpArkhamDBClient appHttpManager settings.arkhamDBBaseUrl settings.arkhamDBClientId settings.arkhamDBClientSecret) (appArkhamDB appSettings)
   appLogger <- newStdoutLoggerSet defaultBufSize >>= makeYesodLogger
@@ -398,6 +400,7 @@ getApplicationRepl = do
 
 shutdownApp :: App -> IO ()
 shutdownApp app = do
+  readMVar (executorThread $ appArkhamDBWriteBackExecutor app) >>= traverse_ killThread
   for_ (appRoomHeartbeatThread app) killThread
   for_ (appPubSubSupervisorThread app) killThread
   case appMessageBroker app of

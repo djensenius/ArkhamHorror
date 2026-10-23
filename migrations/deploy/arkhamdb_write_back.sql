@@ -1,6 +1,8 @@
 -- Deploy arkham-horror-backend:arkhamdb_write_back to pg
 -- requires: arkhamdb_account_linking
 BEGIN;
+ALTER TABLE arkhamdb_accounts ADD COLUMN last_write_back_attempt_at timestamptz;
+ALTER TABLE arkhamdb_accounts ADD COLUMN write_back_failures integer NOT NULL DEFAULT 0;
 ALTER TABLE arkhamdb_deck_links ADD COLUMN campaign_key varchar;
 CREATE TABLE arkhamdb_pushes (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),

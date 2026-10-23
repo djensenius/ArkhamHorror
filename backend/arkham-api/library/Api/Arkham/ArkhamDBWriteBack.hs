@@ -13,39 +13,53 @@ import Arkham.Decklist qualified as Decklist
 import Arkham.Game (Game (..))
 import Arkham.Game.Utils (gameInvestigators, modeCampaign)
 import Arkham.Investigator.Types (InvestigatorAttrs (..))
-import Data.List (nubBy)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
 import Database.Persist qualified as P
-import Database.Persist.Sql (updateWhereCount)
+import Database.Persist.Sql (Single (..), rawSql, rawExecute, updateWhereCount)
 import Import hiding (state)
 import UnliftIO.Exception (try)
 
 writeBackStore :: ArkhamDBWriteBackStore Handler
 writeBackStore = ArkhamDBWriteBackStore
   { claimPush = \now retry uid deckId -> runDB do
+      -- A busy user's remote request must not attract pool-sized lock waiters.
+      rawExecute "SET LOCAL lock_timeout = '5s'" []
+      available <- rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE SKIP LOCKED" [toPersistValue uid] :: DB [Single Int64]
+      if null available then pure Nothing else do
+        mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
+        account <- getBy $ UniqueArkhamDBAccountUser uid
+        case (mapping, account) of
+          (Just (Entity _ link), Just (Entity generation accountValue))
+            | arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link && writeBackAdmissionReady now accountValue -> do
+              pending <- oldestPush deckId
+              case pending of
+                Just (Entity key job) | pushCanRun now retry job && generation == arkhamDBPushGeneration job -> do
+                  let claimed = job {arkhamDBPushStatus = "running", arkhamDBPushError = Nothing, arkhamDBPushUpdatedAt = now}
+                  replace key claimed
+                  P.update generation [ArkhamDBAccountLastWriteBackAttemptAt P.=. Just now]
+                  pure $ Just $ Entity key claimed
+                _ -> pure Nothing
+          _ -> pure Nothing
+  , requestPushRetry = \now uid deckId -> runDB do
+      rawExecute "SET LOCAL lock_timeout = '5s'" []
       lockArkhamDBUser uid
-      mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
-      case mapping of
-        Just (Entity _ link) | arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link -> do
-          pending <- oldestPush deckId
-          case pending of
-            Nothing -> pure Nothing
-            Just (Entity key job) -> do
-              let runnable = pushCanRun now retry job
-              active <- sameAccountGeneration uid $ arkhamDBPushGeneration job
-              if runnable && active then do
-                let claimed = job {arkhamDBPushStatus = "running", arkhamDBPushError = Nothing, arkhamDBPushUpdatedAt = now}
-                replace key claimed
-                pure $ Just $ Entity key claimed
-              else pure Nothing
-        _ -> pure Nothing
+      account <- getBy $ UniqueArkhamDBAccountUser uid
+      pending <- oldestPush deckId
+      case (account, pending) of
+        (Just (Entity generation value), Just (Entity key job))
+          | arkhamDBPushUserId job == uid && arkhamDBPushGeneration job == generation
+          , writeBackAdmissionReady now value, pushCanRun now True job ->
+              P.update key [ArkhamDBPushStatus P.=. "pending"]
+        _ -> pure ()
   , checkpointPush = \previous updated -> runDB do
       active <- activePush previous
       if not active then pure False else do
         affected <- updateWhereCount (pushClaim previous) $ pushUpdates updated
+        when (affected == 1 && arkhamDBPushStatus updated == "failed") $
+          P.update (arkhamDBPushGeneration updated) [ArkhamDBAccountWriteBackFailures P.+=. 1]
         pure $ affected == 1
   , finishPush = \previous remote -> runDB do
       active <- activePush previous
@@ -86,6 +100,7 @@ writeBackStore = ArkhamDBWriteBackStore
               replace associationId campaign {arkhamDBCampaignDeckLastPushedXp = arkhamDBPushTotalXp job}
               pure deckId
             P.update key [ArkhamDBPushStatus P.=. "succeeded", ArkhamDBPushError P.=. Nothing]
+            P.update (arkhamDBPushGeneration job) [ArkhamDBAccountWriteBackFailures P.=. 0]
             pure $ Just result
           _ -> pure Nothing
   , keepRemoteDeck = \previous remote -> runDB do
@@ -222,16 +237,27 @@ queueCampaignWriteBack gameId step now game = for_ (modeCampaign $ gameMode game
               Nothing Nothing Nothing "normal" now now
           _ -> pure ()
 
--- A worker has no game lock and cannot affect a committed answer. Pending jobs
--- survive a process exit; retry resumes the oldest job and its durable stage.
+-- One bounded executor, no game lock, no per-boundary/per-retry forks. Only
+-- a page of identifiers is read; full payloads are fetched after admission.
 dispatchCampaignWriteBack :: Handler ()
 dispatchCampaignWriteBack = do
   configured <- getsYesod $ appArkhamDB . appSettings
   client <- getsYesod appArkhamDBClient
-  for_ ((,) <$> configured <*> client) \(settings, transport) ->
-    forkHandler (const $ pure ()) do
-      pending <- runDB $ selectList [ArkhamDBPushStatus P.==. "pending"] [Asc ArkhamDBPushCreatedAt, Asc ArkhamDBPushId]
-      for_ (nubBy (\a b -> arkhamDBPushDeckId (entityVal a) == arkhamDBPushDeckId (entityVal b)) pending) \(Entity _ job) -> do
-        now <- liftIO getCurrentTime
-        void $ try @_ @SomeException $ runWriteBack (persistentStore $ const $ pure ()) writeBackStore
-          (hoistArkhamDBClient liftIO transport) settings now False (arkhamDBPushUserId job) (arkhamDBPushDeckId job)
+  executor <- getsYesod appArkhamDBWriteBackExecutor
+  for_ ((,) <$> configured <*> client) \(settings, transport) -> do
+    start <- liftIO $ wakeArkhamDBExecutor executor
+    when start $ forkHandler (const $ liftIO $ resetArkhamDBExecutor executor) $
+      runArkhamDBExecutor executor $ sweep settings transport Nothing
+ where
+  sweep settings transport cursor = do
+    rows <- runDB $ rawSql
+      ("SELECT user_id, deck_id, id FROM arkhamdb_pushes WHERE status = 'pending' " <>
+        maybe "" (const "AND id > ? ") cursor <> "ORDER BY id LIMIT 32")
+      (maybe [] (pure . toPersistValue) cursor) :: Handler [(Single UserId, Single ArkhamDeckId, Single ArkhamDBPushId)]
+    for_ rows \(Single uid, Single deckId, _) -> do
+      now <- liftIO getCurrentTime
+      void $ try @_ @SomeException $ runWriteBack (persistentStore $ const $ pure ()) writeBackStore
+        (hoistArkhamDBClient liftIO transport) settings now False uid deckId
+    case viaNonEmpty last rows of
+      Just (_, _, Single key) | length rows == 32 -> sweep settings transport $ Just key
+      _ -> pure ()

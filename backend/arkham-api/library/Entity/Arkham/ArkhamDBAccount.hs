@@ -26,6 +26,8 @@ ArkhamDBAccount sql=arkhamdb_accounts
   expiresAt UTCTime Maybe
   createdAt UTCTime
   updatedAt UTCTime
+  lastWriteBackAttemptAt UTCTime Maybe
+  writeBackFailures Int default=0
   UniqueArkhamDBAccountUser userId
   deriving Generic Show
 ArkhamDBLinkState sql=arkhamdb_link_states

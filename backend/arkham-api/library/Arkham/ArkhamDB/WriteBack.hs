@@ -7,6 +7,8 @@ import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
+import Control.Concurrent (ThreadId, myThreadId, modifyMVar, modifyMVar_)
+import System.Timeout (timeout)
 import Control.Monad.Except
 import Data.Aeson
 import Data.Aeson.KeyMap qualified as KM
@@ -19,11 +21,51 @@ import Entity.User
 import Relude
 import Settings (ArkhamDBSettings)
 
+-- One worker per application/process, with a single coalescing wake-up slot.
+-- Neither gameplay boundaries nor retries allocate a worker while it is running.
+data ArkhamDBExecutor = ArkhamDBExecutor
+  { executorStarted :: MVar Bool
+  , executorWake :: MVar ()
+  , executorThread :: MVar (Maybe ThreadId)
+  }
+
+newArkhamDBExecutor :: IO ArkhamDBExecutor
+newArkhamDBExecutor = ArkhamDBExecutor <$> newMVar False <*> newEmptyMVar <*> newMVar Nothing
+
+wakeArkhamDBExecutor :: ArkhamDBExecutor -> IO Bool
+wakeArkhamDBExecutor executor = modifyMVar executor.executorStarted \started -> do
+  void $ tryPutMVar executor.executorWake ()
+  pure (True, not started)
+
+runArkhamDBExecutor :: MonadIO m => ArkhamDBExecutor -> m () -> m ()
+runArkhamDBExecutor executor sweep = do
+  tid <- liftIO myThreadId
+  liftIO $ modifyMVar_ executor.executorThread $ const $ pure $ Just tid
+  forever do
+    -- Poll durable pending work after restart and throttled claims, even without
+    -- another gameplay boundary. Coalesced signals make active work wake sooner.
+    _ <- liftIO $ timeout 30000000 $ takeMVar executor.executorWake
+    sweep
+
+resetArkhamDBExecutor :: ArkhamDBExecutor -> IO ()
+resetArkhamDBExecutor executor = do
+  modifyMVar_ executor.executorThread $ const $ pure Nothing
+  modifyMVar_ executor.executorStarted $ const $ pure False
+
+writeBackRetryDelay :: Int -> Int
+writeBackRetryDelay failures = min 300 $ 30 * (2 ^ min 4 (max 0 failures))
+
+writeBackAdmissionReady :: UTCTime -> ArkhamDBAccount -> Bool
+writeBackAdmissionReady now account = maybe True
+  (<= addUTCTime (negate $ fromIntegral $ writeBackRetryDelay $ arkhamDBAccountWriteBackFailures account) now)
+  (arkhamDBAccountLastWriteBackAttemptAt account)
+
 -- Claim serializes a deck's oldest outstanding push. Each checkpoint commits
 -- independently, BEFORE its remote side effect. A crashed creation is recovered,
 -- never repeated. Every write checks account generation and the claim's version.
 data ArkhamDBWriteBackStore m = ArkhamDBWriteBackStore
   { claimPush :: UTCTime -> Bool -> UserId -> ArkhamDeckId -> m (Maybe (Entity ArkhamDBPush))
+  , requestPushRetry :: UTCTime -> UserId -> ArkhamDeckId -> m ()
   , checkpointPush :: Entity ArkhamDBPush -> ArkhamDBPush -> m Bool
   , finishPush :: Entity ArkhamDBPush -> ArkhamDBRemoteDeck -> m (Maybe ArkhamDeckId)
   , keepRemoteDeck :: Entity ArkhamDBPush -> ArkhamDBRemoteDeck -> m Bool
