@@ -3,12 +3,13 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -Wno-orphans -Wno-missing-deriving-strategies #-}
 
-module Arkham.Api.ArkhamDBSpec (spec) where
+module Arkham.Api.ArkhamDBSpec where
 
 import Api.Handler.Arkham.ArkhamDB (arkhamDBCallback, runArkhamDB)
 import Api.Handler.Arkham.Decks (toDeckErrors)
 import Application (makeLogWare)
 import Arkham.ArkhamDB
+import Arkham.ArkhamDB.WriteBack (ArkhamDBStatusResponse (..))
 import Arkham.ArkhamDB.Service
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
@@ -78,6 +79,7 @@ getLockTimeoutR = runArkhamDB $ liftIO $ throwIO $
 handlerStore :: ArkhamDBStore IO -> ArkhamDBStore (Yesod.HandlerFor CallbackSite)
 handlerStore store = ArkhamDBStore
   { withRefreshLock = \uid action -> withRunInIO \run -> withRefreshLock store uid (run . action . handlerStore)
+  , ownsPushClaim = liftIO . store.ownsPushClaim
   , saveLinkState = liftIO . store.saveLinkState
   , claimLinkState = \time nonce -> liftIO $ store.claimLinkState time nonce
   , findAccountGeneration = liftIO . store.findAccountGeneration
@@ -131,11 +133,14 @@ tokens = ArkhamDBOAuthTokens "private-access-token" (Just "private-refresh-token
 remote :: ArkhamDBRemoteDeck
 remote = ArkhamDBRemoteDeck
   (ArkhamDBDecklist mempty mempty "01001" "Roland Banks" Nothing Nothing Nothing (Just "123") (Just "Private deck"))
-  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0")
+  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0") Nothing True "Guide" "campaign" (Map.singleton "01006" 1) (Just "too_few_cards")
 
 stubClient :: ArkhamDBClient IO
 stubClient = ArkhamDBClient
-  { exchangeCode = \code uri -> do
+  { upgradeDeck = \_ _ _ _ -> expectationFailure "Unexpected upgrade" >> pure (Left ArkhamDBNotFound)
+  , createDeck = \_ _ -> expectationFailure "Unexpected create" >> pure (Left ArkhamDBNotFound)
+  , saveDeck = \_ _ _ -> expectationFailure "Unexpected save" >> pure (Left ArkhamDBNotFound)
+  , exchangeCode = \code uri -> do
       code `shouldBe` "authorization-code"
       uri `shouldBe` "https://server.example/api/v1/arkham/arkhamdb/callback"
       pure $ Right tokens
@@ -175,6 +180,7 @@ newStore = do
             lock <- newMVar ()
             pure (Map.insert uid lock locks, lock)
         withMVar lock $ const $ action store
+      ownsPushClaim = const $ pure False
       store = ArkhamDBStore {..}
       modify = modifyIORef' ref
       saveLinkState state = modify \s -> s {storedStates = Map.insert (arkhamDBLinkStateNonce state) (Entity (ArkhamDBLinkStateKey UUID.nil) state) s.storedStates}
@@ -224,7 +230,7 @@ newStore = do
           Just (key, _) -> (s, Entity key <$> Map.lookup key s.storedDecks)
           Nothing ->
             let key = ArkhamDeckKey $ UUID.fromWords 0 0 0 s.storedNextDeck
-                link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing time time
+                link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing Nothing time time
              in (s {storedNextDeck = s.storedNextDeck + 1, storedDecks = Map.insert key deck s.storedDecks, storedLinks = Map.insert key link s.storedLinks}, Just $ Entity key deck)
       saveSyncedDeck generation key deck remoteDeck time = atomicModifyIORef' ref \s ->
         if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation || Map.notMember key s.storedLinks then (s, False) else
@@ -275,6 +281,46 @@ paddedResponse size body = body <> BSL.replicate (fromIntegral size - BSL.length
 
 spec :: Spec
 spec = describe "ArkhamDB account linking and private decks" do
+  for_ [("upgrade", "PUT /api/oauth2/deck/upgrade/123", "xp=5"), ("new", "POST /api/oauth2/deck/new", "investigator=01001"), ("save", "PUT /api/oauth2/deck/save/124", "slots=%7B%2201006%22%3A1%7D")] \(operation, methodPath, fieldName) ->
+    it ("uses ArkhamDB's documented method and form for " <> operation) do
+      incoming <- newIORef "HTTP/1.1 200 OK\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"success\":true,\"msg\":124}"
+      outgoing <- newIORef mempty
+      manager <- newManager defaultManagerSettings
+        { managerRawConnection = pure $ \_ _ _ -> makeConnection
+            (atomicModifyIORef' incoming (\bytes -> (mempty, bytes)))
+            (\bytes -> modifyIORef' outgoing (<> bytes)) (pure ())
+        , managerProxyInsecure = noProxy
+        }
+      let client = httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
+      result <- case operation of
+        "upgrade" -> client.upgradeDeck "token" "123" 5 (Just "{}")
+        "new" -> client.createDeck "token" remote.deck
+        _ -> client.saveDeck "token" "124" remote {deck = remote.deck {slots = Map.singleton "01006" 1, sideSlots = Map.singleton "01007" 1}}
+      result `shouldBe` Right "124"
+      request <- readIORef outgoing
+      request `shouldSatisfy` BS8.isInfixOf methodPath
+      request `shouldSatisfy` BS8.isInfixOf fieldName
+      when (operation == "save") do
+        for_ ["description_md=Guide", "tags=campaign", "ignored=%7B%2201006%22%3A1%7D", "problem=too_few_cards"] \field ->
+          request `shouldSatisfy` BS8.isInfixOf field
+
+  it "loads the remote guide tags ignored slots and problem for lossless save forwarding" do
+    let raw = object
+          [ "id" .= (123 :: Int), "investigator_code" .= ("01001" :: Text), "slots" .= object []
+          , "description_md" .= ("Campaign guide" :: Text), "tags" .= ("solo campaign" :: Text)
+          , "ignoreDeckLimitSlots" .= object ["01006" .= (2 :: Int)], "problem" .= ("too_many_cards" :: Text)]
+    remote <- either (fail . show) pure $ case fromJSON raw of Error err -> Left err; Success value -> Right (value :: ArkhamDBRemoteDeck)
+    remote.descriptionMd `shouldBe` "Campaign guide"
+    remote.tags `shouldBe` "solo campaign"
+    remote.ignoreDeckLimitSlots `shouldBe` Map.singleton "01006" 2
+    remote.problem `shouldBe` Just "too_many_cards"
+
+  it "sanitizes a rejected HTTP write envelope and enforces the decoded write-body cap" do
+    rejected <- chunkedClient "" "{\"success\":false,\"msg\":124,\"error\":\"private-access-token\"}"
+    rejected.upgradeDeck "token" "123" 5 Nothing `shouldReturn` Left (ArkhamDBRemoteError "Write rejected")
+    oversized <- chunkedClient "" $ paddedResponse (1024 * 1024 + 1) "{\"success\":true,\"msg\":124}"
+    oversized.saveDeck "token" "124" remote `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
+
   it "sanitizes PostgreSQL lock timeout as retryable remoteUnavailable" do
     (store, _) <- newStore
     application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
@@ -943,8 +989,8 @@ arkhamDBFixture = do
   synced <- runExceptT (syncRemoteDeck store stubClient settings now userId deckId forbiddenPublic) >>= either (fail . show) pure
   pure $ object
     [ "linkStart" .= start
-    , "linkedStatus" .= linked
-    , "unlinkedStatus" .= unlinked
+    , "linkedStatus" .= ArkhamDBStatusResponse linked []
+    , "unlinkedStatus" .= ArkhamDBStatusResponse unlinked []
     , "decks" .= summaries
     , "completionRequest" .= ArkhamDBLinkCompleteRequest "completion-secret"
     , "importRequest" .= object ["deckId" .= String "123"]

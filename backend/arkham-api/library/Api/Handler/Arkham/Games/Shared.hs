@@ -4,6 +4,9 @@
 
 module Api.Handler.Arkham.Games.Shared where
 
+import Arkham.ArkhamDB.Campaign (isWriteBackBoundary, observeCampaignWriteBackBoundary)
+import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
+
 import Api.Arkham.Epic (
   applyEpicDeltasLocked,
   lookupGameEvent,
@@ -16,7 +19,7 @@ import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Arkham.Achievement.Types (Achievement, achievementChecklist, achievementName)
 import Arkham.Asset.Types (Asset, assetController, assetOwner, assetPlacement)
-import Arkham.Campaign.Types (CampaignAttrs)
+import Arkham.Campaign.Types (CampaignAttrs (..))
 import Arkham.Card.CardCode (CardCode (..), HasCardCode (toCardCode))
 import Arkham.Card.CustomCard (CustomCard, registerCustomCards)
 import Arkham.Classes.Entity (attr, overAttrs, toAttrs)
@@ -450,6 +453,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
     , newAchievements
     , mPhaseChanged
     , mAnswerRejection
+    , writeBackRequested
     ) <- rejectOrganizerGate $ runDB $ atomicallyWithGame gameId \g@ArkhamGame {..} -> do
     -- Read the prior log from the per-room cache when it's in sync with
     -- the just-locked game's step; otherwise fall back to the DB. Avoids
@@ -479,7 +483,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
     reply <- handleAnswer gameJson playerId response
     case reply of
       -- Nothing happened, so the log to publish is the one already there.
-      Unhandled reason -> pure (g, oldLogEntries, Nothing, False, [], [], Just reason)
+      Unhandled reason -> pure (g, oldLogEntries, Nothing, False, [], [], Just reason, False)
       Handled answerMessages -> do
         -- Epic Multiplayer: if this game is a group within an event, build an
         -- EpicEnv so Shared* messages emitted during the action are captured as
@@ -529,6 +533,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
         achievementProgressRef <- newIORef []
         achievementProgressByRef <- newIORef []
         enteredPhasesRef <- newIORef []
+        writeBackBoundaryRef <- newIORef Nothing
         let
           collectFromRun = \case
             EarnAchievement a -> modifyIORef' achievementsRef (a :)
@@ -537,6 +542,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
             AchievementProgressBy iid a items ->
               modifyIORef' achievementProgressByRef ((iid, a, items) :)
             Begin phase -> modifyIORef' enteredPhasesRef (phase :)
+            message | isWriteBackBoundary message -> observeCampaignWriteBackBoundary gameRef writeBackBoundaryRef message
             _ -> pure ()
         mResult <- liftIO $ timeout runMessagesTimeoutMicros do
           runGameApp (GameApp gameRef queueRef genRef (handleMessageLog pendingLogRef broadcast) mEpicEnv) do
@@ -589,6 +595,8 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
                 arkhamGameCreatedAt
                 now
         replace gameId g'
+        writeBackBoundary <- readIORef writeBackBoundaryRef
+        for_ writeBackBoundary \(boundary, snapshot) -> queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary snapshot
         {- In order, one row at a time, NOT every insert then every retraction.
 
         A narration may retract its own previous line and immediately write the
@@ -712,7 +720,10 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
           , case ge of
               Game {gamePhase = newPhase} -> phaseTransitions oldPhase newPhase enteredPhases
           , Nothing
+          , isJust writeBackBoundary
           )
+
+  when writeBackRequested dispatchCampaignWriteBack
 
   -- Update the per-room cache after the DB transaction has committed, so the
   -- cache is never ahead of durably-stored state.

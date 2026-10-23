@@ -20,10 +20,12 @@ module Api.Handler.Arkham.Decks (
 import Import hiding (delete, on, update, (=.), (==.))
 import Import qualified as P
 
+import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Campaign.Types (campaignLog)
+import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary)
 import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
 import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
 import Arkham.Card.CardCode
@@ -276,28 +278,29 @@ putApiV1ArkhamGameDecksR gameId = do
                     gameRef <- newIORef arkhamGameCurrentData
                     queueRef <- newQueue currentQueue
                     genRef <- newIORef $ mkStdGen gameSeed
-                    runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing) do
-                      let question' = Map.delete playerId gameQuestion
-                      unless (Map.null question') (push $ AskMap question')
-                      -- No deck at all is the "continue without upgrading" path: push nothing
-                      -- and let the parked continuation run.
-                      for_ mDecklist \decklist ->
-                        push
-                          $ if sameInvestigator investigatorId decklist
-                            then UpgradeDecklist investigatorId decklist
-                            else ReplaceInvestigator investigatorId decklist
-                      runMessages (gameIdToText gameId) noRunObservers
+                    writeBackBoundary <- withCampaignWriteBackBoundary gameRef \observers ->
+                      runGameApp (GameApp gameRef queueRef genRef (pure . const ()) Nothing) do
+                        let question' = Map.delete playerId gameQuestion
+                        unless (Map.null question') (push $ AskMap question')
+                        -- No deck at all is the "continue without upgrading" path: push nothing
+                        -- and let the parked continuation run.
+                        for_ mDecklist \decklist ->
+                          push
+                            $ if sameInvestigator investigatorId decklist
+                              then UpgradeDecklist investigatorId decklist
+                              else ReplaceInvestigator investigatorId decklist
+                        runMessages (gameIdToText gameId) observers
                     ge <- readIORef gameRef
                     updatedQueue <- readIORef (queueToRef queueRef)
                     diffDown <- evaluate $ diff ge arkhamGameCurrentData
-                    pure (ge, updatedQueue, diffDown)
+                    pure (ge, updatedQueue, diffDown, writeBackBoundary)
 
 
                   case upgraded of
                     -- First line only: engine `error`s carry a call stack the player cannot use.
                     Left err ->
                       pure $ Left (Status.status500, "Could not upgrade deck: " <> T.takeWhile (/= '\n') (tshow err))
-                    Right (ge, updatedQueue, diffDown) -> do
+                    Right (ge, updatedQueue, diffDown, writeBackBoundary) -> do
                       let g' =
                             ArkhamGame
                               arkhamGameName
@@ -334,12 +337,15 @@ putApiV1ArkhamGameDecksR gameId = do
                               where_ $ d.userId ==. val userId
                               where_ $ d.url ==. val (Just oldDeckUrl)
 
+                      for_ writeBackBoundary \(boundary, snapshot) ->
+                        queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary snapshot
                       pure $ Right g'
 
 
   case outcome of
     Left (status, message) -> sendStatusJSON status (JSONError message)
-    Right ArkhamGame {..} ->
+    Right ArkhamGame {..} -> do
+      dispatchCampaignWriteBack
       publishToRoom gameId
         $ GameUpdate
         $ PublicGame gameId arkhamGameName mempty arkhamGameCurrentData

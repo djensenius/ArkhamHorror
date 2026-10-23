@@ -22,6 +22,7 @@ import Settings (ArkhamDBSettings (..))
 -- all its database operations share that transaction/connection.
 data ArkhamDBStore m = ArkhamDBStore
   { withRefreshLock :: forall a. UserId -> (ArkhamDBStore m -> m a) -> m a
+  , ownsPushClaim :: Entity ArkhamDBPush -> m Bool
   , saveLinkState :: ArkhamDBLinkState -> m ()
   , claimLinkState :: UTCTime -> Text -> m (Maybe (Entity ArkhamDBLinkState))
   , findAccountGeneration :: UserId -> m (Maybe ArkhamDBAccountId)
@@ -105,7 +106,7 @@ encryptedAccount :: MonadIO m => ArkhamDBSettings -> UTCTime -> UserId -> Arkham
 encryptedAccount settings now userId tokens = do
   access <- (.unTokenCiphertext) <$> encryptToken settings.arkhamDBTokenKey tokens.accessToken
   refresh <- traverse (fmap (.unTokenCiphertext) . encryptToken settings.arkhamDBTokenKey) tokens.refreshToken
-  pure $ ArkhamDBAccount userId tokens.remoteUserId tokens.remoteUserName access refresh tokens.tokenExpiresAt now now
+  pure $ ArkhamDBAccount userId tokens.remoteUserId tokens.remoteUserName access refresh tokens.tokenExpiresAt now now Nothing 0
 
 accessTokenFor :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> UserId -> ArkhamDBAction m Text
 accessTokenFor store client settings now userId = do

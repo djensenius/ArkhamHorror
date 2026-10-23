@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/arkhamdb-write-back.schema.json",
+  "title": "ArkhamDB write-back encoder fixtures",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "states",
+    "toggleRequest",
+    "overwriteRequest",
+    "keepRemoteRequest",
+    "saveAsNewRequest"
+  ],
+  "properties": {
+    "states": {
+      "$ref": "./arkhamdb.schema.json#/$defs/writeBackStatusList"
+    },
+    "toggleRequest": {
+      "$ref": "./arkhamdb.schema.json#/$defs/toggleRequest"
+    },
+    "overwriteRequest": {
+      "$ref": "./arkhamdb.schema.json#/$defs/resolveRequest"
+    },
+    "keepRemoteRequest": {
+      "$ref": "./arkhamdb.schema.json#/$defs/resolveRequest"
+    },
+    "saveAsNewRequest": {
+      "$ref": "./arkhamdb.schema.json#/$defs/resolveRequest"
+    }
+  }
+}
