@@ -523,7 +523,10 @@ spec = describe "ArkhamDB campaign write-back" do
     h.run False
     assertState h "succeeded"
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5", "upgrade/124/1"]
-    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124", "save/125"]
+    -- Upgrade already copied the unchanged slots; verification can finish
+    -- read-only instead of issuing a redundant save into the new target.
+    state <- readIORef h.linked
+    fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "125"
     readIORef h.baseline `shouldReturn` 6
 
   it "uses only the newly earned cumulative XP delta, not investigatorSpentXp" do
