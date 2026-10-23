@@ -30,7 +30,7 @@ import Api.Arkham.Helpers (
   pubSubSupervisor,
   roomHeartbeat,
  )
-import Arkham.ArkhamDB.WriteBack (newArkhamDBExecutor, executorThread)
+import Arkham.ArkhamDB.WriteBack (newArkhamDBExecutor, stopArkhamDBExecutor)
 import Arkham.Metrics qualified as Metrics
 import Config
 import Control.Concurrent (forkIO, killThread)
@@ -400,7 +400,7 @@ getApplicationRepl = do
 
 shutdownApp :: App -> IO ()
 shutdownApp app = do
-  readMVar (executorThread $ appArkhamDBWriteBackExecutor app) >>= traverse_ killThread
+  stopArkhamDBExecutor $ appArkhamDBWriteBackExecutor app
   for_ (appRoomHeartbeatThread app) killThread
   for_ (appPubSubSupervisorThread app) killThread
   case appMessageBroker app of

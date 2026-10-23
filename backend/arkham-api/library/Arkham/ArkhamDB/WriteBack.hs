@@ -7,7 +7,7 @@ import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
-import Control.Concurrent (ThreadId, myThreadId, modifyMVar, modifyMVar_)
+import Control.Concurrent (ThreadId, myThreadId, modifyMVar, modifyMVar_, killThread)
 import System.Timeout (timeout)
 import Control.Monad.Except
 import Data.Aeson
@@ -46,6 +46,9 @@ runArkhamDBExecutor executor sweep = do
     -- another gameplay boundary. Coalesced signals make active work wake sooner.
     _ <- liftIO $ timeout 30000000 $ takeMVar executor.executorWake
     sweep
+
+stopArkhamDBExecutor :: ArkhamDBExecutor -> IO ()
+stopArkhamDBExecutor executor = readMVar executor.executorThread >>= traverse_ killThread
 
 resetArkhamDBExecutor :: ArkhamDBExecutor -> IO ()
 resetArkhamDBExecutor executor = do
