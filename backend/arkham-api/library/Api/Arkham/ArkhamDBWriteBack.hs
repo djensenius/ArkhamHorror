@@ -9,7 +9,6 @@ import Arkham.ArkhamDB.WriteBack
 import Arkham.Campaign.Types (Campaign (..), CampaignAttrs (..), invalidCards)
 import Arkham.Classes.Entity (toAttrs)
 import Arkham.Helpers (Deck (..))
-import Arkham.Decklist qualified as Decklist
 import Arkham.Game (Game (..))
 import Arkham.Game.Utils (gameInvestigators, modeCampaign)
 import Arkham.Investigator.Types (InvestigatorAttrs (..))
