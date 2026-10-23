@@ -27,7 +27,6 @@ import Data.Time.Clock (getCurrentTime)
 import Database.PostgreSQL.Simple (sqlState)
 import Import hiding (state)
 import Network.HTTP.Types.Status qualified as Status
-import UnliftIO (MonadUnliftIO)
 import UnliftIO.Exception (catch, throwIO)
 
 runArkhamDB :: (MonadHandler m, MonadUnliftIO m) => ArkhamDBAction m a -> m a

@@ -16362,6 +16362,22 @@
           ],
           "keyword": "oneOf",
           "messageContains": "is not valid under any"
+        },
+        {
+          "path": [
+            "overwriteRequest",
+            "confirmed"
+          ],
+          "keyword": "const",
+          "messageContains": "True was expected"
+        },
+        {
+          "path": [
+            "overwriteRequest",
+            "resolution"
+          ],
+          "keyword": "const",
+          "messageContains": "'keepRemote' was expected"
         }
       ]
     },
@@ -16382,6 +16398,22 @@
           ],
           "keyword": "oneOf",
           "messageContains": "is not valid under any"
+        },
+        {
+          "path": [
+            "saveAsNewRequest",
+            "confirmed"
+          ],
+          "keyword": "const",
+          "messageContains": "True was expected"
+        },
+        {
+          "path": [
+            "saveAsNewRequest",
+            "resolution"
+          ],
+          "keyword": "const",
+          "messageContains": "'keepRemote' was expected"
         }
       ]
     },

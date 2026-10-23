@@ -5,7 +5,6 @@ import Arkham.ArkhamDB
 import Arkham.Card.CardCode (unCardCode)
 import Arkham.Id (InvestigatorId (..), PlayerId (..))
 import Arkham.ArkhamDB.Campaign (campaignDeckSnapshot)
-import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
 import Arkham.Campaign.Types (CampaignAttrs (..))
 import Arkham.Classes.Entity (toAttrs)
@@ -22,7 +21,7 @@ import Data.UUID qualified as UUID
 import Database.Persist qualified as P
 import Database.Persist.Sql (updateWhereCount)
 import Import hiding (state)
-import UnliftIO.Exception (SomeException, try)
+import UnliftIO.Exception (try)
 
 writeBackStore :: ArkhamDBWriteBackStore Handler
 writeBackStore = ArkhamDBWriteBackStore
