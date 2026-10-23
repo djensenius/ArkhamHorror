@@ -27,7 +27,7 @@ import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.STM.TBQueue
 
 import Data.UUID qualified as UUID
-import Database.Persist (Entity (..))
+import Database.Persist (Entity (..), Update (..), PersistUpdate (Assign), fieldLens)
 import Database.Persist.Sql (toSqlKey)
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
@@ -127,7 +127,7 @@ newHarness = do
               pure $ Just result
         , keepRemoteDeck = \(Entity _ value) remote -> do
             modifyIORef' linked \s -> s
-              { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckList = remote.deck, arkhamDeckUrl = remote.deck.url}) Linking.deckId s.storedDecks
+              { Linking.storedDecks = Map.adjust (applyDeckUpdates $ keepRemoteDeckUpdates remote) Linking.deckId s.storedDecks
               , Linking.storedLinks = Map.adjust (\link -> link
                   { arkhamDBDeckLinkRemoteDeckId = remote.remoteDeckId
                   , arkhamDBDeckLinkLastSyncedDateUpdate = remote.dateUpdate
@@ -197,6 +197,12 @@ assertNoPush :: Harness -> Expectation
 assertNoPush h = do
   calls <- readIORef h.calls
   filter (\call -> "upgrade/" `T.isPrefixOf` call || "save/" `T.isPrefixOf` call || call == "new") calls `shouldBe` []
+
+applyDeckUpdates :: [Update ArkhamDeck] -> ArkhamDeck -> ArkhamDeck
+applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId deck) updates
+ where
+  apply entity (Update field value Assign) = runIdentity $ fieldLens field (const $ Identity value) entity
+  apply _ _ = error "Only field assignments are used by keep-remote"
 
 spec :: Spec
 spec = describe "ArkhamDB campaign write-back" do
@@ -415,6 +421,19 @@ spec = describe "ArkhamDB campaign write-back" do
     assertNoPush h
     state <- readIORef h.linked
     fmap arkhamDeckList (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just (remoteDecklist Linking.settings Linking.remote)
+
+  it "keeps a materialized remote snapshot without applying its overlay twice" do
+    h <- newHarness
+    let overlay = DeckOverlay Nothing mempty (Map.singleton "01006" 1) mempty
+    modifyIORef' h.linked \state -> state
+      { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) Linking.deckId state.storedDecks }
+    h.run False
+    modifyIORef' h.job \job -> job {arkhamDBPushStatus = "conflict"}
+    _ <- h.writes.resolvePush Linking.now Linking.userId Linking.deckId "keep"
+    h.run False
+    saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked
+    fmap (Decklist.slots . arkhamDeckPlayList) saved `shouldBe` Just currentDeck.slots
+    fmap arkhamDeckOverlay saved `shouldBe` Just Nothing
 
   it "explicit overwrite creates a version despite the recorded remote conflict" do
     h <- newHarness

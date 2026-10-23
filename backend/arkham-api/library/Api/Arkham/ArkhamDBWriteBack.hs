@@ -112,13 +112,7 @@ writeBackStore = ArkhamDBWriteBackStore
       if not active then pure False else do
         let job = entityVal previous
             deckId = arkhamDBPushDeckId job
-            list = remoteDecklistFromRemote remote
-        P.update deckId
-          [ ArkhamDeckList P.=. list
-          , ArkhamDeckUrl P.=. list.url
-          , ArkhamDeckName P.=. fromMaybe list.investigator_name list.decklist_name
-          , ArkhamDeckInvestigatorName P.=. list.investigator_name
-          ]
+        P.update deckId $ keepRemoteDeckUpdates remote
         updateWhere [ArkhamDBDeckLinkDeckId P.==. deckId]
           [ ArkhamDBDeckLinkRemoteDeckId P.=. remote.remoteDeckId
           , ArkhamDBDeckLinkLastSyncedDateUpdate P.=. remote.dateUpdate
@@ -186,9 +180,6 @@ writeBackStore = ArkhamDBWriteBackStore
       pure $ maybe False (\(Entity key _) -> hasPushMarker key remote) previous
   , campaignXpBaseline = \key -> runDB $ maybe 0 (arkhamDBCampaignDeckLastPushedXp . entityVal) <$> getBy (UniqueArkhamDBCampaignDeck key)
   }
- where
-  -- Explicit re-syncs and copies use canonical URLs; game associations persist.
-  remoteDecklistFromRemote remote = remote.deck
 
 -- Retain enough terminal history for status/recovery, not full campaign payloads
 -- forever. Outstanding work is never pruned.

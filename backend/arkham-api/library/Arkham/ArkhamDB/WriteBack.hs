@@ -14,7 +14,7 @@ import Data.Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
-import Database.Persist (Entity (..))
+import Database.Persist (Entity (..), Update, (=.))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.User
@@ -156,6 +156,16 @@ ownsCampaignDeck uid deck link = arkhamDeckUserId deck == uid && arkhamDBDeckLin
 canResolvePush :: Text -> ArkhamDBPush -> Bool
 canResolvePush mode job = arkhamDBPushStatus job `elem` ["conflict", "failed"] && mode `elem` ["overwrite", "new", "keep"] &&
   (mode /= "overwrite" || (arkhamDBPushStage job /= "creating" && isNothing (arkhamDBPushTargetId job) && arkhamDBPushError job /= Just "campaignChanged"))
+
+-- The accepted remote list is materialized, including any campaign overlay.
+keepRemoteDeckUpdates :: ArkhamDBRemoteDeck -> [Update ArkhamDeck]
+keepRemoteDeckUpdates remote =
+  [ ArkhamDeckList =. remote.deck
+  , ArkhamDeckUrl =. remote.deck.url
+  , ArkhamDeckName =. fromMaybe remote.deck.investigator_name remote.deck.decklist_name
+  , ArkhamDeckInvestigatorName =. remote.deck.investigator_name
+  , ArkhamDeckOverlay =. Nothing
+  ]
 
 campaignCopyDeck :: ArkhamDeck -> ArkhamDBRemoteDeck -> ArkhamDeck
 campaignCopyDeck deck remote = deck
