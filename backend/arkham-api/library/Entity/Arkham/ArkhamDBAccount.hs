@@ -77,6 +77,7 @@ ArkhamDBPush sql=arkhamdb_pushes
   mode Text
   createdAt UTCTime
   updatedAt UTCTime
+  boundary Text
   UniqueArkhamDBPushEvent deckId eventKey
   deriving Generic Show
 ArkhamDBCampaignDeck sql=arkhamdb_campaign_decks

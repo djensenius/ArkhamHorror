@@ -7,6 +7,7 @@ import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Campaign
 import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
+import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Card (Card (..))
 import Arkham.Card.EncounterCard (EncounterCard (..))
@@ -69,7 +70,7 @@ newHarness = do
   generation <- store.findAccountGeneration Linking.userId >>= maybe (fail "Missing account") pure
   job <- newIORef $ ArkhamDBPush Linking.deckId Linking.userId generation "game/1/iid" "game/iid"
     (encodePushDeck currentDeck) 5 "pending" "ready" Nothing Nothing Linking.remote.dateUpdate Linking.remote.deckVersion
-    Nothing Nothing Nothing "normal" Linking.now Linking.now
+    Nothing Nothing Nothing "normal" Linking.now Linking.now "scenarioEnd"
   remotes <- newIORef $ Map.singleton "123" Linking.remote
   calls <- newIORef []
   baseline <- newIORef 0
@@ -264,6 +265,10 @@ spec = describe "ArkhamDB campaign write-back" do
     isWriteBackBoundary (ForTarget GameTarget $ EndOfScenario Nothing) `shouldBe` True
     isWriteBackBoundary FinishedUpgradingDecks `shouldBe` True
     isWriteBackBoundary (GainXP "01001" GameSource 1) `shouldBe` False
+
+  it "skips the campaign-start ChooseDecksStep with no XP or remote version" do
+    campaignWriteBackBoundary (Just $ ChooseDecksStep PrologueStep) FinishedUpgradingDecks `shouldBe` Nothing
+    campaignWriteBackBoundary (Just $ UpgradeDeckStep PrologueStep) FinishedUpgradingDecks `shouldBe` Just "upgrade"
 
   it "matches encoder-generated write-back contract fixtures" do
     generated <- writeBackFixture

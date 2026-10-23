@@ -206,8 +206,8 @@ pushUpdates job =
 
 -- Snapshot the durable campaign decks, not the investigator's shuffled draw pile.
 -- The association is resolved once by owner + URL and survives later remote syncs.
-queueCampaignWriteBack :: ArkhamGameId -> Int -> UTCTime -> Game -> DB ()
-queueCampaignWriteBack gameId step now game = for_ (modeCampaign $ gameMode game) \campaign -> do
+queueCampaignWriteBack :: ArkhamGameId -> Int -> UTCTime -> Text -> Game -> DB ()
+queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ gameMode game) \campaign -> do
   players <- selectList [ArkhamPlayerArkhamGameId P.==. gameId] []
   let owner playerId = arkhamPlayerUserId . entityVal <$> find ((== playerId) . PlayerId . coerce . entityKey) players
       attrs = toAttrs campaign
@@ -238,7 +238,7 @@ queueCampaignWriteBack gameId step now game = for_ (modeCampaign $ gameMode game
                 event = UUID.toText (coerce gameId) <> "/" <> T.pack (show step) <> "/" <> unCardCode (unInvestigatorId iid)
             void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
               "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
-              Nothing Nothing Nothing "normal" now now
+              Nothing Nothing Nothing "normal" now now boundary
           _ -> pure ()
 
 -- One bounded executor, no game lock, no per-boundary/per-retry forks. Only

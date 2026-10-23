@@ -24,7 +24,8 @@ import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWri
 import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
-import Arkham.Campaign.Types (campaignLog)
+import Arkham.Campaign.Types (campaignLog, campaignStep)
+import Arkham.ArkhamDB.Campaign (campaignWriteBackBoundary)
 import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
 import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
 import Arkham.Card.CardCode
@@ -335,7 +336,8 @@ putApiV1ArkhamGameDecksR gameId = do
                               where_ $ d.userId ==. val userId
                               where_ $ d.url ==. val (Just oldDeckUrl)
 
-                      queueCampaignWriteBack gameId (arkhamGameStep + 1) now ge
+                      for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> modeCampaign (gameMode arkhamGameCurrentData)) FinishedUpgradingDecks) \boundary ->
+                        queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary ge
                       pure $ Right g'
 
 

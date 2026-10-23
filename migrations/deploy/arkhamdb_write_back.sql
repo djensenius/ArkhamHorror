@@ -25,6 +25,7 @@ CREATE TABLE arkhamdb_pushes (
   mode varchar NOT NULL,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
+  boundary varchar NOT NULL,
   CONSTRAINT unique_arkham_d_b_push_event UNIQUE (deck_id, event_key)
 );
 CREATE INDEX idx_arkhamdb_pushes_pending ON arkhamdb_pushes (deck_id, created_at, id)

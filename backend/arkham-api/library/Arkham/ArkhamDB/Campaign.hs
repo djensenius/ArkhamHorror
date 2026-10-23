@@ -1,6 +1,7 @@
 module Arkham.ArkhamDB.Campaign where
 
 import Arkham.Card (Card (..), PlayerCard, onlyPlayerCards, toCardCode, toCardId)
+import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Decklist qualified as Decklist
 import Arkham.Message (Message (..))
 import Arkham.Taboo.Types (TabooList, fromTabooId)
@@ -14,6 +15,14 @@ isWriteBackBoundary = \case
   ForTarget GameTarget (EndOfScenario _) -> True
   FinishedUpgradingDecks -> True
   _ -> False
+
+campaignWriteBackBoundary :: Maybe CampaignStep -> Message -> Maybe Text
+campaignWriteBackBoundary step message = case message of
+  ForTarget GameTarget (EndOfScenario _) -> Just "scenarioEnd"
+  FinishedUpgradingDecks -> case step of
+    Just ChooseDecksStep {} -> Nothing
+    _ -> Just "upgrade"
+  _ -> Nothing
 
 -- Campaign story cards can also occur in its stored deck: deduplicate identity,
 -- not code, so two distinct copies of one card keep their actual quantity.

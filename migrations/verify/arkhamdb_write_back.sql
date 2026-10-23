@@ -4,7 +4,7 @@ SELECT last_write_back_attempt_at, write_back_failures FROM arkhamdb_accounts WH
 SELECT campaign_key FROM arkhamdb_deck_links WHERE FALSE;
 SELECT id, deck_id, user_id, generation, event_key, campaign_key, payload, total_xp,
        status, stage, source_id, target_id, expected_date_update, expected_version,
-       remote_date_update, remote_version, error, mode, created_at, updated_at
+       remote_date_update, remote_version, error, mode, created_at, updated_at, boundary
   FROM arkhamdb_pushes WHERE FALSE;
 SELECT id, campaign_key, deck_id, user_id, last_pushed_xp FROM arkhamdb_campaign_decks WHERE FALSE;
 ROLLBACK;

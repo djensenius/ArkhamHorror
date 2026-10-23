@@ -4,7 +4,8 @@
 
 module Api.Handler.Arkham.Games.Shared where
 
-import Arkham.ArkhamDB.Campaign (isWriteBackBoundary)
+import Arkham.ArkhamDB.Campaign (isWriteBackBoundary, campaignWriteBackBoundary)
+import Arkham.Game.Utils qualified as GameUtils
 import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
 
 import Api.Arkham.Epic (
@@ -19,7 +20,7 @@ import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.CustomCards (userCustomCards)
 import Arkham.Achievement.Types (Achievement, achievementChecklist, achievementName)
 import Arkham.Asset.Types (Asset, assetController, assetOwner, assetPlacement)
-import Arkham.Campaign.Types (CampaignAttrs)
+import Arkham.Campaign.Types (CampaignAttrs (..))
 import Arkham.Card.CardCode (CardCode (..), HasCardCode (toCardCode))
 import Arkham.Card.CustomCard (CustomCard, registerCustomCards)
 import Arkham.Classes.Entity (attr, overAttrs, toAttrs)
@@ -533,7 +534,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
         achievementProgressRef <- newIORef []
         achievementProgressByRef <- newIORef []
         enteredPhasesRef <- newIORef []
-        writeBackBoundaryRef <- newIORef False
+        writeBackBoundaryRef <- newIORef Nothing
         let
           collectFromRun = \case
             EarnAchievement a -> modifyIORef' achievementsRef (a :)
@@ -542,7 +543,10 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
             AchievementProgressBy iid a items ->
               modifyIORef' achievementProgressByRef ((iid, a, items) :)
             Begin phase -> modifyIORef' enteredPhasesRef (phase :)
-            message | isWriteBackBoundary message -> writeIORef writeBackBoundaryRef True
+            message | isWriteBackBoundary message -> do
+              current <- readIORef gameRef
+              for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> GameUtils.modeCampaign (gameMode current)) message) $
+                writeIORef writeBackBoundaryRef . Just
             _ -> pure ()
         mResult <- liftIO $ timeout runMessagesTimeoutMicros do
           runGameApp (GameApp gameRef queueRef genRef (handleMessageLog pendingLogRef broadcast) mEpicEnv) do
@@ -596,7 +600,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
                 now
         replace gameId g'
         writeBackBoundary <- readIORef writeBackBoundaryRef
-        when writeBackBoundary $ queueCampaignWriteBack gameId (arkhamGameStep + 1) now ge
+        for_ writeBackBoundary \boundary -> queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary ge
         {- In order, one row at a time, NOT every insert then every retraction.
 
         A narration may retract its own previous line and immediately write the
