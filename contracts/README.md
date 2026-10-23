@@ -1230,6 +1230,10 @@ load→write interval. Resolution uses
   conflict, never an XP update to the first campaign's lineage. Save-as-new in
   that case clones the saved local deck (same owner, ` (campaign copy)` suffix),
   creates its own opted-in link and moves only the second campaign's association.
+  The copy stores the materialized campaign list with no overlay, so reusing it
+  cannot apply the original overlay twice; the original overlay is untouched.
+  Both saved-row and list URLs are canonical remote API URLs on copies and
+  keep-remote re-syncs, while the persistent game association remains stable.
   The original deck/link/campaign is untouched. Read `resultingLocalDeckId`.
   For a single campaign, save-as-new reuses the local link.
 

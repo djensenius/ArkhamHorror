@@ -96,6 +96,7 @@ writeBackStore = ArkhamDBWriteBackStore
             list = remoteDecklistFromRemote remote
         P.update deckId
           [ ArkhamDeckList P.=. list
+          , ArkhamDeckUrl P.=. list.url
           , ArkhamDeckName P.=. fromMaybe list.investigator_name list.decklist_name
           , ArkhamDeckInvestigatorName P.=. list.investigator_name
           ]
@@ -161,7 +162,7 @@ writeBackStore = ArkhamDBWriteBackStore
   , campaignXpBaseline = \key -> runDB $ maybe 0 (arkhamDBCampaignDeckLastPushedXp . entityVal) <$> getBy (UniqueArkhamDBCampaignDeck key)
   }
  where
-  -- URLs used to match live investigators remain stable across remote versions.
+  -- Explicit re-syncs and copies use canonical URLs; game associations persist.
   remoteDecklistFromRemote remote = remote.deck
 
 oldestPush :: ArkhamDeckId -> DB (Maybe (Entity ArkhamDBPush))

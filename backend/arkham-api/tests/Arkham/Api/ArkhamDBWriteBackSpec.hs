@@ -7,6 +7,7 @@ import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Campaign
 import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
+import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Card (Card (..))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Card.PlayerCard (PlayerCard (..))
@@ -110,7 +111,7 @@ newHarness = do
               pure $ Just result
         , keepRemoteDeck = \(Entity _ value) remote -> do
             modifyIORef' linked \s -> s
-              { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckList = remote.deck}) Linking.deckId s.storedDecks
+              { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckList = remote.deck, arkhamDeckUrl = remote.deck.url}) Linking.deckId s.storedDecks
               , Linking.storedLinks = Map.adjust (\link -> link
                   { arkhamDBDeckLinkRemoteDeckId = remote.remoteDeckId
                   , arkhamDBDeckLinkLastSyncedDateUpdate = remote.dateUpdate
@@ -322,7 +323,7 @@ spec = describe "ArkhamDB campaign write-back" do
     assertState h "cancelled"
     assertNoPush h
     state <- readIORef h.linked
-    fmap arkhamDeckList (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just Linking.remote.deck
+    fmap arkhamDeckList (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just (remoteDecklist Linking.settings Linking.remote)
 
   it "explicit overwrite creates a version despite the recorded remote conflict" do
     h <- newHarness
@@ -346,7 +347,11 @@ spec = describe "ArkhamDB campaign write-back" do
 
   it "blocks a second campaign and save-as-new clones only its local association" do
     h <- newHarness
-    modifyIORef' h.linked \state -> state {Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkCampaignKey = Just "first-campaign/iid"}) Linking.deckId state.storedLinks}
+    let overlay = DeckOverlay Nothing mempty (Map.singleton "01006" 1) mempty
+    modifyIORef' h.linked \state -> state
+      { Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkCampaignKey = Just "first-campaign/iid"}) Linking.deckId state.storedLinks
+      , Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) Linking.deckId state.storedDecks
+      }
     h.run False
     assertState h "conflict"
     arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "campaignChanged"
@@ -358,6 +363,14 @@ spec = describe "ArkhamDB campaign write-back" do
     fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "123"
     fmap (Decklist.slots . arkhamDeckList) (Map.lookup (ArkhamDeckKey $ UUID.fromWords 0 0 0 246) state.storedDecks)
       `shouldBe` Just currentDeck.slots
+    let copyId = ArkhamDeckKey $ UUID.fromWords 0 0 0 246
+        copy = Map.lookup copyId state.storedDecks
+        canonicalUrl = Just $ publicDeckUrl Linking.settings "125"
+    fmap (Decklist.slots . arkhamDeckPlayList) copy `shouldBe` Just currentDeck.slots
+    fmap arkhamDeckOverlay copy `shouldBe` Just Nothing
+    fmap arkhamDeckOverlay (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just (Just overlay)
+    fmap arkhamDeckUrl copy `shouldBe` Just canonicalUrl
+    fmap (Decklist.url . arkhamDeckList) copy `shouldBe` Just canonicalUrl
 
   it "does not overwrite a known target edited after a failed save" do
     h <- newHarness

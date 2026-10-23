@@ -108,6 +108,9 @@ campaignCopyDeck :: ArkhamDeck -> ArkhamDBRemoteDeck -> ArkhamDeck
 campaignCopyDeck deck remote = deck
   { arkhamDeckName = arkhamDeckName deck <> " (campaign copy)"
   , arkhamDeckList = remote.deck
+  , arkhamDeckUrl = remote.deck.url
+  -- The campaign snapshot already includes the overlay; never apply it twice.
+  , arkhamDeckOverlay = Nothing
   }
 
 needsCampaignCopy :: ArkhamDBDeckLink -> ArkhamDBPush -> Bool
@@ -246,14 +249,14 @@ runWriteBack store writes client settings now retry userId deckId = do
                     else conflict next verified "remoteChanged"
         finish entity remote = do
           _ <- ensureGeneration $ entityVal entity
-          saved <- lift $ writes.finishPush entity remote
+          saved <- lift $ writes.finishPush entity remote {deck = remoteDecklist settings remote}
           when (isNothing saved) $ throwError linkChanged
         process entity = do
           let job = entityVal entity
           link <- ensureGeneration job
           if arkhamDBPushMode job == "keep" then do
             remote <- load job (arkhamDBDeckLinkRemoteDeckId link) >>= latestVersion job [arkhamDBDeckLinkRemoteDeckId link]
-            saved <- lift $ writes.keepRemoteDeck entity remote
+            saved <- lift $ writes.keepRemoteDeck entity remote {deck = remoteDecklist settings remote}
             unless saved $ throwError linkChanged
           else processDeck entity link
         processDeck entity link = do
