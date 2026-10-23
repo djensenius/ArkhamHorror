@@ -2,6 +2,10 @@ module Arkham.ArkhamDB.Campaign where
 
 import Arkham.Card (Card, CardCode, PlayerCard, onlyPlayerCards, toCardCode)
 import Arkham.Helpers.Deck (partitionReloadedDeck)
+import Arkham.Campaign.Types (campaignStep)
+import Arkham.Classes.Entity (toAttrs)
+import Arkham.Game (Game (..), RunObservers (..), noRunObservers)
+import Arkham.Game.Utils (modeCampaign)
 import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Decklist qualified as Decklist
 import Arkham.Message (Message (..))
@@ -23,6 +27,19 @@ campaignWriteBackBoundary step message = case message of
     Just ChooseDecksStep {} -> Nothing
     _ -> Just "upgrade"
   _ -> Nothing
+
+-- Observe only messages actually popped by the drain, using the campaign step
+-- BEFORE FinishedUpgradingDecks changes it. A remaining seat/question is not a
+-- completed upgrade, even though its continuation is already in the queue.
+withCampaignWriteBackBoundary :: IORef Game -> (RunObservers -> IO ()) -> IO (Maybe Text)
+withCampaignWriteBackBoundary gameRef drain = do
+  boundaryRef <- newIORef Nothing
+  let observe message = when (isWriteBackBoundary message) do
+        current <- readIORef gameRef
+        for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> modeCampaign current.gameMode) message) $
+          writeIORef boundaryRef . Just
+  drain noRunObservers {observeMessage = Just observe}
+  readIORef boundaryRef
 
 -- Reconcile exactly as ReloadDecks: story cards supersede saved-deck copies
 -- by canonical printing, and campaign-invalid cards are not exported.

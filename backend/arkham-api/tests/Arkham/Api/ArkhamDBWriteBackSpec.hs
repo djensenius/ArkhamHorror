@@ -2,6 +2,15 @@
 
 module Arkham.Api.ArkhamDBWriteBackSpec where
 
+import Api.Arkham.Helpers (GameApp (..), runGameApp)
+import Arkham.Game qualified as Game
+import Arkham.Game.State (GameState (IsActive))
+import Arkham.Difficulty (Difficulty (Easy))
+import Arkham.Id (PlayerId (..))
+import Arkham.Classes.HasQueue (newQueue)
+import Arkham.Queue (queueToRef)
+import Arkham.Question (Question (ChooseUpgradeDeck, ContinueCampaign))
+import Control.Monad.Random (mkStdGen)
 import Arkham.Api.ArkhamDBSpec qualified as Linking
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.Campaign
@@ -329,6 +338,33 @@ spec = describe "ArkhamDB campaign write-back" do
   it "skips the campaign-start ChooseDecksStep with no XP or remote version" do
     campaignWriteBackBoundary (Just $ ChooseDecksStep PrologueStep) FinishedUpgradingDecks `shouldBe` Nothing
     campaignWriteBackBoundary (Just $ UpgradeDeckStep PrologueStep) FinishedUpgradingDecks `shouldBe` Just "upgrade"
+
+  it "queues only after the upgrade drain reaches completion, not a remaining seat's AskMap" do
+    let pid = PlayerId $ UUID.fromWords 0 0 0 101
+        game = (Game.newCampaign "01" Nothing 1 1 Easy False) {Game.gameGameState = IsActive}
+    gameRef <- newIORef game
+    queue <- newQueue
+      [ SetCampaignStep $ UpgradeDeckStep PrologueStep
+      , AskMap $ Map.singleton pid ChooseUpgradeDeck
+      , FinishedUpgradingDecks
+      , AskMap $ Map.singleton pid ContinueCampaign
+      ]
+    gen <- newIORef $ mkStdGen 1
+    let drain observers = runGameApp (GameApp gameRef queue gen (pure . const ()) Nothing) $
+          Game.runMessages "write-back-upgrade" observers
+    withCampaignWriteBackBoundary gameRef drain `shouldReturn` Nothing
+    remaining <- readIORef $ queueToRef queue
+    remaining `shouldSatisfy` elem FinishedUpgradingDecks
+    withCampaignWriteBackBoundary gameRef drain `shouldReturn` Just "upgrade"
+
+  it "does not enqueue the initial deck-choice completion observed by the drain" do
+    let pid = PlayerId $ UUID.fromWords 0 0 0 101
+        game = (Game.newCampaign "01" Nothing 1 1 Easy False) {Game.gameGameState = IsActive}
+    gameRef <- newIORef game
+    queue <- newQueue [SetCampaignStep $ ChooseDecksStep PrologueStep, FinishedUpgradingDecks, AskMap $ Map.singleton pid ContinueCampaign]
+    gen <- newIORef $ mkStdGen 1
+    withCampaignWriteBackBoundary gameRef (\observers -> runGameApp (GameApp gameRef queue gen (pure . const ()) Nothing) $
+      Game.runMessages "write-back-initial-choice" observers) `shouldReturn` Nothing
 
   it "matches encoder-generated write-back contract fixtures" do
     generated <- writeBackFixture
