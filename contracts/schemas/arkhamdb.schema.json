@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arkhamhorror.app/contracts/arkhamdb.schema.json",
+  "title": "ArkhamDB account linking and private deck reads",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "linkStart",
+    "linkedStatus",
+    "unlinkedStatus",
+    "decks",
+    "importRequest",
+    "error",
+    "importedDeck",
+    "syncedDeck",
+    "completionRequest",
+    "tokenExpiredError"
+  ],
+  "properties": {
+    "linkStart": {
+      "$ref": "#/$defs/linkStart"
+    },
+    "linkedStatus": {
+      "$ref": "#/$defs/linkStatus"
+    },
+    "unlinkedStatus": {
+      "$ref": "#/$defs/linkStatus"
+    },
+    "decks": {
+      "$ref": "#/$defs/deckList"
+    },
+    "importRequest": {
+      "$ref": "#/$defs/importRequest"
+    },
+    "error": {
+      "$ref": "#/$defs/error"
+    },
+    "importedDeck": {
+      "$ref": "./decks.schema.json#/$defs/deck"
+    },
+    "syncedDeck": {
+      "$ref": "./decks.schema.json#/$defs/deck"
+    },
+    "completionRequest": {
+      "$ref": "#/$defs/completionRequest"
+    },
+    "tokenExpiredError": {
+      "$ref": "#/$defs/error"
+    }
+  },
+  "$defs": {
+    "linkStart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizeUrl",
+        "expiresAt"
+      ],
+      "properties": {
+        "authorizeUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "linkStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "linked",
+        "remoteAccountId",
+        "remoteAccountName",
+        "tokenExpiry",
+        "linkedAt",
+        "writeBackEnabledDeckCount"
+      ],
+      "properties": {
+        "linked": {
+          "type": "boolean"
+        },
+        "remoteAccountId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remoteAccountName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tokenExpiry": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "linkedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "writeBackEnabledDeckCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "deckSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "url",
+        "investigatorName",
+        "lastUpdatedAt",
+        "version",
+        "linkedLocalDeckId"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "investigatorName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastUpdatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "linkedLocalDeckId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        }
+      }
+    },
+    "deckList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/deckSummary"
+      }
+    },
+    "importRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deckId"
+      ],
+      "properties": {
+        "deckId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "error"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "disabled",
+            "oauthCallbackInvalidState",
+            "notLinked",
+            "tokenExpired",
+            "notFound",
+            "storageFailure",
+            "remoteUnavailable",
+            "oauthCompletionInvalid"
+          ]
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    },
+    "completionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completion"
+      ],
+      "properties": {
+        "completion": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

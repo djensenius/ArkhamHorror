@@ -115,6 +115,6 @@ spec = describe "campaign catalog endpoint payload" do
         `shouldBe` CampaignCatalogOk expectedHeaders campaignCatalogBytes
 
   it "advertises the catalog capability and revision in GET /api/v1/capabilities" do
-    let capabilities = serverCapabilities Nothing
+    let capabilities = serverCapabilities Nothing False
     capabilities.capabilities `shouldSatisfy` List.elem campaignCatalogCapability
     capabilities.campaignCatalog `shouldBe` campaignCatalogMetadata

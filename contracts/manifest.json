@@ -1,5 +1,5 @@
 {
-  "schemaRevision": "0.1.53",
+  "schemaRevision": "0.1.54",
   "status": "baseline-incomplete",
   "apiBasePath": "/api/v1",
   "documents": [
@@ -51,7 +51,8 @@
     "contracts/fixtures/locale-catalog-source-en.json",
     "contracts/fixtures/locale-catalog-source-pt-BR.json",
     "contracts/schemas/question-presentation-representatives.schema.json",
-    "contracts/schemas/raw-question-fixture.schema.json"
+    "contracts/schemas/raw-question-fixture.schema.json",
+    "contracts/schemas/arkhamdb.schema.json"
   ],
   "fixtures": [
     {
@@ -573,6 +574,14 @@
     {
       "path": "contracts/fixtures/question-generic-wrapped.json",
       "schema": "contracts/schemas/raw-question-fixture.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/arkhamdb.json",
+      "schema": "contracts/schemas/arkhamdb.schema.json"
+    },
+    {
+      "path": "contracts/fixtures/capabilities-arkhamdb.json",
+      "schema": "contracts/schemas/capabilities.schema.json"
     }
   ],
   "compatibility": {
@@ -16316,9 +16325,11 @@
     "contracts/fixtures/answer-retire-investigator.json": "765180a79c83be002b4fd4c2879e6f3b84ad14df44bc986d70043dbd109708c2",
     "contracts/fixtures/answer-scenario-specific.json": "a63eb4b30df34bfb466f998155e0dcc36c910eb44bb6e492e40d46ae30d86dc4",
     "contracts/fixtures/answer-standalone-settings.json": "b59b8fbd200209b0966a75954aa5258e1f177f87c5fa1fba9243dee65cbf6066",
+    "contracts/fixtures/arkhamdb.json": "6f65fa4ce1abc81da016b6fa3bad93b2f1e4bbee5ff5bf08f7f09749088ada40",
     "contracts/fixtures/campaign-catalog.json": "1319f85f8d709c2e7134586621da42cb376048154cc5498e3f24a395c365c250",
-    "contracts/fixtures/capabilities-locale-catalog.json": "8a3e38bf22b53c4e09c407cb7f59413ca9463b0f6570b388b4df02f6fa85ea06",
-    "contracts/fixtures/capabilities.json": "096e253b657ebbe286c080f3b4aca7def50861764959d56715da3e3e7c339f61",
+    "contracts/fixtures/capabilities-arkhamdb.json": "548cec7914c02fe7cb78c37f71d9346f0e8bacfcca428db0d915bf709932ffc4",
+    "contracts/fixtures/capabilities-locale-catalog.json": "1b376e4e5edde3b8cf14eb0291622f8826d31183df14d3237db29c7218c9beeb",
+    "contracts/fixtures/capabilities.json": "e7e2375383add93478ce22929c811fcd813c24dbbbee0b4dc3630ed53c577e10",
     "contracts/fixtures/card-code-entity-map.json": "970749b0970f629722515394068afb660b9168a8fbeea768afbbc1cf1ef66492",
     "contracts/fixtures/catalog.json": "481f42cbac1fcb208cdb1b626a3cc6951c35531383e7439dc3c0d7c02a9044ac",
     "contracts/fixtures/decks.json": "be1b19529d95386c6c2ed0b5c665aa25ae64a450c8a3f412d10b8523b966aaff",
@@ -16345,7 +16356,7 @@
     "contracts/fixtures/locale-catalog-chunk-309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488.json": "309d63c6b0ab62a2fc4bc993860a820b05c156f2e7d67439a24b487839df1488",
     "contracts/fixtures/locale-catalog-chunk-9a30c62c45fb06a929d13506b454d5b9637c5bf3eeb986243ddb007a856cb1a5.json": "9a30c62c45fb06a929d13506b454d5b9637c5bf3eeb986243ddb007a856cb1a5",
     "contracts/fixtures/locale-catalog-chunk-d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693.json": "d951fedc2b5f0644bb126beb77f6e03a2abad3627c274985e9b8a42b09116693",
-    "contracts/fixtures/locale-catalog-manifest.json": "e62edd50ec380abb26841376619194467392fbccedd274f9a02eec977c094da8",
+    "contracts/fixtures/locale-catalog-manifest.json": "1bb0ab7cde32f2b2fa43fb9b4df1163ab90d83ccc7d4fbd90a3ce61e7ba760e2",
     "contracts/fixtures/locale-catalog-owned-files.json": "13924d3a1d159fabdd0aaf65a3701da379d8641fb9164089463e6281ddef6e6c",
     "contracts/fixtures/locale-catalog-source-de.json": "1d60ade53a4b4d7241c88ce8f0cab1b4027e81cd25f10f1ad815948e198fd0bb",
     "contracts/fixtures/locale-catalog-source-en.json": "879de3d794fa5da6202243d3c2b5a37f7e59f7e2582affc4c94d5e9ebb4ff2dd",
@@ -16426,17 +16437,18 @@
     "contracts/fixtures/question-round-end-forced-ability.json": "9441f141605642ce4d0d69c1aab05e5b0d7ce39202d7872c1ed52293004331ed",
     "contracts/fixtures/question-treachery-forced-ability.json": "7ddeee49948feb86c56b6a44fbf85cb2d3e4d0b90c64f03a23d663093a04ae34",
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
-    "contracts/fixtures/replay-attestation.json": "dd35364723200ac1d53ea2b991b2bdcc90804f72e3a199677e53ffec7315c9cf",
+    "contracts/fixtures/replay-attestation.json": "b445a7ed2b139cac64f5835136e4cdbdf0d648f8df1b64fc45b634f7bc20c3ac",
     "contracts/fixtures/room-closed.json": "fabfe52fd38ab86c7c210c681205d6aa2c992200a798063b982ba0a0aefcfae6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
-    "contracts/manifest.json": "762fca56d5af48853c22bb03d34e9a68a517039f694473bcad97d16bd1ce7faa",
-    "contracts/openapi.yaml": "2b980ca05146de42cc4a7d8f6612d6fd2201195c0488dfb8df177c9c2186598d",
-    "contracts/route-inventory.json": "7e32dbda601623fb7c9673c67a3bdcca47eb272e02e8eab5a3ff649f63c63d8b",
+    "contracts/manifest.json": "5817e0e9cdf71d9063746d65a19b8b1c95db3682603ce0af08ac245ed97f5770",
+    "contracts/openapi.yaml": "9e7509233b406fd55acfda559b9ec310df5fec45d50cfbeccf973bec3111f4dd",
+    "contracts/route-inventory.json": "9fcbca9006040fe8ec70dfbc7b96985418315624f3320d3142bb2de842b5170b",
     "contracts/schemas/account.schema.json": "2c5ab4f223e76f6dbbad4766b60867610ae52edcc222db6eb850505f7f81fc29",
     "contracts/schemas/achievements.schema.json": "8945ad4292a8b93442ef54be8465661aa27ffc9e6e7f710a552d9566edf77bf3",
     "contracts/schemas/act.schema.json": "8cf088e64f0d2668fb158045501c1d5682ddf8956d5a76c9129322d68c636335",
     "contracts/schemas/agenda.schema.json": "c273d60d4d0a380428718f2b83d152b5e979c837705bbd4916a7ec6df40963e3",
+    "contracts/schemas/arkhamdb.schema.json": "43a8782d8daab78f4db076a282a56567342b7b497683e497e31d7c7eb8a7e898",
     "contracts/schemas/basic-choice-question.schema.json": "2d611ed83a47a8efb7843f989434dd772421528e9945f7e2c5054d4395f10172",
     "contracts/schemas/campaign-catalog.schema.json": "e49e5000658288b4324280fe4164359b419a0c91fbbf7c16c045385060c23dc1",
     "contracts/schemas/capabilities.schema.json": "a71638283a94b4e68c29c1a705dba0f007a3b5a28de324fecdcfdbd179430658",

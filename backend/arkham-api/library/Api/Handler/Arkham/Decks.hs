@@ -12,6 +12,7 @@ module Api.Handler.Arkham.Decks (
   killedOrInsaneInvestigatorIdsFromCampaignLog,
   mustReplaceInvestigatorDeck,
   replacementDeckRejection,
+  toDeckErrors,
   putApiV1ArkhamDeckOverlayR,
   deleteApiV1ArkhamDeckOverlayR,
 ) where

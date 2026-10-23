@@ -91,13 +91,18 @@ def require(condition: bool, message: str) -> None:
 manifest = load_governed_json("contracts/manifest.json")
 documents = manifest["documents"]
 fixtures = manifest["fixtures"]
+ARKHAMDB_CAPABILITY = "arkhamdb.account-linking.v1"
+ARKHAMDB_CAPABILITIES_FIXTURE = "contracts/fixtures/capabilities-arkhamdb.json"
 capabilities_fixtures = [
     fixture
     for fixture in fixtures
     if fixture.get("schema") == "contracts/schemas/capabilities.schema.json"
+    and fixture.get("path") != ARKHAMDB_CAPABILITIES_FIXTURE
 ]
 
-# The capabilities response has exactly two production shapes, and both are
+# The two locale-specific shapes below keep ArkhamDB disabled. Its independent
+# enabled fixture is checked against the no-catalog response separately.
+# Both locale-specific production shapes are
 # registered as real Aeson-encoded fixtures: the one a deployment without a
 # locale catalog serves (no `localeCatalog`, no `i18n.locale-catalog.v1`), and
 # the one a deployment that publishes a catalog serves. The semantic question
@@ -185,6 +190,26 @@ require(
     "deployment without a catalog serves and the one it serves with a catalog -- so both the "
     "optional field's presence and its exact absence are governed; got "
     f"{[fixture['path'] for fixture in capabilities_fixtures]}",
+)
+
+require(
+    {"path": ARKHAMDB_CAPABILITIES_FIXTURE, "schema": "contracts/schemas/capabilities.schema.json"}
+    in fixtures,
+    "manifest.json must register the ArkhamDB-enabled capabilities fixture",
+)
+arkhamdb_response = load_governed_json(ARKHAMDB_CAPABILITIES_FIXTURE)
+require(
+    ARKHAMDB_CAPABILITY in arkhamdb_response.get("capabilities", []),
+    "ArkhamDB-enabled fixture must advertise its optional capability",
+)
+normalized_arkhamdb_response = dict(arkhamdb_response)
+normalized_arkhamdb_response["capabilities"] = [
+    capability for capability in arkhamdb_response["capabilities"]
+    if capability != ARKHAMDB_CAPABILITY
+]
+require(
+    normalized_arkhamdb_response == load_governed_json("contracts/fixtures/capabilities.json"),
+    "Enabling ArkhamDB must add only its capability, not change the baseline response",
 )
 
 capabilities_shapes: dict[bool, str] = {}

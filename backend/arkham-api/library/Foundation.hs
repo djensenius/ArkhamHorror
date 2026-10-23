@@ -29,6 +29,7 @@ import Control.Monad.Catch qualified as Catch
 import Data.IntMap.Strict qualified as IntMap
 import UnliftIO.Exception qualified as UnliftIO
 
+import Arkham.ArkhamDB (ArkhamDBClient)
 import Arkham.Card.CardCode
 import Arkham.Log.Entry (LogRow)
 import Auth.ApiKey qualified as ApiKey
@@ -199,6 +200,7 @@ data App = App
   , appMessageBroker :: MessageBroker
   , appPubSubSupervisorThread :: !(Maybe ThreadId)
   , appRoomHeartbeatThread :: !(Maybe ThreadId)
+  , appArkhamDBClient :: Maybe (ArkhamDBClient IO)
   , appHttpManager :: Manager
   , appLogger :: Logger
   , appGameRooms :: !(MVar (Map ArkhamGameId Room))

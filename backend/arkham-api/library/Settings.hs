@@ -21,8 +21,10 @@ import Base.Api.Types.LocaleCatalog
   )
 import Control.Exception qualified as Exception
 import Data.Aeson
-  (FromJSON(..), Result(..), Value, fromJSON, withObject, (.!=), (.:), (.:?))
+  (FromJSON(..), Key, Object, Result(..), Value, fromJSON, withObject, (.!=), (.:), (.:?))
+import Data.Aeson.Types (Parser)
 import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Base64 qualified as B64
 import Data.FileEmbed (embedFile)
 import Data.String.Conversions.Monomorphic (toStrictByteString)
 import Data.Text qualified as T
@@ -67,6 +69,36 @@ fromDatabaseUrl size url = do
     , pgPoolIdleTimeout = 60
     }
 
+-- | Optional server-held OAuth credentials and dedicated token encryption key.
+data ArkhamDBSettings = ArkhamDBSettings
+    { arkhamDBClientId :: Text
+    , arkhamDBClientSecret :: Text
+    , arkhamDBTokenKey :: Text
+    , arkhamDBBaseUrl :: Text
+    , arkhamDBPublicServerBase :: Text
+    }
+    deriving stock (Eq, Show)
+
+parseOptionalText :: Object -> Key -> Parser (Maybe Text)
+parseOptionalText o key = do
+    value <- o .:? key
+    pure $ value >>= \case
+        "" -> Nothing
+        text -> Just text
+
+parseArkhamDBSettings :: Object -> Parser (Maybe ArkhamDBSettings)
+parseArkhamDBSettings o = do
+    clientId <- parseOptionalText o "arkhamdb-client-id"
+    clientSecret <- parseOptionalText o "arkhamdb-client-secret"
+    tokenKey <- parseOptionalText o "arkhamdb-token-key"
+    for_ tokenKey \key -> case B64.decode (encodeUtf8 key) of
+        Right bytes | BS8.length bytes == 32 -> pure ()
+        _ -> fail "ARKHAMDB_TOKEN_KEY must be base64 encoding exactly 32 bytes"
+    publicServerBase <- mfilter (not . T.null . T.strip) <$> parseOptionalText o "arkhamdb-public-server-base"
+    baseUrl <- fromMaybe "https://arkhamdb.com" <$> parseOptionalText o "arkhamdb-base-url"
+    when (T.null $ T.strip baseUrl) $ fail "ARKHAMDB_BASE_URL must not be empty"
+    pure $ ArkhamDBSettings <$> clientId <*> clientSecret <*> tokenKey <*> Just baseUrl <*> publicServerBase
+
 -- | Runtime settings to configure this application. These settings can be
 -- loaded from various sources: defaults, environment variables, config files,
 -- theoretically even a database.
@@ -105,6 +137,11 @@ data AppSettings = AppSettings
     -- legacy shape exactly. A supplied-but-invalid configuration fails this
     -- parse -- and therefore startup -- rather than being silently dropped;
     -- see 'Base.Api.Types.LocaleCatalog.parseLocaleCatalogConfig'.
+    , appArkhamDB :: Maybe ArkhamDBSettings
+    -- ^ Optional ArkhamDB OAuth credentials. The integration is disabled unless
+    -- every required value is present, so deployments can ship the routes dark.
+    -- Tokens use @arkhamdb-token-key@ for encryption at rest; it is unrelated to
+    -- the Yesod client-session key.
     , appCustomCardArtDir :: Maybe FilePath
     -- ^ Where to put custom card art. In development it goes in the frontend's
     -- public directory so it is served locally and never reaches the shared
@@ -144,6 +181,7 @@ instance FromJSON AppSettings where
         appMailtrapApiToken <- o .: "mailtrap-api-token"
         appBugsnagApiKey <- o .: "bugsnag-api-token"
         appAssetHost <- o .:? "asset-host"
+        appArkhamDB <- parseArkhamDBSettings o
         mArtDir <- o .:? "custom-card-art-dir"
         let appCustomCardArtDir = case mArtDir of
                 Just "" -> Nothing

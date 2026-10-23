@@ -79,6 +79,7 @@ library:
     - constraints-extras
     - containers
     - cryptohash-sha256
+    - crypton
     - crypton-x509-store
     - data-default-class
     - dependent-map
@@ -108,11 +109,13 @@ library:
     - monad-logger
     - monad-time
     - monoidal-containers
+    - ram
     - mtl >= 2.3.1
     - parsec
     - path-pieces
     - persistent
     - persistent-postgresql
+    - postgresql-simple
     - pretty-simple
     - process
     - typed-process
@@ -234,12 +237,18 @@ tests:
       - hspec-expectations-lifted
       - http-client
       - http-types
+      - fast-logger
+      - wai
+      - wai-extra
+      - yesod-core
       - jose
       - lens
       - monad-time
       - uuid
       - mtl
       - persistent
+      - postgresql-simple
+      - zlib
       - random
       - base16-bytestring
       - cryptohash-sha256
@@ -248,5 +257,6 @@ tests:
       - text
       - time
       - unordered-containers
+      - unliftio
       - unix
       - yaml

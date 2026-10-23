@@ -1066,6 +1066,93 @@ required key set is extracted from `fixtures/question-read.json`,
 fixtures' SHA-256 digests together with this manifest's `schemaRevision`, so a
 catalog can always be traced to the contract revision it was generated for.
 
+### ArkhamDB account linking (fork-only, optional)
+
+Revision `0.1.54` adds `arkhamdb.account-linking.v1` and the
+`/arkham/arkhamdb` read-side endpoints documented in OpenAPI and
+`arkhamdb.schema.json`. It does not raise the native-client minimum revision.
+The capability is absent and the endpoints return 501 unless all of
+`ARKHAMDB_CLIENT_ID`, `ARKHAMDB_CLIENT_SECRET`, `ARKHAMDB_TOKEN_KEY` and
+`ARKHAMDB_PUBLIC_SERVER_BASE` are configured. `ARKHAMDB_BASE_URL` defaults to
+`https://arkhamdb.com`, including when its value is empty or YAML null.
+Unset, empty and YAML-null (`null`, `~`) credential values disable linking.
+Set the public base to the server's externally reachable
+HTTPS origin; register its `/api/v1/arkham/arkhamdb/callback` URL with ArkhamDB.
+Use a dedicated base64-encoded key decoding to exactly 32 bytes, generated with
+`openssl rand -base64 32`, not the session-cookie key. Non-empty invalid keys
+and whitespace-only base URLs fail settings parsing without echoing the secret.
+Changing the key makes existing credentials require relinking.
+Access and refresh tokens are AES-256-GCM encrypted at rest, never included in
+responses. Preserve this secret across server restarts.
+
+Start linking with authenticated `POST /arkham/arkhamdb/link/start` and open
+`authorizeUrl` in an app authentication browser. The callback claims the nonce
+and stores encrypted pending tokens; it **does not** link the account. It sends
+HTTP 302 only to `arkhamhorror://arkhamdb-link?result=pending&completion=<secret>`.
+The app submits `{completion}` to authenticated `POST /arkham/arkhamdb/link/complete`.
+Only the initiating local user can finalize, before the ten-minute nonce expiry;
+completion is single-use and only its SHA-256 hash is stored. An authorization
+URL transferred to another user's browser cannot finalize in that user's app.
+Error callbacks redirect to the same fixed scheme with `result=error` and fixed
+`reason=access_denied` or `reason=link_failed`; error callbacks never exchange a
+code. The callback always uses the fixed app scheme, with no web-page mode or
+caller-selected redirect URL. Its raw 302 body contains no completion secret.
+The request logger excludes `/api/v1/arkham/arkhamdb/*` (including detailed
+logging), since callback queries and completion JSON contain credentials. OAuth account identity fields remain nullable when
+omitted; no identity is invented and no profile request is assumed.
+
+Unlink deletes credentials, pending nonces and mappings, but not imported local
+decks. Relink preserves mappings and replaces the account row (its id is the
+link generation). Import/sync persistence checks that generation in the same
+transaction as deck writes, under the user-row lock shared with unlink/relink.
+Stale operations return HTTP 409 `notLinked`. All ArkhamDB `notLinked` and
+`tokenExpired` states return 409, **not 401**; 401 means app authentication failed.
+Concurrent refresh losers re-read and use the winner's token, provided the
+account generation is unchanged. Revoke the app on ArkhamDB separately if needed
+(no documented revocation endpoint is assumed).
+Refresh transactions set a transaction-local five-second database lock deadline;
+lock contention returns sanitized HTTP 502 `remoteUnavailable` for retry.
+ArkhamDB HTTP calls have a ten-second deadline including decoding and fully
+evaluated results, and a 1 MiB decoded response limit (also for gzip/chunked bodies).
+
+Expired pending token rows cannot be finalized, but are only purged when a
+subsequent link-start request runs expired-state cleanup. Periodic cleanup of
+abandoned pending credentials is deferred to a follow-up.
+
+The committed test suite and `.github/workflows/haskell.yml` do not provision a
+PostgreSQL test database. ArkhamDB specs therefore use the production service
+with an in-memory transactional store and HTTP-connection stubs. Callback
+response tests dispatch the production callback body through Yesod/WAI with
+injected persistence/transport; the logging probe captures the production
+request logger in `Detailed True` mode. They do not
+execute `persistentStore` SQL or prove PostgreSQL concurrency behavior. The
+claim/finalize, refresh compare-and-update, generation locks and unique mapping
+constraint need database-backed integration coverage when a test DB harness is
+available; this is a known test-coverage gap, not a claim of SQL integration coverage.
+Real-PostgreSQL small-pool concurrency coverage (refresh failures, lock deadlines,
+unlink/finalization ordering and connection reuse) is tracked in Backlog task-2.46.
+
+List, import and sync use the linked account's OAuth API, so private decks do
+not require public sharing. Expired tokens (including a 60-second safety window)
+are refreshed before use, and rejected tokens are refreshed/retried once. If no
+refresh token was issued, expiry requires relinking. OAuth imports record
+`date_update` as the primary future conflict marker, and remote version as text
+(strings such as `1.0` are retained; JSON numbers are normalized to JSON text).
+The OAuth sync endpoint returns the same saved Deck entity as ordinary public
+sync and falls back to that existing path for unmapped decks. Stored deck and
+list URLs consistently use `<base>/api/public/deck/<id>`. A relinked account that
+cannot load a preserved mapping (remote 403/404) drops that mapping and tries
+the public URL, including on a repeat-import check. Import is unique per local
+user and remote deck id; repeat imports return the existing Deck (HTTP 200). This revision does
+not implement write-back, version upgrades or conflict resolution (task-2.45).
+`writeBackEnabledDeckCount` therefore remains zero for newly imported decks.
+
+Clients opting into these endpoints must update their pinned backend commit and
+schemaRevision to this revision after merge: Apple `ContractPin.swift`; Linux
+`src/ContractPin.cpp`, `contracts/contract-pin.json` and vendored fixtures. Existing
+clients satisfying the unchanged `0.1.53` minimum can keep using public decks.
+The enabled and disabled capabilities fixtures illustrate feature negotiation.
+
 ### Locale catalog discovery
 
 `GET /capabilities` advertises a catalog with the `i18n.locale-catalog.v1`

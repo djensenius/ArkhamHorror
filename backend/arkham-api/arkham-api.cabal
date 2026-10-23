@@ -37,6 +37,7 @@ library
       Api.Handler.Arkham.Achievements
       Api.Handler.Arkham.Admin.GameStats
       Api.Handler.Arkham.Admin.Metrics
+      Api.Handler.Arkham.ArkhamDB
       Api.Handler.Arkham.CampaignCatalog
       Api.Handler.Arkham.Cards
       Api.Handler.Arkham.CardSetSubmissions
@@ -1049,6 +1050,8 @@ library
       Arkham.Agenda.Runner
       Arkham.Agenda.Sequence
       Arkham.Agenda.Types
+      Arkham.ArkhamDB
+      Arkham.ArkhamDB.Service
       Arkham.Aspect
       Arkham.Aspect.Types
       Arkham.Asset
@@ -8997,6 +9000,7 @@ library
       Entity.Answer
       Entity.Arkham.Achievement
       Entity.Arkham.ApiKey
+      Entity.Arkham.ArkhamDBAccount
       Entity.Arkham.ArkhamDBDecklist
       Entity.Arkham.CustomCard
       Entity.Arkham.CustomCardSet
@@ -9082,6 +9086,7 @@ library
     , constraints-extras
     , containers
     , cryptohash-sha256
+    , crypton
     , crypton-x509-store
     , data-default-class
     , dependent-map
@@ -9116,8 +9121,10 @@ library
     , path-pieces
     , persistent
     , persistent-postgresql
+    , postgresql-simple
     , pretty-simple
     , process
+    , ram
     , random-shuffle
     , regex-posix
     , relude
@@ -9320,6 +9327,7 @@ test-suite spec
       Arkham.Agenda.Cards.TheDunwichLegacy.TheMiskatonicMuseum.ShadowsDeepenSpec
       Arkham.Agenda.Cards.TheScarletKeys.CongressOfTheKeys.TheWorldUnbiddenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
+      Arkham.Api.ArkhamDBSpec
       Arkham.Api.CampaignCatalogSpec
       Arkham.Api.Events.EventCreationSpec
       Arkham.Api.Events.EventListSpec
@@ -9774,6 +9782,7 @@ test-suite spec
     , cryptohash-sha256
     , directory
     , exceptions
+    , fast-logger
     , filepath
     , hspec
     , hspec-expectations-lifted
@@ -9784,13 +9793,19 @@ test-suite spec
     , monad-time
     , mtl
     , persistent
+    , postgresql-simple
     , random
     , relude
     , stm
     , text
     , time
     , unix
+    , unliftio
     , unordered-containers
     , uuid
+    , wai
+    , wai-extra
     , yaml
+    , yesod-core
+    , zlib
   default-language: GHC2021
