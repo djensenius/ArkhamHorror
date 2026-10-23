@@ -245,7 +245,8 @@
         "reason": {
           "enum": [
             "remoteChanged",
-            "campaignChanged"
+            "campaignChanged",
+            "pushUncertain"
           ]
         },
         "lastSyncedDateUpdate": {

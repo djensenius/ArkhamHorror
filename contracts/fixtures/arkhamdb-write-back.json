@@ -65,6 +65,24 @@
       "resultingLocalDeckId": "00000000-0000-0000-0000-000000000017",
       "spentXpSynced": false,
       "state": "cancelled"
+    },
+    {
+      "campaignKey": "game/iid",
+      "conflict": {
+        "lastSyncedDateUpdate": "2026-10-19T11:00:00Z",
+        "lastSyncedVersion": "1.0",
+        "reason": "pushUncertain",
+        "remoteDateUpdate": "2026-10-19T11:00:00Z",
+        "remoteVersion": "1.0"
+      },
+      "enabled": true,
+      "error": "pushUncertain",
+      "localDeckId": "00000000-0000-0000-0000-000000000017",
+      "pushId": "00000000-0000-0000-0000-0000000000f5",
+      "remoteDeckId": "123",
+      "resultingLocalDeckId": "00000000-0000-0000-0000-000000000017",
+      "spentXpSynced": false,
+      "state": "conflict"
     }
   ],
   "toggleRequest": {

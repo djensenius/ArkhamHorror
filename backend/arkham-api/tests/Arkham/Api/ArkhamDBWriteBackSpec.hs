@@ -760,8 +760,13 @@ writeBackFixture = do
   runWith failure failure.client {loadDeck = \_ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"} False
   disabled <- newHarness
   _ <- disabled.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId False
+  uncertain <- newHarness
+  source <- parseRecoverySource []
+  modifyIORef' uncertain.remotes $ Map.insert "123" source
+  runWith uncertain uncertain.client {upgradeDeck = \_ _ _ _ -> pure $ Left $ ArkhamDBRemoteError "lost reply"} False
+  uncertain.run True
   let statuses h = h.writes.deckWriteBackStatus Linking.userId
-  states <- concat <$> traverse statuses [success, conflict, failure, disabled]
+  states <- concat <$> traverse statuses [success, conflict, failure, disabled, uncertain]
   pure $ object
     [ "states" .= states
     , "toggleRequest" .= ArkhamDBWriteBackToggleRequest True
