@@ -501,6 +501,18 @@ spec = describe "ArkhamDB campaign write-back" do
     Map.size state.storedLinks `shouldBe` 1
     fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "125"
 
+  for_ [("deleted", ArkhamDBNotFound), ("revoked", ArkhamDBUnauthorized)] \(label, sourceError) ->
+    it ("saves as new when the old source is " <> label) do
+      h <- newHarness
+      modifyIORef' h.job \job -> job {arkhamDBPushStatus = "conflict"}
+      _ <- h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new"
+      let unavailable = h.client {loadDeck = \token remoteId ->
+            if remoteId == "123" then pure $ Left sourceError else h.client.loadDeck token remoteId}
+      runWith h unavailable False
+      assertState h "succeeded"
+      readIORef h.calls `shouldReturn` ["new", "load/125", "save/125", "load/125"]
+      arkhamDBPushSourceId <$> readIORef h.job `shouldReturn` Nothing
+
   it "keeps save-as-new ahead of later queued snapshots with a fresh push identity" do
     h <- newHarness
     original <- readIORef h.job

@@ -336,6 +336,20 @@ runWriteBack store writes client settings now retry userId deckId = do
                   if samePushedDeck desired verified && isNothing verified.nextDeckId
                     then finish next verified
                     else conflict next verified "remoteChanged"
+        createVersion entity desired source xp = do
+          next <- checkpoint entity (entityVal entity)
+            { arkhamDBPushStage = "creating"
+            , arkhamDBPushSourceId = (.remoteDeckId) <$> source
+            , arkhamDBPushExpectedDateUpdate = source >>= (.dateUpdate)
+            , arkhamDBPushExpectedVersion = source >>= (.deckVersion)
+            }
+          target <- request (entityVal next) \token -> case source of
+            Nothing -> client.createDeck token desired
+            Just original -> client.upgradeDeck token original.remoteDeckId xp desired.meta
+          created <- checkpoint next (entityVal next)
+            { arkhamDBPushStage = "created", arkhamDBPushTargetId = Just target
+            , arkhamDBPushExpectedDateUpdate = Nothing, arkhamDBPushExpectedVersion = Nothing }
+          saveVersion True created desired
         finish entity remote = do
           _ <- ensureGeneration $ entityVal entity
           saved <- lift $ writes.finishPush entity remote {deck = remoteDecklist settings remote}
@@ -356,6 +370,7 @@ runWriteBack store writes client settings now retry userId deckId = do
             "creating" -> recover entity desired
             "created" -> saveVersion False entity desired
             "saving" -> saveVersion False entity desired
+            _ | arkhamDBPushMode job == "new" -> createVersion entity desired Nothing 0
             _ -> do
               ready <- checkpoint entity job
                 { arkhamDBPushExpectedDateUpdate = arkhamDBDeckLinkLastSyncedDateUpdate link
@@ -365,7 +380,7 @@ runWriteBack store writes client settings now retry userId deckId = do
               original <- load (entityVal ready) $ arkhamDBDeckLinkRemoteDeckId link
               campaignTarget <- lift $ writes.campaignOwnsTarget (arkhamDBPushCampaignKey job) original
               let otherCampaign = maybe False (/= arkhamDBPushCampaignKey job) $ arkhamDBDeckLinkCampaignKey link
-              if otherCampaign && arkhamDBPushMode job /= "new"
+              if otherCampaign
                 then conflict ready original "campaignChanged"
                 else if arkhamDBPushMode job == "normal" &&
                   ((isNothing (arkhamDBDeckLinkLastSyncedDateUpdate link) && isNothing (arkhamDBDeckLinkLastSyncedVersion link)) || not (sameMarkers (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link) original) || isJust original.nextDeckId)
@@ -382,17 +397,7 @@ runWriteBack store writes client settings now retry userId deckId = do
                       saveVersion False target desired
                   else do
                     source <- if arkhamDBPushMode job == "overwrite" then latestVersion (entityVal ready) [original.remoteDeckId] original else pure original
-                    next <- checkpoint ready (entityVal ready)
-                      { arkhamDBPushStage = "creating"
-                      , arkhamDBPushSourceId = if arkhamDBPushMode job == "new" then Nothing else Just source.remoteDeckId
-                      , arkhamDBPushExpectedDateUpdate = source.dateUpdate
-                      , arkhamDBPushExpectedVersion = source.deckVersion
-                      }
-                    target <- request (entityVal next) \token ->
-                      if arkhamDBPushMode job == "new" then client.createDeck token desired
-                      else client.upgradeDeck token source.remoteDeckId (max 0 $ arkhamDBPushTotalXp job - baseline) desired.meta
-                    created <- checkpoint next (entityVal next) {arkhamDBPushStage = "created", arkhamDBPushTargetId = Just target, arkhamDBPushExpectedDateUpdate = Nothing, arkhamDBPushExpectedVersion = Nothing}
-                    saveVersion True created desired
+                    createVersion ready desired (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
     result <- runExceptT $ process initial
     case result of
       Left err -> do
