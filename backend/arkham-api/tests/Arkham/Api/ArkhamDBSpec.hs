@@ -132,7 +132,7 @@ tokens = ArkhamDBOAuthTokens "private-access-token" (Just "private-refresh-token
 remote :: ArkhamDBRemoteDeck
 remote = ArkhamDBRemoteDeck
   (ArkhamDBDecklist mempty mempty "01001" "Roland Banks" Nothing Nothing Nothing (Just "123") (Just "Private deck"))
-  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0") Nothing
+  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0") Nothing "Guide" "campaign" (Map.singleton "01006" 1) (Just "too_few_cards")
 
 stubClient :: ArkhamDBClient IO
 stubClient = ArkhamDBClient
@@ -293,17 +293,20 @@ spec = describe "ArkhamDB account linking and private decks" do
       result <- case operation of
         "upgrade" -> client.upgradeDeck "token" "123" 5 (Just "{}")
         "new" -> client.createDeck "token" remote.deck
-        _ -> client.saveDeck "token" "124" remote.deck {slots = Map.singleton "01006" 1, sideSlots = Map.singleton "01007" 1}
+        _ -> client.saveDeck "token" "124" remote {deck = remote.deck {slots = Map.singleton "01006" 1, sideSlots = Map.singleton "01007" 1}}
       result `shouldBe` Right "124"
       request <- readIORef outgoing
       request `shouldSatisfy` BS8.isInfixOf methodPath
       request `shouldSatisfy` BS8.isInfixOf fieldName
+      when (operation == "save") do
+        for_ ["description_md=Guide", "tags=campaign", "ignored=%7B%2201006%22%3A1%7D", "problem=too_few_cards"] \field ->
+          request `shouldSatisfy` BS8.isInfixOf field
 
   it "sanitizes a rejected HTTP write envelope and enforces the decoded write-body cap" do
     rejected <- chunkedClient "" "{\"success\":false,\"msg\":124,\"error\":\"private-access-token\"}"
     rejected.upgradeDeck "token" "123" 5 Nothing `shouldReturn` Left (ArkhamDBRemoteError "Write rejected")
     oversized <- chunkedClient "" $ paddedResponse (1024 * 1024 + 1) "{\"success\":true,\"msg\":124}"
-    oversized.saveDeck "token" "124" remote.deck `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
+    oversized.saveDeck "token" "124" remote `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
 
   it "sanitizes PostgreSQL lock timeout as retryable remoteUnavailable" do
     (store, _) <- newStore

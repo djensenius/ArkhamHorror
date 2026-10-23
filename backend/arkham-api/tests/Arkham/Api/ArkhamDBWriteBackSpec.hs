@@ -154,7 +154,7 @@ newHarness = do
             pure $ Right "125"
         , saveDeck = \_ target deck -> do
             record $ "save/" <> target
-            modifyIORef' remotes $ Map.adjust (\value -> value {deck = deck, dateUpdate = Just "saved"}) target
+            modifyIORef' remotes $ Map.adjust (\value -> value {deck = deck.deck, dateUpdate = Just "saved"}) target
             pure $ Right target
         }
       run retry = runWriteBack store writes client Linking.settings Linking.now retry Linking.userId Linking.deckId

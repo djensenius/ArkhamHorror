@@ -242,7 +242,7 @@ runWriteBack store writes client settings now retry userId deckId = do
                 else do
                   next <- checkpoint entity job
                     { arkhamDBPushStage = "saving", arkhamDBPushExpectedDateUpdate = remote.dateUpdate, arkhamDBPushExpectedVersion = remote.deckVersion }
-                  _ <- request (entityVal next) (\token -> client.saveDeck token target desired)
+                  _ <- request (entityVal next) (\token -> client.saveDeck token target remote {deck = desired})
                   verified <- load (entityVal next) target
                   if samePushedDeck desired verified && isNothing verified.nextDeckId
                     then finish next verified

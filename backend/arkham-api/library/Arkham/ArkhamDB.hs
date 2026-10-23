@@ -116,11 +116,15 @@ data ArkhamDBRemoteDeck = ArkhamDBRemoteDeck
   , dateUpdate :: Maybe Text
   , deckVersion :: Maybe Text
   , nextDeckId :: Maybe Text
+  , descriptionMd :: Text
+  , tags :: Text
+  , ignoreDeckLimitSlots :: Map Text Int
+  , problem :: Maybe Text
   }
   deriving stock (Eq, Show, Generic)
 
 instance NFData ArkhamDBRemoteDeck where
-  rnf ArkhamDBRemoteDeck {..} = rnf (toJSON deck, remoteDeckId, dateUpdate, deckVersion, nextDeckId)
+  rnf ArkhamDBRemoteDeck {..} = rnf (toJSON deck, remoteDeckId, dateUpdate, deckVersion, nextDeckId, descriptionMd, tags, ignoreDeckLimitSlots, problem)
 
 instance FromJSON ArkhamDBRemoteDeck where
   parseJSON value = do
@@ -130,6 +134,10 @@ instance FromJSON ArkhamDBRemoteDeck where
       dateUpdate <- o .:? "date_update"
       deckVersion <- o .:? "version" >>= traverse parseTextValue
       nextDeckId <- ((<|>) <$> o .:? "next_deck" <*> o .:? "next_deck_id") >>= traverse parseTextId
+      descriptionMd <- o .:? "description_md" .!= ""
+      tags <- o .:? "tags" .!= ""
+      ignoreDeckLimitSlots <- o .:? "ignoreDeckLimitSlots" .!= mempty
+      problem <- o .:? "problem"
       let deck = parsedDeck {Decklist.decklist_id = Just remoteDeckId}
       pure ArkhamDBRemoteDeck {..}) value
 
@@ -179,7 +187,7 @@ data ArkhamDBClient m = ArkhamDBClient
   , loadDeck :: Text -> Text -> m (Either ArkhamDBClientError ArkhamDBRemoteDeck)
   , upgradeDeck :: Text -> Text -> Int -> Maybe Text -> m (Either ArkhamDBClientError Text)
   , createDeck :: Text -> ArkhamDBDecklist -> m (Either ArkhamDBClientError Text)
-  , saveDeck :: Text -> Text -> ArkhamDBDecklist -> m (Either ArkhamDBClientError Text)
+  , saveDeck :: Text -> Text -> ArkhamDBRemoteDeck -> m (Either ArkhamDBClientError Text)
   }
 
 hoistArkhamDBClient :: (forall a. m a -> n a) -> ArkhamDBClient m -> ArkhamDBClient n
@@ -276,8 +284,12 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
     [("xp", showText xp)] <> optionalField "meta" metadata
   createDeck token decklist = authedWrite token "POST" "/api/oauth2/deck/new" $
     [("investigator", unCardCode (unInvestigatorId decklist.investigator_code))] <> deckFields decklist
-  saveDeck token remoteId decklist = authedWrite token "PUT" ("/api/oauth2/deck/save/" <> remoteId) $
-    [("slots", jsonText (Map.mapKeys unCardCode decklist.slots)), ("side", jsonText (Map.mapKeys unCardCode decklist.sideSlots)), ("problem", "")] <> deckFields decklist
+  -- saveDeckAction assigns ignored/problem even when omitted. Forward the
+  -- loaded target's non-campaign fields rather than clearing legality or guides.
+  saveDeck token remoteId remote = authedWrite token "PUT" ("/api/oauth2/deck/save/" <> remoteId) $
+    [("slots", jsonText (Map.mapKeys unCardCode remote.deck.slots)), ("side", jsonText (Map.mapKeys unCardCode remote.deck.sideSlots))
+    , ("description_md", remote.descriptionMd), ("tags", remote.tags), ("ignored", jsonText remote.ignoreDeckLimitSlots)]
+    <> optionalField "problem" remote.problem <> deckFields remote.deck
 
   deckFields :: Decklist.ArkhamDBDecklist -> [(Text, Text)]
   deckFields decklist = optionalField "name" decklist.decklist_name
