@@ -227,9 +227,9 @@ runWriteBack store writes client settings now retry userId deckId = do
           case recovered of
             Nothing -> throwError $ ArkhamDBError "pushUncertain" "ArkhamDB creation outcome is uncertain; no creation was retried"
             Just remote -> do
-              next <- checkpoint entity job {arkhamDBPushStage = "created", arkhamDBPushTargetId = Just remote.remoteDeckId}
-              saveVersion next desired
-        saveVersion entity desired = do
+              next <- checkpoint entity job {arkhamDBPushStage = "created", arkhamDBPushTargetId = Just remote.remoteDeckId, arkhamDBPushExpectedDateUpdate = Nothing, arkhamDBPushExpectedVersion = Nothing}
+              saveVersion False next desired
+        saveVersion establishBaseline entity desired = do
           let job = entityVal entity
           target <- maybe (throwError $ ArkhamDBError "storageFailure" "Missing push target") pure $ arkhamDBPushTargetId job
           remote <- load job target
@@ -237,7 +237,9 @@ runWriteBack store writes client settings now retry userId deckId = do
             then conflict entity remote "remoteChanged"
             else if samePushedDeck desired remote
               then finish entity remote
-              else if arkhamDBPushStage job == "saving" && not (sameMarkers (arkhamDBPushExpectedDateUpdate job) (arkhamDBPushExpectedVersion job) remote)
+              else if not establishBaseline &&
+                ((isNothing (arkhamDBPushExpectedDateUpdate job) && isNothing (arkhamDBPushExpectedVersion job)) ||
+                  not (sameMarkers (arkhamDBPushExpectedDateUpdate job) (arkhamDBPushExpectedVersion job) remote))
                 then conflict entity remote "remoteChanged"
                 else do
                   next <- checkpoint entity job
@@ -265,8 +267,8 @@ runWriteBack store writes client settings now retry userId deckId = do
           desired <- either throwError pure $ markedDeck (entityKey entity) unmarked
           case arkhamDBPushStage job of
             "creating" -> recover entity desired
-            "created" -> saveVersion entity desired
-            "saving" -> saveVersion entity desired
+            "created" -> saveVersion False entity desired
+            "saving" -> saveVersion False entity desired
             _ -> do
               ready <- checkpoint entity job
                 { arkhamDBPushExpectedDateUpdate = arkhamDBDeckLinkLastSyncedDateUpdate link
@@ -294,8 +296,8 @@ runWriteBack store writes client settings now retry userId deckId = do
                     target <- request (entityVal next) \token ->
                       if arkhamDBPushMode job == "new" then client.createDeck token desired
                       else client.upgradeDeck token source.remoteDeckId (max 0 $ arkhamDBPushTotalXp job - baseline) desired.meta
-                    created <- checkpoint next (entityVal next) {arkhamDBPushStage = "created", arkhamDBPushTargetId = Just target}
-                    saveVersion created desired
+                    created <- checkpoint next (entityVal next) {arkhamDBPushStage = "created", arkhamDBPushTargetId = Just target, arkhamDBPushExpectedDateUpdate = Nothing, arkhamDBPushExpectedVersion = Nothing}
+                    saveVersion True created desired
     result <- runExceptT $ process initial
     case result of
       Left err -> do

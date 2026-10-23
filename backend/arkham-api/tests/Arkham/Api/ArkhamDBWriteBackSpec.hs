@@ -278,7 +278,7 @@ spec = describe "ArkhamDB campaign write-back" do
     h.run True
     readIORef h.calls `shouldReturn` before
 
-  it "resumes an uncertain upgrade from its marked next_deck without upgrading again" do
+  it "conflicts on recovered creation without a stored target baseline, without upgrading again" do
     h <- newHarness
     let lost = h.client {upgradeDeck = \token source xp metadata -> do
           _ <- h.client.upgradeDeck token source xp metadata
@@ -286,23 +286,26 @@ spec = describe "ArkhamDB campaign write-back" do
     runWith h lost False
     assertState h "failed"
     h.run True
-    assertState h "succeeded"
+    assertState h "conflict"
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
 
   it "recovers a lost creation via its namespaced marker when no version chain is exposed" do
     h <- newHarness
     let lost = h.client {upgradeDeck = \token source xp metadata -> do
           _ <- h.client.upgradeDeck token source xp metadata
-          modifyIORef' h.remotes $ Map.adjust (\remote -> remote {nextDeckId = Nothing}) source
+          modifyIORef' h.remotes $ Map.adjust (\remote -> remote {nextDeckId = Nothing, dateUpdate = Just "changed-source"}) source
           pure $ Left $ ArkhamDBRemoteError "lost response"}
     runWith h lost False
     h.run True
-    assertState h "succeeded"
+    assertState h "conflict"
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
 
   it "does not repeat creation when an uncertain outcome cannot be proven" do
     h <- newHarness
-    let lost = h.client {upgradeDeck = \_ _ _ _ -> modifyIORef' h.calls (<> ["upgrade/uncertain"]) >> pure (Left $ ArkhamDBRemoteError "lost")}
+    let lost = h.client {upgradeDeck = \_ _ _ _ -> do
+          modifyIORef' h.calls (<> ["upgrade/uncertain"])
+          modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "changed-source"}) "123"
+          pure (Left $ ArkhamDBRemoteError "lost")}
     runWith h lost False
     h.run True
     assertState h "failed"
@@ -387,6 +390,16 @@ spec = describe "ArkhamDB campaign write-back" do
     fmap arkhamDeckOverlay (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just (Just overlay)
     fmap arkhamDeckUrl copy `shouldBe` Just canonicalUrl
     fmap (Decklist.url . arkhamDeckList) copy `shouldBe` Just canonicalUrl
+
+  it "does not overwrite edits after the first created-target load failed" do
+    h <- newHarness
+    let unavailable = h.client {loadDeck = \token remoteId -> if remoteId == "124" then pure $ Left $ ArkhamDBRemoteError "unavailable" else h.client.loadDeck token remoteId}
+    runWith h unavailable False
+    arkhamDBPushStage <$> readIORef h.job `shouldReturn` "created"
+    modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "external-edit", deck = remote.deck {Decklist.slots = Map.singleton "01009" 2}}) "124"
+    h.run True
+    assertState h "conflict"
+    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` []
 
   it "does not overwrite a known target edited after a failed save" do
     h <- newHarness
