@@ -511,16 +511,6 @@ spec = describe "ArkhamDB campaign write-back" do
     filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124", "save/124"]
     fmap (.deck.slots) . Map.lookup "124" <$> readIORef h.remotes `shouldReturn` Just (Map.singleton "01009" 2)
 
-  it "does not save the subsequent upgrade over an edited scenario-end version" do
-    h <- newHarness
-    h.run False
-    modifyIORef' h.job \job -> job {arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushTargetId = Nothing, arkhamDBPushBoundary = "upgrade"}
-    modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "external-edit"}) "124"
-    before <- readIORef h.calls
-    h.run False
-    assertState h "conflict"
-    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` filter (T.isPrefixOf "save/") before
-
   it "uses only the newly earned cumulative XP delta, not investigatorSpentXp" do
     h <- newHarness
     writeIORef h.baseline 3

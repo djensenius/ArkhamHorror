@@ -101,6 +101,7 @@ writeBackStore = ArkhamDBWriteBackStore
               pure deckId
             P.update key [ArkhamDBPushStatus P.=. "succeeded", ArkhamDBPushError P.=. Nothing]
             P.update (arkhamDBPushGeneration job) [ArkhamDBAccountWriteBackFailures P.=. 0]
+            pruneCompletedPushes deckId
             pure $ Just result
           _ -> pure Nothing
   , keepRemoteDeck = \previous remote -> runDB do
@@ -125,6 +126,7 @@ writeBackStore = ArkhamDBWriteBackStore
           [ArkhamDBPushStatus P.=. "cancelled", ArkhamDBPushError P.=. Nothing]
         updateWhere [ArkhamDBCampaignDeckCampaignKey P.==. arkhamDBPushCampaignKey job]
           [ArkhamDBCampaignDeckLastPushedXp P.=. arkhamDBPushTotalXp job]
+        pruneCompletedPushes deckId
         pure True
   , resolvePush = \now uid deckId mode -> runDB do
       lockArkhamDBUser uid
@@ -159,6 +161,7 @@ writeBackStore = ArkhamDBWriteBackStore
         [ArkhamDBDeckLinkWriteBack P.=. enabled, ArkhamDBDeckLinkUpdatedAt P.=. now]
       unless enabled $ updateWhere [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushUserId P.==. uid, ArkhamDBPushStatus P.!=. "succeeded"]
         [ArkhamDBPushStatus P.=. "cancelled", ArkhamDBPushError P.=. Nothing]
+      pruneCompletedPushes deckId
       pure $ affected == 1
   , deckWriteBackStatus = \uid -> runDB do
       links <- selectList [ArkhamDBDeckLinkUserId P.==. uid] [Asc ArkhamDBDeckLinkDeckId]
@@ -182,6 +185,13 @@ writeBackStore = ArkhamDBWriteBackStore
  where
   -- Explicit re-syncs and copies use canonical URLs; game associations persist.
   remoteDecklistFromRemote remote = remote.deck
+
+-- Retain enough terminal history for status/recovery, not full campaign payloads
+-- forever. Outstanding work is never pruned.
+pruneCompletedPushes :: ArkhamDeckId -> DB ()
+pruneCompletedPushes deckId = rawExecute
+  "DELETE FROM arkhamdb_pushes WHERE id IN (SELECT id FROM arkhamdb_pushes WHERE deck_id = ? AND status IN ('succeeded', 'cancelled') ORDER BY created_at DESC, id DESC OFFSET 20)"
+  [toPersistValue deckId]
 
 oldestPush :: ArkhamDeckId -> DB (Maybe (Entity ArkhamDBPush))
 oldestPush deckId = selectFirst [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
