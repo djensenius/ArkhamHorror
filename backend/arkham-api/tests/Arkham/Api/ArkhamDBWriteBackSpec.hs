@@ -6,7 +6,7 @@ import Api.Arkham.Helpers (GameApp (..), runGameApp)
 import Arkham.Campaign (lookupCampaign)
 import Arkham.Campaign.Types (campaignStep)
 import Arkham.Classes.Entity (overAttrs)
-import Data.These (These (This))
+import Arkham.Prelude (These (This))
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
 import Arkham.Difficulty (Difficulty (Easy))
