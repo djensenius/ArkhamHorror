@@ -2,6 +2,7 @@
 
 module Arkham.ArkhamDB (
   ArkhamDBClient (..),
+  arkhamDBWriteBackCapability,
   ArkhamDBClientError (..),
   ArkhamDBDeckSummary (..),
   ArkhamDBImportRequest (..),
@@ -56,6 +57,9 @@ import System.Timeout (timeout)
 arkhamDBAccountLinkingCapability :: Text
 arkhamDBAccountLinkingCapability = "arkhamdb.account-linking.v1"
 
+arkhamDBWriteBackCapability :: Text
+arkhamDBWriteBackCapability = "arkhamdb.write-back.v1"
+
 data ArkhamDBClientError
   = ArkhamDBUnauthorized
   | ArkhamDBNotFound
@@ -108,11 +112,12 @@ data ArkhamDBRemoteDeck = ArkhamDBRemoteDeck
   , remoteDeckId :: Text
   , dateUpdate :: Maybe Text
   , deckVersion :: Maybe Text
+  , nextDeckId :: Maybe Text
   }
   deriving stock (Eq, Show, Generic)
 
 instance NFData ArkhamDBRemoteDeck where
-  rnf ArkhamDBRemoteDeck {..} = rnf (toJSON deck, remoteDeckId, dateUpdate, deckVersion)
+  rnf ArkhamDBRemoteDeck {..} = rnf (toJSON deck, remoteDeckId, dateUpdate, deckVersion, nextDeckId)
 
 instance FromJSON ArkhamDBRemoteDeck where
   parseJSON value = do
@@ -121,6 +126,7 @@ instance FromJSON ArkhamDBRemoteDeck where
       remoteDeckId <- parseTextId =<< o .: "id"
       dateUpdate <- o .:? "date_update"
       deckVersion <- o .:? "version" >>= traverse parseTextValue
+      nextDeckId <- ((<|>) <$> o .:? "next_deck" <*> o .:? "next_deck_id") >>= traverse parseTextId
       let deck = parsedDeck {Decklist.decklist_id = Just remoteDeckId}
       pure ArkhamDBRemoteDeck {..}) value
 
@@ -168,6 +174,9 @@ data ArkhamDBClient m = ArkhamDBClient
   , refreshTokens :: Text -> m (Either ArkhamDBClientError ArkhamDBOAuthTokens)
   , listDecks :: Text -> m (Either ArkhamDBClientError [ArkhamDBDeckSummary])
   , loadDeck :: Text -> Text -> m (Either ArkhamDBClientError ArkhamDBRemoteDeck)
+  , upgradeDeck :: Text -> Text -> Int -> Maybe Text -> m (Either ArkhamDBClientError Text)
+  , createDeck :: Text -> ArkhamDBDecklist -> m (Either ArkhamDBClientError Text)
+  , saveDeck :: Text -> Text -> ArkhamDBDecklist -> m (Either ArkhamDBClientError Text)
   }
 
 hoistArkhamDBClient :: (forall a. m a -> n a) -> ArkhamDBClient m -> ArkhamDBClient n
@@ -176,6 +185,9 @@ hoistArkhamDBClient transform client = ArkhamDBClient
   , refreshTokens = transform . client.refreshTokens
   , listDecks = transform . client.listDecks
   , loadDeck = \token remoteId -> transform $ client.loadDeck token remoteId
+  , upgradeDeck = \token remoteId xp metadata -> transform $ client.upgradeDeck token remoteId xp metadata
+  , createDeck = \token decklist -> transform $ client.createDeck token decklist
+  , saveDeck = \token remoteId decklist -> transform $ client.saveDeck token remoteId decklist
   }
 
 newtype TokenCiphertext = TokenCiphertext {unTokenCiphertext :: Text}
@@ -256,6 +268,39 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
 
   listDecks accessToken = authedGet accessToken "/api/oauth2/decks"
   loadDeck accessToken deckId = authedGet accessToken $ "/api/oauth2/deck/load/" <> deckId
+
+  upgradeDeck token remoteId xp metadata = authedWrite token "PUT" ("/api/oauth2/deck/upgrade/" <> remoteId) $
+    [("xp", showText xp)] <> optional "meta" metadata
+  createDeck token decklist = authedWrite token "POST" "/api/oauth2/deck/new" $
+    [("investigator", showJSON decklist.investigator_code)] <> deckFields decklist
+  saveDeck token remoteId decklist = authedWrite token "PUT" ("/api/oauth2/deck/save/" <> remoteId) $
+    [("slots", jsonText decklist.slots), ("side", jsonText decklist.sideSlots), ("problem", "")] <> deckFields decklist
+
+  deckFields decklist = optional "name" decklist.decklist_name
+    <> optional "meta" decklist.meta <> [("taboo", maybe "0" showText decklist.taboo_id)]
+  optional key = maybe [] (\value -> [(key, value)])
+  showText :: Show a => a -> Text
+  showText = T.pack . show
+  jsonText :: ToJSON a => a -> Text
+  jsonText = decodeUtf8 . BSL.toStrict . encode
+  showJSON value = case toJSON value of
+    String text -> text
+    _ -> jsonText value
+
+  authedWrite token verb path fields = liftIO $ runArkhamDBRequest 10000000 do
+    req0 <- parseRequest $ T.unpack $ normalizeBase baseUrl <> path
+    let req = (urlEncodedBody [(encodeUtf8 k, encodeUtf8 v) | (k, v) <- fields] req0
+          { requestHeaders = [(hAuthorization, "Bearer " <> encodeUtf8 token), (hAccept, "application/json")]
+          , redirectCount = 0
+          , checkResponse = \_ _ -> pure ()
+          }) {method = verb}
+    withBoundedResponse req manager \response -> pure do
+      body <- responseResult response
+      value <- first (const $ ArkhamDBDecodeError "Invalid response") $ eitherDecode body
+      first (const $ ArkhamDBRemoteError "Write rejected") $ flip parseEither value $ withObject "ArkhamDB write" \o -> do
+        success <- o .: "success"
+        unless success $ fail "Write rejected"
+        parseTextId =<< o .: "msg"
 
   tokenRequest :: [(Text, Text)] -> m (Either ArkhamDBClientError ArkhamDBOAuthTokens)
   tokenRequest fields = liftIO $ runArkhamDBRequest 10000000 do

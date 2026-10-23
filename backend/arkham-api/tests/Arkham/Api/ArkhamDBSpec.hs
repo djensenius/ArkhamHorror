@@ -131,11 +131,14 @@ tokens = ArkhamDBOAuthTokens "private-access-token" (Just "private-refresh-token
 remote :: ArkhamDBRemoteDeck
 remote = ArkhamDBRemoteDeck
   (ArkhamDBDecklist mempty mempty "01001" "Roland Banks" Nothing Nothing Nothing (Just "123") (Just "Private deck"))
-  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0")
+  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0") Nothing
 
 stubClient :: ArkhamDBClient IO
 stubClient = ArkhamDBClient
-  { exchangeCode = \code uri -> do
+  { upgradeDeck = \_ _ _ _ -> expectationFailure "Unexpected upgrade" >> pure (Left ArkhamDBNotFound)
+  , createDeck = \_ _ -> expectationFailure "Unexpected create" >> pure (Left ArkhamDBNotFound)
+  , saveDeck = \_ _ _ -> expectationFailure "Unexpected save" >> pure (Left ArkhamDBNotFound)
+  , exchangeCode = \code uri -> do
       code `shouldBe` "authorization-code"
       uri `shouldBe` "https://server.example/api/v1/arkham/arkhamdb/callback"
       pure $ Right tokens
@@ -275,6 +278,32 @@ paddedResponse size body = body <> BSL.replicate (fromIntegral size - BSL.length
 
 spec :: Spec
 spec = describe "ArkhamDB account linking and private decks" do
+  for_ [("upgrade", "PUT /api/oauth2/deck/upgrade/123", "xp=5"), ("new", "POST /api/oauth2/deck/new", "investigator=01001"), ("save", "PUT /api/oauth2/deck/save/124", "side=")] \(operation, methodPath, fieldName) ->
+    it ("uses ArkhamDB's documented method and form for " <> operation) do
+      incoming <- newIORef "HTTP/1.1 200 OK\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"success\":true,\"msg\":124}"
+      outgoing <- newIORef mempty
+      manager <- newManager defaultManagerSettings
+        { managerRawConnection = pure $ \_ _ _ -> makeConnection
+            (atomicModifyIORef' incoming (\bytes -> (mempty, bytes)))
+            (\bytes -> modifyIORef' outgoing (<> bytes)) (pure ())
+        , managerProxyInsecure = noProxy
+        }
+      let client = httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
+      result <- case operation of
+        "upgrade" -> client.upgradeDeck "token" "123" 5 (Just "{}")
+        "new" -> client.createDeck "token" remote.deck
+        _ -> client.saveDeck "token" "124" remote.deck
+      result `shouldBe` Right "124"
+      request <- readIORef outgoing
+      request `shouldSatisfy` BS8.isInfixOf methodPath
+      request `shouldSatisfy` BS8.isInfixOf fieldName
+
+  it "sanitizes a rejected HTTP write envelope and enforces the decoded write-body cap" do
+    rejected <- chunkedClient "" "{\"success\":false,\"msg\":\"private-access-token\"}"
+    rejected.upgradeDeck "token" "123" 5 Nothing `shouldReturn` Left (ArkhamDBRemoteError "Write rejected")
+    oversized <- chunkedClient "" $ paddedResponse (1024 * 1024 + 1) "{\"success\":true,\"msg\":124}"
+    oversized.saveDeck "token" "124" remote.deck `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
+
   it "sanitizes PostgreSQL lock timeout as retryable remoteUnavailable" do
     (store, _) <- newStore
     application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
