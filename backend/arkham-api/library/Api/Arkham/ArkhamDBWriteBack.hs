@@ -20,7 +20,8 @@ import Data.UUID qualified as UUID
 import Database.Persist qualified as P
 import Database.Persist.Sql (Single (..), rawSql, rawExecute, updateWhereCount)
 import Import hiding (state)
-import UnliftIO.Exception (try)
+import Control.Concurrent (forkIO)
+import UnliftIO.Exception (finally, try)
 
 writeBackStore :: ArkhamDBWriteBackStore Handler
 writeBackStore = ArkhamDBWriteBackStore
@@ -262,13 +263,19 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
 -- a page of identifiers is read; full payloads are fetched after admission.
 dispatchCampaignWriteBack :: Handler ()
 dispatchCampaignWriteBack = do
-  configured <- getsYesod $ appArkhamDB . appSettings
-  client <- getsYesod appArkhamDBClient
   executor <- getsYesod appArkhamDBWriteBackExecutor
-  for_ ((,) <$> configured <*> client) \(settings, transport) -> do
-    start <- liftIO $ wakeArkhamDBExecutor executor
-    when start $ forkHandler (const $ liftIO $ resetArkhamDBExecutor executor) $
-      runArkhamDBExecutor executor $ sweep settings transport Nothing
+  liftIO $ void $ wakeArkhamDBExecutor executor
+
+-- Allocate the worker from the foundation, never from a request's resources.
+-- The initial wake resumes durable pending work immediately after a restart.
+startCampaignWriteBack :: App -> IO ()
+startCampaignWriteBack foundation =
+  for_ ((,) <$> appArkhamDB (appSettings foundation) <*> appArkhamDBClient foundation) \(settings, transport) -> do
+    let executor = appArkhamDBWriteBackExecutor foundation
+    start <- wakeArkhamDBExecutor executor
+    when start $ void $ forkIO $
+      runArkhamDBExecutor executor (unsafeHandler foundation $ sweep settings transport Nothing)
+        `finally` resetArkhamDBExecutor executor
  where
   sweep settings transport cursor = do
     rows <- runDB $ rawSql

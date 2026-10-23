@@ -133,7 +133,7 @@ tokens = ArkhamDBOAuthTokens "private-access-token" (Just "private-refresh-token
 remote :: ArkhamDBRemoteDeck
 remote = ArkhamDBRemoteDeck
   (ArkhamDBDecklist mempty mempty "01001" "Roland Banks" Nothing Nothing Nothing (Just "123") (Just "Private deck"))
-  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0") Nothing "Guide" "campaign" (Map.singleton "01006" 1) (Just "too_few_cards")
+  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0") Nothing True "Guide" "campaign" (Map.singleton "01006" 1) (Just "too_few_cards")
 
 stubClient :: ArkhamDBClient IO
 stubClient = ArkhamDBClient

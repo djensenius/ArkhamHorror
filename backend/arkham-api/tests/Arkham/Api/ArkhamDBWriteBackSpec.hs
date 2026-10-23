@@ -19,6 +19,7 @@ import Arkham.Taboo.Types (TabooList (TabooList25))
 import Arkham.Target (Target (GameTarget))
 import Arkham.Source (Source (GameSource))
 import Data.Aeson
+import Data.Aeson.Types (Pair)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (addUTCTime, getCurrentTime)
@@ -482,8 +483,10 @@ spec = describe "ArkhamDB campaign write-back" do
     assertState h "conflict"
     filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` []
 
-  it "returns an unsent upgrade to ready when the unchanged source has no successor" do
+  it "returns an unsent upgrade to ready only with explicit next_deck null on the unchanged source" do
     h <- newHarness
+    source <- parseRecoverySource ["next_deck" .= Null]
+    modifyIORef' h.remotes $ Map.insert "123" source
     let unsent = h.client {upgradeDeck = \_ _ _ _ -> pure $ Left $ ArkhamDBRemoteError "failed before transmission"}
     runWith h unsent False
     h.run True
@@ -492,6 +495,20 @@ spec = describe "ArkhamDB campaign write-back" do
     assertNoPush h
     h.run True
     assertState h "succeeded"
+
+  for_ [[], ["next_deck_id" .= Null]] \successorFields ->
+    it ("conflicts on an uncertain upgrade when next_deck is missing: " <> show successorFields) do
+      h <- newHarness
+      source <- parseRecoverySource successorFields
+      modifyIORef' h.remotes $ Map.insert "123" source
+      let unsent = h.client {upgradeDeck = \_ _ _ _ -> pure $ Left $ ArkhamDBRemoteError "lost reply"}
+      runWith h unsent False
+      h.run True
+      arkhamDBPushStage <$> readIORef h.job `shouldReturn` "creating"
+      assertState h "conflict"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "pushUncertain"
+      h.run True
+      assertNoPush h
 
   it "does not overwrite a known target edited after a failed save" do
     h <- newHarness
@@ -513,6 +530,20 @@ spec = describe "ArkhamDB campaign write-back" do
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
     filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124", "save/124"]
     fmap (.deck.slots) . Map.lookup "124" <$> readIORef h.remotes `shouldReturn` Just (Map.singleton "01009" 2)
+
+  it "reuses the scenario-end version when side-story costs lower XP below the baseline" do
+    h <- newHarness
+    h.run False
+    modifyIORef' h.job \job -> job
+      { arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushTargetId = Nothing
+      , arkhamDBPushBoundary = "upgrade", arkhamDBPushTotalXp = 4
+      , arkhamDBPushPayload = encodePushDeck currentDeck {Decklist.slots = Map.singleton "01009" 2}}
+    h.run False
+    assertState h "succeeded"
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124", "save/124"]
+    fmap (.deck.slots) . Map.lookup "124" <$> readIORef h.remotes `shouldReturn` Just (Map.singleton "01009" 2)
+    readIORef h.baseline `shouldReturn` 4
 
   it "creates a further version rather than dropping XP granted during the upgrade" do
     h <- newHarness
@@ -570,6 +601,15 @@ spec = describe "ArkhamDB campaign write-back" do
   it "requires explicit confirmation for overwrite and save-as-new" do
     for_ ["overwrite", "saveAsNew"] \resolution ->
       (fromJSON $ object ["resolution" .= (resolution :: Text), "confirmed" .= False] :: Result ArkhamDBResolveRequest) `shouldSatisfy` \case Error _ -> True; _ -> False
+
+-- Exercise presence/null through the production parser, not a hand-set flag.
+parseRecoverySource :: [Pair] -> IO ArkhamDBRemoteDeck
+parseRecoverySource successorFields = case fromJSON $ object $
+  [ "id" .= (123 :: Int), "investigator_code" .= ("01001" :: Text), "slots" .= object []
+  , "date_update" .= Linking.remote.dateUpdate, "version" .= Linking.remote.deckVersion
+  ] <> successorFields of
+    Error err -> fail err
+    Success remote -> pure (remote :: ArkhamDBRemoteDeck)
 
 -- Run under stack exec ghci to regenerate, using the production encoders.
 writeBackFixture :: IO Value

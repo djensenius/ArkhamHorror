@@ -1179,9 +1179,10 @@ opt-in, `state` (`idle`, `pending`, `running`, `failed`, `conflict`, `succeeded`
 `cancelled`), sanitized `error`, and conflict markers. Work is ordered per local
 deck; a failed/conflicted older snapshot blocks newer snapshots. Explicit
 `POST /arkham/arkhamdb/decks/{localDeckId}/write-back/retry` resumes the oldest
-job; after a server restart, pending jobs can also be retried this way. One
-coalescing dispatcher per process runs at most one job at a time, reads pages of
-32 identifiers (not global payloads), and polls every thirty seconds once started.
+job. One coalescing dispatcher starts with the application (not a request),
+wakes immediately to resume pending jobs after a server restart, runs at most one
+job at a time, reads pages of 32 identifiers (not global payloads), and polls
+every thirty seconds.
 Claims skip a busy user lock rather than filling the DB pool with waiters. Each
 user has a minimum thirty-second admission interval, with exponential failure
 backoff (60/120/240 seconds, capped at five minutes). A throttled explicit retry
@@ -1214,10 +1215,13 @@ object. HTTP slot keys and investigator codes use raw ArkhamDB codes, without
 the backend JSON card-code `c` prefix. Metadata must be a JSON object and existing keys are preserved; the
 reserved namespaced `ahn_push` key records the push ID for safe recovery.
 
-`investigatorXp` is cumulative earned XP. Each version receives only the delta
-since the last successful push for that game/investigator association; the
-association's initial baseline is zero. Opting in mid-campaign therefore sends
-all XP earned so far as the first delta, not just the last scenario's XP.
+`investigatorXp` is cumulative earned XP net of `SpendXP` side-story costs.
+Each version receives only the nonnegative delta since the last successful push
+for that game/investigator association; the association's initial baseline is
+zero. Opting in mid-campaign therefore sends all earned XP net of those costs
+so far as the first delta, not just the last scenario's XP. If costs lower the
+total below the baseline at an upgrade boundary, the campaign deck is saved into
+the existing unchanged scenario-end version rather than creating a 0-XP version.
 **Spent XP is not synchronized:** every deck status explicitly reports
 `spentXpSynced: false`. Set spent XP manually on ArkhamDB **before the next
 remote version upgrade**; otherwise ArkhamDB's carryover can be overstated.
@@ -1246,9 +1250,11 @@ load→write interval. Resolution uses
 `POST /arkham/arkhamdb/decks/{localDeckId}/resolve-conflict`:
 
 - `{"resolution":"keepRemote"}` re-syncs the saved local deck from the latest
-  remote version and cancels outstanding local snapshots. It never rewrites a
-  running campaign's deck or gameplay state. **This choice lasts only until the
-  next scenario-end/upgrade boundary**: that boundary snapshots the unchanged
+  remote version and cancels outstanding local snapshots. It also advances the
+  campaign's XP baseline to the discarded snapshot's total, even if no remote
+  version was created: that snapshot's earned XP is never pushed later. It never
+  rewrites a running campaign's deck or gameplay state. **This choice lasts only
+  until the next scenario-end/upgrade boundary**: that boundary snapshots the unchanged
   campaign state again and may replace the remote content. Disable write-back
   to keep ArkhamDB authoritative for longer.
 - `{"resolution":"overwrite","confirmed":true}` explicitly creates a version
@@ -1277,13 +1283,19 @@ recovery first follows the original deck's `next_deck`/`next_deck_id` and verifi
 the push marker; it never adopts an unrelated successor. If no usable chain is
 exposed, it scans at most 100 listed decks for exactly one matching marker. If
 creation cannot be proven, it remains `failed`/`pushUncertain` and **does not**
-repeat upgrade/new. In upgrade mode only, an unchanged source with no successor
-proves creation did not happen: the intent returns to `ready` for a safe explicit
-retry. A known target can resume save only if its stored intermediate markers
-remain unchanged, or complete read-only if its verified content already matches.
+repeat upgrade/new. In upgrade mode only, an unchanged source whose loaded JSON
+explicitly contains `"next_deck": null` proves creation did not happen: the intent
+returns to `ready` for a safe explicit retry. A missing `next_deck` key (even with
+`next_deck_id: null`) is uncertain and records a conflict, never a safe retry.
+A known target can resume save only if its stored intermediate markers remain
+unchanged, or complete read-only if its verified content already matches.
 If the first load after creation failed, or recovery finds a created target
 without a captured target baseline, the worker conservatively records a conflict
-and performs no save. Attribution (`ahn_push`) alone never proves unchanged state. Explicit
+and performs no save. **Keep-remote is the expected recovery after a lost or
+failed first load following creation**: the new remote version lacks the campaign
+deck changes until the next scenario-end/upgrade boundary. Keep-remote also
+recovers a save into the scenario-end version that failed and then conflicted.
+Attribution (`ahn_push`) alone never proves unchanged state. Explicit
 save-as-new starts a separately identified operation; overwrite never discards
 an uncertain creation intent. No undocumented ArkhamDB idempotency header is
 assumed. Stubs cover runtime success, failures, conflicts, resolution and retry. The

@@ -38,6 +38,7 @@ import Crypto.Error (CryptoFailable (..))
 import Crypto.Hash.SHA256 qualified as SHA256
 import Crypto.Random (getRandomBytes)
 import Data.Aeson
+import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (Parser, parseEither, typeMismatch)
 import Data.ByteArray qualified as BA
 import Data.ByteString.Base64 qualified as B64
@@ -116,6 +117,8 @@ data ArkhamDBRemoteDeck = ArkhamDBRemoteDeck
   , dateUpdate :: Maybe Text
   , deckVersion :: Maybe Text
   , nextDeckId :: Maybe Text
+  -- Only an explicit next_deck: null proves that a lost upgrade was unsent.
+  , nextDeckKnownAbsent :: Bool
   , descriptionMd :: Text
   , tags :: Text
   , ignoreDeckLimitSlots :: Map Text Int
@@ -124,7 +127,7 @@ data ArkhamDBRemoteDeck = ArkhamDBRemoteDeck
   deriving stock (Eq, Show, Generic)
 
 instance NFData ArkhamDBRemoteDeck where
-  rnf ArkhamDBRemoteDeck {..} = rnf (toJSON deck, remoteDeckId, dateUpdate, deckVersion, nextDeckId, descriptionMd, tags, ignoreDeckLimitSlots, problem)
+  rnf ArkhamDBRemoteDeck {..} = rnf (nextDeckKnownAbsent, (toJSON deck, remoteDeckId, dateUpdate, deckVersion, nextDeckId, descriptionMd, tags, ignoreDeckLimitSlots, problem))
 
 instance FromJSON ArkhamDBRemoteDeck where
   parseJSON value = do
@@ -134,6 +137,7 @@ instance FromJSON ArkhamDBRemoteDeck where
       dateUpdate <- o .:? "date_update"
       deckVersion <- o .:? "version" >>= traverse parseTextValue
       nextDeckId <- ((<|>) <$> o .:? "next_deck" <*> o .:? "next_deck_id") >>= traverse parseTextId
+      let nextDeckKnownAbsent = KM.lookup "next_deck" o == Just Null && isNothing nextDeckId
       descriptionMd <- o .:? "description_md" .!= ""
       tags <- o .:? "tags" .!= ""
       ignoreDeckLimitSlots <- o .:? "ignoreDeckLimitSlots" .!= mempty

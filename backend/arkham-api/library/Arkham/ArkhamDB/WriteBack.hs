@@ -258,12 +258,17 @@ runWriteBack store writes client settings now retry userId deckId = do
           Just next | next `elem` seen || length seen >= 100 -> throwError $ ArkhamDBError "remoteUnavailable" "ArkhamDB version chain is invalid"
           Just next -> load job next >>= latestVersion job (next : seen)
         recover entity desired = do
+          original <- traverse (load $ entityVal entity) $ arkhamDBPushSourceId $ entityVal entity
+          case original of
+            Just source | isNothing source.nextDeckId && not source.nextDeckKnownAbsent ->
+              conflict entity source "pushUncertain"
+            _ -> recoverVersion entity desired original
+        recoverVersion entity desired originalSource = do
           let job = entityVal entity
               key = entityKey entity
-          chainCandidate <- case arkhamDBPushSourceId job of
+          chainCandidate <- case originalSource of
             Nothing -> pure Nothing
-            Just source -> do
-              original <- load job source
+            Just original -> do
               case original.nextDeckId of
                 Nothing | isJust original.dateUpdate || isJust original.deckVersion
                   , sameMarkers (arkhamDBPushExpectedDateUpdate job) (arkhamDBPushExpectedVersion job) original -> do
@@ -347,7 +352,7 @@ runWriteBack store writes client settings now retry userId deckId = do
                     samePushedDeck (unmarkedDeck desired) original {deck = unmarkedDeck original.deck}
                     then finish ready original
                   else if arkhamDBPushMode job == "normal" && arkhamDBPushBoundary job == "upgrade" &&
-                    arkhamDBPushTotalXp job == baseline && campaignTarget
+                    arkhamDBPushTotalXp job <= baseline && campaignTarget
                     then do
                       target <- checkpoint ready (entityVal ready)
                         { arkhamDBPushStage = "created", arkhamDBPushTargetId = Just original.remoteDeckId

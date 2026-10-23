@@ -30,6 +30,7 @@ import Api.Arkham.Helpers (
   pubSubSupervisor,
   roomHeartbeat,
  )
+import Api.Arkham.ArkhamDBWriteBack (startCampaignWriteBack)
 import Arkham.ArkhamDB.WriteBack (newArkhamDBExecutor, stopArkhamDBExecutor)
 import Arkham.Metrics qualified as Metrics
 import Config
@@ -204,7 +205,9 @@ makeFoundation appSettings = do
     WebSocketBroker -> pure Nothing
     RedisBroker {} -> Just <$> forkIO (roomHeartbeat appMessageBroker appGameRooms)
 
-  pure $ mkFoundation pool appRoomHeartbeatThread
+  let foundation = mkFoundation pool appRoomHeartbeatThread
+  startCampaignWriteBack foundation
+  pure foundation
 
 {- | Convert our foundation to a WAI Application by calling @toWaiAppPlain@ and
  applying some additional middlewares.
