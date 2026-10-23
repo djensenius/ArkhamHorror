@@ -545,7 +545,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
             Begin phase -> modifyIORef' enteredPhasesRef (phase :)
             message | isWriteBackBoundary message -> do
               current <- readIORef gameRef
-              for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> GameUtils.modeCampaign (gameMode current)) message) $
+              for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> GameUtils.modeCampaign current.gameMode) message) $
                 writeIORef writeBackBoundaryRef . Just
             _ -> pure ()
         mResult <- liftIO $ timeout runMessagesTimeoutMicros do
@@ -724,7 +724,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
           , case ge of
               Game {gamePhase = newPhase} -> phaseTransitions oldPhase newPhase enteredPhases
           , Nothing
-          , writeBackBoundary
+          , isJust writeBackBoundary
           )
 
   when writeBackRequested dispatchCampaignWriteBack

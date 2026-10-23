@@ -336,7 +336,7 @@ putApiV1ArkhamGameDecksR gameId = do
                               where_ $ d.userId ==. val userId
                               where_ $ d.url ==. val (Just oldDeckUrl)
 
-                      for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> modeCampaign (gameMode arkhamGameCurrentData)) FinishedUpgradingDecks) \boundary ->
+                      for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> modeCampaign arkhamGameCurrentData.gameMode) FinishedUpgradingDecks) \boundary ->
                         queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary ge
                       pure $ Right g'
 
