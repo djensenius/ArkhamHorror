@@ -208,12 +208,14 @@ spec = describe "ArkhamDB campaign write-back" do
   for_ ["date", "version"] \marker ->
     it ("records a " <> toString marker <> " conflict and performs no remote mutation") do
       h <- newHarness
+      modifyIORef' h.job \job -> job {arkhamDBPushExpectedDateUpdate = Just "older-queued-baseline"}
       modifyIORef' h.remotes $ Map.adjust (\remote -> if marker == "date" then remote {dateUpdate = Just "edited"} else remote {deckVersion = Just "9.0"}) "123"
       h.run False
       assertState h "conflict"
       assertNoPush h
       statuses <- h.writes.deckWriteBackStatus Linking.userId
       map (.conflict) statuses `shouldSatisfy` all isJust
+      map (fmap (.lastSyncedDateUpdate) . (.conflict)) statuses `shouldBe` [Just Linking.remote.dateUpdate]
 
   it "refreshes an expired token under the generation lock without reentrant lock contention" do
     h <- newHarness

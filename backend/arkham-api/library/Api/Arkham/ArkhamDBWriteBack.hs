@@ -207,7 +207,9 @@ queueCampaignWriteBack gameId step now game = for_ (modeCampaign $ gameMode game
         Just (Entity _ value) -> P.get (arkhamDBCampaignDeckDeckId value) <&> fmap (Entity $ arkhamDBCampaignDeckDeckId value)
         Nothing -> case investigatorDeckUrl ia of
           Nothing -> pure Nothing
-          Just url -> selectFirst [ArkhamDeckUserId P.==. uid, ArkhamDeckUrl P.==. Just url] [Asc ArkhamDeckId]
+          Just url -> do
+            links <- selectList [ArkhamDBDeckLinkUserId P.==. uid, ArkhamDBDeckLinkWriteBack P.==. True] []
+            selectFirst [ArkhamDeckUserId P.==. uid, ArkhamDeckUrl P.==. Just url, ArkhamDeckId P.<-. map (arkhamDBDeckLinkDeckId . entityVal) links] [Asc ArkhamDeckId]
       for_ saved \(Entity deckId deck) -> do
         mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
         generation <- getBy $ UniqueArkhamDBAccountUser uid

@@ -265,20 +265,24 @@ runWriteBack store writes client settings now retry userId deckId = do
             "created" -> saveVersion entity desired
             "saving" -> saveVersion entity desired
             _ -> do
+              ready <- checkpoint entity job
+                { arkhamDBPushExpectedDateUpdate = arkhamDBDeckLinkLastSyncedDateUpdate link
+                , arkhamDBPushExpectedVersion = arkhamDBDeckLinkLastSyncedVersion link
+                }
               baseline <- lift $ writes.campaignXpBaseline (arkhamDBPushCampaignKey job)
               original <- load job $ arkhamDBDeckLinkRemoteDeckId link
               let otherCampaign = maybe False (/= arkhamDBPushCampaignKey job) $ arkhamDBDeckLinkCampaignKey link
               if otherCampaign && arkhamDBPushMode job /= "new"
-                then conflict entity original "campaignChanged"
+                then conflict ready original "campaignChanged"
                 else if arkhamDBPushMode job == "normal" &&
                   ((isNothing (arkhamDBDeckLinkLastSyncedDateUpdate link) && isNothing (arkhamDBDeckLinkLastSyncedVersion link)) || not (sameMarkers (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link) original) || isJust original.nextDeckId)
-                  then conflict entity original "remoteChanged"
+                  then conflict ready original "remoteChanged"
                   else if arkhamDBPushMode job == "normal" && arkhamDBPushTotalXp job == baseline &&
                     samePushedDeck (unmarkedDeck desired) original {deck = unmarkedDeck original.deck}
-                    then finish entity original
+                    then finish ready original
                   else do
                     source <- if arkhamDBPushMode job == "overwrite" then latestVersion job [original.remoteDeckId] original else pure original
-                    next <- checkpoint entity job
+                    next <- checkpoint ready (entityVal ready)
                       { arkhamDBPushStage = "creating"
                       , arkhamDBPushSourceId = if arkhamDBPushMode job == "new" then Nothing else Just source.remoteDeckId
                       , arkhamDBPushExpectedDateUpdate = source.dateUpdate
