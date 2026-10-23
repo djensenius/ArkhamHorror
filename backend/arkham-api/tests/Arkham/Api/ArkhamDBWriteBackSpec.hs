@@ -167,9 +167,10 @@ newHarness = do
             record $ "upgrade/" <> source <> "/" <> showText xp
             modifyIORef' remotes \values ->
               let original = fromMaybe Linking.remote $ Map.lookup source values
-                  version = original {deck = original.deck {Decklist.meta = metadata}, remoteDeckId = "124", dateUpdate = Just "created", deckVersion = Just "2.0", nextDeckId = Nothing}
-              in Map.insert "124" version $ Map.adjust (\value -> value {nextDeckId = Just "124"}) source values
-            pure $ Right "124"
+                  target = maybe "124" (showText . (+1)) (readMaybe (toString source) :: Maybe Int)
+                  version = original {deck = original.deck {Decklist.meta = metadata}, remoteDeckId = target, dateUpdate = Just "created", deckVersion = Just "2.0", nextDeckId = Nothing}
+              in Map.insert target version $ Map.adjust (\value -> value {nextDeckId = Just target}) source values
+            pure $ Right $ maybe "124" (showText . (+1)) (readMaybe (toString source) :: Maybe Int)
         , createDeck = \_ deck -> do
             record "new"
             modifyIORef' remotes $ Map.insert "125" $ Linking.remote
@@ -512,6 +513,18 @@ spec = describe "ArkhamDB campaign write-back" do
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
     filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124", "save/124"]
     fmap (.deck.slots) . Map.lookup "124" <$> readIORef h.remotes `shouldReturn` Just (Map.singleton "01009" 2)
+
+  it "creates a further version rather than dropping XP granted during the upgrade" do
+    h <- newHarness
+    h.run False
+    modifyIORef' h.job \job -> job
+      { arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushTargetId = Nothing
+      , arkhamDBPushBoundary = "upgrade", arkhamDBPushTotalXp = 6 }
+    h.run False
+    assertState h "succeeded"
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5", "upgrade/124/1"]
+    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124", "save/125"]
+    readIORef h.baseline `shouldReturn` 6
 
   it "uses only the newly earned cumulative XP delta, not investigatorSpentXp" do
     h <- newHarness
