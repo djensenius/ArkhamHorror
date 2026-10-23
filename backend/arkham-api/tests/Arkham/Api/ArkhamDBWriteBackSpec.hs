@@ -456,6 +456,22 @@ spec = describe "ArkhamDB campaign write-back" do
     Map.size state.storedLinks `shouldBe` 1
     fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "125"
 
+  it "keeps save-as-new ahead of later queued snapshots with a fresh push identity" do
+    h <- newHarness
+    original <- readIORef h.job
+    let failed = original {arkhamDBPushStatus = "failed", arkhamDBPushStage = "created", arkhamDBPushTargetId = Just "124"}
+        later = original {arkhamDBPushCreatedAt = addUTCTime 30 Linking.now, arkhamDBPushEventKey = "game/2/iid"}
+        replacement = saveAsNewPush (addUTCTime 60 Linking.now) failed
+        freshKey = ArkhamDBPushKey $ UUID.fromWords 0 0 0 999
+        ordered = sortOn (\(Entity key job) -> (arkhamDBPushCreatedAt job, key))
+          [Entity pushKey later, Entity freshKey replacement]
+    map entityKey ordered `shouldBe` [freshKey, pushKey]
+    arkhamDBPushCreatedAt replacement `shouldBe` arkhamDBPushCreatedAt original
+    arkhamDBPushUpdatedAt replacement `shouldBe` addUTCTime 60 Linking.now
+    arkhamDBPushEventKey replacement `shouldNotBe` arkhamDBPushEventKey original
+    arkhamDBPushStage replacement `shouldBe` "ready"
+    arkhamDBPushTargetId replacement `shouldBe` Nothing
+
   it "blocks a second campaign and save-as-new clones only its local association" do
     h <- newHarness
     let overlay = DeckOverlay Nothing mempty (Map.singleton "01006" 1) mempty

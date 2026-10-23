@@ -139,12 +139,7 @@ writeBackStore = ArkhamDBWriteBackStore
                 -- Explicit save-as-new starts a fresh, independently identified push.
                 if mode == "new" && arkhamDBPushStage job /= "ready" then do
                   P.update key [ArkhamDBPushStatus P.=. "cancelled"]
-                  void $ insert job
-                    { arkhamDBPushEventKey = arkhamDBPushEventKey job <> "/new/" <> T.pack (show now)
-                    , arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = "new"
-                    , arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing, arkhamDBPushError = Nothing
-                    , arkhamDBPushCreatedAt = now, arkhamDBPushUpdatedAt = now
-                    }
+                  void $ insert $ saveAsNewPush now job
                 else P.update key
                   [ ArkhamDBPushStatus P.=. "pending", ArkhamDBPushStage P.=. "ready", ArkhamDBPushMode P.=. mode
                   , ArkhamDBPushSourceId P.=. Nothing, ArkhamDBPushTargetId P.=. Nothing

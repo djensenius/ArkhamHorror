@@ -13,6 +13,7 @@ import Control.Monad.Except
 import Data.Aeson
 import Data.Aeson.KeyMap qualified as KM
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
+import Data.Text qualified as T
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..), Update, (=.))
 import Entity.Arkham.ArkhamDBAccount
@@ -166,6 +167,16 @@ keepRemoteDeckUpdates remote =
   , ArkhamDeckInvestigatorName =. remote.deck.investigator_name
   , ArkhamDeckOverlay =. Nothing
   ]
+
+-- Insert with a fresh primary key, but retain this boundary's position ahead
+-- of snapshots queued after it. The event key identifies the new creation.
+saveAsNewPush :: UTCTime -> ArkhamDBPush -> ArkhamDBPush
+saveAsNewPush now job = job
+  { arkhamDBPushEventKey = arkhamDBPushEventKey job <> "/new/" <> T.pack (show now)
+  , arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = "new"
+  , arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing, arkhamDBPushError = Nothing
+  , arkhamDBPushUpdatedAt = now
+  }
 
 campaignCopyDeck :: ArkhamDeck -> ArkhamDBRemoteDeck -> ArkhamDeck
 campaignCopyDeck deck remote = deck
