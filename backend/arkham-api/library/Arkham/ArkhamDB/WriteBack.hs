@@ -188,6 +188,8 @@ runWriteBack store writes client settings now retry userId deckId = do
           -- relink between the preflight and token read could write to a NEW
           -- account using an OLD deck intent. Checkpoints still commit outside
           -- this short per-request transaction so lost replies are recoverable.
+          current <- lift $ locked.ownsPushClaim $ Entity (entityKey initial) job
+          unless current $ throwError linkChanged
           _ <- ensureGenerationUsing locked job
           let requestStore = locked {withRefreshLock = \_ run -> run requestStore}
           withAccessToken requestStore client settings now userId action
@@ -279,7 +281,7 @@ runWriteBack store writes client settings now retry userId deckId = do
                 , arkhamDBPushExpectedVersion = arkhamDBDeckLinkLastSyncedVersion link
                 }
               baseline <- lift $ writes.campaignXpBaseline (arkhamDBPushCampaignKey job)
-              original <- load job $ arkhamDBDeckLinkRemoteDeckId link
+              original <- load (entityVal ready) $ arkhamDBDeckLinkRemoteDeckId link
               let otherCampaign = maybe False (/= arkhamDBPushCampaignKey job) $ arkhamDBDeckLinkCampaignKey link
               if otherCampaign && arkhamDBPushMode job /= "new"
                 then conflict ready original "campaignChanged"
@@ -290,7 +292,7 @@ runWriteBack store writes client settings now retry userId deckId = do
                     samePushedDeck (unmarkedDeck desired) original {deck = unmarkedDeck original.deck}
                     then finish ready original
                   else do
-                    source <- if arkhamDBPushMode job == "overwrite" then latestVersion job [original.remoteDeckId] original else pure original
+                    source <- if arkhamDBPushMode job == "overwrite" then latestVersion (entityVal ready) [original.remoteDeckId] original else pure original
                     next <- checkpoint ready (entityVal ready)
                       { arkhamDBPushStage = "creating"
                       , arkhamDBPushSourceId = if arkhamDBPushMode job == "new" then Nothing else Just source.remoteDeckId

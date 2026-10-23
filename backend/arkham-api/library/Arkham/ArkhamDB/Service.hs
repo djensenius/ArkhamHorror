@@ -22,6 +22,7 @@ import Settings (ArkhamDBSettings (..))
 -- all its database operations share that transaction/connection.
 data ArkhamDBStore m = ArkhamDBStore
   { withRefreshLock :: forall a. UserId -> (ArkhamDBStore m -> m a) -> m a
+  , ownsPushClaim :: Entity ArkhamDBPush -> m Bool
   , saveLinkState :: ArkhamDBLinkState -> m ()
   , claimLinkState :: UTCTime -> Text -> m (Maybe (Entity ArkhamDBLinkState))
   , findAccountGeneration :: UserId -> m (Maybe ArkhamDBAccountId)

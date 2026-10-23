@@ -20,6 +20,8 @@ import Arkham.Source (Source (GameSource))
 import Data.Aeson
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
+import Data.Time.Clock (addUTCTime, getCurrentTime)
+import Control.Concurrent (forkIO)
 import Data.UUID qualified as UUID
 import Database.Persist (Entity (..))
 import Entity.Arkham.ArkhamDBAccount
@@ -55,7 +57,8 @@ currentDeck = Linking.remote.deck
 
 newHarness :: IO Harness
 newHarness = do
-  (store, linked) <- Linking.newStore
+  (baseStore, linked) <- Linking.newStore
+  let store = baseStore
   Linking.linkAccount store
   imported <- runExceptT $ importRemoteDeck store Linking.stubClient Linking.settings Linking.now Linking.userId "123" Linking.forbiddenPublic
   imported `shouldSatisfy` isRight
@@ -67,7 +70,11 @@ newHarness = do
   remotes <- newIORef $ Map.singleton "123" Linking.remote
   calls <- newIORef []
   baseline <- newIORef 0
-  let record call = modifyIORef' calls (<> [call])
+  let claimStore = store {withRefreshLock = \uid action -> withRefreshLock store uid \locked -> action locked {ownsPushClaim = claimStore.ownsPushClaim}, ownsPushClaim = \(Entity key previous) -> do
+        current <- readIORef job
+        pure $ key == pushKey && arkhamDBPushStatus current == "running" && arkhamDBPushStatus previous == "running" &&
+          arkhamDBPushStage current == arkhamDBPushStage previous && arkhamDBPushUpdatedAt current == arkhamDBPushUpdatedAt previous}
+      record call = modifyIORef' calls (<> [call])
       mapping = do
         state <- readIORef linked
         maybe (fail "Missing link") pure $ Map.lookup Linking.deckId state.storedLinks
@@ -88,7 +95,7 @@ newHarness = do
         , checkpointPush = \(Entity _ previous) next -> do
             active <- valid previous
             current <- readIORef job
-            if active && arkhamDBPushStatus current == arkhamDBPushStatus previous && arkhamDBPushStage current == arkhamDBPushStage previous then writeIORef job next >> pure True
+            if active && arkhamDBPushStatus current == arkhamDBPushStatus previous && arkhamDBPushStage current == arkhamDBPushStage previous && arkhamDBPushUpdatedAt current == arkhamDBPushUpdatedAt previous then writeIORef job next >> pure True
             else pure False
         , finishPush = \(Entity _ value) remote -> do
             active <- valid value
@@ -157,8 +164,8 @@ newHarness = do
             modifyIORef' remotes $ Map.adjust (\value -> value {deck = deck.deck, dateUpdate = Just "saved"}) target
             pure $ Right target
         }
-      run retry = runWriteBack store writes client Linking.settings Linking.now retry Linking.userId Linking.deckId
-  pure Harness {..}
+      run retry = runWriteBack claimStore writes client Linking.settings Linking.now retry Linking.userId Linking.deckId
+  pure Harness {store = claimStore, ..}
  where
   showText = fromString . show
 
@@ -426,6 +433,27 @@ spec = describe "ArkhamDB campaign write-back" do
     writeIORef h.baseline 3
     h.run False
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/2"]
+
+  it "fences a paused save after another worker reclaims and completes the exact job" do
+    h <- newHarness
+    reached <- newEmptyMVar
+    release <- newEmptyMVar
+    done <- newEmptyMVar
+    let pausedWrites = h.writes {checkpointPush = \previous next -> do
+          saved <- h.writes.checkpointPush previous next
+          when (saved && arkhamDBPushStage next == "saving") $ putMVar reached () >> takeMVar release
+          pure saved}
+    _ <- forkIO $ runWriteBack h.store pausedWrites h.client Linking.settings Linking.now False Linking.userId Linking.deckId >> putMVar done ()
+    timeout 2000000 (takeMVar reached) `shouldReturn` Just ()
+    later <- addUTCTime 61 <$> getCurrentTime
+    runWriteBack h.store h.writes h.client Linking.settings later True Linking.userId Linking.deckId
+    assertState h "succeeded"
+    modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "external-edit"}) "124"
+    before <- readIORef h.calls
+    putMVar release ()
+    timeout 2000000 (takeMVar done) `shouldReturn` Just ()
+    readIORef h.calls `shouldReturn` before
+    fmap (.dateUpdate) . Map.lookup "124" <$> readIORef h.remotes `shouldReturn` Just (Just "external-edit")
 
   it "refuses to mutate with a replaced account generation" do
     h <- newHarness

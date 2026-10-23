@@ -24,6 +24,12 @@ persistentStoreWith validate database = ArkhamDBStore
       lockArkhamDBUser userId
       connection <- ask
       lift $ action $ persistentStoreWith validate (`runReaderT` connection)
+  , ownsPushClaim = \(Entity key job) -> database do
+      matching <- P.count
+        [ ArkhamDBPushId P.==. key, ArkhamDBPushStatus P.==. "running"
+        , ArkhamDBPushStage P.==. arkhamDBPushStage job, ArkhamDBPushUpdatedAt P.==. arkhamDBPushUpdatedAt job
+        ]
+      pure $ arkhamDBPushStatus job == "running" && matching == 1
   , saveLinkState = \state -> database do
       lockArkhamDBUser $ arkhamDBLinkStateUserId state
       deleteWhere [ArkhamDBLinkStateExpiresAt P.<=. arkhamDBLinkStateCreatedAt state]

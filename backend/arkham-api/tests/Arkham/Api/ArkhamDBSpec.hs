@@ -79,6 +79,7 @@ getLockTimeoutR = runArkhamDB $ liftIO $ throwIO $
 handlerStore :: ArkhamDBStore IO -> ArkhamDBStore (Yesod.HandlerFor CallbackSite)
 handlerStore store = ArkhamDBStore
   { withRefreshLock = \uid action -> withRunInIO \run -> withRefreshLock store uid (run . action . handlerStore)
+  , ownsPushClaim = liftIO . store.ownsPushClaim
   , saveLinkState = liftIO . store.saveLinkState
   , claimLinkState = \time nonce -> liftIO $ store.claimLinkState time nonce
   , findAccountGeneration = liftIO . store.findAccountGeneration
@@ -179,6 +180,7 @@ newStore = do
             lock <- newMVar ()
             pure (Map.insert uid lock locks, lock)
         withMVar lock $ const $ action store
+      ownsPushClaim = const $ pure False
       store = ArkhamDBStore {..}
       modify = modifyIORef' ref
       saveLinkState state = modify \s -> s {storedStates = Map.insert (arkhamDBLinkStateNonce state) (Entity (ArkhamDBLinkStateKey UUID.nil) state) s.storedStates}
