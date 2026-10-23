@@ -45,15 +45,16 @@ writeBackStore = ArkhamDBWriteBackStore
           _ -> pure Nothing
   , requestPushRetry = \now uid deckId -> runDB do
       rawExecute "SET LOCAL lock_timeout = '5s'" []
-      lockArkhamDBUser uid
-      account <- getBy $ UniqueArkhamDBAccountUser uid
-      pending <- oldestPush deckId
-      case (account, pending) of
-        (Just (Entity generation value), Just (Entity key job))
-          | arkhamDBPushUserId job == uid && arkhamDBPushGeneration job == generation
-          , writeBackAdmissionReady now value, pushCanRun now True job ->
-              P.update key [ArkhamDBPushStatus P.=. "pending"]
-        _ -> pure ()
+      available <- rawSql "SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE SKIP LOCKED" [toPersistValue uid] :: DB [Single Int64]
+      unless (null available) do
+        account <- getBy $ UniqueArkhamDBAccountUser uid
+        pending <- oldestPush deckId
+        case (account, pending) of
+          (Just (Entity generation value), Just (Entity key job))
+            | arkhamDBPushUserId job == uid && arkhamDBPushGeneration job == generation
+            , writeBackAdmissionReady now value, pushCanRun now True job ->
+                P.update key [ArkhamDBPushStatus P.=. "pending"]
+          _ -> pure ()
   , checkpointPush = \previous updated -> runDB do
       active <- activePush previous
       if not active then pure False else do
