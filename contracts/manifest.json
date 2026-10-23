@@ -16580,7 +16580,7 @@
     "contracts/fixtures/question-round-end-forced-ability.json": "9441f141605642ce4d0d69c1aab05e5b0d7ce39202d7872c1ed52293004331ed",
     "contracts/fixtures/question-treachery-forced-ability.json": "7ddeee49948feb86c56b6a44fbf85cb2d3e4d0b90c64f03a23d663093a04ae34",
     "contracts/fixtures/question-window-choose-one.json": "96058cb5e2bb8a1d3beb5107b08fb66b8b4be8eb648317d439c5859657e362f6",
-    "contracts/fixtures/replay-attestation.json": "60b83bf10b8bd6b46b47abfcdd3a2d1ddd14e656cf4e3823d977ae7c945e5602",
+    "contracts/fixtures/replay-attestation.json": "f3cc290cd95c99dc3fcf1346b5fa11adac28fe2ba4cc6b884e8b23307f938c28",
     "contracts/fixtures/room-closed.json": "fabfe52fd38ab86c7c210c681205d6aa2c992200a798063b982ba0a0aefcfae6",
     "contracts/fixtures/shared-state-update.json": "c319bb83018ad037b9e0a6fd05be0829515c5adc70ddd474088db82d3f1123cc",
     "contracts/fixtures/uuid-entity-map.json": "09ebbcb0bffbcfac4060c878976570b965f10b70a2597111b162662b56b7763d",
