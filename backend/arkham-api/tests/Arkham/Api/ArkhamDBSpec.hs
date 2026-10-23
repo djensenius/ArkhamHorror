@@ -279,7 +279,7 @@ paddedResponse size body = body <> BSL.replicate (fromIntegral size - BSL.length
 
 spec :: Spec
 spec = describe "ArkhamDB account linking and private decks" do
-  for_ [("upgrade", "PUT /api/oauth2/deck/upgrade/123", "xp=5"), ("new", "POST /api/oauth2/deck/new", "investigator=01001"), ("save", "PUT /api/oauth2/deck/save/124", "side=")] \(operation, methodPath, fieldName) ->
+  for_ [("upgrade", "PUT /api/oauth2/deck/upgrade/123", "xp=5"), ("new", "POST /api/oauth2/deck/new", "investigator=01001"), ("save", "PUT /api/oauth2/deck/save/124", "slots=%7B%2201006%22%3A1%7D")] \(operation, methodPath, fieldName) ->
     it ("uses ArkhamDB's documented method and form for " <> operation) do
       incoming <- newIORef "HTTP/1.1 200 OK\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"success\":true,\"msg\":124}"
       outgoing <- newIORef mempty
@@ -293,7 +293,7 @@ spec = describe "ArkhamDB account linking and private decks" do
       result <- case operation of
         "upgrade" -> client.upgradeDeck "token" "123" 5 (Just "{}")
         "new" -> client.createDeck "token" remote.deck
-        _ -> client.saveDeck "token" "124" remote.deck
+        _ -> client.saveDeck "token" "124" remote.deck {slots = Map.singleton "01006" 1, sideSlots = Map.singleton "01007" 1}
       result `shouldBe` Right "124"
       request <- readIORef outgoing
       request `shouldSatisfy` BS8.isInfixOf methodPath

@@ -1,4 +1,5 @@
 {-# LANGUAGE NoFieldSelectors #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 
 module Arkham.ArkhamDB.WriteBack where
 
@@ -46,6 +47,7 @@ data ArkhamDBDeckWriteBackStatus = ArkhamDBDeckWriteBackStatus
   { localDeckId :: ArkhamDeckId
   , remoteDeckId :: Text
   , enabled :: Bool
+  , spentXpSynced :: Bool
   , state :: Text
   , pushId :: Maybe ArkhamDBPushId
   , campaignKey :: Maybe Text
@@ -84,6 +86,7 @@ pushStatus deckId link pending resulting = ArkhamDBDeckWriteBackStatus
   { localDeckId = deckId
   , remoteDeckId = arkhamDBDeckLinkRemoteDeckId link
   , enabled = arkhamDBDeckLinkWriteBack link
+  , spentXpSynced = False
   , state = maybe "idle" (arkhamDBPushStatus . entityVal) pending
   , pushId = entityKey <$> pending
   , campaignKey = arkhamDBPushCampaignKey . entityVal <$> pending
@@ -154,7 +157,7 @@ samePushedDeck desired remote =
 
 -- A single durable job, with no network work in the game transaction. Errors
 -- become sanitized per-deck state; the caller never needs to fail a game answer.
-runWriteBack :: MonadIO m => ArkhamDBStore m -> ArkhamDBWriteBackStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> Bool -> UserId -> ArkhamDeckId -> m ()
+runWriteBack :: forall m. MonadIO m => ArkhamDBStore m -> ArkhamDBWriteBackStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> Bool -> UserId -> ArkhamDeckId -> m ()
 runWriteBack store writes client settings now retry userId deckId = do
   claimed <- writes.claimPush now retry userId deckId
   for_ claimed \initial -> do
@@ -176,7 +179,8 @@ runWriteBack store writes client settings now retry userId deckId = do
           unless (arkhamDBDeckLinkWriteBack link) $ throwError $ ArkhamDBError "writeBackDisabled" "Deck write-back is disabled"
           pure link
         ensureGeneration = ensureGenerationUsing store
-        request job action = ExceptT $ store.withRefreshLock userId \locked -> runExceptT do
+        request :: forall a. ArkhamDBPush -> (Text -> m (Either ArkhamDBClientError a)) -> ArkhamDBAction m a
+        request job action = ExceptT $ withRefreshLock store userId \locked -> runExceptT do
           -- Bind token selection and transport to this generation. Otherwise a
           -- relink between the preflight and token read could write to a NEW
           -- account using an OLD deck intent. Checkpoints still commit outside
@@ -213,7 +217,7 @@ runWriteBack store writes client settings now retry userId deckId = do
               summaries <- request job client.listDecks
               -- Recovery is deliberately bounded. If the result is ambiguous or
               -- not discoverable, keep an uncertain failure rather than create twice.
-              candidates <- for (take 100 summaries) \summary -> load job summary.id
+              candidates <- forM (take 100 summaries) \summary -> load job summary.id
               pure $ case filter (hasPushMarker key) candidates of
                 [value] -> Just value
                 _ -> Nothing

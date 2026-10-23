@@ -27,6 +27,9 @@ module Arkham.ArkhamDB (
 ) where
 
 import Arkham.Decklist (ArkhamDBDecklist)
+import Arkham.Card.CardCode (unCardCode)
+import Arkham.Id (InvestigatorId (..))
+import Data.Map.Strict qualified as Map
 import Arkham.Decklist qualified as Decklist
 import Control.Exception qualified as E
 import Crypto.Cipher.AES (AES256)
@@ -270,23 +273,23 @@ httpArkhamDBClient manager baseUrl clientId clientSecret = ArkhamDBClient {..}
   loadDeck accessToken deckId = authedGet accessToken $ "/api/oauth2/deck/load/" <> deckId
 
   upgradeDeck token remoteId xp metadata = authedWrite token "PUT" ("/api/oauth2/deck/upgrade/" <> remoteId) $
-    [("xp", showText xp)] <> optional "meta" metadata
+    [("xp", showText xp)] <> optionalField "meta" metadata
   createDeck token decklist = authedWrite token "POST" "/api/oauth2/deck/new" $
-    [("investigator", showJSON decklist.investigator_code)] <> deckFields decklist
+    [("investigator", unCardCode (unInvestigatorId decklist.investigator_code))] <> deckFields decklist
   saveDeck token remoteId decklist = authedWrite token "PUT" ("/api/oauth2/deck/save/" <> remoteId) $
-    [("slots", jsonText decklist.slots), ("side", jsonText decklist.sideSlots), ("problem", "")] <> deckFields decklist
+    [("slots", jsonText (Map.mapKeys unCardCode decklist.slots)), ("side", jsonText (Map.mapKeys unCardCode decklist.sideSlots)), ("problem", "")] <> deckFields decklist
 
-  deckFields decklist = optional "name" decklist.decklist_name
-    <> optional "meta" decklist.meta <> [("taboo", maybe "0" showText decklist.taboo_id)]
-  optional key = maybe [] (\value -> [(key, value)])
+  deckFields :: Decklist.ArkhamDBDecklist -> [(Text, Text)]
+  deckFields decklist = optionalField "name" decklist.decklist_name
+    <> optionalField "meta" decklist.meta <> [("taboo", maybe "0" showText decklist.taboo_id)]
+  optionalField :: Text -> Maybe Text -> [(Text, Text)]
+  optionalField key = maybe [] (\value -> [(key, value)])
   showText :: Show a => a -> Text
   showText = T.pack . show
   jsonText :: ToJSON a => a -> Text
   jsonText = decodeUtf8 . BSL.toStrict . encode
-  showJSON value = case toJSON value of
-    String text -> text
-    _ -> jsonText value
 
+  authedWrite :: Text -> ByteString -> Text -> [(Text, Text)] -> m (Either ArkhamDBClientError Text)
   authedWrite token verb path fields = liftIO $ runArkhamDBRequest 10000000 do
     req0 <- parseRequest $ T.unpack $ normalizeBase baseUrl <> path
     let req = (urlEncodedBody [(encodeUtf8 k, encodeUtf8 v) | (k, v) <- fields] req0

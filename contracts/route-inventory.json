@@ -483,6 +483,30 @@
       "coverage": "documented"
     },
     {
+      "method": "PUT",
+      "path": "/api/v1/arkham/arkhamdb/decks/{ArkhamDeckId}/write-back",
+      "resource": "ApiV1ArkhamArkhamDBWriteBackR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/arkham/arkhamdb/decks/{ArkhamDeckId}/write-back/retry",
+      "resource": "ApiV1ArkhamArkhamDBWriteBackRetryR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/arkham/arkhamdb/decks/{ArkhamDeckId}/resolve-conflict",
+      "resource": "ApiV1ArkhamArkhamDBResolveConflictR",
+      "surface": "decks",
+      "scope": "native-client",
+      "coverage": "documented"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/arkham/decks",
       "resource": "ApiV1ArkhamDecksR",

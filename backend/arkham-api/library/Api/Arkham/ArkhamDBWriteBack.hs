@@ -2,16 +2,17 @@ module Api.Arkham.ArkhamDBWriteBack where
 
 import Api.Arkham.ArkhamDBStore
 import Arkham.ArkhamDB
+import Arkham.Card.CardCode (unCardCode)
+import Arkham.Id (InvestigatorId (..), PlayerId (..))
 import Arkham.ArkhamDB.Campaign (campaignDeckSnapshot)
 import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
 import Arkham.Campaign.Types (CampaignAttrs (..))
 import Arkham.Classes.Entity (toAttrs)
-import Arkham.Deck (Deck (..))
+import Arkham.Helpers (Deck (..))
 import Arkham.Decklist qualified as Decklist
 import Arkham.Game (Game (..))
 import Arkham.Game.Utils (gameInvestigators, modeCampaign)
-import Arkham.Id (InvestigatorId (..))
 import Arkham.Investigator.Types (InvestigatorAttrs (..))
 import Data.List (nubBy)
 import Data.Map.Strict qualified as Map
@@ -58,7 +59,7 @@ writeBackStore = ArkhamDBWriteBackStore
           (Just (Entity linkId link), Just (Entity associationId campaign)) -> do
             let crossCampaign = needsCampaignCopy link job
             result <- if crossCampaign then do
-              deck <- P.get deckId >>= maybe (fail "Missing linked deck") pure
+              deck <- get404 deckId
               -- A second campaign must not steal the first campaign's lineage.
               copyId <- insert $ campaignCopyDeck deck remote
               insert_ link
@@ -148,7 +149,7 @@ writeBackStore = ArkhamDBWriteBackStore
       pure $ affected == 1
   , deckWriteBackStatus = \uid -> runDB do
       links <- selectList [ArkhamDBDeckLinkUserId P.==. uid] [Asc ArkhamDBDeckLinkDeckId]
-      for links \(Entity _ link) -> do
+      forM links \(Entity _ link) -> do
         let deckId = arkhamDBDeckLinkDeckId link
         outstanding <- oldestPush deckId
         recent <- case outstanding of
@@ -195,11 +196,11 @@ pushUpdates job =
 queueCampaignWriteBack :: ArkhamGameId -> Int -> UTCTime -> Game -> DB ()
 queueCampaignWriteBack gameId step now game = for_ (modeCampaign $ gameMode game) \campaign -> do
   players <- selectList [ArkhamPlayerArkhamGameId P.==. gameId] []
-  let owner playerId = arkhamPlayerUserId . entityVal <$> find ((== playerId) . coerce . entityKey) players
+  let owner playerId = arkhamPlayerUserId . entityVal <$> find ((== playerId) . PlayerId . coerce . entityKey) players
       attrs = toAttrs campaign
   for_ (Map.toList $ gameInvestigators game) \(iid, investigator) -> do
     let ia = toAttrs investigator
-        key = UUID.toText (coerce gameId) <> "/" <> unInvestigatorId iid
+        key = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId iid)
     for_ (owner $ investigatorPlayerId ia) \uid -> do
       association <- getBy $ UniqueArkhamDBCampaignDeck key
       saved <- case association of
@@ -215,7 +216,7 @@ queueCampaignWriteBack gameId step now game = for_ (modeCampaign $ gameMode game
             when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
             let story = Map.findWithDefault [] iid $ campaignStoryCards attrs
                 list = campaignDeckSnapshot (arkhamDeckList deck) cards story (investigatorSideDeck ia) (investigatorTaboo ia)
-                event = UUID.toText (coerce gameId) <> "/" <> T.pack (show step) <> "/" <> unInvestigatorId iid
+                event = UUID.toText (coerce gameId) <> "/" <> T.pack (show step) <> "/" <> unCardCode (unInvestigatorId iid)
             void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
               "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
               Nothing Nothing Nothing "normal" now now

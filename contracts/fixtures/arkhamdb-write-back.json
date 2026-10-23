@@ -1,0 +1,73 @@
+{
+  "keepRemoteRequest": {
+    "confirmed": false,
+    "resolution": "keepRemote"
+  },
+  "overwriteRequest": {
+    "confirmed": true,
+    "resolution": "overwrite"
+  },
+  "saveAsNewRequest": {
+    "confirmed": true,
+    "resolution": "saveAsNew"
+  },
+  "states": [
+    {
+      "campaignKey": "game/iid",
+      "conflict": null,
+      "enabled": true,
+      "error": null,
+      "localDeckId": "00000000-0000-0000-0000-000000000017",
+      "pushId": "00000000-0000-0000-0000-0000000000f5",
+      "remoteDeckId": "124",
+      "resultingLocalDeckId": "00000000-0000-0000-0000-000000000017",
+      "spentXpSynced": false,
+      "state": "succeeded"
+    },
+    {
+      "campaignKey": "game/iid",
+      "conflict": {
+        "lastSyncedDateUpdate": "2026-10-19T11:00:00Z",
+        "lastSyncedVersion": "1.0",
+        "reason": "remoteChanged",
+        "remoteDateUpdate": "edited",
+        "remoteVersion": "1.0"
+      },
+      "enabled": true,
+      "error": "remoteChanged",
+      "localDeckId": "00000000-0000-0000-0000-000000000017",
+      "pushId": "00000000-0000-0000-0000-0000000000f5",
+      "remoteDeckId": "123",
+      "resultingLocalDeckId": "00000000-0000-0000-0000-000000000017",
+      "spentXpSynced": false,
+      "state": "conflict"
+    },
+    {
+      "campaignKey": "game/iid",
+      "conflict": null,
+      "enabled": true,
+      "error": "remoteUnavailable",
+      "localDeckId": "00000000-0000-0000-0000-000000000017",
+      "pushId": "00000000-0000-0000-0000-0000000000f5",
+      "remoteDeckId": "123",
+      "resultingLocalDeckId": "00000000-0000-0000-0000-000000000017",
+      "spentXpSynced": false,
+      "state": "failed"
+    },
+    {
+      "campaignKey": "game/iid",
+      "conflict": null,
+      "enabled": false,
+      "error": null,
+      "localDeckId": "00000000-0000-0000-0000-000000000017",
+      "pushId": "00000000-0000-0000-0000-0000000000f5",
+      "remoteDeckId": "123",
+      "resultingLocalDeckId": "00000000-0000-0000-0000-000000000017",
+      "spentXpSynced": false,
+      "state": "pending"
+    }
+  ],
+  "toggleRequest": {
+    "enabled": true
+  }
+}

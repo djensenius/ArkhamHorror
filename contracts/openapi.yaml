@@ -499,7 +499,7 @@ paths:
   /arkham/arkhamdb/status:
     get:
       operationId: getArkhamDBLinkStatus
-      summary: Inspect the current user's ArkhamDB account link without exposing tokens
+      summary: Inspect the current user's ArkhamDB account and per-deck write-back states without exposing tokens
       responses:
         "200":
           description: Linked or unlinked status
@@ -620,6 +620,105 @@ paths:
           $ref: "#/components/responses/ArkhamDBDisabled"
         "502":
           $ref: "#/components/responses/ArkhamDBRemoteUnavailable"
+  /arkham/arkhamdb/decks/{deckId}/write-back:
+    put:
+      operationId: setArkhamDBWriteBack
+      summary: Opt in or out of campaign write-back for an owned linked deck
+      description: |
+        Requires arkhamdb.write-back.v1. Enabling applies at future scenario-end and campaign-upgrade boundaries, not to each mutation. Disabling cancels queued work; a remote request already in flight may finish.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/arkhamdb.schema.json#/$defs/toggleRequest"
+      responses:
+        "200":
+          description: Current owned deck link states; asynchronous work may still be pending
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/writeBackStatusList"
+        "400":
+          description: Invalid request or missing explicit confirmation
+        "401":
+          description: App authentication required
+        "404":
+          description: Deck not found, not linked, or not owned by the caller
+        "409":
+          description: Write-back is disabled, no resolvable push, or creation outcome is uncertain
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/decks/{deckId}/write-back/retry:
+    post:
+      operationId: retryArkhamDBWriteBack
+      summary: Asynchronously retry the oldest pending or failed campaign push
+      description: |
+        Requires arkhamdb.write-back.v1. Returns immediately. Resumes the durable stage, never blindly repeats an uncertain upgrade or creation. Poll status.deckLinks for completion. A running job can be reclaimed only after its sixty-second lease. Conflicts require explicit resolution.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      responses:
+        "200":
+          description: Current owned deck link states; asynchronous work may still be pending
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/writeBackStatusList"
+        "400":
+          description: Invalid request or missing explicit confirmation
+        "401":
+          description: App authentication required
+        "404":
+          description: Deck not found, not linked, or not owned by the caller
+        "409":
+          description: Write-back is disabled, no resolvable push, or creation outcome is uncertain
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
+  /arkham/arkhamdb/decks/{deckId}/resolve-conflict:
+    post:
+      operationId: resolveArkhamDBWriteBackConflict
+      summary: Resolve a campaign deck conflict explicitly
+      description: |
+        Requires arkhamdb.write-back.v1. keepRemote re-syncs the saved local deck only, never the live campaign. overwrite and saveAsNew require confirmed=true. saveAsNew creates an independent ArkhamDB deck; for a second campaign it also clones the local saved deck and moves only that campaign association. Poll status.deckLinks, including resultingLocalDeckId. An uncertain creation cannot be overwritten blindly; retry recovery or explicitly save as new.
+      parameters:
+        - $ref: "#/components/parameters/DeckId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "./schemas/arkhamdb.schema.json#/$defs/resolveRequest"
+      responses:
+        "200":
+          description: Current owned deck link states; asynchronous work may still be pending
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/writeBackStatusList"
+        "400":
+          description: Invalid request or missing explicit confirmation
+        "401":
+          description: App authentication required
+        "404":
+          description: Deck not found, not linked, or not owned by the caller
+        "409":
+          description: Write-back is disabled, no resolvable push, or creation outcome is uncertain
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/arkhamdb.schema.json#/$defs/error"
+        "501":
+          $ref: "#/components/responses/ArkhamDBDisabled"
   /arkham/decks:
     get:
       operationId: listDecks

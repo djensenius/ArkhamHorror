@@ -1143,15 +1143,115 @@ sync and falls back to that existing path for unmapped decks. Stored deck and
 list URLs consistently use `<base>/api/public/deck/<id>`. A relinked account that
 cannot load a preserved mapping (remote 403/404) drops that mapping and tries
 the public URL, including on a repeat-import check. Import is unique per local
-user and remote deck id; repeat imports return the existing Deck (HTTP 200). This revision does
-not implement write-back, version upgrades or conflict resolution (task-2.45).
-`writeBackEnabledDeckCount` therefore remains zero for newly imported decks.
+user and remote deck id; repeat imports return the existing Deck (HTTP 200). Newly imported decks have write-back disabled. Revision `0.1.55` adds the
+independently discoverable `arkhamdb.write-back.v1` capability whenever account
+linking is configured. The native minimum remains `0.1.53`.
 
 Clients opting into these endpoints must update their pinned backend commit and
 schemaRevision to this revision after merge: Apple `ContractPin.swift`; Linux
 `src/ContractPin.cpp`, `contracts/contract-pin.json` and vendored fixtures. Existing
 clients satisfying the unchanged `0.1.53` minimum can keep using public decks.
 The enabled and disabled capabilities fixtures illustrate feature negotiation.
+
+#### Opt-in campaign write-back (revision 0.1.55)
+
+Use `PUT /arkham/arkhamdb/decks/{localDeckId}/write-back` with `{ "enabled": true }`.
+Only the owning user's imported, linked deck can be toggled. Changes are batched
+at scenario end and at campaign upgrade commits, not per card mutation. The
+snapshot uses the campaign's per-investigator `campaignDecks` plus story cards
+(deduplicated by card identity), including actual weaknesses, not the shuffled
+investigator draw pile. It preserves metadata, sideboard and taboo. A stable
+association is recorded at the first boundary using the existing owner + deck
+URL match; future boundaries use that game + investigator association even if
+the saved deck URL changes. As with ordinary upgrade persistence, a deck that
+was never saved locally cannot be associated by an arbitrary inline list alone.
+
+The game transaction writes only a durable outbox intent. A post-commit worker
+performs all remote IO, without a game lock: an ArkhamDB outage cannot fail an
+answer. Inspect `GET /arkham/arkhamdb/status` → `deckLinks` for each local deck's
+opt-in, `state` (`idle`, `pending`, `running`, `failed`, `conflict`, `succeeded`,
+`cancelled`), sanitized `error`, and conflict markers. Work is ordered per local
+deck; a failed/conflicted older snapshot blocks newer snapshots. Explicit
+`POST /arkham/arkhamdb/decks/{localDeckId}/write-back/retry` resumes the oldest
+job; after a server restart, pending jobs can also be retried this way. A crashed
+running claim has a sixty-second reclaim threshold. Disabling cancels queued
+work and prevents subsequent requests; a remote request already in flight may
+finish. Relink/unlink generations guard every checkpoint and completion, and
+unlink/relink cascades old-generation outbox intents. It cannot revoke an
+already transmitted remote request. The existing ten-second request deadline,
+1 MiB decoded-body cap, bearer-token refresh and sanitized error rules apply to
+writes too. The request logger's ArkhamDB path exclusion includes these routes.
+
+API semantics verified against `https://arkhamdb.com/api/doc` and ArkhamDB's
+`Oauth2Controller`: `PUT deck/upgrade/{id}` creates a new version, taking earned
+`xp` and metadata; it does **not** take slots. The worker durably records the new
+ID, then `PUT deck/save/{newId}` uploads the complete current slots and `side`
+(the sideboard parameter), name, taboo and meta; finally it loads and verifies
+that version. `POST deck/new` creates an empty deck and is similarly followed
+by save. ArkhamDB's success envelope returns the numeric ID in `msg`, not a deck
+object. HTTP slot keys and investigator codes use raw ArkhamDB codes, without
+the backend JSON card-code `c` prefix. Metadata must be a JSON object and existing keys are preserved; the
+reserved namespaced `ahn_push` key records the push ID for safe recovery.
+
+`investigatorXp` is cumulative earned XP. Each version receives only the delta
+since the last successful push for that game/investigator association; the
+association's initial baseline is zero. **Spent XP is not synchronized:** every deck status explicitly reports
+`spentXpSynced: false`. Set spent XP manually on ArkhamDB **before the next
+remote version upgrade**; otherwise ArkhamDB's carryover can be overstated.
+Source inspection of ArkhamDB `Oauth2Controller.saveDeckAction` shows that
+`xp_spent` is accepted only when explicitly supplied; `Services/Decks.saveDeck`
+does not calculate it and `Entity/Deck.getXpSpent` returns the stored property.
+There is no authoritative upgrade-cost value to forward here:
+`Arkham/Investigator/Runner/Card.hs:502` copies total XP into `spentXp` at upgrade,
+`Api/Arkham/Types/Deck.hs:45-49` carries only investigator/list/URL, and web
+`UpgradeDeck.vue:79-83,448-451` uses XP minus that checkpoint for the upgrade
+prompt but submits no spent amount. `initDeckXp` accounts only for card-granted
+XP, not upgrade purchase costs. No cost calculator or invented spent number is
+introduced. Verify earned XP/carryover, manual spent XP, `side` round-trip,
+and story-card acceptance with live credentials (task-4.7); the HTTP adapter is
+isolated and swappable. A pre-existing deck with a prior ArkhamDB XP history
+should be saved as a new deck before starting a new locally tracked campaign.
+
+Before a normal push, both remote `date_update` (primary marker) and version
+must equal the last synchronized markers; a changed marker, an advanced
+`next_deck`, or absence of both markers records a conflict and pushes nothing.
+ArkhamDB does not document a conditional-write/CAS API: this preflight protects
+changes already present when loaded, not a concurrent remote edit in the narrow
+load→write interval. Resolution uses
+`POST /arkham/arkhamdb/decks/{localDeckId}/resolve-conflict`:
+
+- `{"resolution":"keepRemote"}` re-syncs the saved local deck from the latest
+  remote version and cancels outstanding local snapshots. It never rewrites a
+  running campaign's deck or gameplay state.
+- `{"resolution":"overwrite","confirmed":true}` explicitly creates a version
+  from the latest remote lineage using the campaign snapshot despite conflict.
+- `{"resolution":"saveAsNew","confirmed":true}` creates a separate remote deck.
+  A second campaign using the same linked local deck is always a `campaignChanged`
+  conflict, never an XP update to the first campaign's lineage. Save-as-new in
+  that case clones the saved local deck (same owner, ` (campaign copy)` suffix),
+  creates its own opted-in link and moves only the second campaign's association.
+  The original deck/link/campaign is untouched. Read `resultingLocalDeckId`.
+  For a single campaign, save-as-new reuses the local link.
+
+Creation intent, returned ID, save intent and completion are separate durable
+checkpoints. Retrying a completed push does nothing. After a lost upgrade reply,
+recovery first follows the original deck's `next_deck`/`next_deck_id` and verifies
+the push marker; it never adopts an unrelated successor. If no usable chain is
+exposed, it scans at most 100 listed decks for exactly one matching marker. If
+creation cannot be proven, it remains `failed`/`pushUncertain` and **does not**
+repeat upgrade/new. A known target can resume save only if its markers remain
+unchanged, or complete if its verified content already matches. Explicit
+save-as-new starts a separately identified operation; overwrite never discards
+an uncertain creation intent. No undocumented ArkhamDB idempotency header is
+assumed. Stubs cover runtime success, failures, conflicts, resolution and retry. The
+outage test proves the worker caller remains unaffected, then failed state and
+retry; it is not an end-to-end WAI game-answer test. PostgreSQL locking, SQL
+concurrency and end-to-end game-answer coverage remain in task-2.46, and live
+ArkhamDB behavior in task-4.7. No such coverage is claimed here.
+
+Clients consuming write-back must update Apple `ContractPin.swift`, and Linux
+`src/ContractPin.cpp`, `contracts/contract-pin.json` and vendored fixtures, to the
+merged backend commit and schemaRevision `0.1.55`.
 
 ### Locale catalog discovery
 
