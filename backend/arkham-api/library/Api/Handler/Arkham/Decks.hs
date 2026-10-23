@@ -37,7 +37,7 @@ import Arkham.Decklist
 import Arkham.Game
 import Arkham.Game.Diff
 import Arkham.Game.State (isChooseDecks)
-import Arkham.Game.Utils (gameInvestigators)
+import Arkham.Game.Utils (gameInvestigators, modeCampaign)
 import Arkham.Id
 import Arkham.Investigator.Cards (allInvestigatorCards)
 import Arkham.Investigator.Types (investigatorDeckUrl, investigatorDrivenInsane, investigatorKilled, investigatorPlayerId)
