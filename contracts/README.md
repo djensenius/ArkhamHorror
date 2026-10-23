@@ -1221,6 +1221,8 @@ all XP earned so far as the first delta, not just the last scenario's XP.
 **Spent XP is not synchronized:** every deck status explicitly reports
 `spentXpSynced: false`. Set spent XP manually on ArkhamDB **before the next
 remote version upgrade**; otherwise ArkhamDB's carryover can be overstated.
+Manual spent-XP edits also change remote markers and can require explicit
+conflict resolution before the next push; they are never silently overwritten.
 Source inspection of ArkhamDB `Oauth2Controller.saveDeckAction` shows that
 `xp_spent` is accepted only when explicitly supplied; `Services/Decks.saveDeck`
 does not calculate it and `Entity/Deck.getXpSpent` returns the stored property.
@@ -1322,8 +1324,9 @@ temporary database/cluster was dropped. This is manual SQL evidence, **not** a
 production handler/WAI concurrency test.
 
 Limitations: unlink/relink deletes the mapping but does not re-point a live
-campaign's persisted association to a newly imported deck row; that campaign
-may stop enqueueing until its original row is linked again. Lineage bindings
+campaign's persisted association to a newly imported deck row; write-back for
+that campaign can stop enqueueing. There is currently no association-repointing
+API for this lifecycle case. Lineage bindings
 also remain after campaign completion/deletion; use save-as-new for a different
 campaign. These lifecycle UX changes are not included here. Succeeded/cancelled
 payload history is pruned to the newest 20 per local link; outstanding intents
