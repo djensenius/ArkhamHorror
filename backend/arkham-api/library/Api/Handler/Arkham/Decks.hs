@@ -337,8 +337,8 @@ putApiV1ArkhamGameDecksR gameId = do
                               where_ $ d.userId ==. val userId
                               where_ $ d.url ==. val (Just oldDeckUrl)
 
-                      for_ writeBackBoundary \boundary ->
-                        queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary ge
+                      for_ writeBackBoundary \(boundary, snapshot) ->
+                        queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary snapshot
                       pure $ Right g'
 
 

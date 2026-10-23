@@ -625,7 +625,7 @@ paths:
       operationId: setArkhamDBWriteBack
       summary: Opt in or out of campaign write-back for an owned linked deck
       description: |
-        Requires arkhamdb.write-back.v1. Enabling applies at future scenario-end and campaign-upgrade boundaries, not to each mutation. Disabling cancels queued work; a remote request already in flight may finish.
+        Requires arkhamdb.write-back.v1. Enabling applies at future scenario-end and campaign-upgrade boundaries, not to each mutation. Disabling cancels unstarted queued work and prevents further requests; a remote request already in flight may finish. Created or uncertain creation intents remain failed/writeBackDisabled with their XP accounting intact. After re-enabling, reconcile them by retry, keepRemote or saveAsNew before later snapshots can run; overwrite remains refused.
       parameters:
         - $ref: "#/components/parameters/DeckId"
       requestBody:
@@ -681,7 +681,7 @@ paths:
       operationId: resolveArkhamDBWriteBackConflict
       summary: Resolve a campaign deck conflict explicitly
       description: |
-        Requires arkhamdb.write-back.v1. keepRemote re-syncs the saved local deck only, never the live campaign; the next boundary uses campaign state again. overwrite and saveAsNew require confirmed=true. saveAsNew creates an independent ArkhamDB deck; for a second campaign it also clones the local saved deck and moves only that campaign association. Poll status.deckLinks, including resultingLocalDeckId. Overwrite is rejected for campaignChanged or an already created target. An uncertain creation cannot be overwritten blindly; retry recovery or explicitly save as new.
+        Requires arkhamdb.write-back.v1. keepRemote re-syncs the saved local deck only, never the live campaign; the next boundary uses campaign state again. overwrite and saveAsNew require confirmed=true. saveAsNew creates an independent ArkhamDB deck; for a second campaign it also clones the local saved deck and moves only that campaign association. Poll status.deckLinks, including resultingLocalDeckId. Overwrite is rejected for campaignChanged or an already created target. An uncertain creation cannot be overwritten blindly; retry recovery or explicitly save as new. Failed keepRemote reads retain the creation checkpoint and overwrite fence until successful adoption. Completion records targetAlreadyLinked rather than changing a target already mapped to another local deck; use saveAsNew or remove the other mapping before retrying.
       parameters:
         - $ref: "#/components/parameters/DeckId"
       requestBody:

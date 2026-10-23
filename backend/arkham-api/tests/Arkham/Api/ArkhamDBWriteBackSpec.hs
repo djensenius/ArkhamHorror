@@ -4,9 +4,16 @@ module Arkham.Api.ArkhamDBWriteBackSpec where
 
 import Api.Arkham.Helpers (GameApp (..), runGameApp)
 import Arkham.Campaign (lookupCampaign)
-import Arkham.Campaign.Types (campaignStep)
-import Arkham.Classes.Entity (overAttrs)
+import Arkham.Campaign.Types (campaignStep, campaignDecks, campaignStoryCards)
+import Arkham.Classes.Entity (overAttrs, toAttrs)
 import Arkham.Prelude (These (This))
+import Arkham.Game.Utils (gameInvestigators, modeCampaign)
+import Arkham.Entities (entitiesInvestigators)
+import Arkham.Investigator (lookupInvestigator)
+import Arkham.Investigator.Types (investigatorXp)
+import Arkham.Helpers (Deck (..))
+import Control.Exception (try, throwIO, IOException)
+import System.IO.Error (userError)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
 import Arkham.Difficulty (Difficulty (Easy))
@@ -17,6 +24,7 @@ import Arkham.Question (Question (ChooseUpgradeDeck, ContinueCampaign))
 import Control.Monad.Random (mkStdGen)
 import Arkham.Api.ArkhamDBSpec qualified as Linking
 import Arkham.ArkhamDB
+import Arkham.ArkhamDB qualified as ArkhamDB
 import Arkham.ArkhamDB.Campaign
 import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
@@ -101,6 +109,12 @@ newHarness = do
         generationNow <- store.findAccountGeneration Linking.userId
         link <- mapping
         pure $ generationNow == Just (arkhamDBPushGeneration value) && arkhamDBDeckLinkWriteBack link
+      targetAvailable value remote = do
+        state <- readIORef linked
+        let existing = find (\link -> arkhamDBDeckLinkUserId link == arkhamDBPushUserId value && arkhamDBDeckLinkRemoteDeckId link == remote.remoteDeckId) $ Map.elems state.storedLinks
+        case targetLinkConflict value remote existing of
+          Nothing -> pure True
+          Just conflicted -> writeIORef job conflicted >> pure False
       writes = ArkhamDBWriteBackStore
         { claimPush = \time retry uid deckId -> do
             value <- readIORef job
@@ -119,7 +133,8 @@ newHarness = do
             else pure False
         , finishPush = \(Entity _ value) remote -> do
             active <- valid value
-            if not active then pure Nothing else do
+            available <- if active then targetAvailable value remote else pure False
+            if not available then pure Nothing else do
               writeIORef completed $ Just (arkhamDBPushCampaignKey value, remote.remoteDeckId)
               writeIORef baseline $ arkhamDBPushTotalXp value
               link <- mapping
@@ -139,24 +154,29 @@ newHarness = do
               writeIORef job value {arkhamDBPushStatus = "succeeded"}
               pure $ Just result
         , keepRemoteDeck = \(Entity _ value) remote -> do
-            modifyIORef' linked \s -> s
-              { Linking.storedDecks = Map.adjust (applyDeckUpdates $ keepRemoteDeckUpdates remote) Linking.deckId s.storedDecks
-              , Linking.storedLinks = Map.adjust (\link -> link
-                  { arkhamDBDeckLinkRemoteDeckId = remote.remoteDeckId
-                  , arkhamDBDeckLinkLastSyncedDateUpdate = remote.dateUpdate
-                  , arkhamDBDeckLinkLastSyncedVersion = remote.deckVersion
-                  }) Linking.deckId s.storedLinks
-              }
-            writeIORef job value {arkhamDBPushStatus = "cancelled"}
-            pure True
-        , resolvePush = \_ _ _ mode -> do
+            available <- targetAvailable value remote
+            if not available then pure False else do
+              modifyIORef' linked \s -> s
+                { Linking.storedDecks = Map.adjust (applyDeckUpdates $ keepRemoteDeckUpdates remote) Linking.deckId s.storedDecks
+                , Linking.storedLinks = Map.adjust (\link -> link
+                    { arkhamDBDeckLinkRemoteDeckId = remote.remoteDeckId
+                    , arkhamDBDeckLinkLastSyncedDateUpdate = remote.dateUpdate
+                    , arkhamDBDeckLinkLastSyncedVersion = remote.deckVersion
+                    }) Linking.deckId s.storedLinks
+                }
+              writeIORef baseline $ arkhamDBPushTotalXp value
+              writeIORef job value {arkhamDBPushStatus = "cancelled"}
+              pure True
+        , resolvePush = \time _ _ mode -> do
             value <- readIORef job
             if not (canResolvePush mode value) then pure False else do
-              writeIORef job value {arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = mode, arkhamDBPushTargetId = Nothing}
+              writeIORef job $ if mode == "new" && arkhamDBPushStage value /= "ready"
+                then saveAsNewPush time value else resolvedPush time mode value
               pure True
         , toggleWriteBack = \_ _ _ enabled -> do
             modifyIORef' linked (\s -> s {Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkWriteBack = enabled}) Linking.deckId s.storedLinks})
-            unless enabled $ modifyIORef' job (\value -> value {arkhamDBPushStatus = "cancelled", arkhamDBPushError = Nothing})
+            unless enabled $ modifyIORef' job \value ->
+              if arkhamDBPushStatus value `elem` ["succeeded", "cancelled"] then value else disabledPush value
             pure True
         , deckWriteBackStatus = \_ -> do
             value <- readIORef job
@@ -364,7 +384,7 @@ spec = describe "ArkhamDB campaign write-back" do
     withCampaignWriteBackBoundary gameRef drain `shouldReturn` Nothing
     remaining <- readIORef $ queueToRef queue
     remaining `shouldSatisfy` elem FinishedUpgradingDecks
-    withCampaignWriteBackBoundary gameRef drain `shouldReturn` Just "upgrade"
+    fmap fst <$> withCampaignWriteBackBoundary gameRef drain `shouldReturn` Just "upgrade"
 
   it "does not enqueue the initial deck-choice completion observed by the drain" do
     let pid = PlayerId $ UUID.fromWords 0 0 0 101
@@ -374,6 +394,49 @@ spec = describe "ArkhamDB campaign write-back" do
     gen <- newIORef $ mkStdGen 1
     withCampaignWriteBackBoundary gameRef (\observers -> runGameApp (GameApp gameRef queue gen (pure . const ()) Nothing) $
       Game.runMessages "write-back-initial-choice" observers) `shouldReturn` Nothing
+
+  for_ [("scenarioEnd", ForTarget GameTarget $ EndOfScenario Nothing), ("upgrade", FinishedUpgradingDecks)] \(label, message) ->
+    it ("captures " <> toString label <> " campaign and investigator state before a roster-swapping continuation") do
+      let iid = "01001"
+          pid = PlayerId $ UUID.fromWords 0 0 0 101
+          card = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 555) Nothing "01006" "01006" mempty Nothing Nothing Nothing Nothing Nothing
+          investigator = overAttrs (\attrs -> attrs {investigatorXp = 5}) $ lookupInvestigator iid pid
+          initial = boundaryGame $ UpgradeDeckStep PrologueStep
+          captured = initial
+            { Game.gameEntities = initial.gameEntities {entitiesInvestigators = Map.singleton iid investigator}
+            , Game.gameMode = This $ overAttrs (\attrs -> attrs
+                {campaignStep = UpgradeDeckStep PrologueStep, campaignDecks = Map.singleton iid $ Deck [card], campaignStoryCards = Map.singleton iid [PlayerCard card]}) $ lookupCampaign "01" Easy
+            }
+          continuation = initial
+            { Game.gameEntities = initial.gameEntities {entitiesInvestigators = mempty}
+            , Game.gameMode = This $ lookupCampaign "06" Easy
+            }
+      gameRef <- newIORef captured
+      -- Synthetic equivalent of Dream-Eaters' Waking Nightmare continuation:
+      -- the boundary is popped, then campaign attributes/roster are swapped.
+      observed <- withCampaignWriteBackBoundary gameRef \observers -> do
+        for_ observers.observeMessage ($ message)
+        writeIORef gameRef continuation
+      fmap fst observed `shouldBe` Just label
+      let snapshot = snd <$> observed
+      fmap (Map.keys . gameInvestigators) snapshot `shouldBe` Just [iid]
+      fmap (fmap (campaignDecks . toAttrs) . modeCampaign . Game.gameMode) snapshot
+        `shouldBe` Just (Just $ Map.singleton iid $ Deck [card])
+      fmap (fmap (campaignStoryCards . toAttrs) . modeCampaign . Game.gameMode) snapshot
+        `shouldBe` Just (Just $ Map.singleton iid [PlayerCard card])
+      fmap (map (investigatorXp . toAttrs) . Map.elems . gameInvestigators) snapshot `shouldBe` Just [5]
+      Map.null . gameInvestigators <$> readIORef gameRef `shouldReturn` True
+
+  it "does not enqueue a captured boundary when the later drain fails" do
+    gameRef <- newIORef $ boundaryGame $ UpgradeDeckStep PrologueStep
+    queued <- newIORef (0 :: Int)
+    result <- try @IOException do
+      snapshot <- withCampaignWriteBackBoundary gameRef \observers -> do
+        for_ observers.observeMessage ($ FinishedUpgradingDecks)
+        throwIO $ userError "later continuation failed"
+      for_ snapshot $ const $ modifyIORef' queued (+1)
+    result `shouldSatisfy` isLeft
+    readIORef queued `shouldReturn` 0
 
   it "matches encoder-generated write-back contract fixtures" do
     generated <- writeBackFixture
@@ -524,6 +587,102 @@ spec = describe "ArkhamDB campaign write-back" do
     saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked
     fmap (Decklist.slots . arkhamDeckPlayList) saved `shouldBe` Just currentDeck.slots
     fmap arkhamDeckOverlay saved `shouldBe` Just Nothing
+
+  for_ ["keep", "finish", "copy"] \completion ->
+    it ("records a target-link conflict atomically on " <> toString completion <> " completion") do
+      h <- newHarness
+      let otherId = ArkhamDeckKey $ UUID.fromWords 0 0 0 999
+          claimTarget target = modifyIORef' h.linked \state -> state
+            { Linking.storedLinks = case Map.lookup Linking.deckId state.storedLinks of
+                Nothing -> state.storedLinks
+                Just link -> Map.insert otherId link
+                  {arkhamDBDeckLinkDeckId = otherId, arkhamDBDeckLinkRemoteDeckId = target} state.storedLinks }
+      if completion == "keep" then do
+        -- Another saved deck already imported the successor of this lineage.
+        modifyIORef' h.remotes $ Map.insert "124" Linking.remote {ArkhamDB.remoteDeckId = "124"} .
+          Map.adjust (\remote -> remote {nextDeckId = Just "124"}) "123"
+        claimTarget "124"
+        h.run False
+        h.writes.resolvePush Linking.now Linking.userId Linking.deckId "keep" `shouldReturn` True
+        h.run False
+      else do
+        when (completion == "copy") do
+          modifyIORef' h.linked \state -> state
+            { Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkCampaignKey = Just "other/iid"}) Linking.deckId state.storedLinks }
+          modifyIORef' h.job \job -> job {arkhamDBPushStatus = "conflict"}
+          h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+        -- Simulate import claiming the target after remote save, before local
+        -- completion. The SQL store serializes the lookup/write with imports.
+        let raced = h.client {saveDeck = \token target deck -> do
+              result <- h.client.saveDeck token target deck
+              claimTarget target
+              pure result}
+        runWith h raced False
+      assertState h "conflict"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "targetAlreadyLinked"
+      readIORef h.baseline `shouldReturn` 0
+      state <- readIORef h.linked
+      Map.size state.storedLinks `shouldBe` 2
+      fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "123"
+      fmap arkhamDeckList (Map.lookup Linking.deckId state.storedDecks) `shouldBe` Just (remoteDecklist Linking.settings Linking.remote)
+      before <- readIORef h.calls
+      runWriteBack h.store h.writes h.client Linking.settings (addUTCTime 1000 Linking.now) False Linking.userId Linking.deckId
+      readIORef h.calls `shouldReturn` before
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+
+  for_ [False, True] \uncertain ->
+    it ("preserves " <> (if uncertain then "uncertain" else "created") <> " XP accounting when keep-remote loading fails") do
+      h <- newHarness
+      let failed = if uncertain then h.client {upgradeDeck = \token source xp metadata -> do
+            _ <- h.client.upgradeDeck token source xp metadata
+            pure $ Left $ ArkhamDBRemoteError "lost reply"}
+            else h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"}
+      runWith h failed False
+      intent <- readIORef h.job
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "keep" `shouldReturn` True
+      runWith h h.client {loadDeck = \_ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"} False
+      assertState h "failed"
+      retained <- readIORef h.job
+      arkhamDBPushStage retained `shouldBe` arkhamDBPushStage intent
+      arkhamDBPushSourceId retained `shouldBe` Just "123"
+      arkhamDBPushTargetId retained `shouldBe` arkhamDBPushTargetId intent
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
+      h.run True
+      assertState h "cancelled"
+      readIORef h.baseline `shouldReturn` 5
+      filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+
+  for_ [False, True] \uncertain ->
+    it ("reconciles " <> (if uncertain then "uncertain" else "created") <> " +5 XP across disable and re-enable before the next boundary") do
+      h <- newHarness
+      let failed = if uncertain then h.client {upgradeDeck = \token source xp metadata -> do
+            _ <- h.client.upgradeDeck token source xp metadata
+            pure $ Left $ ArkhamDBRemoteError "lost reply"}
+            else h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"}
+      runWith h failed False
+      intent <- readIORef h.job
+      h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId False `shouldReturn` True
+      before <- readIORef h.calls
+      h.run True
+      readIORef h.calls `shouldReturn` before
+      h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId True `shouldReturn` True
+      -- The old intent still heads the queue; re-enable cannot auto-retry it
+      -- or let a later boundary replace it and submit its XP again.
+      h.run False
+      assertState h "failed"
+      arkhamDBPushStage <$> readIORef h.job `shouldReturn` arkhamDBPushStage intent
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "keep" `shouldReturn` True
+      h.run False
+      readIORef h.baseline `shouldReturn` 5
+      -- Submit the next observed boundary, retaining cumulative XP = 5.
+      modifyIORef' h.job \job -> job
+        { arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = "normal"
+        , arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing, arkhamDBPushBoundary = "upgrade"
+        , arkhamDBPushEventKey = "game/2/iid" }
+      h.run False
+      assertState h "succeeded"
+      filter (\call -> "upgrade/" `T.isPrefixOf` call && "/5" `T.isSuffixOf` call) <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
 
   it "explicit overwrite creates a version despite the recorded remote conflict" do
     h <- newHarness
@@ -765,8 +924,16 @@ writeBackFixture = do
   modifyIORef' uncertain.remotes $ Map.insert "123" source
   runWith uncertain uncertain.client {upgradeDeck = \_ _ _ _ -> pure $ Left $ ArkhamDBRemoteError "lost reply"} False
   uncertain.run True
+  collision <- newHarness
+  collisionJob <- readIORef collision.job
+  let otherId = ArkhamDeckKey $ UUID.fromWords 0 0 0 999
+  state <- readIORef collision.linked
+  link <- maybe (fail "Missing link") pure $ Map.lookup Linking.deckId state.storedLinks
+  case targetLinkConflict collisionJob Linking.remote (Just link {arkhamDBDeckLinkDeckId = otherId}) of
+    Just conflicted -> writeIORef collision.job conflicted
+    Nothing -> fail "Missing target conflict"
   let statuses h = h.writes.deckWriteBackStatus Linking.userId
-  states <- concat <$> traverse statuses [success, conflict, failure, disabled, uncertain]
+  states <- concat <$> traverse statuses [success, conflict, failure, disabled, uncertain, collision]
   pure $ object
     [ "states" .= states
     , "toggleRequest" .= ArkhamDBWriteBackToggleRequest True

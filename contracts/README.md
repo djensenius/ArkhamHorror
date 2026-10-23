@@ -1172,7 +1172,10 @@ URL match; future boundaries use that game + investigator association even if
 the saved deck URL changes. As with ordinary upgrade persistence, a deck that
 was never saved locally cannot be associated by an arbitrary inline list alone.
 
-The game transaction writes only a durable outbox intent. A post-commit worker
+The boundary observer captures the campaign and investigator state when the
+boundary message is popped, before later continuations can swap campaigns or
+clear the roster. Only a successful drain persists that captured snapshot,
+atomically with the game step. The game transaction writes only a durable outbox intent. A post-commit worker
 performs all remote IO, without a game lock: an ArkhamDB outage cannot fail an
 answer. Inspect `GET /arkham/arkhamdb/status` → `deckLinks` for each local deck's
 opt-in, `state` (`idle`, `pending`, `running`, `failed`, `conflict`, `succeeded`,
@@ -1189,9 +1192,12 @@ backoff (60/120/240 seconds, capped at five minutes). A throttled explicit retry
 returns status without scheduling more workers. A crashed running claim has a
 sixty-second reclaim threshold. Every request checks the exact running claim
 under the same per-user transaction that selects the token and sends the request;
-a reclaimed or cancelled worker cannot transmit another mutation. Disabling cancels queued
-work and prevents subsequent requests; a remote request already in flight may
-finish. Relink/unlink generations guard every checkpoint and completion, and
+a reclaimed or cancelled worker cannot transmit another mutation. Disabling cancels
+unstarted queued work and prevents subsequent requests; a remote request already
+in flight may finish. Already-created or uncertain creation intents are retained
+as `failed`/`writeBackDisabled`, not cancelled: after re-enabling, explicitly
+retry, keep remote, or save as new to reconcile them before later snapshots can
+run. Their overwrite fence and cumulative XP accounting survive opt-out. Relink/unlink generations guard every checkpoint and completion, and
 unlink/relink cascades old-generation outbox intents. Enqueue key-shares the
 account generation through insertion, skipping a concurrently deleted/locked
 account rather than rolling back gameplay. It cannot revoke an
@@ -1250,7 +1256,9 @@ load→write interval. Resolution uses
 `POST /arkham/arkhamdb/decks/{localDeckId}/resolve-conflict`:
 
 - `{"resolution":"keepRemote"}` re-syncs the saved local deck from the latest
-  remote version and cancels outstanding local snapshots. It also advances the
+  remote version and cancels outstanding local snapshots only after the read and
+  local adoption succeed. Failed reads preserve any creation checkpoint and
+  continue to refuse overwrite. Successful adoption also advances the
   campaign's XP baseline to the discarded snapshot's total, even if no remote
   version was created: that snapshot's earned XP is never pushed later. It never
   rewrites a running campaign's deck or gameplay state. **This choice lasts only
@@ -1276,6 +1284,12 @@ load→write interval. Resolution uses
   accepts no earned XP: save-as-new does **not** transfer earned XP/carryover.
   Set the new deck's XP manually on ArkhamDB; the local cumulative baseline is
   advanced so a later boundary does not replay the entire campaign's XP.
+
+Both keep-remote adoption and push completion record `targetAlreadyLinked` if
+another local deck already maps to the resulting remote id. No saved deck, link
+or XP baseline is changed; the conflict blocks later snapshots and is not lease-
+reclaimed automatically. Choose save-as-new to obtain an independent target, or
+remove the other mapping before retrying the original resolution.
 
 Creation intent, returned ID, save intent and completion are separate durable
 checkpoints. Retrying a completed push does nothing. After a lost upgrade reply,

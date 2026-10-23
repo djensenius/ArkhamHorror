@@ -159,6 +159,36 @@ canResolvePush :: Text -> ArkhamDBPush -> Bool
 canResolvePush mode job = arkhamDBPushStatus job `elem` ["conflict", "failed"] && mode `elem` ["overwrite", "new", "keep"] &&
   (mode /= "overwrite" || (arkhamDBPushStage job /= "creating" && isNothing (arkhamDBPushTargetId job) && arkhamDBPushError job /= Just "campaignChanged"))
 
+-- Keep-remote is read-only until adoption succeeds. In particular, a failed
+-- read must not retire the XP-bearing creation checkpoint or its overwrite fence.
+resolvedPush :: UTCTime -> Text -> ArkhamDBPush -> ArkhamDBPush
+resolvedPush now mode job = (if mode == "keep" then job else job
+  { arkhamDBPushStage = "ready", arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing })
+  { arkhamDBPushStatus = "pending", arkhamDBPushMode = mode
+  , arkhamDBPushError = Nothing, arkhamDBPushUpdatedAt = now }
+
+hasCreationIntent :: ArkhamDBPush -> Bool
+hasCreationIntent job = arkhamDBPushStage job == "creating" || isJust (arkhamDBPushTargetId job)
+
+-- Disabling fences in-flight requests, but an already transmitted creation
+-- remains the oldest outstanding job until explicitly reconciled on re-enable.
+disabledPush :: ArkhamDBPush -> ArkhamDBPush
+disabledPush job = job
+  { arkhamDBPushStatus = if hasCreationIntent job then "failed" else "cancelled"
+  , arkhamDBPushError = if hasCreationIntent job then Just "writeBackDisabled" else Nothing
+  }
+
+-- Called under the same user lock as imports and completion. Return a durable
+-- conflict instead of attempting a UNIQUE(user_id, remote_deck_id) violation.
+targetLinkConflict :: ArkhamDBPush -> ArkhamDBRemoteDeck -> Maybe ArkhamDBDeckLink -> Maybe ArkhamDBPush
+targetLinkConflict job remote existing = do
+  link <- existing
+  guard $ arkhamDBDeckLinkDeckId link /= arkhamDBPushDeckId job || needsCampaignCopy link job
+  pure job
+    { arkhamDBPushStatus = "conflict", arkhamDBPushError = Just "targetAlreadyLinked"
+    , arkhamDBPushRemoteDateUpdate = remote.dateUpdate, arkhamDBPushRemoteVersion = remote.deckVersion
+    }
+
 -- The accepted remote list is materialized, including any campaign overlay.
 keepRemoteDeckUpdates :: ArkhamDBRemoteDeck -> [Update ArkhamDeck]
 keepRemoteDeckUpdates remote =

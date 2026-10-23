@@ -4,8 +4,7 @@
 
 module Api.Handler.Arkham.Games.Shared where
 
-import Arkham.ArkhamDB.Campaign (isWriteBackBoundary, campaignWriteBackBoundary)
-import Arkham.Game.Utils qualified as GameUtils
+import Arkham.ArkhamDB.Campaign (isWriteBackBoundary, observeCampaignWriteBackBoundary)
 import Api.Arkham.ArkhamDBWriteBack (queueCampaignWriteBack, dispatchCampaignWriteBack)
 
 import Api.Arkham.Epic (
@@ -543,10 +542,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
             AchievementProgressBy iid a items ->
               modifyIORef' achievementProgressByRef ((iid, a, items) :)
             Begin phase -> modifyIORef' enteredPhasesRef (phase :)
-            message | isWriteBackBoundary message -> do
-              current <- readIORef gameRef
-              for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> GameUtils.modeCampaign current.gameMode) message) $
-                writeIORef writeBackBoundaryRef . Just
+            message | isWriteBackBoundary message -> observeCampaignWriteBackBoundary gameRef writeBackBoundaryRef message
             _ -> pure ()
         mResult <- liftIO $ timeout runMessagesTimeoutMicros do
           runGameApp (GameApp gameRef queueRef genRef (handleMessageLog pendingLogRef broadcast) mEpicEnv) do
@@ -600,7 +596,7 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
                 now
         replace gameId g'
         writeBackBoundary <- readIORef writeBackBoundaryRef
-        for_ writeBackBoundary \boundary -> queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary ge
+        for_ writeBackBoundary \(boundary, snapshot) -> queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary snapshot
         {- In order, one row at a time, NOT every insert then every retraction.
 
         A narration may retract its own previous line and immediately write the

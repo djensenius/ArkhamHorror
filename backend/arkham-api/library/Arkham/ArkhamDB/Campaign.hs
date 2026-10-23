@@ -28,17 +28,21 @@ campaignWriteBackBoundary step message = case message of
     _ -> Just "upgrade"
   _ -> Nothing
 
--- Observe only messages actually popped by the drain, using the campaign step
--- BEFORE FinishedUpgradingDecks changes it. A remaining seat/question is not a
--- completed upgrade, even though its continuation is already in the queue.
-withCampaignWriteBackBoundary :: IORef Game -> (RunObservers -> IO ()) -> IO (Maybe Text)
+-- Capture the pre-message campaign/roster together with the label. Later
+-- continuations can swap campaigns or clear investigators (Dream-Eaters).
+-- Callers persist this only after a successful drain, in the game transaction.
+observeCampaignWriteBackBoundary :: IORef Game -> IORef (Maybe (Text, Game)) -> Message -> IO ()
+observeCampaignWriteBackBoundary gameRef boundaryRef message = when (isWriteBackBoundary message) do
+  current <- readIORef gameRef
+  for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> modeCampaign current.gameMode) message) \boundary ->
+    writeIORef boundaryRef $ Just (boundary, current)
+
+-- A remaining seat/question is not a completed upgrade, even though its
+-- continuation is already in the queue. Exceptions never return a snapshot.
+withCampaignWriteBackBoundary :: IORef Game -> (RunObservers -> IO ()) -> IO (Maybe (Text, Game))
 withCampaignWriteBackBoundary gameRef drain = do
   boundaryRef <- newIORef Nothing
-  let observe message = when (isWriteBackBoundary message) do
-        current <- readIORef gameRef
-        for_ (campaignWriteBackBoundary (campaignStep . toAttrs <$> modeCampaign current.gameMode) message) $
-          writeIORef boundaryRef . Just
-  drain noRunObservers {observeMessage = Just observe}
+  drain noRunObservers {observeMessage = Just $ observeCampaignWriteBackBoundary gameRef boundaryRef}
   readIORef boundaryRef
 
 -- Reconcile exactly as ReloadDecks: story cards supersede saved-deck copies

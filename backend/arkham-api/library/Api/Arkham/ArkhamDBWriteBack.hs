@@ -65,7 +65,8 @@ writeBackStore = ArkhamDBWriteBackStore
         pure $ affected == 1
   , finishPush = \previous remote -> runDB do
       active <- activePush previous
-      if not active then pure Nothing else do
+      available <- if active then checkPushTarget previous remote else pure False
+      if not available then pure Nothing else do
         let Entity key job = previous
             deckId = arkhamDBPushDeckId job
         mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
@@ -108,7 +109,8 @@ writeBackStore = ArkhamDBWriteBackStore
           _ -> pure Nothing
   , keepRemoteDeck = \previous remote -> runDB do
       active <- activePush previous
-      if not active then pure False else do
+      available <- if active then checkPushTarget previous remote else pure False
+      if not available then pure False else do
         let job = entityVal previous
             deckId = arkhamDBPushDeckId job
         P.update deckId $ keepRemoteDeckUpdates remote
@@ -139,11 +141,7 @@ writeBackStore = ArkhamDBWriteBackStore
                 if mode == "new" && arkhamDBPushStage job /= "ready" then do
                   P.update key [ArkhamDBPushStatus P.=. "cancelled"]
                   void $ insert $ saveAsNewPush now job
-                else P.update key
-                  [ ArkhamDBPushStatus P.=. "pending", ArkhamDBPushStage P.=. "ready", ArkhamDBPushMode P.=. mode
-                  , ArkhamDBPushSourceId P.=. Nothing, ArkhamDBPushTargetId P.=. Nothing
-                  , ArkhamDBPushError P.=. Nothing, ArkhamDBPushUpdatedAt P.=. now
-                  ]
+                else replace key $ resolvedPush now mode job
                 pruneCompletedPushes deckId
                 pure True
         _ -> pure False
@@ -151,8 +149,10 @@ writeBackStore = ArkhamDBWriteBackStore
       lockArkhamDBUser uid
       affected <- updateWhereCount [ArkhamDBDeckLinkDeckId P.==. deckId, ArkhamDBDeckLinkUserId P.==. uid]
         [ArkhamDBDeckLinkWriteBack P.=. enabled, ArkhamDBDeckLinkUpdatedAt P.=. now]
-      unless enabled $ updateWhere [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushUserId P.==. uid, ArkhamDBPushStatus P.!=. "succeeded"]
-        [ArkhamDBPushStatus P.=. "cancelled", ArkhamDBPushError P.=. Nothing]
+      unless enabled do
+        outstanding <- selectList
+          [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushUserId P.==. uid, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]] []
+        for_ outstanding \(Entity key job) -> replace key $ disabledPush job
       pruneCompletedPushes deckId
       pure $ affected == 1
   , deckWriteBackStatus = \uid -> runDB do
@@ -198,6 +198,16 @@ activePush previous@(Entity _ job) = do
   matching <- P.count $ pushClaim previous
   link <- getBy $ UniqueArkhamDBDeckLinkDeck $ arkhamDBPushDeckId job
   pure $ active && matching == 1 && maybe False (arkhamDBDeckLinkWriteBack . entityVal) link
+
+-- activePush has acquired the user lock also used by saveImportedDeck, so
+-- neither a concurrent import nor another completion can claim this target
+-- between the lookup and the link write in this transaction.
+checkPushTarget :: Entity ArkhamDBPush -> ArkhamDBRemoteDeck -> DB Bool
+checkPushTarget (Entity key job) remote = do
+  existing <- getBy $ UniqueArkhamDBDeckLinkUserRemote (arkhamDBPushUserId job) remote.remoteDeckId
+  case targetLinkConflict job remote (entityVal <$> existing) of
+    Nothing -> pure True
+    Just conflicted -> replace key conflicted >> pure False
 
 pushUpdates :: ArkhamDBPush -> [Update ArkhamDBPush]
 pushUpdates job =
