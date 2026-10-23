@@ -6,7 +6,7 @@ import Arkham.Card.CardCode (unCardCode)
 import Arkham.Id (InvestigatorId (..), PlayerId (..))
 import Arkham.ArkhamDB.Campaign (campaignDeckSnapshot)
 import Arkham.ArkhamDB.WriteBack
-import Arkham.Campaign.Types (CampaignAttrs (..))
+import Arkham.Campaign.Types (Campaign (..), CampaignAttrs (..), invalidCards)
 import Arkham.Classes.Entity (toAttrs)
 import Arkham.Helpers (Deck (..))
 import Arkham.Decklist qualified as Decklist
@@ -239,7 +239,7 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
           (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
             when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
             let story = Map.findWithDefault [] iid $ campaignStoryCards attrs
-                list = campaignDeckSnapshot (arkhamDeckList deck) cards story (investigatorSideDeck ia) (investigatorTaboo ia)
+                list = campaignDeckSnapshot (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
                 event = UUID.toText (coerce gameId) <> "/" <> T.pack (show step) <> "/" <> unCardCode (unInvestigatorId iid)
             void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
               "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)

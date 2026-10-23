@@ -282,32 +282,44 @@ spec = describe "ArkhamDB campaign write-back" do
     ownsCampaignDeck Linking.userId deck {arkhamDeckUserId = toSqlKey 999} link `shouldBe` False
     ownsCampaignDeck Linking.userId deck link {arkhamDBDeckLinkUserId = toSqlKey 999} `shouldBe` False
 
-  it "snapshots campaign story cards and weaknesses by identity, not the investigator draw pile" do
+  it "snapshots campaign story cards and weaknesses with ReloadDecks reconciliation, not the investigator draw pile" do
     let card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
         first = card 1 "01006"
         duplicate = card 2 "01006"
         weakness = card 3 "01100"
         story = card 4 "01007"
         side = card 5 "01008"
-        snapshot = campaignDeckSnapshot currentDeck [first, duplicate, weakness, story] [PlayerCard story] (Just [side]) (Just TabooList25)
+        snapshot = campaignDeckSnapshot currentDeck [first, duplicate, weakness, story] [PlayerCard story] [] (Just [side]) (Just TabooList25)
     snapshot.slots `shouldBe` Map.fromList [("01006", 2), ("01100", 1), ("01007", 1)]
     snapshot.sideSlots `shouldBe` Map.singleton "01008" 1
     snapshot.taboo_id `shouldBe` Just 10
 
+  it "reconciles a submitted weakness with its original campaign story printing" do
+    let card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
+        submitted = [card 1 "01006", card 2 "01006", card 3 "01103", card 4 "01099"]
+        story = [PlayerCard $ card 5 "01603", PlayerCard $ card 6 "01099"]
+        snapshot = campaignDeckSnapshot currentDeck submitted story [] Nothing Nothing
+    snapshot.slots `shouldBe` Map.fromList [("01006", 2), ("01603", 1), ("01099", 1)]
+
+  it "excludes campaign-invalid saved cards before counting export slots" do
+    let card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
+        snapshot = campaignDeckSnapshot currentDeck [card 1 "01006", card 2 "01006", card 3 "01103"] [] ["01103"] Nothing Nothing
+    snapshot.slots `shouldBe` Map.singleton "01006" 2
+
   it "preserves Joe Diamond sideSlots and extra_deck instead of exporting his hunch deck" do
     let card = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 20) Nothing "05010" "05010" mempty Nothing Nothing Nothing Nothing Nothing
         joe = currentDeck {Decklist.investigator_code = "05002", Decklist.meta = Just "{\"extra_deck\":{\"05010\":1}}"}
-        snapshot = campaignDeckSnapshot joe [] [] (Just [card]) Nothing
+        snapshot = campaignDeckSnapshot joe [] [] [] (Just [card]) Nothing
     snapshot.sideSlots `shouldBe` joe.sideSlots
     snapshot.meta `shouldBe` joe.meta
 
   it "does not export encounter story cards as player deck slots" do
     let encounter = MkEncounterCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 21) "01116" "01116" Nothing Nothing False Nothing
-    (campaignDeckSnapshot currentDeck [] [EncounterCard encounter] Nothing Nothing).slots `shouldBe` mempty
+    (campaignDeckSnapshot currentDeck [] [EncounterCard encounter] [] Nothing Nothing).slots `shouldBe` mempty
 
   it "retains an original unknown remote taboo rather than clearing it" do
     let original = currentDeck {Decklist.taboo_id = Just 99}
-    (campaignDeckSnapshot original [] [] Nothing Nothing).taboo_id `shouldBe` Just 99
+    (campaignDeckSnapshot original [] [] [] Nothing Nothing).taboo_id `shouldBe` Just 99
 
   it "writes at scenario-end and completed-upgrade boundaries, not temporary per-card mutations" do
     isWriteBackBoundary (ForTarget GameTarget $ EndOfScenario Nothing) `shouldBe` True
