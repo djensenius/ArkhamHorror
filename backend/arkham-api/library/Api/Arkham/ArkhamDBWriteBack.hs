@@ -172,6 +172,11 @@ writeBackStore = ArkhamDBWriteBackStore
           Nothing -> pure Nothing
           Just (Entity _ job) -> fmap (arkhamDBCampaignDeckDeckId . entityVal) <$> getBy (UniqueArkhamDBCampaignDeck $ arkhamDBPushCampaignKey job)
         pure $ pushStatus deckId link recent resulting
+  , campaignOwnsTarget = \campaign remote -> runDB do
+      previous <- selectFirst
+        [ArkhamDBPushCampaignKey P.==. campaign, ArkhamDBPushStatus P.==. "succeeded", ArkhamDBPushTargetId P.==. Just remote.remoteDeckId]
+        [Desc ArkhamDBPushCreatedAt, Desc ArkhamDBPushId]
+      pure $ maybe False (\(Entity key _) -> hasPushMarker key remote) previous
   , campaignXpBaseline = \key -> runDB $ maybe 0 (arkhamDBCampaignDeckLastPushedXp . entityVal) <$> getBy (UniqueArkhamDBCampaignDeck key)
   }
  where

@@ -74,6 +74,7 @@ newHarness = do
   remotes <- newIORef $ Map.singleton "123" Linking.remote
   calls <- newIORef []
   baseline <- newIORef 0
+  completed <- newIORef Nothing
   let claimStore = store {withRefreshLock = \uid action -> withRefreshLock store uid \locked -> action locked {ownsPushClaim = claimStore.ownsPushClaim}, ownsPushClaim = \(Entity key previous) -> do
         current <- readIORef job
         pure $ key == pushKey && arkhamDBPushStatus current == "running" && arkhamDBPushStatus previous == "running" &&
@@ -105,6 +106,7 @@ newHarness = do
         , finishPush = \(Entity _ value) remote -> do
             active <- valid value
             if not active then pure Nothing else do
+              writeIORef completed $ Just (arkhamDBPushCampaignKey value, remote.remoteDeckId)
               writeIORef baseline $ arkhamDBPushTotalXp value
               link <- mapping
               let copy = needsCampaignCopy link value
@@ -146,6 +148,9 @@ newHarness = do
             state <- readIORef linked
             let resulting = arkhamDBDeckLinkDeckId <$> find ((== Just (arkhamDBPushCampaignKey value)) . arkhamDBDeckLinkCampaignKey) (Map.elems state.storedLinks)
             pure [pushStatus Linking.deckId link (Just $ Entity pushKey value) (resulting <|> Just Linking.deckId)]
+        , campaignOwnsTarget = \campaign remote -> do
+            previous <- readIORef completed
+            pure $ previous == Just (campaign, remote.remoteDeckId) && hasPushMarker pushKey remote
         , campaignXpBaseline = const $ readIORef baseline
         }
       client = Linking.stubClient
@@ -493,6 +498,28 @@ spec = describe "ArkhamDB campaign write-back" do
     h.run True
     assertState h "conflict"
     filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` []
+
+  it "saves the subsequent upgrade into this campaign's unchanged scenario-end version" do
+    h <- newHarness
+    h.run False
+    modifyIORef' h.job \job -> job
+      { arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushTargetId = Nothing
+      , arkhamDBPushBoundary = "upgrade", arkhamDBPushPayload = encodePushDeck currentDeck {Decklist.slots = Map.singleton "01009" 2}}
+    h.run False
+    assertState h "succeeded"
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124", "save/124"]
+    fmap (.deck.slots) . Map.lookup "124" <$> readIORef h.remotes `shouldReturn` Just (Map.singleton "01009" 2)
+
+  it "does not save the subsequent upgrade over an edited scenario-end version" do
+    h <- newHarness
+    h.run False
+    modifyIORef' h.job \job -> job {arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushTargetId = Nothing, arkhamDBPushBoundary = "upgrade"}
+    modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "external-edit"}) "124"
+    before <- readIORef h.calls
+    h.run False
+    assertState h "conflict"
+    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` filter (T.isPrefixOf "save/") before
 
   it "uses only the newly earned cumulative XP delta, not investigatorSpentXp" do
     h <- newHarness

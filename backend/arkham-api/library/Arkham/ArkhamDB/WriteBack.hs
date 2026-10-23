@@ -72,6 +72,7 @@ data ArkhamDBWriteBackStore m = ArkhamDBWriteBackStore
   , resolvePush :: UTCTime -> UserId -> ArkhamDeckId -> Text -> m Bool
   , toggleWriteBack :: UTCTime -> UserId -> ArkhamDeckId -> Bool -> m Bool
   , deckWriteBackStatus :: UserId -> m [ArkhamDBDeckWriteBackStatus]
+  , campaignOwnsTarget :: Text -> ArkhamDBRemoteDeck -> m Bool
   , campaignXpBaseline :: Text -> m Int
   }
 
@@ -288,7 +289,8 @@ runWriteBack store writes client settings now retry userId deckId = do
           let job = entityVal entity
           target <- maybe (throwError $ ArkhamDBError "storageFailure" "Missing push target") pure $ arkhamDBPushTargetId job
           remote <- load job target
-          if not (hasPushMarker (entityKey entity) remote) || isJust remote.nextDeckId
+          campaignTarget <- lift $ writes.campaignOwnsTarget (arkhamDBPushCampaignKey job) remote
+          if (not (hasPushMarker (entityKey entity) remote) && not campaignTarget) || isJust remote.nextDeckId
             then conflict entity remote "remoteChanged"
             else if samePushedDeck desired remote
               then finish entity remote
@@ -331,6 +333,7 @@ runWriteBack store writes client settings now retry userId deckId = do
                 }
               baseline <- lift $ writes.campaignXpBaseline (arkhamDBPushCampaignKey job)
               original <- load (entityVal ready) $ arkhamDBDeckLinkRemoteDeckId link
+              campaignTarget <- lift $ writes.campaignOwnsTarget (arkhamDBPushCampaignKey job) original
               let otherCampaign = maybe False (/= arkhamDBPushCampaignKey job) $ arkhamDBDeckLinkCampaignKey link
               if otherCampaign && arkhamDBPushMode job /= "new"
                 then conflict ready original "campaignChanged"
@@ -340,6 +343,13 @@ runWriteBack store writes client settings now retry userId deckId = do
                   else if arkhamDBPushMode job == "normal" && arkhamDBPushTotalXp job == baseline &&
                     samePushedDeck (unmarkedDeck desired) original {deck = unmarkedDeck original.deck}
                     then finish ready original
+                  else if arkhamDBPushMode job == "normal" && arkhamDBPushBoundary job == "upgrade" &&
+                    arkhamDBPushTotalXp job == baseline && campaignTarget
+                    then do
+                      target <- checkpoint ready (entityVal ready)
+                        { arkhamDBPushStage = "created", arkhamDBPushTargetId = Just original.remoteDeckId
+                        , arkhamDBPushExpectedDateUpdate = original.dateUpdate, arkhamDBPushExpectedVersion = original.deckVersion }
+                      saveVersion False target desired
                   else do
                     source <- if arkhamDBPushMode job == "overwrite" then latestVersion (entityVal ready) [original.remoteDeckId] original else pure original
                     next <- checkpoint ready (entityVal ready)
