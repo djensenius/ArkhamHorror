@@ -140,8 +140,10 @@ newHarness = do
             if not (canResolvePush mode value) then pure False else do
               writeIORef job value {arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = mode, arkhamDBPushTargetId = Nothing}
               pure True
-        , toggleWriteBack = \_ _ _ enabled -> modifyIORef' linked (\s -> s
-            {Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkWriteBack = enabled}) Linking.deckId s.storedLinks}) >> pure True
+        , toggleWriteBack = \_ _ _ enabled -> do
+            modifyIORef' linked (\s -> s {Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkWriteBack = enabled}) Linking.deckId s.storedLinks})
+            unless enabled $ modifyIORef' job (\value -> value {arkhamDBPushStatus = "cancelled", arkhamDBPushError = Nothing})
+            pure True
         , deckWriteBackStatus = \_ -> do
             value <- readIORef job
             link <- mapping

@@ -64,7 +64,7 @@
       "remoteDeckId": "123",
       "resultingLocalDeckId": "00000000-0000-0000-0000-000000000017",
       "spentXpSynced": false,
-      "state": "pending"
+      "state": "cancelled"
     }
   ],
   "toggleRequest": {

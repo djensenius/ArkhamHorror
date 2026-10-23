@@ -304,6 +304,17 @@ spec = describe "ArkhamDB account linking and private decks" do
         for_ ["description_md=Guide", "tags=campaign", "ignored=%7B%2201006%22%3A1%7D", "problem=too_few_cards"] \field ->
           request `shouldSatisfy` BS8.isInfixOf field
 
+  it "loads the remote guide tags ignored slots and problem for lossless save forwarding" do
+    let raw = object
+          [ "id" .= (123 :: Int), "investigator_code" .= ("01001" :: Text), "slots" .= object []
+          , "description_md" .= ("Campaign guide" :: Text), "tags" .= ("solo campaign" :: Text)
+          , "ignoreDeckLimitSlots" .= object ["01006" .= (2 :: Int)], "problem" .= ("too_many_cards" :: Text)]
+    remote <- either (fail . show) pure $ case fromJSON raw of Error err -> Left err; Success value -> Right (value :: ArkhamDBRemoteDeck)
+    remote.descriptionMd `shouldBe` "Campaign guide"
+    remote.tags `shouldBe` "solo campaign"
+    remote.ignoreDeckLimitSlots `shouldBe` Map.singleton "01006" 2
+    remote.problem `shouldBe` Just "too_many_cards"
+
   it "sanitizes a rejected HTTP write envelope and enforces the decoded write-body cap" do
     rejected <- chunkedClient "" "{\"success\":false,\"msg\":124,\"error\":\"private-access-token\"}"
     rejected.upgradeDeck "token" "123" 5 Nothing `shouldReturn` Left (ArkhamDBRemoteError "Write rejected")
