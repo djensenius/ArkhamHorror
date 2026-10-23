@@ -210,6 +210,10 @@ runWriteBack store writes client settings now retry userId deckId = do
             Just source -> do
               original <- load job source
               case original.nextDeckId of
+                Nothing | isJust original.dateUpdate || isJust original.deckVersion
+                  , sameMarkers (arkhamDBPushExpectedDateUpdate job) (arkhamDBPushExpectedVersion job) original -> do
+                    _ <- checkpoint entity job {arkhamDBPushStage = "ready", arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing}
+                    throwError $ ArkhamDBError "remoteUnavailable" "Previous upgrade did not create a version; retry is safe"
                 Nothing -> pure Nothing
                 Just next -> do
                   candidate <- load job next

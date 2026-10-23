@@ -401,6 +401,17 @@ spec = describe "ArkhamDB campaign write-back" do
     assertState h "conflict"
     filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` []
 
+  it "returns an unsent upgrade to ready when the unchanged source has no successor" do
+    h <- newHarness
+    let unsent = h.client {upgradeDeck = \_ _ _ _ -> pure $ Left $ ArkhamDBRemoteError "failed before transmission"}
+    runWith h unsent False
+    h.run True
+    arkhamDBPushStage <$> readIORef h.job `shouldReturn` "ready"
+    arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "remoteUnavailable"
+    assertNoPush h
+    h.run True
+    assertState h "succeeded"
+
   it "does not overwrite a known target edited after a failed save" do
     h <- newHarness
     let lost = h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"}
