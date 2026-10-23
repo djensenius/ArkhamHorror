@@ -239,7 +239,8 @@ spec = describe "ArkhamDB campaign write-back" do
           value <- readIORef h.job
           let claimed = value {arkhamDBPushStatus = "running"}
           writeIORef h.job claimed
-          pure $ Just $ Entity pushKey claimed}
+          pure $ Just $ Entity pushKey claimed
+          , checkpointPush = \_ next -> writeIORef h.job next >> pure True}
     runWriteBack h.store permissive h.client Linking.settings Linking.now False Linking.userId Linking.deckId
     assertNoPush h
     readIORef h.calls `shouldReturn` []
