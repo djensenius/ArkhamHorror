@@ -154,6 +154,7 @@ writeBackStore = ArkhamDBWriteBackStore
                   , ArkhamDBPushSourceId P.=. Nothing, ArkhamDBPushTargetId P.=. Nothing
                   , ArkhamDBPushError P.=. Nothing, ArkhamDBPushUpdatedAt P.=. now
                   ]
+                pruneCompletedPushes deckId
                 pure True
         _ -> pure False
   , toggleWriteBack = \now uid deckId enabled -> runDB do
