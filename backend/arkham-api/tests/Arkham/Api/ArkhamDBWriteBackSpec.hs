@@ -3,6 +3,10 @@
 module Arkham.Api.ArkhamDBWriteBackSpec where
 
 import Api.Arkham.Helpers (GameApp (..), runGameApp)
+import Arkham.Campaign (lookupCampaign)
+import Arkham.Campaign.Types (campaignStep)
+import Arkham.Classes.Entity (overAttrs)
+import Data.These (These (This))
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
 import Arkham.Difficulty (Difficulty (Easy))
@@ -207,6 +211,12 @@ assertNoPush h = do
   calls <- readIORef h.calls
   filter (\call -> "upgrade/" `T.isPrefixOf` call || "save/" `T.isPrefixOf` call || call == "new") calls `shouldBe` []
 
+boundaryGame :: CampaignStep -> Game.Game
+boundaryGame step = (Game.newCampaign "01" Nothing 1 1 Easy False)
+  { Game.gameGameState = IsActive
+  , Game.gameMode = This $ overAttrs (\attrs -> attrs {campaignStep = step}) $ lookupCampaign "01" Easy
+  }
+
 applyDeckUpdates :: [Update ArkhamDeck] -> ArkhamDeck -> ArkhamDeck
 applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId deck) updates
  where
@@ -341,11 +351,10 @@ spec = describe "ArkhamDB campaign write-back" do
 
   it "queues only after the upgrade drain reaches completion, not a remaining seat's AskMap" do
     let pid = PlayerId $ UUID.fromWords 0 0 0 101
-        game = (Game.newCampaign "01" Nothing 1 1 Easy False) {Game.gameGameState = IsActive}
+        game = boundaryGame $ UpgradeDeckStep PrologueStep
     gameRef <- newIORef game
     queue <- newQueue
-      [ SetCampaignStep $ UpgradeDeckStep PrologueStep
-      , AskMap $ Map.singleton pid ChooseUpgradeDeck
+      [ AskMap $ Map.singleton pid ChooseUpgradeDeck
       , FinishedUpgradingDecks
       , AskMap $ Map.singleton pid ContinueCampaign
       ]
@@ -359,9 +368,9 @@ spec = describe "ArkhamDB campaign write-back" do
 
   it "does not enqueue the initial deck-choice completion observed by the drain" do
     let pid = PlayerId $ UUID.fromWords 0 0 0 101
-        game = (Game.newCampaign "01" Nothing 1 1 Easy False) {Game.gameGameState = IsActive}
+        game = boundaryGame $ ChooseDecksStep PrologueStep
     gameRef <- newIORef game
-    queue <- newQueue [SetCampaignStep $ ChooseDecksStep PrologueStep, FinishedUpgradingDecks, AskMap $ Map.singleton pid ContinueCampaign]
+    queue <- newQueue [FinishedUpgradingDecks, AskMap $ Map.singleton pid ContinueCampaign]
     gen <- newIORef $ mkStdGen 1
     withCampaignWriteBackBoundary gameRef (\observers -> runGameApp (GameApp gameRef queue gen (pure . const ()) Nothing) $
       Game.runMessages "write-back-initial-choice" observers) `shouldReturn` Nothing
