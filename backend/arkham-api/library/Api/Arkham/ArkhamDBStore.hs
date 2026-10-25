@@ -96,12 +96,7 @@ persistentStoreWith validate database = ArkhamDBStore
       active <- sameAccountGeneration (arkhamDeckUserId deck) generation
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
       if not active || isNothing mapping then pure False else do
-        P.update deckId
-          [ ArkhamDeckList P.=. arkhamDeckList deck
-          , ArkhamDeckUrl P.=. arkhamDeckUrl deck
-          , ArkhamDeckName P.=. arkhamDeckName deck
-          , ArkhamDeckInvestigatorName P.=. arkhamDeckInvestigatorName deck
-          ]
+        P.update deckId $ syncedDeckUpdates deck
         updateWhere [ArkhamDBDeckLinkDeckId P.==. deckId]
           [ ArkhamDBDeckLinkLastSyncedDateUpdate P.=. remote.dateUpdate
           , ArkhamDBDeckLinkLastSyncedVersion P.=. remote.deckVersion

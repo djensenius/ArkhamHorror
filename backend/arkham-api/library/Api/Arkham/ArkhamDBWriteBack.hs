@@ -86,7 +86,7 @@ writeBackStore = ArkhamDBWriteBackStore
                 , arkhamDBDeckLinkCampaignKey = Just $ arkhamDBPushCampaignKey job
                 , arkhamDBDeckLinkLastError = Nothing
                 }
-              P.update associationId [ArkhamDBCampaignDeckDeckId P.=. copyId, ArkhamDBCampaignDeckLastPushedXp P.=. arkhamDBPushTotalXp job]
+              P.update associationId [ArkhamDBCampaignDeckDeckId P.=. copyId, ArkhamDBCampaignDeckLastPushedXp P.=. acknowledgedCampaignXp job (arkhamDBCampaignDeckLastPushedXp campaign)]
               -- Move only this campaign's queued work to its new local link.
               updateWhere [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushCampaignKey P.==. arkhamDBPushCampaignKey job, ArkhamDBPushStatus P.==. "pending"]
                 [ArkhamDBPushDeckId P.=. copyId]
@@ -100,7 +100,7 @@ writeBackStore = ArkhamDBWriteBackStore
                 , arkhamDBDeckLinkCampaignKey = Just $ arkhamDBPushCampaignKey job
                 , arkhamDBDeckLinkUpdatedAt = arkhamDBPushUpdatedAt job
                 }
-              replace associationId campaign {arkhamDBCampaignDeckLastPushedXp = arkhamDBPushTotalXp job}
+              replace associationId campaign {arkhamDBCampaignDeckLastPushedXp = acknowledgedCampaignXp job (arkhamDBCampaignDeckLastPushedXp campaign)}
               pure deckId
             P.update key [ArkhamDBPushStatus P.=. "succeeded", ArkhamDBPushError P.=. Nothing]
             P.update (arkhamDBPushGeneration job) [ArkhamDBAccountWriteBackFailures P.=. 0]
@@ -122,8 +122,9 @@ writeBackStore = ArkhamDBWriteBackStore
           ]
         updateWhere [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P.<-. ["pending", "failed", "conflict", "running"]]
           [ArkhamDBPushStatus P.=. "cancelled", ArkhamDBPushError P.=. Nothing]
-        updateWhere [ArkhamDBCampaignDeckCampaignKey P.==. arkhamDBPushCampaignKey job]
-          [ArkhamDBCampaignDeckLastPushedXp P.=. arkhamDBPushTotalXp job]
+        association <- getBy $ UniqueArkhamDBCampaignDeck $ arkhamDBPushCampaignKey job
+        for_ association \(Entity associationId campaign) ->
+          P.update associationId [ArkhamDBCampaignDeckLastPushedXp P.=. acknowledgedCampaignXp job (arkhamDBCampaignDeckLastPushedXp campaign)]
         pruneCompletedPushes deckId
         pure True
   , resolvePush = \now uid deckId mode -> runDB do

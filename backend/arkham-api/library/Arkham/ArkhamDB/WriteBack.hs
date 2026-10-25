@@ -218,6 +218,13 @@ campaignCopyDeck deck remote = deck
   , arkhamDeckOverlay = Nothing
   }
 
+-- A save cannot subtract XP already credited to this remote lineage. Only an
+-- explicit new deck starts a fresh baseline (and receives the full total).
+acknowledgedCampaignXp :: ArkhamDBPush -> Int -> Int
+acknowledgedCampaignXp job previous
+  | arkhamDBPushMode job == "new" = arkhamDBPushTotalXp job
+  | otherwise = max previous $ arkhamDBPushTotalXp job
+
 needsCampaignCopy :: ArkhamDBDeckLink -> ArkhamDBPush -> Bool
 needsCampaignCopy link job = arkhamDBPushMode job == "new" &&
   maybe False (/= arkhamDBPushCampaignKey job) (arkhamDBDeckLinkCampaignKey link)
@@ -233,6 +240,7 @@ markedDeck :: ArkhamDBPushId -> ArkhamDBDecklist -> Either ArkhamDBError ArkhamD
 markedDeck key deck = do
   metadata <- case Decklist.meta deck of
     Nothing -> Right KM.empty
+    Just "" -> Right KM.empty -- ArkhamDB's sentinel for decks without metadata.
     Just text -> case eitherDecodeStrict' $ encodeUtf8 text of
       Right (Object value) -> Right value
       _ -> Left $ ArkhamDBError "validationFailed" "Deck metadata must be a JSON object"

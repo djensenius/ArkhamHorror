@@ -29,7 +29,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
-import Database.Persist (Entity (..))
+import Database.Persist (Entity (..), Update (..), PersistUpdate (Assign), fieldLens)
 import Database.PostgreSQL.Simple (SqlError (..), ExecStatus (FatalError))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
@@ -235,7 +235,7 @@ newStore = do
       saveSyncedDeck generation key deck remoteDeck time = atomicModifyIORef' ref \s ->
         if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation || Map.notMember key s.storedLinks then (s, False) else
         (s
-          { storedDecks = Map.insert key deck s.storedDecks
+          { storedDecks = Map.adjust (applySyncedDeckUpdates key deck) key s.storedDecks
           , storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key s.storedLinks
           }, True)
       dropDeckLink generation uid key = atomicModifyIORef' ref \s ->
@@ -245,6 +245,13 @@ newStore = do
  where
   entityValue (Entity _ value) = value
   pendingMatches time uid digest value = arkhamDBLinkStateUserId value == uid && arkhamDBLinkStateCompletionHash value == Just digest && arkhamDBLinkStateExpiresAt value > time && isJust (arkhamDBLinkStateEncryptedPendingTokens value)
+
+-- Exercise the actual SQL field assignments, not whole-row replacement.
+applySyncedDeckUpdates :: ArkhamDeckId -> ArkhamDeck -> ArkhamDeck -> ArkhamDeck
+applySyncedDeckUpdates key updated previous = entityVal $ foldl' apply (Entity key previous) $ syncedDeckUpdates updated
+ where
+  apply entity (Update field value Assign) = runIdentity $ fieldLens field (const $ Identity value) entity
+  apply _ _ = error "Only field assignments are used by linked sync"
 
 linkAccount :: ArkhamDBStore IO -> IO ()
 linkAccount store = do

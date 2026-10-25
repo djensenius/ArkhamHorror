@@ -136,7 +136,7 @@ newHarness = do
             available <- if active then targetAvailable value remote else pure False
             if not available then pure Nothing else do
               writeIORef completed $ Just (arkhamDBPushCampaignKey value, remote.remoteDeckId)
-              writeIORef baseline $ arkhamDBPushTotalXp value
+              modifyIORef' baseline $ acknowledgedCampaignXp value
               link <- mapping
               let copy = needsCampaignCopy link value
                   result = if copy then ArkhamDeckKey (UUID.fromWords 0 0 0 246) else Linking.deckId
@@ -164,7 +164,7 @@ newHarness = do
                     , arkhamDBDeckLinkLastSyncedVersion = remote.deckVersion
                     }) Linking.deckId s.storedLinks
                 }
-              writeIORef baseline $ arkhamDBPushTotalXp value
+              modifyIORef' baseline $ acknowledgedCampaignXp value
               writeIORef job value {arkhamDBPushStatus = "cancelled"}
               pure True
         , resolvePush = \time _ _ mode -> do
@@ -471,13 +471,52 @@ spec = describe "ArkhamDB campaign write-back" do
     timeout 2000000 (h.run False) `shouldReturn` Just ()
     assertState h "succeeded"
 
-  it "refuses invalid metadata without making any remote request" do
-    h <- newHarness
-    modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck currentDeck {Decklist.meta = Just "[]"}}
-    h.run False
-    assertState h "failed"
-    arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
-    readIORef h.calls `shouldReturn` []
+  for_ ["write-back", "retry", "save-as-new"] \mode ->
+    it ("accepts ArkhamDB's remote empty-string metadata through " <> toString mode) do
+      h <- newHarness
+      remote <- case fromJSON $ object
+        [ "id" .= (123 :: Int), "slots" .= currentDeck.slots
+        , "investigator_code" .= ("01001" :: Text), "investigator_name" .= ("Roland Banks" :: Text)
+        , "meta" .= ("" :: Text), "next_deck" .= Null
+        , "date_update" .= Linking.remote.dateUpdate, "version" .= Linking.remote.deckVersion
+        ] of
+          Error err -> fail err
+          Success value -> pure (value :: ArkhamDBRemoteDeck)
+      remote.deck.meta `shouldBe` Just ""
+      writeIORef h.remotes $ Map.singleton "123" remote
+      -- The boundary snapshot preserves the remote metadata representation.
+      let snapshot = campaignDeckSnapshot remote.deck [] [] [] Nothing Nothing
+      snapshot.meta `shouldBe` Just ""
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
+      if mode == "retry" then do
+        runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "unavailable"} False
+        assertState h "failed"
+        arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "remoteUnavailable"
+        h.run True
+      else do
+        when (mode == "save-as-new") do
+          writeIORef h.baseline 9
+          modifyIORef' h.job \job -> job {arkhamDBPushStatus = "conflict"}
+          h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+        h.run False
+      assertState h "succeeded"
+      let target = if mode == "save-as-new" then "125" else "124"
+      pushed <- Map.lookup target <$> readIORef h.remotes >>= maybe (fail "Missing target") pure
+      hasPushMarker pushKey pushed `shouldBe` True
+      (decodeStrict' . encodeUtf8 =<< pushed.deck.meta :: Maybe Value) `shouldBe`
+        Just (object ["ahn_push" .= pushMarker pushKey])
+      readIORef h.baseline `shouldReturn` 5
+      filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn`
+        if mode == "save-as-new" then [] else ["upgrade/123/5"]
+
+  for_ ["[]", "null", "not JSON", "\"\"", " "] \metadata ->
+    it ("refuses nonempty invalid or non-object metadata without remote requests: " <> toString metadata) do
+      h <- newHarness
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck currentDeck {Decklist.meta = Just metadata}}
+      h.run False
+      assertState h "failed"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+      readIORef h.calls `shouldReturn` []
 
   it "does not push opted-out decks" do
     h <- newHarness
@@ -587,6 +626,31 @@ spec = describe "ArkhamDB campaign write-back" do
     saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked
     fmap (Decklist.slots . arkhamDeckPlayList) saved `shouldBe` Just currentDeck.slots
     fmap arkhamDeckOverlay saved `shouldBe` Just Nothing
+
+  for_ [False, True] \viaImport ->
+    for_ [False, True] \materialized ->
+      it ((if materialized then "adopts a materialized campaign result" else "retains the overlay for an unmaterialized remote deck") <>
+          " through ordinary linked " <> if viaImport then "repeat-import sync" else "sync") do
+        h <- newHarness
+        let overlay = DeckOverlay Nothing mempty (Map.singleton "01006" 1) mempty
+        modifyIORef' h.linked \state -> state
+          { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) Linking.deckId state.storedDecks }
+        -- The normal export includes the overlay in its campaign slots, and
+        -- leaves the saved local list/overlay untouched until linked sync.
+        when materialized $ h.run False >> assertState h "succeeded"
+        let target = if materialized then "124" else "123"
+        result <- runExceptT (if viaImport
+          then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId target Linking.forbiddenPublic
+          else syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic)
+          >>= either (fail . show) pure
+        let expectedSlots = if materialized then currentDeck.slots else Map.singleton "01006" 1
+            expectedOverlay = if materialized then Nothing else Just overlay
+        -- The response and SQL assignment list must agree, not just the list.
+        Decklist.slots (arkhamDeckPlayList $ entityVal result) `shouldBe` expectedSlots
+        arkhamDeckOverlay (entityVal result) `shouldBe` expectedOverlay
+        saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+        Decklist.slots (arkhamDeckPlayList saved) `shouldBe` expectedSlots
+        arkhamDeckOverlay saved `shouldBe` expectedOverlay
 
   for_ ["keep", "finish", "copy"] \completion ->
     it ("records a target-link conflict atomically on " <> toString completion <> " completion") do
@@ -839,7 +903,15 @@ spec = describe "ArkhamDB campaign write-back" do
     filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
     filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` ["save/124", "save/124"]
     fmap (.deck.slots) . Map.lookup "124" <$> readIORef h.remotes `shouldReturn` Just (Map.singleton "01009" 2)
-    readIORef h.baseline `shouldReturn` 4
+    -- Inspect the next grant as well as the lower-XP save: 5 -> 4 -> 7
+    -- must credit 5 then 2, never 5 then 3.
+    modifyIORef' h.job \job -> job
+      { arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushTargetId = Nothing
+      , arkhamDBPushBoundary = "scenarioEnd", arkhamDBPushTotalXp = 7 }
+    h.run False
+    assertState h "succeeded"
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5", "upgrade/124/2"]
+    readIORef h.baseline `shouldReturn` 7
 
   it "creates a further version rather than dropping XP granted during the upgrade" do
     h <- newHarness

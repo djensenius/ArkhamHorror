@@ -4,10 +4,11 @@ import Arkham.ArkhamDB
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
 import Control.Monad.Except
-import Data.Aeson (ToJSON (..), eitherDecodeStrict', encode, object, (.=))
+import Data.Aeson (ToJSON (..), Value (..), decodeStrict', eitherDecodeStrict', encode, object, (.=))
+import Data.Aeson.KeyMap qualified as KM
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime)
-import Database.Persist (Entity (..))
+import Database.Persist (Entity (..), Update, (=.))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.User
@@ -231,11 +232,30 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
                 , arkhamDeckUrl = decklist.url
                 , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
                 , arkhamDeckInvestigatorName = remote.deck.investigator_name
+                -- Write-back snapshots already contain the campaign overlay.
+                , arkhamDeckOverlay = if materializedCampaignDeck remote.deck then Nothing else arkhamDeckOverlay deck
                 }
           lift $ store.validateDeck $ arkhamDeckPlayList updated
           saved <- lift $ store.saveSyncedDeck generation deckId updated remote now
           unless saved $ throwError linkChanged
           pure $ Entity deckId updated
+
+materializedCampaignDeck :: ArkhamDBDecklist -> Bool
+materializedCampaignDeck deck = case deck.meta >>= decodeStrict' . encodeUtf8 of
+  Just (Object metadata) -> case KM.lookup "ahn_push" metadata of
+    Just (String marker) -> not $ T.null marker
+    _ -> False
+  _ -> False
+
+-- The same adopted overlay must be returned and persisted by linked sync.
+syncedDeckUpdates :: ArkhamDeck -> [Update ArkhamDeck]
+syncedDeckUpdates deck =
+  [ ArkhamDeckList =. arkhamDeckList deck
+  , ArkhamDeckUrl =. arkhamDeckUrl deck
+  , ArkhamDeckName =. arkhamDeckName deck
+  , ArkhamDeckInvestigatorName =. arkhamDeckInvestigatorName deck
+  , ArkhamDeckOverlay =. arkhamDeckOverlay deck
+  ]
 
 linkStatus :: Monad m => ArkhamDBStore m -> UserId -> ArkhamDBAction m ArkhamDBLinkStatusResponse
 linkStatus store userId = do
