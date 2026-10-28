@@ -26,7 +26,8 @@ import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Campaign.Types (campaignLog)
 import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary)
-import Arkham.ArkhamDB.WriteBack (savedDeckUpgradeTargets)
+import Arkham.ArkhamDB.WriteBack (savedDeckUpgradeTargets, savedDeckUpgradeUpdates)
+import Arkham.ArkhamDB.Service (ArkhamDBError (..), adoptDecklist, arkhamDBErrorStatus)
 import Entity.Arkham.ArkhamDBAccount
 import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
 import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
@@ -58,6 +59,7 @@ import Data.UUID qualified as UUID
 import Data.Traversable (for)
 import Database.Esqueleto.Experimental hiding (isNothing, (<&>))
 import Database.Persist qualified as Persist
+import Database.Persist.Sql (rawSql)
 import Entity.Arkham.Step
 import Json hiding (Success)
 import Network.HTTP.Conduit (
@@ -300,11 +302,32 @@ putApiV1ArkhamGameDecksR gameId = do
                     pure (ge, updatedQueue, diffDown, writeBackBoundary)
 
 
-                  case upgraded of
+                  -- Prepare all saved-list adoptions before writing either the
+                  -- game or a deck. Copying a push marker first would hide an
+                  -- unconsumed incorporated overlay from subsequent sync.
+                  prepared <- case mDecklist of
+                    Just decklist | sameInvestigator investigatorId decklist -> do
+                      let campaignKey = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId investigatorId)
+                      association <- fmap entityVal <$> getBy (UniqueArkhamDBCampaignDeck campaignKey)
+                      targets <- savedDeckUpgradeTargets Persist.get
+                        (\url -> P.selectList [ArkhamDeckUserId P.==. userId, ArkhamDeckUrl P.==. Just url] [])
+                        userId association (attr investigatorDeckUrl investigatorEntity)
+                      fmap sequence $ for (sort targets) \deckId -> do
+                        -- Overlay editing writes this row too. Read under its
+                        -- lock so consumption cannot erase a concurrent edit.
+                        locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR UPDATE"
+                          [toPersistValue deckId] :: DB [Entity ArkhamDeck]
+                        pure $ case viaNonEmpty head locked of
+                          Nothing -> Left $ ArkhamDBError "notFound" "Saved deck no longer exists"
+                          Just (Entity _ deck) -> (deckId,) <$> savedDeckUpgradeUpdates now deck decklist
+                    _ -> pure $ Right []
+
+                  case (prepared, upgraded) of
+                    (Left err, _) -> pure $ Left (arkhamDBErrorStatus err, arkhamDBErrorMessage err)
                     -- First line only: engine `error`s carry a call stack the player cannot use.
-                    Left err ->
+                    (_, Left err) ->
                       pure $ Left (Status.status500, "Could not upgrade deck: " <> T.takeWhile (/= '\n') (tshow err))
-                    Right (ge, updatedQueue, diffDown, writeBackBoundary) -> do
+                    (Right savedUpdates, Right (ge, updatedQueue, diffDown, writeBackBoundary)) -> do
                       let g' =
                             ArkhamGame
                               arkhamGameName
@@ -326,16 +349,7 @@ putApiV1ArkhamGameDecksR gameId = do
                       -- Prefer its owned association; URL matching is only for
                       -- saved decks without a write-back association (#5257).
                       -- Replacements are different decks, not upgrades of this one.
-                      for_ mDecklist \decklist ->
-                        when (sameInvestigator investigatorId decklist) do
-                          let campaignKey = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId investigatorId)
-                          association <- fmap entityVal <$> getBy (UniqueArkhamDBCampaignDeck campaignKey)
-                          targets <- savedDeckUpgradeTargets Persist.get
-                            (\url -> P.selectList [ArkhamDeckUserId P.==. userId, ArkhamDeckUrl P.==. Just url] [])
-                            userId association (attr investigatorDeckUrl investigatorEntity)
-                          for_ targets \deckId -> P.update deckId $
-                            [ArkhamDeckList P.=. decklist, ArkhamDeckLastUsedAt P.=. Just now]
-                              <> [ArkhamDeckUrl P.=. decklist.url | isJust decklist.url]
+                      for_ savedUpdates \(deckId, updates) -> P.update deckId updates
 
                       for_ writeBackBoundary \(boundary, snapshot) ->
                         queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary snapshot
@@ -494,10 +508,19 @@ postApiV1ArkhamSyncDeckR deckId = do
   edecklist <- maybe (pure $ Left "no deck url") getDeckList (arkhamDeckUrl deck)
   case edecklist of
     Right decklist -> do
-      runDB $ update \d -> do
-        set d [ArkhamDeckList =. val decklist]
-        where_ $ d.id ==. val deckId
-      pure $ Entity deckId $ deck {arkhamDeckList = decklist}
+      result <- runDB do
+        locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR UPDATE"
+          [toPersistValue deckId] :: DB [Entity ArkhamDeck]
+        let adoption = case viaNonEmpty head locked of
+              Nothing -> Left $ ArkhamDBError "notFound" "Saved deck no longer exists"
+              Just (Entity _ current) -> adoptDecklist current decklist
+        case adoption of
+          Left err -> pure $ Left err
+          Right adopted -> do
+            P.update deckId
+              [ArkhamDeckList P.=. arkhamDeckList adopted, ArkhamDeckOverlay P.=. arkhamDeckOverlay adopted]
+            pure $ Right $ Entity deckId adopted
+      either (\err -> sendStatusJSON (arkhamDBErrorStatus err) $ JSONError $ arkhamDBErrorMessage err) pure result
     Left _ -> sendStatusJSON Status.status400 (JSONError "Could not sync deck")
 
 ownedDeck :: ArkhamDeckId -> Handler ArkhamDeck

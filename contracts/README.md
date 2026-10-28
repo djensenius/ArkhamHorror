@@ -1332,7 +1332,14 @@ failed first load following creation**: the new remote version lacks the campaig
 deck changes until the next scenario-end/upgrade boundary. Keep-remote also
 recovers a save into the scenario-end version that failed and then conflicted.
 Attribution (`ahn_push`) alone never proves unchanged state. Explicit
-save-as-new starts a separately identified operation; overwrite never discards
+save-as-new starts a separately identified operation without retiring a
+creation-bearing predecessor until the independent target is actually adopted.
+A live replacement runs ahead of its retained predecessor; disabling or undoing
+an unstarted replacement exposes the original accounting fence again. Nested
+replacements retain all creation checkpoints until adoption. A derived
+independent replacement cannot switch back to overwrite of the original lineage,
+even if it fails before creation; retry/new remain independent, while keep-remote
+is explicit read-only reconciliation. Overwrite never discards
 an uncertain creation intent. No undocumented ArkhamDB idempotency header is
 assumed. Stubs cover runtime success, failures, conflicts, resolution and retry. The
 outage test proves the worker caller remains unaffected, then failed state and
@@ -1391,11 +1398,15 @@ the latest materialization's provenance, never the saved row's current overlay.
 Ordinary linked sync and
 repeat-import sync consume an unchanged exported overlay once, on first
 adoption. Overlays added or replaced before enqueue or after adoption survive.
+The campaign UPGRADE endpoint's saved-list replacement and legacy public sync
+use the same adoption rule before copying a pushed list's marker. UPGRADE
+validates every saved-list adoption before persisting either the game or decks;
+an incorporated overlay is not applied twice when displaying or reusing a deck.
 Explicit null provenance proves that no saved overlay was applied, so a saved
 overlay retained during a direct-list upgrade survives subsequent sync/import.
 For legacy campaigns or raw replacements without captured provenance, first
 adopting a push while a local overlay exists is ambiguous: implicit sync/import returns
-`validationFailed` without changing the saved deck, rather than clear unexported
+`validationFailed` (HTTP 400) without changing the saved deck, rather than clear unexported
 edits or apply an incorporated overlay twice. Explicit keep-remote remains a
 user-authorized replacement of the saved list/overlay.
 Succeeded/cancelled

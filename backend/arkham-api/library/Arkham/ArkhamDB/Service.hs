@@ -57,6 +57,7 @@ arkhamDBErrorStatus :: ArkhamDBError -> Status.Status
 arkhamDBErrorStatus err = case arkhamDBErrorCode err of
   "disabled" -> Status.status501
   "oauthCallbackInvalidState" -> Status.status400
+  "validationFailed" -> Status.status400
   "oauthCompletionInvalid" -> Status.status403
   "notLinked" -> Status.status409
   "tokenExpired" -> Status.status409
@@ -227,29 +228,31 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
           lift $ publicSync deckId
         Left err -> throwError err
         Right remote -> do
-          let adoptingPush = isJust (campaignPushMarker remote.deck) &&
-                campaignPushMarker remote.deck /= campaignPushMarker (arkhamDeckList deck)
-          -- Legacy snapshots without captured provenance cannot prove whether
-          -- the local overlay was materialized. Refuse ambiguous adoption:
-          -- clearing loses edits, while retaining may apply an overlay twice.
-          when (adoptingPush && isJust (arkhamDeckOverlay deck) && isNothing (exportedOverlay remote.deck)) $
-            throwError $ ArkhamDBError "validationFailed" "Campaign overlay provenance is unavailable; refusing ambiguous adoption"
-          let decklist = remoteDecklist settings remote
-              updated = deck
-                { arkhamDeckList = decklist
-                , arkhamDeckUrl = decklist.url
+          adopted <- either throwError pure $ adoptDecklist deck $ remoteDecklist settings remote
+          let updated = adopted
+                { arkhamDeckUrl = (arkhamDeckList adopted).url
                 , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
                 , arkhamDeckInvestigatorName = remote.deck.investigator_name
-                -- A changed push marker alone says nothing about a newer
-                -- local overlay. Consume only the overlay actually exported.
-                , arkhamDeckOverlay = if adoptingPush &&
-                    exportedOverlay remote.deck == (toJSON <$> arkhamDeckOverlay deck)
-                    then Nothing else arkhamDeckOverlay deck
                 }
           lift $ store.validateDeck $ arkhamDeckPlayList updated
           saved <- lift $ store.saveSyncedDeck generation deckId updated remote now
           unless saved $ throwError linkChanged
           pure $ Entity deckId updated
+
+-- Every implicit saved-list replacement must consume provenance BEFORE copying
+-- the incoming push marker. Retain newer overlays; never infer incorporation
+-- merely from a matching current overlay or changed marker.
+adoptDecklist :: ArkhamDeck -> ArkhamDBDecklist -> Either ArkhamDBError ArkhamDeck
+adoptDecklist deck incoming = do
+  let adopting = isJust (campaignPushMarker incoming) &&
+        campaignPushMarker incoming /= campaignPushMarker (arkhamDeckList deck)
+  when (adopting && isJust (arkhamDeckOverlay deck) && isNothing (exportedOverlay incoming)) $
+    Left $ ArkhamDBError "validationFailed" "Campaign overlay provenance is unavailable; refusing ambiguous adoption"
+  pure deck
+    { arkhamDeckList = incoming
+    , arkhamDeckOverlay = if adopting && exportedOverlay incoming == (toJSON <$> arkhamDeckOverlay deck)
+        then Nothing else arkhamDeckOverlay deck
+    }
 
 -- Internal ArkhamDB metadata records the exact overlay in the queued snapshot.
 -- Invalid metadata remains invalid so write-back validation still rejects it.
@@ -259,7 +262,7 @@ withExportedOverlay overlay = withOverlayProvenance $ Just $ toJSON overlay
 withoutExportedOverlay :: ArkhamDBDecklist -> ArkhamDBDecklist
 withoutExportedOverlay = withOverlayProvenance Nothing
 
--- Explicit null means seating proved there was no saved overlay; missing
+-- Explicit null proves no saved overlay was applied; missing
 -- provenance means unknown, not proof of absence.
 withOverlayProvenance :: Maybe Value -> ArkhamDBDecklist -> ArkhamDBDecklist
 withOverlayProvenance provenance deck = deck {Decklist.meta = case deck.meta of

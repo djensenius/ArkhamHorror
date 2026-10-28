@@ -37,7 +37,7 @@ import Entity.User
 import Helpers.AppSettings (loadAppSettings)
 import Network.HTTP.Client
 import Network.HTTP.Client.Internal (managerProxyInsecure)
-import Network.HTTP.Types (hLocation, status200, status302, status409, status502)
+import Network.HTTP.Types (hLocation, status200, status302, status400, status409, status502)
 import Numeric (showHex)
 import Network.Wai qualified as Wai
 import Network.Wai.Test qualified as WaiTest
@@ -61,6 +61,8 @@ data CallbackSite = CallbackSite (ArkhamDBStore IO) (ArkhamDBClient IO)
 Yesod.mkYesod "CallbackSite" [Yesod.parseRoutes|
 /api/v1/arkham/arkhamdb/callback CallbackR GET
 /lock-timeout LockTimeoutR GET
+/overlay-sync OverlaySyncR POST
+/overlay-import OverlayImportR POST
 |]
 
 instance Yesod.Yesod CallbackSite where
@@ -75,6 +77,18 @@ getCallbackR = do
 getLockTimeoutR :: Yesod.HandlerFor CallbackSite ()
 getLockTimeoutR = runArkhamDB $ liftIO $ throwIO $
   SqlError "55P03" FatalError "private-access-token" "server-secret" "private-refresh-token"
+
+postOverlaySyncR :: Yesod.HandlerFor CallbackSite Value
+postOverlaySyncR = do
+  CallbackSite store client <- Yesod.getYesod
+  toJSON <$> runArkhamDB (syncRemoteDeck (handlerStore store) (hoistArkhamDBClient liftIO client)
+    settings now userId deckId (liftIO . forbiddenPublic))
+
+postOverlayImportR :: Yesod.HandlerFor CallbackSite Value
+postOverlayImportR = do
+  CallbackSite store client <- Yesod.getYesod
+  toJSON <$> runArkhamDB (importRemoteDeck (handlerStore store) (hoistArkhamDBClient liftIO client)
+    settings now userId "123" (liftIO . forbiddenPublic))
 
 handlerStore :: ArkhamDBStore IO -> ArkhamDBStore (Yesod.HandlerFor CallbackSite)
 handlerStore store = ArkhamDBStore
@@ -288,6 +302,26 @@ paddedResponse size body = body <> BSL.replicate (fromIntegral size - BSL.length
 
 spec :: Spec
 spec = describe "ArkhamDB account linking and private decks" do
+  for_ ["/overlay-sync", "/overlay-import"] \path ->
+    it ("returns actual HTTP 400 for ambiguous overlay adoption through " <> BS8.unpack path) do
+      (store, ref) <- newStore
+      linkAccount store
+      runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+          incoming = remote {deck = remote.deck {meta = Just "{\"ahn_push\":\"legacy-push\"}"}}
+          client = stubClient {loadDeck = \_ _ -> pure $ Right incoming}
+      modifyIORef' ref \s -> s {storedDecks = Map.adjust (\d -> d {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
+      before <- Map.lookup deckId . storedDecks <$> readIORef ref
+      application <- Yesod.toWaiAppPlain $ CallbackSite store client
+      response <- WaiTest.runSession
+        (WaiTest.request $ (WaiTest.setPath WaiTest.defaultRequest path) {Wai.requestMethod = "POST"}) application
+      WaiTest.simpleStatus response `shouldBe` status400
+      eitherDecode @Value (WaiTest.simpleBody response) `shouldBe` Right (object
+        ["code" .= String "validationFailed", "error" .= String "Campaign overlay provenance is unavailable; refusing ambiguous adoption"])
+      after <- Map.lookup deckId . storedDecks <$> readIORef ref
+      fmap arkhamDeckList after `shouldBe` fmap arkhamDeckList before
+      fmap arkhamDeckOverlay after `shouldBe` Just (Just overlay)
+
   for_ [("upgrade", "PUT /api/oauth2/deck/upgrade/123", "xp=5"), ("new", "POST /api/oauth2/deck/new", "investigator=01001"), ("save", "PUT /api/oauth2/deck/save/124", "slots=%7B%2201006%22%3A1%7D")] \(operation, methodPath, fieldName) ->
     it ("uses ArkhamDB's documented method and form for " <> operation) do
       incoming <- newIORef "HTTP/1.1 200 OK\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"success\":true,\"msg\":124}"

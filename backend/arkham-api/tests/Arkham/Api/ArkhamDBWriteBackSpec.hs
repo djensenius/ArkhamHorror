@@ -228,6 +228,77 @@ newHarness = do
 runWith :: Harness -> ArkhamDBClient IO -> Bool -> IO ()
 runWith h client retry = runWriteBack h.store h.writes client Linking.settings Linking.now retry Linking.userId Linking.deckId
 
+-- Unlike the single-intent harness above, retain every durable predecessor and
+-- allocate a fresh identity for each independent replacement. Mirror SQL's
+-- oldest-row/descendant selection and retire ancestors only on adoption.
+newQueuedHarness :: IO (Harness, IORef (Map ArkhamDBPushId ArkhamDBPush))
+newQueuedHarness = do
+  base <- newHarness
+  initial <- readIORef base.job
+  rows <- newIORef $ Map.singleton pushKey initial
+  let outstanding value = arkhamDBPushStatus value `notElem` ["succeeded", "cancelled"]
+      next = do
+        candidates <- map (uncurry Entity) . Map.toList . Map.filter outstanding <$> readIORef rows
+        pure $ do
+          original <- viaNonEmpty head $ sortOn (\(Entity key value) -> (arkhamDBPushCreatedAt value, key)) candidates
+          pure $ preferReplacement original candidates
+      matches (Entity key previous) = do
+        current <- Map.lookup key <$> readIORef rows
+        pure $ maybe False (\value ->
+          arkhamDBPushStatus value == arkhamDBPushStatus previous &&
+          arkhamDBPushStage value == arkhamDBPushStage previous &&
+          arkhamDBPushUpdatedAt value == arkhamDBPushUpdatedAt previous) current
+      owns previous = (&& arkhamDBPushStatus (entityVal previous) == "running") <$> matches previous
+      store = base.store
+        { ownsPushClaim = owns
+        , withRefreshLock = \uid action -> withRefreshLock base.store uid \locked -> action locked {ownsPushClaim = owns}
+        }
+      writes = base.writes
+        { claimPush = \time retry uid deckId -> next >>= \case
+            Nothing -> pure Nothing
+            Just (Entity key value) -> do
+              writeIORef base.job value
+              claimed <- base.writes.claimPush time retry uid deckId
+              forM claimed \(Entity _ running) -> do
+                modifyIORef' rows $ Map.insert key running
+                pure $ Entity key running
+        , checkpointPush = \previous@(Entity key _) value -> do
+            active <- matches previous
+            if not active then pure False else do
+              saved <- base.writes.checkpointPush previous value
+              when saved $ modifyIORef' rows $ Map.insert key value
+              pure saved
+        , finishPush = \previous@(Entity key value) remote -> do
+            result <- base.writes.finishPush previous remote
+            when (isJust result) $ modifyIORef' rows $
+              Map.insert key value {arkhamDBPushStatus = "succeeded", arkhamDBPushError = Nothing} .
+              Map.map (\ancestor -> if value `supersedesPush` ancestor
+                then ancestor {arkhamDBPushStatus = "cancelled", arkhamDBPushError = Nothing} else ancestor)
+            pure result
+        , keepRemoteDeck = \previous remote -> do
+            saved <- base.writes.keepRemoteDeck previous remote
+            when saved $ modifyIORef' rows $ Map.map (\value -> if outstanding value
+              then value {arkhamDBPushStatus = "cancelled", arkhamDBPushError = Nothing} else value)
+            pure saved
+        , resolvePush = \time _ _ mode -> next >>= \case
+            Nothing -> pure False
+            Just (Entity key value)
+              | canResolvePush mode value -> do
+                  modifyIORef' rows \values ->
+                    if mode == "new" && arkhamDBPushStage value /= "ready"
+                    then Map.insert (ArkhamDBPushKey $ UUID.fromWords 0 0 0 $ fromIntegral $ 245 + Map.size values)
+                      (saveAsNewPush time value) $ Map.insert key (saveAsNewPredecessor value) values
+                    else Map.insert key (resolvedPush time mode value) values
+                  pure True
+              | otherwise -> pure False
+        , toggleWriteBack = \time uid deckId enabled -> do
+            result <- base.writes.toggleWriteBack time uid deckId enabled
+            unless enabled $ modifyIORef' rows $ Map.map (\value -> if outstanding value then disabledPush value else value)
+            pure result
+        }
+      run retry = runWriteBack store writes base.client Linking.settings Linking.now retry Linking.userId Linking.deckId
+  pure (base {store = store, writes = writes, run = run}, rows)
+
 assertState :: Harness -> Text -> Expectation
 assertState h expected = arkhamDBPushStatus <$> readIORef h.job >>= (`shouldBe` expected)
 
@@ -291,6 +362,170 @@ applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId 
 
 spec :: Spec
 spec = describe "ArkhamDB campaign write-back" do
+  for_ [False, True] \uncertain ->
+    for_ [False, True] \undo ->
+      it ("retains save-as-new predecessor accounting across " <> show (uncertain, undo)) do
+        (h, rows) <- newQueuedHarness
+        let failing = if uncertain
+              then h.client {upgradeDeck = \token source xp metadata ->
+                h.client.upgradeDeck token source xp metadata >> pure (Left $ ArkhamDBRemoteError "lost upgrade reply")}
+              else h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"}
+        runWith h failing False
+        h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+        persisted <- readIORef rows
+        Map.size persisted `shouldBe` 2
+        fmap arkhamDBPushStatus (Map.lookup pushKey persisted) `shouldBe` Just "failed"
+        let active value = arkhamDBPushStatus value `notElem` ["succeeded", "cancelled"]
+        when undo $ cancelUndoneCampaignPushes
+          [(key, arkhamDBPushEventKey value, arkhamDBPushUserId value) | (key, value) <- Map.toList persisted, active value]
+          (\_ action -> action)
+          (\key -> modifyIORef' rows $ Map.adjust (\value -> if active value then undonePush value else value) key)
+          0
+        h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId False `shouldReturn` True
+        h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId True `shouldReturn` True
+        -- Re-answering queues a fresh boundary; the original persisted
+        -- accounting fence, not the cancelled replacement, must stay ahead.
+        original <- maybe (fail "Missing predecessor") pure $ Map.lookup pushKey persisted
+        let fresh = original
+              { arkhamDBPushEventKey = "game/2/iid", arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready"
+              , arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing, arkhamDBPushError = Nothing
+              , arkhamDBPushCreatedAt = addUTCTime 60 Linking.now
+              }
+        modifyIORef' rows $ Map.insert (ArkhamDBPushKey $ UUID.fromWords 0 0 0 250) fresh
+        before <- readIORef h.calls
+        h.run False
+        h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
+        readIORef h.calls `shouldReturn` before
+        h.run True
+        if undo then do
+          -- Neither restart-style fresh selection nor explicit retry may save
+          -- the undone snapshot. Toggling must preserve boundaryUndone.
+          readIORef h.calls `shouldReturn` before
+          latest <- readIORef rows
+          fmap arkhamDBPushError (Map.lookup pushKey latest) `shouldBe` Just (Just "boundaryUndone")
+          for_ ["keep", "new"] \mode ->
+            h.writes.resolvePush Linking.now Linking.userId Linking.deckId mode `shouldReturn` False
+        else do
+          when uncertain do
+            -- Recovery cannot infer a missing target baseline. It must remain
+            -- fenced until explicit read-only keep-remote reconciliation.
+            h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
+            h.writes.resolvePush Linking.now Linking.userId Linking.deckId "keep" `shouldReturn` True
+            h.run False
+          readIORef h.baseline `shouldReturn` 5
+          h.run False
+        calls <- readIORef h.calls
+        filter (T.isPrefixOf "upgrade/123/") calls `shouldBe` ["upgrade/123/5"]
+        filter (== "new") calls `shouldBe` []
+
+  for_ [False, True] \undo ->
+    it ("retains nested creation fences when the next independent replacement is retired: " <> show undo) do
+      (h, rows) <- newQueuedHarness
+      let failing = h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"}
+      runWith h failing False
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+      runWith h failing False
+      h.writes.resolvePush (addUTCTime 1 Linking.now) Linking.userId Linking.deckId "new" `shouldReturn` True
+      when undo $ modifyIORef' rows $ Map.map undonePush
+      h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId False `shouldReturn` True
+      h.writes.toggleWriteBack Linking.now Linking.userId Linking.deckId True `shouldReturn` True
+      requests <- readIORef h.calls
+      h.run False
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
+      readIORef h.calls `shouldReturn` requests
+      h.run True
+      if undo then readIORef h.calls `shouldReturn` requests
+      else do
+        readIORef h.baseline `shouldReturn` 5
+        state <- readIORef h.linked
+        fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "125"
+      filter (T.isPrefixOf "upgrade/123/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+      filter (== "new") <$> readIORef h.calls `shouldReturn` ["new"]
+
+  it "does not redirect a failed targetless independent replacement onto its predecessor's XP lineage" do
+    (h, rows) <- newQueuedHarness
+    runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
+    h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+    -- Losing the mapping after claim, before preflight, leaves a failed ready
+    -- child. Restoring that mapping must not make overwrite safe.
+    let missingLink = h.store {findDeck = \key ->
+          fmap (fmap (\(deck, _) -> (deck, Nothing))) $ h.store.findDeck key}
+    runWriteBack missingLink h.writes h.client Linking.settings Linking.now False Linking.userId Linking.deckId
+    values <- Map.elems <$> readIORef rows
+    values `shouldSatisfy` any (\value -> "/new/" `T.isInfixOf` arkhamDBPushEventKey value &&
+      arkhamDBPushStage value == "ready" && arkhamDBPushStatus value == "failed")
+    h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
+    h.run True
+    filter (T.isPrefixOf "upgrade/123/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+    filter (== "new") <$> readIORef h.calls `shouldReturn` ["new"]
+
+  it "retires all retained predecessors only after a nested independent target is adopted" do
+    (h, rows) <- newQueuedHarness
+    let failing = h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"}
+    runWith h failing False
+    h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+    runWith h failing False
+    h.writes.resolvePush (addUTCTime 1 Linking.now) Linking.userId Linking.deckId "new" `shouldReturn` True
+    before <- readIORef rows
+    length (filter ((== "failed") . arkhamDBPushStatus) $ Map.elems before) `shouldBe` 2
+    -- Give the next independent creation its own server identifier.
+    let client = h.client {createDeck = \token deck -> do
+          result <- h.client.createDeck token deck
+          modifyIORef' h.remotes \values -> maybe values (\remote -> Map.insert "126" remote {ArkhamDB.remoteDeckId = "126"} $ Map.delete "125" values) $ Map.lookup "125" values
+          pure $ "126" <$ result}
+    runWith h client False
+    after <- readIORef rows
+    length (filter ((== "cancelled") . arkhamDBPushStatus) $ Map.elems after) `shouldBe` 2
+    length (filter ((== "succeeded") . arkhamDBPushStatus) $ Map.elems after) `shouldBe` 1
+    readIORef h.baseline `shouldReturn` 5
+    state <- readIORef h.linked
+    fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just "126"
+
+  for_ [False, True] \changedOverlay ->
+    it ("adopts a pushed list through actual upgrade persistence without intervening sync: " <> show changedOverlay) do
+      h <- newHarness
+      (gameRef, pid, drain) <- newCampaignMessages
+      let exported = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+          local = if changedOverlay then exported {overlayAdd = Map.singleton "01008" 1} else exported
+          base = Linking.remote.deck {Decklist.slots = Map.singleton "01006" 1, Decklist.meta = Nothing}
+          snapshot = withExportedOverlay (Just exported) base {Decklist.slots = Map.fromList [("01006", 1), ("01007", 1)]}
+      modifyIORef' h.linked \state -> state
+        {Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckList = base, arkhamDeckOverlay = Just local}) Linking.deckId state.storedDecks}
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
+      h.run False
+      remote <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing pushed deck") pure
+      saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+      initial <- readIORef gameRef
+      drain $ deckChosenWithOverlay initial pid Nothing base
+      drain [UpgradeDecklist "01001" remote.deck]
+      -- This exact builder is used by the UPGRADE endpoint before any game or
+      -- saved-deck write, not a test-only overlay edit or intervening sync.
+      updates <- either (fail . show) pure $ savedDeckUpgradeUpdates Linking.now saved remote.deck
+      let adopted = applyDeckUpdates updates saved
+          expected = Map.fromList $ [("01006", 1), ("01007", 1)] <> [("01008", 1) | changedOverlay]
+      Decklist.slots (arkhamDeckPlayList adopted) `shouldBe` expected
+      arkhamDeckOverlay adopted `shouldBe` if changedOverlay then Just local else Nothing
+      -- Display and reuse of the saved play list must agree, including after
+      -- sync sees the already-copied push marker.
+      modifyIORef' h.linked \state -> state {Linking.storedDecks = Map.insert Linking.deckId adopted state.storedDecks}
+      replicateM_ 2 do
+        result <- runExceptT $ syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic
+        synced <- either (fail . show) (pure . entityVal) result
+        Decklist.slots (arkhamDeckPlayList synced) `shouldBe` expected
+      drain [LoadDecklist pid $ arkhamDeckPlayList adopted]
+      reused <- readIORef gameRef
+      let cards = modeCampaign reused.gameMode >>= Map.lookup "01001" . campaignDecks . toAttrs
+      fmap (Map.fromListWith (+) . map (\card -> (toCardCode card, 1 :: Int)) . unDeck) cards `shouldBe` Just expected
+
+  it "refuses ambiguous upgrade persistence before copying an unknown-provenance push marker" do
+    h <- newHarness
+    saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+    let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+        incoming = currentDeck {Decklist.meta = Just "{\"ahn_push\":\"legacy\"}"}
+    case savedDeckUpgradeUpdates Linking.now saved {arkhamDeckOverlay = Just overlay} incoming of
+      Left err -> arkhamDBErrorCode err `shouldBe` "validationFailed"
+      Right _ -> expectationFailure "Ambiguous upgrade must not persist"
+
   for_ [("single-step", 5), ("multi-step", 2)] \(kind, restoredStep) -> do
     it ("skips all write-back queries for unconfigured " <> kind <> " undo") do
       calls <- newIORef ([] :: [Text])

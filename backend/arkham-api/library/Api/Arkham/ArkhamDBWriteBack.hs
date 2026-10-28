@@ -103,6 +103,10 @@ writeBackStore = ArkhamDBWriteBackStore
               replace associationId campaign {arkhamDBCampaignDeckLastPushedXp = acknowledgedCampaignXp job (arkhamDBCampaignDeckLastPushedXp campaign)}
               pure deckId
             P.update key [ArkhamDBPushStatus P.=. "succeeded", ArkhamDBPushError P.=. Nothing]
+            -- Only committed adoption retires the earlier lineage's XP fence.
+            rawExecute
+              "UPDATE arkhamdb_pushes SET status = 'cancelled', error = NULL WHERE deck_id = ? AND campaign_key = ? AND status NOT IN ('succeeded', 'cancelled') AND left(?, length(event_key) + 5) = event_key || '/new/'"
+              [toPersistValue deckId, toPersistValue (arkhamDBPushCampaignKey job), toPersistValue (arkhamDBPushEventKey job)]
             P.update (arkhamDBPushGeneration job) [ArkhamDBAccountWriteBackFailures P.=. 0]
             pruneCompletedPushes deckId
             pure $ Just result
@@ -140,7 +144,7 @@ writeBackStore = ArkhamDBWriteBackStore
                 -- Never discard an uncertain creation intent and create again.
                 -- Explicit save-as-new starts a fresh, independently identified push.
                 if mode == "new" && arkhamDBPushStage job /= "ready" then do
-                  P.update key [ArkhamDBPushStatus P.=. "cancelled"]
+                  replace key $ saveAsNewPredecessor job
                   void $ insert $ saveAsNewPush now job
                 else replace key $ resolvedPush now mode job
                 pruneCompletedPushes deckId
@@ -184,8 +188,20 @@ pruneCompletedPushes deckId = rawExecute
   [toPersistValue deckId]
 
 oldestPush :: ArkhamDeckId -> DB (Maybe (Entity ArkhamDBPush))
-oldestPush deckId = selectFirst [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
-  [Asc ArkhamDBPushCreatedAt, Asc ArkhamDBPushId]
+oldestPush deckId = do
+  oldest <- selectFirst [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
+    [Asc ArkhamDBPushCreatedAt, Asc ArkhamDBPushId]
+  case oldest of
+    Nothing -> pure Nothing
+    Just original@(Entity _ job) -> do
+      -- A live save-as-new descendant runs ahead of its retained predecessor.
+      -- Disabled/undone targetless replacements are terminal, exposing the
+      -- predecessor fence again. Fetch at most one additional full payload.
+      let prefix = toPersistValue $ replacementEventPrefix job
+      replacements <- rawSql
+        "SELECT ?? FROM arkhamdb_pushes WHERE deck_id = ? AND campaign_key = ? AND status NOT IN ('succeeded', 'cancelled') AND left(event_key, length(?)) = ? ORDER BY length(event_key) DESC, created_at, id LIMIT 1"
+        [toPersistValue deckId, toPersistValue (arkhamDBPushCampaignKey job), prefix, prefix]
+      pure $ Just $ preferReplacement original replacements
 
 pushClaim :: Entity ArkhamDBPush -> [Filter ArkhamDBPush]
 pushClaim (Entity key job) =

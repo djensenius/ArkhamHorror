@@ -209,13 +209,26 @@ savedDeckUpgradeTargets getDeck findByUrl uid association oldUrl = case associat
     decks <- maybe (pure []) findByUrl oldUrl
     pure [key | Entity key deck <- decks, arkhamDeckUserId deck == uid]
 
+savedDeckUpgradeUpdates :: UTCTime -> ArkhamDeck -> ArkhamDBDecklist -> Either ArkhamDBError [Update ArkhamDeck]
+savedDeckUpgradeUpdates now deck incoming = do
+  adopted <- adoptDecklist deck incoming
+  pure $
+    [ ArkhamDeckList =. arkhamDeckList adopted
+    , ArkhamDeckOverlay =. arkhamDeckOverlay adopted
+    , ArkhamDeckLastUsedAt =. Just now
+    ] <> [ArkhamDeckUrl =. incoming.url | isJust incoming.url]
+
 ownsCampaignDeck :: UserId -> ArkhamDeck -> ArkhamDBDeckLink -> Bool
 ownsCampaignDeck uid deck link = arkhamDeckUserId deck == uid && arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
 
 canResolvePush :: Text -> ArkhamDBPush -> Bool
 canResolvePush mode job = arkhamDBPushStatus job `elem` ["conflict", "failed"] && mode `elem` ["overwrite", "new", "keep"] &&
   arkhamDBPushError job /= Just "boundaryUndone" &&
-  (mode /= "overwrite" || (arkhamDBPushStage job /= "creating" && isNothing (arkhamDBPushTargetId job) && arkhamDBPushError job /= Just "campaignChanged"))
+  (mode /= "overwrite" || (arkhamDBPushStage job /= "creating" && isNothing (arkhamDBPushTargetId job) &&
+    arkhamDBPushError job /= Just "campaignChanged" &&
+    -- An independent replacement must not switch back onto a predecessor's
+    -- possibly XP-credited lineage before its own creation has even started.
+    not ("/new/" `T.isInfixOf` arkhamDBPushEventKey job)))
 
 -- Keep-remote is read-only until adoption succeeds. In particular, a failed
 -- read must not retire the XP-bearing creation checkpoint or its overwrite fence.
@@ -278,6 +291,27 @@ saveAsNewPush now job = job
   , arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing, arkhamDBPushError = Nothing
   , arkhamDBPushUpdatedAt = now
   }
+
+-- A fresh independent intent is not adoption. Keep the original creation's
+-- accounting checkpoint outstanding until its replacement actually completes.
+saveAsNewPredecessor :: ArkhamDBPush -> ArkhamDBPush
+saveAsNewPredecessor job
+  | hasCreationIntent job = job
+  | otherwise = job {arkhamDBPushStatus = "cancelled"}
+
+replacementEventPrefix :: ArkhamDBPush -> Text
+replacementEventPrefix job = arkhamDBPushEventKey job <> "/new/"
+
+supersedesPush :: ArkhamDBPush -> ArkhamDBPush -> Bool
+supersedesPush replacement predecessor =
+  arkhamDBPushDeckId replacement == arkhamDBPushDeckId predecessor &&
+  arkhamDBPushCampaignKey replacement == arkhamDBPushCampaignKey predecessor &&
+  replacementEventPrefix predecessor `T.isPrefixOf` arkhamDBPushEventKey replacement
+
+preferReplacement :: Entity ArkhamDBPush -> [Entity ArkhamDBPush] -> Entity ArkhamDBPush
+preferReplacement original candidates = fromMaybe original $ viaNonEmpty head $
+  sortOn (negate . T.length . arkhamDBPushEventKey . entityVal) $
+    filter (\candidate -> entityVal candidate `supersedesPush` entityVal original) candidates
 
 campaignCopyDeck :: ArkhamDeck -> ArkhamDBRemoteDeck -> ArkhamDeck
 campaignCopyDeck deck remote = deck
