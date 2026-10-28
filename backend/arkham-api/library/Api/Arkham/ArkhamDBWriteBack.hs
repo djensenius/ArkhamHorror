@@ -222,43 +222,40 @@ pushUpdates job =
 -- Snapshot the durable campaign decks, not the investigator's shuffled draw pile.
 -- The association is resolved once by owner + URL and survives later remote syncs.
 queueCampaignWriteBack :: ArkhamGameId -> Int -> UTCTime -> Text -> Game -> DB ()
-queueCampaignWriteBack gameId step now boundary game = do
+queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ gameMode game) \campaign -> do
   history <- getBy404 $ UniqueStep gameId step
-  queueAtHistory (entityKey history)
- where
-  queueAtHistory historyId = for_ (modeCampaign $ gameMode game) \campaign -> do
-      players <- selectList [ArkhamPlayerArkhamGameId P.==. gameId] []
-      let owner playerId = arkhamPlayerUserId . entityVal <$> find ((== playerId) . PlayerId . coerce . entityKey) players
-          attrs = toAttrs campaign
-      for_ (Map.toList $ gameInvestigators game) \(iid, investigator) -> do
-        let ia = toAttrs investigator
-            key = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId iid)
-        for_ (owner $ investigatorPlayerId ia) \uid -> do
-          association <- getBy $ UniqueArkhamDBCampaignDeck key
-          saved <- case association of
-            Just (Entity _ value) -> P.get (arkhamDBCampaignDeckDeckId value) <&> fmap (Entity $ arkhamDBCampaignDeckDeckId value)
-            Nothing -> case investigatorDeckUrl ia of
-              Nothing -> pure Nothing
-              Just url -> do
-                links <- selectList [ArkhamDBDeckLinkUserId P.==. uid, ArkhamDBDeckLinkWriteBack P.==. True] []
-                selectFirst [ArkhamDeckUserId P.==. uid, ArkhamDeckUrl P.==. Just url, ArkhamDeckId P.<-. map (arkhamDBDeckLinkDeckId . entityVal) links] [Asc ArkhamDeckId]
-          for_ saved \(Entity deckId deck) -> do
-            mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
-            -- Lock only the generation's key, not the user/refresh lock. An unlink
-            -- either wins first (skip obsolete work) or waits until this INSERT's
-            -- transaction commits; it cannot turn gameplay into a FK violation.
-            generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
-            let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
-            case (mapping, generation, Map.lookup iid $ campaignDecks attrs) of
-              (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
-                when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
-                let story = Map.findWithDefault [] iid $ campaignStoryCards attrs
-                    list = campaignDeckSnapshot (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
-                    event = boundaryEventKey gameId step iid historyId
-                void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
-                  "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
-                  Nothing Nothing Nothing "normal" now now boundary
-              _ -> pure ()
+  players <- selectList [ArkhamPlayerArkhamGameId P.==. gameId] []
+  let owner playerId = arkhamPlayerUserId . entityVal <$> find ((== playerId) . PlayerId . coerce . entityKey) players
+      attrs = toAttrs campaign
+  for_ (Map.toList $ gameInvestigators game) \(iid, investigator) -> do
+    let ia = toAttrs investigator
+        key = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId iid)
+    for_ (owner $ investigatorPlayerId ia) \uid -> do
+      association <- getBy $ UniqueArkhamDBCampaignDeck key
+      saved <- case association of
+        Just (Entity _ value) -> P.get (arkhamDBCampaignDeckDeckId value) <&> fmap (Entity $ arkhamDBCampaignDeckDeckId value)
+        Nothing -> case investigatorDeckUrl ia of
+          Nothing -> pure Nothing
+          Just url -> do
+            links <- selectList [ArkhamDBDeckLinkUserId P.==. uid, ArkhamDBDeckLinkWriteBack P.==. True] []
+            selectFirst [ArkhamDeckUserId P.==. uid, ArkhamDeckUrl P.==. Just url, ArkhamDeckId P.<-. map (arkhamDBDeckLinkDeckId . entityVal) links] [Asc ArkhamDeckId]
+      for_ saved \(Entity deckId deck) -> do
+        mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
+        -- Lock only the generation's key, not the user/refresh lock. An unlink
+        -- either wins first (skip obsolete work) or waits until this INSERT's
+        -- transaction commits; it cannot turn gameplay into a FK violation.
+        generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
+        let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
+        case (mapping, generation, Map.lookup iid $ campaignDecks attrs) of
+          (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
+            when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
+            let story = Map.findWithDefault [] iid $ campaignStoryCards attrs
+                list = campaignDeckSnapshot (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
+                event = boundaryEventKey gameId step iid (entityKey history)
+            void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
+              "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
+              Nothing Nothing Nothing "normal" now now boundary
+          _ -> pure ()
 
 -- Undo holds the game lock. Retire only outstanding intents, preserving any
 -- transmitted checkpoint for inspection. Changing status fences a worker's
