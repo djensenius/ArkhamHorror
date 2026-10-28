@@ -1168,8 +1168,10 @@ The engine's `investigatorSideDeck` is an extra deck, not the ArkhamDB sideboard
 Joe Diamond's `meta.extra_deck` and the original `sideSlots` are carried through
 unchanged. An unrecognized engine taboo falls back to the original remote id. A stable
 association is recorded at the first boundary using the existing owner + deck
-URL match; future boundaries use that game + investigator association even if
-the saved deck URL changes. As with ordinary upgrade persistence, a deck that
+URL match; future boundaries and saved-deck upgrade persistence use that owned
+game + investigator association even if the saved deck URL changes (including a
+save-as-new campaign copy). Only an absent association falls back to owner + URL.
+As with ordinary upgrade persistence, a deck that
 was never saved locally cannot be associated by an arbitrary inline list alone.
 
 The boundary observer captures the campaign and investigator state when the
@@ -1204,6 +1206,14 @@ account rather than rolling back gameplay. It cannot revoke an
 already transmitted remote request. The existing ten-second request deadline,
 1 MiB decoded-body cap, bearer-token refresh and sanitized error rules apply to
 writes too. The request logger's ArkhamDB path exclusion includes these routes.
+
+Undo (single-step and all multi-step variants) cancels outstanding pushes for
+that game at or after the restored step, fencing their next request and local
+completion. Re-answering uses a fresh history-row identity even when the numeric
+step is reused, so it enqueues the corrected snapshot. **Already-sent pushes
+cannot be undone on ArkhamDB**, including a request in flight when undo commits.
+Undo does not roll back remote versions or credited XP; a later snapshot may
+conflict with those remote changes and require explicit resolution.
 
 API semantics verified against `https://arkhamdb.com/api/doc` and ArkhamDB's
 `Oauth2Controller`: `PUT deck/upgrade/{id}` creates a new version, taking earned
@@ -1267,6 +1277,8 @@ load→write interval. Resolution uses
   to keep ArkhamDB authoritative for longer.
 - `{"resolution":"overwrite","confirmed":true}` explicitly creates a version
   from the latest remote lineage using the campaign snapshot despite conflict.
+  Before upgrading, the resolved source must not belong to another campaign's
+  link, even when reached through a re-imported, unbound ancestor.
   It returns HTTP 409 for `campaignChanged`, an uncertain creation, or an already
   created target; use a plain retry for an already created target (never pay the
   earned XP delta twice).
@@ -1337,6 +1349,10 @@ as proof of production SQL correctness. The PostgreSQL/WAI follow-up must name:
   rejection, association creation, generation key-share through insertion,
   payload/story/player-card/sideboard/taboo projection and captured cumulative
   XP; ChooseDecksStep exclusion and both real end/upgrade boundary hooks.
+- Association-first saved-deck upgrade persistence after a campaign copy,
+  single/multi-step undo cancellation and claim fencing, and rewritten-history
+  boundary identities. The memory-store regressions exercise the production
+  resolver/key predicates, not PostgreSQL/WAI undo transactions.
 - Real WAI game-answer and deck-upgrade transactions committing under ArkhamDB
   outage, concurrent unlink/relink enqueue in both orders, callback/refresh
   locking and pool connection reuse; terminal retention (last 20 per link).
@@ -1354,7 +1370,10 @@ campaign's persisted association to a newly imported deck row; write-back for
 that campaign can stop enqueueing. There is currently no association-repointing
 API for this lifecycle case. Lineage bindings
 also remain after campaign completion/deletion; use save-as-new for a different
-campaign. These lifecycle UX changes are not included here. Succeeded/cancelled
+campaign. These lifecycle UX changes are not included here. Ordinary linked sync
+and repeat-import sync clear incorporated overlays only on first adopting a
+pushed snapshot; overlays attached after adoption survive re-syncing the same
+remote push marker. Succeeded/cancelled
 payload history is pruned to the newest 20 per local link; outstanding intents
 are never pruned.
 

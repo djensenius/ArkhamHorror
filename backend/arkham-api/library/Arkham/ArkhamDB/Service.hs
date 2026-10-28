@@ -232,20 +232,23 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
                 , arkhamDeckUrl = decklist.url
                 , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
                 , arkhamDeckInvestigatorName = remote.deck.investigator_name
-                -- Write-back snapshots already contain the campaign overlay.
-                , arkhamDeckOverlay = if materializedCampaignDeck remote.deck then Nothing else arkhamDeckOverlay deck
+                -- Clear an incorporated overlay only on first adopting a push.
+                -- An overlay attached after adoption is not in that snapshot.
+                , arkhamDeckOverlay = if isJust (campaignPushMarker remote.deck) &&
+                    campaignPushMarker remote.deck /= campaignPushMarker (arkhamDeckList deck)
+                    then Nothing else arkhamDeckOverlay deck
                 }
           lift $ store.validateDeck $ arkhamDeckPlayList updated
           saved <- lift $ store.saveSyncedDeck generation deckId updated remote now
           unless saved $ throwError linkChanged
           pure $ Entity deckId updated
 
-materializedCampaignDeck :: ArkhamDBDecklist -> Bool
-materializedCampaignDeck deck = case deck.meta >>= decodeStrict' . encodeUtf8 of
+campaignPushMarker :: ArkhamDBDecklist -> Maybe Text
+campaignPushMarker deck = case deck.meta >>= decodeStrict' . encodeUtf8 of
   Just (Object metadata) -> case KM.lookup "ahn_push" metadata of
-    Just (String marker) -> not $ T.null marker
-    _ -> False
-  _ -> False
+    Just (String marker) | not (T.null marker) -> Just marker
+    _ -> Nothing
+  _ -> Nothing
 
 -- The same adopted overlay must be returned and persisted by linked sync.
 syncedDeckUpdates :: ArkhamDeck -> [Update ArkhamDeck]

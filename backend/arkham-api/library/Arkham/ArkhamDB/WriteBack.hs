@@ -18,6 +18,10 @@ import Data.UUID qualified as UUID
 import Database.Persist (Entity (..), Update, (=.))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
+import Entity.Arkham.Game
+import Entity.Arkham.Step
+import Arkham.Card.CardCode (unCardCode)
+import Arkham.Id (InvestigatorId (..))
 import Entity.User
 import Relude
 import Settings (ArkhamDBSettings)
@@ -151,6 +155,37 @@ pushCanRun :: UTCTime -> Bool -> ArkhamDBPush -> Bool
 pushCanRun now retry job = arkhamDBPushStatus job == "pending" ||
   (retry && arkhamDBPushStatus job == "failed") ||
   (arkhamDBPushStatus job == "running" && arkhamDBPushUpdatedAt job < addUTCTime (-60) now)
+
+-- The cursor is reusable after undo; the history row UUID is not. Keep the
+-- numeric step for retiring old intents, including ones from before this key format.
+boundaryEventKey :: ArkhamGameId -> Int -> InvestigatorId -> ArkhamStepId -> Text
+boundaryEventKey gameId step iid historyId = UUID.toText (coerce gameId) <> "/" <> T.pack (show step)
+  <> "/" <> unCardCode (unInvestigatorId iid) <> "/" <> UUID.toText (coerce historyId)
+
+boundaryWasUndone :: Int -> Text -> Bool
+boundaryWasUndone restoredStep event = case T.splitOn "/" event of
+  _ : step : _ -> maybe False (>= restoredStep) (readMaybe $ toString step :: Maybe Int)
+  _ -> False
+
+-- Resolve upgrade persistence independently of the live investigator's URL:
+-- save-as-new can move this campaign to a copy without changing that URL.
+savedDeckUpgradeTargets
+  :: Monad m
+  => (ArkhamDeckId -> m (Maybe ArkhamDeck))
+  -> (Text -> m [Entity ArkhamDeck])
+  -> UserId
+  -> Maybe ArkhamDBCampaignDeck
+  -> Maybe Text
+  -> m [ArkhamDeckId]
+savedDeckUpgradeTargets getDeck findByUrl uid association oldUrl = case association of
+  Just campaign | arkhamDBCampaignDeckUserId campaign == uid -> do
+    let key = arkhamDBCampaignDeckDeckId campaign
+    deck <- getDeck key
+    pure [key | Just owned <- [deck], arkhamDeckUserId owned == uid]
+  Just _ -> pure [] -- A stale/foreign association must never fall back to another deck.
+  Nothing -> do
+    decks <- maybe (pure []) findByUrl oldUrl
+    pure [key | Entity key deck <- decks, arkhamDeckUserId deck == uid]
 
 ownsCampaignDeck :: UserId -> ArkhamDeck -> ArkhamDBDeckLink -> Bool
 ownsCampaignDeck uid deck link = arkhamDeckUserId deck == uid && arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
@@ -435,7 +470,15 @@ runWriteBack store writes client settings now retry userId deckId = do
                       saveVersion False target desired
                   else do
                     source <- if arkhamDBPushMode job == "overwrite" then latestVersion (entityVal ready) [original.remoteDeckId] original else pure original
-                    createVersion ready desired (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
+                    -- A re-imported ancestor has no campaign binding of its own.
+                    -- Overwrite must not use it to enter another campaign's lineage.
+                    links <- lift $ store.findDeckLinks userId
+                    let sourceOwnedElsewhere = any (\(_, candidate) ->
+                          arkhamDBDeckLinkRemoteDeckId candidate == source.remoteDeckId &&
+                          maybe False (/= arkhamDBPushCampaignKey job) (arkhamDBDeckLinkCampaignKey candidate)) links
+                    if sourceOwnedElsewhere
+                      then conflict ready source "campaignChanged"
+                      else createVersion ready desired (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
     result <- runExceptT $ process initial
     case result of
       Left err -> do

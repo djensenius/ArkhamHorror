@@ -52,6 +52,8 @@ import Database.Persist (Entity (..), Update (..), PersistUpdate (Assign), field
 import Database.Persist.Sql (toSqlKey)
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
+import Entity.Arkham.Game
+import Entity.Arkham.Step
 import Relude hiding (state)
 import Test.Hspec
 import System.Timeout (timeout)
@@ -245,6 +247,69 @@ applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId 
 
 spec :: Spec
 spec = describe "ArkhamDB campaign write-back" do
+  it "persists copy-then-upgrade to the campaign association rather than the live original URL" do
+    h <- newHarness
+    modifyIORef' h.linked \state -> state
+      { Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkCampaignKey = Just "other/iid"}) Linking.deckId state.storedLinks }
+    modifyIORef' h.job \job -> job {arkhamDBPushStatus = "conflict"}
+    h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+    h.run False
+    assertState h "succeeded"
+    state <- readIORef h.linked
+    let copyId = ArkhamDeckKey $ UUID.fromWords 0 0 0 246
+        association = ArkhamDBCampaignDeck "game/iid" copyId Linking.userId 5
+        getDeck key = pure $ Map.lookup key state.storedDecks
+        byUrl url = pure [Entity key deck | (key, deck) <- Map.toList state.storedDecks, arkhamDeckUrl deck == Just url]
+        oldUrl = Just $ publicDeckUrl Linking.settings "123"
+        upgraded = currentDeck {Decklist.slots = Map.singleton "01007" 2}
+    targets <- savedDeckUpgradeTargets getDeck byUrl Linking.userId (Just association) oldUrl
+    targets `shouldBe` [copyId]
+    let persisted = foldl' (\decks key -> Map.adjust (\deck -> deck {arkhamDeckList = upgraded}) key decks) state.storedDecks targets
+    arkhamDeckList <$> Map.lookup Linking.deckId persisted `shouldBe` arkhamDeckList <$> Map.lookup Linking.deckId state.storedDecks
+    arkhamDeckList <$> Map.lookup copyId persisted `shouldBe` Just upgraded
+    -- Both association ownership and saved-row ownership are required. A
+    -- stale association must not fall through to the original URL's deck.
+    let foreignUser = toSqlKey 999
+    savedDeckUpgradeTargets getDeck byUrl Linking.userId (Just association {arkhamDBCampaignDeckUserId = foreignUser}) oldUrl `shouldReturn` []
+    savedDeckUpgradeTargets (\key -> fmap (\deck -> deck {arkhamDeckUserId = foreignUser}) <$> getDeck key)
+      byUrl Linking.userId (Just association) oldUrl `shouldReturn` []
+    savedDeckUpgradeTargets getDeck byUrl Linking.userId Nothing oldUrl `shouldReturn` [Linking.deckId]
+
+  for_ ["pending", "running", "failed", "conflict"] \status ->
+    it ("fences an undone " <> toString status <> " boundary before its next remote request") do
+      h <- newHarness
+      modifyIORef' h.job \job -> job {arkhamDBPushStatus = status}
+      job <- readIORef h.job
+      -- The production undo store selects this game's outstanding event keys
+      -- and uses this predicate before atomically cancelling their claims.
+      when (boundaryWasUndone 1 $ arkhamDBPushEventKey job) $
+        modifyIORef' h.job \current -> current {arkhamDBPushStatus = "cancelled"}
+      assertState h "cancelled"
+      h.run True
+      assertNoPush h
+      boundaryWasUndone 2 (arkhamDBPushEventKey job) `shouldBe` False
+      boundaryWasUndone 0 (arkhamDBPushEventKey job) `shouldBe` True
+
+  it "enqueues a fresh corrected snapshot when undo re-answers a reused boundary step" do
+    h <- newHarness
+    let gameId = ArkhamGameKey $ UUID.fromWords 0 0 0 1
+        firstHistory = ArkhamStepKey $ UUID.fromWords 0 0 0 2
+        rewrittenHistory = ArkhamStepKey $ UUID.fromWords 0 0 0 3
+        firstEvent = boundaryEventKey gameId 5 "01001" firstHistory
+        nextEvent = boundaryEventKey gameId 5 "01001" rewrittenHistory
+        corrected = currentDeck {Decklist.slots = Map.singleton "01007" 2}
+    firstEvent `shouldNotBe` nextEvent
+    job <- readIORef h.job
+    let outbox = Map.singleton firstEvent job {arkhamDBPushEventKey = firstEvent, arkhamDBPushStatus = "cancelled"}
+        replacement = job {arkhamDBPushEventKey = nextEvent, arkhamDBPushPayload = encodePushDeck corrected}
+        enqueued = Map.insertWith (\_ old -> old) nextEvent replacement outbox
+    Map.size enqueued `shouldBe` 2
+    writeIORef h.job $ fromMaybe (error "Missing rewritten boundary") $ Map.lookup nextEvent enqueued
+    h.run False
+    assertState h "succeeded"
+    pushed <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing pushed deck") pure
+    pushed.deck.slots `shouldBe` corrected.slots
+
   it "coalesces saturated dispatch admission and leaves an unrelated small-pool connection available" do
     executor <- newArkhamDBExecutor
     pool <- newTBQueueIO 2
@@ -626,6 +691,56 @@ spec = describe "ArkhamDB campaign write-back" do
     saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked
     fmap (Decklist.slots . arkhamDeckPlayList) saved `shouldBe` Just currentDeck.slots
     fmap arkhamDeckOverlay saved `shouldBe` Just Nothing
+
+  for_ [False, True] \viaImport ->
+    it ("preserves overlays attached after adopting a push through " <> if viaImport then "repeat-import sync" else "sync") do
+      h <- newHarness
+      h.run False
+      assertState h "succeeded"
+      let sync = runExceptT (if viaImport
+            then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId "124" Linking.forbiddenPublic
+            else syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic)
+            >>= either (fail . show) pure
+          overlay = DeckOverlay Nothing mempty (Map.singleton "01006" 1) mempty
+      _ <- sync
+      modifyIORef' h.linked \state -> state
+        { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) Linking.deckId state.storedDecks }
+      replicateM_ 2 do
+        result <- sync
+        arkhamDeckOverlay (entityVal result) `shouldBe` Just overlay
+        Map.lookup "01006" (Decklist.slots $ arkhamDeckPlayList $ entityVal result) `shouldBe` Just 2
+        saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+        arkhamDeckOverlay saved `shouldBe` Just overlay
+
+  it "rejects ancestor re-import overwrite into another campaign's resolved source lineage" do
+    h <- newHarness
+    -- Seed A's saved row at 124. Leave the harness's next local id available
+    -- so the real repeat-ancestor import creates B's independently unbound row.
+    let otherId = ArkhamDeckKey $ UUID.fromWords 0 0 0 999
+    modifyIORef' h.linked \state -> state
+      { Linking.storedLinks = case Map.lookup Linking.deckId state.storedLinks of
+          Nothing -> mempty
+          Just link -> Map.singleton otherId link
+            { arkhamDBDeckLinkDeckId = otherId, arkhamDBDeckLinkRemoteDeckId = "124"
+            , arkhamDBDeckLinkCampaignKey = Just "campaign-a/iid" }
+      , Linking.storedDecks = maybe mempty (Map.singleton otherId) $ Map.lookup Linking.deckId state.storedDecks
+      , Linking.storedNextDeck = 23 }
+    modifyIORef' h.remotes $ Map.insert "124" Linking.remote
+      {ArkhamDB.remoteDeckId = "124", dateUpdate = Just "campaign-a"} .
+      Map.adjust (\remote -> remote {nextDeckId = Just "124"}) "123"
+    imported <- runExceptT $ importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId "123" Linking.forbiddenPublic
+    fmap entityKey imported `shouldBe` Right Linking.deckId
+    modifyIORef' h.linked \state -> state
+      { Linking.storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkWriteBack = True}) Linking.deckId state.storedLinks }
+    h.run False
+    assertState h "conflict"
+    h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` True
+    h.run False
+    assertState h "conflict"
+    arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "campaignChanged"
+    h.writes.resolvePush Linking.now Linking.userId Linking.deckId "overwrite" `shouldReturn` False
+    assertNoPush h
+    readIORef h.baseline `shouldReturn` 0
 
   for_ [False, True] \viaImport ->
     for_ [False, True] \materialized ->

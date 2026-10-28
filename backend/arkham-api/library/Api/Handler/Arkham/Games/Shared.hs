@@ -595,8 +595,6 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
                 arkhamGameCreatedAt
                 now
         replace gameId g'
-        writeBackBoundary <- readIORef writeBackBoundaryRef
-        for_ writeBackBoundary \(boundary, snapshot) -> queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary snapshot
         {- In order, one row at a time, NOT every insert then every retraction.
 
         A narration may retract its own previous line and immediately write the
@@ -633,6 +631,8 @@ updateGameWithAnswerRejection customCards response gameId mRoom = do
             [ ArkhamStepChoice =. Choice diffDown updatedQueue
             , ArkhamStepActionDiff =. ActionDiff (view actionDiffL ge)
             ]
+        writeBackBoundary <- readIORef writeBackBoundaryRef
+        for_ writeBackBoundary \(boundary, snapshot) -> queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary snapshot
 
         -- Epic Multiplayer: drain any shared-counter deltas emitted this action
         -- and apply them to the authoritative event row under a short FOR UPDATE

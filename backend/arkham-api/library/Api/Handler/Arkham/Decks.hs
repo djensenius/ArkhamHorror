@@ -26,6 +26,8 @@ import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Campaign.Types (campaignLog)
 import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary)
+import Arkham.ArkhamDB.WriteBack (savedDeckUpgradeTargets)
+import Entity.Arkham.ArkhamDBAccount
 import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
 import Arkham.CampaignLogKey (CampaignLogKey (DrivenInsaneInvestigators, KilledInvestigators), recordedCardCodes)
 import Arkham.Card.CardCode
@@ -52,8 +54,10 @@ import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time.Clock
+import Data.UUID qualified as UUID
 import Data.Traversable (for)
 import Database.Esqueleto.Experimental hiding (isNothing, (<&>))
+import Database.Persist qualified as Persist
 import Entity.Arkham.Step
 import Json hiding (Success)
 import Network.HTTP.Conduit (
@@ -318,24 +322,20 @@ putApiV1ArkhamGameDecksR gameId = do
                           (arkhamGameStep + 1)
                           (ActionDiff $ view actionDiffL ge)
 
-                      {- Keep the player's saved deck in step with the campaign. Without this the
-                      deck page (which renders the arkham_decks row) shows the list as first
-                      imported forever, and its Sync button cannot help: an arkham.build deck url is
-                      a version-pinned share snapshot (#5257). There is no game -> deck foreign key,
-                      so the row is found by owner + the url the game was using; since we move the
-                      row's url forward too, later upgrades keep matching. A deck imported into two
-                      live campaigns therefore tracks whichever upgraded last.
-                      Skipped for a replacement investigator -- that is a different deck, not an
-                      upgrade of this one. -}
+                      -- A campaign copy keeps the live investigator's old URL.
+                      -- Prefer its owned association; URL matching is only for
+                      -- saved decks without a write-back association (#5257).
+                      -- Replacements are different decks, not upgrades of this one.
                       for_ mDecklist \decklist ->
                         when (sameInvestigator investigatorId decklist) do
-                          for_ (attr investigatorDeckUrl investigatorEntity) \oldDeckUrl ->
-                            update \d -> do
-                              set d
-                                $ [ArkhamDeckList =. val decklist, ArkhamDeckLastUsedAt =. val (Just now)]
-                                <> [ArkhamDeckUrl =. val decklist.url | isJust decklist.url]
-                              where_ $ d.userId ==. val userId
-                              where_ $ d.url ==. val (Just oldDeckUrl)
+                          let campaignKey = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId investigatorId)
+                          association <- fmap entityVal <$> getBy (UniqueArkhamDBCampaignDeck campaignKey)
+                          targets <- savedDeckUpgradeTargets Persist.get
+                            (\url -> P.selectList [ArkhamDeckUserId P.==. userId, ArkhamDeckUrl P.==. Just url] [])
+                            userId association (attr investigatorDeckUrl investigatorEntity)
+                          for_ targets \deckId -> P.update deckId $
+                            [ArkhamDeckList P.=. decklist, ArkhamDeckLastUsedAt P.=. Just now]
+                              <> [ArkhamDeckUrl P.=. decklist.url | isJust decklist.url]
 
                       for_ writeBackBoundary \(boundary, snapshot) ->
                         queueCampaignWriteBack gameId (arkhamGameStep + 1) now boundary snapshot

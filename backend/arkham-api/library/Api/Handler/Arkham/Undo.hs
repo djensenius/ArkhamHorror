@@ -10,6 +10,7 @@ module Api.Handler.Arkham.Undo (
 
 import Api.Arkham.Epic (getGameUndoFloor, lookupGameEvent, revertEpicDeltasForGameStep)
 import Api.Arkham.Helpers
+import Api.Arkham.ArkhamDBWriteBack (cancelCampaignWriteBack)
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.Games.Shared (propagateShared, publishToRoom)
 import Arkham.Card.CardCode
@@ -131,6 +132,7 @@ stepBack isDebug userId gameId = do
             set g [ArkhamGameStep =. val (n - 1)]
             where_ $ g.id ==. val gameId
           trimLogFrom gameId (n - 1)
+          cancelCampaignWriteBack gameId (n - 1)
           deleteKey stepId
           revertShared
         pure
@@ -176,6 +178,7 @@ stepBack isDebug userId gameId = do
                   rawGame.createdAt
                   now
               trimLogFrom gameId (n - 1)
+              cancelCampaignWriteBack gameId (n - 1)
               deleteKey stepId
               plan <- revertShared
 
@@ -476,6 +479,7 @@ stepBackToRawStep userId gameId rawGame requestedStep = runExceptT do
     -- drop the log of the first undone action (the one that landed at toStep+1), not
     -- just > toStep.
     trimLogFrom gameId toStep
+    cancelCampaignWriteBack gameId toStep
 
   -- Epic Multiplayer: multi-step undo must ALSO revert the shared-counter deltas
   -- recorded on every undone step (single-step 'stepBack' already does), deleting
