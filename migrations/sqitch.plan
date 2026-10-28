@@ -38,3 +38,4 @@ log_entry_group [add_key_to_log_entries] 2026-10-06T00:00:00Z Claude <noreply@an
 arkhamdb_account_linking [users arkham_decks] 2026-10-19T00:00:00Z David Jensenius <david@jensenius.com> # ArkhamDB OAuth accounts and private deck sync links
 arkhamdb_write_back [arkhamdb_account_linking] 2026-10-23T00:00:00Z David Jensenius <david@jensenius.com> # Durable opt-in campaign deck write-back
 arkhamdb_write_back_undo_index [arkhamdb_write_back] 2026-10-28T00:00:00Z David Jensenius <david@jensenius.com> # Indexed per-game undo admission and cancellation
+arkhamdb_write_back_accounting_fences [arkhamdb_write_back] 2026-10-28T01:00:00Z David Jensenius <david@jensenius.com> # Preserve uncertain accounting across credential generation deletion

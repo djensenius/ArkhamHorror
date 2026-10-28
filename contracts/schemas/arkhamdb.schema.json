@@ -248,7 +248,8 @@
             "campaignChanged",
             "pushUncertain",
             "targetAlreadyLinked",
-            "boundaryUndone"
+            "boundaryUndone",
+            "accountChanged"
           ]
         },
         "lastSyncedDateUpdate": {

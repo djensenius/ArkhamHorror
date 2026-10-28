@@ -60,7 +60,7 @@ ArkhamDBPush sql=arkhamdb_pushes
   Id UUID default=uuid_generate_v4()
   deckId ArkhamDeckId OnDeleteCascade
   userId UserId OnDeleteCascade
-  generation ArkhamDBAccountId OnDeleteCascade
+  generation ArkhamDBAccountId noreference
   eventKey Text
   campaignKey Text
   payload Text

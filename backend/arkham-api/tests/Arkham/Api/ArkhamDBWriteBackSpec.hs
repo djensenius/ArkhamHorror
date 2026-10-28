@@ -1004,10 +1004,30 @@ spec = describe "ArkhamDB campaign write-back" do
         fixture <- Linking.loadNamedFixture "arkhamdb-write-back.json"
         case fixture of
           Object value -> case KM.lookup "states" value of
-            Just (Array states) -> Just (toJSON status) `shouldBe` viaNonEmpty last (toList states)
+            Just (Array states) -> Just (toJSON status) `shouldBe` find (\case
+              Object state -> KM.lookup "error" state == Just (String "boundaryUndone")
+              _ -> False) states
             _ -> expectationFailure "Missing fixture states"
           _ -> expectationFailure "Invalid write-back fixture"
       _ -> expectationFailure "Expected one actual undone status"
+
+  it "keeps accountChanged accounting non-runnable through disable, undo, retry and all resolutions" do
+    h <- newHarness
+    runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
+    job <- readIORef h.job
+    let fence = job {arkhamDBPushStatus = "conflict", arkhamDBPushError = Just "accountChanged"}
+    disabledPush fence `shouldSatisfy` \kept -> arkhamDBPushError kept == Just "accountChanged" && arkhamDBPushStatus kept == "conflict"
+    undonePush fence `shouldSatisfy` \kept -> arkhamDBPushError kept == Just "accountChanged" && arkhamDBPushStatus kept == "conflict"
+    for_ [False, True] \retry -> pushCanRun Linking.now retry fence `shouldBe` False
+    for_ ["keep", "overwrite", "new"] \mode -> canResolvePush mode fence `shouldBe` False
+    writeIORef h.job fence
+    states <- h.writes.deckWriteBackStatus Linking.userId
+    fixture <- Linking.loadNamedFixture "arkhamdb-write-back.json"
+    case (states, fixture) of
+      ([status], Object value) -> case KM.lookup "states" value of
+        Just (Array expected) -> Just (toJSON status) `shouldBe` viaNonEmpty last (toList expected)
+        _ -> expectationFailure "Missing accountChanged fixture"
+      _ -> expectationFailure "Missing accountChanged status"
 
   it "upgrades then saves the current campaign slots, story cards, weaknesses, sideboard, meta and taboo" do
     h <- newHarness
@@ -1860,8 +1880,11 @@ writeBackFixture = do
   undone <- newHarness
   runWith undone undone.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
   cancelHarnessUndo undone 0
+  retired <- newHarness
+  runWith retired retired.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
+  modifyIORef' retired.job \job -> job {arkhamDBPushStatus = "conflict", arkhamDBPushError = Just "accountChanged"}
   let statuses h = h.writes.deckWriteBackStatus Linking.userId
-  states <- concat <$> traverse statuses [success, conflict, failure, disabled, uncertain, collision, undone]
+  states <- concat <$> traverse statuses [success, conflict, failure, disabled, uncertain, collision, undone, retired]
   pure $ object
     [ "states" .= states
     , "toggleRequest" .= ArkhamDBWriteBackToggleRequest True

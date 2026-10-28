@@ -6,7 +6,7 @@
 module Arkham.Api.ArkhamDBSpec where
 
 import Api.Handler.Arkham.ArkhamDB (arkhamDBCallback, runArkhamDB)
-import Api.Handler.Arkham.Decks (toDeckErrors)
+import Api.Handler.Arkham.Decks (toDeckErrors, deleteSavedDeckResponse)
 import Application (makeLogWare)
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB.WriteBack (ArkhamDBStatusResponse (..))
@@ -57,20 +57,26 @@ import Yesod.Core qualified as Yesod
 
 -- Dispatch the same callback body as the production route through Yesod/WAI.
 -- Only persistence and remote HTTP are replaced; redirects are not simulated.
-data CallbackSite = CallbackSite (ArkhamDBStore IO) (ArkhamDBClient IO)
+data CallbackSite = CallbackSite (ArkhamDBStore IO) (ArkhamDBClient IO) (IO Bool)
 Yesod.mkYesod "CallbackSite" [Yesod.parseRoutes|
 /api/v1/arkham/arkhamdb/callback CallbackR GET
 /lock-timeout LockTimeoutR GET
 /overlay-sync OverlaySyncR POST
 /overlay-import OverlayImportR POST
+/deck DeckDeletionR DELETE
 |]
 
 instance Yesod.Yesod CallbackSite where
   makeSessionBackend _ = pure Nothing
 
+deleteDeckDeletionR :: Yesod.HandlerFor CallbackSite ()
+deleteDeckDeletionR = do
+  CallbackSite _ _ remove <- Yesod.getYesod
+  deleteSavedDeckResponse $ liftIO remove
+
 getCallbackR :: Yesod.HandlerFor CallbackSite Yesod.Html
 getCallbackR = do
-  CallbackSite store client <- Yesod.getYesod
+  CallbackSite store client _ <- Yesod.getYesod
   arkhamDBCallback (handlerStore store) (pure $ hoistArkhamDBClient liftIO client) settings
 
 -- Exercise the real handler boundary after PostgreSQL aborts a transaction.
@@ -80,13 +86,13 @@ getLockTimeoutR = runArkhamDB $ liftIO $ throwIO $
 
 postOverlaySyncR :: Yesod.HandlerFor CallbackSite Value
 postOverlaySyncR = do
-  CallbackSite store client <- Yesod.getYesod
+  CallbackSite store client _ <- Yesod.getYesod
   toJSON <$> runArkhamDB (syncRemoteDeck (handlerStore store) (hoistArkhamDBClient liftIO client)
     settings now userId deckId (liftIO . forbiddenPublic))
 
 postOverlayImportR :: Yesod.HandlerFor CallbackSite Value
 postOverlayImportR = do
-  CallbackSite store client <- Yesod.getYesod
+  CallbackSite store client _ <- Yesod.getYesod
   toJSON <$> runArkhamDB (importRemoteDeck (handlerStore store) (hoistArkhamDBClient liftIO client)
     settings now userId "123" (liftIO . forbiddenPublic))
 
@@ -421,6 +427,18 @@ spec = describe "ArkhamDB account linking and private decks" do
     arkhamDeckLastUsedAt persisted `shouldBe` Nothing
     toJSON (entityVal result) `shouldBe` toJSON persisted
 
+  for_ [False, True] \unused ->
+    it ("returns the actual saved-deck DELETE HTTP response for unused=" <> show unused) do
+      called <- newIORef (0 :: Int)
+      (store, _) <- newStore
+      application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (modifyIORef' called (+1) >> pure unused)
+      response <- WaiTest.runSession
+        (WaiTest.request $ (WaiTest.setPath WaiTest.defaultRequest "/deck") {Wai.requestMethod = "DELETE"}) application
+      WaiTest.simpleStatus response `shouldBe` if unused then status200 else status409
+      unless unused $ eitherDecode @Value (WaiTest.simpleBody response) `shouldBe` Right (object
+        ["errorMsg" .= String "Saved deck has campaign accounting or unresolved write-back; deletion requires reconciliation"])
+      readIORef called `shouldReturn` 1
+
   for_ ["/overlay-sync", "/overlay-import"] \path ->
     it ("returns actual HTTP 400 for ambiguous overlay adoption through " <> BS8.unpack path) do
       (store, ref) <- newStore
@@ -431,7 +449,7 @@ spec = describe "ArkhamDB account linking and private decks" do
           client = stubClient {loadDeck = \_ _ -> pure $ Right incoming}
       modifyIORef' ref \s -> s {storedDecks = Map.adjust (\d -> d {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
       before <- Map.lookup deckId . storedDecks <$> readIORef ref
-      application <- Yesod.toWaiAppPlain $ CallbackSite store client
+      application <- Yesod.toWaiAppPlain $ CallbackSite store client (pure True)
       response <- WaiTest.runSession
         (WaiTest.request $ (WaiTest.setPath WaiTest.defaultRequest path) {Wai.requestMethod = "POST"}) application
       WaiTest.simpleStatus response `shouldBe` status400
@@ -483,7 +501,7 @@ spec = describe "ArkhamDB account linking and private decks" do
 
   it "sanitizes PostgreSQL lock timeout as retryable remoteUnavailable" do
     (store, _) <- newStore
-    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (pure True)
     response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest "/lock-timeout") application
     WaiTest.simpleStatus response `shouldBe` status502
     eitherDecode @Value (WaiTest.simpleBody response) `shouldBe` Right (object
@@ -533,7 +551,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     (store, ref) <- newStore
     time <- getCurrentTime
     _ <- runExceptT $ startLink store settings time userId "nonce"
-    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (pure True)
     response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest
       "/api/v1/arkham/arkhamdb/callback?state=nonce&code=authorization-code") application
     WaiTest.simpleStatus response `shouldBe` status302
@@ -553,7 +571,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     (store, _) <- newStore
     time <- getCurrentTime
     _ <- runExceptT $ startLink store settings time userId "nonce"
-    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (pure True)
     response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest
       "/api/v1/arkham/arkhamdb/callback?state=nonce&code=authorization-code&web=1") application
     WaiTest.simpleStatus response `shouldBe` status302
@@ -566,7 +584,7 @@ spec = describe "ArkhamDB account linking and private decks" do
       time <- getCurrentTime
       _ <- runExceptT $ startLink store settings time userId "nonce"
       let client = stubClient {exchangeCode = \_ _ -> expectationFailure "error callback exchanged OAuth code" >> pure (Right tokens)}
-      application <- Yesod.toWaiAppPlain $ CallbackSite store client
+      application <- Yesod.toWaiAppPlain $ CallbackSite store client (pure True)
       response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest $
         "/api/v1/arkham/arkhamdb/callback?state=nonce&code=must-not-exchange&error=" <> oauthError) application
       WaiTest.simpleStatus response `shouldBe` status302

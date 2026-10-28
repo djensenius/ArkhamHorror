@@ -32,9 +32,10 @@ writeBackStore = ArkhamDBWriteBackStore
       if null available then pure Nothing else do
         mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
         account <- getBy $ UniqueArkhamDBAccountUser uid
+        fenced <- hasAccountAccountingFence deckId
         case (mapping, account) of
           (Just (Entity _ link), Just (Entity generation accountValue))
-            | arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link && writeBackAdmissionReady now accountValue -> do
+            | not fenced, arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link && writeBackAdmissionReady now accountValue -> do
               pending <- oldestPush deckId
               case pending of
                 Just (Entity key job) | pushCanRun now retry job && generation == arkhamDBPushGeneration job -> do
@@ -135,9 +136,10 @@ writeBackStore = ArkhamDBWriteBackStore
       lockArkhamDBUser uid
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
       pending <- oldestPush deckId
+      fenced <- hasAccountAccountingFence deckId
       case (mapping, pending) of
         (Just (Entity _ link), Just (Entity key job))
-          | arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
+          | not fenced, arkhamDBDeckLinkUserId link == uid && arkhamDBDeckLinkWriteBack link
           , canResolvePush mode job -> do
               active <- sameAccountGeneration uid $ arkhamDBPushGeneration job
               if not active then pure False else do
@@ -189,10 +191,17 @@ pruneCompletedPushes deckId = rawExecute
 
 oldestPush :: ArkhamDeckId -> DB (Maybe (Entity ArkhamDBPush))
 oldestPush deckId = do
-  oldest <- selectFirst [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
+  fence <- selectFirst
+    [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushError P.==. Just "accountChanged",
+     ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
     [Asc ArkhamDBPushCreatedAt, Asc ArkhamDBPushId]
+  oldest <- case fence of
+    Just _ -> pure fence
+    Nothing -> selectFirst [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
+      [Asc ArkhamDBPushCreatedAt, Asc ArkhamDBPushId]
   case oldest of
     Nothing -> pure Nothing
+    Just original@(Entity _ job) | accountingFencedPush job -> pure $ Just original
     Just original@(Entity _ job) -> do
       -- A live save-as-new descendant runs ahead of its retained predecessor.
       -- Disabled/undone targetless replacements are terminal, exposing the
@@ -202,6 +211,13 @@ oldestPush deckId = do
         "SELECT ?? FROM arkhamdb_pushes WHERE deck_id = ? AND campaign_key = ? AND status NOT IN ('succeeded', 'cancelled') AND left(event_key, length(?)) = ? ORDER BY length(event_key) DESC, created_at, id LIMIT 1"
         [toPersistValue deckId, toPersistValue (arkhamDBPushCampaignKey job), prefix, prefix]
       pure $ Just $ preferReplacement original replacements
+
+-- Survives account deletion: neither a new generation nor another queued
+-- campaign may acknowledge/cancel an unresolved old generation's remote call.
+hasAccountAccountingFence :: ArkhamDeckId -> DB Bool
+hasAccountAccountingFence deckId = (> 0) <$> P.count
+  [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushError P.==. Just "accountChanged",
+   ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
 
 pushClaim :: Entity ArkhamDBPush -> [Filter ArkhamDBPush]
 pushClaim (Entity key job) =
@@ -214,7 +230,8 @@ activePush previous@(Entity _ job) = do
   active <- sameAccountGeneration (arkhamDBPushUserId job) (arkhamDBPushGeneration job)
   matching <- P.count $ pushClaim previous
   link <- getBy $ UniqueArkhamDBDeckLinkDeck $ arkhamDBPushDeckId job
-  pure $ active && matching == 1 && maybe False (arkhamDBDeckLinkWriteBack . entityVal) link
+  fenced <- hasAccountAccountingFence $ arkhamDBPushDeckId job
+  pure $ not fenced && active && matching == 1 && maybe False (arkhamDBDeckLinkWriteBack . entityVal) link
 
 -- activePush has acquired the user lock also used by saveImportedDeck, so
 -- neither a concurrent import nor another completion can claim this target
@@ -260,14 +277,18 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
         -- under the key lock: the earlier URL/association lookup is only a hint.
         decks <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue deckId]
         for_ (decks :: [Entity ArkhamDeck]) \(Entity _ deck) -> do
-          mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
+          -- FOR SHARE (not KEY SHARE) conflicts with opt-out's flag UPDATE.
+          -- Skip a busy link rather than delaying the game transaction.
+          mappings <- rawSql "SELECT ?? FROM arkhamdb_deck_links WHERE deck_id = ? FOR SHARE SKIP LOCKED" [toPersistValue deckId]
+          let mapping = viaNonEmpty head (mappings :: [Entity ArkhamDBDeckLink])
           -- Lock only the generation's key, not the user/refresh lock. An unlink
           -- either wins first (skip obsolete work) or waits until this INSERT's
           -- transaction commits; it cannot turn gameplay into a FK violation.
           generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
           let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
+          fenced <- hasAccountAccountingFence deckId
           case (mapping, generation, Map.lookup deckIid $ campaignDecks attrs) of
-            (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
+            (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | not fenced, ownsCampaignDeck uid deck link -> do
               when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
               let story = Map.findWithDefault [] deckIid $ campaignStoryCards attrs
                   list = campaignWriteBackSnapshot (campaignStore attrs) deckIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)

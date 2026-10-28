@@ -152,9 +152,9 @@ pushStatus deckId link pending resulting = ArkhamDBDeckWriteBackStatus
   }
 
 pushCanRun :: UTCTime -> Bool -> ArkhamDBPush -> Bool
-pushCanRun now retry job = arkhamDBPushStatus job == "pending" ||
+pushCanRun now retry job = not (accountingFencedPush job) && (arkhamDBPushStatus job == "pending" ||
   (retry && arkhamDBPushStatus job == "failed") ||
-  (arkhamDBPushStatus job == "running" && arkhamDBPushUpdatedAt job < addUTCTime (-60) now)
+  (arkhamDBPushStatus job == "running" && arkhamDBPushUpdatedAt job < addUTCTime (-60) now))
 
 -- The cursor is reusable after undo; the history row UUID is not. Keep the
 -- numeric step for retiring old intents, including ones from before this key format.
@@ -223,7 +223,7 @@ ownsCampaignDeck uid deck link = arkhamDeckUserId deck == uid && arkhamDBDeckLin
 
 canResolvePush :: Text -> ArkhamDBPush -> Bool
 canResolvePush mode job = arkhamDBPushStatus job `elem` ["conflict", "failed"] && mode `elem` ["overwrite", "new", "keep"] &&
-  arkhamDBPushError job /= Just "boundaryUndone" &&
+  not (accountingFencedPush job) &&
   (mode /= "overwrite" || (arkhamDBPushStage job /= "creating" && isNothing (arkhamDBPushTargetId job) &&
     arkhamDBPushError job /= Just "campaignChanged" &&
     -- An independent replacement must not switch back onto a predecessor's
@@ -241,10 +241,13 @@ resolvedPush now mode job = (if mode == "keep" then job else job
 hasCreationIntent :: ArkhamDBPush -> Bool
 hasCreationIntent job = arkhamDBPushStage job == "creating" || isJust (arkhamDBPushTargetId job)
 
+accountingFencedPush :: ArkhamDBPush -> Bool
+accountingFencedPush job = arkhamDBPushError job `elem` [Just "boundaryUndone", Just "accountChanged"]
+
 -- Disabling fences in-flight requests, but an already transmitted creation
 -- remains the oldest outstanding job until explicitly reconciled on re-enable.
 disabledPush :: ArkhamDBPush -> ArkhamDBPush
-disabledPush job | arkhamDBPushError job == Just "boundaryUndone" = job
+disabledPush job | accountingFencedPush job = job
 disabledPush job = job
   { arkhamDBPushStatus = if hasCreationIntent job then "failed" else "cancelled"
   , arkhamDBPushError = if hasCreationIntent job then Just "writeBackDisabled" else Nothing
@@ -256,6 +259,7 @@ disabledPush job = job
 -- enter normal recovery, which would save the undone snapshot. Only an
 -- independent, read-only reconciliation can safely retire this fence.
 undonePush :: ArkhamDBPush -> ArkhamDBPush
+undonePush job | accountingFencedPush job = job
 undonePush job = job
   { arkhamDBPushStatus = if hasCreationIntent job then "conflict" else "cancelled"
   , arkhamDBPushError = if hasCreationIntent job then Just "boundaryUndone" else Nothing

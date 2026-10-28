@@ -5,6 +5,7 @@ module Api.Handler.Arkham.Decks (
   postApiV1ArkhamDecksFetchR,
   postApiV1ArkhamDecksValidateR,
   deleteApiV1ArkhamDeckR,
+  deleteSavedDeckResponse,
   putApiV1ArkhamGameDecksR,
   postApiV1ArkhamSyncDeckR,
   requireGameDecksAccess,
@@ -493,10 +494,25 @@ getApiV1ArkhamDeckR deckId = do
 deleteApiV1ArkhamDeckR :: ArkhamDeckId -> Handler ()
 deleteApiV1ArkhamDeckR deckId = do
   userId <- getRequestUserId
-  runDB $ delete do
-    decks <- from $ table @ArkhamDeck
-    where_ $ decks.id ==. val deckId
-    where_ $ decks.userId ==. val userId
+  deleteSavedDeckResponse $ runDB do
+    -- Excludes enqueue's key-share fence until the usage check and DELETE
+    -- commit together. A foreign/missing id remains a non-disclosing no-op.
+    locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? AND user_id = ? FOR UPDATE"
+      [toPersistValue deckId, toPersistValue userId] :: DB [Entity ArkhamDeck]
+    if null locked then pure True else do
+      campaigns <- Persist.count [ArkhamDBCampaignDeckDeckId P.==. deckId]
+      outstanding <- Persist.count [ArkhamDBPushDeckId P.==. deckId, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
+      if campaigns > 0 || outstanding > 0 then pure False else do
+        Persist.delete deckId
+        pure True
+
+-- Shared actual HTTP response boundary; SQL ownership/usage checks above stay
+-- in the locked transaction, not in a client-side or pre-I/O projection.
+deleteSavedDeckResponse :: MonadHandler m => m Bool -> m ()
+deleteSavedDeckResponse remove = do
+  removed <- remove
+  unless removed $ sendStatusJSON Status.status409 $
+    JSONError "Saved deck has campaign accounting or unresolved write-back; deletion requires reconciliation"
 
 newtype JSONError = JSONError {errorMsg :: Text}
   deriving stock (Show, Eq, Generic)

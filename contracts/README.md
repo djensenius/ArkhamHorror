@@ -1364,6 +1364,7 @@ as proof of production SQL correctness. The PostgreSQL/WAI follow-up must name:
   fixture now correctly shows `cancelled`, not `pending`).
 - `queueCampaignWriteBack`: owner + URL matching and stale-seat ownership
   rejection, association creation, generation key-share through insertion,
+  nonblocking link SHARE through insertion versus opt-out in both orders,
   payload/story/player-card/sideboard/taboo projection and captured cumulative
   XP; ChooseDecksStep exclusion and both real end/upgrade boundary hooks.
 - Association-first saved-deck upgrade persistence after a campaign copy,
@@ -1373,6 +1374,10 @@ as proof of production SQL correctness. The PostgreSQL/WAI follow-up must name:
 - Real WAI game-answer and deck-upgrade transactions committing under ArkhamDB
   outage, concurrent unlink/relink enqueue in both orders, callback/refresh
   locking and pool connection reuse; terminal retention (last 20 per link).
+- Account-deletion trigger retention across unlink, relink and revocation,
+  including uncertain in-flight calls and new-generation retry/resolution
+  refusal; actual saved-deck DELETE refusal with HTTP 409 while campaign
+  accounting or unresolved work exists, including after unlink.
 
 A one-off throwaway PostgreSQL 14 check on **port 5442 only** applied every
 sqitch deploy SQL file in plan order, reproduced the old unlocked-generation FK
@@ -1382,10 +1387,28 @@ The review-round transcript is `/tmp/arkham-logs/245-sec-m-pg-evidence.md`; the
 temporary database/cluster was dropped. This is manual SQL evidence, **not** a
 production handler/WAI concurrency test.
 
-Limitations: unlink/relink deletes the mapping but does not re-point a live
+Account generation deletion removes credentials but no longer cascades push
+accounting. A database trigger cancels unstarted intents and retains creation-bearing
+or uncertain in-flight intents as non-runnable `conflict/accountChanged`.
+This includes unlink, relink/generation replacement and direct revocation.
+No XP baseline is advanced on an unknown remote outcome. The fence blocks
+enqueue/claim/completion, survives toggles and undo, and refuses retry and all
+existing resolutions, including keep-remote, overwrite and save-as-new. There is
+currently no reconciliation API to retire it; no old snapshot is exported.
+Generation UUIDs and deck snapshots contain no account credentials.
+
+Saved-deck DELETE locks and re-reads the owned row before checking usage.
+Any persisted campaign association or unresolved push returns HTTP 409 with
+`errorMsg`, without deletion. This preserves acknowledged XP and uncertain
+accounting even after unlink; completed campaigns' associations also remain
+protected. There is currently no safe association-release/reconciliation API.
+Ordinary unused decks remain deletable.
+
+Limitations: unlink deletes the mapping but does not re-point a live
 campaign's persisted association to a newly imported deck row; write-back for
 that campaign can stop enqueueing. There is currently no association-repointing
-API for this lifecycle case. Lineage bindings
+API for this lifecycle case. Relink retains mappings, but uncertain old-generation
+work remains fenced as described above. Lineage bindings
 also remain after campaign completion/deletion; use save-as-new for a different
 campaign. These lifecycle UX changes are not included here. Deck materialization
 records provenance in the existing campaign store
