@@ -280,11 +280,15 @@ spec = describe "ArkhamDB campaign write-back" do
       h <- newHarness
       modifyIORef' h.job \job -> job {arkhamDBPushStatus = status}
       job <- readIORef h.job
+      let claim = Entity pushKey job
+      when (status == "running") $ h.store.ownsPushClaim claim `shouldReturn` True
       -- The production undo store selects this game's outstanding event keys
-      -- and uses this predicate before atomically cancelling their claims.
-      when (boundaryWasUndone 1 $ arkhamDBPushEventKey job) $
-        modifyIORef' h.job \current -> current {arkhamDBPushStatus = "cancelled"}
+      -- and shares the request's user lock before cancelling their claims.
+      withRefreshLock h.store Linking.userId \_ ->
+        when (boundaryWasUndone 1 $ arkhamDBPushEventKey job) $
+          modifyIORef' h.job \current -> current {arkhamDBPushStatus = "cancelled"}
       assertState h "cancelled"
+      withRefreshLock h.store Linking.userId (\locked -> locked.ownsPushClaim claim) `shouldReturn` False
       h.run True
       assertNoPush h
       boundaryWasUndone 2 (arkhamDBPushEventKey job) `shouldBe` False

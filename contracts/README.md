@@ -1209,7 +1209,8 @@ writes too. The request logger's ArkhamDB path exclusion includes these routes.
 
 Undo (single-step and all multi-step variants) cancels outstanding pushes for
 that game at or after the restored step, fencing their next request and local
-completion. Re-answering uses a fresh history-row identity even when the numeric
+completion under the same per-user lock held through each remote request (undo
+may wait for an in-flight request). Re-answering uses a fresh history-row identity even when the numeric
 step is reused, so it enqueues the corrected snapshot. **Already-sent pushes
 cannot be undone on ArkhamDB**, including a request in flight when undo commits.
 Undo does not roll back remote versions or credited XP; a later snapshot may

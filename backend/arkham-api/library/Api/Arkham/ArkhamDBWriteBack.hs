@@ -258,14 +258,17 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
           _ -> pure ()
 
 -- Undo holds the game lock. Retire only outstanding intents, preserving any
--- transmitted checkpoint for inspection. Changing status fences a worker's
--- next request and completion via its exact claim; in-flight IO is irreversible.
+-- transmitted checkpoint for inspection. Share the request's user lock so
+-- cancellation cannot race between its claim check and transport call. Lock
+-- users in a consistent order for multiplayer undo. In-flight IO is irreversible.
 cancelCampaignWriteBack :: ArkhamGameId -> Int -> DB ()
 cancelCampaignWriteBack gameId restoredStep = do
   rows <- rawSql
-    "SELECT id, event_key FROM arkhamdb_pushes WHERE split_part(campaign_key, '/', 1) = ? AND status NOT IN ('succeeded', 'cancelled')"
-    [PersistText $ UUID.toText $ coerce gameId] :: DB [(Single ArkhamDBPushId, Single Text)]
-  for_ rows \(Single key, Single event) -> when (boundaryWasUndone restoredStep event) $
+    "SELECT id, event_key, user_id FROM arkhamdb_pushes WHERE split_part(campaign_key, '/', 1) = ? AND status NOT IN ('succeeded', 'cancelled') ORDER BY user_id, id"
+    [PersistText $ UUID.toText $ coerce gameId] :: DB [(Single ArkhamDBPushId, Single Text, Single UserId)]
+  let undone = filter (\(_, Single event, _) -> boundaryWasUndone restoredStep event) rows
+  traverse_ lockArkhamDBUser $ ordNub [uid | (_, _, Single uid) <- undone]
+  for_ undone \(Single key, _, _) ->
     updateWhere [ArkhamDBPushId P.==. key, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
       [ArkhamDBPushStatus P.=. "cancelled", ArkhamDBPushError P.=. Nothing]
 
