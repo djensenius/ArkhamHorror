@@ -3,11 +3,13 @@ module Arkham.ArkhamDB.Service where
 import Arkham.ArkhamDB
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
+import Arkham.Custom.Overlay (DeckOverlay)
 import Control.Monad.Except
-import Data.Aeson (ToJSON (..), eitherDecodeStrict', encode, object, (.=))
+import Data.Aeson (ToJSON (..), Value (..), decodeStrict', eitherDecodeStrict', encode, object, (.=))
+import Data.Aeson.KeyMap qualified as KM
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime)
-import Database.Persist (Entity (..))
+import Database.Persist (Entity (..), Update, (=.))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.User
@@ -22,6 +24,7 @@ import Settings (ArkhamDBSettings (..))
 -- all its database operations share that transaction/connection.
 data ArkhamDBStore m = ArkhamDBStore
   { withRefreshLock :: forall a. UserId -> (ArkhamDBStore m -> m a) -> m a
+  , ownsPushClaim :: Entity ArkhamDBPush -> m Bool
   , saveLinkState :: ArkhamDBLinkState -> m ()
   , claimLinkState :: UTCTime -> Text -> m (Maybe (Entity ArkhamDBLinkState))
   , findAccountGeneration :: UserId -> m (Maybe ArkhamDBAccountId)
@@ -34,7 +37,10 @@ data ArkhamDBStore m = ArkhamDBStore
   , findDeckLinks :: UserId -> m [(ArkhamDeckId, ArkhamDBDeckLink)]
   , findDeck :: ArkhamDeckId -> m (Maybe (ArkhamDeck, Maybe ArkhamDBDeckLink))
   , saveImportedDeck :: ArkhamDBAccountId -> ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m (Maybe (Entity ArkhamDeck))
-  , saveSyncedDeck :: ArkhamDBAccountId -> ArkhamDeckId -> ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m Bool
+  -- The writer locks/re-reads the current row, invokes adoption/validation
+  -- inside that transaction, and returns the actual persisted entity.
+  , saveSyncedDeck :: ArkhamDBAccountId -> ArkhamDeckId -> ArkhamDBDeckLink -> ArkhamDBRemoteDeck -> UTCTime
+      -> (ArkhamDeck -> m (Either ArkhamDBError ArkhamDeck)) -> m (Either ArkhamDBError (Entity ArkhamDeck))
   , dropDeckLink :: ArkhamDBAccountId -> UserId -> ArkhamDeckId -> m Bool
   , validateDeck :: ArkhamDBDecklist -> m ()
   }
@@ -54,6 +60,7 @@ arkhamDBErrorStatus :: ArkhamDBError -> Status.Status
 arkhamDBErrorStatus err = case arkhamDBErrorCode err of
   "disabled" -> Status.status501
   "oauthCallbackInvalidState" -> Status.status400
+  "validationFailed" -> Status.status400
   "oauthCompletionInvalid" -> Status.status403
   "notLinked" -> Status.status409
   "tokenExpired" -> Status.status409
@@ -105,7 +112,7 @@ encryptedAccount :: MonadIO m => ArkhamDBSettings -> UTCTime -> UserId -> Arkham
 encryptedAccount settings now userId tokens = do
   access <- (.unTokenCiphertext) <$> encryptToken settings.arkhamDBTokenKey tokens.accessToken
   refresh <- traverse (fmap (.unTokenCiphertext) . encryptToken settings.arkhamDBTokenKey) tokens.refreshToken
-  pure $ ArkhamDBAccount userId tokens.remoteUserId tokens.remoteUserName access refresh tokens.tokenExpiresAt now now
+  pure $ ArkhamDBAccount userId tokens.remoteUserId tokens.remoteUserName access refresh tokens.tokenExpiresAt now now Nothing 0
 
 accessTokenFor :: MonadIO m => ArkhamDBStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> UserId -> ArkhamDBAction m Text
 accessTokenFor store client settings now userId = do
@@ -223,18 +230,86 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
           unless dropped $ throwError linkChanged
           lift $ publicSync deckId
         Left err -> throwError err
-        Right remote -> do
-          let decklist = remoteDecklist settings remote
-              updated = deck
-                { arkhamDeckList = decklist
-                , arkhamDeckUrl = decklist.url
-                , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
-                , arkhamDeckInvestigatorName = remote.deck.investigator_name
-                }
-          lift $ store.validateDeck $ arkhamDeckPlayList updated
-          saved <- lift $ store.saveSyncedDeck generation deckId updated remote now
-          unless saved $ throwError linkChanged
-          pure $ Entity deckId updated
+        Right remote ->
+          ExceptT $ store.saveSyncedDeck generation deckId mapping remote now \current -> runExceptT do
+            adopted <- either throwError pure $ adoptDecklist current $ remoteDecklist settings remote
+            let updated = adopted
+                  { arkhamDeckUrl = (arkhamDeckList adopted).url
+                  , arkhamDeckName = fromMaybe (arkhamDeckName current) remote.deck.decklist_name
+                  , arkhamDeckInvestigatorName = remote.deck.investigator_name
+                  }
+            lift $ store.validateDeck $ arkhamDeckPlayList updated
+            pure updated
+
+-- A newer adoption may save into the same remote id. Do not downgrade its
+-- markers (or list) with a result fetched against an earlier mapping snapshot.
+sameSyncedDeckLink :: ArkhamDBDeckLink -> ArkhamDBDeckLink -> Bool
+sameSyncedDeckLink expected current =
+  arkhamDBDeckLinkDeckId expected == arkhamDBDeckLinkDeckId current &&
+  arkhamDBDeckLinkUserId expected == arkhamDBDeckLinkUserId current &&
+  arkhamDBDeckLinkRemoteDeckId expected == arkhamDBDeckLinkRemoteDeckId current &&
+  arkhamDBDeckLinkLastSyncedDateUpdate expected == arkhamDBDeckLinkLastSyncedDateUpdate current &&
+  arkhamDBDeckLinkLastSyncedVersion expected == arkhamDBDeckLinkLastSyncedVersion current
+
+-- Every implicit saved-list replacement must consume provenance BEFORE copying
+-- the incoming push marker. Retain newer overlays; never infer incorporation
+-- merely from a matching current overlay or changed marker.
+adoptDecklist :: ArkhamDeck -> ArkhamDBDecklist -> Either ArkhamDBError ArkhamDeck
+adoptDecklist deck incoming = do
+  let adopting = isJust (campaignPushMarker incoming) &&
+        campaignPushMarker incoming /= campaignPushMarker (arkhamDeckList deck)
+  when (adopting && isJust (arkhamDeckOverlay deck) && isNothing (exportedOverlay incoming)) $
+    Left $ ArkhamDBError "validationFailed" "Campaign overlay provenance is unavailable; refusing ambiguous adoption"
+  pure deck
+    { arkhamDeckList = incoming
+    , arkhamDeckOverlay = if adopting && exportedOverlay incoming == (toJSON <$> arkhamDeckOverlay deck)
+        then Nothing else arkhamDeckOverlay deck
+    }
+
+-- Internal ArkhamDB metadata records the exact overlay in the queued snapshot.
+-- Invalid metadata remains invalid so write-back validation still rejects it.
+withExportedOverlay :: Maybe DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
+withExportedOverlay overlay = withOverlayProvenance $ Just $ toJSON overlay
+
+withoutExportedOverlay :: ArkhamDBDecklist -> ArkhamDBDecklist
+withoutExportedOverlay = withOverlayProvenance Nothing
+
+-- Explicit null proves no saved overlay was applied; missing
+-- provenance means unknown, not proof of absence.
+withOverlayProvenance :: Maybe Value -> ArkhamDBDecklist -> ArkhamDBDecklist
+withOverlayProvenance provenance deck = deck {Decklist.meta = case deck.meta of
+  Nothing -> encodeMetadata KM.empty
+  Just "" -> encodeMetadata KM.empty
+  Just text -> case decodeStrict' $ encodeUtf8 text of
+    Just (Object metadata) -> encodeMetadata metadata
+    _ -> Just text}
+ where
+  encodeMetadata metadata =
+    let clean = KM.delete "ahn_overlay" metadata
+        updated = maybe clean (\value -> KM.insert "ahn_overlay" value clean) provenance
+    in if KM.null updated then Nothing else Just $ decodeUtf8 $ toStrict $ encode $ Object updated
+
+exportedOverlay :: ArkhamDBDecklist -> Maybe Value
+exportedOverlay deck = case deck.meta >>= decodeStrict' . encodeUtf8 of
+  Just (Object metadata) -> KM.lookup "ahn_overlay" metadata
+  _ -> Nothing
+
+campaignPushMarker :: ArkhamDBDecklist -> Maybe Text
+campaignPushMarker deck = case deck.meta >>= decodeStrict' . encodeUtf8 of
+  Just (Object metadata) -> case KM.lookup "ahn_push" metadata of
+    Just (String marker) | not (T.null marker) -> Just marker
+    _ -> Nothing
+  _ -> Nothing
+
+-- The same adopted overlay must be returned and persisted by linked sync.
+syncedDeckUpdates :: ArkhamDeck -> [Update ArkhamDeck]
+syncedDeckUpdates deck =
+  [ ArkhamDeckList =. arkhamDeckList deck
+  , ArkhamDeckUrl =. arkhamDeckUrl deck
+  , ArkhamDeckName =. arkhamDeckName deck
+  , ArkhamDeckInvestigatorName =. arkhamDeckInvestigatorName deck
+  , ArkhamDeckOverlay =. arkhamDeckOverlay deck
+  ]
 
 linkStatus :: Monad m => ArkhamDBStore m -> UserId -> ArkhamDBAction m ArkhamDBLinkStatusResponse
 linkStatus store userId = do

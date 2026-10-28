@@ -10,6 +10,7 @@ module Api.Handler.Arkham.Undo (
 
 import Api.Arkham.Epic (getGameUndoFloor, lookupGameEvent, revertEpicDeltasForGameStep)
 import Api.Arkham.Helpers
+import Api.Arkham.ArkhamDBWriteBack (cancelCampaignWriteBack)
 import Api.Arkham.Types.MultiplayerVariant
 import Api.Handler.Arkham.Games.Shared (propagateShared, publishToRoom)
 import Arkham.Card.CardCode
@@ -82,10 +83,11 @@ New cost: fromJSON(return value only) = 1 conversion
 -}
 stepBack
   :: Bool
+  -> Bool
   -> UserId
   -> ArkhamGameId
   -> DB (Either Json.Value (ArkhamGame, Maybe (ArkhamEpicEventId, SharedEventState)))
-stepBack isDebug userId gameId = do
+stepBack configured isDebug userId gameId = do
   lockGame gameId
   rawGame <- get404 (ArkhamGameRawKey gameId)
   runExceptT do
@@ -131,6 +133,7 @@ stepBack isDebug userId gameId = do
             set g [ArkhamGameStep =. val (n - 1)]
             where_ $ g.id ==. val gameId
           trimLogFrom gameId (n - 1)
+          cancelCampaignWriteBack configured gameId (n - 1)
           deleteKey stepId
           revertShared
         pure
@@ -176,6 +179,7 @@ stepBack isDebug userId gameId = do
                   rawGame.createdAt
                   now
               trimLogFrom gameId (n - 1)
+              cancelCampaignWriteBack configured gameId (n - 1)
               deleteKey stepId
               plan <- revertShared
 
@@ -237,7 +241,8 @@ putApiV1ArkhamGameUndoR gameId = do
         pure player.userId
       _ -> pure userId'
   oldPhase <- runDB $ gamePhase . arkhamGameCurrentData <$> get404 gameId
-  result <- runDB (stepBack isDebug userId gameId)
+  configured <- getsYesod $ isJust . appArkhamDB . appSettings
+  result <- runDB (stepBack configured isDebug userId gameId)
   case result of
     Left err -> do
       liftIO $ print err
@@ -304,20 +309,22 @@ replaces the row with an updated `updatedAt`, and rebroadcasts the
 truncated game log.
 -}
 multiStepUndoHandler
-  :: ( UserId
+  :: ( Bool
+       -> UserId
        -> ArkhamGameId
        -> DB (Either Json.Value (ArkhamGame, Maybe (ArkhamEpicEventId, SharedEventState)))
      )
   -> ArkhamGameId
   -> Handler ()
 multiStepUndoHandler runStepBack gameId = do
+  configured <- getsYesod $ isJust . appArkhamDB . appSettings
   userId <- getRequestUserId
   x <- liftIO getRandom
   now <- liftIO getCurrentTime
   oldPhase <- runDB $ gamePhase . arkhamGameCurrentData <$> get404 gameId
   eResult <- runDB do
     runExceptT do
-      (agame, mPropagate) <- ExceptT $ runStepBack userId gameId
+      (agame, mPropagate) <- ExceptT $ runStepBack configured userId gameId
       lift do
         gameLog <-
           reverse . map (toLogRow . entityVal) <$> select do
@@ -368,58 +375,62 @@ multiStepUndoHandler runStepBack gameId = do
 
 -- | Multi-step scenario undo: roll back to scenarioSteps = 1 (start of scenario).
 stepBackScenario
-  :: UserId
+  :: Bool
+  -> UserId
   -> ArkhamGameId
   -> DB (Either Json.Value (ArkhamGame, Maybe (ArkhamEpicEventId, SharedEventState)))
-stepBackScenario userId gameId = do
+stepBackScenario configured userId gameId = do
   lockGame gameId
   rawGame <- get404 (ArkhamGameRawKey gameId)
-  stepBackToScenarioStep userId gameId rawGame 1
+  stepBackToScenarioStep configured userId gameId rawGame 1
 
 {- | Multi-step undo to a boundary recorded in the raw JSON (e.g.
 "undoActionStep"). Errors out if the boundary is not set.
 -}
 stepBackToBoundary
   :: Json.Key
+  -> Bool
   -> UserId
   -> ArkhamGameId
   -> DB (Either Json.Value (ArkhamGame, Maybe (ArkhamEpicEventId, SharedEventState)))
-stepBackToBoundary field userId gameId = do
+stepBackToBoundary field configured userId gameId = do
   lockGame gameId
   rawGame <- get404 (ArkhamGameRawKey gameId)
   case getMaybeIntField field rawGame.currentData of
     Nothing -> pure $ Left $ jsonError $ "No boundary set for " <> tshow field
-    Just target -> stepBackToScenarioStep userId gameId rawGame target
+    Just target -> stepBackToScenarioStep configured userId gameId rawGame target
 
 {- | Multi-step undo to the given target scenarioSteps value. Caller is
 responsible for having locked the game and fetched the raw game state.
 -}
 stepBackToScenarioStep
-  :: UserId
+  :: Bool
+  -> UserId
   -> ArkhamGameId
   -> ArkhamGameRaw
   -> Int
   -> DB (Either Json.Value (ArkhamGame, Maybe (ArkhamEpicEventId, SharedEventState)))
-stepBackToScenarioStep userId gameId rawGame targetStep = do
+stepBackToScenarioStep configured userId gameId rawGame targetStep = do
   -- gameScenarioSteps and the game's step are different counters, but they
   -- advance together, so the DISTANCE back is the same in both.
   let n = getScenarioSteps rawGame.currentData - targetStep
   if n <= 0
     then pure $ Left $ jsonError "Nothing to undo"
-    else stepBackToRawStep userId gameId rawGame (arkhamGameRawStep rawGame - n)
+    else stepBackToRawStep configured userId gameId rawGame (arkhamGameRawStep rawGame - n)
 
 {- | Multi-step undo to an absolute game step, which is what a log entry names.
 Locks and fetches like the other entry points, then shares the body below.
 -}
 stepBackToGameStep
   :: Int
+  -> Bool
   -> UserId
   -> ArkhamGameId
   -> DB (Either Json.Value (ArkhamGame, Maybe (ArkhamEpicEventId, SharedEventState)))
-stepBackToGameStep targetStep userId gameId = do
+stepBackToGameStep targetStep configured userId gameId = do
   lockGame gameId
   rawGame <- get404 (ArkhamGameRawKey gameId)
-  stepBackToRawStep userId gameId rawGame targetStep
+  stepBackToRawStep configured userId gameId rawGame targetStep
 
 {- | The shared body: revert every step above @requestedStep@. Caller is
 responsible for having locked the game and fetched the raw game state.
@@ -430,12 +441,13 @@ once for the return value:
   New cost: fromJSON(return value only) = 1
 -}
 stepBackToRawStep
-  :: UserId
+  :: Bool
+  -> UserId
   -> ArkhamGameId
   -> ArkhamGameRaw
   -> Int
   -> DB (Either Json.Value (ArkhamGame, Maybe (ArkhamEpicEventId, SharedEventState)))
-stepBackToRawStep userId gameId rawGame requestedStep = runExceptT do
+stepBackToRawStep configured userId gameId rawGame requestedStep = runExceptT do
   when (requestedStep >= arkhamGameRawStep rawGame) $ throwError $ jsonError "Nothing to undo"
   Entity pid arkhamPlayer <- lift $ getBy404 (UniquePlayer userId gameId)
   -- Epic Multiplayer: never let a multi-step undo cross the act-advance floor
@@ -476,6 +488,7 @@ stepBackToRawStep userId gameId rawGame requestedStep = runExceptT do
     -- drop the log of the first undone action (the one that landed at toStep+1), not
     -- just > toStep.
     trimLogFrom gameId toStep
+    cancelCampaignWriteBack configured gameId toStep
 
   -- Epic Multiplayer: multi-step undo must ALSO revert the shared-counter deltas
   -- recorded on every undone step (single-step 'stepBack' already does), deleting

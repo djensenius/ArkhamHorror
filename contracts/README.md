@@ -1143,15 +1143,332 @@ sync and falls back to that existing path for unmapped decks. Stored deck and
 list URLs consistently use `<base>/api/public/deck/<id>`. A relinked account that
 cannot load a preserved mapping (remote 403/404) drops that mapping and tries
 the public URL, including on a repeat-import check. Import is unique per local
-user and remote deck id; repeat imports return the existing Deck (HTTP 200). This revision does
-not implement write-back, version upgrades or conflict resolution (task-2.45).
-`writeBackEnabledDeckCount` therefore remains zero for newly imported decks.
+user and remote deck id; repeat imports return the existing Deck (HTTP 200). Newly imported decks have write-back disabled. Revision `0.1.55` adds the
+independently discoverable `arkhamdb.write-back.v1` capability whenever account
+linking is configured. The native minimum remains `0.1.53`.
 
 Clients opting into these endpoints must update their pinned backend commit and
 schemaRevision to this revision after merge: Apple `ContractPin.swift`; Linux
 `src/ContractPin.cpp`, `contracts/contract-pin.json` and vendored fixtures. Existing
 clients satisfying the unchanged `0.1.53` minimum can keep using public decks.
 The enabled and disabled capabilities fixtures illustrate feature negotiation.
+
+#### Opt-in campaign write-back (revision 0.1.55)
+
+Use `PUT /arkham/arkhamdb/decks/{localDeckId}/write-back` with `{ "enabled": true }`.
+Only the owning user's imported, linked deck can be toggled. Changes are batched
+at scenario end and at campaign upgrade commits, not per card mutation. The initial
+campaign-start `ChooseDecksStep` is skipped: no XP or remote version is sent
+before the first scenario. The
+snapshot uses the campaign's per-investigator `campaignDecks` plus story cards
+(deduplicated by card identity), including actual weaknesses, not the shuffled
+investigator draw pile. Only player cards are exported (encounter story cards
+are excluded, as in `ReloadDecks`). It exports campaign metadata and taboo.
+The engine's `investigatorSideDeck` is an extra deck, not the ArkhamDB sideboard:
+Joe Diamond's `meta.extra_deck` and ArkhamDB `sideSlots` remain remote-owned.
+Before creation, the worker takes those fields from the loaded remote source,
+not the older queued snapshot (including after sync or confirmed overwrite).
+Missing `extra_deck` removes the queued key; empty/null values replace it exactly.
+All other campaign metadata, including overlay provenance, stays in the snapshot.
+An unrecognized engine taboo falls back to the original remote id. A stable
+association is recorded at the first boundary using the existing owner + deck
+URL match; future boundaries and saved-deck upgrade persistence use that owned
+game + investigator association even if the saved deck URL changes (including a
+save-as-new campaign copy). Only an absent association falls back to owner + URL.
+As with ordinary upgrade persistence, a deck that
+was never saved locally cannot be associated by an arbitrary inline list alone.
+
+The boundary observer captures the campaign and investigator state when the
+boundary message is popped, before later continuations can swap campaigns or
+clear the roster. Only a successful drain persists that captured snapshot,
+atomically with the game step. The game transaction writes only a durable outbox intent. A post-commit worker
+performs all remote IO, without a game lock: an ArkhamDB outage cannot fail an
+answer. Inspect `GET /arkham/arkhamdb/status` → `deckLinks` for each local deck's
+opt-in, `state` (`idle`, `pending`, `running`, `failed`, `conflict`, `succeeded`,
+`cancelled`), sanitized `error`, and conflict markers. Work is ordered per local
+deck; a failed/conflicted older snapshot blocks newer snapshots. Explicit
+`POST /arkham/arkhamdb/decks/{localDeckId}/write-back/retry` resumes the oldest
+job. One coalescing dispatcher starts with the application (not a request),
+wakes immediately to resume pending jobs after a server restart, runs at most one
+job at a time, reads pages of 32 identifiers (not global payloads), and polls
+every thirty seconds.
+Claims skip a busy user lock rather than filling the DB pool with waiters. Each
+user has a minimum thirty-second admission interval, with exponential failure
+backoff (60/120/240 seconds, capped at five minutes). A throttled explicit retry
+returns status without scheduling more workers. A crashed running claim has a
+sixty-second reclaim threshold. Every request checks the exact running claim
+under the same per-user transaction that selects the token and sends the request;
+a reclaimed or cancelled worker cannot transmit another mutation. Disabling cancels
+unstarted queued work and prevents subsequent requests; a remote request already
+in flight may finish. Already-created or uncertain creation intents are retained
+as `failed`/`writeBackDisabled`, not cancelled: after re-enabling, explicitly
+retry, keep remote, or save as new to reconcile them before later snapshots can
+run. Their overwrite fence and cumulative XP accounting survive opt-out. Relink/unlink generations guard every checkpoint and completion, and
+unlink/relink cascades old-generation outbox intents. Enqueue key-shares the
+account generation through insertion, skipping a concurrently deleted/locked
+account rather than rolling back gameplay. It cannot revoke an
+already transmitted remote request. The existing ten-second request deadline,
+1 MiB decoded-body cap, bearer-token refresh and sanitized error rules apply to
+writes too. The request logger's ArkhamDB path exclusion includes these routes.
+
+Undo (single-step and all multi-step variants) cancels outstanding pushes for
+that game at or after the restored step, fencing their next request and local
+completion under the same per-user lock held through each remote request (undo
+may wait for an in-flight request). Re-answering uses a fresh history-row identity even when the numeric
+step is reused, so it enqueues the corrected snapshot. **Already-sent pushes
+cannot be undone on ArkhamDB**, including a request in flight when undo commits.
+Undo does not roll back remote versions or credited XP; a later snapshot may
+conflict with those remote changes and require explicit resolution.
+
+API semantics verified against `https://arkhamdb.com/api/doc` and ArkhamDB's
+`Oauth2Controller`: `PUT deck/upgrade/{id}` creates a new version, taking earned
+`xp` and metadata; it does **not** take slots. The worker durably records the new
+ID, then `PUT deck/save/{newId}` uploads the complete current slots and `side`
+(the sideboard parameter), name, taboo and meta; finally it loads and verifies
+that version. Loaded `description_md`, `tags`, `ignoreDeckLimitSlots` (sent as
+`ignored`) and `problem` are forwarded unchanged; the server does not declare
+an invalid remote deck valid by sending an empty problem. The subsequent
+campaign-upgrade boundary **saves into that same scenario-end version**, rather
+than creating a second 0-XP version, only if it is still the latest, unchanged
+version attributed to this campaign and no more earned XP is due. `POST deck/new` creates an empty deck and is similarly followed
+by save. ArkhamDB's success envelope returns the numeric ID in `msg`, not a deck
+object. HTTP slot keys and investigator codes use raw ArkhamDB codes, without
+the backend JSON card-code `c` prefix. Metadata must be a JSON object and existing keys are preserved; the
+reserved namespaced `ahn_push` key records the push ID for safe recovery.
+
+The effective deck is stored in an internal version-1 payload envelope atomically
+with the conditional creating checkpoint, before any creation request. Same-version
+saves likewise checkpoint the effective payload before saving. Save, recovery and
+verification use that exact frozen deck; they never remerge later source edits.
+If recovery proves a creation was unsent and returns to ready, changed remote-owned
+source fields conflict rather than silently refreezing or overwriting them.
+Legacy in-flight rows without preparation provenance fail closed with
+`pushUncertain`, without a remote write, inferred acknowledgment or repeated upgrade.
+Explicit save-as-new starts a fresh independent preparation, using the latest
+accessible source's sideboard/extra deck; a deleted or inaccessible old source
+falls back to the captured snapshot for the independent deck only. It never
+mutates that old source. Existing accounting/generation/undo fences still apply.
+
+`investigatorXp` is cumulative earned XP net of `SpendXP` side-story costs.
+Each version receives only the nonnegative delta since the last successful push
+for that game/investigator association; the association's initial baseline is
+zero. Opting in mid-campaign therefore sends all earned XP net of those costs
+so far as the first delta, not just the last scenario's XP. If costs lower the
+total below the baseline at an upgrade boundary, the campaign deck is saved into
+the existing unchanged scenario-end version rather than creating a 0-XP version.
+**Spent XP is not synchronized:** every deck status explicitly reports
+`spentXpSynced: false`. Set spent XP manually on ArkhamDB **before the next
+remote version upgrade**; otherwise ArkhamDB's carryover can be overstated.
+Manual spent-XP edits also change remote markers and can require explicit
+conflict resolution before the next push; they are never silently overwritten.
+Source inspection of ArkhamDB `Oauth2Controller.saveDeckAction` shows that
+`xp_spent` is accepted only when explicitly supplied; `Services/Decks.saveDeck`
+does not calculate it and `Entity/Deck.getXpSpent` returns the stored property.
+There is no authoritative upgrade-cost value to forward here:
+`Arkham/Investigator/Runner/Card.hs:502` copies total XP into `spentXp` at upgrade,
+`Api/Arkham/Types/Deck.hs:45-49` carries only investigator/list/URL, and web
+`UpgradeDeck.vue:79-83,448-451` uses XP minus that checkpoint for the upgrade
+prompt but submits no spent amount. `initDeckXp` accounts only for card-granted
+XP, not upgrade purchase costs. No cost calculator or invented spent number is
+introduced. Verify earned XP/carryover, manual spent XP, `side` round-trip,
+and story-card acceptance with live credentials (task-4.7); the HTTP adapter is
+isolated and swappable. A pre-existing deck with a prior ArkhamDB XP history
+should be saved as a new deck before starting a new locally tracked campaign.
+
+Before a normal push, both remote `date_update` (primary marker) and version
+must equal the last synchronized markers; a changed marker, an advanced
+`next_deck`, or absence of both markers records a conflict and pushes nothing.
+ArkhamDB does not document a conditional-write/CAS API: this preflight protects
+changes already present when loaded, not a concurrent remote edit in the narrow
+load→write interval. Resolution uses
+`POST /arkham/arkhamdb/decks/{localDeckId}/resolve-conflict`:
+
+- `{"resolution":"keepRemote"}` re-syncs the saved local deck from the latest
+  remote version and cancels outstanding local snapshots only after the read and
+  local adoption succeed. Failed reads preserve any creation checkpoint and
+  continue to refuse overwrite. Successful adoption also advances the
+  campaign's XP baseline to the discarded snapshot's total, even if no remote
+  version was created: that snapshot's earned XP is never pushed later. It never
+  rewrites a running campaign's deck or gameplay state. **This choice lasts only
+  until the next scenario-end/upgrade boundary**: that boundary snapshots the unchanged
+  campaign state again and may replace the remote content. Disable write-back
+  to keep ArkhamDB authoritative for longer.
+- `{"resolution":"overwrite","confirmed":true}` explicitly creates a version
+  from the latest remote lineage using the campaign snapshot despite conflict.
+  Before upgrading, the resolved source must not belong to another campaign's
+  link, even when reached through a re-imported, unbound ancestor.
+  It returns HTTP 409 for `campaignChanged`, an uncertain creation, or an already
+  created target; use a plain retry for an already created target (never pay the
+  earned XP delta twice).
+- `{"resolution":"saveAsNew","confirmed":true}` creates a separate remote deck.
+  A second campaign using the same linked local deck is always a `campaignChanged`
+  conflict, never an XP update to the first campaign's lineage. Save-as-new in
+  that case clones the saved local deck (same owner, ` (campaign copy)` suffix),
+  creates its own opted-in link and moves only the second campaign's association.
+  The copy stores the materialized campaign list with no overlay, so reusing it
+  cannot apply the original overlay twice; the original overlay is untouched.
+  Both saved-row and list URLs are canonical remote API URLs on copies and
+  keep-remote re-syncs, while the persistent game association remains stable.
+  The original deck/link/campaign is untouched. Read `resultingLocalDeckId`.
+  For a single campaign, save-as-new reuses the local link. ArkhamDB `deck/new`
+  accepts no earned XP: save-as-new does **not** transfer earned XP/carryover.
+  Set the new deck's XP manually on ArkhamDB; the local cumulative baseline is
+  advanced so a later boundary does not replay the entire campaign's XP.
+
+Both keep-remote adoption and push completion record `targetAlreadyLinked` if
+another local deck already maps to the resulting remote id. No saved deck, link
+or XP baseline is changed; the conflict blocks later snapshots and is not lease-
+reclaimed automatically. Choose save-as-new to obtain an independent target, or
+remove the other mapping before retrying the original resolution.
+
+Undoing a boundary with a created or uncertain creation intent records
+`conflict` with reason/error `boundaryUndone`. Its remote version may already
+have received earned XP. This durable oldest-intent fence blocks later
+snapshots; retry is a no-op, and **all** existing resolutions (`keepRemote`,
+`overwrite`, `saveAsNew`) are refused with HTTP 409. Disabling/re-enabling
+write-back does not remove it. There is currently **no reconciliation API**
+that can safely retire this fence. The undone snapshot is never exported by
+recovery; no unproven XP accounting is discarded to unblock the queue.
+
+Creation intent, returned ID, save intent and completion are separate durable
+checkpoints. Retrying a completed push does nothing. After a lost upgrade reply,
+recovery first follows the original deck's `next_deck`/`next_deck_id` and verifies
+the push marker; it never adopts an unrelated successor. If no usable chain is
+exposed, it scans at most 100 listed decks for exactly one matching marker. If
+creation cannot be proven, it remains `failed`/`pushUncertain` and **does not**
+repeat upgrade/new. In upgrade mode only, an unchanged source whose loaded JSON
+explicitly contains `"next_deck": null` proves creation did not happen: the intent
+returns to `ready` for a safe explicit retry. A missing `next_deck` key (even with
+`next_deck_id: null`) is uncertain and records a conflict, never a safe retry.
+A known target can resume save only if its stored intermediate markers remain
+unchanged, or complete read-only if its verified content already matches.
+If the first load after creation failed, or recovery finds a created target
+without a captured target baseline, the worker conservatively records a conflict
+and performs no save. **Keep-remote is the expected recovery after a lost or
+failed first load following creation**: the new remote version lacks the campaign
+deck changes until the next scenario-end/upgrade boundary. Keep-remote also
+recovers a save into the scenario-end version that failed and then conflicted.
+Attribution (`ahn_push`) alone never proves unchanged state. Explicit
+save-as-new starts a separately identified operation without retiring a
+creation-bearing predecessor until the independent target is actually adopted.
+A live replacement runs ahead of its retained predecessor; disabling or undoing
+an unstarted replacement exposes the original accounting fence again. Nested
+replacements retain all creation checkpoints until adoption. A derived
+independent replacement cannot switch back to overwrite of the original lineage,
+even if it fails before creation; retry/new remain independent, while keep-remote
+is explicit read-only reconciliation. Overwrite never discards
+an uncertain creation intent. No undocumented ArkhamDB idempotency header is
+assumed. Stubs cover runtime success, failures, conflicts, resolution and retry. The
+outage test proves the worker caller remains unaffected, then failed state and
+retry; it is not an end-to-end WAI game-answer test. PostgreSQL locking, SQL
+concurrency and end-to-end game-answer coverage remain in task-2.46, and live
+ArkhamDB behavior in task-4.7. No such coverage is claimed here.
+
+#### task-2.46: required production-store and gameplay integration coverage
+
+The committed service tests use transactional memory stores, not duplicated SQL
+as proof of production SQL correctness. The PostgreSQL/WAI follow-up must name:
+
+- Claim ordering, exact-claim/version fencing under the token-selection lock,
+  sixty-second reclaim, opt-out cancellation, generation changes, nonblocking
+  claims, single-executor saturation and per-user retry/backoff admission.
+- Production `finishPush`: campaign-copy insert (materialized list, no overlay),
+  canonical URL/link creation, XP baseline, association movement and re-pointing
+  only that campaign's pending pushes; unchanged scenario-end-version reuse.
+- `keepRemoteDeck` cancellation and saved-deck-only update, `resolvePush` status,
+  mode/stage/target guards, HTTP 409 for `campaignChanged` overwrite and separate
+  save-as-new intent insertion; production toggle cancellation (the disabled
+  fixture now correctly shows `cancelled`, not `pending`).
+- `queueCampaignWriteBack`: owner + URL matching and stale-seat ownership
+  rejection, association creation, generation key-share through insertion,
+  nonblocking link SHARE through insertion versus opt-out in both orders,
+  payload/story/player-card/sideboard/taboo projection and captured cumulative
+  XP; ChooseDecksStep exclusion and both real end/upgrade boundary hooks.
+- Association-first saved-deck upgrade persistence after a campaign copy,
+  single/multi-step undo cancellation and claim fencing, and rewritten-history
+  boundary identities. The memory-store regressions exercise the production
+  resolver/key predicates, not PostgreSQL/WAI undo transactions.
+- Real WAI game-answer and deck-upgrade transactions committing under ArkhamDB
+  outage, concurrent unlink/relink enqueue in both orders, callback/refresh
+  locking and pool connection reuse; terminal retention (last 20 per link).
+- Account-deletion trigger retention across unlink, relink and revocation,
+  including uncertain in-flight calls and new-generation retry/resolution
+  refusal; actual saved-deck DELETE refusal with HTTP 409 while campaign
+  accounting or unresolved work exists, including after unlink.
+
+A one-off throwaway PostgreSQL 14 check on **port 5442 only** applied every
+sqitch deploy SQL file in plan order, reproduced the old unlocked-generation FK
+rollback, verified both key-share interleavings preserve a simulated game action,
+and checked stale-seat ownership rejection and a CHECK constraint at runtime.
+The review-round transcript is `/tmp/arkham-logs/245-sec-m-pg-evidence.md`; the
+temporary database/cluster was dropped. This is manual SQL evidence, **not** a
+production handler/WAI concurrency test.
+
+Account generation deletion removes credentials but no longer cascades push
+accounting. A database trigger cancels unstarted intents and retains creation-bearing
+or uncertain in-flight intents as non-runnable `conflict/accountChanged`.
+This includes unlink, relink/generation replacement and direct revocation.
+No XP baseline is advanced on an unknown remote outcome. The fence blocks
+enqueue/claim/completion, survives toggles and undo, and refuses retry and all
+existing resolutions, including keep-remote, overwrite and save-as-new. There is
+currently no reconciliation API to retire it; no old snapshot is exported.
+Generation UUIDs and deck snapshots contain no account credentials.
+
+Saved-deck DELETE locks and re-reads the owned row before checking usage.
+Any persisted campaign association or unresolved push returns HTTP 409 with
+`errorMsg`, without deletion. This preserves acknowledged XP and uncertain
+accounting even after unlink; completed campaigns' associations also remain
+protected. There is currently no safe association-release/reconciliation API.
+Ordinary unused decks remain deletable.
+
+Limitations: unlink deletes the mapping but does not re-point a live
+campaign's persisted association to a newly imported deck row; write-back for
+that campaign can stop enqueueing. There is currently no association-repointing
+API for this lifecycle case. Relink retains mappings, but uncertain old-generation
+work remains fenced as described above. Lineage bindings
+also remain after campaign completion/deletion; use save-as-new for a different
+campaign. These lifecycle UX changes are not included here. Deck materialization
+records provenance in the existing campaign store
+(`ahn_overlay/<resolved-investigator>`). Saved-deck seating records the overlay
+actually applied, under the seated identity (including alternate fronts).
+Whole-deck initialization or upgrade invalidates the previous proof; direct
+deck-list loading, upgrade and investigator replacement then record explicit null,
+because those paths do not apply the saved overlay. The boundary snapshot uses
+the latest materialization's provenance, never the saved row's current overlay.
+Ordinary linked sync and
+repeat-import sync consume an unchanged exported overlay once, on first
+adoption. Overlays added or replaced before enqueue or after adoption survive.
+The campaign UPGRADE endpoint's saved-list replacement and legacy public sync
+use the same adoption rule before copying a pushed list's marker. UPGRADE
+validates every saved-list adoption before persisting either the game or decks;
+an incorporated overlay is not applied twice when displaying or reusing a deck.
+Linked sync/re-import locks and re-reads the current saved row after remote I/O.
+Provenance adoption and play-list validation run under that row lock, before
+either the deck or mapping markers are changed. Overlay add/replace/remove
+committed during the remote read is respected, including for unmarked lists.
+The response is the row read back from persistence, not a pre-I/O projection.
+If the mapping adopted another remote target or newer sync markers meanwhile, the stale result is
+refused rather than applied to that new target's link.
+Explicit null provenance proves that no saved overlay was applied, so a saved
+overlay retained during a direct-list upgrade survives subsequent sync/import.
+For legacy campaigns or raw replacements without captured provenance, first
+adopting a push while a local overlay exists is ambiguous: implicit sync/import returns
+`validationFailed` (HTTP 400) without changing the saved deck, rather than clear unexported
+edits or apply an incorporated overlay twice. Explicit keep-remote remains a
+user-authorized replacement of the saved list/overlay.
+Homunculus transformation uses the transformed campaign deck/story/proof key
+even before the live investigator id is promoted at reset. A persisted
+`ahn_write_back_identity/<deck-investigator>` origin keeps the existing campaign
+association and XP baseline through both phases; saved upgrades use that same
+origin. This does not change gameplay identities. Unknown legacy origins or
+colliding seated aliases are skipped rather than guessed as fresh XP lineages.
+Succeeded/cancelled
+payload history is pruned to the newest 20 per local link; outstanding intents
+are never pruned.
+
+Clients consuming write-back must update Apple `ContractPin.swift`, and Linux
+`src/ContractPin.cpp`, `contracts/contract-pin.json` and vendored fixtures, to the
+merged backend commit and schemaRevision `0.1.55`.
 
 ### Locale catalog discovery
 

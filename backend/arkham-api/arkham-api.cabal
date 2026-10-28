@@ -24,6 +24,8 @@ flag library-only
 
 library
   exposed-modules:
+      Api.Arkham.ArkhamDBStore
+      Api.Arkham.ArkhamDBWriteBack
       Api.Arkham.Deck
       Api.Arkham.Epic
       Api.Arkham.Export
@@ -1051,7 +1053,10 @@ library
       Arkham.Agenda.Sequence
       Arkham.Agenda.Types
       Arkham.ArkhamDB
+      Arkham.ArkhamDB.Campaign
+      Arkham.ArkhamDB.Overlay
       Arkham.ArkhamDB.Service
+      Arkham.ArkhamDB.WriteBack
       Arkham.Aspect
       Arkham.Aspect.Types
       Arkham.Asset
@@ -9328,6 +9333,7 @@ test-suite spec
       Arkham.Agenda.Cards.TheScarletKeys.CongressOfTheKeys.TheWorldUnbiddenSpec
       Arkham.Agenda.Cards.TheScarletKeys.DeadHeat.EmptyStreetsSpec
       Arkham.Api.ArkhamDBSpec
+      Arkham.Api.ArkhamDBWriteBackSpec
       Arkham.Api.CampaignCatalogSpec
       Arkham.Api.Events.EventCreationSpec
       Arkham.Api.Events.EventListSpec

@@ -8,6 +8,7 @@ import Arkham.Source as X
 import Arkham.Target as X
 
 import Arkham.Ability
+import Arkham.ArkhamDB.Overlay (campaignDeckOverlayKey, campaignDeckIdentityKey, moveCampaignDeckIdentity)
 import Arkham.Campaign.Overlay (CampaignOverlay (..))
 import Arkham.CampaignLog
 import Arkham.CampaignLogKey
@@ -48,6 +49,11 @@ defaultCampaignRunner msg a = case msg of
     pure
       $ flip overAttrs a
       $ (decksL %~ Map.mapKeys (\iid' -> if iid == iid' then "11068b" else iid'))
+      . (storeL %~ moveCampaignDeckIdentity iid "11068b" (Map.keys $ campaignDecks $ toAttrs a))
+      . (storeL %~ \store ->
+          let previous = Map.lookup (campaignDeckOverlayKey iid) store
+              clean = Map.delete (campaignDeckOverlayKey "11068b") $ Map.delete (campaignDeckOverlayKey iid) store
+          in maybe clean (\value -> Map.insert (campaignDeckOverlayKey "11068b") value clean) previous)
       . (storyCardsL %~ Map.mapKeys (\iid' -> if iid == iid' then "11068b" else iid'))
       . (modifiersL %~ Map.mapKeys (\iid' -> if iid == iid' then "11068b" else iid'))
       . ( logL
@@ -164,6 +170,8 @@ defaultCampaignRunner msg a = case msg of
     pure
       $ updateAttrs a
       $ (decksL %~ Map.delete iid)
+      . (storeL %~ Map.delete (campaignDeckOverlayKey iid))
+      . (storeL %~ Map.delete (campaignDeckIdentityKey iid))
       . (storyCardsL %~ Map.delete iid)
       . (modifiersL %~ Map.delete iid)
   UnretireInvestigator _ -> a <$ push (CampaignStep $ campaignStep $ toAttrs a)
@@ -294,7 +302,11 @@ defaultCampaignRunner msg a = case msg of
                <> (if ancients then ancientsStartingXpMessages iid else [])
            ]
 
-      pure $ updateAttrs a $ decksL %~ insertMap iid deck'
+      -- Raw replacement cards alone do not prove which saved overlay was
+      -- applied. A direct deck-list loader records explicit absence after
+      -- this materialization; saved-deck seating then records its actual source.
+      pure $ updateAttrs a $
+        (decksL %~ insertMap iid deck') . (storeL %~ Map.delete (campaignDeckOverlayKey iid))
   DoStep 1 (InitDeck InitDeckAttrs {initDeckInvestigator = iid, initDeckDeck = deck}) -> do
     let cardCodes = map toCardCode $ unDeck deck
     mSpiritualHealing <-
@@ -386,7 +398,8 @@ defaultCampaignRunner msg a = case msg of
       <> toList mEldritchBrand
       <> [DoStep 1 (UpgradeDeck iid mUrl oldDeck)]
       <> initXp
-    pure $ updateAttrs a $ decksL %~ insertMap iid deck'
+    pure $ updateAttrs a $
+      (decksL %~ insertMap iid deck') . (storeL %~ Map.delete (campaignDeckOverlayKey iid))
   DoStep 1 (UpgradeDeck iid _ oldDeck) -> do
     -- we have lost the old deck data, so we swap in the message
     let
@@ -420,7 +433,9 @@ defaultCampaignRunner msg a = case msg of
     for_ mSpiritualHealing push
     pure a
   ReplaceInvestigator oldIid _ -> do
-    pure $ updateAttrs a $ decksL %~ deleteMap oldIid
+    pure $ updateAttrs a $
+      (decksL %~ deleteMap oldIid) .
+      (storeL %~ Map.delete (campaignDeckOverlayKey oldIid) . Map.delete (campaignDeckIdentityKey oldIid))
   FinishedUpgradingDecks -> case campaignStep (toAttrs a) of
     ChooseDecksStep nextStep' -> do
       push $ CampaignStep nextStep'

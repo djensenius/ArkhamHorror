@@ -3,19 +3,20 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -Wno-orphans -Wno-missing-deriving-strategies #-}
 
-module Arkham.Api.ArkhamDBSpec (spec) where
+module Arkham.Api.ArkhamDBSpec where
 
 import Api.Handler.Arkham.ArkhamDB (arkhamDBCallback, runArkhamDB)
-import Api.Handler.Arkham.Decks (toDeckErrors)
+import Api.Handler.Arkham.Decks (toDeckErrors, deleteSavedDeckResponse)
 import Application (makeLogWare)
 import Arkham.ArkhamDB
+import Arkham.ArkhamDB.WriteBack (ArkhamDBStatusResponse (..))
 import Arkham.ArkhamDB.Service
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Base.Api.Types.Capabilities qualified as Capabilities
 import Codec.Compression.GZip qualified as GZip
 import Control.Concurrent (threadDelay, modifyMVar, newEmptyMVar, newMVar, putMVar, takeMVar, tryPutMVar, withMVar)
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket, throwIO, try)
 import Data.Aeson
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -28,7 +29,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.UUID qualified as UUID
-import Database.Persist (Entity (..))
+import Database.Persist (Entity (..), Update (..), PersistUpdate (Assign), fieldLens)
 import Database.PostgreSQL.Simple (SqlError (..), ExecStatus (FatalError))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
@@ -36,7 +37,7 @@ import Entity.User
 import Helpers.AppSettings (loadAppSettings)
 import Network.HTTP.Client
 import Network.HTTP.Client.Internal (managerProxyInsecure)
-import Network.HTTP.Types (hLocation, status200, status302, status409, status502)
+import Network.HTTP.Types (hLocation, status200, status302, status400, status409, status502)
 import Numeric (showHex)
 import Network.Wai qualified as Wai
 import Network.Wai.Test qualified as WaiTest
@@ -56,18 +57,26 @@ import Yesod.Core qualified as Yesod
 
 -- Dispatch the same callback body as the production route through Yesod/WAI.
 -- Only persistence and remote HTTP are replaced; redirects are not simulated.
-data CallbackSite = CallbackSite (ArkhamDBStore IO) (ArkhamDBClient IO)
+data CallbackSite = CallbackSite (ArkhamDBStore IO) (ArkhamDBClient IO) (IO Bool)
 Yesod.mkYesod "CallbackSite" [Yesod.parseRoutes|
 /api/v1/arkham/arkhamdb/callback CallbackR GET
 /lock-timeout LockTimeoutR GET
+/overlay-sync OverlaySyncR POST
+/overlay-import OverlayImportR POST
+/deck DeckDeletionR DELETE
 |]
 
 instance Yesod.Yesod CallbackSite where
   makeSessionBackend _ = pure Nothing
 
+deleteDeckDeletionR :: Yesod.HandlerFor CallbackSite ()
+deleteDeckDeletionR = do
+  CallbackSite _ _ remove <- Yesod.getYesod
+  deleteSavedDeckResponse $ liftIO remove
+
 getCallbackR :: Yesod.HandlerFor CallbackSite Yesod.Html
 getCallbackR = do
-  CallbackSite store client <- Yesod.getYesod
+  CallbackSite store client _ <- Yesod.getYesod
   arkhamDBCallback (handlerStore store) (pure $ hoistArkhamDBClient liftIO client) settings
 
 -- Exercise the real handler boundary after PostgreSQL aborts a transaction.
@@ -75,9 +84,22 @@ getLockTimeoutR :: Yesod.HandlerFor CallbackSite ()
 getLockTimeoutR = runArkhamDB $ liftIO $ throwIO $
   SqlError "55P03" FatalError "private-access-token" "server-secret" "private-refresh-token"
 
+postOverlaySyncR :: Yesod.HandlerFor CallbackSite Value
+postOverlaySyncR = do
+  CallbackSite store client _ <- Yesod.getYesod
+  toJSON <$> runArkhamDB (syncRemoteDeck (handlerStore store) (hoistArkhamDBClient liftIO client)
+    settings now userId deckId (liftIO . forbiddenPublic))
+
+postOverlayImportR :: Yesod.HandlerFor CallbackSite Value
+postOverlayImportR = do
+  CallbackSite store client _ <- Yesod.getYesod
+  toJSON <$> runArkhamDB (importRemoteDeck (handlerStore store) (hoistArkhamDBClient liftIO client)
+    settings now userId "123" (liftIO . forbiddenPublic))
+
 handlerStore :: ArkhamDBStore IO -> ArkhamDBStore (Yesod.HandlerFor CallbackSite)
 handlerStore store = ArkhamDBStore
   { withRefreshLock = \uid action -> withRunInIO \run -> withRefreshLock store uid (run . action . handlerStore)
+  , ownsPushClaim = liftIO . store.ownsPushClaim
   , saveLinkState = liftIO . store.saveLinkState
   , claimLinkState = \time nonce -> liftIO $ store.claimLinkState time nonce
   , findAccountGeneration = liftIO . store.findAccountGeneration
@@ -90,7 +112,8 @@ handlerStore store = ArkhamDBStore
   , findDeckLinks = liftIO . store.findDeckLinks
   , findDeck = liftIO . store.findDeck
   , saveImportedDeck = \generation deck remoteDeck time -> liftIO $ store.saveImportedDeck generation deck remoteDeck time
-  , saveSyncedDeck = \generation key deck remoteDeck time -> liftIO $ store.saveSyncedDeck generation key deck remoteDeck time
+  , saveSyncedDeck = \generation key expected remoteDeck time adopt -> withRunInIO \run ->
+      store.saveSyncedDeck generation key expected remoteDeck time (run . adopt)
   , dropDeckLink = \generation uid key -> liftIO $ store.dropDeckLink generation uid key
   , validateDeck = liftIO . store.validateDeck
   }
@@ -131,11 +154,14 @@ tokens = ArkhamDBOAuthTokens "private-access-token" (Just "private-refresh-token
 remote :: ArkhamDBRemoteDeck
 remote = ArkhamDBRemoteDeck
   (ArkhamDBDecklist mempty mempty "01001" "Roland Banks" Nothing Nothing Nothing (Just "123") (Just "Private deck"))
-  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0")
+  "123" (Just "2026-10-19T11:00:00Z") (Just "1.0") Nothing True "Guide" "campaign" (Map.singleton "01006" 1) (Just "too_few_cards")
 
 stubClient :: ArkhamDBClient IO
 stubClient = ArkhamDBClient
-  { exchangeCode = \code uri -> do
+  { upgradeDeck = \_ _ _ _ -> expectationFailure "Unexpected upgrade" >> pure (Left ArkhamDBNotFound)
+  , createDeck = \_ _ -> expectationFailure "Unexpected create" >> pure (Left ArkhamDBNotFound)
+  , saveDeck = \_ _ _ -> expectationFailure "Unexpected save" >> pure (Left ArkhamDBNotFound)
+  , exchangeCode = \code uri -> do
       code `shouldBe` "authorization-code"
       uri `shouldBe` "https://server.example/api/v1/arkham/arkhamdb/callback"
       pure $ Right tokens
@@ -175,6 +201,7 @@ newStore = do
             lock <- newMVar ()
             pure (Map.insert uid lock locks, lock)
         withMVar lock $ const $ action store
+      ownsPushClaim = const $ pure False
       store = ArkhamDBStore {..}
       modify = modifyIORef' ref
       saveLinkState state = modify \s -> s {storedStates = Map.insert (arkhamDBLinkStateNonce state) (Entity (ArkhamDBLinkStateKey UUID.nil) state) s.storedStates}
@@ -224,14 +251,27 @@ newStore = do
           Just (key, _) -> (s, Entity key <$> Map.lookup key s.storedDecks)
           Nothing ->
             let key = ArkhamDeckKey $ UUID.fromWords 0 0 0 s.storedNextDeck
-                link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing time time
+                link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing Nothing time time
              in (s {storedNextDeck = s.storedNextDeck + 1, storedDecks = Map.insert key deck s.storedDecks, storedLinks = Map.insert key link s.storedLinks}, Just $ Entity key deck)
-      saveSyncedDeck generation key deck remoteDeck time = atomicModifyIORef' ref \s ->
-        if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation || Map.notMember key s.storedLinks then (s, False) else
-        (s
-          { storedDecks = Map.insert key deck s.storedDecks
-          , storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key s.storedLinks
-          }, True)
+      saveSyncedDeck generation key expected remoteDeck time adopt = withRefreshLock (arkhamDBDeckLinkUserId expected) \_ -> do
+        let uid = arkhamDBDeckLinkUserId expected
+        s <- readIORef ref
+        case (Map.lookup key s.storedDecks, Map.lookup key s.storedLinks) of
+          (Just current, Just link)
+            | Map.lookup uid s.storedGenerations == Just generation
+            , arkhamDeckUserId current == uid, arkhamDBDeckLinkUserId link == uid
+            , sameSyncedDeckLink expected link
+            , arkhamDBDeckLinkRemoteDeckId link == remoteDeck.remoteDeckId -> do
+                prepared <- adopt current
+                case prepared of
+                  Left err -> pure $ Left err
+                  Right updated -> atomicModifyIORef' ref \latest ->
+                    let persisted = applySyncedDeckUpdates key updated current
+                    in (latest
+                      { storedDecks = Map.insert key persisted latest.storedDecks
+                      , storedLinks = Map.adjust (\value -> value {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key latest.storedLinks
+                      }, Right $ Entity key persisted)
+          _ -> pure $ Left linkChanged
       dropDeckLink generation uid key = atomicModifyIORef' ref \s ->
         if Map.lookup uid s.storedGenerations /= Just generation then (s, False) else (s {storedLinks = Map.delete key s.storedLinks}, True)
       validateDeck _ = pure ()
@@ -239,6 +279,13 @@ newStore = do
  where
   entityValue (Entity _ value) = value
   pendingMatches time uid digest value = arkhamDBLinkStateUserId value == uid && arkhamDBLinkStateCompletionHash value == Just digest && arkhamDBLinkStateExpiresAt value > time && isJust (arkhamDBLinkStateEncryptedPendingTokens value)
+
+-- Exercise the actual SQL field assignments, not whole-row replacement.
+applySyncedDeckUpdates :: ArkhamDeckId -> ArkhamDeck -> ArkhamDeck -> ArkhamDeck
+applySyncedDeckUpdates key updated previous = entityVal $ foldl' apply (Entity key previous) $ syncedDeckUpdates updated
+ where
+  apply entity (Update field value Assign) = runIdentity $ fieldLens field (const $ Identity value) entity
+  apply _ _ = error "Only field assignments are used by linked sync"
 
 linkAccount :: ArkhamDBStore IO -> IO ()
 linkAccount store = do
@@ -275,9 +322,186 @@ paddedResponse size body = body <> BSL.replicate (fromIntegral size - BSL.length
 
 spec :: Spec
 spec = describe "ArkhamDB account linking and private decks" do
+  for_ [False, True] \viaImport ->
+    for_ [False, True] \pushed ->
+      for_ ["add", "replace", "remove" :: Text] \edit ->
+        it ("adopts the current row after an overlay edit during remote IO: " <> show (viaImport, pushed, edit)) do
+          (store, ref) <- newStore
+          linkAccount store
+          runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+          let old = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+              newer = old {overlayAdd = Map.singleton "01008" 1}
+              initial = if edit == "add" then Nothing else Just old
+              edited = if edit == "remove" then Nothing else Just newer
+              incoming = if pushed
+                then withExportedOverlay (Just old) remote.deck
+                  {slots = Map.fromList [("01006", 1), ("01007", 1)], meta = Just "{\"ahn_push\":\"completed-push\"}"}
+                else remote.deck {slots = Map.singleton "01006" 1, meta = Nothing}
+          modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = initial}) deckId s.storedDecks}
+          loaded <- newEmptyMVar
+          release <- newEmptyMVar
+          validated <- newIORef Nothing
+          inWriter <- newIORef False
+          let checking = store
+                { validateDeck = \deck -> do
+                    readIORef inWriter `shouldReturn` True
+                    writeIORef validated $ Just deck
+                , saveSyncedDeck = \generation key uid value time adopt ->
+                    store.saveSyncedDeck generation key uid value time \current -> do
+                      writeIORef inWriter True
+                      result <- adopt current
+                      writeIORef inWriter False
+                      pure result
+                }
+              client = stubClient {loadDeck = \_ _ -> do
+                putMVar loaded ()
+                takeMVar release
+                pure $ Right remote {deck = incoming}}
+              action = if viaImport then importRemoteDeck checking client settings now userId "123" forbiddenPublic
+                else syncRemoteDeck checking client settings now userId deckId forbiddenPublic
+          withAsync (runExceptT action) \request -> do
+            timeout 2000000 (takeMVar loaded) `shouldReturn` Just ()
+            -- The transport still holds the account lock. Overlay PUT/DELETE
+            -- do not use it; their committed row edit precedes the sync save.
+            modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = edited}) deckId s.storedDecks}
+            putMVar release ()
+            result <- wait request >>= either (fail . show) pure
+            persisted <- Map.lookup deckId . storedDecks <$> readIORef ref >>= maybe (fail "Missing saved row") pure
+            arkhamDeckOverlay persisted `shouldBe` edited
+            toJSON (entityVal result) `shouldBe` toJSON persisted
+            readIORef validated `shouldReturn` Just (arkhamDeckPlayList persisted)
+            slots (arkhamDeckPlayList persisted) `shouldBe`
+              Map.unionWith (+) incoming.slots (maybe mempty overlayAdd edited)
+
+  it "validates the current-row overlay inside adoption before any saved-list or marker writes" do
+    (store, ref) <- newStore
+    linkAccount store
+    runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+    validated <- newIORef Nothing
+    let overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+        rejecting = store {validateDeck = \deck -> do
+          writeIORef validated $ Just deck
+          throwIO $ userError "current overlay validation failed"}
+        client = stubClient {loadDeck = \_ _ -> do
+          modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
+          pure $ Right remote {deck = remote.deck {slots = Map.singleton "01006" 1}, dateUpdate = Just "new-marker"}}
+    -- Validation throws before the transactional writer mutates either row.
+    result <- try @SomeException $ runExceptT $ syncRemoteDeck rejecting client settings now userId deckId forbiddenPublic
+    case result of
+      Left err -> show err `shouldContain` "current overlay validation failed"
+      Right _ -> expectationFailure "Expected current-row validation failure"
+    fmap (fmap slots) (readIORef validated) `shouldReturn` Just (Map.fromList [("01006", 1), ("01008", 1)])
+    current <- readIORef ref
+    fmap (slots . arkhamDeckList) (Map.lookup deckId current.storedDecks) `shouldBe` Just remote.deck.slots
+    fmap arkhamDeckOverlay (Map.lookup deckId current.storedDecks) `shouldBe` Just (Just overlay)
+    fmap arkhamDBDeckLinkLastSyncedDateUpdate (Map.lookup deckId current.storedLinks) `shouldBe` Just remote.dateUpdate
+
+  for_ [False, True] \retarget ->
+    it ("refuses a stale remote result after newer mapping adoption: " <> show retarget) do
+      (store, ref) <- newStore
+      linkAccount store
+      runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+      let target = if retarget then "124" else "123"
+          client = stubClient {loadDeck = \_ _ -> do
+            modifyIORef' ref \s -> s
+              { storedLinks = Map.adjust (\link -> link
+                  {arkhamDBDeckLinkRemoteDeckId = target, arkhamDBDeckLinkLastSyncedDateUpdate = Just "adopted"}) deckId s.storedLinks
+              }
+            pure $ Right remote {dateUpdate = Just "stale"}}
+      runExceptT (syncRemoteDeck store client settings now userId deckId forbiddenPublic) >>= expectCode "notLinked"
+      state <- readIORef ref
+      fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup deckId state.storedLinks) `shouldBe` Just target
+      fmap arkhamDBDeckLinkLastSyncedDateUpdate (Map.lookup deckId state.storedLinks) `shouldBe` Just (Just "adopted")
+
+  it "returns the actual field-assigned sync row, not unwritten callback fields" do
+    (store, ref) <- newStore
+    linkAccount store
+    runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+    generation <- store.findAccountGeneration userId >>= maybe (fail "Missing generation") pure
+    expected <- Map.lookup deckId . storedLinks <$> readIORef ref >>= maybe (fail "Missing mapping") pure
+    saved <- store.saveSyncedDeck generation deckId expected remote now $
+      \current -> pure $ Right current {arkhamDeckName = "Updated", arkhamDeckLastUsedAt = Just now}
+    result <- either (fail . show) pure saved
+    persisted <- Map.lookup deckId . storedDecks <$> readIORef ref >>= maybe (fail "Missing saved row") pure
+    arkhamDeckName persisted `shouldBe` "Updated"
+    arkhamDeckLastUsedAt persisted `shouldBe` Nothing
+    toJSON (entityVal result) `shouldBe` toJSON persisted
+
+  for_ [False, True] \unused ->
+    it ("returns the actual saved-deck DELETE HTTP response for unused=" <> show unused) do
+      called <- newIORef (0 :: Int)
+      (store, _) <- newStore
+      application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (modifyIORef' called (+1) >> pure unused)
+      response <- WaiTest.runSession
+        (WaiTest.request $ (WaiTest.setPath WaiTest.defaultRequest "/deck") {Wai.requestMethod = "DELETE"}) application
+      WaiTest.simpleStatus response `shouldBe` if unused then status200 else status409
+      unless unused $ eitherDecode @Value (WaiTest.simpleBody response) `shouldBe` Right (object
+        ["errorMsg" .= String "Saved deck has campaign accounting or unresolved write-back; deletion requires reconciliation"])
+      readIORef called `shouldReturn` 1
+
+  for_ ["/overlay-sync", "/overlay-import"] \path ->
+    it ("returns actual HTTP 400 for ambiguous overlay adoption through " <> BS8.unpack path) do
+      (store, ref) <- newStore
+      linkAccount store
+      runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+          incoming = remote {deck = remote.deck {meta = Just "{\"ahn_push\":\"legacy-push\"}"}}
+          client = stubClient {loadDeck = \_ _ -> pure $ Right incoming}
+      modifyIORef' ref \s -> s {storedDecks = Map.adjust (\d -> d {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
+      before <- Map.lookup deckId . storedDecks <$> readIORef ref
+      application <- Yesod.toWaiAppPlain $ CallbackSite store client (pure True)
+      response <- WaiTest.runSession
+        (WaiTest.request $ (WaiTest.setPath WaiTest.defaultRequest path) {Wai.requestMethod = "POST"}) application
+      WaiTest.simpleStatus response `shouldBe` status400
+      eitherDecode @Value (WaiTest.simpleBody response) `shouldBe` Right (object
+        ["code" .= String "validationFailed", "error" .= String "Campaign overlay provenance is unavailable; refusing ambiguous adoption"])
+      after <- Map.lookup deckId . storedDecks <$> readIORef ref
+      fmap arkhamDeckList after `shouldBe` fmap arkhamDeckList before
+      fmap arkhamDeckOverlay after `shouldBe` Just (Just overlay)
+
+  for_ [("upgrade", "PUT /api/oauth2/deck/upgrade/123", "xp=5"), ("new", "POST /api/oauth2/deck/new", "investigator=01001"), ("save", "PUT /api/oauth2/deck/save/124", "slots=%7B%2201006%22%3A1%7D")] \(operation, methodPath, fieldName) ->
+    it ("uses ArkhamDB's documented method and form for " <> operation) do
+      incoming <- newIORef "HTTP/1.1 200 OK\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"success\":true,\"msg\":124}"
+      outgoing <- newIORef mempty
+      manager <- newManager defaultManagerSettings
+        { managerRawConnection = pure $ \_ _ _ -> makeConnection
+            (atomicModifyIORef' incoming (\bytes -> (mempty, bytes)))
+            (\bytes -> modifyIORef' outgoing (<> bytes)) (pure ())
+        , managerProxyInsecure = noProxy
+        }
+      let client = httpArkhamDBClient manager "http://arkhamdb.stub" "client" "secret"
+      result <- case operation of
+        "upgrade" -> client.upgradeDeck "token" "123" 5 (Just "{}")
+        "new" -> client.createDeck "token" remote.deck
+        _ -> client.saveDeck "token" "124" remote {deck = remote.deck {slots = Map.singleton "01006" 1, sideSlots = Map.singleton "01007" 1}}
+      result `shouldBe` Right "124"
+      request <- readIORef outgoing
+      request `shouldSatisfy` BS8.isInfixOf methodPath
+      request `shouldSatisfy` BS8.isInfixOf fieldName
+      when (operation == "save") do
+        for_ ["description_md=Guide", "tags=campaign", "ignored=%7B%2201006%22%3A1%7D", "problem=too_few_cards"] \field ->
+          request `shouldSatisfy` BS8.isInfixOf field
+
+  it "loads the remote guide tags ignored slots and problem for lossless save forwarding" do
+    let raw = object
+          [ "id" .= (123 :: Int), "investigator_code" .= ("01001" :: Text), "slots" .= object []
+          , "description_md" .= ("Campaign guide" :: Text), "tags" .= ("solo campaign" :: Text)
+          , "ignoreDeckLimitSlots" .= object ["01006" .= (2 :: Int)], "problem" .= ("too_many_cards" :: Text)]
+    remote <- either (fail . show) pure $ case fromJSON raw of Error err -> Left err; Success value -> Right (value :: ArkhamDBRemoteDeck)
+    remote.descriptionMd `shouldBe` "Campaign guide"
+    remote.tags `shouldBe` "solo campaign"
+    remote.ignoreDeckLimitSlots `shouldBe` Map.singleton "01006" 2
+    remote.problem `shouldBe` Just "too_many_cards"
+
+  it "sanitizes a rejected HTTP write envelope and enforces the decoded write-body cap" do
+    rejected <- chunkedClient "" "{\"success\":false,\"msg\":124,\"error\":\"private-access-token\"}"
+    rejected.upgradeDeck "token" "123" 5 Nothing `shouldReturn` Left (ArkhamDBRemoteError "Write rejected")
+    oversized <- chunkedClient "" $ paddedResponse (1024 * 1024 + 1) "{\"success\":true,\"msg\":124}"
+    oversized.saveDeck "token" "124" remote `shouldReturn` Left (ArkhamDBRemoteError "Response too large")
+
   it "sanitizes PostgreSQL lock timeout as retryable remoteUnavailable" do
     (store, _) <- newStore
-    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (pure True)
     response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest "/lock-timeout") application
     WaiTest.simpleStatus response `shouldBe` status502
     eitherDecode @Value (WaiTest.simpleBody response) `shouldBe` Right (object
@@ -327,7 +551,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     (store, ref) <- newStore
     time <- getCurrentTime
     _ <- runExceptT $ startLink store settings time userId "nonce"
-    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (pure True)
     response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest
       "/api/v1/arkham/arkhamdb/callback?state=nonce&code=authorization-code") application
     WaiTest.simpleStatus response `shouldBe` status302
@@ -347,7 +571,7 @@ spec = describe "ArkhamDB account linking and private decks" do
     (store, _) <- newStore
     time <- getCurrentTime
     _ <- runExceptT $ startLink store settings time userId "nonce"
-    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient
+    application <- Yesod.toWaiAppPlain $ CallbackSite store stubClient (pure True)
     response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest
       "/api/v1/arkham/arkhamdb/callback?state=nonce&code=authorization-code&web=1") application
     WaiTest.simpleStatus response `shouldBe` status302
@@ -360,7 +584,7 @@ spec = describe "ArkhamDB account linking and private decks" do
       time <- getCurrentTime
       _ <- runExceptT $ startLink store settings time userId "nonce"
       let client = stubClient {exchangeCode = \_ _ -> expectationFailure "error callback exchanged OAuth code" >> pure (Right tokens)}
-      application <- Yesod.toWaiAppPlain $ CallbackSite store client
+      application <- Yesod.toWaiAppPlain $ CallbackSite store client (pure True)
       response <- WaiTest.runSession (WaiTest.request $ WaiTest.setPath WaiTest.defaultRequest $
         "/api/v1/arkham/arkhamdb/callback?state=nonce&code=must-not-exchange&error=" <> oauthError) application
       WaiTest.simpleStatus response `shouldBe` status302
@@ -943,8 +1167,8 @@ arkhamDBFixture = do
   synced <- runExceptT (syncRemoteDeck store stubClient settings now userId deckId forbiddenPublic) >>= either (fail . show) pure
   pure $ object
     [ "linkStart" .= start
-    , "linkedStatus" .= linked
-    , "unlinkedStatus" .= unlinked
+    , "linkedStatus" .= ArkhamDBStatusResponse linked []
+    , "unlinkedStatus" .= ArkhamDBStatusResponse unlinked []
     , "decks" .= summaries
     , "completionRequest" .= ArkhamDBLinkCompleteRequest "completion-secret"
     , "importRequest" .= object ["deckId" .= String "123"]

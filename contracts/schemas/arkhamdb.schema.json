@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://arkhamhorror.app/contracts/arkhamdb.schema.json",
-  "title": "ArkhamDB account linking and private deck reads",
+  "title": "ArkhamDB account linking, private decks and opt-in campaign write-back",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -76,7 +76,8 @@
         "remoteAccountName",
         "tokenExpiry",
         "linkedAt",
-        "writeBackEnabledDeckCount"
+        "writeBackEnabledDeckCount",
+        "deckLinks"
       ],
       "properties": {
         "linked": {
@@ -111,6 +112,9 @@
         "writeBackEnabledDeckCount": {
           "type": "integer",
           "minimum": 0
+        },
+        "deckLinks": {
+          "$ref": "#/$defs/writeBackStatusList"
         }
       }
     },
@@ -202,7 +206,11 @@
             "notFound",
             "storageFailure",
             "remoteUnavailable",
-            "oauthCompletionInvalid"
+            "oauthCompletionInvalid",
+            "writeBackDisabled",
+            "conflict",
+            "pushUncertain",
+            "validationFailed"
           ]
         },
         "error": {
@@ -222,6 +230,214 @@
           "minLength": 1
         }
       }
+    },
+    "writeBackConflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "lastSyncedDateUpdate",
+        "lastSyncedVersion",
+        "remoteDateUpdate",
+        "remoteVersion"
+      ],
+      "properties": {
+        "reason": {
+          "enum": [
+            "remoteChanged",
+            "campaignChanged",
+            "pushUncertain",
+            "targetAlreadyLinked",
+            "boundaryUndone",
+            "accountChanged"
+          ]
+        },
+        "lastSyncedDateUpdate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastSyncedVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remoteDateUpdate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remoteVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "writeBackStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "localDeckId",
+        "remoteDeckId",
+        "enabled",
+        "state",
+        "pushId",
+        "campaignKey",
+        "error",
+        "conflict",
+        "resultingLocalDeckId",
+        "spentXpSynced"
+      ],
+      "properties": {
+        "localDeckId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "remoteDeckId": {
+          "type": "string",
+          "pattern": "^[0-9]+$"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "state": {
+          "enum": [
+            "idle",
+            "pending",
+            "running",
+            "failed",
+            "conflict",
+            "succeeded",
+            "cancelled"
+          ]
+        },
+        "pushId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "campaignKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "conflict": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/writeBackConflict"
+            }
+          ]
+        },
+        "resultingLocalDeckId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "spentXpSynced": {
+          "const": false,
+          "description": "No authoritative upgrade-cost value exists in the server or upgrade request. Set spent XP manually on ArkhamDB before the next version upgrade."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "conflict"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "conflict": {
+                "$ref": "#/$defs/writeBackConflict"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "conflict": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "writeBackStatusList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/writeBackStatus"
+      }
+    },
+    "toggleRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "resolveRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "resolution"
+          ],
+          "properties": {
+            "resolution": {
+              "const": "keepRemote"
+            },
+            "confirmed": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "resolution",
+            "confirmed"
+          ],
+          "properties": {
+            "resolution": {
+              "enum": [
+                "overwrite",
+                "saveAsNew"
+              ]
+            },
+            "confirmed": {
+              "const": true
+            }
+          }
+        }
+      ]
     }
   }
 }
