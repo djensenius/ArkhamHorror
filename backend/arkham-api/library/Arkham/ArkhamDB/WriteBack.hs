@@ -11,6 +11,7 @@ import Control.Concurrent (ThreadId, myThreadId, modifyMVar, modifyMVar_, killTh
 import System.Timeout (timeout)
 import Control.Monad.Except
 import Data.Aeson
+import Data.Aeson.Types (parseEither)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Time.Clock (UTCTime, addUTCTime, getCurrentTime)
 import Data.Text qualified as T
@@ -234,7 +235,8 @@ canResolvePush mode job = arkhamDBPushStatus job `elem` ["conflict", "failed"] &
 -- read must not retire the XP-bearing creation checkpoint or its overwrite fence.
 resolvedPush :: UTCTime -> Text -> ArkhamDBPush -> ArkhamDBPush
 resolvedPush now mode job = (if mode == "keep" then job else job
-  { arkhamDBPushStage = "ready", arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing })
+  { arkhamDBPushStage = "ready", arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing
+  , arkhamDBPushPayload = unpreparedPushPayload $ arkhamDBPushPayload job })
   { arkhamDBPushStatus = "pending", arkhamDBPushMode = mode
   , arkhamDBPushError = Nothing, arkhamDBPushUpdatedAt = now }
 
@@ -294,6 +296,7 @@ saveAsNewPush now job = job
   , arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = "new"
   , arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing, arkhamDBPushError = Nothing
   , arkhamDBPushUpdatedAt = now
+  , arkhamDBPushPayload = unpreparedPushPayload $ arkhamDBPushPayload job
   }
 
 -- A fresh independent intent is not adoption. Keep the original creation's
@@ -340,21 +343,54 @@ needsCampaignCopy link job = arkhamDBPushMode job == "new" &&
 encodePushDeck :: ArkhamDBDecklist -> Text
 encodePushDeck = decodeUtf8 . toStrict . encode
 
+-- Internal, versioned storage envelope; never sent to ArkhamDB or clients.
+-- Its presence proves that remote-owned fields were frozen before side effects.
+encodePreparedPushDeck :: ArkhamDBDecklist -> Text
+encodePreparedPushDeck deck = decodeUtf8 $ toStrict $ encode $ object
+  ["effectivePayloadRevision" .= (1 :: Int), "deck" .= deck]
+
+decodePushDeckPayload :: Text -> Either String (Bool, ArkhamDBDecklist)
+decodePushDeckPayload text = eitherDecodeStrict' (encodeUtf8 text) >>= parseEither
+  (\value -> withObject "Push payload" (\o ->
+    if KM.member "effectivePayloadRevision" o then do
+      revision <- o .: "effectivePayloadRevision"
+      unless (revision == (1 :: Int)) $ fail "Unknown effective payload revision"
+      (True,) <$> o .: "deck"
+    else (False,) <$> parseJSON value) value)
+
+unpreparedPushPayload :: Text -> Text
+unpreparedPushPayload text = either (const text) (encodePushDeck . snd) $ decodePushDeckPayload text
+
+-- Only these fields are remote-owned. Main/story slots, taboo, campaign meta
+-- and overlay provenance stay in the campaign snapshot. Absence deletes a
+-- stale extra_deck key; empty/null values replace it exactly as on the source.
+effectivePushDeck :: ArkhamDBDecklist -> ArkhamDBDecklist -> Either ArkhamDBError ArkhamDBDecklist
+effectivePushDeck queued remote = do
+  metadata <- pushDeckMetadata queued
+  remoteMetadata <- pushDeckMetadata remote
+  let clean = KM.delete "extra_deck" metadata
+      merged = maybe clean (\value -> KM.insert "extra_deck" value clean) $ KM.lookup "extra_deck" remoteMetadata
+  pure queued
+    { Decklist.sideSlots = remote.sideSlots
+    , Decklist.meta = if KM.null merged then Nothing else Just $ decodeUtf8 $ toStrict $ encode $ Object merged
+    }
+
 pushMarker :: ArkhamDBPushId -> Text
 pushMarker = UUID.toText . coerce
 
 -- Preserve every existing metadata key. A non-object meta is not silently lost.
 markedDeck :: ArkhamDBPushId -> ArkhamDBDecklist -> Either ArkhamDBError ArkhamDBDecklist
 markedDeck key deck = do
-  metadata <- case Decklist.meta deck of
+  metadata <- pushDeckMetadata deck
+  pure deck {Decklist.meta = Just $ decodeUtf8 $ toStrict $ encode $ Object $ KM.insert "ahn_push" (String $ pushMarker key) metadata}
+
+pushDeckMetadata :: ArkhamDBDecklist -> Either ArkhamDBError (KM.KeyMap Value)
+pushDeckMetadata deck = case Decklist.meta deck of
     Nothing -> Right KM.empty
     Just "" -> Right KM.empty -- ArkhamDB's sentinel for decks without metadata.
     Just text -> case eitherDecodeStrict' $ encodeUtf8 text of
       Right (Object value) -> Right value
       _ -> Left $ ArkhamDBError "validationFailed" "Deck metadata must be a JSON object"
-  pure deck {Decklist.meta = Just $ encodePushDeckMeta $ Object $ KM.insert "ahn_push" (String $ pushMarker key) metadata}
- where
-  encodePushDeckMeta = decodeUtf8 . toStrict . encode
 
 hasPushMarker :: ArkhamDBPushId -> ArkhamDBRemoteDeck -> Bool
 hasPushMarker key remote = do
@@ -507,6 +543,7 @@ runWriteBack store writes client settings now retry userId deckId = do
         createVersion entity desired source xp = do
           next <- checkpoint entity (entityVal entity)
             { arkhamDBPushStage = "creating"
+            , arkhamDBPushPayload = encodePreparedPushDeck desired
             , arkhamDBPushSourceId = (.remoteDeckId) <$> source
             , arkhamDBPushExpectedDateUpdate = source >>= (.dateUpdate)
             , arkhamDBPushExpectedVersion = source >>= (.deckVersion)
@@ -532,13 +569,23 @@ runWriteBack store writes client settings now retry userId deckId = do
           else processDeck entity link
         processDeck entity link = do
           let job = entityVal entity
-          unmarked <- either (const $ throwError $ ArkhamDBError "storageFailure" "Invalid pending deck") pure $ eitherDecodeStrict' $ encodeUtf8 $ arkhamDBPushPayload job
+          (prepared, unmarked) <- either (const $ throwError $ ArkhamDBError "storageFailure" "Invalid pending deck") pure $ decodePushDeckPayload $ arkhamDBPushPayload job
           desired <- either throwError pure $ markedDeck (entityKey entity) unmarked
+          when (not prepared && (arkhamDBPushStage job /= "ready" || hasCreationIntent job)) $
+            throwError $ ArkhamDBError "pushUncertain" "Legacy in-flight payload has no prepared remote-field provenance"
           case arkhamDBPushStage job of
             "creating" -> recover entity desired
             "created" -> saveVersion False entity desired
             "saving" -> saveVersion False entity desired
-            _ | arkhamDBPushMode job == "new" -> createVersion entity desired Nothing 0
+            _ | arkhamDBPushMode job == "new" -> do
+              effective <- if prepared then pure desired else do
+                -- An independent new deck may still be made when its old
+                -- source is gone/inaccessible; it never mutates that source.
+                source <- (Just <$> (load job (arkhamDBDeckLinkRemoteDeckId link) >>= latestVersion job [arkhamDBDeckLinkRemoteDeckId link]))
+                  `catchError` \err -> if arkhamDBErrorCode err `elem` ["notFound", "tokenExpired"]
+                    then pure Nothing else throwError err
+                maybe (pure desired) (either throwError pure . effectivePushDeck desired . (.deck)) source
+              createVersion entity effective Nothing 0
             _ -> do
               ready <- checkpoint entity job
                 { arkhamDBPushExpectedDateUpdate = arkhamDBDeckLinkLastSyncedDateUpdate link
@@ -557,17 +604,27 @@ runWriteBack store writes client settings now retry userId deckId = do
                 else if arkhamDBPushMode job == "normal" &&
                   ((isNothing (arkhamDBDeckLinkLastSyncedDateUpdate link) && isNothing (arkhamDBDeckLinkLastSyncedVersion link)) || not (sameMarkers (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link) original) || isJust original.nextDeckId)
                   then conflict ready original "remoteChanged"
-                  else if arkhamDBPushMode job == "normal" && arkhamDBPushTotalXp job == baseline &&
-                    samePushedDeck (unmarkedDeck desired) original {deck = unmarkedDeck original.deck}
-                    then finish ready original
-                  else if arkhamDBPushMode job == "normal" && arkhamDBPushBoundary job == "upgrade" &&
-                    arkhamDBPushTotalXp job <= baseline && campaignTarget
-                    then do
-                      target <- checkpoint ready (entityVal ready)
-                        { arkhamDBPushStage = "created", arkhamDBPushTargetId = Just original.remoteDeckId
-                        , arkhamDBPushExpectedDateUpdate = original.dateUpdate, arkhamDBPushExpectedVersion = original.deckVersion }
-                      saveVersion False target desired
-                  else createVersion ready desired (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
+                  else do
+                    merged <- either throwError pure $ effectivePushDeck desired source.deck
+                    -- Recovery may prove an upgrade was never sent and return
+                    -- to ready. Keep its frozen payload, but never overwrite
+                    -- newly edited source fields after a sync advances markers.
+                    if prepared && not (samePushedDeck desired source {deck = merged})
+                      then conflict ready source "remoteChanged"
+                    else do
+                      let effective = if prepared then desired else merged
+                      if arkhamDBPushMode job == "normal" && arkhamDBPushTotalXp job == baseline &&
+                        samePushedDeck (unmarkedDeck effective) original {deck = unmarkedDeck original.deck}
+                        then finish ready original
+                      else if arkhamDBPushMode job == "normal" && arkhamDBPushBoundary job == "upgrade" &&
+                        arkhamDBPushTotalXp job <= baseline && campaignTarget
+                        then do
+                          target <- checkpoint ready (entityVal ready)
+                            { arkhamDBPushStage = "created", arkhamDBPushTargetId = Just original.remoteDeckId
+                            , arkhamDBPushPayload = encodePreparedPushDeck effective
+                            , arkhamDBPushExpectedDateUpdate = original.dateUpdate, arkhamDBPushExpectedVersion = original.deckVersion }
+                          saveVersion False target effective
+                      else createVersion ready effective (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
     result <- runExceptT $ process initial
     case result of
       Left err -> do

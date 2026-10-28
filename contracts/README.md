@@ -1163,10 +1163,14 @@ before the first scenario. The
 snapshot uses the campaign's per-investigator `campaignDecks` plus story cards
 (deduplicated by card identity), including actual weaknesses, not the shuffled
 investigator draw pile. Only player cards are exported (encounter story cards
-are excluded, as in `ReloadDecks`). It preserves metadata, sideboard and taboo.
+are excluded, as in `ReloadDecks`). It exports campaign metadata and taboo.
 The engine's `investigatorSideDeck` is an extra deck, not the ArkhamDB sideboard:
-Joe Diamond's `meta.extra_deck` and the original `sideSlots` are carried through
-unchanged. An unrecognized engine taboo falls back to the original remote id. A stable
+Joe Diamond's `meta.extra_deck` and ArkhamDB `sideSlots` remain remote-owned.
+Before creation, the worker takes those fields from the loaded remote source,
+not the older queued snapshot (including after sync or confirmed overwrite).
+Missing `extra_deck` removes the queued key; empty/null values replace it exactly.
+All other campaign metadata, including overlay provenance, stays in the snapshot.
+An unrecognized engine taboo falls back to the original remote id. A stable
 association is recorded at the first boundary using the existing owner + deck
 URL match; future boundaries and saved-deck upgrade persistence use that owned
 game + investigator association even if the saved deck URL changes (including a
@@ -1231,6 +1235,19 @@ by save. ArkhamDB's success envelope returns the numeric ID in `msg`, not a deck
 object. HTTP slot keys and investigator codes use raw ArkhamDB codes, without
 the backend JSON card-code `c` prefix. Metadata must be a JSON object and existing keys are preserved; the
 reserved namespaced `ahn_push` key records the push ID for safe recovery.
+
+The effective deck is stored in an internal version-1 payload envelope atomically
+with the conditional creating checkpoint, before any creation request. Same-version
+saves likewise checkpoint the effective payload before saving. Save, recovery and
+verification use that exact frozen deck; they never remerge later source edits.
+If recovery proves a creation was unsent and returns to ready, changed remote-owned
+source fields conflict rather than silently refreezing or overwriting them.
+Legacy in-flight rows without preparation provenance fail closed with
+`pushUncertain`, without a remote write, inferred acknowledgment or repeated upgrade.
+Explicit save-as-new starts a fresh independent preparation, using the latest
+accessible source's sideboard/extra deck; a deleted or inaccessible old source
+falls back to the captured snapshot for the independent deck only. It never
+mutates that old source. Existing accounting/generation/undo fences still apply.
 
 `investigatorXp` is cumulative earned XP net of `SpendXP` side-story costs.
 Each version receives only the nonnegative delta since the last successful push

@@ -3,6 +3,7 @@
 module Arkham.Api.ArkhamDBWriteBackSpec where
 
 import Api.Arkham.Helpers (GameApp (..), runGameApp)
+import Api.Arkham.ArkhamDBWriteBack qualified as PersistentWriteBack
 import Arkham.Campaign (lookupCampaign)
 import Arkham.Campaign.Types (campaignStep, campaignDecks, campaignStoryCards, campaignStore)
 import Arkham.Classes.Entity (overAttrs, toAttrs)
@@ -364,6 +365,174 @@ applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId 
 
 spec :: Spec
 spec = describe "ArkhamDB campaign write-back" do
+  for_ ["normal", "overwrite", "new"] \mode ->
+    it ("freezes current remote sideboard/extra_deck with the production checkpoint before creation: " <> toString mode) do
+      h <- newHarness
+      let queued = withExportedOverlay Nothing currentDeck
+            {Decklist.meta = Just "{\"alternate_front\":\"01001\",\"extra_deck\":\"01100\",\"campaign\":\"kept\"}"}
+          side = Map.singleton "01009" 2
+          source = Linking.remote {dateUpdate = Just "edited", deck = Linking.remote.deck
+            {Decklist.sideSlots = side, Decklist.meta = Just "{\"extra_deck\":\"01008\",\"remote_only\":\"not-campaign-meta\"}"}}
+          apply entity (Update field value Assign) = runIdentity $ fieldLens field (const $ Identity value) entity
+          apply _ _ = error "Checkpoint must use assignments"
+          production = h.writes {checkpointPush = \previous next ->
+            h.writes.checkpointPush previous $ entityVal $ foldl' apply previous $ PersistentWriteBack.pushUpdates next}
+          assertPrepared = do
+            stored <- readIORef h.job
+            arkhamDBPushStage stored `shouldBe` "creating"
+            case decodePushDeckPayload (arkhamDBPushPayload stored) of
+              Right (True, effective) -> do
+                effective.sideSlots `shouldBe` side
+                (pushDeckMetadata effective >>= pure . KM.lookup "extra_deck") `shouldBe` Right (Just $ String "01008")
+              _ -> expectationFailure "Prepared payload was not persisted with creation"
+          client = h.client
+            { upgradeDeck = \token remoteId xp metadata -> assertPrepared >> h.client.upgradeDeck token remoteId xp metadata
+            , createDeck = \token deck -> assertPrepared >> h.client.createDeck token deck
+            }
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck queued}
+      modifyIORef' h.remotes $ Map.insert "123" source
+      if mode == "normal" then do
+        synced <- runExceptT $ syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic
+        synced `shouldSatisfy` isRight
+      else do
+        h.run False
+        assertState h "conflict"
+        h.writes.resolvePush Linking.now Linking.userId Linking.deckId mode `shouldReturn` True
+      runWriteBack h.store production client Linking.settings Linking.now False Linking.userId Linking.deckId
+      assertState h "succeeded"
+      pushed <- Map.lookup (if mode == "new" then "125" else "124") <$> readIORef h.remotes >>= maybe (fail "Missing target") pure
+      pushed.deck.sideSlots `shouldBe` side
+      pushed.deck.slots `shouldBe` queued.slots
+      pushed.deck.taboo_id `shouldBe` queued.taboo_id
+      metadata <- either (fail . show) pure $ pushDeckMetadata pushed.deck
+      KM.lookup "extra_deck" metadata `shouldBe` Just (String "01008")
+      KM.lookup "campaign" metadata `shouldBe` Just (String "kept")
+      KM.lookup "remote_only" metadata `shouldBe` Nothing
+      exportedOverlay pushed.deck `shouldBe` exportedOverlay queued
+
+  for_ [Nothing, Just Null, Just (String "")] \extra ->
+    it ("removes or empties stale queued extra_deck from remote state: " <> show extra) do
+      h <- newHarness
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck currentDeck {Decklist.meta = Just "{\"extra_deck\":\"01100\"}"}}
+      let metadata = object $ maybe [] (\value -> ["extra_deck" .= value]) extra
+      modifyIORef' h.remotes $ Map.adjust (\remote -> remote {deck = remote.deck {Decklist.meta = Just $ decodeUtf8 $ toStrict $ encode metadata}}) "123"
+      h.run False
+      assertState h "succeeded"
+      pushed <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing target") pure
+      (pushDeckMetadata pushed.deck >>= pure . KM.lookup "extra_deck") `shouldBe` Right extra
+      pushed.deck.sideSlots `shouldBe` mempty
+
+  it "prepares current remote-owned fields before saving into the existing scenario-end version" do
+    h <- newHarness
+    h.run False
+    let slots = Map.singleton "01009" 2
+        side = Map.singleton "01008" 3
+    modifyIORef' h.job \job -> job
+      { arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready"
+      , arkhamDBPushTargetId = Nothing, arkhamDBPushSourceId = Nothing
+      , arkhamDBPushBoundary = "upgrade", arkhamDBPushEventKey = "game/2/iid"
+      , arkhamDBPushPayload = encodePushDeck $ withExportedOverlay Nothing currentDeck {Decklist.slots = slots} }
+    modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "edited",
+      deck = remote.deck {Decklist.sideSlots = side, Decklist.meta = Just $ decodeUtf8 $ toStrict $ encode $ object
+        ["ahn_push" .= pushMarker pushKey, "ahn_overlay" .= Null, "extra_deck" .= String "01008"]}}) "124"
+    synced <- runExceptT $ syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic
+    synced `shouldSatisfy` isRight
+    h.run False
+    assertState h "succeeded"
+    frozen <- arkhamDBPushPayload <$> readIORef h.job
+    decodePushDeckPayload frozen `shouldSatisfy` either (const False) fst
+    pushed <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing existing target") pure
+    pushed.deck.slots `shouldBe` slots
+    pushed.deck.sideSlots `shouldBe` side
+    (pushDeckMetadata pushed.deck >>= pure . KM.lookup "extra_deck") `shouldBe` Right (Just $ String "01008")
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+    readIORef h.baseline `shouldReturn` 5
+
+  for_ ["lost-create", "failed-save", "lost-save"] \failure ->
+    it ("resumes the exact prepared payload without remerging later source edits: " <> toString failure) do
+      h <- newHarness
+      let side = Map.singleton "01009" 2
+          source = Linking.remote {deck = currentDeck
+            { Decklist.slots = if failure == "lost-create" then currentDeck.slots else Linking.remote.deck.slots
+            , Decklist.sideSlots = side, Decklist.meta = Just "{\"extra_deck\":\"01008\"}"}}
+          client = h.client
+            { upgradeDeck = \token remoteId xp metadata -> do
+                result <- h.client.upgradeDeck token remoteId xp metadata
+                pure $ if failure == "lost-create" then Left (ArkhamDBRemoteError "lost create response") else result
+            , saveDeck = \token remoteId remote ->
+                if failure == "failed-save" then pure $ Left $ ArkhamDBRemoteError "failed save"
+                else do
+                  result <- h.client.saveDeck token remoteId remote
+                  pure $ if failure == "lost-save" then Left (ArkhamDBRemoteError "lost save response") else result
+            }
+      modifyIORef' h.remotes $ Map.insert "123" source
+      runWith h client False
+      assertState h "failed"
+      frozen <- arkhamDBPushPayload <$> readIORef h.job
+      decodePushDeckPayload frozen `shouldSatisfy` either (const False) fst
+      modifyIORef' h.remotes $ Map.adjust (\remote -> remote {deck = remote.deck
+        {Decklist.sideSlots = Map.singleton "01006" 3, Decklist.meta = Just "{\"extra_deck\":\"01100\"}"}}) "123"
+      h.run True
+      assertState h "succeeded"
+      arkhamDBPushPayload <$> readIORef h.job `shouldReturn` frozen
+      pushed <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing target") pure
+      pushed.deck.sideSlots `shouldBe` side
+      (pushDeckMetadata pushed.deck >>= pure . KM.lookup "extra_deck") `shouldBe` Right (Just $ String "01008")
+      filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+      readIORef h.baseline `shouldReturn` 5
+
+  for_ ["creating", "created", "saving"] \stage ->
+    it ("refuses legacy in-flight payload without preparation provenance: " <> toString stage) do
+      h <- newHarness
+      modifyIORef' h.job \job -> job
+        { arkhamDBPushStatus = "failed", arkhamDBPushStage = stage
+        , arkhamDBPushSourceId = Just "123", arkhamDBPushTargetId = if stage == "creating" then Nothing else Just "124" }
+      h.run True
+      assertState h "failed"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "pushUncertain"
+      readIORef h.calls `shouldReturn` []
+      readIORef h.baseline `shouldReturn` 0
+
+  for_ ["normal", "new"] \mode ->
+    it ("does not create or publish a prepared payload when the conditional checkpoint is rejected: " <> toString mode) do
+      h <- newHarness
+      modifyIORef' h.job \job -> job {arkhamDBPushMode = mode}
+      before <- arkhamDBPushPayload <$> readIORef h.job
+      let writes = h.writes {checkpointPush = \previous next ->
+            if arkhamDBPushStage next == "creating" then pure False else h.writes.checkpointPush previous next}
+      runWriteBack h.store writes h.client Linking.settings Linking.now False Linking.userId Linking.deckId
+      arkhamDBPushPayload <$> readIORef h.job `shouldReturn` before
+      arkhamDBPushStage <$> readIORef h.job `shouldReturn` "ready"
+      assertNoPush h
+
+  it "keeps prepared fields frozen and conflicts if an unsent creation returns to a changed source" do
+    h <- newHarness
+    source <- parseRecoverySource ["next_deck" .= Null]
+    modifyIORef' h.remotes $ Map.insert "123" source
+    runWith h h.client {upgradeDeck = \_ _ _ _ -> pure $ Left $ ArkhamDBRemoteError "never sent"} False
+    frozen <- arkhamDBPushPayload <$> readIORef h.job
+    h.run True
+    arkhamDBPushStage <$> readIORef h.job `shouldReturn` "ready"
+    modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "later",
+      deck = remote.deck {Decklist.sideSlots = Map.singleton "01009" 2}}) "123"
+    synced <- runExceptT $ syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic
+    synced `shouldSatisfy` isRight
+    h.run True
+    assertState h "conflict"
+    arkhamDBPushPayload <$> readIORef h.job `shouldReturn` frozen
+    assertNoPush h
+
+  it "does not replace post-creation remote sideboard edits with its frozen payload" do
+    h <- newHarness
+    runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
+    frozen <- arkhamDBPushPayload <$> readIORef h.job
+    modifyIORef' h.remotes $ Map.adjust (\remote -> remote {dateUpdate = Just "edited-target",
+      deck = remote.deck {Decklist.sideSlots = Map.singleton "01009" 2}}) "124"
+    h.run True
+    assertState h "conflict"
+    arkhamDBPushPayload <$> readIORef h.job `shouldReturn` frozen
+    filter (T.isPrefixOf "save/") <$> readIORef h.calls `shouldReturn` []
+
   it "keeps one association and XP baseline through actual Homunculus transformation, boundary and reset" do
     h <- newHarness
     (gameRef, pid, drain) <- newCampaignMessages
@@ -1035,7 +1204,8 @@ spec = describe "ArkhamDB campaign write-back" do
     assertState h "succeeded"
     readIORef h.calls `shouldReturn` ["load/123", "upgrade/123/5", "load/124", "save/124", "load/124"]
     pushed <- Map.lookup "124" <$> readIORef h.remotes
-    let expected = either (const currentDeck) id $ markedDeck pushKey $ withExportedOverlay Nothing currentDeck
+    let expected = either (const currentDeck) id $ markedDeck pushKey $
+          withExportedOverlay Nothing currentDeck {Decklist.sideSlots = Linking.remote.deck.sideSlots}
     fmap (samePushedDeck expected) pushed `shouldBe` Just True
     readIORef h.baseline `shouldReturn` 5
 

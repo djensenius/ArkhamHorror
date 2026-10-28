@@ -246,6 +246,7 @@ checkPushTarget (Entity key job) remote = do
 pushUpdates :: ArkhamDBPush -> [Update ArkhamDBPush]
 pushUpdates job =
   [ ArkhamDBPushStatus P.=. arkhamDBPushStatus job, ArkhamDBPushStage P.=. arkhamDBPushStage job
+  , ArkhamDBPushPayload P.=. arkhamDBPushPayload job
   , ArkhamDBPushSourceId P.=. arkhamDBPushSourceId job, ArkhamDBPushTargetId P.=. arkhamDBPushTargetId job
   , ArkhamDBPushExpectedDateUpdate P.=. arkhamDBPushExpectedDateUpdate job, ArkhamDBPushExpectedVersion P.=. arkhamDBPushExpectedVersion job
   , ArkhamDBPushRemoteDateUpdate P.=. arkhamDBPushRemoteDateUpdate job, ArkhamDBPushRemoteVersion P.=. arkhamDBPushRemoteVersion job
