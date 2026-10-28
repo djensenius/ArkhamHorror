@@ -261,16 +261,26 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
 -- transmitted checkpoint for inspection. Share the request's user lock so
 -- cancellation cannot race between its claim check and transport call. Lock
 -- users in a consistent order for multiplayer undo. In-flight IO is irreversible.
-cancelCampaignWriteBack :: ArkhamGameId -> Int -> DB ()
-cancelCampaignWriteBack gameId restoredStep = do
-  rows <- rawSql
-    "SELECT id, event_key, user_id FROM arkhamdb_pushes WHERE split_part(campaign_key, '/', 1) = ? AND status NOT IN ('succeeded', 'cancelled') ORDER BY user_id, id"
-    [PersistText $ UUID.toText $ coerce gameId] :: DB [(Single ArkhamDBPushId, Single Text, Single UserId)]
-  let undone = filter (\(_, Single event, _) -> boundaryWasUndone restoredStep event) rows
-  traverse_ lockArkhamDBUser $ ordNub [uid | (_, _, Single uid) <- undone]
-  for_ undone \(Single key, _, _) ->
-    updateWhere [ArkhamDBPushId P.==. key, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
-      [ArkhamDBPushStatus P.=. "cancelled", ArkhamDBPushError P.=. Nothing]
+cancelCampaignWriteBack :: Bool -> ArkhamGameId -> Int -> DB ()
+cancelCampaignWriteBack configured gameId restoredStep = cancelCampaignWriteBackIfNeeded configured participates (\step -> cancel step) restoredStep
+ where
+  parameters = [PersistText $ UUID.toText $ coerce gameId]
+  participates :: DB Bool
+  participates = do
+    rows <- rawSql
+      "SELECT EXISTS (SELECT 1 FROM arkhamdb_pushes WHERE split_part(campaign_key, '/', 1) = ? AND status NOT IN ('succeeded', 'cancelled'))"
+      parameters
+    pure $ rows == [Single True]
+  cancel :: Int -> DB ()
+  cancel toStep = do
+    rows <- rawSql
+      "SELECT id, event_key, user_id FROM arkhamdb_pushes WHERE split_part(campaign_key, '/', 1) = ? AND status NOT IN ('succeeded', 'cancelled') ORDER BY user_id, id"
+      parameters :: DB [(Single ArkhamDBPushId, Single Text, Single UserId)]
+    cancelUndoneCampaignPushes [(key, event, uid) | (Single key, Single event, Single uid) <- rows]
+      (\users action -> traverse_ lockArkhamDBUser users >> action)
+      (\key -> updateWhere [ArkhamDBPushId P.==. key, ArkhamDBPushStatus P./<-. ["succeeded", "cancelled"]]
+        [ArkhamDBPushStatus P.=. "cancelled", ArkhamDBPushError P.=. Nothing])
+      toStep
 
 -- One bounded executor, no game lock, no per-boundary/per-retry forks. Only
 -- a page of identifiers is read; full payloads are fetched after admission.

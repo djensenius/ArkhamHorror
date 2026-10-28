@@ -12,7 +12,7 @@ import Arkham.Entities (entitiesInvestigators)
 import Arkham.Investigator (lookupInvestigator)
 import Arkham.Investigator.Types (investigatorXp)
 import Arkham.Helpers (Deck (..))
-import Control.Exception (try, throwIO, IOException)
+import Control.Exception (try, throwIO, IOException, finally)
 import System.IO.Error (userError)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
@@ -233,6 +233,32 @@ assertNoPush h = do
   calls <- readIORef h.calls
   filter (\call -> "upgrade/" `T.isPrefixOf` call || "save/" `T.isPrefixOf` call || call == "new") calls `shouldBe` []
 
+-- Exercise the production cancellation traversal and the same per-user lock as
+-- request admission. The harness replaces SQL writes, not the undo predicates.
+cancelHarnessUndo :: Harness -> Int -> IO ()
+cancelHarnessUndo h = cancelHarnessUndoWith h (pure ())
+
+cancelHarnessUndoWith :: Harness -> IO () -> Int -> IO ()
+cancelHarnessUndoWith h beforeLock restoredStep = do
+  job <- readIORef h.job
+  cancelUndoneCampaignPushes [(pushKey, arkhamDBPushEventKey job, arkhamDBPushUserId job)]
+    (\users action -> beforeLock >> withLocks users action)
+    (\_ -> modifyIORef' h.job \current ->
+      if arkhamDBPushStatus current `elem` ["succeeded", "cancelled"] then current
+      else current {arkhamDBPushStatus = "cancelled", arkhamDBPushError = Nothing})
+    restoredStep
+ where
+  withLocks [] action = action
+  withLocks (uid : users) action = withRefreshLock h.store uid $ const $ withLocks users action
+
+assertUndoNotCompleted :: Harness -> Expectation
+assertUndoNotCompleted h = do
+  assertState h "cancelled"
+  readIORef h.baseline `shouldReturn` 0
+  state <- readIORef h.linked
+  arkhamDBDeckLinkRemoteDeckId <$> Map.lookup Linking.deckId state.storedLinks `shouldBe` Just "123"
+  arkhamDBDeckLinkCampaignKey <$> Map.lookup Linking.deckId state.storedLinks `shouldBe` Just Nothing
+
 boundaryGame :: CampaignStep -> Game.Game
 boundaryGame step = (Game.newCampaign "01" Nothing 1 1 Easy False)
   { Game.gameGameState = IsActive
@@ -247,6 +273,90 @@ applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId 
 
 spec :: Spec
 spec = describe "ArkhamDB campaign write-back" do
+  for_ [("single-step", 5), ("multi-step", 2)] \(kind, restoredStep) -> do
+    it ("skips all write-back queries for unconfigured " <> kind <> " undo") do
+      calls <- newIORef ([] :: [Text])
+      let participates = modifyIORef' calls (<> ["exists"]) >> pure True
+          cancel _ = modifyIORef' calls (<> ["cancel"])
+      cancelCampaignWriteBackIfNeeded False participates cancel restoredStep
+      readIORef calls `shouldReturn` []
+
+    it ("only checks indexed participation for ordinary " <> kind <> " undo") do
+      calls <- newIORef ([] :: [Text])
+      let participates = modifyIORef' calls (<> ["exists"]) >> pure False
+          cancel _ = modifyIORef' calls (<> ["cancel"])
+      cancelCampaignWriteBackIfNeeded True participates cancel restoredStep
+      readIORef calls `shouldReturn` ["exists"]
+
+  it "retires only boundaries strictly above the restored history step" do
+    let events = ["game/4/iid", "game/5/iid/row", "game/6/iid/row"]
+    map (boundaryWasUndone 5) events `shouldBe` [False, False, True]
+    h <- newHarness
+    cancelled <- newIORef ([] :: [ArkhamDBPushId])
+    let keys = [ArkhamDBPushKey $ UUID.fromWords 0 0 0 n | n <- [4,5,6]]
+    cancelUndoneCampaignPushes (zipWith (\key event -> (key, event, Linking.userId)) keys events)
+      (\_ action -> action) (\key -> modifyIORef' cancelled (<> [key])) 5
+    readIORef cancelled `shouldReturn` [ArkhamDBPushKey $ UUID.fromWords 0 0 0 6]
+    -- A boundary exactly at the restored cursor is still valid and must run.
+    modifyIORef' h.job \job -> job {arkhamDBPushEventKey = "game/5/iid/row"}
+    h.run False
+    assertState h "succeeded"
+
+  it "fences an already-dispatched worker cancelled before request admission" do
+    h <- newHarness
+    reached <- newEmptyMVar
+    release <- newEmptyMVar
+    done <- newEmptyMVar
+    let pausedWrites = h.writes {checkpointPush = \previous next -> do
+          saved <- h.writes.checkpointPush previous next
+          when (saved && arkhamDBPushStage next == "creating") $ putMVar reached () >> takeMVar release
+          pure saved}
+    tid <- forkIO $ runWriteBack h.store pausedWrites h.client Linking.settings Linking.now False Linking.userId Linking.deckId
+      `finally` putMVar done ()
+    flip finally (killThread tid) do
+      timeout 2000000 (takeMVar reached) `shouldReturn` Just ()
+      cancelHarnessUndo h 0
+      assertState h "cancelled"
+      before <- readIORef h.calls
+      before `shouldBe` ["load/123"]
+      putMVar release ()
+      timeout 2000000 (takeMVar done) `shouldReturn` Just ()
+      readIORef h.calls `shouldReturn` before
+      assertUndoNotCompleted h
+
+  it "waits for an admitted request before cancelling and fences subsequent work" do
+    h <- newHarness
+    admitted <- newEmptyMVar
+    release <- newEmptyMVar
+    cancelling <- newEmptyMVar
+    cancelled <- newEmptyMVar
+    done <- newEmptyMVar
+    let pausedClient = h.client {loadDeck = \token remoteId -> do
+          response <- h.client.loadDeck token remoteId
+          putMVar admitted ()
+          takeMVar release
+          pure response}
+        -- Let cancellation commit before the worker's next admission. No sleep
+        -- decides which contender acquires the per-user request lock next.
+        pausedWrites = h.writes {checkpointPush = \previous next -> do
+          when (arkhamDBPushStage next == "creating") $ readMVar cancelled
+          h.writes.checkpointPush previous next}
+    worker <- forkIO $ runWriteBack h.store pausedWrites pausedClient Linking.settings Linking.now False Linking.userId Linking.deckId
+      `finally` putMVar done ()
+    flip finally (killThread worker) do
+      timeout 2000000 (takeMVar admitted) `shouldReturn` Just ()
+      undo <- forkIO $ cancelHarnessUndoWith h (putMVar cancelling ()) 0 `finally` putMVar cancelled ()
+      flip finally (killThread undo) do
+        timeout 2000000 (takeMVar cancelling) `shouldReturn` Just ()
+        timeout 100000 (readMVar cancelled) `shouldReturn` Nothing
+        assertState h "running"
+        readIORef h.calls `shouldReturn` ["load/123"]
+        putMVar release ()
+        timeout 2000000 (readMVar cancelled) `shouldReturn` Just ()
+        timeout 2000000 (takeMVar done) `shouldReturn` Just ()
+        readIORef h.calls `shouldReturn` ["load/123"]
+        assertUndoNotCompleted h
+
   it "persists copy-then-upgrade to the campaign association rather than the live original URL" do
     h <- newHarness
     modifyIORef' h.linked \state -> state
@@ -285,7 +395,7 @@ spec = describe "ArkhamDB campaign write-back" do
       -- The production undo store selects this game's outstanding event keys
       -- and shares the request's user lock before cancelling their claims.
       withRefreshLock h.store Linking.userId \_ ->
-        when (boundaryWasUndone 1 $ arkhamDBPushEventKey job) $
+        when (boundaryWasUndone 0 $ arkhamDBPushEventKey job) $
           modifyIORef' h.job \current -> current {arkhamDBPushStatus = "cancelled"}
       assertState h "cancelled"
       withRefreshLock h.store Linking.userId (\locked -> locked.ownsPushClaim claim) `shouldReturn` False
@@ -718,7 +828,7 @@ spec = describe "ArkhamDB campaign write-back" do
 
   it "rejects ancestor re-import overwrite into another campaign's resolved source lineage" do
     h <- newHarness
-    -- Seed A's saved row at 124. Leave the harness's next local id available
+    -- A remains linked at 124, but the lineage continues to 125. Leave the harness's next local id available
     -- so the real repeat-ancestor import creates B's independently unbound row.
     let otherId = ArkhamDeckKey $ UUID.fromWords 0 0 0 999
     modifyIORef' h.linked \state -> state
@@ -730,7 +840,8 @@ spec = describe "ArkhamDB campaign write-back" do
       , Linking.storedDecks = maybe mempty (Map.singleton otherId) $ Map.lookup Linking.deckId state.storedDecks
       , Linking.storedNextDeck = 23 }
     modifyIORef' h.remotes $ Map.insert "124" Linking.remote
-      {ArkhamDB.remoteDeckId = "124", dateUpdate = Just "campaign-a"} .
+      {ArkhamDB.remoteDeckId = "124", dateUpdate = Just "campaign-a", nextDeckId = Just "125"} .
+      Map.insert "125" Linking.remote {ArkhamDB.remoteDeckId = "125", dateUpdate = Just "later-version"} .
       Map.adjust (\remote -> remote {nextDeckId = Just "124"}) "123"
     imported <- runExceptT $ importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId "123" Linking.forbiddenPublic
     fmap entityKey imported `shouldBe` Right Linking.deckId

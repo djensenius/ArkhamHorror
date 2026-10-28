@@ -164,8 +164,30 @@ boundaryEventKey gameId step iid historyId = UUID.toText (coerce gameId) <> "/" 
 
 boundaryWasUndone :: Int -> Text -> Bool
 boundaryWasUndone restoredStep event = case T.splitOn "/" event of
-  _ : step : _ -> maybe False (>= restoredStep) (readMaybe $ toString step :: Maybe Int)
+  _ : step : _ -> maybe False (> restoredStep) (readMaybe $ toString step :: Maybe Int)
   _ -> False
+
+-- Shared by single- and multi-step undo. Unconfigured installations perform no
+-- lookup; ordinary games need only an indexed existence check, never job reads.
+cancelCampaignWriteBackIfNeeded :: Monad m => Bool -> m Bool -> (Int -> m ()) -> Int -> m ()
+cancelCampaignWriteBackIfNeeded configured participates cancel restoredStep =
+  when configured do
+    outstanding <- participates
+    when outstanding $ cancel restoredStep
+
+-- Read identifiers only, then serialize cancellation with request admission.
+-- The game lock prevents a new boundary from being enqueued during undo.
+cancelUndoneCampaignPushes
+  :: Monad m
+  => [(ArkhamDBPushId, Text, UserId)]
+  -> ([UserId] -> m () -> m ())
+  -> (ArkhamDBPushId -> m ())
+  -> Int
+  -> m ()
+cancelUndoneCampaignPushes rows withUserLocks cancel restoredStep = do
+  let undone = filter (\(_, event, _) -> boundaryWasUndone restoredStep event) rows
+  withUserLocks (sort $ ordNub [uid | (_, _, uid) <- undone]) $
+    for_ undone \(key, _, _) -> cancel key
 
 -- Resolve upgrade persistence independently of the live investigator's URL:
 -- save-as-new can move this campaign to a copy without changing that URL.
@@ -348,10 +370,11 @@ runWriteBack store writes client settings now retry userId deckId = do
           , arkhamDBPushRemoteDateUpdate = remote.dateUpdate
           , arkhamDBPushRemoteVersion = remote.deckVersion
           }
-        latestVersion job seen remote = case remote.nextDeckId of
-          Nothing -> pure remote
+        latestVersion job seen remote = fst <$> latestVersionWithLineage job seen remote
+        latestVersionWithLineage job seen remote = case remote.nextDeckId of
+          Nothing -> pure (remote, seen)
           Just next | next `elem` seen || length seen >= 100 -> throwError $ ArkhamDBError "remoteUnavailable" "ArkhamDB version chain is invalid"
-          Just next -> load job next >>= latestVersion job (next : seen)
+          Just next -> load job next >>= latestVersionWithLineage job (next : seen)
         recover entity desired = do
           original <- traverse (load $ entityVal entity) $ arkhamDBPushSourceId $ entityVal entity
           case original of
@@ -469,12 +492,14 @@ runWriteBack store writes client settings now retry userId deckId = do
                         , arkhamDBPushExpectedDateUpdate = original.dateUpdate, arkhamDBPushExpectedVersion = original.deckVersion }
                       saveVersion False target desired
                   else do
-                    source <- if arkhamDBPushMode job == "overwrite" then latestVersion (entityVal ready) [original.remoteDeckId] original else pure original
+                    (source, lineage) <- if arkhamDBPushMode job == "overwrite"
+                      then latestVersionWithLineage (entityVal ready) [original.remoteDeckId] original
+                      else pure (original, [original.remoteDeckId])
                     -- A re-imported ancestor has no campaign binding of its own.
                     -- Overwrite must not use it to enter another campaign's lineage.
                     links <- lift $ store.findDeckLinks userId
                     let sourceOwnedElsewhere = any (\(_, candidate) ->
-                          arkhamDBDeckLinkRemoteDeckId candidate == source.remoteDeckId &&
+                          arkhamDBDeckLinkRemoteDeckId candidate `elem` lineage &&
                           maybe False (/= arkhamDBPushCampaignKey job) (arkhamDBDeckLinkCampaignKey candidate)) links
                     if sourceOwnedElsewhere
                       then conflict ready source "campaignChanged"
