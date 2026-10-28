@@ -5,6 +5,7 @@ module Entity.Answer where
 import Import.NoFoundation hiding (get)
 
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
+import Arkham.ArkhamDB.Campaign (recordCampaignDeckOverlay)
 import Arkham.Campaign.Option
 import Arkham.CampaignLog
 import Arkham.CampaignLogKey
@@ -525,7 +526,7 @@ handleAnswer game playerId = \case
     -- An overlay chosen here is for this game only; the deck's own overlay is
     -- the one that sticks.
     reply <-
-      loadChosenDeck game playerId
+      loadChosenDeck game playerId (arkhamDeckOverlay deck)
         $ maybe id applyOverlay mOverlay (arkhamDeckPlayList deck)
     -- Only a deck that was actually seated counts as used; a rejected mid-campaign
     -- join must not reorder the decks page.
@@ -552,7 +553,7 @@ handleAnswer game playerId = \case
     P.get (coerce playerId) >>= \case
       Just seat -> registerDeckOwnerCustomCards (arkhamPlayerUserId seat)
       Nothing -> pure ()
-    loadChosenDeck game playerId dl
+    loadChosenDeck game playerId Nothing dl
   JoinCampaignAnswer
     | not (isContinueCampaignAsk game playerId) -> unhandled "Wrong question type"
     | not (atCampaignContinuation game) -> unhandled "Players can only join between scenarios"
@@ -587,8 +588,8 @@ touchDeck deckId = do
   update deckId [ArkhamDeckLastUsedAt =. Just now]
 
 -- | Seat @playerId@'s chosen deck, unless it violates deck-choice guards.
-loadChosenDeck :: Game -> PlayerId -> ArkhamDBDecklist -> DB Reply
-loadChosenDeck game playerId dl =
+loadChosenDeck :: Game -> PlayerId -> Maybe DeckOverlay -> ArkhamDBDecklist -> DB Reply
+loadChosenDeck game playerId seatedOverlay dl =
   case joinDeckRejection game playerId dl.investigator <|> challengeScenarioDeckRejection game playerId dl of
     Just reason -> unhandled reason
     Nothing -> do
@@ -596,7 +597,8 @@ loadChosenDeck game playerId dl =
       -- Record the deck's custom cards on the game itself; the process registry
       -- they resolved against is rebuilt from the game, and other clients read
       -- their art and defs from there.
-      handled $ map DebugRegisterCustomCard (decklistCustomCards dl) <> deckChosen game playerId dl
+      handled $ recordCampaignDeckOverlay (investigator_code dl) seatedOverlay
+        : map DebugRegisterCustomCard (decklistCustomCards dl) <> deckChosen game playerId dl
 
 {- | Like 'handleAnswer' but with no DB access. Returns 'Unhandled' for
 'DeckAnswer' / 'DeckListAnswer', which require updating an 'ArkhamPlayer'

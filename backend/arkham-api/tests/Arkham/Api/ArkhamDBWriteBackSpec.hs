@@ -40,6 +40,8 @@ import Arkham.Taboo.Types (TabooList (TabooList25))
 import Arkham.Target (Target (GameTarget))
 import Arkham.Source (Source (GameSource))
 import Data.Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KM
 import Data.Aeson.Types (Pair)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as T
@@ -93,7 +95,7 @@ newHarness = do
   modifyIORef' linked \s -> s {Linking.storedLinks = Map.adjust (\l -> l {arkhamDBDeckLinkWriteBack = True}) Linking.deckId s.storedLinks}
   generation <- store.findAccountGeneration Linking.userId >>= maybe (fail "Missing account") pure
   job <- newIORef $ ArkhamDBPush Linking.deckId Linking.userId generation "game/1/iid" "game/iid"
-    (encodePushDeck currentDeck) 5 "pending" "ready" Nothing Nothing Linking.remote.dateUpdate Linking.remote.deckVersion
+    (encodePushDeck $ withExportedOverlay Nothing currentDeck) 5 "pending" "ready" Nothing Nothing Linking.remote.dateUpdate Linking.remote.deckVersion
     Nothing Nothing Nothing "normal" Linking.now Linking.now "scenarioEnd"
   remotes <- newIORef $ Map.singleton "123" Linking.remote
   calls <- newIORef []
@@ -660,13 +662,30 @@ spec = describe "ArkhamDB campaign write-back" do
     fixture <- Linking.loadNamedFixture "arkhamdb-write-back.json"
     generated `shouldBe` fixture
 
+  it "encodes an actual undone creation as the governed boundaryUndone conflict" do
+    h <- newHarness
+    runWith h h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
+    cancelHarnessUndo h 0
+    statuses <- h.writes.deckWriteBackStatus Linking.userId
+    case statuses of
+      [status] -> do
+        status.state `shouldBe` "conflict"
+        fmap (.reason) status.conflict `shouldBe` Just "boundaryUndone"
+        fixture <- Linking.loadNamedFixture "arkhamdb-write-back.json"
+        case fixture of
+          Object value -> case KM.lookup "states" value of
+            Just (Array states) -> Just (toJSON status) `shouldBe` viaNonEmpty last (toList states)
+            _ -> expectationFailure "Missing fixture states"
+          _ -> expectationFailure "Invalid write-back fixture"
+      _ -> expectationFailure "Expected one actual undone status"
+
   it "upgrades then saves the current campaign slots, story cards, weaknesses, sideboard, meta and taboo" do
     h <- newHarness
     h.run False
     assertState h "succeeded"
     readIORef h.calls `shouldReturn` ["load/123", "upgrade/123/5", "load/124", "save/124", "load/124"]
     pushed <- Map.lookup "124" <$> readIORef h.remotes
-    let expected = either (const currentDeck) id $ markedDeck pushKey currentDeck
+    let expected = either (const currentDeck) id $ markedDeck pushKey $ withExportedOverlay Nothing currentDeck
     fmap (samePushedDeck expected) pushed `shouldBe` Just True
     readIORef h.baseline `shouldReturn` 5
 
@@ -845,6 +864,60 @@ spec = describe "ArkhamDB campaign write-back" do
     fmap arkhamDeckOverlay saved `shouldBe` Just Nothing
 
   for_ [False, True] \viaImport ->
+    for_ [False, True] \hadOverlay ->
+      it ("uses seated overlay provenance when the saved overlay changes before enqueue: " <> show (viaImport, hadOverlay)) do
+        h <- newHarness
+        let seated = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+            replacement = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+            provenance = recordCampaignDeckOverlay "01001" $ if hadOverlay then Just seated else Nothing
+            store = case provenance of
+              SetGlobal _ key value -> Map.singleton (Key.toText key) value
+              _ -> error "Expected campaign provenance"
+            card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
+            campaignCards = card 1 "01006" : [card 2 "01007" | hadOverlay]
+        -- The saved row changes AFTER deck seating, but BEFORE the production
+        -- snapshot builder runs. Its current overlay was never materialized.
+        modifyIORef' h.linked \state -> state
+          { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just replacement}) Linking.deckId state.storedDecks }
+        saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+        let snapshot = campaignWriteBackSnapshot store "01001" (arkhamDeckList saved) campaignCards [] [] Nothing Nothing
+        exportedOverlay snapshot `shouldBe` Just (if hadOverlay then toJSON seated else Null)
+        modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
+        h.run False
+        assertState h "succeeded"
+        replicateM_ 2 do
+          result <- runExceptT (if viaImport
+            then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId "124" Linking.forbiddenPublic
+            else syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic)
+            >>= either (fail . show) pure
+          arkhamDeckOverlay (entityVal result) `shouldBe` Just replacement
+          Decklist.slots (arkhamDeckPlayList $ entityVal result) `shouldBe`
+            Map.fromList ([("01006", 1), ("01008", 1)] <> [("01007", 1) | hadOverlay])
+
+  for_ [False, True] \viaImport ->
+    it ("refuses ambiguous legacy overlay adoption without clearing or applying it twice: " <> show viaImport) do
+      h <- newHarness
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01006" 1) mempty
+          card n = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing "01006" "01006" mempty Nothing Nothing Nothing Nothing Nothing
+          -- A legacy campaign has no seating provenance. Even an inherited
+          -- metadata claim on the current saved list is not trusted.
+          snapshot = campaignWriteBackSnapshot mempty "01001" (withExportedOverlay (Just overlay) currentDeck) [card 1, card 2] [] [] Nothing Nothing
+      exportedOverlay snapshot `shouldBe` Nothing
+      modifyIORef' h.linked \state -> state
+        { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) Linking.deckId state.storedDecks }
+      beforeSync <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
+      h.run False
+      assertState h "succeeded"
+      result <- runExceptT (if viaImport
+        then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId "124" Linking.forbiddenPublic
+        else syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic)
+      fmap arkhamDBErrorCode (either Just (const Nothing) result) `shouldBe` Just "validationFailed"
+      afterSync <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked
+      fmap (toJSON . arkhamDeckPlayList) afterSync `shouldBe` fmap (toJSON . arkhamDeckPlayList) beforeSync
+      fmap arkhamDeckOverlay afterSync `shouldBe` Just (Just overlay)
+
+  for_ [False, True] \viaImport ->
     for_ [False, True] \replacement ->
       it ("preserves unexported overlays before first adoption: " <> show (viaImport, replacement)) do
         h <- newHarness
@@ -981,8 +1054,15 @@ spec = describe "ArkhamDB campaign write-back" do
         -- The normal export includes the overlay in its campaign slots, and
         -- leaves the saved local list/overlay untouched until linked sync.
         when materialized do
+          let provenance = recordCampaignDeckOverlay "01001" $ Just overlay
+              store = case provenance of
+                SetGlobal _ key value -> Map.singleton (Key.toText key) value
+                _ -> error "Expected campaign provenance"
+              card n code = MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
+              cards = [card 1 "01006", card 2 "01100", card 3 "01007"]
+              snapshot = campaignWriteBackSnapshot store "01001" currentDeck cards [] [] Nothing Nothing
           modifyIORef' h.job \job -> job
-            {arkhamDBPushPayload = encodePushDeck $ withExportedOverlay (Just overlay) currentDeck}
+            {arkhamDBPushPayload = encodePushDeck snapshot}
           h.run False
           assertState h "succeeded"
         let target = if materialized then "124" else "123"
@@ -1353,8 +1433,11 @@ writeBackFixture = do
   case targetLinkConflict collisionJob Linking.remote (Just link {arkhamDBDeckLinkDeckId = otherId}) of
     Just conflicted -> writeIORef collision.job conflicted
     Nothing -> fail "Missing target conflict"
+  undone <- newHarness
+  runWith undone undone.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"} False
+  cancelHarnessUndo undone 0
   let statuses h = h.writes.deckWriteBackStatus Linking.userId
-  states <- concat <$> traverse statuses [success, conflict, failure, disabled, uncertain, collision]
+  states <- concat <$> traverse statuses [success, conflict, failure, disabled, uncertain, collision, undone]
   pure $ object
     [ "states" .= states
     , "toggleRequest" .= ArkhamDBWriteBackToggleRequest True

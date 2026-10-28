@@ -227,6 +227,13 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
           lift $ publicSync deckId
         Left err -> throwError err
         Right remote -> do
+          let adoptingPush = isJust (campaignPushMarker remote.deck) &&
+                campaignPushMarker remote.deck /= campaignPushMarker (arkhamDeckList deck)
+          -- Legacy snapshots without captured provenance cannot prove whether
+          -- the local overlay was materialized. Refuse ambiguous adoption:
+          -- clearing loses edits, while retaining may apply an overlay twice.
+          when (adoptingPush && isJust (arkhamDeckOverlay deck) && isNothing (exportedOverlay remote.deck)) $
+            throwError $ ArkhamDBError "validationFailed" "Campaign overlay provenance is unavailable; refusing ambiguous adoption"
           let decklist = remoteDecklist settings remote
               updated = deck
                 { arkhamDeckList = decklist
@@ -235,8 +242,7 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
                 , arkhamDeckInvestigatorName = remote.deck.investigator_name
                 -- A changed push marker alone says nothing about a newer
                 -- local overlay. Consume only the overlay actually exported.
-                , arkhamDeckOverlay = if isJust (campaignPushMarker remote.deck) &&
-                    campaignPushMarker remote.deck /= campaignPushMarker (arkhamDeckList deck) &&
+                , arkhamDeckOverlay = if adoptingPush &&
                     exportedOverlay remote.deck == (toJSON <$> arkhamDeckOverlay deck)
                     then Nothing else arkhamDeckOverlay deck
                 }
@@ -248,7 +254,15 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
 -- Internal ArkhamDB metadata records the exact overlay in the queued snapshot.
 -- Invalid metadata remains invalid so write-back validation still rejects it.
 withExportedOverlay :: Maybe DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
-withExportedOverlay overlay deck = deck {Decklist.meta = case deck.meta of
+withExportedOverlay overlay = withOverlayProvenance $ Just $ toJSON overlay
+
+withoutExportedOverlay :: ArkhamDBDecklist -> ArkhamDBDecklist
+withoutExportedOverlay = withOverlayProvenance Nothing
+
+-- Explicit null means seating proved there was no saved overlay; missing
+-- provenance means unknown, not proof of absence.
+withOverlayProvenance :: Maybe Value -> ArkhamDBDecklist -> ArkhamDBDecklist
+withOverlayProvenance provenance deck = deck {Decklist.meta = case deck.meta of
   Nothing -> encodeMetadata KM.empty
   Just "" -> encodeMetadata KM.empty
   Just text -> case decodeStrict' $ encodeUtf8 text of
@@ -257,7 +271,7 @@ withExportedOverlay overlay deck = deck {Decklist.meta = case deck.meta of
  where
   encodeMetadata metadata =
     let clean = KM.delete "ahn_overlay" metadata
-        updated = maybe clean (\value -> KM.insert "ahn_overlay" (toJSON value) clean) overlay
+        updated = maybe clean (\value -> KM.insert "ahn_overlay" value clean) provenance
     in if KM.null updated then Nothing else Just $ decodeUtf8 $ toStrict $ encode $ Object updated
 
 exportedOverlay :: ArkhamDBDecklist -> Maybe Value

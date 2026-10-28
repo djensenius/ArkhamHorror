@@ -4,9 +4,8 @@ import Api.Arkham.ArkhamDBStore
 import Arkham.ArkhamDB
 import Arkham.Card.CardCode (unCardCode)
 import Arkham.Id (InvestigatorId (..), PlayerId (..))
-import Arkham.ArkhamDB.Campaign (campaignDeckSnapshot)
+import Arkham.ArkhamDB.Campaign (campaignWriteBackSnapshot)
 import Arkham.ArkhamDB.WriteBack
-import Arkham.ArkhamDB.Service (withExportedOverlay)
 import Arkham.Campaign.Types (Campaign (..), CampaignAttrs (..), invalidCards)
 import Arkham.Classes.Entity (toAttrs)
 import Arkham.Helpers (Deck (..))
@@ -255,9 +254,9 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
             (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
               when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
               let story = Map.findWithDefault [] iid $ campaignStoryCards attrs
-                  list = campaignDeckSnapshot (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
+                  list = campaignWriteBackSnapshot (campaignStore attrs) iid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
                   event = boundaryEventKey gameId step iid (entityKey history)
-              void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck $ withExportedOverlay (arkhamDeckOverlay deck) list) (investigatorXp ia)
+              void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
                 "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
                 Nothing Nothing Nothing "normal" now now boundary
             _ -> pure ()

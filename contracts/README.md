@@ -1304,6 +1304,15 @@ or XP baseline is changed; the conflict blocks later snapshots and is not lease-
 reclaimed automatically. Choose save-as-new to obtain an independent target, or
 remove the other mapping before retrying the original resolution.
 
+Undoing a boundary with a created or uncertain creation intent records
+`conflict` with reason/error `boundaryUndone`. Its remote version may already
+have received earned XP. This durable oldest-intent fence blocks later
+snapshots; retry is a no-op, and **all** existing resolutions (`keepRemote`,
+`overwrite`, `saveAsNew`) are refused with HTTP 409. Disabling/re-enabling
+write-back does not remove it. There is currently **no reconciliation API**
+that can safely retire this fence. The undone snapshot is never exported by
+recovery; no unproven XP accounting is discarded to unblock the queue.
+
 Creation intent, returned ID, save intent and completion are separate durable
 checkpoints. Retrying a completed push does nothing. After a lost upgrade reply,
 recovery first follows the original deck's `next_deck`/`next_deck_id` and verifies
@@ -1371,10 +1380,19 @@ campaign's persisted association to a newly imported deck row; write-back for
 that campaign can stop enqueueing. There is currently no association-repointing
 API for this lifecycle case. Lineage bindings
 also remain after campaign completion/deletion; use save-as-new for a different
-campaign. These lifecycle UX changes are not included here. Ordinary linked sync
-and repeat-import sync clear incorporated overlays only on first adopting a
-pushed snapshot; overlays attached after adoption survive re-syncing the same
-remote push marker. Succeeded/cancelled
+campaign. These lifecycle UX changes are not included here. Deck seating records
+the saved overlay actually materialized in the existing campaign store
+(`ahn_overlay/<investigator>`); the boundary snapshot uses that captured
+provenance, never the saved row's current overlay. Ordinary linked sync and
+repeat-import sync consume an unchanged exported overlay once, on first
+adoption. Overlays added or replaced before enqueue or after adoption survive.
+Explicit null provenance means seating proved there was no saved overlay.
+For legacy campaigns without captured provenance, first adopting a push while
+a local overlay exists is ambiguous: implicit sync/import returns
+`validationFailed` without changing the saved deck, rather than clear unexported
+edits or apply an incorporated overlay twice. Explicit keep-remote remains a
+user-authorized replacement of the saved list/overlay.
+Succeeded/cancelled
 payload history is pruned to the newest 20 per local link; outstanding intents
 are never pruned.
 

@@ -247,7 +247,8 @@
             "remoteChanged",
             "campaignChanged",
             "pushUncertain",
-            "targetAlreadyLinked"
+            "targetAlreadyLinked",
+            "boundaryUndone"
           ]
         },
         "lastSyncedDateUpdate": {
