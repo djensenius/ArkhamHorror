@@ -1380,15 +1380,21 @@ campaign's persisted association to a newly imported deck row; write-back for
 that campaign can stop enqueueing. There is currently no association-repointing
 API for this lifecycle case. Lineage bindings
 also remain after campaign completion/deletion; use save-as-new for a different
-campaign. These lifecycle UX changes are not included here. Deck seating records
-the saved overlay actually materialized in the existing campaign store
-(`ahn_overlay/<investigator>`); the boundary snapshot uses that captured
-provenance, never the saved row's current overlay. Ordinary linked sync and
+campaign. These lifecycle UX changes are not included here. Deck materialization
+records provenance in the existing campaign store
+(`ahn_overlay/<resolved-investigator>`). Saved-deck seating records the overlay
+actually applied, under the seated identity (including alternate fronts).
+Whole-deck initialization or upgrade invalidates the previous proof; direct
+deck-list loading, upgrade and investigator replacement then record explicit null,
+because those paths do not apply the saved overlay. The boundary snapshot uses
+the latest materialization's provenance, never the saved row's current overlay.
+Ordinary linked sync and
 repeat-import sync consume an unchanged exported overlay once, on first
 adoption. Overlays added or replaced before enqueue or after adoption survive.
-Explicit null provenance means seating proved there was no saved overlay.
-For legacy campaigns without captured provenance, first adopting a push while
-a local overlay exists is ambiguous: implicit sync/import returns
+Explicit null provenance proves that no saved overlay was applied, so a saved
+overlay retained during a direct-list upgrade survives subsequent sync/import.
+For legacy campaigns or raw replacements without captured provenance, first
+adopting a push while a local overlay exists is ambiguous: implicit sync/import returns
 `validationFailed` without changing the saved deck, rather than clear unexported
 edits or apply an incorporated overlay twice. Explicit keep-remote remains a
 user-authorized replacement of the saved list/overlay.

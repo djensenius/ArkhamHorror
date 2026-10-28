@@ -1054,6 +1054,7 @@ library
       Arkham.Agenda.Types
       Arkham.ArkhamDB
       Arkham.ArkhamDB.Campaign
+      Arkham.ArkhamDB.Overlay
       Arkham.ArkhamDB.Service
       Arkham.ArkhamDB.WriteBack
       Arkham.Aspect

@@ -1,9 +1,12 @@
-module Arkham.ArkhamDB.Campaign where
+module Arkham.ArkhamDB.Campaign (
+  module Arkham.ArkhamDB.Campaign,
+  campaignDeckOverlayKey,
+  recordCampaignDeckOverlay,
+) where
 
 import Arkham.Card (Card, CardCode, PlayerCard, onlyPlayerCards, toCardCode)
-import Arkham.Card.CardCode (unCardCode)
-import Arkham.Custom.Overlay (DeckOverlay)
-import Arkham.Id (InvestigatorId (..))
+import Arkham.ArkhamDB.Overlay
+import Arkham.Id (InvestigatorId)
 import Arkham.ArkhamDB.Service (withExportedOverlay, withoutExportedOverlay)
 import Arkham.Helpers.Deck (partitionReloadedDeck)
 import Arkham.Campaign.Types (campaignStep)
@@ -14,9 +17,8 @@ import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Decklist qualified as Decklist
 import Arkham.Message (Message (..))
 import Arkham.Taboo.Types (TabooList, fromTabooId)
-import Arkham.Target (Target (GameTarget, CampaignTarget))
-import Data.Aeson (Value, toJSON, parseJSON)
-import Data.Aeson.Key qualified as Key
+import Arkham.Target (Target (GameTarget))
+import Data.Aeson (Value, parseJSON)
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
 import Relude
@@ -64,16 +66,9 @@ campaignDeckSnapshot original cards story invalid _side taboo = original
  where
   counts = Map.fromListWith (+) . map (\card -> (toCardCode card, 1))
 
--- Capture at deck seating, when the saved overlay is actually materialized,
--- not at a later boundary when the saved row may already have a different one.
--- The existing campaign store is persisted and restored together with undo.
-campaignDeckOverlayKey :: InvestigatorId -> Text
-campaignDeckOverlayKey iid = "ahn_overlay/" <> unCardCode (unInvestigatorId iid)
-
-recordCampaignDeckOverlay :: InvestigatorId -> Maybe DeckOverlay -> Message
-recordCampaignDeckOverlay iid overlay =
-  SetGlobal CampaignTarget (Key.fromText $ campaignDeckOverlayKey iid) (toJSON overlay)
-
+-- Use the provenance of the latest materialization, not a forever-valid seat
+-- capture. Whole-deck replacements reset it; incremental campaign edits retain
+-- their source lineage. The store follows ordinary persistence and undo.
 campaignWriteBackSnapshot :: Map Text Value -> InvestigatorId -> Decklist.ArkhamDBDecklist -> [PlayerCard] -> [Card] -> [CardCode] -> Maybe [PlayerCard] -> Maybe TabooList -> Decklist.ArkhamDBDecklist
 campaignWriteBackSnapshot store iid original cards story invalid side taboo =
   let snapshot = campaignDeckSnapshot original cards story invalid side taboo

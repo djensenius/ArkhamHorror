@@ -4,7 +4,7 @@ module Arkham.Api.ArkhamDBWriteBackSpec where
 
 import Api.Arkham.Helpers (GameApp (..), runGameApp)
 import Arkham.Campaign (lookupCampaign)
-import Arkham.Campaign.Types (campaignStep, campaignDecks, campaignStoryCards)
+import Arkham.Campaign.Types (campaignStep, campaignDecks, campaignStoryCards, campaignStore)
 import Arkham.Classes.Entity (overAttrs, toAttrs)
 import Arkham.Prelude (These (This))
 import Arkham.Game.Utils (gameInvestigators, modeCampaign)
@@ -30,12 +30,12 @@ import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
 import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Custom.Overlay (DeckOverlay (..))
-import Arkham.Card (Card (..))
+import Arkham.Card (Card (..), toCardCode)
 import Arkham.Card.EncounterCard (EncounterCard (..))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Card.PlayerCard (PlayerCard (..))
 import Arkham.Decklist qualified as Decklist
-import Arkham.Message (Message (..))
+import Arkham.Message (Message (..), InitDeckAttrs (..))
 import Arkham.Taboo.Types (TabooList (TabooList25))
 import Arkham.Target (Target (GameTarget))
 import Arkham.Source (Source (GameSource))
@@ -56,6 +56,7 @@ import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
 import Entity.Arkham.Game
 import Entity.Arkham.Step
+import Entity.Answer (deckChosenWithOverlay)
 import Relude hiding (state)
 import Test.Hspec
 import System.Timeout (timeout)
@@ -266,6 +267,21 @@ boundaryGame step = (Game.newCampaign "01" Nothing 1 1 Easy False)
   { Game.gameGameState = IsActive
   , Game.gameMode = This $ overAttrs (\attrs -> attrs {campaignStep = step}) $ lookupCampaign "01" Easy
   }
+
+-- Run the real deck seating/replacement queues, including Game.Runner's
+-- deck-list loading and Campaign.Runner's materialization, without SQL.
+newCampaignMessages :: IO (IORef Game.Game, PlayerId, [Message] -> IO ())
+newCampaignMessages = do
+  let pid = PlayerId $ UUID.fromWords 0 0 0 101
+  gameRef <- newIORef $ (boundaryGame $ ChooseDecksStep PrologueStep)
+    {Game.gamePlayers = [pid]}
+  gen <- newIORef $ mkStdGen 1
+  let drain messages = do
+        modifyIORef' gameRef \game -> game {Game.gameQuestion = mempty}
+        queue <- newQueue $ messages <> [AskMap $ Map.singleton pid ContinueCampaign]
+        runGameApp (GameApp gameRef queue gen (pure . const ()) Nothing) $
+          Game.runMessages "write-back-overlay-materialization" Game.noRunObservers
+  pure (gameRef, pid, drain)
 
 applyDeckUpdates :: [Update ArkhamDeck] -> ArkhamDeck -> ArkhamDeck
 applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId deck) updates
@@ -862,6 +878,100 @@ spec = describe "ArkhamDB campaign write-back" do
     saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked
     fmap (Decklist.slots . arkhamDeckPlayList) saved `shouldBe` Just currentDeck.slots
     fmap arkhamDeckOverlay saved `shouldBe` Just Nothing
+
+  for_ [False, True] \viaImport ->
+    for_ ["upgrade", "reload", "replace" :: Text] \replacement ->
+      it ("tracks actual seating then " <> toString replacement <> " before export and " <> if viaImport then "re-import" else "sync") do
+        h <- newHarness
+        (gameRef, pid, drain) <- newCampaignMessages
+        let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+            base = Linking.remote.deck {Decklist.slots = Map.singleton "01006" 1, Decklist.meta = Nothing}
+            upgraded = base {Decklist.investigator_code = if replacement == "replace" then "01002" else "01001"}
+            nextIid = Decklist.decklistInvestigatorId upgraded
+        modifyIORef' h.linked \state -> state
+          { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckList = base, arkhamDeckOverlay = Just overlay}) Linking.deckId state.storedDecks }
+        saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+        initial <- readIORef gameRef
+        drain $ deckChosenWithOverlay initial pid (arkhamDeckOverlay saved) $ arkhamDeckPlayList saved
+        seated <- readIORef gameRef
+        let seatedCampaign = maybe (error "Missing seated campaign") toAttrs $ modeCampaign seated.gameMode
+        Map.lookup (campaignDeckOverlayKey "01001") (campaignStore seatedCampaign) `shouldBe` Just (toJSON overlay)
+        map toCardCode (maybe [] unDeck $ Map.lookup "01001" $ campaignDecks seatedCampaign) `shouldContain` ["01007"]
+        -- Actual server replacement path, NOT a hand-built campaign snapshot.
+        -- The upgrade handler replaces this saved list but preserves its overlay.
+        drain [case replacement of
+          "upgrade" -> UpgradeDecklist "01001" upgraded
+          "reload" -> LoadDecklist pid upgraded
+          _ -> ReplaceInvestigator "01001" upgraded]
+        modifyIORef' h.linked \state -> state
+          { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckList = upgraded}) Linking.deckId state.storedDecks }
+        replaced <- readIORef gameRef
+        let attrs = maybe (error "Missing replaced campaign") toAttrs $ modeCampaign replaced.gameMode
+            cards = maybe [] unDeck $ Map.lookup nextIid $ campaignDecks attrs
+            snapshot = campaignWriteBackSnapshot (campaignStore attrs) nextIid upgraded cards [] [] Nothing Nothing
+        map toCardCode cards `shouldBe` ["01006"]
+        exportedOverlay snapshot `shouldBe` Just Null
+        when (replacement == "replace") $
+          Map.lookup (campaignDeckOverlayKey "01001") (campaignStore attrs) `shouldBe` Nothing
+        modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
+        h.run False
+        assertState h "succeeded"
+        replicateM_ 2 do
+          result <- runExceptT (if viaImport
+            then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId "124" Linking.forbiddenPublic
+            else syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic)
+            >>= either (fail . show) pure
+          arkhamDeckOverlay (entityVal result) `shouldBe` Just overlay
+          Decklist.slots (arkhamDeckPlayList $ entityVal result) `shouldBe` Map.fromList [("01006", 1), ("01007", 1)]
+
+  for_ [False, True] \viaImport ->
+    it ("records actual alternate-front seating identity before export and " <> if viaImport then "re-import" else "sync") do
+      h <- newHarness
+      (gameRef, pid, drain) <- newCampaignMessages
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+          base = Linking.remote.deck
+            {Decklist.slots = Map.singleton "01006" 1, Decklist.meta = Just "{\"alternate_front\":\"01002\"}"}
+      modifyIORef' h.linked \state -> state
+        { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckList = base, arkhamDeckOverlay = Just overlay}) Linking.deckId state.storedDecks }
+      saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+      initial <- readIORef gameRef
+      drain $ deckChosenWithOverlay initial pid (arkhamDeckOverlay saved) $ arkhamDeckPlayList saved
+      seated <- readIORef gameRef
+      Map.keys (gameInvestigators seated) `shouldBe` ["01002"]
+      let attrs = maybe (error "Missing seated campaign") toAttrs $ modeCampaign seated.gameMode
+          cards = maybe [] unDeck $ Map.lookup "01002" $ campaignDecks attrs
+          snapshot = campaignWriteBackSnapshot (campaignStore attrs) "01002" base cards [] [] Nothing Nothing
+      Map.lookup (campaignDeckOverlayKey "01001") (campaignStore attrs) `shouldBe` Nothing
+      Map.lookup (campaignDeckOverlayKey "01002") (campaignStore attrs) `shouldBe` Just (toJSON overlay)
+      exportedOverlay snapshot `shouldBe` Just (toJSON overlay)
+      modifyIORef' h.job \job -> job {arkhamDBPushPayload = encodePushDeck snapshot}
+      h.run False
+      assertState h "succeeded"
+      replicateM_ 2 do
+        result <- runExceptT (if viaImport
+          then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId "124" Linking.forbiddenPublic
+          else syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic)
+          >>= either (fail . show) pure
+        arkhamDeckOverlay (entityVal result) `shouldBe` Nothing
+        Decklist.slots (arkhamDeckPlayList $ entityVal result) `shouldBe` Map.fromList [("01006", 1), ("01007", 1)]
+
+  for_ [False, True] \initialize ->
+    it ("invalidates seated proof on an unproven raw " <> if initialize then "initialization" else "upgrade") do
+      (gameRef, pid, drain) <- newCampaignMessages
+      initial <- readIORef gameRef
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+          base = Linking.remote.deck {Decklist.slots = Map.singleton "01006" 1, Decklist.meta = Nothing}
+      drain $ deckChosenWithOverlay initial pid (Just overlay) $ arkhamDeckPlayList $
+        ArkhamDeck Linking.userId Nothing "Deck" "Roland" base (Just overlay) Nothing
+      seated <- readIORef gameRef
+      let attrs = maybe (error "Missing campaign") toAttrs $ modeCampaign seated.gameMode
+          deck = fromMaybe (error "Missing seated deck") $ Map.lookup "01001" $ campaignDecks attrs
+      drain [if initialize
+        then InitDeck $ InitDeckAttrs "01001" Nothing Nothing deck
+        else UpgradeDeck "01001" Nothing deck]
+      replaced <- readIORef gameRef
+      let store = campaignStore . toAttrs <$> modeCampaign replaced.gameMode
+      (store >>= Map.lookup (campaignDeckOverlayKey "01001")) `shouldBe` Nothing
 
   for_ [False, True] \viaImport ->
     for_ [False, True] \hadOverlay ->

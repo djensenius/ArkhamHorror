@@ -484,9 +484,16 @@ Outside a barrier the old re-push is kept: 'ChooseUpgradeDeck' (migrated in phas
 2) and The Dream Eaters' hand-rolled sequential deck prompts still use it.
 -}
 deckChosen :: Game -> PlayerId -> ArkhamDBDecklist -> [Message]
-deckChosen game playerId dl = case barrierSeat playerId game of
-  Just (bid, _) -> [LoadDecklist playerId dl, SeatResolved bid playerId]
-  Nothing -> LoadDecklist playerId dl : reAskOthers game playerId
+deckChosen game playerId = deckChosenWithOverlay game playerId Nothing
+
+deckChosenWithOverlay :: Game -> PlayerId -> Maybe DeckOverlay -> ArkhamDBDecklist -> [Message]
+deckChosenWithOverlay game playerId seatedOverlay dl =
+  -- LoadDecklist/InitDeck first invalidate the old materialization. Record the
+  -- saved overlay only after that actual load, under its resolved identity.
+  [LoadDecklist playerId dl, recordCampaignDeckOverlay (decklistInvestigatorId dl) seatedOverlay]
+    <> case barrierSeat playerId game of
+      Just (bid, _) -> [SeatResolved bid playerId]
+      Nothing -> reAskOthers game playerId
 
 {- | Re-park the seats still owed a question after @playerId@ answered.
 
@@ -597,8 +604,8 @@ loadChosenDeck game playerId seatedOverlay dl =
       -- Record the deck's custom cards on the game itself; the process registry
       -- they resolved against is rebuilt from the game, and other clients read
       -- their art and defs from there.
-      handled $ recordCampaignDeckOverlay (investigator_code dl) seatedOverlay
-        : map DebugRegisterCustomCard (decklistCustomCards dl) <> deckChosen game playerId dl
+      handled $ map DebugRegisterCustomCard (decklistCustomCards dl)
+        <> deckChosenWithOverlay game playerId seatedOverlay dl
 
 {- | Like 'handleAnswer' but with no DB access. Returns 'Unhandled' for
 'DeckAnswer' / 'DeckListAnswer', which require updating an 'ArkhamPlayer'

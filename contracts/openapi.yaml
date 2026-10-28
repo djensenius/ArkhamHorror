@@ -561,8 +561,10 @@ paths:
       summary: Import a private deck through the linked account's OAuth authorization
       description: |
         Repeat import syncs the existing linked deck. First adoption of a pushed
-        campaign snapshot consumes only the unchanged overlay captured at deck
-        seating, never an overlay added or replaced later. A legacy push with no
+        campaign snapshot consumes only the unchanged overlay captured for its
+        latest deck materialization, never an overlay added or replaced later.
+        Direct deck-list upgrades record that no saved overlay was applied, so a
+        retained saved overlay survives. A legacy or raw-replacement push with no
         captured provenance and a local overlay returns validationFailed without
         changing the saved deck, rather than lose edits or apply an overlay twice.
       requestBody:
@@ -603,8 +605,10 @@ paths:
         If a preserved mapping is inaccessible (remote 403/404), it is removed
         and the public URL is used. Persistence requires the same account generation.
         Both paths return the same saved Deck entity shape. No write-back runs.
-        First adoption consumes an unchanged overlay only with captured seating
-        provenance. An added/replaced overlay survives. Legacy pushes without
+        First adoption consumes an unchanged overlay only with provenance from
+        the latest deck materialization. Direct deck-list upgrades do not apply
+        saved overlays; those overlays survive, as do added/replaced overlays.
+        Legacy or raw-replacement pushes without
         provenance refuse ambiguous adoption with validationFailed if a local
         overlay exists; the saved deck is unchanged.
       parameters:
