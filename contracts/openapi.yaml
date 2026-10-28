@@ -872,6 +872,12 @@ paths:
           description: Deck is absent for this account
         "401":
           description: Token is absent or invalid
+        "409":
+          description: Deck has campaign accounting or unresolved write-back; deletion requires reconciliation and leaves the saved deck unchanged
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeckOperationError"
   /arkham/decks/{deckId}/sync:
     post:
       operationId: syncDeck
