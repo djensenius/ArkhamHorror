@@ -214,6 +214,7 @@ ownsCampaignDeck uid deck link = arkhamDeckUserId deck == uid && arkhamDBDeckLin
 
 canResolvePush :: Text -> ArkhamDBPush -> Bool
 canResolvePush mode job = arkhamDBPushStatus job `elem` ["conflict", "failed"] && mode `elem` ["overwrite", "new", "keep"] &&
+  arkhamDBPushError job /= Just "boundaryUndone" &&
   (mode /= "overwrite" || (arkhamDBPushStage job /= "creating" && isNothing (arkhamDBPushTargetId job) && arkhamDBPushError job /= Just "campaignChanged"))
 
 -- Keep-remote is read-only until adoption succeeds. In particular, a failed
@@ -230,9 +231,21 @@ hasCreationIntent job = arkhamDBPushStage job == "creating" || isJust (arkhamDBP
 -- Disabling fences in-flight requests, but an already transmitted creation
 -- remains the oldest outstanding job until explicitly reconciled on re-enable.
 disabledPush :: ArkhamDBPush -> ArkhamDBPush
+disabledPush job | arkhamDBPushError job == Just "boundaryUndone" = job
 disabledPush job = job
   { arkhamDBPushStatus = if hasCreationIntent job then "failed" else "cancelled"
   , arkhamDBPushError = if hasCreationIntent job then Just "writeBackDisabled" else Nothing
+  }
+
+-- An upgrade may already have credited XP even when its reply/save was lost.
+-- Keep this non-runnable oldest intent durably, rather than allowing a fresh
+-- boundary (or an explicit overwrite) to credit the same XP again. It must not
+-- enter normal recovery, which would save the undone snapshot. Only an
+-- independent, read-only reconciliation can safely retire this fence.
+undonePush :: ArkhamDBPush -> ArkhamDBPush
+undonePush job = job
+  { arkhamDBPushStatus = if hasCreationIntent job then "conflict" else "cancelled"
+  , arkhamDBPushError = if hasCreationIntent job then Just "boundaryUndone" else Nothing
   }
 
 -- Called under the same user lock as imports and completion. Return a durable
@@ -317,7 +330,7 @@ sameMarkers date version remote = date == remote.dateUpdate && version == remote
 
 unmarkedDeck :: ArkhamDBDecklist -> ArkhamDBDecklist
 unmarkedDeck deck = deck {Decklist.meta = case deck.meta >>= decodeStrict' . encodeUtf8 of
-  Just (Object value) -> let clean = KM.delete "ahn_push" value
+  Just (Object value) -> let clean = KM.delete "ahn_overlay" $ KM.delete "ahn_push" value
     in if KM.null clean then Nothing else Just $ decodeUtf8 $ toStrict $ encode $ Object clean
   _ -> deck.meta}
 
@@ -375,6 +388,27 @@ runWriteBack store writes client settings now retry userId deckId = do
           Nothing -> pure (remote, seen)
           Just next | next `elem` seen || length seen >= 100 -> throwError $ ArkhamDBError "remoteUnavailable" "ArkhamDB version chain is invalid"
           Just next -> load job next >>= latestVersionWithLineage job (next : seen)
+        -- The selected deck's forward chain cannot reveal an owner bound to
+        -- an ancestor. Walk the other campaign bindings too, with one shared
+        -- request budget; missing/incomplete/cyclic chains fail closed.
+        ownedElsewhere job lineage = do
+          links <- lift $ store.findDeckLinks userId
+          let bound = [arkhamDBDeckLinkRemoteDeckId candidate | (_, candidate) <- links,
+                maybe False (/= arkhamDBPushCampaignKey job) $ arkhamDBDeckLinkCampaignKey candidate]
+              walk remaining seen remoteId
+                | remoteId `elem` lineage = pure (True, remaining)
+                | remaining <= 0 || remoteId `elem` seen = pure (True, remaining)
+                | otherwise = do
+                    remote <- load job remoteId
+                    case remote.nextDeckId of
+                      Just next -> walk (remaining - 1) (remoteId : seen) next
+                      Nothing -> pure (not remote.nextDeckKnownAbsent, remaining - 1)
+              scan _ [] = pure False
+              scan remaining (remoteId : rest) = do
+                (owned, left) <- walk remaining [] remoteId
+                if owned then pure True else scan left rest
+          if length bound > 100 then pure True
+            else scan (100 :: Int) bound `catchError` const (pure True)
         recover entity desired = do
           original <- traverse (load $ entityVal entity) $ arkhamDBPushSourceId $ entityVal entity
           case original of
@@ -475,8 +509,12 @@ runWriteBack store writes client settings now retry userId deckId = do
               baseline <- lift $ writes.campaignXpBaseline (arkhamDBPushCampaignKey job)
               original <- load (entityVal ready) $ arkhamDBDeckLinkRemoteDeckId link
               campaignTarget <- lift $ writes.campaignOwnsTarget (arkhamDBPushCampaignKey job) original
+              (source, lineage) <- if arkhamDBPushMode job == "overwrite"
+                then latestVersionWithLineage (entityVal ready) [original.remoteDeckId] original
+                else pure (original, [original.remoteDeckId])
+              sourceOwnedElsewhere <- ownedElsewhere (entityVal ready) lineage
               let otherCampaign = maybe False (/= arkhamDBPushCampaignKey job) $ arkhamDBDeckLinkCampaignKey link
-              if otherCampaign
+              if otherCampaign || sourceOwnedElsewhere
                 then conflict ready original "campaignChanged"
                 else if arkhamDBPushMode job == "normal" &&
                   ((isNothing (arkhamDBDeckLinkLastSyncedDateUpdate link) && isNothing (arkhamDBDeckLinkLastSyncedVersion link)) || not (sameMarkers (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link) original) || isJust original.nextDeckId)
@@ -491,19 +529,7 @@ runWriteBack store writes client settings now retry userId deckId = do
                         { arkhamDBPushStage = "created", arkhamDBPushTargetId = Just original.remoteDeckId
                         , arkhamDBPushExpectedDateUpdate = original.dateUpdate, arkhamDBPushExpectedVersion = original.deckVersion }
                       saveVersion False target desired
-                  else do
-                    (source, lineage) <- if arkhamDBPushMode job == "overwrite"
-                      then latestVersionWithLineage (entityVal ready) [original.remoteDeckId] original
-                      else pure (original, [original.remoteDeckId])
-                    -- A re-imported ancestor has no campaign binding of its own.
-                    -- Overwrite must not use it to enter another campaign's lineage.
-                    links <- lift $ store.findDeckLinks userId
-                    let sourceOwnedElsewhere = any (\(_, candidate) ->
-                          arkhamDBDeckLinkRemoteDeckId candidate `elem` lineage &&
-                          maybe False (/= arkhamDBPushCampaignKey job) (arkhamDBDeckLinkCampaignKey candidate)) links
-                    if sourceOwnedElsewhere
-                      then conflict ready source "campaignChanged"
-                      else createVersion ready desired (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
+                  else createVersion ready desired (Just source) (max 0 $ arkhamDBPushTotalXp job - baseline)
     result <- runExceptT $ process initial
     case result of
       Left err -> do

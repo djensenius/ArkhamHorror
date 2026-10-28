@@ -3,6 +3,7 @@ module Arkham.ArkhamDB.Service where
 import Arkham.ArkhamDB
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
+import Arkham.Custom.Overlay (DeckOverlay)
 import Control.Monad.Except
 import Data.Aeson (ToJSON (..), Value (..), decodeStrict', eitherDecodeStrict', encode, object, (.=))
 import Data.Aeson.KeyMap qualified as KM
@@ -232,16 +233,37 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
                 , arkhamDeckUrl = decklist.url
                 , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
                 , arkhamDeckInvestigatorName = remote.deck.investigator_name
-                -- Clear an incorporated overlay only on first adopting a push.
-                -- An overlay attached after adoption is not in that snapshot.
+                -- A changed push marker alone says nothing about a newer
+                -- local overlay. Consume only the overlay actually exported.
                 , arkhamDeckOverlay = if isJust (campaignPushMarker remote.deck) &&
-                    campaignPushMarker remote.deck /= campaignPushMarker (arkhamDeckList deck)
+                    campaignPushMarker remote.deck /= campaignPushMarker (arkhamDeckList deck) &&
+                    exportedOverlay remote.deck == (toJSON <$> arkhamDeckOverlay deck)
                     then Nothing else arkhamDeckOverlay deck
                 }
           lift $ store.validateDeck $ arkhamDeckPlayList updated
           saved <- lift $ store.saveSyncedDeck generation deckId updated remote now
           unless saved $ throwError linkChanged
           pure $ Entity deckId updated
+
+-- Internal ArkhamDB metadata records the exact overlay in the queued snapshot.
+-- Invalid metadata remains invalid so write-back validation still rejects it.
+withExportedOverlay :: Maybe DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
+withExportedOverlay overlay deck = deck {Decklist.meta = case deck.meta of
+  Nothing -> encodeMetadata KM.empty
+  Just "" -> encodeMetadata KM.empty
+  Just text -> case decodeStrict' $ encodeUtf8 text of
+    Just (Object metadata) -> encodeMetadata metadata
+    _ -> Just text}
+ where
+  encodeMetadata metadata =
+    let clean = KM.delete "ahn_overlay" metadata
+        updated = maybe clean (\value -> KM.insert "ahn_overlay" (toJSON value) clean) overlay
+    in if KM.null updated then Nothing else Just $ decodeUtf8 $ toStrict $ encode $ Object updated
+
+exportedOverlay :: ArkhamDBDecklist -> Maybe Value
+exportedOverlay deck = case deck.meta >>= decodeStrict' . encodeUtf8 of
+  Just (Object metadata) -> KM.lookup "ahn_overlay" metadata
+  _ -> Nothing
 
 campaignPushMarker :: ArkhamDBDecklist -> Maybe Text
 campaignPushMarker deck = case deck.meta >>= decodeStrict' . encodeUtf8 of

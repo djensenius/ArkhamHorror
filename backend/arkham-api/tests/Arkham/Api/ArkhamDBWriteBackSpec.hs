@@ -245,7 +245,7 @@ cancelHarnessUndoWith h beforeLock restoredStep = do
     (\users action -> beforeLock >> withLocks users action)
     (\_ -> modifyIORef' h.job \current ->
       if arkhamDBPushStatus current `elem` ["succeeded", "cancelled"] then current
-      else current {arkhamDBPushStatus = "cancelled", arkhamDBPushError = Nothing})
+      else undonePush current)
     restoredStep
  where
   withLocks [] action = action
@@ -316,13 +316,13 @@ spec = describe "ArkhamDB campaign write-back" do
     flip finally (killThread tid) do
       timeout 2000000 (takeMVar reached) `shouldReturn` Just ()
       cancelHarnessUndo h 0
-      assertState h "cancelled"
+      assertState h "conflict"
       before <- readIORef h.calls
       before `shouldBe` ["load/123"]
       putMVar release ()
       timeout 2000000 (takeMVar done) `shouldReturn` Just ()
       readIORef h.calls `shouldReturn` before
-      assertUndoNotCompleted h
+      readIORef h.baseline `shouldReturn` 0
 
   it "waits for an admitted request before cancelling and fences subsequent work" do
     h <- newHarness
@@ -423,6 +423,44 @@ spec = describe "ArkhamDB campaign write-back" do
     assertState h "succeeded"
     pushed <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing pushed deck") pure
     pushed.deck.slots `shouldBe` corrected.slots
+
+  for_ [False, True] \lostResponse ->
+    it ("durably fences undone creation before re-answer and overwrite: " <> show lostResponse) do
+      h <- newHarness
+      let failing = if lostResponse
+            then h.client {upgradeDeck = \token source xp metadata ->
+              h.client.upgradeDeck token source xp metadata >> pure (Left $ ArkhamDBRemoteError "lost response")}
+            else h.client {saveDeck = \_ _ _ -> pure $ Left $ ArkhamDBRemoteError "save failed"}
+      runWith h failing False
+      assertState h "failed"
+      beforeUndo <- readIORef h.calls
+      cancelHarnessUndo h 0
+      fence <- readIORef h.job
+      arkhamDBPushStatus fence `shouldBe` "conflict"
+      for_ ["overwrite", "new", "keep"] \mode ->
+        h.writes.resolvePush Linking.now Linking.userId Linking.deckId mode `shouldReturn` False
+      -- A fresh boundary remains behind the durable oldest job, just as in
+      -- the SQL store. Reconstruct the persisted rows after restart.
+      let replacement = fence
+            { arkhamDBPushEventKey = "game/1/iid/reanswered"
+            , arkhamDBPushPayload = encodePushDeck currentDeck {Decklist.slots = Map.singleton "01007" 2}
+            , arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready"
+            , arkhamDBPushTargetId = Nothing, arkhamDBPushSourceId = Nothing
+            , arkhamDBPushError = Nothing
+            }
+          persisted = [disabledPush fence, replacement]
+          oldest = find (\job -> arkhamDBPushStatus job `notElem` ["succeeded", "cancelled"]) persisted
+      fmap arkhamDBPushEventKey oldest `shouldBe` Just (arkhamDBPushEventKey fence)
+      for_ oldest \job -> pushCanRun (addUTCTime 3600 Linking.now) True job `shouldBe` False
+      writeIORef h.job $ disabledPush fence
+      h.run True
+      h.run False
+      calls <- readIORef h.calls
+      calls `shouldBe` beforeUndo
+      filter ("upgrade/" `T.isPrefixOf`) calls `shouldBe` ["upgrade/123/5"]
+      filter ("save/" `T.isPrefixOf`) calls `shouldBe` []
+      remote <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing credited version") pure
+      remote.deck.slots `shouldNotBe` currentDeck.slots
 
   it "coalesces saturated dispatch admission and leaves an unrelated small-pool connection available" do
     executor <- newArkhamDBExecutor
@@ -807,6 +845,81 @@ spec = describe "ArkhamDB campaign write-back" do
     fmap arkhamDeckOverlay saved `shouldBe` Just Nothing
 
   for_ [False, True] \viaImport ->
+    for_ [False, True] \replacement ->
+      it ("preserves unexported overlays before first adoption: " <> show (viaImport, replacement)) do
+        h <- newHarness
+        let exported = DeckOverlay Nothing mempty (Map.singleton "01006" 1) mempty
+            current = DeckOverlay Nothing mempty (Map.singleton "01007" 2) mempty
+        when replacement $ modifyIORef' h.job \job -> job
+          {arkhamDBPushPayload = encodePushDeck $ withExportedOverlay (Just exported) currentDeck}
+        h.run False
+        modifyIORef' h.linked \state -> state
+          { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just current}) Linking.deckId state.storedDecks }
+        replicateM_ 2 do
+          result <- runExceptT (if viaImport
+            then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId "124" Linking.forbiddenPublic
+            else syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic)
+            >>= either (fail . show) pure
+          arkhamDeckOverlay (entityVal result) `shouldBe` Just current
+
+  for_ ["normal", "overwrite"] \mode ->
+    it ("rejects a directly imported descendant owned by another campaign: " <> toString mode) do
+      h <- newHarness
+      let otherId = ArkhamDeckKey $ UUID.fromWords 0 0 0 999
+      modifyIORef' h.linked \state -> state
+        { Linking.storedLinks = case Map.lookup Linking.deckId state.storedLinks of
+            Nothing -> mempty
+            Just link -> Map.insert otherId link
+              { arkhamDBDeckLinkDeckId = otherId, arkhamDBDeckLinkRemoteDeckId = "124"
+              , arkhamDBDeckLinkCampaignKey = Just "campaign-a/iid" } $
+              Map.singleton Linking.deckId link {arkhamDBDeckLinkRemoteDeckId = "125"}
+        , Linking.storedDecks = maybe state.storedDecks (\deck -> Map.insert otherId deck state.storedDecks) $
+            Map.lookup Linking.deckId state.storedDecks
+        }
+      modifyIORef' h.remotes $ Map.insert "124" Linking.remote
+        {ArkhamDB.remoteDeckId = "124", nextDeckId = Just "125"} .
+        Map.insert "125" Linking.remote {ArkhamDB.remoteDeckId = "125"}
+      modifyIORef' h.job \job -> job {arkhamDBPushMode = mode}
+      h.run False
+      assertState h "conflict"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "campaignChanged"
+      assertNoPush h
+      h.writes.resolvePush Linking.now Linking.userId Linking.deckId "new" `shouldReturn` True
+      h.run False
+      assertState h "succeeded"
+      state <- readIORef h.linked
+      arkhamDBDeckLinkRemoteDeckId <$> Map.lookup otherId state.storedLinks `shouldBe` Just "124"
+
+  for_ ["missing", "cycle", "incomplete", "budget"] \ambiguity ->
+    it ("fails closed on ambiguous other-campaign lineage: " <> toString ambiguity) do
+      h <- newHarness
+      let otherId = ArkhamDeckKey $ UUID.fromWords 0 0 0 999
+      modifyIORef' h.linked \state -> state
+        { Linking.storedLinks = case Map.lookup Linking.deckId state.storedLinks of
+            Nothing -> mempty
+            Just link -> Map.insert otherId link
+              { arkhamDBDeckLinkDeckId = otherId, arkhamDBDeckLinkRemoteDeckId = "200"
+              , arkhamDBDeckLinkCampaignKey = Just "campaign-a/iid" } state.storedLinks
+        , Linking.storedDecks = maybe state.storedDecks (\deck -> Map.insert otherId deck state.storedDecks) $
+            Map.lookup Linking.deckId state.storedDecks
+        }
+      case ambiguity of
+        "cycle" -> modifyIORef' h.remotes $ Map.insert "200" Linking.remote
+          {ArkhamDB.remoteDeckId = "200", nextDeckId = Just "200"}
+        "incomplete" -> modifyIORef' h.remotes $ Map.insert "200" Linking.remote
+          {ArkhamDB.remoteDeckId = "200", nextDeckKnownAbsent = False}
+        "budget" -> modifyIORef' h.remotes \remotes -> foldl' (\values n ->
+          Map.insert (T.pack $ show n) Linking.remote
+            {ArkhamDB.remoteDeckId = T.pack $ show n, nextDeckId = Just $ T.pack $ show $ n + 1} values) remotes [200 .. 301 :: Int]
+        _ -> pure ()
+      h.run False
+      assertState h "conflict"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "campaignChanged"
+      assertNoPush h
+      calls <- readIORef h.calls
+      length calls `shouldSatisfy` (<= 101)
+
+  for_ [False, True] \viaImport ->
     it ("preserves overlays attached after adopting a push through " <> if viaImport then "repeat-import sync" else "sync") do
       h <- newHarness
       h.run False
@@ -867,7 +980,11 @@ spec = describe "ArkhamDB campaign write-back" do
           { Linking.storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) Linking.deckId state.storedDecks }
         -- The normal export includes the overlay in its campaign slots, and
         -- leaves the saved local list/overlay untouched until linked sync.
-        when materialized $ h.run False >> assertState h "succeeded"
+        when materialized do
+          modifyIORef' h.job \job -> job
+            {arkhamDBPushPayload = encodePushDeck $ withExportedOverlay (Just overlay) currentDeck}
+          h.run False
+          assertState h "succeeded"
         let target = if materialized then "124" else "123"
         result <- runExceptT (if viaImport
           then importRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId target Linking.forbiddenPublic
@@ -881,6 +998,8 @@ spec = describe "ArkhamDB campaign write-back" do
         saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
         Decklist.slots (arkhamDeckPlayList saved) `shouldBe` expectedSlots
         arkhamDeckOverlay saved `shouldBe` expectedOverlay
+        again <- runExceptT $ syncRemoteDeck h.store h.client Linking.settings Linking.now Linking.userId Linking.deckId Linking.forbiddenPublic
+        fmap (arkhamDeckOverlay . entityVal) again `shouldBe` Right expectedOverlay
 
   for_ ["keep", "finish", "copy"] \completion ->
     it ("records a target-link conflict atomically on " <> toString completion <> " completion") do
