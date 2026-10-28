@@ -37,7 +37,10 @@ data ArkhamDBStore m = ArkhamDBStore
   , findDeckLinks :: UserId -> m [(ArkhamDeckId, ArkhamDBDeckLink)]
   , findDeck :: ArkhamDeckId -> m (Maybe (ArkhamDeck, Maybe ArkhamDBDeckLink))
   , saveImportedDeck :: ArkhamDBAccountId -> ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m (Maybe (Entity ArkhamDeck))
-  , saveSyncedDeck :: ArkhamDBAccountId -> ArkhamDeckId -> ArkhamDeck -> ArkhamDBRemoteDeck -> UTCTime -> m Bool
+  -- The writer locks/re-reads the current row, invokes adoption/validation
+  -- inside that transaction, and returns the actual persisted entity.
+  , saveSyncedDeck :: ArkhamDBAccountId -> ArkhamDeckId -> ArkhamDBDeckLink -> ArkhamDBRemoteDeck -> UTCTime
+      -> (ArkhamDeck -> m (Either ArkhamDBError ArkhamDeck)) -> m (Either ArkhamDBError (Entity ArkhamDeck))
   , dropDeckLink :: ArkhamDBAccountId -> UserId -> ArkhamDeckId -> m Bool
   , validateDeck :: ArkhamDBDecklist -> m ()
   }
@@ -227,17 +230,26 @@ syncRemoteDeck store client settings now userId deckId publicSync = do
           unless dropped $ throwError linkChanged
           lift $ publicSync deckId
         Left err -> throwError err
-        Right remote -> do
-          adopted <- either throwError pure $ adoptDecklist deck $ remoteDecklist settings remote
-          let updated = adopted
-                { arkhamDeckUrl = (arkhamDeckList adopted).url
-                , arkhamDeckName = fromMaybe (arkhamDeckName deck) remote.deck.decklist_name
-                , arkhamDeckInvestigatorName = remote.deck.investigator_name
-                }
-          lift $ store.validateDeck $ arkhamDeckPlayList updated
-          saved <- lift $ store.saveSyncedDeck generation deckId updated remote now
-          unless saved $ throwError linkChanged
-          pure $ Entity deckId updated
+        Right remote ->
+          ExceptT $ store.saveSyncedDeck generation deckId mapping remote now \current -> runExceptT do
+            adopted <- either throwError pure $ adoptDecklist current $ remoteDecklist settings remote
+            let updated = adopted
+                  { arkhamDeckUrl = (arkhamDeckList adopted).url
+                  , arkhamDeckName = fromMaybe (arkhamDeckName current) remote.deck.decklist_name
+                  , arkhamDeckInvestigatorName = remote.deck.investigator_name
+                  }
+            lift $ store.validateDeck $ arkhamDeckPlayList updated
+            pure updated
+
+-- A newer adoption may save into the same remote id. Do not downgrade its
+-- markers (or list) with a result fetched against an earlier mapping snapshot.
+sameSyncedDeckLink :: ArkhamDBDeckLink -> ArkhamDBDeckLink -> Bool
+sameSyncedDeckLink expected current =
+  arkhamDBDeckLinkDeckId expected == arkhamDBDeckLinkDeckId current &&
+  arkhamDBDeckLinkUserId expected == arkhamDBDeckLinkUserId current &&
+  arkhamDBDeckLinkRemoteDeckId expected == arkhamDBDeckLinkRemoteDeckId current &&
+  arkhamDBDeckLinkLastSyncedDateUpdate expected == arkhamDBDeckLinkLastSyncedDateUpdate current &&
+  arkhamDBDeckLinkLastSyncedVersion expected == arkhamDBDeckLinkLastSyncedVersion current
 
 -- Every implicit saved-list replacement must consume provenance BEFORE copying
 -- the incoming push marker. Retain newer overlays; never infer incorporation

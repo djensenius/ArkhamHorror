@@ -25,7 +25,7 @@ import Api.Arkham.Helpers
 import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Campaign.Types (campaignLog)
-import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary)
+import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary, campaignWriteBackSeatIdentity)
 import Arkham.ArkhamDB.WriteBack (savedDeckUpgradeTargets, savedDeckUpgradeUpdates)
 import Arkham.ArkhamDB.Service (ArkhamDBError (..), adoptDecklist, arkhamDBErrorStatus)
 import Entity.Arkham.ArkhamDBAccount
@@ -305,9 +305,14 @@ putApiV1ArkhamGameDecksR gameId = do
                   -- Prepare all saved-list adoptions before writing either the
                   -- game or a deck. Copying a push marker first would hide an
                   -- unconsumed incorporated overlay from subsequent sync.
+                  let stableIdentity = case modeCampaign arkhamGameCurrentData.gameMode of
+                        Nothing -> Just investigatorId
+                        Just _ -> snd <$> campaignWriteBackSeatIdentity arkhamGameCurrentData investigatorId
                   prepared <- case mDecklist of
-                    Just decklist | sameInvestigator investigatorId decklist -> do
-                      let campaignKey = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId investigatorId)
+                    Just decklist
+                      | sameInvestigator investigatorId decklist
+                      , Just stableIid <- stableIdentity -> do
+                      let campaignKey = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId stableIid)
                       association <- fmap entityVal <$> getBy (UniqueArkhamDBCampaignDeck campaignKey)
                       targets <- savedDeckUpgradeTargets Persist.get
                         (\url -> P.selectList [ArkhamDeckUserId P.==. userId, ArkhamDeckUrl P.==. Just url] [])

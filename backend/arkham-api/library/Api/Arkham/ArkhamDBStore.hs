@@ -92,18 +92,35 @@ persistentStoreWith validate database = ArkhamDBStore
             entity@(Entity deckId _) <- insertEntity deck
             insert_ $ ArkhamDBDeckLink deckId (arkhamDeckUserId deck) remote.remoteDeckId remote.dateUpdate remote.deckVersion False Nothing Nothing now now
             pure $ Just entity
-  , saveSyncedDeck = \generation deckId deck remote now -> database do
-      active <- sameAccountGeneration (arkhamDeckUserId deck) generation
+  , saveSyncedDeck = \generation deckId expected remote now adopt -> database do
+      let userId = arkhamDBDeckLinkUserId expected
+      active <- sameAccountGeneration userId generation
+      -- Overlay PUT/DELETE only lock this row, not the account. No pre-I/O
+      -- overlay or adoption decision may cross this transaction boundary.
+      rows <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR UPDATE"
+        [toPersistValue deckId] :: ReaderT SqlBackend Handler [Entity ArkhamDeck]
       mapping <- getBy $ UniqueArkhamDBDeckLinkDeck deckId
-      if not active || isNothing mapping then pure False else do
-        P.update deckId $ syncedDeckUpdates deck
-        updateWhere [ArkhamDBDeckLinkDeckId P.==. deckId]
-          [ ArkhamDBDeckLinkLastSyncedDateUpdate P.=. remote.dateUpdate
-          , ArkhamDBDeckLinkLastSyncedVersion P.=. remote.deckVersion
-          , ArkhamDBDeckLinkLastError P.=. Nothing
-          , ArkhamDBDeckLinkUpdatedAt P.=. now
-          ]
-        pure True
+      case (active, viaNonEmpty head rows, mapping) of
+        (True, Just (Entity _ current), Just (Entity _ link))
+          | arkhamDeckUserId current == userId
+          , arkhamDBDeckLinkUserId link == userId
+          , sameSyncedDeckLink expected link
+          , arkhamDBDeckLinkRemoteDeckId link == remote.remoteDeckId -> do
+              prepared <- lift $ adopt current
+              case prepared of
+                Left err -> pure $ Left err
+                Right updated -> do
+                  P.update deckId $ syncedDeckUpdates updated
+                  updateWhere [ArkhamDBDeckLinkDeckId P.==. deckId]
+                    [ ArkhamDBDeckLinkLastSyncedDateUpdate P.=. remote.dateUpdate
+                    , ArkhamDBDeckLinkLastSyncedVersion P.=. remote.deckVersion
+                    , ArkhamDBDeckLinkLastError P.=. Nothing
+                    , ArkhamDBDeckLinkUpdatedAt P.=. now
+                    ]
+                  -- Return the row read back under the same lock, not the
+                  -- callback's projection (which may contain unwritten fields).
+                  Right . Entity deckId <$> getJust deckId
+        _ -> pure $ Left linkChanged
   , dropDeckLink = \generation userId deckId -> database do
       active <- sameAccountGeneration userId generation
       when active $ deleteBy $ UniqueArkhamDBDeckLinkDeck deckId

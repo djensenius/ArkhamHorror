@@ -9,10 +9,11 @@ import Arkham.ArkhamDB.Overlay
 import Arkham.Id (InvestigatorId)
 import Arkham.ArkhamDB.Service (withExportedOverlay, withoutExportedOverlay)
 import Arkham.Helpers.Deck (partitionReloadedDeck)
-import Arkham.Campaign.Types (campaignStep)
+import Arkham.Campaign.Types (campaignStep, campaignStore, campaignDecks)
 import Arkham.Classes.Entity (toAttrs)
 import Arkham.Game (Game (..), RunObservers (..), noRunObservers)
-import Arkham.Game.Utils (modeCampaign)
+import Arkham.Game.Utils (modeCampaign, gameInvestigators)
+import Arkham.Investigator.Types (investigatorForm, InvestigatorForm (HomunculusForm))
 import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Decklist qualified as Decklist
 import Arkham.Message (Message (..))
@@ -22,6 +23,30 @@ import Data.Aeson (Value, parseJSON)
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
 import Relude
+
+-- Resolve materialized cards/proof separately from the durable association id.
+-- A Homunculus's live id changes only on reset; both phases share the origin.
+campaignWriteBackIdentity :: Map Text Value -> [InvestigatorId] -> InvestigatorId -> Bool -> Maybe (InvestigatorId, InvestigatorId)
+campaignWriteBackIdentity store occupied liveId homunculus = do
+  let deckId = if homunculus then "11068b" else liveId
+      recorded iid = Map.lookup (campaignDeckIdentityKey iid) store >>= parseMaybe parseJSON
+  guard $ deckId `elem` occupied
+  stableId <- if homunculus then recorded deckId
+    else case Map.lookup (campaignDeckIdentityKey deckId) store of
+      Nothing -> Just liveId
+      Just value -> parseMaybe parseJSON value
+  guard $ liveId == deckId || liveId == stableId
+  guard $ homunculus || stableId == liveId
+  -- Do not let another seated deck claim this same association/baseline.
+  guard $ all (\other -> other == deckId || (other /= stableId && recorded other /= Just stableId)) occupied
+  pure (deckId, stableId)
+
+campaignWriteBackSeatIdentity :: Game -> InvestigatorId -> Maybe (InvestigatorId, InvestigatorId)
+campaignWriteBackSeatIdentity game iid = do
+  campaign <- toAttrs <$> modeCampaign game.gameMode
+  investigator <- Map.lookup iid $ gameInvestigators game
+  campaignWriteBackIdentity (campaignStore campaign) (Map.keys $ campaignDecks campaign)
+    iid (investigatorForm (toAttrs investigator) == HomunculusForm)
 
 isWriteBackBoundary :: Message -> Bool
 isWriteBackBoundary = \case

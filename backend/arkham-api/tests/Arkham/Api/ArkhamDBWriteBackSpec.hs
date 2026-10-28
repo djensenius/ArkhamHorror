@@ -17,7 +17,7 @@ import System.IO.Error (userError)
 import Arkham.Game qualified as Game
 import Arkham.Game.State (GameState (IsActive))
 import Arkham.Difficulty (Difficulty (Easy))
-import Arkham.Id (PlayerId (..))
+import Arkham.Id (PlayerId (..), InvestigatorId (..))
 import Arkham.Classes.HasQueue (newQueue)
 import Arkham.Queue (queueToRef)
 import Arkham.Question (Question (ChooseUpgradeDeck, ContinueCampaign))
@@ -26,16 +26,18 @@ import Arkham.Api.ArkhamDBSpec qualified as Linking
 import Arkham.ArkhamDB
 import Arkham.ArkhamDB qualified as ArkhamDB
 import Arkham.ArkhamDB.Campaign
+import Arkham.ArkhamDB.Overlay (campaignDeckIdentityKey, moveCampaignDeckIdentity)
 import Arkham.ArkhamDB.Service
 import Arkham.ArkhamDB.WriteBack
 import Arkham.CampaignStep (CampaignStep (..))
 import Arkham.Custom.Overlay (DeckOverlay (..))
 import Arkham.Card (Card (..), toCardCode)
+import Arkham.Card.CardCode (unCardCode)
 import Arkham.Card.EncounterCard (EncounterCard (..))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Card.PlayerCard (PlayerCard (..))
 import Arkham.Decklist qualified as Decklist
-import Arkham.Message (Message (..), InitDeckAttrs (..))
+import Arkham.Message (Message (..), InitDeckAttrs (..), ShuffleIn (..))
 import Arkham.Taboo.Types (TabooList (TabooList25))
 import Arkham.Target (Target (GameTarget))
 import Arkham.Source (Source (GameSource))
@@ -362,6 +364,83 @@ applyDeckUpdates updates deck = entityVal $ foldl' apply (Entity Linking.deckId 
 
 spec :: Spec
 spec = describe "ArkhamDB campaign write-back" do
+  it "keeps one association and XP baseline through actual Homunculus transformation, boundary and reset" do
+    h <- newHarness
+    (gameRef, pid, drain) <- newCampaignMessages
+    baselines <- newIORef Map.empty
+    let overlay = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+        base = Linking.remote.deck {Decklist.slots = Map.fromList [("01006", 1), ("11068a", 1)], Decklist.meta = Nothing}
+        play = arkhamDeckPlayList $ ArkhamDeck Linking.userId Nothing "Deck" "Roland" base (Just overlay) Nothing
+        story code n = PlayerCard $ MkPlayerCard (unsafeMakeCardId $ UUID.fromWords 0 0 0 n) Nothing code code mempty Nothing Nothing Nothing Nothing Nothing
+        writes = h.writes
+          { campaignXpBaseline = \key -> Map.findWithDefault 0 key <$> readIORef baselines
+          , finishPush = \entity remote -> do
+              result <- h.writes.finishPush entity remote
+              when (isJust result) $ modifyIORef' baselines $
+                Map.alter (Just . acknowledgedCampaignXp (entityVal entity) . fromMaybe 0) (arkhamDBPushCampaignKey $ entityVal entity)
+              pure result
+          }
+        submit game liveId = do
+          (deckId, stableId) <- maybe (fail "Missing stable write-back identity") pure $ campaignWriteBackSeatIdentity game liveId
+          stableId `shouldBe` "01001"
+          let attrs = maybe (error "Missing campaign") toAttrs $ modeCampaign game.gameMode
+              cards = maybe [] unDeck $ Map.lookup deckId $ campaignDecks attrs
+              storyCards = Map.findWithDefault [] deckId $ campaignStoryCards attrs
+              snapshot = campaignWriteBackSnapshot (campaignStore attrs) deckId base cards storyCards [] Nothing Nothing
+              investigator = fromMaybe (error "Missing live investigator") $ Map.lookup liveId $ gameInvestigators game
+              key = "game/" <> unCardCode (unInvestigatorId stableId)
+          exportedOverlay snapshot `shouldBe` Just (toJSON overlay)
+          modifyIORef' h.job \job -> job
+            { arkhamDBPushCampaignKey = key, arkhamDBPushPayload = encodePushDeck snapshot
+            , arkhamDBPushTotalXp = investigatorXp $ toAttrs investigator
+            , arkhamDBPushStatus = "pending", arkhamDBPushStage = "ready", arkhamDBPushMode = "normal"
+            , arkhamDBPushSourceId = Nothing, arkhamDBPushTargetId = Nothing, arkhamDBPushError = Nothing
+            }
+          runWriteBack h.store writes h.client Linking.settings Linking.now False Linking.userId Linking.deckId
+          assertState h "succeeded"
+          pure snapshot
+        boundary = do
+          modifyIORef' gameRef \game -> game {Game.gameQuestion = mempty}
+          captured <- withCampaignWriteBackBoundary gameRef \observers -> do
+            queue <- newQueue [ForTarget GameTarget $ EndOfScenario Nothing, AskMap $ Map.singleton pid ContinueCampaign]
+            gen <- newIORef $ mkStdGen 1
+            runGameApp (GameApp gameRef queue gen (pure . const ()) Nothing) $
+              Game.runMessages "homunculus-write-back-boundary" observers
+          maybe (fail "Missing actual boundary") (pure . snd) captured
+    initial <- readIORef gameRef
+    drain $ deckChosenWithOverlay initial pid (Just overlay) play
+    drain [ReloadDecks, GainXP "01001" GameSource 5]
+    seated <- readIORef gameRef
+    void $ submit seated "01001"
+    drain [AddCampaignCardToDeck "01001" DoNotShuffleIn $ story "01008" 801, BecomeHomunculus "01001"]
+    transformed <- readIORef gameRef
+    Map.keys (gameInvestigators transformed) `shouldBe` ["01001"]
+    campaignWriteBackSeatIdentity transformed "01001" `shouldBe` Just ("11068b", "01001")
+    first <- boundary >>= \game -> submit game "01001"
+    Map.lookup "01008" first.slots `shouldBe` Just 1
+    drain [ResetGame, ForTarget GameTarget ResetGame]
+    promoted <- readIORef gameRef
+    Map.keys (gameInvestigators promoted) `shouldBe` ["11068b"]
+    campaignWriteBackSeatIdentity promoted "11068b" `shouldBe` Just ("11068b", "01001")
+    drain [GainXP "11068b" GameSource 2, AddCampaignCardToDeck "11068b" DoNotShuffleIn $ story "01009" 802]
+    later <- boundary >>= \game -> submit game "11068b"
+    Map.lookup "01009" later.slots `shouldBe` Just 1
+    readIORef baselines `shouldReturn` Map.singleton "game/01001" 7
+    filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn`
+      ["upgrade/123/5", "upgrade/124/0", "upgrade/125/2"]
+    state <- readIORef h.linked
+    fmap arkhamDBDeckLinkCampaignKey (Map.lookup Linking.deckId state.storedLinks) `shouldBe` Just (Just "game/01001")
+    Map.size state.storedLinks `shouldBe` 1
+
+  it "refuses unknown or colliding transformed write-back identities without guessing a fresh lineage" do
+    campaignWriteBackIdentity mempty ["11068b"] "11068b" True `shouldBe` Nothing
+    let known = Map.singleton (campaignDeckIdentityKey "11068b") $ toJSON ("01001" :: InvestigatorId)
+        collision = moveCampaignDeckIdentity "01001" "11068b" ["01001", "11068b"] mempty
+    campaignWriteBackIdentity known ["01001", "11068b"] "11068b" True `shouldBe` Nothing
+    campaignWriteBackIdentity known ["01001", "11068b"] "01001" False `shouldBe` Nothing
+    Map.lookup (campaignDeckIdentityKey "11068b") collision `shouldBe` Just Null
+    campaignWriteBackIdentity collision ["11068b"] "01001" True `shouldBe` Nothing
+
   for_ [False, True] \uncertain ->
     for_ [False, True] \undo ->
       it ("retains save-as-new predecessor accounting across " <> show (uncertain, undo)) do

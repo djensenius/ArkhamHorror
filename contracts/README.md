@@ -1402,6 +1402,13 @@ The campaign UPGRADE endpoint's saved-list replacement and legacy public sync
 use the same adoption rule before copying a pushed list's marker. UPGRADE
 validates every saved-list adoption before persisting either the game or decks;
 an incorporated overlay is not applied twice when displaying or reusing a deck.
+Linked sync/re-import locks and re-reads the current saved row after remote I/O.
+Provenance adoption and play-list validation run under that row lock, before
+either the deck or mapping markers are changed. Overlay add/replace/remove
+committed during the remote read is respected, including for unmarked lists.
+The response is the row read back from persistence, not a pre-I/O projection.
+If the mapping adopted another remote target or newer sync markers meanwhile, the stale result is
+refused rather than applied to that new target's link.
 Explicit null provenance proves that no saved overlay was applied, so a saved
 overlay retained during a direct-list upgrade survives subsequent sync/import.
 For legacy campaigns or raw replacements without captured provenance, first
@@ -1409,6 +1416,12 @@ adopting a push while a local overlay exists is ambiguous: implicit sync/import 
 `validationFailed` (HTTP 400) without changing the saved deck, rather than clear unexported
 edits or apply an incorporated overlay twice. Explicit keep-remote remains a
 user-authorized replacement of the saved list/overlay.
+Homunculus transformation uses the transformed campaign deck/story/proof key
+even before the live investigator id is promoted at reset. A persisted
+`ahn_write_back_identity/<deck-investigator>` origin keeps the existing campaign
+association and XP baseline through both phases; saved upgrades use that same
+origin. This does not change gameplay identities. Unknown legacy origins or
+colliding seated aliases are skipped rather than guessed as fresh XP lineages.
 Succeeded/cancelled
 payload history is pruned to the newest 20 per local link; outstanding intents
 are never pruned.

@@ -4,7 +4,7 @@ import Api.Arkham.ArkhamDBStore
 import Arkham.ArkhamDB
 import Arkham.Card.CardCode (unCardCode)
 import Arkham.Id (InvestigatorId (..), PlayerId (..))
-import Arkham.ArkhamDB.Campaign (campaignWriteBackSnapshot)
+import Arkham.ArkhamDB.Campaign (campaignWriteBackSnapshot, campaignWriteBackSeatIdentity)
 import Arkham.ArkhamDB.WriteBack
 import Arkham.Campaign.Types (Campaign (..), CampaignAttrs (..), invalidCards)
 import Arkham.Classes.Entity (toAttrs)
@@ -245,8 +245,8 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
       attrs = toAttrs campaign
   for_ (Map.toList $ gameInvestigators game) \(iid, investigator) -> do
     let ia = toAttrs investigator
-        key = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId iid)
-    for_ (owner $ investigatorPlayerId ia) \uid -> do
+    for_ ((,) <$> owner (investigatorPlayerId ia) <*> campaignWriteBackSeatIdentity game iid) \(uid, (deckIid, stableIid)) -> do
+      let key = UUID.toText (coerce gameId) <> "/" <> unCardCode (unInvestigatorId stableIid)
       association <- getBy $ UniqueArkhamDBCampaignDeck key
       saved <- case association of
         Just (Entity _ value) -> P.get (arkhamDBCampaignDeckDeckId value) <&> fmap (Entity $ arkhamDBCampaignDeckDeckId value)
@@ -266,12 +266,12 @@ queueCampaignWriteBack gameId step now boundary game = for_ (modeCampaign $ game
           -- transaction commits; it cannot turn gameplay into a FK violation.
           generations <- rawSql "SELECT ?? FROM arkhamdb_accounts WHERE user_id = ? FOR KEY SHARE SKIP LOCKED" [toPersistValue uid]
           let generation = viaNonEmpty head (generations :: [Entity ArkhamDBAccount])
-          case (mapping, generation, Map.lookup iid $ campaignDecks attrs) of
+          case (mapping, generation, Map.lookup deckIid $ campaignDecks attrs) of
             (Just (Entity _ link), Just (Entity generationId _), Just (Deck cards)) | ownsCampaignDeck uid deck link -> do
               when (isNothing association) $ insert_ $ ArkhamDBCampaignDeck key deckId uid 0
-              let story = Map.findWithDefault [] iid $ campaignStoryCards attrs
-                  list = campaignWriteBackSnapshot (campaignStore attrs) iid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
-                  event = boundaryEventKey gameId step iid (entityKey history)
+              let story = Map.findWithDefault [] deckIid $ campaignStoryCards attrs
+                  list = campaignWriteBackSnapshot (campaignStore attrs) deckIid (arkhamDeckList deck) cards story (case campaign of Campaign c -> invalidCards c) (investigatorSideDeck ia) (investigatorTaboo ia)
+                  event = boundaryEventKey gameId step stableIid (entityKey history)
               void $ insertUnique $ ArkhamDBPush deckId uid generationId event key (encodePushDeck list) (investigatorXp ia)
                 "pending" "ready" Nothing Nothing (arkhamDBDeckLinkLastSyncedDateUpdate link) (arkhamDBDeckLinkLastSyncedVersion link)
                 Nothing Nothing Nothing "normal" now now boundary

@@ -8,7 +8,7 @@ import Arkham.Source as X
 import Arkham.Target as X
 
 import Arkham.Ability
-import Arkham.ArkhamDB.Overlay (campaignDeckOverlayKey)
+import Arkham.ArkhamDB.Overlay (campaignDeckOverlayKey, campaignDeckIdentityKey, moveCampaignDeckIdentity)
 import Arkham.Campaign.Overlay (CampaignOverlay (..))
 import Arkham.CampaignLog
 import Arkham.CampaignLogKey
@@ -49,6 +49,7 @@ defaultCampaignRunner msg a = case msg of
     pure
       $ flip overAttrs a
       $ (decksL %~ Map.mapKeys (\iid' -> if iid == iid' then "11068b" else iid'))
+      . (storeL %~ moveCampaignDeckIdentity iid "11068b" (Map.keys $ campaignDecks $ toAttrs a))
       . (storeL %~ \store ->
           let previous = Map.lookup (campaignDeckOverlayKey iid) store
               clean = Map.delete (campaignDeckOverlayKey "11068b") $ Map.delete (campaignDeckOverlayKey iid) store
@@ -170,6 +171,7 @@ defaultCampaignRunner msg a = case msg of
       $ updateAttrs a
       $ (decksL %~ Map.delete iid)
       . (storeL %~ Map.delete (campaignDeckOverlayKey iid))
+      . (storeL %~ Map.delete (campaignDeckIdentityKey iid))
       . (storyCardsL %~ Map.delete iid)
       . (modifiersL %~ Map.delete iid)
   UnretireInvestigator _ -> a <$ push (CampaignStep $ campaignStep $ toAttrs a)
@@ -432,7 +434,8 @@ defaultCampaignRunner msg a = case msg of
     pure a
   ReplaceInvestigator oldIid _ -> do
     pure $ updateAttrs a $
-      (decksL %~ deleteMap oldIid) . (storeL %~ Map.delete (campaignDeckOverlayKey oldIid))
+      (decksL %~ deleteMap oldIid) .
+      (storeL %~ Map.delete (campaignDeckOverlayKey oldIid) . Map.delete (campaignDeckIdentityKey oldIid))
   FinishedUpgradingDecks -> case campaignStep (toAttrs a) of
     ChooseDecksStep nextStep' -> do
       push $ CampaignStep nextStep'

@@ -568,6 +568,8 @@ paths:
         captured provenance and a local overlay returns validationFailed without
         changing the saved deck, rather than lose edits or apply an overlay twice.
         validationFailed is HTTP 400, not an upstream availability error.
+        Adoption uses the locked current saved row after remote I/O, just as
+        linked sync does; concurrent overlay edits are not replaced by a stale snapshot.
       requestBody:
         required: true
         content:
@@ -606,6 +608,10 @@ paths:
         If a preserved mapping is inaccessible (remote 403/404), it is removed
         and the public URL is used. Persistence requires the same account generation.
         Both paths return the same saved Deck entity shape. No write-back runs.
+        Linked adoption re-reads and locks the current saved row after remote
+        I/O. Overlay adoption, play-list validation and deck/link writes share
+        that transaction. The response is the actual persisted row. A changed
+        mapping target or newer sync markers reject the stale result rather than being overwritten.
         First adoption consumes an unchanged overlay only with provenance from
         the latest deck materialization. Direct deck-list upgrades do not apply
         saved overlays; those overlays survive, as do added/replaced overlays.

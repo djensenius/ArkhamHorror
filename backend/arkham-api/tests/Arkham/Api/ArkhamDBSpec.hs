@@ -16,7 +16,7 @@ import Arkham.Decklist (ArkhamDBDecklist (..))
 import Base.Api.Types.Capabilities qualified as Capabilities
 import Codec.Compression.GZip qualified as GZip
 import Control.Concurrent (threadDelay, modifyMVar, newEmptyMVar, newMVar, putMVar, takeMVar, tryPutMVar, withMVar)
-import Control.Exception (bracket, throwIO)
+import Control.Exception (bracket, throwIO, try)
 import Data.Aeson
 import Data.Aeson qualified as Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -106,7 +106,8 @@ handlerStore store = ArkhamDBStore
   , findDeckLinks = liftIO . store.findDeckLinks
   , findDeck = liftIO . store.findDeck
   , saveImportedDeck = \generation deck remoteDeck time -> liftIO $ store.saveImportedDeck generation deck remoteDeck time
-  , saveSyncedDeck = \generation key deck remoteDeck time -> liftIO $ store.saveSyncedDeck generation key deck remoteDeck time
+  , saveSyncedDeck = \generation key expected remoteDeck time adopt -> withRunInIO \run ->
+      store.saveSyncedDeck generation key expected remoteDeck time (run . adopt)
   , dropDeckLink = \generation uid key -> liftIO $ store.dropDeckLink generation uid key
   , validateDeck = liftIO . store.validateDeck
   }
@@ -246,12 +247,25 @@ newStore = do
             let key = ArkhamDeckKey $ UUID.fromWords 0 0 0 s.storedNextDeck
                 link = ArkhamDBDeckLink key (arkhamDeckUserId deck) remoteDeck.remoteDeckId remoteDeck.dateUpdate remoteDeck.deckVersion False Nothing Nothing time time
              in (s {storedNextDeck = s.storedNextDeck + 1, storedDecks = Map.insert key deck s.storedDecks, storedLinks = Map.insert key link s.storedLinks}, Just $ Entity key deck)
-      saveSyncedDeck generation key deck remoteDeck time = atomicModifyIORef' ref \s ->
-        if Map.lookup (arkhamDeckUserId deck) s.storedGenerations /= Just generation || Map.notMember key s.storedLinks then (s, False) else
-        (s
-          { storedDecks = Map.adjust (applySyncedDeckUpdates key deck) key s.storedDecks
-          , storedLinks = Map.adjust (\link -> link {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key s.storedLinks
-          }, True)
+      saveSyncedDeck generation key expected remoteDeck time adopt = withRefreshLock (arkhamDBDeckLinkUserId expected) \_ -> do
+        let uid = arkhamDBDeckLinkUserId expected
+        s <- readIORef ref
+        case (Map.lookup key s.storedDecks, Map.lookup key s.storedLinks) of
+          (Just current, Just link)
+            | Map.lookup uid s.storedGenerations == Just generation
+            , arkhamDeckUserId current == uid, arkhamDBDeckLinkUserId link == uid
+            , sameSyncedDeckLink expected link
+            , arkhamDBDeckLinkRemoteDeckId link == remoteDeck.remoteDeckId -> do
+                prepared <- adopt current
+                case prepared of
+                  Left err -> pure $ Left err
+                  Right updated -> atomicModifyIORef' ref \latest ->
+                    let persisted = applySyncedDeckUpdates key updated current
+                    in (latest
+                      { storedDecks = Map.insert key persisted latest.storedDecks
+                      , storedLinks = Map.adjust (\value -> value {arkhamDBDeckLinkLastSyncedDateUpdate = remoteDeck.dateUpdate, arkhamDBDeckLinkLastSyncedVersion = remoteDeck.deckVersion, arkhamDBDeckLinkUpdatedAt = time}) key latest.storedLinks
+                      }, Right $ Entity key persisted)
+          _ -> pure $ Left linkChanged
       dropDeckLink generation uid key = atomicModifyIORef' ref \s ->
         if Map.lookup uid s.storedGenerations /= Just generation then (s, False) else (s {storedLinks = Map.delete key s.storedLinks}, True)
       validateDeck _ = pure ()
@@ -302,6 +316,111 @@ paddedResponse size body = body <> BSL.replicate (fromIntegral size - BSL.length
 
 spec :: Spec
 spec = describe "ArkhamDB account linking and private decks" do
+  for_ [False, True] \viaImport ->
+    for_ [False, True] \pushed ->
+      for_ ["add", "replace", "remove" :: Text] \edit ->
+        it ("adopts the current row after an overlay edit during remote IO: " <> show (viaImport, pushed, edit)) do
+          (store, ref) <- newStore
+          linkAccount store
+          runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+          let old = DeckOverlay Nothing mempty (Map.singleton "01007" 1) mempty
+              newer = old {overlayAdd = Map.singleton "01008" 1}
+              initial = if edit == "add" then Nothing else Just old
+              edited = if edit == "remove" then Nothing else Just newer
+              incoming = if pushed
+                then withExportedOverlay (Just old) remote.deck
+                  {slots = Map.fromList [("01006", 1), ("01007", 1)], meta = Just "{\"ahn_push\":\"completed-push\"}"}
+                else remote.deck {slots = Map.singleton "01006" 1, meta = Nothing}
+          modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = initial}) deckId s.storedDecks}
+          loaded <- newEmptyMVar
+          release <- newEmptyMVar
+          validated <- newIORef Nothing
+          inWriter <- newIORef False
+          let checking = store
+                { validateDeck = \deck -> do
+                    readIORef inWriter `shouldReturn` True
+                    writeIORef validated $ Just deck
+                , saveSyncedDeck = \generation key uid value time adopt ->
+                    store.saveSyncedDeck generation key uid value time \current -> do
+                      writeIORef inWriter True
+                      result <- adopt current
+                      writeIORef inWriter False
+                      pure result
+                }
+              client = stubClient {loadDeck = \_ _ -> do
+                putMVar loaded ()
+                takeMVar release
+                pure $ Right remote {deck = incoming}}
+              action = if viaImport then importRemoteDeck checking client settings now userId "123" forbiddenPublic
+                else syncRemoteDeck checking client settings now userId deckId forbiddenPublic
+          withAsync (runExceptT action) \request -> do
+            timeout 2000000 (takeMVar loaded) `shouldReturn` Just ()
+            -- The transport still holds the account lock. Overlay PUT/DELETE
+            -- do not use it; their committed row edit precedes the sync save.
+            modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = edited}) deckId s.storedDecks}
+            putMVar release ()
+            result <- wait request >>= either (fail . show) pure
+            persisted <- Map.lookup deckId . storedDecks <$> readIORef ref >>= maybe (fail "Missing saved row") pure
+            arkhamDeckOverlay persisted `shouldBe` edited
+            toJSON (entityVal result) `shouldBe` toJSON persisted
+            readIORef validated `shouldReturn` Just (arkhamDeckPlayList persisted)
+            slots (arkhamDeckPlayList persisted) `shouldBe`
+              Map.unionWith (+) incoming.slots (maybe mempty overlayAdd edited)
+
+  it "validates the current-row overlay inside adoption before any saved-list or marker writes" do
+    (store, ref) <- newStore
+    linkAccount store
+    runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+    validated <- newIORef Nothing
+    let overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+        rejecting = store {validateDeck = \deck -> do
+          writeIORef validated $ Just deck
+          throwIO $ userError "current overlay validation failed"}
+        client = stubClient {loadDeck = \_ _ -> do
+          modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = Just overlay}) deckId s.storedDecks}
+          pure $ Right remote {deck = remote.deck {slots = Map.singleton "01006" 1}, dateUpdate = Just "new-marker"}}
+    -- Validation throws before the transactional writer mutates either row.
+    result <- try @SomeException $ runExceptT $ syncRemoteDeck rejecting client settings now userId deckId forbiddenPublic
+    case result of
+      Left err -> show err `shouldContain` "current overlay validation failed"
+      Right _ -> expectationFailure "Expected current-row validation failure"
+    fmap (fmap slots) (readIORef validated) `shouldReturn` Just (Map.fromList [("01006", 1), ("01008", 1)])
+    current <- readIORef ref
+    fmap (slots . arkhamDeckList) (Map.lookup deckId current.storedDecks) `shouldBe` Just remote.deck.slots
+    fmap arkhamDeckOverlay (Map.lookup deckId current.storedDecks) `shouldBe` Just (Just overlay)
+    fmap arkhamDBDeckLinkLastSyncedDateUpdate (Map.lookup deckId current.storedLinks) `shouldBe` Just remote.dateUpdate
+
+  for_ [False, True] \retarget ->
+    it ("refuses a stale remote result after newer mapping adoption: " <> show retarget) do
+      (store, ref) <- newStore
+      linkAccount store
+      runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+      let target = if retarget then "124" else "123"
+          client = stubClient {loadDeck = \_ _ -> do
+            modifyIORef' ref \s -> s
+              { storedLinks = Map.adjust (\link -> link
+                  {arkhamDBDeckLinkRemoteDeckId = target, arkhamDBDeckLinkLastSyncedDateUpdate = Just "adopted"}) deckId s.storedLinks
+              }
+            pure $ Right remote {dateUpdate = Just "stale"}}
+      runExceptT (syncRemoteDeck store client settings now userId deckId forbiddenPublic) >>= expectCode "notLinked"
+      state <- readIORef ref
+      fmap arkhamDBDeckLinkRemoteDeckId (Map.lookup deckId state.storedLinks) `shouldBe` Just target
+      fmap arkhamDBDeckLinkLastSyncedDateUpdate (Map.lookup deckId state.storedLinks) `shouldBe` Just (Just "adopted")
+
+  it "returns the actual field-assigned sync row, not unwritten callback fields" do
+    (store, ref) <- newStore
+    linkAccount store
+    runExceptT (importRemoteDeck store stubClient settings now userId "123" forbiddenPublic) >>= (`shouldSatisfy` isRight)
+    generation <- store.findAccountGeneration userId >>= maybe (fail "Missing generation") pure
+    expected <- Map.lookup deckId . storedLinks <$> readIORef ref >>= maybe (fail "Missing mapping") pure
+    saved <- store.saveSyncedDeck generation deckId expected remote now $
+      \current -> pure $ Right current {arkhamDeckName = "Updated", arkhamDeckLastUsedAt = Just now}
+    result <- either (fail . show) pure saved
+    persisted <- Map.lookup deckId . storedDecks <$> readIORef ref >>= maybe (fail "Missing saved row") pure
+    arkhamDeckName persisted `shouldBe` "Updated"
+    arkhamDeckLastUsedAt persisted `shouldBe` Nothing
+    toJSON (entityVal result) `shouldBe` toJSON persisted
+
   for_ ["/overlay-sync", "/overlay-import"] \path ->
     it ("returns actual HTTP 400 for ambiguous overlay adoption through " <> BS8.unpack path) do
       (store, ref) <- newStore
