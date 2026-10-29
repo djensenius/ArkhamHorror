@@ -57,6 +57,7 @@ import Data.Set qualified as Set
 import Data.Text qualified as T
 import Data.Time.Clock
 import Data.UUID qualified as UUID
+import Data.UUID.V4 qualified as UUID
 import Data.Traversable (for)
 import Database.Esqueleto.Experimental hiding (isNothing, (<&>))
 import Database.Persist qualified as Persist
@@ -192,7 +193,9 @@ postApiV1ArkhamDecksR = do
   -- The overlay may name cards only this user has, so the library has to be
   -- resolvable before the list is checked or stored.
   registerUserCustomCards userId
-  let deck = (fromPostData userId postData) {arkhamDeckOverlay = deckOverlay postData}
+  attachment <- liftIO UUID.nextRandom
+  let base = fromPostData userId postData
+      deck = maybe base (\overlay -> attachDeckOverlay attachment overlay base) $ deckOverlay postData
   case toDeckErrors (arkhamDeckPlayList deck) of
     [] -> runDB $ insertEntity deck
     err -> sendStatusJSON status400 err
@@ -401,6 +404,7 @@ fromPostData userId CreateDeckPost {..} = do
     , arkhamDeckName = deckName
     , arkhamDeckList = deckList
     , arkhamDeckOverlay = Nothing
+    , arkhamDeckOverlayAttachmentId = Nothing
     , arkhamDeckLastUsedAt = Nothing
     }
 
@@ -539,7 +543,10 @@ postApiV1ArkhamSyncDeckR deckId = do
           Left err -> pure $ Left err
           Right adopted -> do
             P.update deckId
-              [ArkhamDeckList P.=. arkhamDeckList adopted, ArkhamDeckOverlay P.=. arkhamDeckOverlay adopted]
+              [ ArkhamDeckList P.=. arkhamDeckList adopted
+              , ArkhamDeckOverlay P.=. arkhamDeckOverlay adopted
+              , ArkhamDeckOverlayAttachmentId P.=. arkhamDeckOverlayAttachmentId adopted
+              ]
             pure $ Right $ Entity deckId adopted
       either (\err -> sendStatusJSON (arkhamDBErrorStatus err) $ JSONError $ arkhamDBErrorMessage err) pure result
     Left _ -> sendStatusJSON Status.status400 (JSONError "Could not sync deck")
@@ -562,15 +569,17 @@ putApiV1ArkhamDeckOverlayR deckId = do
   deck <- ownedDeck deckId
   overlay <- requireCheckJsonBody
   registerUserCustomCards (arkhamDeckUserId deck)
-  let overlaid = deck {arkhamDeckOverlay = Just overlay}
+  attachment <- liftIO UUID.nextRandom
+  let overlaid = attachDeckOverlay attachment overlay deck
   case toDeckErrors (arkhamDeckPlayList overlaid) of
     [] -> do
-      runDB $ P.update deckId [ArkhamDeckOverlay P.=. Just overlay]
+      runDB $ P.update deckId
+        [ArkhamDeckOverlay P.=. Just overlay, ArkhamDeckOverlayAttachmentId P.=. Just attachment]
       pure $ Entity deckId overlaid
     err -> sendStatusJSON Status.status400 err
 
 deleteApiV1ArkhamDeckOverlayR :: ArkhamDeckId -> Handler (Entity ArkhamDeck)
 deleteApiV1ArkhamDeckOverlayR deckId = do
   deck <- ownedDeck deckId
-  runDB $ P.update deckId [ArkhamDeckOverlay P.=. Nothing]
-  pure $ Entity deckId $ deck {arkhamDeckOverlay = Nothing}
+  runDB $ P.update deckId [ArkhamDeckOverlay P.=. Nothing, ArkhamDeckOverlayAttachmentId P.=. Nothing]
+  pure $ Entity deckId $ deck {arkhamDeckOverlay = Nothing, arkhamDeckOverlayAttachmentId = Nothing}

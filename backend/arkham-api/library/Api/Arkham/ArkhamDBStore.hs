@@ -30,6 +30,15 @@ persistentStoreWith validate database = ArkhamDBStore
         , ArkhamDBPushStage P.==. arkhamDBPushStage job, ArkhamDBPushUpdatedAt P.==. arkhamDBPushUpdatedAt job
         ]
       pure $ arkhamDBPushStatus job == "running" && matching == 1
+  , renewPushClaim = \time (Entity key job) -> database do
+      let renewedAt = max time $ arkhamDBPushUpdatedAt job
+      affected <- if arkhamDBPushStatus job /= "running" then pure 0 else updateWhereCount
+        [ ArkhamDBPushId P.==. key, ArkhamDBPushStatus P.==. "running"
+        , ArkhamDBPushStage P.==. arkhamDBPushStage job, ArkhamDBPushUpdatedAt P.==. arkhamDBPushUpdatedAt job
+        , ArkhamDBPushGeneration P.==. arkhamDBPushGeneration job
+        ]
+        [ArkhamDBPushUpdatedAt P.=. renewedAt]
+      pure $ if affected == 1 then Just $ Entity key job {arkhamDBPushUpdatedAt = renewedAt} else Nothing
   , saveLinkState = \state -> database do
       lockArkhamDBUser $ arkhamDBLinkStateUserId state
       deleteWhere [ArkhamDBLinkStateExpiresAt P.<=. arkhamDBLinkStateCreatedAt state]

@@ -216,6 +216,7 @@ savedDeckUpgradeUpdates now deck incoming = do
   pure $
     [ ArkhamDeckList =. arkhamDeckList adopted
     , ArkhamDeckOverlay =. arkhamDeckOverlay adopted
+    , ArkhamDeckOverlayAttachmentId =. arkhamDeckOverlayAttachmentId adopted
     , ArkhamDeckLastUsedAt =. Just now
     ] <> [ArkhamDeckUrl =. incoming.url | isJust incoming.url]
 
@@ -286,6 +287,7 @@ keepRemoteDeckUpdates remote =
   , ArkhamDeckName =. fromMaybe remote.deck.investigator_name remote.deck.decklist_name
   , ArkhamDeckInvestigatorName =. remote.deck.investigator_name
   , ArkhamDeckOverlay =. Nothing
+  , ArkhamDeckOverlayAttachmentId =. Nothing
   ]
 
 -- Insert with a fresh primary key, but retain this boundary's position ahead
@@ -327,6 +329,7 @@ campaignCopyDeck deck remote = deck
   , arkhamDeckUrl = remote.deck.url
   -- The campaign snapshot already includes the overlay; never apply it twice.
   , arkhamDeckOverlay = Nothing
+  , arkhamDeckOverlayAttachmentId = Nothing
   }
 
 -- A save cannot subtract XP already credited to this remote lineage. Only an
@@ -418,14 +421,24 @@ samePushedDeck desired remote =
 -- A single durable job, with no network work in the game transaction. Errors
 -- become sanitized per-deck state; the caller never needs to fail a game answer.
 runWriteBack :: forall m. MonadIO m => ArkhamDBStore m -> ArkhamDBWriteBackStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> Bool -> UserId -> ArkhamDeckId -> m ()
-runWriteBack store writes client settings now retry userId deckId = do
+runWriteBack = runWriteBackWithClock $ liftIO getCurrentTime
+
+runWriteBackWithClock :: forall m. MonadIO m => m UTCTime -> ArkhamDBStore m -> ArkhamDBWriteBackStore m -> ArkhamDBClient m -> ArkhamDBSettings -> UTCTime -> Bool -> UserId -> ArkhamDeckId -> m ()
+runWriteBackWithClock clock store writes client settings now retry userId deckId = do
   claimed <- writes.claimPush now retry userId deckId
   for_ claimed \initial -> do
     latest <- newIORef initial
-    let checkpoint entity proposed = do
-          checkpointTime <- liftIO getCurrentTime
-          let updated = proposed {arkhamDBPushUpdatedAt = checkpointTime}
-          saved <- lift $ writes.checkpointPush entity updated
+    let currentClaim entity = do
+          current <- readIORef latest
+          unless (entityKey current == entityKey entity &&
+            arkhamDBPushStage (entityVal current) == arkhamDBPushStage (entityVal entity)) $
+              throwError linkChanged
+          pure current
+        checkpoint entity proposed = do
+          current <- currentClaim entity
+          checkpointTime <- lift clock
+          let updated = proposed {arkhamDBPushUpdatedAt = max checkpointTime $ arkhamDBPushUpdatedAt $ entityVal current}
+          saved <- lift $ writes.checkpointPush current updated
           unless saved $ throwError linkChanged
           let next = Entity (entityKey entity) updated
           writeIORef latest next
@@ -445,11 +458,19 @@ runWriteBack store writes client settings now retry userId deckId = do
           -- relink between the preflight and token read could write to a NEW
           -- account using an OLD deck intent. Checkpoints still commit outside
           -- this short per-request transaction so lost replies are recoverable.
-          current <- lift $ locked.ownsPushClaim $ Entity (entityKey initial) job
-          unless current $ throwError linkChanged
-          _ <- ensureGenerationUsing locked job
+          let renew = do
+                current <- currentClaim $ Entity (entityKey initial) job
+                _ <- ensureGenerationUsing locked $ entityVal current
+                time <- lift clock
+                renewed <- lift (locked.renewPushClaim time current) >>= maybe (throwError linkChanged) pure
+                writeIORef latest renewed
+          renew
           let requestStore = locked {withRefreshLock = \_ run -> run requestStore}
-          withAccessToken requestStore client settings now userId action
+          result <- lift $ runExceptT $ withAccessToken requestStore client settings now userId action
+          -- Even a single slow read/error must release the user lock with a
+          -- fresh lease. Use this same connection, never another pool borrower.
+          renew
+          either throwError pure result
         load job remoteId = request job (\token -> client.loadDeck token remoteId)
         conflict entity remote why = void $ checkpoint entity (entityVal entity)
           { arkhamDBPushStatus = "conflict"
@@ -556,15 +577,17 @@ runWriteBack store writes client settings now retry userId deckId = do
             , arkhamDBPushExpectedDateUpdate = Nothing, arkhamDBPushExpectedVersion = Nothing }
           saveVersion True created desired
         finish entity remote = do
-          _ <- ensureGeneration $ entityVal entity
-          saved <- lift $ writes.finishPush entity remote {deck = remoteDecklist settings remote}
+          current <- currentClaim entity
+          _ <- ensureGeneration $ entityVal current
+          saved <- lift $ writes.finishPush current remote {deck = remoteDecklist settings remote}
           when (isNothing saved) $ throwError linkChanged
         process entity = do
           let job = entityVal entity
           link <- ensureGeneration job
           if arkhamDBPushMode job == "keep" then do
             remote <- load job (arkhamDBDeckLinkRemoteDeckId link) >>= latestVersion job [arkhamDBDeckLinkRemoteDeckId link]
-            saved <- lift $ writes.keepRemoteDeck entity remote {deck = remoteDecklist settings remote}
+            current <- currentClaim entity
+            saved <- lift $ writes.keepRemoteDeck current remote {deck = remoteDecklist settings remote}
             unless saved $ throwError linkChanged
           else processDeck entity link
         processDeck entity link = do
@@ -630,4 +653,4 @@ runWriteBack store writes client settings now retry userId deckId = do
       Left err -> do
         current@(Entity _ job) <- readIORef latest
         void $ writes.checkpointPush current job {arkhamDBPushStatus = "failed", arkhamDBPushError = Just $ arkhamDBErrorCode err}
-      Right () -> runWriteBack store writes client settings now False userId deckId
+      Right () -> runWriteBackWithClock clock store writes client settings now False userId deckId

@@ -5,10 +5,11 @@ import Arkham.Custom.Overlay (DeckOverlay)
 import Arkham.Id (InvestigatorId (..))
 import Arkham.Message (Message (SetGlobal))
 import Arkham.Target (Target (CampaignTarget))
-import Data.Aeson (Value, toJSON, parseJSON)
+import Data.Aeson (Value, toJSON, parseJSON, object, (.=))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.Types (parseMaybe)
 import Data.Map.Strict qualified as Map
+import Data.UUID (UUID)
 import Relude
 
 campaignDeckOverlayKey :: InvestigatorId -> Text
@@ -17,6 +18,18 @@ campaignDeckOverlayKey iid = "ahn_overlay/" <> unCardCode (unInvestigatorId iid)
 recordCampaignDeckOverlay :: InvestigatorId -> Maybe DeckOverlay -> Message
 recordCampaignDeckOverlay iid overlay =
   SetGlobal CampaignTarget (Key.fromText $ campaignDeckOverlayKey iid) (toJSON overlay)
+
+-- Null proves no attachment was materialized. Legacy captures without an id
+-- remain distinguishable from a proven attachment; never upgrade them by value.
+overlayAttachmentProvenance :: Maybe UUID -> Maybe DeckOverlay -> Value
+overlayAttachmentProvenance attachment overlay = case (attachment, overlay) of
+  (Just key, Just value) -> object ["attachmentId" .= key, "overlay" .= value]
+  _ -> toJSON overlay
+
+recordCampaignDeckAttachment :: InvestigatorId -> Maybe UUID -> Maybe DeckOverlay -> Message
+recordCampaignDeckAttachment iid attachment overlay =
+  SetGlobal CampaignTarget (Key.fromText $ campaignDeckOverlayKey iid) $
+    overlayAttachmentProvenance attachment overlay
 
 campaignDeckIdentityKey :: InvestigatorId -> Text
 campaignDeckIdentityKey iid = "ahn_write_back_identity/" <> unCardCode (unInvestigatorId iid)

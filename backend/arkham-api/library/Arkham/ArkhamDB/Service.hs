@@ -4,11 +4,14 @@ import Arkham.ArkhamDB
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
 import Arkham.Custom.Overlay (DeckOverlay)
+import Arkham.ArkhamDB.Overlay (overlayAttachmentProvenance)
 import Control.Monad.Except
-import Data.Aeson (ToJSON (..), Value (..), decodeStrict', eitherDecodeStrict', encode, object, (.=))
+import Data.Aeson (ToJSON (..), Value (..), decodeStrict', eitherDecodeStrict', encode, object, parseJSON, (.=))
+import Data.Aeson.Types (parseMaybe)
 import Data.Aeson.KeyMap qualified as KM
 import Data.Text qualified as T
 import Data.Time.Clock (UTCTime, addUTCTime)
+import Data.UUID (UUID)
 import Database.Persist (Entity (..), Update, (=.))
 import Entity.Arkham.ArkhamDBAccount
 import Entity.Arkham.Deck
@@ -25,6 +28,9 @@ import Settings (ArkhamDBSettings (..))
 data ArkhamDBStore m = ArkhamDBStore
   { withRefreshLock :: forall a. UserId -> (ArkhamDBStore m -> m a) -> m a
   , ownsPushClaim :: Entity ArkhamDBPush -> m Bool
+  -- Called only through the connection-bound store under the request lock.
+  -- Exact CAS: an expired worker cannot renew a claim already reclaimed.
+  , renewPushClaim :: UTCTime -> Entity ArkhamDBPush -> m (Maybe (Entity ArkhamDBPush))
   , saveLinkState :: ArkhamDBLinkState -> m ()
   , claimLinkState :: UTCTime -> Text -> m (Maybe (Entity ArkhamDBLinkState))
   , findAccountGeneration :: UserId -> m (Maybe ArkhamDBAccountId)
@@ -209,7 +215,7 @@ importRemoteDeck store client settings now userId remoteId publicSync = do
       generation <- accountGeneration store userId
       remote <- withAccessToken store client settings now userId (\token -> client.loadDeck token remoteId)
       let decklist = remoteDecklist settings remote
-          deck = ArkhamDeck userId decklist.url (fromMaybe decklist.investigator_name decklist.decklist_name) decklist.investigator_name decklist Nothing Nothing
+          deck = ArkhamDeck userId decklist.url (fromMaybe decklist.investigator_name decklist.decklist_name) decklist.investigator_name decklist Nothing Nothing Nothing
       lift $ store.validateDeck $ arkhamDeckPlayList deck
       lift (store.saveImportedDeck generation deck remote now) >>= maybe (throwError linkChanged) pure
 
@@ -258,18 +264,36 @@ adoptDecklist :: ArkhamDeck -> ArkhamDBDecklist -> Either ArkhamDBError ArkhamDe
 adoptDecklist deck incoming = do
   let adopting = isJust (campaignPushMarker incoming) &&
         campaignPushMarker incoming /= campaignPushMarker (arkhamDeckList deck)
-  when (adopting && isJust (arkhamDeckOverlay deck) && isNothing (exportedOverlay incoming)) $
+      proof = exportedOverlay incoming
+      provenAttachment = case proof of
+        Just (Object value) -> case (KM.lookup "attachmentId" value, KM.lookup "overlay" value) of
+          (Just key, Just overlay) -> do
+            attachment <- parseMaybe parseJSON key :: Maybe UUID
+            parsed <- parseMaybe parseJSON overlay :: Maybe DeckOverlay
+            pure (attachment, parsed)
+          _ -> Nothing
+        _ -> Nothing
+      consumes = adopting && isJust (arkhamDeckOverlay deck) &&
+        maybe False (\(key, overlay) -> Just key == arkhamDeckOverlayAttachmentId deck &&
+          Just overlay == arkhamDeckOverlay deck) provenAttachment
+  when (adopting && isJust (arkhamDeckOverlay deck) && proof /= Just Null &&
+        (isNothing provenAttachment || isNothing (arkhamDeckOverlayAttachmentId deck) ||
+          maybe False (\(key, overlay) -> Just key == arkhamDeckOverlayAttachmentId deck &&
+            Just overlay /= arkhamDeckOverlay deck) provenAttachment)) $
     Left $ ArkhamDBError "validationFailed" "Campaign overlay provenance is unavailable; refusing ambiguous adoption"
   pure deck
     { arkhamDeckList = incoming
-    , arkhamDeckOverlay = if adopting && exportedOverlay incoming == (toJSON <$> arkhamDeckOverlay deck)
-        then Nothing else arkhamDeckOverlay deck
+    , arkhamDeckOverlay = if consumes then Nothing else arkhamDeckOverlay deck
+    , arkhamDeckOverlayAttachmentId = if consumes then Nothing else arkhamDeckOverlayAttachmentId deck
     }
 
 -- Internal ArkhamDB metadata records the exact overlay in the queued snapshot.
 -- Invalid metadata remains invalid so write-back validation still rejects it.
 withExportedOverlay :: Maybe DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
 withExportedOverlay overlay = withOverlayProvenance $ Just $ toJSON overlay
+
+withExportedAttachment :: Maybe UUID -> Maybe DeckOverlay -> ArkhamDBDecklist -> ArkhamDBDecklist
+withExportedAttachment attachment overlay = withOverlayProvenance $ Just $ overlayAttachmentProvenance attachment overlay
 
 withoutExportedOverlay :: ArkhamDBDecklist -> ArkhamDBDecklist
 withoutExportedOverlay = withOverlayProvenance Nothing
@@ -309,6 +333,7 @@ syncedDeckUpdates deck =
   , ArkhamDeckName =. arkhamDeckName deck
   , ArkhamDeckInvestigatorName =. arkhamDeckInvestigatorName deck
   , ArkhamDeckOverlay =. arkhamDeckOverlay deck
+  , ArkhamDeckOverlayAttachmentId =. arkhamDeckOverlayAttachmentId deck
   ]
 
 linkStatus :: Monad m => ArkhamDBStore m -> UserId -> ArkhamDBAction m ArkhamDBLinkStatusResponse

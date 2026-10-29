@@ -7,7 +7,7 @@ module Arkham.ArkhamDB.Campaign (
 import Arkham.Card (Card, CardCode, PlayerCard, onlyPlayerCards, toCardCode)
 import Arkham.ArkhamDB.Overlay
 import Arkham.Id (InvestigatorId)
-import Arkham.ArkhamDB.Service (withExportedOverlay, withoutExportedOverlay)
+import Arkham.ArkhamDB.Service (withOverlayProvenance, withoutExportedOverlay)
 import Arkham.Helpers.Deck (partitionReloadedDeck)
 import Arkham.Campaign.Types (campaignStep, campaignStore, campaignDecks)
 import Arkham.Classes.Entity (toAttrs)
@@ -97,6 +97,6 @@ campaignDeckSnapshot original cards story invalid _side taboo = original
 campaignWriteBackSnapshot :: Map Text Value -> InvestigatorId -> Decklist.ArkhamDBDecklist -> [PlayerCard] -> [Card] -> [CardCode] -> Maybe [PlayerCard] -> Maybe TabooList -> Decklist.ArkhamDBDecklist
 campaignWriteBackSnapshot store iid original cards story invalid side taboo =
   let snapshot = campaignDeckSnapshot original cards story invalid side taboo
-  in case Map.lookup (campaignDeckOverlayKey iid) store >>= parseMaybe parseJSON of
-    Just overlay -> withExportedOverlay overlay snapshot
+  in case Map.lookup (campaignDeckOverlayKey iid) store of
+    Just proof -> withOverlayProvenance (Just proof) snapshot
     Nothing -> withoutExportedOverlay snapshot

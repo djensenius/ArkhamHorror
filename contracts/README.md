@@ -1198,7 +1198,11 @@ backoff (60/120/240 seconds, capped at five minutes). A throttled explicit retry
 returns status without scheduling more workers. A crashed running claim has a
 sixty-second reclaim threshold. Every request checks the exact running claim
 under the same per-user transaction that selects the token and sends the request;
-a reclaimed or cancelled worker cannot transmit another mutation. Disabling cancels
+it renews the exact claim before and after each HTTP call on that same database
+connection, including long ownership/version/recovery traversals. Renewed claims
+are carried into later checkpoints and completion; a stale claim cannot renew
+after reclamation. No independent heartbeat or nested pool acquisition is used.
+A reclaimed or cancelled worker cannot transmit another mutation. Disabling cancels
 unstarted queued work and prevents subsequent requests; a remote request already
 in flight may finish. Already-created or uncertain creation intents are retained
 as `failed`/`writeBackDisabled`, not cancelled: after re-enabling, explicitly
@@ -1430,7 +1434,16 @@ also remain after campaign completion/deletion; use save-as-new for a different
 campaign. These lifecycle UX changes are not included here. Deck materialization
 records provenance in the existing campaign store
 (`ahn_overlay/<resolved-investigator>`). Saved-deck seating records the overlay
-actually applied, under the seated identity (including alternate fronts).
+actually applied and its private saved-deck attachment UUID, under the seated
+identity (including alternate fronts). Attachment UUIDs are omitted from public
+Deck JSON, rotated by each actual overlay PUT (even byte-identical JSON), and
+cleared together with the attachment on removal/consumption. Adoption/read-only
+sync never rotates them. Exported opaque metadata retains the captured identity:
+a later reattachment cannot be consumed by an older campaign materialization.
+Legacy value-only overlay provenance cannot prove attachment identity and
+ambiguous adoption is refused rather than clearing or double-applying it.
+Existing unidentified attachments must be attached again and materialized anew
+to establish proof; migration does not infer identity from their JSON.
 Whole-deck initialization or upgrade invalidates the previous proof; direct
 deck-list loading, upgrade and investigator replacement then record explicit null,
 because those paths do not apply the saved overlay. The boundary snapshot uses

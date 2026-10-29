@@ -100,6 +100,7 @@ handlerStore :: ArkhamDBStore IO -> ArkhamDBStore (Yesod.HandlerFor CallbackSite
 handlerStore store = ArkhamDBStore
   { withRefreshLock = \uid action -> withRunInIO \run -> withRefreshLock store uid (run . action . handlerStore)
   , ownsPushClaim = liftIO . store.ownsPushClaim
+  , renewPushClaim = \time entity -> liftIO $ store.renewPushClaim time entity
   , saveLinkState = liftIO . store.saveLinkState
   , claimLinkState = \time nonce -> liftIO $ store.claimLinkState time nonce
   , findAccountGeneration = liftIO . store.findAccountGeneration
@@ -202,6 +203,7 @@ newStore = do
             pure (Map.insert uid lock locks, lock)
         withMVar lock $ const $ action store
       ownsPushClaim = const $ pure False
+      renewPushClaim = \_ _ -> pure Nothing
       store = ArkhamDBStore {..}
       modify = modifyIORef' ref
       saveLinkState state = modify \s -> s {storedStates = Map.insert (arkhamDBLinkStateNonce state) (Entity (ArkhamDBLinkStateKey UUID.nil) state) s.storedStates}
@@ -334,7 +336,7 @@ spec = describe "ArkhamDB account linking and private decks" do
               initial = if edit == "add" then Nothing else Just old
               edited = if edit == "remove" then Nothing else Just newer
               incoming = if pushed
-                then withExportedOverlay (Just old) remote.deck
+                then withExportedAttachment (Just UUID.nil) (Just old) remote.deck
                   {slots = Map.fromList [("01006", 1), ("01007", 1)], meta = Just "{\"ahn_push\":\"completed-push\"}"}
                 else remote.deck {slots = Map.singleton "01006" 1, meta = Nothing}
           modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = initial}) deckId s.storedDecks}
@@ -363,7 +365,8 @@ spec = describe "ArkhamDB account linking and private decks" do
             timeout 2000000 (takeMVar loaded) `shouldReturn` Just ()
             -- The transport still holds the account lock. Overlay PUT/DELETE
             -- do not use it; their committed row edit precedes the sync save.
-            modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck {arkhamDeckOverlay = edited}) deckId s.storedDecks}
+            modifyIORef' ref \s -> s {storedDecks = Map.adjust (\deck -> deck
+              {arkhamDeckOverlay = edited, arkhamDeckOverlayAttachmentId = UUID.fromWords 0 0 0 1 <$ edited}) deckId s.storedDecks}
             putMVar release ()
             result <- wait request >>= either (fail . show) pure
             persisted <- Map.lookup deckId . storedDecks <$> readIORef ref >>= maybe (fail "Missing saved row") pure
@@ -1024,7 +1027,7 @@ spec = describe "ArkhamDB account linking and private decks" do
 
   it "retains public sync for a deck without an OAuth mapping" do
     (store, ref) <- newStore
-    let deck = ArkhamDeck userId (Just "https://arkhamdb.example/api/public/deck/123") "Public deck" "Roland Banks" remote.deck Nothing Nothing
+    let deck = ArkhamDeck userId (Just "https://arkhamdb.example/api/public/deck/123") "Public deck" "Roland Banks" remote.deck Nothing Nothing Nothing
     modifyIORef' ref \s -> s {storedDecks = Map.singleton deckId deck}
     called <- newIORef False
     let public key = do
