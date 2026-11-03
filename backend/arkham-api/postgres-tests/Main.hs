@@ -378,6 +378,41 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
               (fmap (show :: Entity ArkhamDBDeckLink -> String) <$> transaction writing (P.getBy $ UniqueArkhamDBDeckLinkDeck deckId))
                 `shouldReturn` fmap show expected
 
+  it "fences a delayed 404 after a remote-ID-only mapping retarget" $
+    withConnection harness \loading -> withConnection harness \writing -> do
+      now <- getCurrentTime
+      let label = "stale-remote-id-only-404"
+      uid <- seedUser loading label
+      encrypted <- encryptedAccount settings now uid $ tokens now
+      void $ seedAccount app loading now uid label encrypted
+      let initialClient = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+      Entity deckId _ <- either (fail . show) pure =<< runStoreActions app loading
+        (\store -> runExceptT $ importRemoteDeck store initialClient settings now uid "123" forbiddenPublic)
+      mapping <- transaction writing (P.getBy $ UniqueArkhamDBDeckLinkDeck deckId)
+        >>= maybe (fail "Expected imported mapping") pure
+      barrier <- newBarrier
+      let delayedClient = hoistArkhamDBClient liftIO $ transport
+            { loadDeck = \_ remoteId -> do
+                remoteId `shouldBe` "123"
+                pauseAt barrier
+                pure $ Left ArkhamDBNotFound
+            }
+          -- Only the remote deck ID changes: mapping id, user and sync
+          -- markers stay identical, isolating the remote-ID drop fence.
+          expected = Entity (entityKey mapping) (entityVal mapping) {arkhamDBDeckLinkRemoteDeckId = "456"}
+      withAsync
+        (runStoreActions app loading \store -> runExceptT $
+          syncRemoteDeck store delayedClient settings now uid deckId forbiddenPublic)
+        \syncing -> do
+          link syncing
+          awaitBarrier barrier
+          transaction writing $ P.update (entityKey mapping) [ArkhamDBDeckLinkRemoteDeckId P.=. "456"]
+          releaseBarrier barrier
+          result <- within "stale 404 completion" $ wait syncing
+          fmap (const ()) result `shouldBe` Left linkChanged
+      (fmap (show :: Entity ArkhamDBDeckLink -> String) <$> transaction writing (P.getBy $ UniqueArkhamDBDeckLinkDeck deckId))
+        `shouldReturn` Just (show expected)
+
   for_ [False, True] \public ->
     for_ [False, True] \syncFirst ->
       for_ ["add", "replace", "remove", "invalid"] \change ->

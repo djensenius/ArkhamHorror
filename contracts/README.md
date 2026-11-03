@@ -1148,7 +1148,8 @@ not purge the global backlog, deadline-bounded progress amid 200,000 active
 authorizations, and skipping a locked expired row until its transaction ends.
 Deck sync coverage drops an unchanged 404 mapping and falls back to the public
 URL exactly once, refuses a delayed 404 or sync result once a write-back has
-retargeted or re-marked the mapping or the mapping row was replaced, and
+retargeted or re-marked the mapping or the mapping row was replaced, refuses a
+delayed 404 after a retarget that changed only the remote deck ID, and
 serializes public and linked sync before and after an overlay add, replace,
 removal or invalid change on the locked deck row. Every actual overlay PUT, even
 a byte-identical one, gets a fresh private attachment identity that DELETE
