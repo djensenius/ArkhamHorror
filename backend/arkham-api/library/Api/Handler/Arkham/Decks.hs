@@ -391,7 +391,10 @@ putApiV1ArkhamGameDecksR gameId = do
                       fmap sequence $ for (sort targets) \deckId -> do
                         -- Overlay editing writes this row too. Read under its
                         -- lock so consumption cannot erase a concurrent edit.
-                        locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR UPDATE"
+                        -- NO KEY UPDATE (non-key columns only) still excludes
+                        -- overlay/sync and delete, but not another game's
+                        -- enqueue key-share fence (which would SKIP its push).
+                        locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR NO KEY UPDATE"
                           [toPersistValue deckId] :: DB [Entity ArkhamDeck]
                         pure $ case viaNonEmpty head locked of
                           Nothing -> Left $ ArkhamDBError "notFound" "Saved deck no longer exists"
@@ -619,6 +622,7 @@ deleteOwnedSavedDeck :: UserId -> ArkhamDeckId -> DB Bool
 deleteOwnedSavedDeck userId deckId = do
   -- Excludes enqueue's key-share fence until the usage check and DELETE
   -- commit together. A foreign/missing id remains a non-disclosing no-op.
+  -- Must stay FOR UPDATE: a DELETE is a key change, unlike lockDeck's writers.
   locked <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? AND user_id = ? FOR UPDATE"
     [toPersistValue deckId, toPersistValue userId] :: DB [Entity ArkhamDeck]
   if null locked then pure True else do
@@ -706,9 +710,13 @@ lockedOwnedDeck userId deckId = lockDeck deckId >>= \case
     requireDeckOwner userId deck
     pure deck
 
+-- NO KEY UPDATE: these writers only UPDATE non-key columns (the primary key is
+-- the table's only unique index). It still serializes them with each other,
+-- linked sync and delete, but not with gameplay enqueue's FOR KEY SHARE SKIP
+-- LOCKED fence, which would otherwise silently skip that deck's push.
 lockDeck :: ArkhamDeckId -> DB (Maybe ArkhamDeck)
 lockDeck deckId = do
-  rows <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR UPDATE"
+  rows <- rawSql "SELECT ?? FROM arkham_decks WHERE id = ? FOR NO KEY UPDATE"
     [toPersistValue deckId] :: DB [Entity ArkhamDeck]
   pure $ entityVal <$> viaNonEmpty head rows
 

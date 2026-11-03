@@ -40,6 +40,19 @@ protectedPaths =
   , "/api/v1/arkham/ArkhamDB/link/complete"
   , "/api/v1/arkham/arkhamdb%2Fcallback"
   , "/api/v1/arkham%2Farkhamdb/link/complete"
+  , "/api//v1/arkham/arkhamdb"
+  , "//api/v1/arkham/arkhamdb"
+  , "/api/v1/arkham/arkhamdb//callback"
+  , "/api/v1//arkham/arkhamdb/callback"
+  , "//api/v1/arkham/arkhamdb/callback"
+  , "/api/v1/arkham/arkhamdb/link//complete"
+  , "/api/v1/arkham//arkhamdb/link/complete"
+  , "//api/v1/arkham/arkhamdb/link/complete"
+  , "/api%2F%2Fv1/arkham/arkhamdb"
+  , "/api/v1/arkham/arkhamdb%2F%2Fcallback"
+  , "/api/v1%2F%2Farkham/arkhamdb/callback"
+  , "/api/v1/arkham/arkhamdb/link%2F%2Fcomplete"
+  , "/api/v1/arkham%2F%2Farkhamdb/link/complete"
   -- arkham.build: the login callback (code and state ride in the query that
   -- captureLog appends), then the authorize and verify bodies.
   , "/api/auth/arkham-build/callback"
@@ -52,11 +65,15 @@ protectedPaths =
   , "/api/auth%2Farkham-build/callback"
   ]
 
+-- Empty segments must not suppress logging of ordinary routes.
 ordinaryPaths :: [ByteString]
 ordinaryPaths =
   [ "/api/v1/arkham/arkhamdb-other"
   , "/api/v1/arkham/arkhamdb2"
   , "/api/v1/arkham/decks"
+  , "/api//v1/arkham/decks"
+  , "//api/v1/arkham/decks"
+  , "/api/v1/arkham//arkhamdb-other"
   , "/api/auth/arkham-build-other/callback"
   , "/api/v1/arkham-builder/verify"
   , "/api/v1/site-settings"
