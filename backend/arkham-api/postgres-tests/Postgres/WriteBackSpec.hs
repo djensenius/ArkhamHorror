@@ -9,7 +9,7 @@ module Postgres.WriteBackSpec (spec, Seed, Fixture (..), fixture, queue, seedCam
 import Api.Arkham.ArkhamDBStore (loadCampaignIdentities)
 import Api.Arkham.ArkhamDBWriteBack
 import Api.Arkham.Types.MultiplayerVariant (MultiplayerVariant (Solo))
-import Api.Handler.Arkham.Decks (deleteOwnedSavedDeck)
+import Api.Handler.Arkham.Decks (deleteOwnedSavedDeck, saveDeckOverlay)
 import Arkham.ArkhamDB (ArkhamDBRemoteDeck (..))
 import Arkham.ArkhamDB qualified as ArkhamDB
 import Arkham.ArkhamDB.Campaign (CampaignGameIdentity (..), campaignAdmissionAllowed)
@@ -22,6 +22,7 @@ import Arkham.Card (Card (PlayerCard))
 import Arkham.Card.Id (unsafeMakeCardId)
 import Arkham.Card.PlayerCard (PlayerCard (..))
 import Arkham.Classes.Entity (overAttrs)
+import Arkham.Custom.Overlay (DeckOverlay (..))
 import Control.Exception (throwIO)
 import Arkham.Decklist (ArkhamDBDecklist (..))
 import Arkham.Difficulty (Difficulty (Easy))
@@ -276,6 +277,45 @@ spec harness app remote seed relinkImport = describe "Production write-back queu
           copied <- within "busy copy commit" (wait finishing) >>= maybe (fail "Expected copy") pure
           pendingAt second f.deckId `shouldReturn` 0
           pendingAt second copied `shouldReturn` 0
+
+  it "saves an overlay without waiting on an in-flight enqueue's deck key-share fence" $
+    withConnection harness \first -> withConnection harness \second -> withConnection harness \observer -> do
+      f <- fixture seed app first "overlay-behind-enqueue"
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+      barrier <- newBarrier
+      -- Pause after the real enqueue has taken (and still holds) FOR KEY SHARE.
+      withAsync (transaction first do
+        queueCampaignWriteBack f.gameId 1 f.now "scenarioEnd" f.game
+        liftIO $ pauseAt barrier) \enqueuing -> do
+          link enqueuing
+          awaitBarrier barrier
+          saved <- within "overlay save beside paused enqueue" $
+            unsafeHandler app $ runSqlConn (saveDeckOverlay f.uid f.deckId $ Just overlay) second
+          arkhamDeckOverlay (P.entityVal saved) `shouldBe` Just overlay
+          releaseBarrier barrier
+          within "enqueue commit" $ wait enqueuing
+      pendingAt observer f.deckId `shouldReturn` 1
+      transaction observer (arkhamDeckOverlay <$> P.getJust f.deckId) `shouldReturn` Just overlay
+
+  it "enqueues a game answer's push while an overlay save holds its deck lock" $
+    withConnection harness \first -> withConnection harness \second -> withConnection harness \observer -> do
+      f <- fixture seed app first "enqueue-behind-overlay"
+      let overlay = DeckOverlay Nothing mempty (Map.singleton "01008" 1) mempty
+      barrier <- newBarrier
+      withAsync (unsafeHandler app $ runSqlConn (do
+        saved <- saveDeckOverlay f.uid f.deckId $ Just overlay
+        liftIO $ pauseAt barrier
+        pure saved) first) \overlaying -> do
+          link overlaying
+          awaitBarrier barrier
+          -- SKIP LOCKED never waits: a conflicting deck lock would show up as
+          -- a missing push row, not as a timeout.
+          within "enqueue beside paused overlay" $ queue f second 1
+          pendingAt observer f.deckId `shouldReturn` 1
+          releaseBarrier barrier
+          void $ within "overlay commit" $ wait overlaying
+      pendingAt observer f.deckId `shouldReturn` 1
+      transaction observer (arkhamDeckOverlay <$> P.getJust f.deckId) `shouldReturn` Just overlay
 
   it "guards unresolved creation even without a campaign association" $
     withConnection harness \connection -> do

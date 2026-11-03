@@ -1150,7 +1150,9 @@ Deck sync coverage drops an unchanged 404 mapping and falls back to the public
 URL exactly once, refuses a delayed 404 or sync result once a write-back has
 retargeted or re-marked the mapping or the mapping row was replaced, and
 serializes public and linked sync before and after an overlay add, replace,
-removal or invalid change on the locked deck row. Every actual overlay PUT, even
+removal or invalid change on the deck row they lock FOR NO KEY UPDATE, which
+neither waits on nor hides a game answer's enqueue holding FOR KEY SHARE on that
+deck (the delete check alone locks FOR UPDATE). Every actual overlay PUT, even
 a byte-identical one, gets a fresh private attachment identity that DELETE
 clears and a later provenance-free sync keeps; incorporated overlay provenance
 is consumed through actual public and linked sync; and overlay removal that
