@@ -12,6 +12,8 @@ const props = withDefaults(defineProps<{
   clickThroughChrome?: boolean
   preserveWidth?: boolean
   preservePosition?: boolean
+  flush?: boolean
+  width?: string
 }>(), { avoidPadding: 8, clickThroughChrome: false })
 
 const id = useId()
@@ -317,7 +319,9 @@ function minimize() {
     return
   }
 
-  document.startViewTransition(() => doMinimize())
+  const transition = document.startViewTransition(() => doMinimize())
+  void transition.ready.catch(() => {})
+  void transition.finished.catch(() => {})
 }
 
 onMounted(async () => {
@@ -379,11 +383,13 @@ function moveUp() {
   <div
     @pointerdown="moveUp"
     class="draggable"
-    :class="{ 'inline-modal': inlineModals, 'click-through-chrome': props.clickThroughChrome, 'position-stable': props.preservePosition }"
+    :class="{ 'inline-modal': inlineModals, 'click-through-chrome': props.clickThroughChrome, 'position-stable': props.preservePosition, 'flush-content': props.flush }"
     ref="draggable"
     :id="id"
     :style="{
       'view-transition-name': id,
+      width: isMinimized ? 'fit-content' : props.width,
+      maxWidth: props.width ? '100%' : undefined,
       boxSizing: props.preserveWidth ? 'border-box' : undefined,
       minWidth: props.preserveWidth && !isMinimized && widestWidth > 0 ? `min(${widestWidth}px, calc(100vw - 32px))` : undefined,
     }"
@@ -409,8 +415,15 @@ function moveUp() {
 </template>
 
 <style scoped>
+.draggable.flush-content > .content { margin: 0; }
+
 .draggable {
   position: absolute;
+  /* Paired with the ::view-transition-group(.modal-window) rule in base.css: a
+     window already carries a view-transition-name for its own minimize, which
+     makes it a group in every other transition too, and groups ignore z-index
+     unless one is given. */
+  view-transition-class: modal-window;
   background: rgba(94, 123, 115, 0.5);
   border-radius: 16px;
   box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
@@ -473,6 +486,11 @@ function moveUp() {
         pointer-events: auto;
       }
     }
+  }
+
+  &:has(.card-picker) {
+    width: min(900px, 92vw);
+    max-width: 92vw;
   }
 
   &:has(> .content > .settings),

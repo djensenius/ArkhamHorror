@@ -5,6 +5,7 @@ module Arkham.Effect.Window (module Arkham.Effect.Window) where
 import Arkham.Ability.Types
 import Arkham.Card.Id
 import Arkham.Id
+import Arkham.Matcher.Card
 import Arkham.Matcher.SkillTest
 import Arkham.Phase
 import Arkham.Prelude
@@ -22,6 +23,14 @@ data EffectWindow
   | EffectSkillTestWindow SkillTestId
   | EffectSkillTestMatchingWindow SkillTestMatcher
   | EffectNextSkillTestWindow InvestigatorId
+  | {- | The next card this investigator actually plays that matches, and that
+    card alone. It emits while it waits -- so the card looks as cheap as it will
+    be when paid for -- and the moment a play begins it re-points to that card's
+    own cost window, which is what stops it reaching the card after. In a
+    'FirstEffectWindow' beside 'EffectRoundWindow' it is "the next event you
+    play this round".
+    -}
+    EffectNextCardPlayedWindow InvestigatorId CardMatcher
   | EffectRoundWindow
   | {- | Lasts through the rest of this round and all of the next; at the end of
     this round it becomes an ordinary 'EffectRoundWindow'.
@@ -51,6 +60,12 @@ data EffectWindow
   | EffectTurnWindow InvestigatorId
   | EffectEndOfNextTurnWindow InvestigatorId
   | EffectNextTurnWindow InvestigatorId
+  | {- | The next encounter card this investigator draws, and that draw alone.
+    The seam for "the next time X draws an encounter card, ..." -- a one-shot
+    that has to outlive the card that scheduled it, which an ability cannot do
+    once its own card is discarded (/Time's Ebb/).
+    -}
+    EffectNextEncounterDrawWindow InvestigatorId
   | EffectCardResolutionWindow CardId
   | {- | Lasts until that card reaches a discard pile. A card that accumulates
     something about itself while it is stuck in hand -- a cost reduction that

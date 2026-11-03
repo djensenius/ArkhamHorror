@@ -30,6 +30,7 @@ import Api.Arkham.Export
 import Api.Arkham.Helpers
 import Api.Arkham.Types.Game (ClaimSeatPost (..))
 import Api.Arkham.Types.MultiplayerVariant
+import Api.Handler.Arkham.CustomCards (forRendering, setPayloadEtag, userCustomCards)
 import Api.Handler.Arkham.Games.Shared (withGameAccess)
 import Arkham.Card.CardCode
 import Arkham.Card.CardDef (cdCardCode)
@@ -45,6 +46,7 @@ import Arkham.Replay.ServerBuildIdentity (serverBuildIdentity)
 import Codec.Compression.GZip qualified as GZip
 import Conduit
 import Control.Exception (SomeAsyncException, evaluate)
+import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Patch qualified as Patch
@@ -59,7 +61,6 @@ import Data.Time.Clock
 import Data.UUID qualified as UUID
 import Database.Esqueleto.Experimental hiding (update)
 import Database.Persist qualified as Persist
-import Entity.Arkham.CustomCard
 import Entity.Arkham.Player
 import Entity.Arkham.ReplayAttestation
 import Entity.Arkham.Step
@@ -112,16 +113,25 @@ decompressReplayImport maximumBytes bytes
                 <> "-byte limit"
           else Right decompressed
 
+-- Both halves report what actually went wrong: the import UI shows the string
+-- straight to the player, and "this export is from a newer engine" and "this
+-- file is not an export at all" are not the same problem.
 decodeExportBytes
   :: BS.ByteString
   -> Handler (Either String (ArkhamExport, Maybe ReplayImportAuthority))
 decodeExportBytes bytes
+  | BS.null bytes = pure $ Left "The uploaded file was empty."
   | isGzipped bytes = do
       eDecompressed <-
         liftIO $
           decompressReplayImport maximumDecompressedReplayImportBytes bytes
-      pure $ eDecompressed >>= decodeReplayImport serverBuildIdentity
-  | otherwise = pure $ decodeReplayImport serverBuildIdentity bytes
+      pure $
+        first ("The compressed export could not be unpacked: " <>) eDecompressed
+          >>= describeDecode . decodeReplayImport serverBuildIdentity
+  | otherwise = pure $ describeDecode $ decodeReplayImport serverBuildIdentity bytes
+ where
+  describeDecode =
+    first ("The export does not match what this version of the game can read: " <>)
 
 -- Compress each emitted JSON chunk as its own gzip member. Gzip readers are
 -- required to handle concatenated members, and this guarantees we keep sending
@@ -489,7 +499,7 @@ postApiV1ArkhamGamesImportR = do
             pure checkpointPlayerId
           pure (selectedInvestigator, checkpointPlayerId)
       (importedGame, importReceipt) <- runDB $ do
-        gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now
+        gameId <- insert $ ArkhamGame agedName agedCurrentData agedStep variant now now False
         (playerRemappings, replayPlayerIds) <- case variant of
           Solo -> do
             newPlayerIds <-
@@ -709,16 +719,39 @@ postApiV1ArkhamGameClaimSeatR gameId = do
 Served on its own rather than folded into the game payload: a custom card
 carries its art inline (a data URI for a dropped image), which has no business
 riding every websocket update.
+
+Read through @gameCustomCards@ rather than by loading the game. @current_data@
+decodes to a whole 'Arkham.Game.Game' -- every location, asset and card, 97kB of
+JSON and several times that for a late campaign -- and this wants one key of it,
+which Postgres can hand over on its own.
+
+Stripped to 'forRendering', because the script on a custom card is read by the
+engine out of the library and by the card builder out of its own request, and by
+nothing here. 'setPayloadEtag' then lets a reader that already has these cards
+be told so, which is what makes moving between pages free rather than another
+copy of the table's whole card set.
 -}
 getApiV1ArkhamGameCustomCardsR :: ArkhamGameId -> Handler [CustomCard]
 getApiV1ArkhamGameCustomCardsR gameId = do
   userId <- getRequestUserId
-  ge <- runDB $ get404 gameId
-  rows <- runDB $ Persist.selectList [ArkhamCustomCardUserId Persist.==. userId] []
+  recorded <- runDB do
+    rows :: [Single Aeson.Value] <-
+      rawSql
+        "SELECT COALESCE(current_data -> 'gameCustomCards', '{}'::jsonb) FROM arkham_games WHERE id = ?"
+        [toPersistValue gameId]
+    case rows of
+      [] -> notFound
+      Single raw : _ -> pure $ fromMaybe mempty $ parseMaybe parseJSON raw
   -- Your own library wins over the copy recorded on the game, so editing a card
   -- shows through at the table without having to re-add it.
-  let library = Map.fromList do
-        Entity _ row <- rows
-        def <- maybeToList $ parseMaybe parseJSON (arkhamCustomCardDef row)
-        pure (cdCardCode def, CustomCard def (arkhamCustomCardArt row))
-  pure $ toList $ library <> gameCustomCards ge.currentData
+  library <- userCustomCards userId
+  {- Re-keyed by each card's own code before being listed, because the library is
+  keyed by every code a card answers to -- its own and the arkham.build aliases
+  'userCustomCards' adds underneath -- and listing it as it stands would send an
+  aliased card once per alias. The reader derives the aliases again from the def
+  it is given, so they were never worth the bytes. -}
+  let
+    deduped = Map.fromList [(cdCardCode (customCardDef c), c) | c <- toList (library <> recorded)]
+    payload = map forRendering (toList deduped)
+  setPayloadEtag payload
+  pure payload

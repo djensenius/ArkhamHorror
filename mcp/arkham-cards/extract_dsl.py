@@ -62,6 +62,15 @@ def shown(path: Path) -> str:
         return str(path.relative_to(ROOT))
     except ValueError:
         return str(path)
+# The words the app already has, which a card may ask for by name instead of
+# writing its own. Read from the frontend when it is there -- it is not, in the
+# image this server ships in, which is why the list is written into dsl.json.
+SHARED_TEXT = ROOT / "frontend/src/locales/en/label.json"
+# `en.ts` assembles the namespace as `{ ...label, cards: cards.label }`, so a
+# card's own prompts are reachable as `label.cards.<card>.<key>` and belong in
+# the same list.
+SHARED_TEXT_CARDS = ROOT / "frontend/src/locales/en/cards.json"
+
 STEPS = ARKHAM / "Custom/Steps.hs"
 EXPR = ARKHAM / "Custom/Expr.hs"
 ABILITY = ARKHAM / "Custom/Ability.hs"
@@ -101,6 +110,7 @@ GENERIC = {"specObject", "subSteps", "runSteps", "reportBadPayload", "stepInvest
 EXPRESSION_LAYER = {
     "evalExpr", "exprInt", "runQuery", "runQueryStep", "substituteExpr", "valueList",
     "getProp", "entityProp", "applyFn", "paymentFn", "cardProp", "skillTestProp",
+    "targetProp",
     "jsonField", "matches", "evalPredicate", "fetchCardOf", "asCard", "pickRandomly",
 }
 
@@ -113,6 +123,7 @@ VALUE_SHAPED = {
     "cancelBatch": "`true`; cancels the batch on the window in $window",
     "query": "an object with `kind` and `matcher`, plus `mode` and `bind` beside it in the step",
     "let": "the name to bind, as a string, with `be` holding the expression",
+    "call": "the `$name` a repeat was called as; runs one more of its passes",
 }
 
 # What a step whose payload is `{kind, matcher}` also takes in the step object.
@@ -189,7 +200,12 @@ def lookups(block: str) -> dict[str, list[str]]:
         elif text_key is not None:
             source, key = text_obj, text_key
         else:
+            # `bindingName r "repeat"` reads "bind" off that same object and
+            # falls back to the name given, so both are keys of it.
             source, key = bind_obj, bind_key
+            found.setdefault(source, [])
+            if "bind" not in found[source]:
+                found[source].append("bind")
         found.setdefault(source, [])
         if key not in found[source]:
             found[source].append(key)
@@ -351,6 +367,38 @@ def array_tolerant_decoders() -> list[str]:
     return tolerant
 
 
+def shared_text() -> dict[str, list[str]]:
+    """Every `label.*` key a card can name, and what each one leaves blank.
+
+    A custom card writing `$label.addToHand name=s:"X"` is asking for a sentence
+    the app already has in every language it has been translated into. The
+    checker needs the list to say when one is misspelt, and the blanks to say
+    when one is left unfilled.
+    """
+    if not SHARED_TEXT.exists():
+        return {}
+    import json as _json
+
+    flat: dict[str, list[str]] = {}
+
+    def walk(value, prefix: str) -> None:
+        if isinstance(value, str):
+            # vue-i18n's literal brace -- `{'{'}` -- is an escaped character,
+            # not something to fill in.
+            blanks = re.findall(r"(?<!')\{([A-Za-z_][A-Za-z0-9_]*)\}", value)
+            flat[prefix] = list(dict.fromkeys(blanks))
+        elif isinstance(value, dict):
+            for key, inner in value.items():
+                walk(inner, f"{prefix}.{key}" if prefix else key)
+
+    walk(_json.loads(SHARED_TEXT.read_text()), "label")
+    if SHARED_TEXT_CARDS.exists():
+        cards = _json.loads(SHARED_TEXT_CARDS.read_text()).get("label")
+        if cards:
+            walk(cards, "label.cards")
+    return flat
+
+
 def meta_keys() -> dict[str, dict[str, str]]:
     """The `_`-prefixed meta keys the engine reads, and what each one holds.
 
@@ -367,8 +415,16 @@ def meta_keys() -> dict[str, dict[str, str]]:
         text = path.read_text(errors="replace")
         where = str(path.relative_to(ARKHAM.parent.parent.parent))
         for key in dedup(re.findall(r'"(_[a-zA-Z]+)"', text)):
+            # Any of the runners that take a meta key and run what is under it
+            # as steps. Named one by one rather than matched loosely, because a
+            # runner left off this list quietly stops the checker looking at
+            # that key at all -- which is how `_onPlay` went unchecked the
+            # moment its call site gained a variant that passes extra bindings.
             runs_steps = bool(
-                re.search(rf'(?:runCustomSteps|customSteps)\b[^\n]*"{re.escape(key)}"', text)
+                re.search(
+                    rf'(?:runCustomSteps|runCustomStepsIn|customSteps)\b[^\n]*"{re.escape(key)}"',
+                    text,
+                )
             )
             entry = found.setdefault(key, {"holds": "", "readIn": where})
             if runs_steps:
@@ -385,6 +441,16 @@ def meta_keys() -> dict[str, dict[str, str]]:
         found.setdefault(key, {"holds": holds, "readIn": "library/Arkham/Custom/Ability.hs"})
         if not found[key]["holds"]:
             found[key]["holds"] = holds
+    # Read by the client rather than the engine, which is why no Haskell
+    # mentions them. A card carries its own text because a game is played by
+    # people who may not own the set it came from.
+    found.setdefault(
+        "_locale",
+        {
+            "holds": "what this card's own `$.name` labels say, by language",
+            "readIn": "frontend/src/arkham/customText.ts",
+        },
+    )
     for key, entry in found.items():
         if not entry["holds"]:
             entry["holds"] = "card data, not steps"
@@ -427,6 +493,62 @@ def hand_written_decoders() -> dict[str, dict[str, list[str]]]:
                 "optional": [k for k in optional if k not in required],
             }
     return decoders
+
+
+#: Where the editor keeps its own list of the steps it can show.
+# Where a type keeps a decoder written by hand beside the derived one, so a
+# constructor that gained a field still reads the older, shorter form.
+COMPAT_SOURCES = [
+    ARKHAM / "Message.hs",
+    ARKHAM / "ScenarioLogKey.hs",
+    *sorted((ARKHAM / "Matcher").glob("*.hs")),
+    *sorted((ARKHAM / "Message").glob("*.hs")),
+]
+
+# `Left (a, b, c) -> pure $ Con a b c AnySource` -- the tuple is what the older
+# form carried, and the constructor is what it is read as.
+COMPAT = re.compile(r"Left\s*\(([^()]*)\)\s*->\s*(?:\n\s*)?(?:pure\s*\$\s*)?([A-Z]\w*)")
+
+
+def legacy_arities() -> dict[str, list[int]]:
+    """The shorter shapes the engine still reads, by constructor.
+
+    A def written before a constructor gained a field is not wrong -- the engine
+    decodes it -- so the arity check has to know the same thing the decoder does,
+    or every card holding one is reported as broken.
+    """
+    out: dict[str, set[int]] = {}
+    for path in COMPAT_SOURCES:
+        if not path.exists():
+            continue
+        for fields, con in COMPAT.findall(path.read_text()):
+            count = len([f for f in fields.split(",") if f.strip()])
+            if count:
+                out.setdefault(con, set()).add(count)
+    return {con: sorted(counts) for con, counts in sorted(out.items())}
+
+
+EDITOR = ROOT / "frontend/src/arkham/components/debug/StepsEditor.vue"
+
+
+def editor_gap(steps: list[dict]) -> list[str]:
+    """Steps the engine runs that the card builder has no editor for.
+
+    The editor keeps its own `StepKind` union and falls back to the Push editor
+    for anything not in it -- so a step it has not learned shows as an empty
+    message, and saving that card writes the emptiness back. Four steps had
+    drifted out of it before this check existed.
+    """
+    if not EDITOR.exists():
+        return []
+    src = EDITOR.read_text()
+    shown = set(re.findall(r"kindOf\(step\) === '([a-zA-Z]+)'", src))
+    shown |= {
+        kind
+        for group in re.findall(r"\[([^\]]*)\]\.includes\(kindOf\(step\)\)", src)
+        for kind in re.findall(r"'([a-zA-Z]+)'", group)
+    }
+    return [s["step"] for s in steps if s["step"] not in shown]
 
 
 def main() -> int:
@@ -499,6 +621,15 @@ def main() -> int:
         # `runRequest`, which only sends the message.
         if key == "request":
             payload_keys = dedup(payload_keys + ["on", "steps"])
+        # As `request`: a deferred search's branches are read by `resumeSearch`
+        # when the found cards come back, not by `runSearch` which asks.
+        if key == "search":
+            payload_keys = dedup(payload_keys + ["bind"])
+        # An outcome's margin. `runOutcomes` only chooses between one rider and
+        # a list of them; `by` is read a level deeper, in `runOutcome`, which is
+        # past where the chain is followed.
+        if key in ("fight", "investigate", "evade", "parley", "test", "withSkillTest"):
+            payload_keys = dedup(payload_keys + ["by"])
 
         read = lookups("\n".join([step_block, payload_block]))
         steps.append(
@@ -542,6 +673,13 @@ def main() -> int:
             + re.findall(r'prop\s*==\s*"([^"]+)"', expr_blocks.get("getProp", ""))
         ),
         "skillTestProperties": string_cases(expr_blocks.get("skillTestProp", "")),
+        "legacyArities": legacy_arities(),
+        # A target answers `keywords` itself and every card reading through its
+        # card, so the list is both arms rather than the cases written there.
+        "targetProperties": dedup(
+            string_cases(expr_blocks.get("targetProp", ""))
+            + string_cases(expr_blocks.get("cardProp", ""))
+        ),
         "transforms": dedup(
             string_cases(expr_blocks.get("applyFn", "")) + string_cases(expr_blocks.get("paymentFn", ""))
         ),
@@ -579,14 +717,25 @@ def main() -> int:
         "vocabulary": vocabulary,
         "handWrittenDecoders": hand_written_decoders(),
         "metaKeys": meta_keys(),
+        "sharedText": shared_text(),
         "arrayTolerantDecoders": array_tolerant_decoders(),
         "entityBindings": entity_bindings(),
         "specs": {
-            "_abilities": ["type", "criteria", "limit", "tooltip", "zone", "steps", "effect"],
+            "_abilities": [
+                "type", "criteria", "limit", "tooltip", "zone", "steps", "effect",
+                "noAttacksOfOpportunity",
+            ],
             "_handlers": ["on", "requires", "global", "steps"],
             "_modifiers": [
                 "kind", "matcher", "modifiers", "if", "each", "eachBind", "let", "requires",
             ],
+            # A keyword the card's set declares, and what this card fills its
+            # slots with. Only the four keys below are fixed: the rest are whatever
+            # slots that keyword declared, so what a card is asked for is the
+            # keyword's business and cannot be listed here. `modifiers` and
+            # `abilities` are the card's own half of the result, gated by the
+            # keyword's `activeWhen` rather than substituted into its templates.
+            "_keywords": ["keyword", "token", "modifiers", "abilities", "…the keyword's slots"],
             "_revelationPlacementValues": vocabulary["revelationPlacements"],
         },
     }
@@ -597,6 +746,13 @@ def main() -> int:
         f"{target.name}: {len(steps)} steps, {len(operators)} expression operators, "
         f"{sum(len(v) for v in vocabulary.values())} vocabulary entries"
     )
+    missing = editor_gap(steps)
+    if missing:
+        print(
+            f"warning: no editor in the card builder for {', '.join(missing)} -- "
+            "they will render as an empty Push and saving will drop them",
+            file=sys.stderr,
+        )
     return 0
 
 

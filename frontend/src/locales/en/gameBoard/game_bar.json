@@ -2,6 +2,13 @@
     "closeLog": "Close Log",
     "viewLog": "View Log",
 
+    "campaign": "Campaign",
+    "viewRemovedFromPlay": "Removed from Play",
+    "sectionPanels": "Panels",
+    "sectionLayout": "Layout",
+    "sectionPreferences": "Preferences",
+    "sectionTools": "Tools",
+    "sectionExports": "Exports",
     "view": "View",
     "shortcuts": "Shortcuts",
     "shortcutsTitle": "Keyboard Shortcuts",
@@ -16,8 +23,8 @@
     "shortcutSelectInvestigator": "View investigator board",
     "shortcutSwitchPerspective": "Switch to investigator's perspective",
 
-    "viewSettings": "View Settings",
-    "viewHistory": "View History",
+    "viewSettings": "Settings",
+    "viewHistory": "History",
     "viewSettingTitle": "Settings for {investigator}",
     "playerSettings": "Player Settings",
     "viewSettingSkipTriggers": "Skip triggers during skill tests that don't affect the outcome",
@@ -26,6 +33,14 @@
     "viewSettingShowOtherPlayersHandsTitle": "Show Other Players' Hands",
 
     "settings": {
+        "customWeaknessTitle": "Custom random weaknesses",
+        "customWeaknessDescription": "Include basic weaknesses from selected custom sets in random draws and deck setup.",
+        "customWeaknessSets": "Included sets",
+        "customWeaknessUnsorted": "Unsorted custom cards",
+        "customWeaknessEmpty": "Your library has no custom basic weaknesses.",
+        "customWeaknessSelect": "Select sets to add their basic weaknesses to the pool.",
+        "customWeaknessSaveFailed": "Could not save the weakness pool. Try again.",
+        "customWeaknessLoadFailed": "Could not load custom weakness sets. Reopen settings to try again.",
         "tabs": {
             "table": "Table",
             "pacing": "Pacing",
@@ -70,7 +85,7 @@
     },
 
 
-    "viewChaosBag": "View Chaos Bag",
+    "viewChaosBag": "Chaos Bag",
     "chaosBag": "Chaos Bag",
     "chaosBagStats": {
         "tokens": "{count} tokens",
@@ -87,16 +102,35 @@
     
     "splitView": "Split View",
 
-    "viewBonded": "View Bonded",
+    "viewBonded": "Bonded",
     "bonded": "Bonded",
 
-    "showOutOfPlay": "Show Out of Play",
+    "showOutOfPlay": "Out of Play",
     "outOfPlay": "Out of Play",
 
 
     "debug": "Debug",
     "toggleDebug": "Toggle Debug",
     "debugEntities": "Entities",
+    "exportLog": "Export Log",
+    "exportLogConfirm": "Export",
+    "exportLogWorking": "Exporting…",
+    "exportLogFailed": "Unable to export the log",
+    "exportLogFormatLabel": "Format",
+    "exportLogFormat": {
+      "transcript": "Transcript (.txt)",
+      "json": "Log data (.json)",
+      "trace": "Trace (.txt)"
+    },
+    "exportLogFormatHint": {
+      "transcript": "The log as you read it, in your language.",
+      "json": "Every entry as the server stores it.",
+      "trace": "Untranslated keys, for bug reports."
+    },
+    "exportLogSample": "Example",
+    "exportLogScenario": "Scenario",
+    "exportLogScope": "Scope",
+    "exportLogWholeCampaign": "Whole campaign",
     "debugExport": "Debug Export",
     "debugExportScenario": "Debug Export (Scenario)",
     "debugExportFull": "Debug Export (Full)",
@@ -115,6 +149,8 @@
     "bugSubmittingFail": "Unable to file bug",
 
     "toggleSidebar": "Toggle Sidebar",
+    "spectators": "Spectators",
+    "watching": "1 person is watching | {count} people are watching",
 
     "rotateLayout": "Rotate Location Layout"
 }

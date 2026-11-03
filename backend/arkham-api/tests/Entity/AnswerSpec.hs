@@ -19,7 +19,7 @@ otherPlayer :: PlayerId
 otherPlayer = PlayerId (fromWords64 0 2)
 
 afterSkillTestSeat :: [UI Message] -> Question Message
-afterSkillTestSeat = QuestionLabel "$label.chooseAfterSkillTestEffect" Nothing . ChooseOneAtATime
+afterSkillTestSeat = QuestionLabel "$label.chooseAfterSkillTestEffect" [] . ChooseOneAtATime
 
 answerFirstChoice :: PlayerId -> Answer
 answerFirstChoice pid =
@@ -181,7 +181,7 @@ spec = do
                 (fromJustNote "test harness always has a scenario" $ modeScenario g.gameMode)
           , gameQuestion =
               singletonMap pid
-                $ QuestionLabel "$chooseLeadInvestigator" Nothing (ChooseOne [])
+                $ QuestionLabel "$chooseLeadInvestigator" [] (ChooseOne [])
           }
 
       game <- getGame

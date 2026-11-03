@@ -16,6 +16,8 @@ module Foundation where
 
 import Import.NoFoundation
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar qualified as MVar
 import Control.Concurrent.STM.TBQueue
 import Control.Exception.Annotated qualified as UE
 import Control.Exception.Annotated.UnliftIO qualified as AnnotatedIO
@@ -27,13 +29,17 @@ import Control.Monad.Catch (
  )
 import Control.Monad.Catch qualified as Catch
 import Data.IntMap.Strict qualified as IntMap
+import Data.Map.Strict qualified as Map
 import UnliftIO.Exception qualified as UnliftIO
 
+import Api.Arkham.Maintenance
+import Api.Arkham.RoomOps
 import Arkham.ArkhamDB (ArkhamDBClient)
 import Arkham.ArkhamDB.WriteBack (ArkhamDBExecutor)
 import Arkham.Card.CardCode
 import Arkham.Log.Entry (LogRow)
 import Auth.ApiKey qualified as ApiKey
+import Auth.Feature qualified as Feature
 import Auth.JWT qualified as JWT
 import Control.Concurrent (ThreadId)
 import Control.Monad.Logger (LogSource)
@@ -58,7 +64,7 @@ import GHC.Records
 import Network.Bugsnag.Exception (AsException (..))
 import Network.Bugsnag.Yesod (bugsnagYesodMiddleware)
 import Network.HTTP.Client.Conduit (HasHttpManager (..), Manager)
-import Network.HTTP.Types (status429)
+import Network.HTTP.Types (status429, status503)
 import Orphans ()
 import ThirdEdition.Store qualified as ThirdEdition
 import Yesod.Core.Types (Logger)
@@ -81,7 +87,63 @@ data Subscriber = Subscriber
   deleted room alive, and cannot be left attached to one that no longer
   exists. See 'closeRoomSubscribers'.
   -}
+  , subInfo :: SubscriberInfo
   }
+
+{- | Who is on the other end of one websocket, and how to ask whether they are
+still there.
+
+Recorded on the subscriber because there is nowhere to look it up from later: a
+room is a set of queues, and the moment a socket is registered the only things
+the server knew about it -- which account opened it, and whether that account
+took a seat or is only watching -- have gone out of scope. An admin staring at
+"3 clients" on a room nobody is playing needs those three names, and needs to
+be able to ask each of them to prove it is still connected.
+-}
+data SubscriberInfo = SubscriberInfo
+  { subUserId :: Maybe UserId
+  {- ^ 'Nothing' for a spectator watching without signing in, which spectating
+  allows -- reaching a game needs only its id. A seated player always has one.
+  -}
+  , subSpectator :: Bool
+  , subAdmin :: Bool
+  {- ^ Whether the account on this socket is an admin. Read once, when the
+  socket joins, because the sweep that consults it runs on a timer with no
+  request behind it and no business opening the users table.
+  -}
+  , subConnectedAt :: UTCTime
+  , subLastPong :: TVar (Maybe UTCTime)
+  {- ^ When this socket last answered a ping. Any pong counts, the keepalive's
+  as much as a probe's, because any pong is proof of life. 'Nothing' until the
+  first one, which is the ordinary state of a socket younger than
+  'Api.Handler.Arkham.Games.Shared.keepAlivePingSeconds'.
+  -}
+  , subSendPing :: IO ()
+  {- ^ Ping this one socket now. A WebSocket-level ping: the browser answers it
+  in its protocol layer without the page being involved, so an answer means
+  the socket is alive even if the tab is asleep or the client is an old build.
+  -}
+  }
+
+{- | A subscriber nothing is known about, for the rooms that are not inspected.
+
+Event and third-edition rooms do not appear on the admin rooms page and have no
+seats to distinguish, so there is nothing for an identity to say about them.
+The ping is a no-op rather than a lie about having asked.
+-}
+anonymousSubscriber :: MonadIO m => m SubscriberInfo
+anonymousSubscriber = liftIO do
+  now <- getCurrentTime
+  lastPong <- newTVarIO Nothing
+  pure
+    $ SubscriberInfo
+      { subUserId = Nothing
+      , subSpectator = False
+      , subAdmin = False
+      , subConnectedAt = now
+      , subLastPong = lastPong
+      , subSendPing = pure ()
+      }
 
 data Room = Room
   { roomSubscribers :: TVar (IntMap Subscriber)
@@ -101,6 +163,20 @@ data Room = Room
   (see 'getRoomIn' / 'releaseRoomIfEmpty') so that "room is in the map"
   and "channel is subscribed" can never disagree. 'pure ()' when no Redis
   broker is configured.
+  -}
+  , roomWatchers :: TVar Int
+  {- ^ How many of this room's sockets are spectators rather than seated
+  players. Only this pod's share of them: with Redis the authoritative
+  number is the cross-pod total in @arkham:watchers@, and this is the
+  fallback for a single-pod deployment, which is every local dev setup.
+  -}
+  , roomNoPlayersSince :: TVar (Maybe Int)
+  {- ^ Unix epoch at which this room was first seen holding watchers and no
+  players, or 'Nothing' while a player is still on it. Read by the sweep
+  in 'Api.Arkham.Helpers.sweepAbandonedRooms', which is why it is a
+  timestamp and not a flag: a player reloading the page is a room with no
+  players for a second or two, and only a room that stays that way is
+  abandoned.
   -}
   }
 
@@ -133,18 +209,20 @@ newRoom chn = atomically do
   next <- newTVar 0
   cache <- newTVar Nothing
   unsub <- newTVar (pure ())
-  pure $ Room subs next chn cache unsub
+  watchers <- newTVar 0
+  noPlayers <- newTVar Nothing
+  pure $ Room subs next chn cache unsub watchers noPlayers
 
 {- | Register a new WebSocket subscriber on the room. Returns the
 subscription id (used to unsubscribe) and the bounded queue the
 subscriber should read from.
 -}
-subscribeToRoom :: MonadIO m => Room -> m (Int, Subscriber)
-subscribeToRoom room = liftIO $ atomically do
+subscribeToRoom :: MonadIO m => SubscriberInfo -> Room -> m (Int, Subscriber)
+subscribeToRoom info room = liftIO $ atomically do
   q <- newTBQueue roomQueueBound
   overflow <- newTVar False
   closed <- newTVar False
-  let sub = Subscriber q overflow closed
+  let sub = Subscriber q overflow closed info
   subId <- readTVar (roomNextSubId room)
   writeTVar (roomNextSubId room) (subId + 1)
   modifyTVar' (roomSubscribers room) (IntMap.insert subId sub)
@@ -153,6 +231,17 @@ subscribeToRoom room = liftIO $ atomically do
 unsubscribeFromRoom :: MonadIO m => Room -> Int -> m ()
 unsubscribeFromRoom room subId = liftIO $ atomically do
   modifyTVar' (roomSubscribers room) (IntMap.delete subId)
+
+{- | Is an admin on this room right now?
+
+A room with an admin watching it is one somebody is deliberately looking at, so
+the abandoned-room sweep leaves it alone rather than evicting them mid-look.
+Nothing else is implied: when they disconnect the room is as abandoned as it
+ever was, and the next sweep takes it.
+-}
+roomHasAdmin :: MonadIO m => Room -> m Bool
+roomHasAdmin room =
+  liftIO $ any (subAdmin . subInfo) <$> readTVarIO (roomSubscribers room)
 
 {- | Evict every socket on the room.
 
@@ -172,6 +261,21 @@ roomClientCount :: MonadIO m => Room -> m Int
 roomClientCount room = liftIO $ atomically do
   IntMap.size <$> readTVar (roomSubscribers room)
 
+{- | Move this pod's spectator tally for the room by @delta@ and read it back.
+
+Clamped at zero: the counter is adjusted from a bracket's release, which can
+run for a socket whose acquire never completed, and a table that claims -1
+watchers is worse than one that claims none.
+-}
+adjustRoomWatchers :: MonadIO m => Room -> Int -> m Int
+adjustRoomWatchers room delta = liftIO $ atomically do
+  modifyTVar' (roomWatchers room) (max 0 . (+ delta))
+  readTVar (roomWatchers room)
+
+-- | This pod's spectator tally for the room.
+roomWatcherCount :: MonadIO m => Room -> m Int
+roomWatcherCount room = readTVarIO (roomWatchers room)
+
 {- | Send a payload to every subscriber on the room. Subscribers whose
 queue is full are flagged as overflowed and skipped; the corresponding
 reader loop will observe the flag and tear itself down.
@@ -187,6 +291,94 @@ broadcastToRoom room msg = liftIO $ atomically do
         then writeTVar subOverflow True
         else writeTBQueue subQueue msg
 
+{- | Snapshot every socket on a room, as the admin rooms page shows them.
+
+Reads the queue depth and the flags under one 'atomically' per socket rather
+than one for the room: a snapshot of a room is not a transaction anybody acts
+on, and holding every subscriber's state still while an admin looks at it would
+block the broadcast path to do it.
+-}
+roomConnectionsOn :: MonadIO m => Text -> Room -> m [RoomConnection]
+roomConnectionsOn pod room = liftIO do
+  subs <- IntMap.toList <$> readTVarIO (roomSubscribers room)
+  for subs \(subId, sub) -> do
+    (depth, full, evicted) <- atomically do
+      queued <- fromIntegral <$> lengthTBQueue (subQueue sub)
+      overflowed <- readTVar (subOverflow sub)
+      closing <- readTVar (subClosed sub)
+      pure (queued, overflowed, closing)
+    lastPong <- readTVarIO (subLastPong (subInfo sub))
+    pure
+      $ RoomConnection
+        { connPod = pod
+        , connId = subId
+        , connUserId = toPathPiece <$> subUserId (subInfo sub)
+        , connSpectator = subSpectator (subInfo sub)
+        , connConnectedAt = subConnectedAt (subInfo sub)
+        , connLastPongAt = lastPong
+        , connQueued = depth
+        , connOverflowed = full
+        , connClosing = evicted
+        , connProbeAnswered = Nothing
+        }
+
+{- | Ping every socket on the room and report which ones answered.
+
+What makes this worth doing at all: a half-open TCP connection is invisible
+from the server side. The socket is still open, its sender loop is still
+parked, the room still counts it -- and the client behind it has been gone for
+hours. Asking is the only way to tell, and a WebSocket ping asks the protocol
+layer rather than the page, so it is answered by a client that is merely idle
+and unanswered by one that is merely gone.
+
+A pong that arrives from the keepalive ping inside the window counts too: the
+question is whether the socket is alive, not whose ping proved it.
+
+A socket that appeared after the pings went out is reported with
+'connProbeAnswered' 'Nothing' rather than as a failure, because it was never
+asked.
+-}
+probeRoomConnections :: MonadIO m => Text -> Int -> Room -> m [RoomConnection]
+probeRoomConnections pod waitMicros room = liftIO do
+  subs <- IntMap.toList <$> readTVarIO (roomSubscribers room)
+  pongsBefore <-
+    IntMap.fromList <$> for subs \(subId, sub) ->
+      (subId,) <$> readTVarIO (subLastPong (subInfo sub))
+  -- A send on a socket whose peer has already gone throws; that is an answer
+  -- about that socket, not a reason to abandon the other sockets' probes.
+  for_ subs \(_, sub) -> UnliftIO.tryAny $ subSendPing (subInfo sub)
+  threadDelay waitMicros
+  map (answeredSince pongsBefore) <$> roomConnectionsOn pod room
+ where
+  answeredSince pongs c = case IntMap.lookup (connId c) pongs of
+    Nothing -> c
+    Just priorPong -> c {connProbeAnswered = Just (connLastPongAt c /= priorPong)}
+
+{- | Close one room and forget it: announce why, evict its sockets, tear down
+its Redis subscription. Returns whether there was a room here to close.
+
+Takes the notice already encoded because the message type it is an alternative
+of lives in "Api.Arkham.Helpers", which imports this module. Order matters and
+is the same order 'Api.Handler.Arkham.Games.Shared.forceDeleteRoom' uses: the
+notice is broadcast while the subscribers are still reading, and each drains
+what it has before stopping, so the reason is the last thing delivered rather
+than something racing the teardown.
+
+Dropping the map entry alone would not get rid of the room -- every websocket
+joins through 'Api.Arkham.Helpers.joinRoomIn', which recreates one on demand,
+so a client still holding its socket (or reconnecting, which the client does by
+itself) would put it straight back with no game behind it.
+-}
+closeRoomIn :: (MonadIO m, Ord k) => MVar (Map k Room) -> k -> BSL.ByteString -> m Bool
+closeRoomIn roomsVar key notice = liftIO $ MVar.modifyMVar roomsVar \rooms ->
+  case Map.lookup key rooms of
+    Nothing -> pure (rooms, False)
+    Just room -> do
+      broadcastToRoom room notice
+      closeRoomSubscribers room
+      void $ UnliftIO.tryAny $ join $ readTVarIO (roomUnsubscribe room)
+      pure (Map.delete key rooms, True)
+
 data MessageBroker = WebSocketBroker | RedisBroker Connection PubSubController
 
 {- | The foundation datatype for your application. This can be a good place to
@@ -201,6 +393,8 @@ data App = App
   , appMessageBroker :: MessageBroker
   , appPubSubSupervisorThread :: !(Maybe ThreadId)
   , appRoomHeartbeatThread :: !(Maybe ThreadId)
+  , appArchiveThreads :: ![ThreadId]
+  -- ^ Archive sweep and restore pollers, joined by 'Application.shutdownApp'.
   , appArkhamDBWriteBackExecutor :: ArkhamDBExecutor
   , appArkhamDBClient :: Maybe (ArkhamDBClient IO)
   , appHttpManager :: Manager
@@ -220,7 +414,24 @@ data App = App
   publishes a heartbeat and watches this timestamp to decide whether the
   subscription is actually alive. See 'pubSubHealthChannel'.
   -}
+  , appMaintenance :: !(TVar (Maybe Maintenance))
+  {- ^ Maintenance mode for this pod: 'Just' while the app is deliberately
+  refusing traffic so the database can be worked on. Seeded from Redis at
+  startup and kept in step across replicas over 'maintenanceChannel', so it
+  is a cache of a shared decision rather than per-pod state. Enforced by
+  'maintenanceMiddleware'.
+  -}
   , appBugsnag :: Bugsnag.Settings
+  , appPodId :: Text
+  {- ^ Which replica this is, for the cross-pod room ops in
+  "Api.Arkham.RoomOps". An admin looking at a room needs to know that three
+  sockets on one pod and three spread over three pods are different
+  situations, and a sweep that closed a room on two pods out of six needs to
+  be able to say which two.
+
+  The Kubernetes pod name when there is one, plus a per-process suffix so a
+  restarted pod is not mistaken for the one it replaced.
+  -}
   }
 
 class Monad m => HasApp m where
@@ -273,7 +484,8 @@ instance Yesod App where
   -- To add it, chain it together with the defaultMiddleware: yesodMiddleware = defaultYesodMiddleware . defaultCsrfMiddleware
   -- For details, see the CSRF documentation in the Yesod.Core.Handler module of the yesod-core package.
   yesodMiddleware :: ToTypedContent res => Handler res -> Handler res
-  yesodMiddleware = bugsnagYesodMiddleware appBugsnag . defaultYesodMiddleware
+  yesodMiddleware =
+    maintenanceMiddleware . bugsnagYesodMiddleware appBugsnag . defaultYesodMiddleware
 
   defaultLayout :: Widget -> Handler Html
   defaultLayout _ = pure ""
@@ -288,24 +500,33 @@ instance Yesod App where
   isAuthorized HealthR _ = pure Authorized
   isAuthorized ErrorR _ = pure Authorized
   isAuthorized (ApiP api) _ = case api of
+    -- The OAuth callback arrives as a browser redirect with no credentials of
+    -- its own; what it may do comes from the state it carries.
+    ApiAuthArkhamBuildCallbackR -> pure Authorized
     ApiV1P v1 -> case v1 of
       AdminP _ -> do
         _ <- getAdminUser
         pure Authorized
-      -- API keys are admin-only while they settle. Gated here rather than in the
-      -- handlers to match the admin routes above, and because a gate a new
-      -- endpoint has to remember to apply is a gate that will be forgotten.
+      -- API keys are behind a per-account grant while they roll out. Gated here
+      -- rather than in the handlers to match the admin routes above, and because
+      -- a gate a new endpoint has to remember to apply is a gate that will be
+      -- forgotten.
       --
       -- `self` is deliberately excluded: it is the one endpoint a *key* calls
       -- about itself, so the MCP server can ask what its credential may do and
-      -- offer only the tools it can use. `getAdminUser` goes through
+      -- offer only the tools it can use. `getFeatureUser` goes through
       -- `getRequestUserId`, which is JWT-only, so gating it would 401 every key
       -- and take that away.
       ApiV1ApiKeysP keys -> case keys of
         ApiV1ApiKeySelfR -> pure Authorized
         _ -> do
-          _ <- getAdminUser
+          _ <- getFeatureUser Feature.apiKeys
           pure Authorized
+      -- Authenticated by token inside the handler, deliberately not by
+      -- 'getAdminUser': that reads the users table, which would make the one
+      -- endpoint whose job is to lift a lock on the database the first thing
+      -- to queue up behind it.
+      ApiV1MaintenanceR -> pure Authorized
       ApiV1ArkhamP arkham -> case arkham of
         ApiV1ArkhamGamesP games -> case games of
           ApiV1ArkhamGamesImportR -> pure Authorized
@@ -535,6 +756,13 @@ callerFromKey required presented = do
           <> ". It has: "
           <> ApiKey.renderScopes granted
 
+      -- Checked on every request, like revocation above, rather than only where
+      -- a key is minted: taking the feature back off an account has to stop the
+      -- keys it already made, or the rollout has no way back.
+      owner <- runDB $ get404 (arkhamApiKeyUserId key)
+      unless (owner.admin || Feature.hasFeature Feature.apiKeys owner.features)
+        $ permissionDenied "API keys are not enabled for this account"
+
       -- A write is what is worth capping; a read costs a query and is not a way
       -- to fill a disk.
       let isWrite = ApiKey.cardsWrite `elem` required
@@ -575,11 +803,72 @@ chargeApiKey now keyId key isWrite = do
            ]
        ]
 
+{- | Refuse every request with a 503 while maintenance mode is on.
+
+Composed OUTSIDE 'bugsnagYesodMiddleware' on purpose: a planned 503 is not an
+error report, and six replicas refusing traffic for an hour would bury the real
+exceptions under tens of thousands of them.
+
+The allow-list is not a convenience, it is what keeps the site reachable at
+all. All three Kubernetes probes AND the DigitalOcean load balancer health
+check point at @/health@ (@terraform/app.tf@, @terraform/ingress.tf@), so a
+@/health@ that 503s gets every container restarted and every node pulled out
+of rotation -- taking the maintenance notice down along with the app, and
+making the switch unreachable so it cannot be turned back off.
+'ApiV1MaintenanceR' is allowed through because it IS the off switch, and
+'ApiV1SiteSettingsR' because it is what tells the client to render the notice
+instead of a board that silently fails to load.
+
+In-flight requests are not interrupted, only new ones refused -- which is what
+makes turning the mode on a drain rather than a kill. Whatever is mid-action
+commits, the pool goes idle, and @pgPoolIdleTimeout@ (60s, "Settings") closes
+the connections on its own. Note what that does NOT tell you: the app going
+quiet is not the database being quiet. @pg_stat_activity@ is the only thing
+that can say whether it is safe to take a lock.
+-}
+maintenanceMiddleware :: ToTypedContent res => Handler res -> Handler res
+maintenanceMiddleware handler = do
+  mMode <- getsYesod appMaintenance >>= readTVarIO
+  mRoute <- getCurrentRoute
+  case mMode of
+    Just mode | not (any alwaysServed mRoute) -> do
+      -- Long enough that a client backing off does not hammer six replicas for
+      -- the length of the window, short enough to come back on its own after.
+      addHeader "Retry-After" "120"
+      sendResponseStatus status503
+        $ object
+          [ "maintenance" .= True
+          , "since" .= maintenanceSince mode
+          , "message" .= fromMaybe defaultMaintenanceMessage (maintenanceMessage mode)
+          ]
+    _ -> handler
+ where
+  alwaysServed = \case
+    HealthR -> True
+    ApiP (ApiV1P ApiV1MaintenanceR) -> True
+    ApiP (ApiV1P ApiV1SiteSettingsR) -> True
+    _ -> False
+
 getAdminUser :: Handler (Entity User)
 getAdminUser = do
   userId <- getRequestUserId
   user <- runDB $ get404 userId
   unless user.admin $ permissionDenied "You must be an admin to access this endpoint"
+  pure $ Entity userId user
+
+{- | The account behind this request, provided it has been let into a feature.
+
+Admins pass whatever their row says: they are the ones doing the granting, and a
+rollout whose first casualty is the person running it is not a rollout. Everyone
+else needs the grant written on their row, which only 'ApiV1AdminUserFeaturesR'
+does -- so the gate cannot be opened by the account it gates.
+-}
+getFeatureUser :: Feature.Feature -> Handler (Entity User)
+getFeatureUser feature = do
+  userId <- getRequestUserId
+  user <- runDB $ get404 userId
+  unless (user.admin || Feature.hasFeature feature user.features)
+    $ permissionDenied "That feature is not enabled for your account"
   pure $ Entity userId user
 
 getRequestUser :: Handler (Entity User)

@@ -147,7 +147,8 @@ instance RunMessage SepulchreOfTheSleeper where
           card <- expeditionAssetCard def
           lead <- getLead
           chooseOrRunOneM lead do
-            questionLabeled "chooseArtifactInvestigator"
+            nameVar def $ questionLabeled "chooseArtifactInvestigator"
+            questionLabeledCard def
             targets [iid | (iid, n) <- counts, n == fewest] (createAssetAt_ card . InPlayArea)
       pure s
     ScenarioSpecific "increaseDisturbance" _ -> do
@@ -203,7 +204,7 @@ instance RunMessage SepulchreOfTheSleeper where
           -- "If there are no surviving investigators, the investigators lose the
           -- campaign." No resolution is only reached once every investigator has
           -- been defeated or driven insane by Your Inevitable Doom.
-          gameOver
+          gameOverLost
         _ -> error $ "Unknown resolution: " <> show res
       pure s
     _ -> SepulchreOfTheSleeper <$> liftRunMessage msg attrs

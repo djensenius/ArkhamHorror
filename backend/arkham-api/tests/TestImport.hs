@@ -703,12 +703,15 @@ the window-ask flavors of ChooseOne, which differ from a plain ChooseOne only
 in whether the queue regenerates the seat (see Entity.Answer), not in how a
 spec answers them.
 -}
-stripQuestionWrappers :: Question msg -> Question msg
+stripQuestionWrappers :: Question Message -> Question Message
 stripQuestionWrappers = \case
   QuestionLabel _ _ q -> stripQuestionWrappers q
   QuestionWithSource _ _ q -> stripQuestionWrappers q
   PayCostQuestion _ q -> stripQuestionWrappers q
   WindowChooseOne cs -> ChooseOne cs
+  ChooseFromCollection iid source codes ->
+    ChooseOne
+      [CardLabel code False [HandleTargetChoice iid source (CardCodeTarget code)] | code <- codes]
   q -> q
 
 chooseOnlyOption :: HasCallStack => String -> TestAppT ()
@@ -915,6 +918,8 @@ newGame scenario' investigator = do
         , gameTombstones = mempty
         , gameInSearchEntities = defaultEntities
         , gameGameState = IsActive
+        , gameOutcome = Nothing
+        , gameLastResolution = Nothing
         , gameFoundCards = mempty
         , gameFocusedCards = mempty
         , gameHighlightedCards = mempty
@@ -931,6 +936,7 @@ newGame scenario' investigator = do
         , gameActionSnapshot = Transient Nothing
         , gameInAction = False
         , gameCards = mempty
+        , gameCollectionCards = Transient Nothing
         , gameCustomCards = mempty
         , gameActiveCost = mempty
         , gameActiveAbilities = mempty
@@ -950,6 +956,7 @@ newGame scenario' investigator = do
         , gameAsIfAtIgnored = mempty
         , gameLocationOffsets = mempty
         , gameCardPlayStack = mempty
+        , gameLogBlockStack = mempty
         }
 
   liftIO $ do

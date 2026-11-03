@@ -66,7 +66,7 @@ import Arkham.Token
 import Arkham.Treachery.Types (Field (..))
 import Arkham.Window
 import Arkham.Window qualified as Window
-import Control.Lens (over, transform)
+import Control.Lens (over, toListOf, transform)
 import Control.Monad.Trans.Class
 import Data.Data (cast, gmapQ)
 import Data.Data.Lens (biplate)
@@ -134,6 +134,16 @@ pendingWindowEffect window = case (windowTiming window, windowType window) of
     CheckDefeated _ target' -> target == target'
     _ -> False
 
+{- | The investigator a window is about, for a per-investigator limit.
+
+Read off the shape rather than enumerated: a window that names a seat carries
+it as its first 'InvestigatorId', and there are far too many window types for a
+hand-written list to stay true as new ones arrive. A window that names none has
+no per-investigator bucket, which is the honest answer for it.
+-}
+windowInvestigator :: WindowType -> Maybe InvestigatorId
+windowInvestigator = listToMaybe . toListOf biplate
+
 windows :: [WindowType] -> [Message]
 windows windows' = [CheckWindows $ map (mkWindow timing) windows' | timing <- [#when, #at, #after]]
 
@@ -186,10 +196,35 @@ pushBatched :: HasQueue Message m => BatchId -> [Message] -> m ()
 pushBatched batchId msgs = push $ Would batchId msgs
 
 wouldDo :: (MonadRandom m, HasQueue Message m) => Message -> WindowType -> WindowType -> m ()
-wouldDo msg wouldWindow window = do
-  (batchId, wouldWindowsMsgs) <- wouldWindows wouldWindow
-  let framed = doBatch batchId msg window
-  push $ Would batchId $ wouldWindowsMsgs <> framed
+wouldDo msg wouldWindow window = wouldDoAny msg [wouldWindow] window
+
+{- | 'wouldDo' for a message that answers to more than one "would" trigger at
+once -- searching the encounter deck is both a search of a deck and a dig
+through the encounter deck for a card. The windows share the batch, so
+cancelling from either one cancels the message.
+-}
+wouldDoAny
+  :: (MonadRandom m, HasQueue Message m) => Message -> [WindowType] -> WindowType -> m ()
+wouldDoAny msg wouldWindows' window = do
+  batchId <- getRandom
+  push $ Would batchId $ wouldChecks batchId wouldWindows' <> doBatch batchId msg window
+
+{- | Frame a message in a cancellable batch with would-windows but no window
+after it, for a message whose completion raises nothing of its own. An empty
+list is still a batch, just one nothing can trigger off.
+-}
+wouldOnly :: (MonadRandom m, HasQueue Message m) => Message -> [WindowType] -> m ()
+wouldOnly msg wouldWindows' = do
+  batchId <- getRandom
+  push $ Would batchId $ wouldChecks batchId wouldWindows' <> [DoBatch batchId msg]
+
+-- | The @when@/@atIf@/@after@ checks that open a would-batch, all sharing it.
+wouldChecks :: BatchId -> [WindowType] -> [Message]
+wouldChecks batchId ws =
+  [ CheckWindows [Window timing w (Just batchId) Nothing | w <- ws]
+  | not (null ws)
+  , timing <- [Timing.When, Timing.AtIf, Timing.After]
+  ]
 
 {- | Take a message which would operate on some value n and instead expand the
 windows to add a single one at a time
@@ -689,6 +724,15 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               $ Matcher.replaceThatInvestigator who deckMatcher
           ]
       _ -> noMatch
+    Matcher.WouldFindEncounterCard timing whoMatcher targetMatcher searchMatcher ->
+      guardTiming timing $ \case
+        Window.WouldFindEncounterCard who target cardMatcher ->
+          andM
+            [ matchWho iid who whoMatcher
+            , targetMatches target targetMatcher
+            , pure $ searchMatchesExtended searchMatcher cardMatcher
+            ]
+        _ -> noMatch
     Matcher.SearchedDeck timing whoMatcher deckMatcher -> guardTiming timing $ \case
       Window.SearchedDeck who deck -> do
         andM
@@ -990,6 +1034,11 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
     Matcher.WouldPerformRevelationSkillTest timing whoMatcher ->
       guardTiming timing $ \case
         Window.WouldPerformRevelationSkillTest who _ -> matchWho iid who whoMatcher
+        _ -> noMatch
+    Matcher.GainsSurge timing whoMatcher sourceMatcher ->
+      guardTiming timing $ \case
+        Window.GainedSurge who surgeSource ->
+          andM [matchWho iid who whoMatcher, sourceMatches surgeSource sourceMatcher]
         _ -> noMatch
     Matcher.WouldDrawEncounterCard timing whoMatcher phaseMatcher ->
       guardTiming timing $ \case
@@ -1397,6 +1446,19 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
       Window.InvestigatorResigned who ->
         matchWho iid who (Matcher.IncludeEliminated $ Matcher.replaceYouMatcher iid whoMatcher)
       _ -> noMatch
+    {- Trauma on defeat is suffered on the way out, so 'IncludeEliminated' here as
+    well: by the time the window resolves the investigator may already be
+    eliminated. -}
+    Matcher.SuffersPhysicalTrauma timing whoMatcher -> guardTiming timing $ \case
+      Window.SufferedTrauma who physical _
+        | physical > 0 ->
+            matchWho iid who (Matcher.IncludeEliminated $ Matcher.replaceYouMatcher iid whoMatcher)
+      _ -> noMatch
+    Matcher.SuffersMentalTrauma timing whoMatcher -> guardTiming timing $ \case
+      Window.SufferedTrauma who _ mental
+        | mental > 0 ->
+            matchWho iid who (Matcher.IncludeEliminated $ Matcher.replaceYouMatcher iid whoMatcher)
+      _ -> noMatch
     Matcher.PutLocationIntoPlay timing whoMatcher locationMatcher ->
       guardTiming timing $ \case
         Window.PutLocationIntoPlay who locationId ->
@@ -1748,6 +1810,15 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
               ]
           _ -> noMatch
         _ -> noMatch
+    Matcher.EnemyAttacksWithAnyTarget timing enemyAttackMatcher enemyMatcher ->
+      guardTiming timing $ \case
+        Window.EnemyAttacks details ->
+          andM
+            [ not <$> isAttackCancelled details
+            , enemyMatches (attackEnemy details) enemyMatcher
+            , enemyAttackMatches iid details enemyAttackMatcher
+            ]
+        _ -> noMatch
     -- tolerate removed enemies, the attacker can be defeated mid-attack
     Matcher.EnemyAttacks timing whoMatcher enemyAttackMatcher enemyMatcher ->
       guardTiming timing $ \case
@@ -1903,6 +1974,10 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
       Window.ResolvesTreachery who treacheryId ->
         andM [matchWho iid who whoMatcher, treacheryId <=~> IncludeOutOfPlayTreachery treacheryMatcher]
       _ -> noMatch
+    Matcher.ResolvesStory timing whoMatcher storyMatcher -> guardTiming timing $ \case
+      Window.ResolvesStory who storyId ->
+        andM [matchWho iid who whoMatcher, storyId <=~> storyMatcher]
+      _ -> noMatch
     Matcher.ResolvesChaosToken timing whoMatcher tokenMatcher -> guardTiming timing $ \case
       Window.ResolvesChaosToken who token ->
         andM [matchWho iid who whoMatcher, matchChaosToken who token tokenMatcher]
@@ -1937,6 +2012,10 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
         Window.ChaosTokenReleased target token ->
           andM [targetMatches target targetMatcher, matchChaosToken iid token tokenMatcher]
         _ -> noMatch
+    Matcher.CardRescued timing whoMatcher cardMatcher -> guardTiming timing $ \case
+      Window.CardRescued who card ->
+        andM [matchWho iid who whoMatcher, pure $ cardMatch card cardMatcher]
+      _ -> noMatch
     Matcher.AddedToVictory timing mWhoMatcher cardMatcher -> guardTiming timing $ \case
       Window.AddedToVictory mWho card ->
         andM
@@ -2236,6 +2315,14 @@ windowMatches iid rawSource window'@(windowTiming &&& windowType -> (timing', wT
     Matcher.GainsClues timing whoMatcher valueMatcher -> guardTiming timing $ \case
       Window.GainsClues who _ n ->
         andM [matchWho iid who whoMatcher, gameValueMatches n valueMatcher]
+      _ -> noMatch
+    Matcher.GainsActions timing whoMatcher sourceMatcher valueMatcher -> guardTiming timing $ \case
+      Window.GainsActions who source' n ->
+        andM
+          [ matchWho iid who whoMatcher
+          , gameValueMatches n valueMatcher
+          , sourceMatches source' sourceMatcher
+          ]
       _ -> noMatch
     Matcher.GainsResources timing whoMatcher sourceMatcher valueMatcher -> guardTiming timing $ \case
       Window.GainsResources who source' n ->

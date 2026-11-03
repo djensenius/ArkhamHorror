@@ -1,5 +1,10 @@
 <script lang="ts" setup>
 import UpgradeDeck from '@/arkham/components/UpgradeDeck.vue';
+import {
+  CARD_FLIGHT_PILE_ATTR,
+  cardFlightPileStyle,
+  useCardFlightState,
+} from '@/arkham/cardFlight'
 import { EyeIcon, QuestionMarkCircleIcon, ViewColumnsIcon, ArchiveBoxXMarkIcon, ArrowPathIcon, LockClosedIcon, LockOpenIcon, ArrowUturnLeftIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon } from '@heroicons/vue/20/solid'
 import {
   watchEffect,
@@ -21,7 +26,7 @@ import { type Enemy } from '@/arkham/types/Enemy';
 import { type ConcealedCard } from '@/arkham/types/ConcealedCard';
 import ConcealedCardView from '@/arkham/components/ConcealedCard.vue';
 import { type Position } from '@/arkham/types/Placement';
-import { type Card, cardId, cardImage } from '@/arkham/types/Card';
+import { type Card, cardId, cardImage, referenceCard } from '@/arkham/types/Card';
 import { TarotCard, tarotCardImage } from '@/arkham/types/TarotCard';
 import { TokenType } from '@/arkham/types/Token';
 import { ModifierType, Hollow } from '@/arkham/types/Modifier';
@@ -41,6 +46,7 @@ import Act from '@/arkham/components/Act.vue';
 import CardView from '@/arkham/components/Card.vue';
 import Draggable from '@/components/Draggable.vue';
 import ChaosBag from '@/arkham/components/ChaosBag.vue'
+import SandboxReveal from '@/arkham/components/debug/SandboxReveal.vue'
 import DebugCardDropHint from '@/arkham/components/DebugCardDropHint.vue';
 import DebugTokenPanel from '@/arkham/components/DebugTokenPanel.vue';
 import { cardDropHandlers, scenarioTarget } from '@/arkham/debugCardDrop';
@@ -54,6 +60,7 @@ import KeyToken from '@/arkham/components/Key.vue';
 import PlayerTabs from '@/arkham/components/PlayerTabs.vue';
 import Connections from '@/arkham/components/Connections.vue';
 import RainOverlay from '@/arkham/components/RainOverlay.vue';
+import SmokePuffLayer from '@/arkham/components/SmokePuffLayer.vue';
 import { supportsHtmlInCanvas } from '@/arkham/droplets';
 import { createRainAudio, type RainAudioInstance } from '@/arkham/rainAudio';
 import { useSoundsDisabled } from '@/composable/useSoundsDisabled';
@@ -74,10 +81,12 @@ import Story from '@/arkham/components/Story.vue';
 import Asset from '@/arkham/components/Asset.vue';
 import Location from '@/arkham/components/Location.vue';
 import TreacheryView from '@/arkham/components/Treachery.vue';
+import SealedChaosTokens from '@/arkham/components/SealedChaosTokens.vue';
 import { useGameChoices } from '@/arkham/composables/useGameChoices';
 import { setLocationOffset, resetLocationOffsets, updateGameRaw } from '@/arkham/api';
 import { useDebug, scenarioHasDebugOptions } from '@/arkham/debug'
 import * as DebugMove from '@/arkham/debugCardMove'
+import * as DebugInPlay from '@/arkham/debugInPlay'
 import { useCardStore } from '@/stores/cards'
 import { storeToRefs } from 'pinia';
 import { useI18n } from 'vue-i18n';
@@ -1102,6 +1111,7 @@ addEntry({
   content: t('gameBar.viewChaosBag'),
   binding: "viewChaosBag",
   nested: 'view',
+  section: 'panels',
   action: () => showChaosBag.value = !showChaosBag.value
 })
 
@@ -1110,14 +1120,16 @@ addEntry({
   icon: ViewColumnsIcon,
   content: t('gameBar.splitView'),
   nested: 'view',
+  section: 'layout',
   action: toggleSplitView
 })
 
 addEntry({
   id: "viewRemovedFromPlay",
   icon: ArchiveBoxXMarkIcon,
-  content: "View removed from Play",
+  content: t('gameBar.viewRemovedFromPlay'),
   nested: 'view',
+  section: 'panels',
   action: () => showRemovedFromPlay()
 })
 
@@ -1127,6 +1139,7 @@ addEntry({
   content: t('gameBar.rotateLayout'),
   binding: "rotateLayout",
   nested: 'view',
+  section: 'layout',
   action: () => {
     rotationSteps.value = (rotationSteps.value + 1) % 4
   }
@@ -1607,7 +1620,35 @@ const topOfEncounterDiscard = computed(() => {
   return cardCodeImage(props.scenario.discard[0].cardCode)
 })
 
+/* The encounter discard as a card-flight destination. Every id in the pile, not
+ * just the rendered top one: a reveal is dismissed long after the engine has
+ * moved on, so the card being flown home has usually been buried by whatever
+ * resolved behind the overlay. See `laidOutPile` in Game.vue. */
+const cardFlightState = useCardFlightState()
+const encounterDiscardIds = computed(() => props.scenario.discard.map((c) => c.id))
+const encounterDiscardFlightStyle = computed(() =>
+  cardFlightPileStyle(cardFlightState, encounterDiscardIds.value),
+)
+
 const cardStore = useCardStore()
+const locationsAcceptDrop = computed(() =>
+  debug.active && DebugMove.draggedCardAccepted(props.game, cardStore.cards, 'locations') === true
+)
+
+function onDragOverLocations(event: DragEvent) {
+  if (!locationsAcceptDrop.value || cardDropInFlight() || DebugInPlay.draggedInPlay.value) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function onDropLocation(event: DragEvent) {
+  if (!locationsAcceptDrop.value || cardDropInFlight() || DebugInPlay.draggedInPlay.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  const cardId = DebugMove.draggedCardId.value
+  if (cardId) DebugMove.debugMoveCard(props.game.id, cardId, { tag: 'DebugCardLocation' })
+}
+
 const encounterDiscardDraggedOver = ref(false)
 // null while nothing is in flight, false when the dragged card has the wrong
 // back for an encounter discard.
@@ -1620,6 +1661,13 @@ function onDragOverEncounterDiscard(event: DragEvent) {
   // A chaos token seals onto a card in play; a deck or discard is not a seal
   // target, so refuse it outright rather than advertising a card move.
   if (cardDropInFlight()) {
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
+    return
+  }
+  // An asset dragged out of play discards through the engine, which picks the
+  // pile itself (Draw.vue's discard is where that drop lives); this zone only
+  // moves cards, so refuse rather than advertise a drop it would ignore.
+  if (DebugInPlay.draggedInPlay.value) {
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'
     return
   }
@@ -1678,7 +1726,13 @@ const globalStoryKey = (story: StoryAttrs) => [story.art, story.flippedArt].sort
 const globalAssets = computed(() => Object.values(props.game.assets).filter((asset) => 
   asset.placement.tag === "OtherPlacement" && asset.placement.contents === "Global"
 ))
-const cardsUnderScenarioReference = computed(() => props.scenario.cardsUnderScenarioReference)
+const cardsUnderScenarioReference = computed(() =>
+  props.scenario.id.replace(/^c/, '') === '73001'
+    ? props.scenario.cardsUnderScenarioReference.map(referenceCard)
+    : props.scenario.cardsUnderScenarioReference
+)
+/* Tokens sealed on the scenario reference card itself (Traces to Nowhere's codex entries). */
+const scenarioSealedChaosTokens = computed(() => props.scenario.sealedChaosTokens)
 const cardsUnderAgenda = computed(() => props.scenario.cardsUnderAgendaDeck)
 const cardsUnderAct = computed(() => props.scenario.cardsUnderActDeck)
 const cardsNextToAct = computed(() => props.scenario.cardsNextToActDeck)
@@ -1841,6 +1895,7 @@ watchEffect(() => {
       icon: EyeIcon,
       content: t('gameBar.showOutOfPlay'),
       nested: 'view',
+      section: 'panels',
       binding: 'showOutOfPlay',
       action: () => showOutOfPlay.value = !showOutOfPlay.value
     })
@@ -2350,6 +2405,7 @@ async function addChaosToken(face: any){
     <UpgradeDeck :game="game" :key="playerId" :playerId="playerId" @choose="choose" @update="update"/>
   </div>
   <div v-else-if="!gameOver" id="scenario" class="scenario" :data-scenario="scenario.id">
+    <SmokePuffLayer />
     <div class="scenario-body" :class="{'split-view': splitView, 'scenario-body--notifier-overlays': showScenarioNotifierBar }">
       <Draggable v-if="showOutOfPlay || forcedShowOutOfPlay">
         <template #handle><header><h2>{{ $t('gameBar.outOfPlay') }}</h2></header></template>
@@ -2485,6 +2541,12 @@ async function addChaosToken(face: any){
             <button class="button" @click="addChaosToken(token.face)">+</button>
           </div>
         </div>
+        <SandboxReveal
+          v-if="debug.active || scenario.chaosBag.debugRevealedChaosTokens.length > 0"
+          :game="game"
+          :chaosBag="scenario.chaosBag"
+          :playerId="playerId"
+        />
       </ChaosBagWindow>
       <CardRow
         v-if="showCards.ref.length > 0"
@@ -2608,7 +2670,11 @@ async function addChaosToken(face: any){
             @dragend="encounterDiscardDraggedOver = false"
             @dragenter.prevent
           >
-            <div class="discard-card">
+            <div
+              class="discard-card"
+              :[CARD_FLIGHT_PILE_ATTR]="encounterDiscardIds.join(' ')"
+              :style="encounterDiscardFlightStyle"
+            >
               <img
                 :src="topOfEncounterDiscard"
                 class="card"
@@ -2850,6 +2916,13 @@ async function addChaosToken(face: any){
                 <PoolItem v-if="damage && damage > 0" type="damage" :amount="damage" />
               </div>
             </div>
+            <SealedChaosTokens
+              v-if="scenarioSealedChaosTokens.length > 0"
+              :tokens="scenarioSealedChaosTokens"
+              :game="game"
+              :playerId="playerId"
+              @choose="choose"
+            />
             <div v-if="scenarioReferenceTreacheries.length > 0" class="scenario-reference-attachments">
               <TreacheryView
                 v-for="treacheryId in scenarioReferenceTreacheries"
@@ -3037,6 +3110,8 @@ async function addChaosToken(face: any){
           'location-cards-container--unlocked': locationsUnlocked,
           'location-cards-container--fullscreen': locationsFullscreen,
         }"
+        @dragover="onDragOverLocations"
+        @drop="onDropLocation"
         @dblclick.passive="toggleZoom"
         @wheel.alt="handleZoomScroll"
       >

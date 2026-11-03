@@ -1,7 +1,6 @@
 <script lang="ts" setup>
 import {
   computed,
-  markRaw,
   nextTick,
   onMounted,
   onUnmounted,
@@ -10,10 +9,11 @@ import {
   shallowRef,
   watch,
 } from 'vue'
-import { useToast } from 'vue-toastification'
+import { useToast } from '@/toasts'
 import { storeToRefs } from 'pinia'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { useNarrative } from '@/arkham/composables/useNarrative'
 import confetti from '@/effects/confetti'
 import { useWebSocket, useResizeObserver } from '@vueuse/core'
 import { MenuItem } from '@headlessui/vue'
@@ -24,10 +24,10 @@ import {
   BackwardIcon,
   BeakerIcon,
   BoltIcon,
+  BookOpenIcon,
   BugAntIcon,
   ClockIcon,
   DocumentArrowDownIcon,
-  DocumentTextIcon,
   EyeIcon,
   ExclamationTriangleIcon,
   FlagIcon,
@@ -38,6 +38,7 @@ import { LottieAnimation } from 'lottie-web-vue'
 import * as JsonDecoder from 'ts.data.json'
 import processingJSON from '@/assets/processing.json'
 import api from '@/api'
+import { setMaintenance } from '@/maintenance'
 import {
   fetchGame,
   buildWebsocketUrl,
@@ -48,6 +49,8 @@ import {
   undoPhase,
   undoRound,
   undoToStep,
+  unarchiveGame,
+  type GameArchive,
   markEventReady,
   eventTimeUp,
 } from '@/arkham/api'
@@ -89,10 +92,12 @@ import { Card, asCardCode, cardDecoder, toCardContents } from '@/arkham/types/Ca
 import { isDevBuild } from '@/arkham/displayRules'
 import {
   CARD_FLIGHT_ATTR,
+  CARD_FLIGHT_PILE_ATTR,
   CARD_FLIGHT_STATE,
   CARD_FLIGHT_TRANSITION_CLASS,
   cardFlightTransitionName,
 } from '@/arkham/cardFlight'
+import { PENDING_DRAWS, pendingDraws, type PendingDraw } from '@/arkham/pendingDraws'
 import { customCardDef, isCustomCardCode } from '@/arkham/customCards'
 import * as Message from '@/arkham/types/Message'
 import type { Phase } from '@/arkham/types/Phase'
@@ -106,6 +111,7 @@ import CardOverlay from '@/arkham/components/CardOverlay.vue'
 import CardView from '@/arkham/components/Card.vue'
 import MultiplayerLobby from '@/arkham/components/MultiplayerLobby.vue'
 import GameLog from '@/arkham/components/GameLog.vue'
+import ExportLogDialog from '@/arkham/components/ExportLogDialog.vue'
 import type { LogEntry, LogRow } from '@/arkham/types/GameLog'
 import {
   legacyLogEntry,
@@ -166,6 +172,14 @@ type ServerResult =
   | { tag: 'GameAudio'; contents: string }
   | { tag: 'SharedStateUpdate'; contents: SharedEventState }
   | { tag: 'EventChanged' }
+  /* An archived undo history came back. The board does not change; this says
+   * the wait is over and undo works again. */
+  | { tag: 'GameUnarchived' }
+  | { tag: 'GameUnarchiveFailed'; contents: string }
+  /* How many people are watching without a seat. Pushed by the server on every
+   * connect and disconnect -- including our own, so the first one arrives with
+   * the socket rather than being asked for. */
+  | { tag: 'GameWatcherCount'; contents: number }
   /* The room is gone -- the game was deleted, or an admin dropped it. The server
    * closes the socket right behind this, and `autoReconnect` would otherwise
    * recreate the very room that was just removed, so this leaves rather than
@@ -319,17 +333,33 @@ interface PlayabilityInfo {
 
 const game = shallowRef<Arkham.Game | null>(null)
 
+/* A community narrative variant rewrites the campaign's prose; its messages are
+ * merged over the campaign's scope for as long as this game is the one open. */
+useNarrative(game)
+
 /* A custom card someone else created shows up in the game payload before this
  * client has its def; refetch the game's custom cards when an unknown one
  * appears. */
+let refetchedFor = ''
 watch(game, (g) => {
   if (!g) return
   const missing = (code: string) => isCustomCardCode(code) && !customCardDef(code)
   // A custom investigator never appears in `cards`; it is only a seat.
-  const unknown =
-    Object.values(g.cards).some((c) => missing(asCardCode(c)))
-    || Object.values(g.investigators).some((i) => missing(i.cardCode))
-  if (unknown) store.fetchCustomCards(props.gameId)
+  const unknown = [
+    ...Object.values(g.cards).map(asCardCode),
+    ...Object.values(g.investigators).map((i) => i.cardCode),
+  ]
+    .filter(missing)
+    .sort()
+    .join(',')
+  /* `fetchCustomCards` remembers its answer for the session, so this has to say
+   * it wants a fresh one -- the whole point here is that the answer changed.
+   * Keyed on which cards are missing so a def that is genuinely gone does not
+   * buy another copy of the set on every update for the rest of the game. */
+  if (unknown && unknown !== refetchedFor) {
+    refetchedFor = unknown
+    store.fetchCustomCards(props.gameId, true)
+  }
 })
 
 // "Ready to play": the group has reached the first investigation phase of an
@@ -436,6 +466,10 @@ const playerId = ref<string | null>(null)
 const ready = ref(false)
 const resultQueue = ref<any>([])
 const showLog = ref(false)
+const showExportLog = ref(false)
+/* Spectators on this game right now, as the server last said. Zero until the
+ * first push, which our own join brings. */
+const watcherCount = ref(0)
 const showShortcuts = ref(false)
 const isMobileViewport = () =>
   typeof window !== 'undefined' && window.matchMedia('(max-width: 800px)').matches
@@ -479,7 +513,7 @@ watch(processing, (busy) => {
 const storyAnswerPending = ref(false)
 const oldQuestion = ref<Record<string, Question> | null>(null)
 const skipAllPending = ref<Set<string>>(new Set())
-const { t } = useI18n()
+const { t, te } = useI18n()
 const phaseNotification = ref<Phase | null>(null)
 const phaseNotificationQueue = ref<Phase[]>([])
 const phaseNotificationPlaying = ref(false)
@@ -533,6 +567,9 @@ const drawSpotlight = ref<DrawSpotlightEntry | null>(null)
 /* Cards an overlay is showing full-screen right now. Their board copies hide so
  * that a card is never on screen twice, and a placeholder holds the slot. */
 const previewedCardIds = ref<ReadonlySet<string>>(new Set())
+/* See `PENDING_DRAWS`. Kept here because only this component sees the update
+ * with its question still on it. */
+const heldPendingDraws = ref<PendingDraw[]>([])
 const flyingCardIds = ref<ReadonlySet<string>>(new Set())
 
 /* Returns whether the overlay actually opened, so a caller holding the lock on
@@ -545,7 +582,7 @@ function showDrawSpotlight(entry: DrawSpotlightEntry): boolean {
 }
 
 type TransitionDocument = Document & {
-  startViewTransition?: (callback: () => Promise<void>) => { finished: Promise<void> }
+  startViewTransition?: (callback: () => Promise<void>) => { ready: Promise<void>; finished: Promise<void> }
 }
 
 /* The on-screen element a card would fly to, or null if it has none.
@@ -570,6 +607,24 @@ function laidOutDestination(id: string): Element | null {
     const r = el.getBoundingClientRect()
     if (r.width && r.height) return el
   }
+  return laidOutPile(id)
+}
+
+/* A card that went into a pile instead of onto the board.
+ *
+ * A discard renders only its top card, and by the time a reveal is dismissed
+ * that is usually no longer the card the reveal was showing -- the engine does
+ * not wait for the click, so everything that resolved behind the overlay has
+ * landed on top of it already. Matching on the pile's whole contents is what
+ * keeps the flight working in that very ordinary case; matching the rendered
+ * top card alone would almost never fire.
+ */
+function laidOutPile(id: string): Element | null {
+  for (const el of document.querySelectorAll(`[${CARD_FLIGHT_PILE_ATTR}]`)) {
+    if (!(el.getAttribute(CARD_FLIGHT_PILE_ATTR) ?? '').split(' ').includes(id)) continue
+    const r = el.getBoundingClientRect()
+    if (r.width && r.height) return el
+  }
   return null
 }
 
@@ -585,7 +640,23 @@ function cardsWithADestination(cards: Card[]): string[] {
  * card blinking out. These sit in the page (no transition name, so they are
  * part of the root snapshot) and hold the space until the card is really back.
  */
-const flightPlaceholders = ref<{ id: string; style: Record<string, string> }[]>([])
+const flightPlaceholders = ref<{ id: string; style: Record<string, string>; image?: string }[]>(
+  [],
+)
+
+/* What a promoted destination was showing, for the placeholder to keep showing.
+ *
+ * Only piles have one. A card flying back to its own slot leaves a slot that was
+ * empty anyway -- it is away being flown -- so a hole is the honest picture
+ * there. A discard is different: it is already showing a card, usually not even
+ * the one in flight, and that card has to stay put until the animation lands or
+ * the pile blinks out from under it.
+ */
+function pileImage(el: Element): string | undefined {
+  if (!el.hasAttribute(CARD_FLIGHT_PILE_ATTR)) return undefined
+  const img = el.querySelector('img')
+  return img instanceof HTMLImageElement ? img.src : undefined
+}
 
 function measureDestinations(ids: string[]) {
   return ids.flatMap((id) => {
@@ -595,6 +666,7 @@ function measureDestinations(ids: string[]) {
     return [
       {
         id,
+        image: pileImage(el),
         style: {
           top: `${r.top}px`,
           left: `${r.left}px`,
@@ -646,6 +718,7 @@ function flyThenDismiss(cards: Card[], hide: () => void) {
     })
     // `finished` rejects when the transition is skipped. Either way the overlay
     // is already gone and the lock has to come off, or the board stays frozen.
+    void transition.ready.catch(() => {})
     transition.finished.then(settle, settle)
   } catch (e) {
     console.error(e)
@@ -706,6 +779,7 @@ function dismissDrawSpotlight() {
 /* Undo rewinds past the draw or reveal, so it goes with it. */
 function clearDrawSpotlight() {
   drawSpotlight.value = null
+  heldPendingDraws.value = []
   previewedCardIds.value = new Set()
   flyingCardIds.value = new Set()
   flightPlaceholders.value = []
@@ -782,6 +856,7 @@ addEntry({
   content: t('gameBar.viewSettings'),
   binding: 'viewSettings',
   nested: 'view',
+  section: 'preferences',
   action: () => (showSettings.value = !showSettings.value),
 })
 
@@ -791,7 +866,22 @@ addEntry({
   content: t('gameBar.viewHistory'),
   binding: 'viewHistory',
   nested: 'view',
+  section: 'panels',
   action: () => (showHistory.value = !showHistory.value),
+})
+
+/* Registered rather than written into the menu, so the View menu is built from
+   one list and the sections below do not have to special-case it. The key is
+   handled before `runMenuShortcut` ever sees it (it returns early), so naming
+   the binding here only labels the row -- it does not bind it twice. */
+addEntry({
+  id: 'shortcuts',
+  icon: BoltIcon,
+  content: t('gameBar.shortcuts'),
+  binding: 'showShortcuts',
+  nested: 'view',
+  section: 'preferences',
+  action: () => (showShortcuts.value = !showShortcuts.value),
 })
 
 // Computed
@@ -826,12 +916,45 @@ const choices = computed(() => {
   return choicesByPlayer.value.get(playerId.value) ?? []
 })
 const gameOver = computed(() => game.value?.gameState.tag === 'IsOver')
+const outcome = computed(() => game.value?.outcome ?? null)
+// A standalone scenario has no campaign, so the verdict is about the scenario.
+const outcomeLabel = computed(() => {
+  const o = outcome.value
+  if (!o) return t('gameOver')
+  const subject = game.value?.campaign ? 'campaign' : 'scenario'
+  if (o.result === 'Lost') return t(`${subject}Lost`)
+  // "The investigators win the campaign…?" is printed that way; say so rather
+  // than flattening it to a plain win.
+  if (o.certainty === 'Uncertain' && subject === 'campaign') return t('campaignWonUncertain')
+  return t(`${subject}Won`)
+})
+
+/* The clause the Campaign Guide attaches to the verdict, as its own line — the
+ * verdict is the headline, the caveat is the printed small print. */
+const outcomeNote = computed(() => {
+  const o = outcome.value
+  if (o?.note && te(o.note)) return t(o.note)
+  if (o?.certainty === 'Uncertain') return t('outcomeUncertain')
+  return null
+})
+// Seats pending a question, in table order. game.question is a server-side Map
+// keyed by PlayerId, so its JSON key order is UUID order, not seat order: taking
+// its head routes deck selection to a seat further down the table and leaves the
+// rows between it and the last answered one empty (#5925). IsChooseDecks carries
+// the seat list, which is also what ChooseDeck.vue orders its rows by.
+function pendingQuestionPlayers(g: Arkham.Game): string[] {
+  const asked = Object.keys(g.question).filter((pid) => !!g.question[pid])
+  const seats = g.gameState.tag === 'IsChooseDecks' ? g.gameState.contents : []
+  const ordered = seats.filter((pid) => asked.includes(pid))
+  return [...ordered, ...asked.filter((pid) => !ordered.includes(pid))]
+}
+
 const questionPlayerId = computed(() => {
   const currentGame = game.value
   if (!currentGame) return playerId.value
   if (playerId.value && currentGame.question[playerId.value]) return playerId.value
   if (solo.value && currentGame.gameState.tag === 'IsChooseDecks') {
-    return Object.keys(currentGame.question)[0] ?? playerId.value
+    return pendingQuestionPlayers(currentGame)[0] ?? playerId.value
   }
   return playerId.value
 })
@@ -888,7 +1011,7 @@ function followPendingUpgradeQuestion(g: Arkham.Game) {
   // Replacement investigators can produce follow-up trauma and setup questions
   // after ChooseUpgradeDeck has been answered. Keep following whichever solo
   // investigator owns the continuation instead of remaining on the answered tab.
-  const pendingPlayer = Object.keys(g.question)[0]
+  const pendingPlayer = pendingQuestionPlayers(g)[0]
   if (pendingPlayer) playerId.value = pendingPlayer
 }
 
@@ -1057,20 +1180,33 @@ watch(
     const [newId] = newVals
     if (!newId) return
     if (oldVals && newId === oldVals[0] && newVals[1] === oldVals[1]) return
-    await fetchGame(props.gameId, props.spectate).then(
-      async ({ game: newGame, playerId: newPlayerId, multiplayerMode, eventId }) => {
-        preloadImages(newGame)
-        ;(window as Window & { g?: Arkham.Game }).g = newGame
-        game.value = newGame
-        solo.value = multiplayerMode === 'Solo'
-        // Engage the Epic event this game belongs to even when the URL lacks
-        // ?event (e.g. entered via the join / take-a-seat path).
-        gamePayloadEventId.value = eventId
-        updateGameLog(newGame.log)
-        playerId.value = newPlayerId
-        ready.value = true
-      },
-    )
+    await fetchGame(props.gameId, props.spectate)
+      .then(
+        async ({ game: newGame, playerId: newPlayerId, multiplayerMode, eventId }) => {
+          preloadImages(newGame)
+          ;(window as Window & { g?: Arkham.Game }).g = newGame
+          game.value = newGame
+          solo.value = multiplayerMode === 'Solo'
+          // Engage the Epic event this game belongs to even when the URL lacks
+          // ?event (e.g. entered via the join / take-a-seat path).
+          gamePayloadEventId.value = eventId
+          updateGameLog(newGame.log)
+          playerId.value = newPlayerId
+          ready.value = true
+        },
+      )
+      .catch((err) => {
+        /* A game you hold no seat in answers 404: the handler looks for your
+         * player row and there is not one. An admin has somewhere to go with
+         * that -- the read-only admin view of the same game -- so send them
+         * there rather than leaving the page on its loading state. Everyone
+         * else keeps the error they were given. */
+        const status = (err as { response?: { status?: number } })?.response?.status
+        if (!props.spectate && userStore.isAdmin && status === 404) {
+          return router.replace({ name: 'AdminGame', params: { gameId: props.gameId } })
+        }
+        throw err
+      })
   },
   { immediate: true },
 )
@@ -1173,17 +1309,25 @@ function entitiesMoved(previous: Arkham.Game, current: Arkham.Game) {
 function applyGameUpdate(updatedGame: Arkham.Game, locked: boolean) {
   const nextGame = locked ? { ...updatedGame, question: {} } : updatedGame
   const previousGame = game.value
+  /* Read before the blanking: a draw lives in the question, and the board needs
+   * it precisely while an overlay has the question hidden -- that is when the
+   * card flying out of the overlay needs a slot laid out to land in. */
+  const draws = pendingDraws(updatedGame, playerId.value ?? '')
   const apply = async () => {
     game.value = nextGame
+    heldPendingDraws.value = draws
     storyAnswerPending.value = false
     await nextTick()
   }
   const transitionDocument = document as Document & {
-    startViewTransition?: (callback: () => Promise<void>) => unknown
+    startViewTransition?: (callback: () => Promise<void>) => { ready: Promise<void>; finished: Promise<void> }
   }
 
   if (previousGame && entitiesMoved(previousGame, nextGame) && transitionDocument.startViewTransition) {
-    transitionDocument.startViewTransition(apply)
+    const transition = transitionDocument.startViewTransition(apply)
+    // A skipped animation must not reject an otherwise successful game update.
+    void transition.ready.catch(() => {})
+    void transition.finished.catch(() => {})
   } else {
     void apply()
   }
@@ -1233,8 +1377,13 @@ function scheduleApplyUpdate(payload: string, queued: boolean) {
           questionTag(currentQuestion) === 'Read' &&
           ArkhamGame.choices(updatedGame, currentPlayer).length === 0 &&
           actionableQuestionPlayers.length > 0
+        // The server names the seat it parked on; fall back to seat order rather
+        // than the question map's UUID key order (#5925).
+        const activeIsAsked = !!updatedGame.question[updatedGame.activePlayerId]
         const nextQuestionPlayer = !questionPlayers.includes(currentPlayer)
-          ? questionPlayers[0]
+          ? activeIsAsked
+            ? updatedGame.activePlayerId
+            : pendingQuestionPlayers(updatedGame)[0]
           : currentReadIsWaiting
             ? actionableQuestionPlayers[0]
             : null
@@ -1321,20 +1470,92 @@ function skipAllTriggers() {
   sendSkipFor(first.playerId, first.choiceIdx)
 }
 
-const { send, close } = useWebSocket(websocketUrl, {
+const { send, close, status: socketStatus } = useWebSocket(websocketUrl, {
   autoReconnect: true,
   onError,
   onConnected,
   onMessage,
 })
 
+// Give normal loading transitions time to settle. Log a serialised snapshot,
+// rather than a reactive object that DevTools may display with later values.
+// No tokens, deck contents or full game state belong in these diagnostics.
+watch(
+  () => JSON.stringify({
+    gameId: props.gameId,
+    ready: ready.value,
+    playerId: playerId.value,
+    gameState: game.value?.gameState,
+    phase: game.value?.phase,
+    scenarioId: game.value?.scenario?.id,
+    campaignStep: game.value?.scenario?.campaignStep?.tag,
+    activePlayerId: game.value?.activePlayerId,
+    questions: Object.fromEntries(Object.entries(game.value?.question ?? {}).map(
+      ([pid, q]) => [pid, questionTag(q)],
+    )),
+  }),
+  (snapshot, _previous, onCleanup) => {
+    const timer = window.setTimeout(() => {
+      const g = game.value
+      let reason: string | null = null
+      if (!ready.value || !g || !playerId.value) {
+        reason = 'Game view is still waiting for its initial game or player'
+      } else if (!g.campaign && g.gameState.tag !== 'IsPending' && g.gameState.tag !== 'IsOver') {
+        const tags = Object.values(g.question).map(questionTag)
+        const ownsQuestion = !!g.question[playerId.value]
+        if (questionTag(g.question[playerId.value]) === 'PickScenarioSettings') {
+          reason = 'Standalone settings have not advanced; an automatic submission or refresh may be pending'
+        } else if (!g.scenario && !ownsQuestion) {
+          reason = 'No scenario or current-player question is available to render'
+        } else if (g.gameState.tag !== 'IsActive' && tags.length === 0) {
+          reason = 'Standalone view has no active game or questions to render'
+        } else if (g.phase === 'CampaignPhase' && !ownsQuestion && !tags.includes('ChooseDeck')) {
+          reason = 'Standalone setup has no question for the current player'
+        }
+      }
+      if (reason) console.warn('[Arkham setup] Game view may be blank or waiting', JSON.stringify({
+        reason,
+        ...JSON.parse(snapshot),
+        socketStatus: socketStatus.value,
+        spectating: props.spectate,
+      }))
+    }, 5000)
+    onCleanup(() => window.clearTimeout(timer))
+  },
+  { immediate: true },
+)
+
+/* Put up in place of leaving at once when the players have gone: a watcher
+ * whose board vanished mid-scenario is owed the reason, and a toast on the way
+ * out of the page is easy to miss. Dismissing it goes home. */
+const roomAbandoned = ref(false)
+
 /* The room was deleted. Close before navigating: `autoReconnect` would
  * otherwise bring the socket straight back up against a room the server has
  * just removed, and recreate it. Going home rather than showing a dead board,
  * because there is nothing left here to look at. */
-function roomClosed() {
+function roomClosed(reason: string) {
   close()
-  toast.info(t('gameClosed'), { timeout: 6000 })
+  /* Maintenance is the one reason the game still exists afterwards, so say so
+   * rather than "that game has been closed" -- which reads as though it were
+   * deleted. `setMaintenance` puts the notice up in place of the board; the
+   * socket carries this but no REST call has 503'd yet, so nothing else would. */
+  if (reason === 'maintenance') {
+    setMaintenance(true)
+  } else if (reason === 'abandoned') {
+    /* Only a spectator can receive this one -- it is sent because the last seat
+       left -- and the board behind the dialog is the last thing that happened,
+       which is worth leaving up while it is read. */
+    roomAbandoned.value = true
+    return
+  } else {
+    toast.info(t('gameClosed'), { timeout: 6000 })
+  }
+  router.push({ name: 'Home' })
+}
+
+function leaveAbandonedRoom() {
+  roomAbandoned.value = false
   router.push({ name: 'Home' })
 }
 
@@ -1408,10 +1629,28 @@ function sendAnswer(payload: string) {
 }
 
 const handleResult = (result: ServerResult) => {
+  /* Ahead of the reset below: every other tag is the table moving, and clearing
+   * `processing` is how the board stops waiting. Somebody opening or closing a
+   * spectator tab is not that, and must not take the spinner off an answer that
+   * is still in flight. */
+  if (result.tag === 'GameWatcherCount') {
+    watcherCount.value = result.contents
+    return
+  }
   processing.value = false
   switch (result.tag) {
     case 'RoomClosed':
-      roomClosed()
+      roomClosed(result.contents)
+      return
+    case 'GameUnarchived':
+      unarchiving.value = false
+      archiveNotice.value = null
+      toast.success(t('archive.restored'), { timeout: 6000 })
+      return
+    case 'GameUnarchiveFailed':
+      unarchiving.value = false
+      toast.error(t('archive.restoreFailed'), { timeout: 8000 })
+      console.error('Unarchive failed', result.contents)
       return
     case 'GameError':
       if (props.spectate) return
@@ -1447,6 +1686,22 @@ const handleResult = (result: ServerResult) => {
       playAudioFile(result.contents)
       return
     case 'GameUI':
+      /* A bamf: see SmokePuffLayer.vue. Queued like any other blocking result
+       * when something already holds the lock, so the two halves of one
+       * vanishing play in order instead of on top of each other.
+       *
+       * The lock is NOT taken here. SmokePuffLayer takes it, because only it
+       * knows when the animation is over -- and if no layer is listening
+       * (outside a scenario, or the context failed) nothing is taken and
+       * nothing stalls, which is the right way round for a decoration. */
+      if (result.contents.startsWith('smokePuff:')) {
+        if (uiLock.value) {
+          qPush(result)
+          return
+        }
+        emitter.emit('arkham:smoke-puff', result.contents.slice('smokePuff:'.length))
+        return
+      }
       if (result.contents.startsWith('theSilence:')) {
         if (props.spectate) return
         const targetPlayer = result.contents.slice('theSilence:'.length)
@@ -1505,19 +1760,17 @@ const handleResult = (result: ServerResult) => {
       return
 
     case 'GameAchievement': {
-      // Non-blocking gold toast; vue-toastification stacks multiple unlocks.
-      // Strings are translated here because the toast container has no i18n.
+      // Non-blocking gold toast; several unlocks at once stack. Translated here
+      // rather than in the component so the component stays a dumb presenter.
       const tag = result.contents
-      toast(
+      toast.custom(
+        AchievementToast,
         {
-          component: markRaw(AchievementToast),
-          props: {
-            title: t('achievements.toastTitle'),
-            name: t(`${achievementEntryScope(tag)}.name`),
-            text: t(`${achievementEntryScope(tag)}.text`),
-          },
+          title: t('achievements.toastTitle'),
+          name: t(`${achievementEntryScope(tag)}.name`),
+          text: t(`${achievementEntryScope(tag)}.text`),
         },
-        { timeout: 8000, icon: false, closeButton: false, toastClassName: 'achievement-toast' },
+        { timeout: 8000, dismissible: false, className: 'achievement-toast' },
       )
       return
     }
@@ -1667,6 +1920,25 @@ const menuShortcutKeys = (item: MenuEntry): string[] => {
   if (item.binding) return shortcutKeys(item.binding)
   return item.shortcut ? [item.shortcut] : []
 }
+
+/* The View menu, in blocks: what you can open, how the board is arranged, and
+   what you have set. An entry says which block it belongs to (see MenuSection),
+   so a panel registered by a scenario or an investigator lands in the right one
+   without this list knowing about it; an empty block draws nothing. */
+const VIEW_SECTIONS = [
+  { id: 'panels', label: 'gameBar.sectionPanels' },
+  { id: 'layout', label: 'gameBar.sectionLayout' },
+  { id: 'preferences', label: 'gameBar.sectionPreferences' },
+] as const
+
+const viewSections = computed(() =>
+  VIEW_SECTIONS.map((section) => ({
+    ...section,
+    items: menuItems.value.filter(
+      (item) => item.nested === 'view' && (item.section ?? 'panels') === section.id,
+    ),
+  })).filter((section) => section.items.length > 0),
+)
 
 /* The card under the cursor as a debug target. `data-id` sits on the card image for
  * assets, enemies and locations, and on the two wrappers an investigator renders as
@@ -2014,6 +2286,55 @@ const toggleSidebar = function () {
 // Undo
 const undoLock = ref(false)
 
+/* An undo the server refused because the history is in cold storage, and the
+ * fetch that is putting it back. See `noticeArchive`. */
+const archiveNotice = ref<{ reason: string; archive: GameArchive } | null>(null)
+const unarchiving = ref(false)
+
+type ArchiveRefusal = {
+  response?: { status?: number; data?: { error?: string; archive?: GameArchive } }
+}
+
+/* Turn a refused undo into the one thing the player can do about it.
+ *
+ * Nothing checks for an archive in advance -- the game payload carries no
+ * archived flag, because it would be false for all but a handful of games -- so
+ * a 409 from an undo is where this surfaces, and this is the only place in the
+ * client that has to know archives exist.
+ *
+ * Returns whether the error was handled, so the caller can fall through to its
+ * ordinary reporting for anything else. */
+function noticeArchive(e: unknown): boolean {
+  const response = (e as ArchiveRefusal).response
+  if (response?.status !== 409) return false
+  const reason = response.data?.error
+  const archive = response.data?.archive
+  if (!archive) return false
+  if (reason === 'restoring') {
+    // Someone at the table already asked; the outcome arrives on the socket.
+    unarchiving.value = true
+    toast.info(t('archive.alreadyRestoring'), { timeout: 6000 })
+    return true
+  }
+  if (reason !== 'archived' && reason !== 'restoreFailed') return false
+  archiveNotice.value = { reason, archive }
+  return true
+}
+
+async function requestUnarchive() {
+  const notice = archiveNotice.value
+  archiveNotice.value = null
+  if (!notice) return
+  unarchiving.value = true
+  try {
+    await unarchiveGame(props.gameId)
+  } catch (e) {
+    unarchiving.value = false
+    toast.error(t('archive.restoreFailed'), { timeout: 8000 })
+    console.error(e)
+  }
+}
+
 /*
  * Every undo goes through here so the lock is taken BEFORE any UI state is
  * touched and released in `finally`.
@@ -2042,7 +2363,7 @@ async function runUndo(call: (gameId: string) => Promise<void>) {
   } catch (e) {
     processing.value = false
     if (game.value && oldQuestion) setGameQuestion(oldQuestion)
-    console.log(e)
+    if (!noticeArchive(e)) console.log(e)
   } finally {
     undoLock.value = false
   }
@@ -2389,10 +2710,18 @@ provide('chooseOrdered', chooseOrdered)
 provide('storyAnswerPending', storyAnswerPending)
 provide('uiLock', uiLock)
 provide(CARD_FLIGHT_STATE, { previewed: previewedCardIds, flying: flyingCardIds })
+provide(PENDING_DRAWS, heldPendingDraws)
 provide('skipAllTriggers', skipAllTriggers)
 provide('skipAllAvailable', skipAllAvailable)
 provide('skipAllInProgress', skipAllInProgress)
-provide('showOtherPlayersHands', showOtherPlayersHands)
+/* A spectator sees every hand. The setting is a player's, about how much of the
+ * table they want on screen while playing their own seat; somebody watching has
+ * no seat to keep anything secret from, and the settings panel it is toggled in
+ * is not rendered for them to reach it in the first place. */
+provide(
+  'showOtherPlayersHands',
+  computed(() => props.spectate || showOtherPlayersHands.value),
+)
 
 function updateFocusLight() {
   if (!realityAcidLightActive.value) return
@@ -2562,6 +2891,13 @@ onUnmounted(() => {
     </div>
   </div>
   <div id="game" v-else-if="ready && game && playerId" :class="{ 'game--inline-modals': inlineModals }" :style="{ '--epic-bar-height': epicBarHeight + 'px' }">
+    <dialog v-if="roomAbandoned" class="error-dialog">
+      <h2>{{ $t('gameAbandonedTitle') }}</h2>
+      <p>{{ $t('gameAbandoned') }}</p>
+      <div class="buttons">
+        <button @click="leaveAbandonedRoom">{{ $t('close') }}</button>
+      </div>
+    </dialog>
     <dialog v-if="error" class="error-dialog">
       <h2>{{ $t('error') }}</h2>
       <p class="error-message">{{ error }}</p>
@@ -2756,27 +3092,25 @@ onUnmounted(() => {
       <p>{{ $t('outOfSyncHint') }}</p>
     </div>
     <div class="game-bar">
-      <div class="game-bar-item">
-        <div>
-          <button @click="showLog = !showLog">
-            <DocumentTextIcon aria-hidden="true" />
-            {{ showLog ? $t('gameBar.closeLog') : $t('gameBar.viewLog') }}
-          </button>
-        </div>
+      <!-- The campaign screen. Not a menu and not a panel: it replaces the
+           board, so it is drawn as a mode you are in (active while open) and
+           sits apart from the menus. It also outgrew the name "log" -- it
+           carries achievements, special rules, partners, the chaos bag and the
+           campaign's own about page. -->
+      <div class="game-bar-item screen-switch" :class="{ active: showLog }">
+        <button :aria-pressed="showLog" @click="showLog = !showLog">
+          <BookOpenIcon aria-hidden="true" />
+          {{ $t('gameBar.campaign') }}
+        </button>
       </div>
       <div>
         <Menu>
           <EyeIcon aria-hidden="true" />
           {{ $t('gameBar.view') }}
           <template #items>
-            <MenuItem v-slot="{ active }">
-              <button :class="{ active }" @click="showShortcuts = !showShortcuts">
-                <BoltIcon aria-hidden="true" /> {{ $t('gameBar.shortcuts') }}
-                <span class="shortcut">{{ shortcutKeys('showShortcuts').join('+') }}</span>
-              </button>
-            </MenuItem>
-            <template v-for="item in menuItems" :key="item.id">
-              <MenuItem v-if="item.nested === 'view'" v-slot="{ active }">
+            <template v-for="section in viewSections" :key="section.id">
+              <div class="menu-section">{{ $t(section.label) }}</div>
+              <MenuItem v-for="item in section.items" :key="item.id" v-slot="{ active }">
                 <button :class="{ active }" @click="item.action">
                   <component v-if="item.icon" v-bind:is="item.icon"></component>
                   {{ item.content }}
@@ -2792,12 +3126,21 @@ onUnmounted(() => {
           <BeakerIcon aria-hidden="true" />
           {{ $t('gameBar.debug') }}
           <template #items>
+            <div class="menu-section">{{ $t('gameBar.sectionTools') }}</div>
             <MenuItem v-slot="{ active }">
               <button :class="{ active }" @click="debug.toggle">
                 <BugAntIcon aria-hidden="true" /> {{ $t('gameBar.toggleDebug') }}
                 <span class="shortcut">{{ shortcutKeys('toggleDebug').join('+') }}</span>
               </button>
             </MenuItem>
+            <MenuItem v-slot="{ active }">
+              <button :class="{ active }" @click="showEntityBrowser = true">
+                <TableCellsIcon aria-hidden="true" /> {{ $t('gameBar.debugEntities') }}
+              </button>
+            </MenuItem>
+            <!-- The debug exports: a game to feed back into the engine, which is
+                 a different thing from the log export next door. -->
+            <div class="menu-section">{{ $t('gameBar.sectionExports') }}</div>
             <MenuItem v-slot="{ active }">
               <button :class="{ active }" @click="debugExport('basic')">
                 <DocumentArrowDownIcon aria-hidden="true" /> {{ $t('gameBar.debugExport') }}
@@ -2811,11 +3154,6 @@ onUnmounted(() => {
             <MenuItem v-if="userStore.isAdmin" v-slot="{ active }">
               <button :class="{ active }" @click="debugExport('full')">
                 <DocumentArrowDownIcon aria-hidden="true" /> {{ $t('gameBar.debugExportFull') }}
-              </button>
-            </MenuItem>
-            <MenuItem v-slot="{ active }">
-              <button :class="{ active }" @click="showEntityBrowser = true">
-                <TableCellsIcon aria-hidden="true" /> {{ $t('gameBar.debugEntities') }}
               </button>
             </MenuItem>
           </template>
@@ -2898,6 +3236,31 @@ onUnmounted(() => {
         </div>
       </template>
       <div v-if="isActualScenarioView" class="right">
+        <!-- Not a button: there is nothing behind the number to open, and the
+             count is read, not used. Hidden at zero so a table nobody is
+             watching carries no extra furniture. -->
+        <div
+          v-if="watcherCount > 0"
+          class="watchers"
+          role="status"
+          v-tooltip="$t('gameBar.spectators')"
+          :aria-label="$t('gameBar.watching', { count: watcherCount }, { plural: watcherCount })"
+        >
+          <EyeIcon aria-hidden="true" />
+          <span class="watcher-count">{{ watcherCount }}</span>
+        </div>
+        <!-- The log's own controls, with the log: exporting is only on offer
+             while the panel it would export is open. A seat, like the scrollback
+             endpoint it reads beside. -->
+        <button
+          v-if="showSidebar && !spectate"
+          class="drawer-toggle log-export"
+          :aria-label="$t('gameBar.exportLog')"
+          :title="$t('gameBar.exportLog')"
+          @click="showExportLog = true"
+        >
+          <DocumentArrowDownIcon aria-hidden="true" />
+        </button>
         <button
           class="drawer-toggle"
           :aria-label="$t('gameBar.toggleSidebar')"
@@ -3016,9 +3379,12 @@ onUnmounted(() => {
             v-for="p in flightPlaceholders"
             :key="p.id"
             class="card-flight-placeholder"
+            :class="{ 'card-flight-placeholder--pile': p.image }"
             :style="p.style"
             aria-hidden="true"
-          />
+          >
+            <img v-if="p.image" :src="p.image" />
+          </div>
         </Teleport>
         <DrawSpotlight
           v-if="drawSpotlight && game && playerId"
@@ -3104,6 +3470,7 @@ onUnmounted(() => {
           :game="game"
           :scenario="game.scenario"
           :playerId="playerId"
+          @update="update"
         />
         <StandaloneScenario
           v-else-if="game.scenario && !gameOver"
@@ -3142,7 +3509,12 @@ onUnmounted(() => {
           />
         </div>
         <div class="game-over" v-if="gameOver">
-          <p>{{ $t('gameOver') }}</p>
+          <p
+            :class="outcome ? (outcome.result === 'Won' ? 'won' : 'lost') : null"
+          >
+            {{ outcomeLabel }}
+          </p>
+          <p v-if="outcomeNote" class="outcome-note">{{ outcomeNote }}</p>
           <button
             class="replay-button"
             @click="router.push({ name: 'ReplayGame', params: { gameId } })"
@@ -3159,6 +3531,20 @@ onUnmounted(() => {
         ></div>
       </div>
     </template>
+    <div v-if="unarchiving" class="archive-restoring">
+      <ArrowPathIcon class="archive-restoring__icon" />
+      <span>{{ $t('archive.restoringBanner') }}</span>
+    </div>
+    <Prompt
+      v-if="archiveNotice"
+      :prompt="
+        archiveNotice.reason === 'restoreFailed'
+          ? $t('archive.retryPrompt')
+          : $t('archive.prompt', { steps: archiveNotice.archive.steps })
+      "
+      :yes="requestUnarchive"
+      :no="() => (archiveNotice = null)"
+    />
     <Prompt
       v-if="confirmingUndoScenario"
       prompt="$game.areYouSureUndoScenario"
@@ -3183,10 +3569,49 @@ onUnmounted(() => {
         @close="showEntityBrowser = false"
       />
     </Teleport>
+    <Teleport to="body">
+      <ExportLogDialog
+        v-if="showExportLog"
+        :gameId="gameId"
+        :gameName="game?.name ?? ''"
+        :playerId="playerId"
+        :legacyLocations="legacyLocations()"
+        @close="showExportLog = false"
+      />
+    </Teleport>
   </div>
 </template>
 
 <style lang="scss" scoped>
+/* Fetching an archive is a download of every step a game ever took, which can
+ * take a while, so it gets a standing indicator rather than only a toast. */
+.archive-restoring {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.85rem;
+}
+
+.archive-restoring__icon {
+  width: 16px;
+  height: 16px;
+  animation: archive-spin 1.2s linear infinite;
+}
+
+@keyframes archive-spin {
+  to { transform: rotate(360deg); }
+}
+
 .back-button {
   display: inline-flex;
   align-items: center;
@@ -3278,6 +3703,57 @@ onUnmounted(() => {
 
 .game-bar div .undo-jump-header {
   display: flex;
+}
+
+/* A block heading inside a menu. Same voice as the undo group's own header,
+   which is where this look came from -- small caps, dim, and untouchable, so a
+   heading is never mistaken for a row you can pick. */
+.menu-section {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1.5px;
+  color: rgba(255, 255, 255, 0.55);
+  padding: 8px 10px 4px;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* The first heading in a menu has the menu's own edge above it. */
+.menu-items > .menu-section:first-child {
+  padding-top: 6px;
+}
+
+/* The campaign screen is a mode, not a popover, so it is set apart from the
+   menus by a rule rather than by a chevron it would be wrong to draw. */
+.game-bar .screen-switch {
+  border-right: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+/* Reads on the bar the way the badge on the home page's Watch button reads: the
+   same pill, so the number means the same thing in both places. */
+.game-bar .watchers {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: rgba(255, 255, 255, 0.75);
+
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+}
+
+.watcher-count {
+  background: var(--background-dark);
+  border-radius: 999px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  min-width: 1.6em;
+  padding: 3px 6px;
+  text-align: center;
 }
 
 .undo-jump-header {
@@ -3668,6 +4144,21 @@ header {
     padding: 10px 20px;
     color: white;
     text-align: center;
+
+    &.won {
+      background: color-mix(in srgb, var(--outcome-won-dark) 75%, transparent);
+    }
+
+    &.lost {
+      background: color-mix(in srgb, var(--outcome-lost-dark) 75%, transparent);
+    }
+
+    &.outcome-note {
+      text-transform: none;
+      font-style: italic;
+      background: rgba(0, 0, 0, 0.35);
+      padding: 6px 20px;
+    }
   }
 }
 
@@ -4223,6 +4714,10 @@ header {
     button {
       background: none;
       border: 0;
+      /* base.css rounds every button by 6px, which is right for a standalone
+         control and wrong here: these are full-width rows in a flat strip, so a
+         rounded highlight floats inside a square menu. */
+      border-radius: 0;
       display: inline;
       padding: 5px 10px;
       display: flex;
@@ -4239,6 +4734,13 @@ header {
     }
   }
   justify-content: flex-start;
+
+  /* The log's controls are a row, not a stack. `.game-bar div button` makes
+     every button here a block-level flex container, so a second control in this
+     group lands on its own line and takes the whole bar to two rows with it. */
+  .right {
+    display: flex;
+  }
 
   .right .drawer-toggle {
     justify-content: center;
@@ -4756,5 +5258,23 @@ dialog {
      the dark board, quiet enough not to look like a card of its own. */
   background: rgba(255, 255, 255, 0.05);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+
+/* A pile stands in for itself instead: it was showing a card before the flight
+   started and has to go on showing it, so this is the pile's own top card held
+   in place while the real element is away being morphed into. Sits below the
+   flying card, which is in the view-transition layer. */
+.card-flight-placeholder--pile {
+  background: none;
+  /* `.discard-card`'s own shadow, so the stand-in is not visibly flatter than
+     the pile it is standing in for. */
+  box-shadow: 1px 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+.card-flight-placeholder--pile img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
 }
 </style>

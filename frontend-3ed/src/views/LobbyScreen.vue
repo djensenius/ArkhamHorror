@@ -72,10 +72,34 @@ const join = (t: TableSummary) =>
     void router.push(`/tables/${t.id}`)
   })
 const leave = (t: TableSummary) => act(t.id, () => api.leaveTable(t.id))
+// two tables made the same day carry the same default name, so the name alone
+// cannot say which one this is about and closing a game cannot be undone
+const closeDetail = (t: TableSummary) =>
+  [scenarioName(t), `${t.seats.length} players`, `made ${new Date(t.createdAt).toLocaleString()}`]
+    .filter(Boolean)
+    .join(' \u00b7 ')
 const close = (t: TableSummary) => {
-  if (confirm(`Close "${t.name}" for everyone?`)) void act(t.id, () => api.closeTable(t.id))
+  if (confirm(`Close "${t.name}" for everyone?\n\n${closeDetail(t)}\n\nThis cannot be undone.`))
+    void act(t.id, () => api.closeTable(t.id))
 }
 const dismissNotice = () => void router.replace({ path: '/' })
+
+// a debug file is an exported table; loading one makes a new table seated by whoever loads it
+const fileInput = ref<HTMLInputElement | null>(null)
+async function loadFile(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (fileInput.value) fileInput.value.value = ''
+  if (!file) return
+  busy.value = 'import'
+  try {
+    const t = await api.importTable(JSON.parse(await file.text()))
+    void router.push(`/tables/${t.id}`)
+  } catch (err) {
+    error.value = err instanceof SyntaxError ? "That file isn't a debug export" : api.errorText(err)
+  } finally {
+    busy.value = null
+  }
+}
 
 let timer: ReturnType<typeof setInterval> | undefined
 const onFocus = () => void refresh()
@@ -113,7 +137,13 @@ onUnmounted(() => {
         <div>
           <h2>Your games</h2>
         </div>
-        <button class="primary lobby-start" :disabled="!catalog" @click="showNew = true">New game</button>
+        <div class="lobby-hero-buttons">
+          <button class="primary lobby-start" :disabled="!catalog" @click="showNew = true">New game</button>
+          <button :disabled="busy === 'import'" @click="fileInput?.click()">
+            {{ busy === 'import' ? 'Loading…' : 'Load game' }}
+          </button>
+          <input ref="fileInput" type="file" accept=".json,application/json" hidden @change="loadFile" />
+        </div>
       </div>
       <section class="lobby-section">
         <h2>My games</h2>

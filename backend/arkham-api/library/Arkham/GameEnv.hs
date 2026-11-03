@@ -12,7 +12,9 @@ import {-# SOURCE #-} Arkham.Card (
   lookupCardDef,
   unsafeMakeCardId,
  )
-import Arkham.Card.CardDef (CardDef, toCardDef)
+import Arkham.Card.CardDef (CardDef, cdCardCode, cdCardSubType, cdMeta, toCardDef)
+import Arkham.Card.CardType (CardSubType (BasicWeakness))
+import Arkham.Card.CustomCard (CustomCard (..))
 import Arkham.Card.EncounterCard
 import Arkham.Card.PlayerCard
 import Arkham.Classes.GameLogger
@@ -20,6 +22,7 @@ import Arkham.Classes.HasAbilities
 import Arkham.Classes.HasDistance
 import Arkham.Classes.HasGame
 import Arkham.Classes.HasQueue
+import Arkham.Decklist.RandomBasicWeakness (RandomBasicWeaknessContext (..))
 import Arkham.Distance
 import {-# SOURCE #-} Arkham.Game
 import Arkham.Game.Settings
@@ -144,6 +147,12 @@ getSkillTest = gameSkillTest <$> getGame
 getCardPlayStack :: HasGame m => m [CardId]
 getCardPlayStack = gameCardPlayStack <$> getGame
 
+{- | The log blocks a resolving action has opened, innermost last. Log-only; see
+'Arkham.Game.Base.gameLogBlockStack'.
+-}
+getLogBlockStack :: HasGame m => m [Text]
+getLogBlockStack = gameLogBlockStack <$> getGame
+
 getsSkillTest :: HasGame m => (SkillTest -> a) -> m (Maybe a)
 getsSkillTest f = fmap f . gameSkillTest <$> getGame
 
@@ -266,6 +275,23 @@ withoutModifiersOf source body = do
     modifiers' = Map.map (filter ((/= toSource source) . (.source))) modifiers
   runReaderT body $ game & modifiersL .~ modifiers'
 
+{- | 'withoutModifiersOf' over several sources at once, to ask what would still
+hold if none of them contributed. 'getAllAbilitiesSkippable' uses it to weigh a
+window against the sources offering something in it, which have not resolved
+yet. An empty list leaves the game untouched rather than rebuilding the map.
+-}
+withoutModifiersOfAny
+  :: (HasGame m, Sourceable source)
+  => [source]
+  -> ReaderT Game m a
+  -> m a
+withoutModifiersOfAny sources body = do
+  game <- getGame
+  let
+    sources' = map toSource sources
+    modifiers' = Map.map (filter ((`notElem` sources') . (.source))) (gameModifiers game)
+  runReaderT body $ if null sources' then game else game & modifiersL .~ modifiers'
+
 withActiveInvestigator :: HasGame m => InvestigatorId -> ReaderT Game m a -> m a
 withActiveInvestigator iid body = do
   game <- getGame
@@ -323,3 +349,27 @@ getAllCardUses =
 
 getTurnOrder :: HasGame m => m [InvestigatorId]
 getTurnOrder = gamePlayerOrder <$> getGame
+
+{- | Use the pool snapshotted when the player’s setting was changed, so every
+player keeps their own eligible sets. Empty selected sets means no custom cards.
+-}
+getCustomRandomWeaknessCards :: HasGame m => PlayerId -> m [CardDef]
+getCustomRandomWeaknessCards pid = do
+  g <- getGame
+  let (enabled, sets) = Map.findWithDefault (False, mempty) pid (settingsCustomRandomWeaknessPools $ gameSettings g)
+      defs =
+        Map.fromList
+          [(cdCardCode def, def) | card <- toList (gameCustomCards g), let def = customCardDef card]
+      selected def = case lookup "set" (cdMeta def) of
+        Just (String name) -> name `member` sets
+        _ -> "" `member` sets
+  pure
+    $ if enabled
+      then filter (\def -> cdCardSubType def == Just BasicWeakness && selected def) (toList defs)
+      else []
+
+withCustomRandomWeaknessPool
+  :: HasGame m => PlayerId -> RandomBasicWeaknessContext -> m RandomBasicWeaknessContext
+withCustomRandomWeaknessPool pid context = do
+  cards <- getCustomRandomWeaknessCards pid
+  pure $ context {rbwCustomCards = cards}

@@ -100,6 +100,11 @@ data InvestigatorMatcher
   | FewestCardsInHand
   | MostCardsInHand
   | MostDamage
+  | {- | "...the most damage on them and their <matcher> cards": the printed
+    idiom that counts an investigator's own damage together with the damage
+    on the assets they control.
+    -}
+    MostDamageIncludingAssets AssetMatcher
   | LowestRemainingHealth
   | LowestRemainingSanity
   | MostRemainingHealth
@@ -130,7 +135,22 @@ data InvestigatorMatcher
   | InvestigatorWithModifier ModifierType
   | InvestigatorEngagedWith EnemyMatcher
   | InvestigatorCanBeEngagedBy EnemyId
-  | InvestigatorWithActionsRemaining ValueMatcher
+  | {- | Every action the investigator still has -- their remaining actions plus
+    every unspent additional action, whatever limitation it carries. This is
+    "actions remaining" left unqualified, as the cards print it (Eerie Glade,
+    Slaughtered Woods, Fathomless Lake), and what an action loss goes by (FAQ
+    1.10). See 'Arkham.Helpers.Action.getAllRemainingActions'.
+    -}
+    InvestigatorWithActionsRemaining ValueMatcher
+  | {- | Narrower: remaining actions plus only those unspent additional actions
+    that carry no limitation on their use. This is what Ages Unwound calls
+    "standard actions", for the cards that print that term.
+
+    Not named for the campaign's word, because the core rules use "standard
+    action" for the opposite side of the split -- the base three, as against
+    the additional ones (glossary "Action"; FAQ 1.10).
+    -}
+    InvestigatorWithUnrestrictedActionsRemaining ValueMatcher
   | InvestigatorWithActionsPerformed ValueMatcher
   | InvestigatorWithClues ValueMatcher
   | InvestigatorWithCluesInPool ValueMatcher
@@ -259,6 +279,10 @@ instance FromJSON InvestigatorMatcher where
       -- only checked the CannotDiscoverClues* modifiers and never that a clue was
       -- there, so saves holding it parse forward into the corrected matcher.
       "InvestigatorCanDiscoverCluesAtOneOf" -> InvestigatorWithDiscoverableCluesAt <$> o .: "contents"
+      -- Renamed from InvestigatorWithStandardActionsRemaining: "standard
+      -- action" is the base three in the core rules, not what this matches.
+      "InvestigatorWithStandardActionsRemaining" ->
+        InvestigatorWithUnrestrictedActionsRemaining <$> o .: "contents"
       "InvestigatorWithHighestSkill" ->
         (uncurry InvestigatorWithHighestSkill <$> o .: "contents")
           <|> (InvestigatorWithHighestSkill <$> o .: "contents" <*> pure UneliminatedInvestigator)

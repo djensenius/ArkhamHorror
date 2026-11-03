@@ -15,6 +15,7 @@ import Arkham.Enemy.CardDefs.TheInnsmouthConspiracy.AgentsOfHydra qualified as E
 import Arkham.Enemy.CardDefs.TheInnsmouthConspiracy.IntoTheMaelstrom qualified as Enemies
 import Arkham.Helpers.FlavorText
 import Arkham.Helpers.Location (getLocationOf, withLocationOf)
+import Arkham.Helpers.Narrative
 import Arkham.Helpers.Query
 import Arkham.Helpers.Xp (toBonus)
 import Arkham.I18n
@@ -22,6 +23,7 @@ import Arkham.Key
 import Arkham.Location.CardDefs.TheInnsmouthConspiracy.IntoTheMaelstrom qualified as Locations
 import Arkham.Location.Grid
 import Arkham.Matcher
+import Arkham.Narrative.TheInnsmouthConspiracy
 import Arkham.Message.Lifted.Choose
 import Arkham.Message.Lifted.Log
 import Arkham.Placement
@@ -144,7 +146,8 @@ setupIntoTheMaelstrom _attrs = scenarioI18n do
 instance RunMessage IntoTheMaelstrom where
   runMessage msg s@(IntoTheMaelstrom attrs) = runQueueT $ scenarioI18n $ case msg of
     PreScenarioSetup -> do
-      story $ i18nWithHeading "intro"
+      narrative <- getInnsmouthNarrative
+      storyBuild =<< narrativeBuilder narrative.intoTheMaelstromIntro (h "intro.title" >> p "intro.body")
       pure s
     StandaloneSetup -> do
       {- FOURMOLU_DISABLE -}
@@ -259,17 +262,17 @@ instance RunMessage IntoTheMaelstrom where
           resolution "resolution6"
           record AgentHarpersMissionIsCompleteButAtWhatCost
           eachInvestigator (`sufferMentalTrauma` 2)
-          gameOver
+          gameOverWonUncertain
         Resolution 7 -> do
           resolution "resolution7"
           record TheRichesOfTheDeepAreLostForeverButAtWhatCost
           eachInvestigator (`sufferMentalTrauma` 2)
-          gameOver
+          gameOverWonUncertain
         Resolution 8 -> do
           resolution "resolution8"
           record TheDeepOnesHaveFloodedTheEarth
           eachInvestigator (kill attrs)
-          gameOver
+          gameOverLost
         _ -> error "Unknown resolution"
       pure s
     _ -> IntoTheMaelstrom <$> liftRunMessage msg attrs

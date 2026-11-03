@@ -150,6 +150,7 @@ filterOutEnemyMessages eid ask'@(Ask pid q) = case q of
   QuestionWithSource {} -> Just ask'
   Read {} -> Just ask'
   ChooseOneWizard {} -> Just ask'
+  ChooseFromCollection {} -> Just ask'
   DropDown {} -> Just ask'
   PickSupplies {} -> Just ask'
   PickDestiny {} -> Just ask'
@@ -253,16 +254,6 @@ getCanReady a = do
   phase <- getPhase
   pure $ CannotReady `notElem` mods && (DoesNotReadyDuringUpkeep `notElem` mods || phase /= #upkeep)
 
-{- | Whether an enemy is currently barred from attacking. 'CannotAttack' is
-unconditional; 'CannotAttackDuringEnemyPhase' only bites in the enemy phase,
-since @Do EnemiesAttack@ is also pushed by card effects outside of it.
--}
-getCannotAttackNow :: HasGame m => [ModifierType] -> m Bool
-getCannotAttackNow mods
-  | CannotAttack `elem` mods = pure True
-  | CannotAttackDuringEnemyPhase `elem` mods = (== #enemy) <$> getPhase
-  | otherwise = pure False
-
 getCanEngage :: HasGame m => EnemyAttrs -> m Bool
 getCanEngage a = do
   keywords <- getModifiedKeywords a
@@ -353,7 +344,7 @@ instance RunMessage EnemyAttrs where
     SetOriginalCardCode cardCode -> pure $ a & originalCardCodeL .~ cardCode
     EndPhase -> pure $ a & movedFromHunterKeywordL .~ False
     SealedChaosToken token _ (isTarget a -> True) -> do
-      pure $ a & sealedChaosTokensL %~ (token :)
+      pure $ a & sealedChaosTokensL %~ addSealedChaosToken token
     SealedChaosToken token _ _ -> do
       pure $ a & sealedChaosTokensL %~ filter (/= token)
     UnsealChaosToken token -> do
@@ -818,7 +809,7 @@ instance RunMessage EnemyAttrs where
             lead <- getLeadPlayer
             pathIds <- getPaths a [lid]
             unless (null pathIds) do
-              pushAll [chooseOne lead [targetLabel lid' [EnemyMove enemyId lid'] | lid' <- pathIds]]
+              push $ chooseOrRunOne lead [targetLabel lid' [EnemyMove enemyId lid'] | lid' <- pathIds]
       pure a
     MoveUntil lid target | isTarget a target -> do
       case enemyPlacement of
@@ -1382,9 +1373,11 @@ instance RunMessage EnemyAttrs where
       mods <- getCombinedModifiers [toTarget iid, toTarget a]
       keywords <- getModifiedKeywords a
       canAttack <- canBeAttackedBy enemyId iid
+      cannotAttack <- enemyCannotAttackNow enemyId
 
       when
         ( canAttack
+            && not cannotAttack
             && (Keyword.Retaliate `elem` keywords)
             && (IgnoreRetaliate `notElem` mods)
             && (not enemyExhausted || CanRetaliateWhileExhausted `elem` mods)
@@ -1523,9 +1516,11 @@ instance RunMessage EnemyAttrs where
       mods <- getCombinedModifiers [toTarget iid, toTarget a]
       keywords <- getModifiedKeywords a
       canAttack <- canBeAttackedBy enemyId iid
+      cannotAttack <- enemyCannotAttackNow enemyId
       pushAll
         [ EnemyAttack $ viaAlert $ (enemyAttack enemyId a iid) {attackDamageStrategy = enemyDamageStrategy}
         | canAttack
+        , not cannotAttack
         , Keyword.Alert `elem` keywords
         , IgnoreAlert `notElem` mods
         ]
@@ -1624,13 +1619,25 @@ instance RunMessage EnemyAttrs where
         & attackingL
         ?~ details {attackCanBeCanceled = canBeCancelled, attackDamageStrategy = strategy}
     -- Defeat does not cancel an attack that has already begun (FAQ 1.4): a
-    -- "when... attacks" interrupt that kills the attacker (Aquinnah (3)
-    -- redirecting the damage onto it) still leaves the attack to resolve, so
-    -- its horror is dealt. 'enemyAttacking' is only set once 'Do EnemyAttack'
-    -- has run, and is cleared again when the attack finishes, so it marks an
-    -- attack that is mid-flight; an enemy defeated before its attack begins
-    -- never gets there.
-    PerformEnemyAttack eid | eid == enemyId && (not enemyDefeated || isJust enemyAttacking) -> do
+    -- "when... attacks" interrupt that kills the attacker does not retroactively
+    -- undo what the attack has already put on the board. But the interrupt runs
+    -- \*before* the attack resolves, so an attacker defeated there never attacks at
+    -- all: Survival Knife (2) (53002) prints "(before resolving that attack)" for
+    -- exactly this (#5890). 'enemyAttacking' cannot tell the two apart -- 'Do
+    -- (EnemyAttack)' sets it before pushing the when-window -- so the test is
+    -- whether the defeat landed before 'PerformEnemyAttack' or inside it.
+    --
+    -- Aquinnah (1)/(3) are the inside case: the redirect is registered as
+    -- 'attackDamageReplacement' and pushed from the branch below, ahead of the
+    -- attack's own damage message, so it kills the attacker with the horror
+    -- already queued and "(You still take horror dealt by the attack.)" holds.
+    --
+    -- Clearing 'attacking' is load-bearing: 'Entities.clearRemovedEntities' keeps
+    -- a RemovedZone enemy in the map while it is set, so the corpse would stay on
+    -- the board and keep matching 'AttackingEnemy' forever.
+    PerformEnemyAttack eid | eid == enemyId && enemyDefeated -> do
+      pure $ a & attackingL .~ Nothing
+    PerformEnemyAttack eid | eid == enemyId -> do
       let details = fromJustNote "missing attack details" enemyAttacking
       modifiers <- maybe (pure []) getModifiers details.singleTarget
       mods <- getModifiers a
@@ -2587,6 +2594,9 @@ instance RunMessage EnemyAttrs where
       pure a
     PlaceUnderneath (isTarget a -> True) cards -> do
       pure $ a & cardsUnderneathL %~ (nubBy ((==) `on` toCardId) . (<> cards))
+    RemoveFromUnderneath (isTarget a -> True) cards -> do
+      let removedIds = map toCardId cards
+      pure $ a & cardsUnderneathL %~ filter ((`notElem` removedIds) . toCardId)
     PlaceUnderneath _ cards -> do
       -- Going underneath something is leaving play, so route through
       -- RemoveFromPlay for the leave-play windows and attachment cleanup.
@@ -2650,9 +2660,10 @@ instance RunMessage EnemyAttrs where
     InSearch msg'@(UseAbility _ ab _) | isSource a ab.source || isProxySource a ab.source -> do
       push $ Do msg'
       pure a
-    InDiscard iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
-      push $ Do msg'
-      pure a
+    -- NOTE: No InDiscard UseAbility handler here. In-discard entities also receive the raw
+    -- message (see RunMessage Game in Game/Runner.hs), so the bare handler above already
+    -- fires for them; a second one pushes `Do (UseAbility)` twice and resolves the ability
+    -- (and pays its cost) twice -- see #4764 and Monastic Training's doubled reaction.
     InHand iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
       push $ Do msg'
       pure a

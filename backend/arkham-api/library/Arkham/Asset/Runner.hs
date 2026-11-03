@@ -193,7 +193,11 @@ instance RunMessage AssetAttrs where
             extraSanity = sum [x | SanityModifier x <- mods]
             remainingHealth = maybe 0 (max 0 . subtract (assetDamage a) . (+ extraHealth)) assetHealth
             remainingSanity = maybe 0 (max 0 . subtract (assetHorror a) . (+ extraSanity)) assetSanity
-            damage' = min (max 0 $ damage + n) remainingHealth
+            -- See the note on Investigator/Runner.hs's InvestigatorDamage: a
+            -- damage-taken modifier has nothing to add to an assignment that
+            -- carries no damage, and damage and horror arrive as separate
+            -- messages.
+            damage' = min (max 0 $ if damage > 0 then damage + n else 0) remainingHealth
             horror' = min (max 0 horror) remainingSanity
         let
           damageEffect = case source of
@@ -247,10 +251,11 @@ instance RunMessage AssetAttrs where
             extraHealth = sum [x | HealthModifier x <- mods]
             extraSanity = sum [x | SanityModifier x <- mods]
         let clamp amount cap current extra = maybe 0 (min amount . subtract current . (+ extra)) cap
+        let n' = if damage > 0 then n else 0
         let damage' =
               if soaksDamage
-                then damage + n
-                else clamp (damage + n) assetHealth (assetDamage a) extraHealth
+                then damage + n'
+                else clamp (damage + n') assetHealth (assetDamage a) extraHealth
         let horror' =
               if soaksHorror
                 then horror
@@ -284,7 +289,7 @@ instance RunMessage AssetAttrs where
               }
     SetOriginalCardCode cardCode -> pure $ a & originalCardCodeL .~ cardCode
     SealedChaosToken token _ (isTarget a -> True) -> do
-      pure $ a & sealedChaosTokensL %~ (\ts -> if token `elem` ts then ts else token : ts)
+      pure $ a & sealedChaosTokensL %~ addSealedChaosToken token
     SealedChaosToken token _ _ -> do
       pure $ a & sealedChaosTokensL %~ filter (/= token)
     UnsealChaosToken token -> runQueueT do
@@ -304,6 +309,7 @@ instance RunMessage AssetAttrs where
         for_ a.controller \iid -> do
           modifiers <- getModifiers iid
           guard $ ControlledAssetsCannotReady `notElem` modifiers
+          guard $ ControlledCardsCannotReady `notElem` modifiers
         lift $ push $ Ready (toTarget a)
       pure a
     RemoveAllDoom _ target | isTarget a target -> pure $ a & tokensL %~ removeAllTokens Doom
@@ -337,15 +343,28 @@ instance RunMessage AssetAttrs where
               push $ PlaceTokens source (toTarget iid) tType n
               pure a
             _ -> do
-              when
-                ( source
-                    == GameSource
-                    && ( (tType == #damage && isJust assetHealth)
-                           || (tType == #horror && isJust assetSanity)
-                       )
-                )
-                $ push
-                $ CheckDefeated source (toTarget a)
+              {- Damage or horror placed on an asset that has the matching stat is
+              damage however it got there, so it has to be answered for. This ran
+              only for GameSource -- the debug tool, which is what it was added
+              for -- so a card that places the token itself (/Unstable Warding/,
+              and the act that seeds it with one) sat at no remaining sanity,
+              never defeated, and so never reached the flip hanging off its
+              defeat.
+
+              The damage-assignment path queues its own 'CheckDefeated' ahead of
+              the 'PlaceTokens' it pushes, so defer to that one: resolving the
+              defeat twice would raise the 'AssetDefeated' window twice, and a
+              card listening there would fire twice. Same guard 'ReassignHorror'
+              uses below. -}
+              let
+                damaging =
+                  (tType == #damage && isJust assetHealth)
+                    || (tType == #horror && isJust assetSanity)
+              when damaging do
+                alreadyChecked <- assertQueue \case
+                  CheckDefeated _ target' -> target' == toTarget a
+                  _ -> False
+                unless alreadyChecked $ push $ CheckDefeated source (toTarget a)
               pure $ a & tokensL %~ addTokens tType n
     InvestigatorDiscardAllClues s iid | a `ownedBy` iid -> do
       runMessage (RemoveAllClues s (toTarget a)) a
@@ -667,8 +686,12 @@ instance RunMessage AssetAttrs where
       -- A card that cannot leave play and then prints its own way out --
       -- "it cannot leave play except using the ability below" -- is the one
       -- thing allowed to discard it, so a discard it sources itself is let
-      -- through. Everything else is still stopped.
-      cannotLeavePlay <- if isSource a source then pure False else a `hasModifier` CannotLeavePlay
+      -- through. Everything else is still stopped. Permanent is the same rule
+      -- as a keyword rather than a modifier (#5841).
+      cannotLeavePlay <-
+        if isSource a source
+          then pure False
+          else orM [pure (toCardDef a).permanent, a `hasModifier` CannotLeavePlay]
       if cannotLeavePlay
         then pure a
         else do
@@ -773,13 +796,17 @@ instance RunMessage AssetAttrs where
       pure $ a & controllerL .~ Nothing
     ReplacedInvestigatorAsset iid aid | aid == assetId -> do
       pure $ a & placementL .~ InPlayArea iid & controllerL ?~ iid
+    -- An asset reaching the victory display leaves play, so it exits through
+    -- `RemoveFromPlay` like a discard or an exile does. That is what opens the
+    -- leave-play windows and parks the tombstone those reactions match against;
+    -- writing `VictoryDisplayZone` straight into the attrs skipped both, so
+    -- nothing could react to the asset going (#5901). The card itself is
+    -- already in the scenario's victory display by this point, which is what
+    -- the display and the xp count read, so the entity goes with every token it
+    -- held, doom included (#5680).
     AddToVictory _ (AssetTarget aid) | aid == assetId -> do
-      -- leaving play removes every token, doom included (#5680)
-      pure
-        $ a
-        & (placementL .~ OutOfPlay Zone.VictoryDisplayZone)
-        & (controllerL .~ Nothing)
-        & (tokensL .~ mempty)
+      push $ RemoveFromPlay (toSource a)
+      pure a
     AddToScenarioDeck key target | isTarget a target -> do
       pushAll
         [RemoveFromGame (toTarget a), AddCardToScenarioDeck key (toCard a)]
@@ -807,7 +834,7 @@ instance RunMessage AssetAttrs where
     Ready target | a `isTarget` target -> case a.controller of
       Just iid -> do
         modifiers <- getModifiers (InvestigatorTarget iid)
-        if ControlledAssetsCannotReady `elem` modifiers
+        if any (`elem` modifiers) [ControlledAssetsCannotReady, ControlledCardsCannotReady]
           then pure a
           else pure $ a & exhaustedL .~ False
       Nothing -> pure $ a & exhaustedL .~ False
@@ -911,9 +938,10 @@ instance RunMessage AssetAttrs where
     InSearch msg'@(UseAbility _ ab _) | isSource a ab.source || isProxySource a ab.source -> do
       push $ Do msg'
       pure a
-    InDiscard iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
-      push $ Do msg'
-      pure a
+    -- NOTE: No InDiscard UseAbility handler here. In-discard entities also receive the raw
+    -- message (see RunMessage Game in Game/Runner.hs), so the bare handler above already
+    -- fires for them; a second one pushes `Do (UseAbility)` twice and resolves the ability
+    -- (and pays its cost) twice -- see #4764 and Monastic Training's doubled reaction.
     InHand iid msg'@(UseAbility iid' ab _) | iid == iid' && (isSource a ab.source || isProxySource a ab.source) -> do
       push $ Do msg'
       pure a

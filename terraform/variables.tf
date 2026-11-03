@@ -144,6 +144,24 @@ variable "app_db_pool" {
   default     = 20
 }
 
+variable "app_archive_sweep" {
+  description = <<-EOT
+    Whether the daily archive sweep runs (ARCHIVE_SWEEP), separately from
+    `ARCHIVE_BUCKET` being set: a bucket makes archiving possible, this is what
+    lets a job choose the games. One run drains the whole backlog in batches, so
+    turning this on is the decision to offload every eligible game's undo
+    history, not just the next few.
+
+    A typed variable rather than an `app_secrets` key so the switch is legible in
+    `terraform plan` -- `app_secrets` is sensitive and renders as
+    "(sensitive value)", which is the wrong thing for a flag that deletes rows.
+    Off is the kill switch, and it takes a rollout restart to apply like any
+    other env change.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "app_memory_target_utilization" {
   description = "HPA memory target percent. Crossing this triggers scale-out."
   type        = number
@@ -203,6 +221,22 @@ variable "database_url" {
   description = "Full Postgres connection URL. Wire to your existing managed DB."
   type        = string
   sensitive   = true
+}
+
+variable "lb_sticky_sessions_ttl" {
+  description = "Seconds the LB pins a browser to one pod, via a cookie. 0 disables affinity."
+  type        = number
+
+  # Long enough to cover a page load and the lazy route chunks that follow it,
+  # short enough that affinity never shapes load: a pod the HPA has just added
+  # starts taking work within two minutes rather than only seeing new visitors.
+  #
+  # See the comment on local.sticky_annotations in ingress.tf for what this is
+  # protecting against. Residual cases -- a chunk imported after the cookie has
+  # lapsed -- are handled on the two layers below it: nginx falls back to the
+  # CDN for a bundle its pod lacks, and the client reloads once on a chunk that
+  # has gone missing entirely.
+  default = 120
 }
 
 variable "asset_host" {

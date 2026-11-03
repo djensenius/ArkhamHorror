@@ -3,13 +3,22 @@ import { computed, watch, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { portraitImage } from '@/arkham/cardImages'
-import { fetchInvestigators, newDeck, validateDeck } from '@/arkham/api'
+import {
+  fetchArkhamBuildConnection,
+  fetchArkhamBuildDecks,
+  fetchInvestigators,
+  newDeck,
+  validateDeck,
+  type ArkhamBuildDeck,
+} from '@/arkham/api'
+import ArkhamBuildLogo from '@/components/icons/ArkhamBuildLogo.vue'
 import ArkhamDbDeck from '@/arkham/components/ArkhamDbDeck.vue';
 import { ArkhamDbDecklist } from '@/arkham/types/Deck';
 import { useCardStore } from '@/stores/cards'
+import { isDevBuild } from '@/arkham/displayRules'
 import { normalizeArkhamBuildDeckCodes } from '@/arkham/arkhamBuildImport'
-import { libraryCard, loadLibrary } from '@/arkham/customCardLibrary'
-import { arkhamBuildCustomCardCode } from '@/arkham/customCards'
+import { libraryCard, libraryCards, loadLibrary } from '@/arkham/customCardLibrary'
+import { arkhamBuildCustomCardCode, isArkhamBuildPlaceholder } from '@/arkham/customCards'
 
 const { t } = useI18n()
 
@@ -26,6 +35,84 @@ const investigators = ref<string[]>([])
 const { cards }  = storeToRefs(store)
 
 investigators.value = await fetchInvestigators()
+
+/* Where the deck is coming from. The arkham.build tab is dev-only while the
+ * integration settles, and beyond that is offered only when this server has an
+ * arkham.build client at all. It leads when the player has actually connected
+ * one -- that is the list they will nearly always want. */
+type Source = 'build' | 'link' | 'file'
+
+const dev = isDevBuild()
+const buildConfigured = ref(false)
+const buildConnected = ref(false)
+if (dev) {
+  try {
+    const status = await fetchArkhamBuildConnection()
+    buildConfigured.value = status.configured
+    buildConnected.value = status.connection !== null
+  } catch {
+    /* Loading a deck by link must keep working whether or not this answers. */
+  }
+}
+
+const source = ref<Source>(buildConnected.value ? 'build' : 'link')
+const sources = computed<Source[]>(() =>
+  dev && buildConfigured.value ? ['build', 'link', 'file'] : ['link', 'file'],
+)
+const sourceLabels: Record<Source, string> = {
+  build: 'newDeck.sourceArkhamBuild',
+  link: 'newDeck.sourceLink',
+  file: 'newDeck.sourceFile',
+}
+
+const buildDecks = ref<ArkhamBuildDeck[]>([])
+const buildLoaded = ref(false)
+const buildLoading = ref(false)
+const buildError = ref(false)
+const buildArkhamdbAvailable = ref(true)
+const buildSearch = ref('')
+const selectedBuildKey = ref<string | null>(null)
+
+const buildDeckKey = (d: ArkhamBuildDeck) => `${d.source}:${d.id}`
+
+const visibleBuildDecks = computed(() => {
+  const needle = buildSearch.value.trim().toLowerCase()
+  const matches = needle
+    ? buildDecks.value.filter((d) => d.decklist.name.toLowerCase().includes(needle) ||
+        (d.decklist.investigator_name ?? '').toLowerCase().includes(needle))
+    : buildDecks.value
+  return [...matches].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+})
+
+async function loadBuildDecks() {
+  buildLoading.value = true
+  buildError.value = false
+  try {
+    const data = await fetchArkhamBuildDecks()
+    buildDecks.value = data.decks
+    buildArkhamdbAvailable.value = data.providers.arkhamdb
+    buildLoaded.value = true
+  } catch {
+    buildError.value = true
+  } finally {
+    buildLoading.value = false
+  }
+}
+
+function chooseBuildDeck(d: ArkhamBuildDeck) {
+  selectedBuildKey.value = buildDeckKey(d)
+  deckList.value = d.decklist
+}
+
+/* Fetching is two round trips to arkham.build, so it waits until the tab is
+ * actually looked at, and is not repeated once it has answered. */
+watch(
+  [source, buildConnected],
+  ([s, connected]) => {
+    if (s === 'build' && connected && !buildLoaded.value && !buildLoading.value) loadBuildDecks()
+  },
+  { immediate: true },
+)
 
 interface UnimplementedCardError {
   tag: string
@@ -79,6 +166,39 @@ const valid = ref(false)
 const saveDeck = computed(() => props.alwaysSave ? true : saveDeckToggle.value)
 const saveDeckToggle = ref(true)
 const investigatorError = ref<string | null>(null)
+
+/* A deck built at arkham.build on one of its placeholder investigators -- Johnny
+ * Anybody, Jane Doe -- has no investigator of its own; the pack exists so an
+ * arbitrary deck can be built there, which is how a deck for an investigator
+ * built HERE gets built on a site that cannot know them. So the deck is not
+ * unimplemented, it is unfinished: it imports with an overlay naming whose deck
+ * it is, and nothing can be seated or upgraded until it has one. */
+const placeholderInvestigator = ref(false)
+const overlayInvestigator = ref<string | null>(null)
+const customInvestigators = computed(() =>
+  libraryCards().filter((c) => c.def.cardType === 'InvestigatorType'),
+)
+const needsInvestigatorChoice = computed(() => placeholderInvestigator.value && !overlayInvestigator.value)
+
+function chooseOverlayInvestigator(code: string) {
+  overlayInvestigator.value = code || null
+  investigator.value = overlayInvestigator.value
+  maybeSetPortrait(investigator.value)
+}
+
+/* Nothing is laid over a deck that brought its own investigator. */
+const deckOverlay = computed(() =>
+  overlayInvestigator.value
+    ? { investigator: overlayInvestigator.value, swaps: {}, add: {}, remove: {} }
+    : null,
+)
+
+async function onPlaceholderInvestigator() {
+  placeholderInvestigator.value = true
+  // The picker is the library, which this page otherwise loads only to name a
+  // card in an error.
+  await loadLibrary()
+}
 const investigator = ref<string | null>(null)
 const deck = ref<string | null>(null)
 const deckId = ref<string | null>(null)
@@ -122,12 +242,15 @@ function loadDeckFromFile(e: Event) {
       deckList.value = data
       investigator.value = null
       investigatorError.value = null
+      placeholderInvestigator.value = false
+      overlayInvestigator.value = null
       if (isInvestigatorImplemented(data.investigator_code)) {
         investigator.value = data.meta?.alternate_front ?? data.investigator_code
         maybeSetPortrait(investigator.value)
-
+      } else if (isArkhamBuildPlaceholder(resolvedInvestigatorCode(data))) {
+        onPlaceholderInvestigator()
       } else {
-        investigatorError.value = `${data.investigator_name} is not yet implemented, please use a different deck ${data}`
+        investigatorError.value = t('newDeck.investigatorNotImplemented', { investigator: data.investigator_name })
       }
       deckId.value = data.id.toString()
       deckName.value = data.name
@@ -146,6 +269,8 @@ async function loadDeck() {
   requestFailed.value = false
   investigator.value = null
   investigatorError.value = null
+  placeholderInvestigator.value = false
+  overlayInvestigator.value = null
 
   const dl = deckList.value
   if (!dl) return
@@ -156,9 +281,10 @@ async function loadDeck() {
   if (invImplemented) {
     investigator.value = invCode
     maybeSetPortrait(invCode)
+  } else if (isArkhamBuildPlaceholder(invCode)) {
+    await onPlaceholderInvestigator()
   } else {
-    investigatorError.value =
-      `${dl.investigator_name} is not yet implemented, please use a different deck ${JSON.stringify(dl)}`
+    investigatorError.value = t('newDeck.investigatorNotImplemented', { investigator: dl.investigator_name })
   }
 
   deckId.value = String(dl.id)
@@ -201,6 +327,8 @@ async function createDeck() {
     deckName.value = null
     deckUrl.value = null
     investigator.value = null
+    placeholderInvestigator.value = false
+    overlayInvestigator.value = null
     deck.value = null
     emit('newDeckList', dl)
     return
@@ -209,11 +337,13 @@ async function createDeck() {
   if (!(deckId.value && deckName.value)) return
 
   try {
-    const created = await newDeck(deckId.value, deckName.value, deckUrl.value, deckList.value)
+    const created = await newDeck(deckId.value, deckName.value, deckUrl.value, deckList.value, deckOverlay.value)
     deckId.value = null
     deckName.value = null
     deckUrl.value = null
     investigator.value = null
+    placeholderInvestigator.value = false
+    overlayInvestigator.value = null
     deck.value = null
     emit('newDeck', created)
   } catch (err: unknown) {
@@ -228,8 +358,90 @@ async function createDeck() {
     <div class="form-body">
       <img v-if="investigator && !noPortrait" class="portrait" :src="portraitImage(investigator)" />
       <div class="fields">
-        <ArkhamDbDeck v-model="deckList" />
-        <input type="file" accept=".json,application/json" @change="loadDeckFromFile" />
+        <div class="sources" role="tablist">
+          <button
+            v-for="s in sources"
+            :key="s"
+            type="button"
+            role="tab"
+            class="source-tab"
+            :class="{ active: source === s }"
+            :aria-selected="source === s"
+            @click.prevent="source = s"
+          >
+            <ArkhamBuildLogo v-if="s === 'build'" class="source-mark" />
+            {{ t(sourceLabels[s]) }}
+          </button>
+        </div>
+
+        <div v-if="source === 'build'" class="build-panel">
+          <template v-if="!buildConnected">
+            <p class="build-note">{{ t('newDeck.notConnected') }}</p>
+            <router-link to="/settings" class="build-link">{{ t('newDeck.openSettings') }}</router-link>
+          </template>
+          <p v-else-if="buildLoading" class="build-note">{{ t('newDeck.loadingDecks') }}</p>
+          <template v-else-if="buildError">
+            <p class="build-note">{{ t('newDeck.decksFailed') }}</p>
+            <button type="button" class="build-retry" @click.prevent="loadBuildDecks">
+              {{ t('newDeck.retry') }}
+            </button>
+          </template>
+          <template v-else>
+            <p v-if="!buildArkhamdbAvailable" class="build-note">
+              {{ t('newDeck.arkhamdbUnavailable') }}
+            </p>
+            <input
+              v-if="buildDecks.length"
+              v-model="buildSearch"
+              type="search"
+              :placeholder="t('newDeck.searchDecks')"
+            />
+            <p v-if="!buildDecks.length" class="build-note">{{ t('newDeck.noDecks') }}</p>
+            <p v-else-if="!visibleBuildDecks.length" class="build-note">
+              {{ t('newDeck.noMatchingDecks') }}
+            </p>
+            <ul v-else class="build-decks">
+              <li v-for="d in visibleBuildDecks" :key="buildDeckKey(d)">
+                <button
+                  type="button"
+                  class="build-deck"
+                  :class="{ chosen: selectedBuildKey === buildDeckKey(d) }"
+                  @click.prevent="chooseBuildDeck(d)"
+                >
+                  <img class="build-portrait" :src="portraitImage(resolvedInvestigatorCode(d.decklist))" />
+                  <span class="build-deck-body">
+                    <span class="build-deck-name">{{ d.decklist.name }}</span>
+                    <span class="build-deck-meta">{{ d.decklist.investigator_name }}</span>
+                  </span>
+                  <span class="build-deck-source">{{ d.source === 'arkhamdb' ? 'ArkhamDB' : '' }}</span>
+                </button>
+              </li>
+            </ul>
+          </template>
+        </div>
+
+        <ArkhamDbDeck v-else-if="source === 'link'" v-model="deckList" />
+
+        <input
+          v-else
+          type="file"
+          accept=".json,application/json"
+          @change="loadDeckFromFile"
+        />
+        <div v-if="placeholderInvestigator" class="placeholder-investigator">
+          <p class="build-note">{{ t('newDeck.placeholderInvestigator') }}</p>
+          <select
+            v-if="customInvestigators.length"
+            :value="overlayInvestigator ?? ''"
+            @change="chooseOverlayInvestigator(($event.target as HTMLSelectElement).value)"
+          >
+            <option value="">{{ t('newDeck.chooseYourInvestigator') }}</option>
+            <option v-for="card in customInvestigators" :key="card.def.cardCode" :value="card.def.cardCode">
+              {{ card.def.name.title }}
+            </option>
+          </select>
+          <p v-else class="build-note">{{ t('newDeck.noCustomInvestigators') }}</p>
+        </div>
         <input v-if="investigator" v-model="deckName" />
         <div v-if="!alwaysSave" class="save-option" :class="{ active: saveDeck }" @click="saveDeckToggle = !saveDeckToggle" role="checkbox" :aria-checked="saveDeck">
           <div class="save-option-body">
@@ -240,7 +452,7 @@ async function createDeck() {
             <div class="save-option-thumb" />
           </div>
         </div>
-        <button :disabled="!valid" @click.prevent="createDeck" class="primary-action">{{ alwaysSave ? t('newDeck.save') : saveDeck ? t('newDeck.saveAndUse') : t('newDeck.useWithoutSaving') }}</button>
+        <button :disabled="!valid || needsInvestigatorChoice" @click.prevent="createDeck" class="primary-action">{{ alwaysSave ? t('newDeck.save') : saveDeck ? t('newDeck.saveAndUse') : t('newDeck.useWithoutSaving') }}</button>
       </div>
     </div>
     <div class="errors" v-if="investigatorError">
@@ -261,6 +473,13 @@ async function createDeck() {
 </template>
 
 <style scoped>
+.placeholder-investigator {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
 .new-deck {
   :deep(input[type=url]) {
     margin-bottom: 0;
@@ -444,5 +663,136 @@ async function createDeck() {
 
 .form-body {
   display: flex;
+}
+
+.sources {
+  display: flex;
+  gap: 4px;
+}
+
+.source-tab {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  color: #aaa;
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  font-size: 0.82em;
+  letter-spacing: 0.05em;
+  padding: 7px 12px;
+  text-transform: uppercase;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+}
+
+.source-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ddd;
+}
+
+.source-tab.active {
+  background: rgba(110, 134, 64, 0.16);
+  border-color: rgba(110, 134, 64, 0.6);
+  color: #e6e6e6;
+}
+
+.source-mark {
+  height: 15px;
+  width: 15px;
+}
+
+.build-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.build-note {
+  color: #999;
+  font-size: 0.86em;
+  margin: 0;
+}
+
+.build-link {
+  color: var(--spooky-green);
+  font-size: 0.86em;
+  width: fit-content;
+}
+
+.build-retry {
+  width: fit-content;
+}
+
+.build-decks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  /* Enough for a long collection to scroll rather than push the save button
+     off the bottom of the panel. */
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.build-deck {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 5px;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  padding: 6px 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.build-deck:hover {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.build-deck.chosen {
+  background: rgba(110, 134, 64, 0.16);
+  border-color: rgba(110, 134, 64, 0.6);
+}
+
+.build-portrait {
+  border-radius: 3px;
+  flex: none;
+  height: 36px;
+  object-fit: cover;
+  width: 36px;
+}
+
+.build-deck-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 1px;
+  min-width: 0;
+}
+
+.build-deck-name {
+  color: #e6e6e6;
+  font-size: 0.94em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.build-deck-meta {
+  color: #999;
+  font-size: 0.78em;
+}
+
+.build-deck-source {
+  color: #888;
+  flex: none;
+  font-size: 0.7em;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 </style>

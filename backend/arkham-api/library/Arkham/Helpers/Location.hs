@@ -9,6 +9,7 @@ import Arkham.Classes.HasQueue
 import Arkham.Classes.Query hiding (matches)
 import Arkham.Direction
 import Arkham.Enemy.Types (EnemyAttrs, Field (..))
+import Arkham.Event.Types (Field (EventPlacement))
 import Arkham.ForMovement
 import {-# SOURCE #-} Arkham.Helpers.Cost (getCanAffordCost)
 import Arkham.Helpers.GameValue (gameValueMatches)
@@ -55,21 +56,27 @@ single location that was granted it -- so they are kept apart rather than merged
 connectedMatcherParts
   :: HasGame m => ForMovement -> LocationId -> m ([LocationMatcher], [LocationMatcher])
 connectedMatcherParts forMovement l = do
-  isRevealed <- field LocationRevealed l
-  directionalMatchers <- fieldMap LocationConnectsTo (map (`LocationInDirection` self) . setToList) l
-  base <-
-    if isRevealed
-      then field LocationRevealedConnectedMatchers l
-      else field LocationConnectedMatchers l
-
   modifiers <- getModifiers (LocationTarget l)
-  -- A location that "loses" a connection symbol stops connecting to that symbol; the
-  -- symbol matchers are what the card def turned its printed connections into.
-  let lostSymbols = [sym | LosesConnectionSymbol sym <- modifiers]
-      keeps = \case
-        Matcher.LocationWithSymbol sym -> sym `notElem` lostSymbols
-        _ -> True
-  (filter keeps base <> directionalMatchers,) <$> foldM applyModifier [] modifiers
+  -- An isolated location connects to nothing at all. The other half -- nothing
+  -- connecting to it -- is the LocationWithSymbol branch of
+  -- Arkham.Game.getLocationsMatching.
+  if DoesNotConnect `elem` modifiers
+    then pure ([], [])
+    else do
+      isRevealed <- field LocationRevealed l
+      directionalMatchers <- fieldMap LocationConnectsTo (map (`LocationInDirection` self) . setToList) l
+      base <-
+        if isRevealed
+          then field LocationRevealedConnectedMatchers l
+          else field LocationConnectedMatchers l
+
+      -- A location that "loses" a connection symbol stops connecting to that symbol; the
+      -- symbol matchers are what the card def turned its printed connections into.
+      let lostSymbols = [sym | LosesConnectionSymbol sym <- modifiers]
+          keeps = \case
+            Matcher.LocationWithSymbol sym -> sym `notElem` lostSymbols
+            _ -> True
+      (filter keeps base <> directionalMatchers,) <$> foldM applyModifier [] modifiers
  where
   applyModifier current (ConnectedToWhen whenMatcher matcher) = do
     matches <- elem l <$> select whenMatcher
@@ -104,6 +111,10 @@ placementLocation = \case
   AttachedToEnemy eid -> fieldMayJoin EnemyLocation eid
   AttachedToTreachery tid -> fieldMayJoin TreacheryLocation tid
   AttachedToAsset aid' _ -> fieldMayJoin AssetLocation aid'
+  -- An event has no location field of its own, so this is wherever the event
+  -- it is attached to has ended up -- usually a play area, which is its
+  -- controller's location.
+  AttachedToEvent eid -> placementLocation =<< field EventPlacement eid
   InVehicle aid' -> field AssetLocation aid'
   AttachedToAct _ -> pure Nothing
   AttachedToAgenda _ -> pure Nothing
@@ -291,25 +302,39 @@ getCanMoveToLocations_ iid source ls = cached (CanMoveToLocationsKey_ iid (toSou
     then do
       getLocationOf iid >>= \case
         Nothing -> pure []
-        Just lid -> do
-          imods <- getModifiers iid
-          mods <- getModifiers lid
-          let extraCostsToLeave = mconcat [c | AdditionalCostToLeave c <- mods]
-          let barricaded = if CanIgnoreBarriers `elem` imods then [] else concat [xs | Barricades xs <- mods]
-          -- "You cannot enter X except by <source>". This is the only move query that
-          -- knows the moving effect's source, so it is where CannotEnterExcept is honored.
-          let entryExceptions = [(l', sm) | CannotEnterExcept l' sm <- imods]
-          ls & filter (and . sequence [(/= lid), (`notElem` barricaded)]) & filterM \l -> do
-            mods' <- getModifiers l
-            pcosts <- filterM ((l <=~>) . fst) [(ma, c) | AdditionalCostToEnterMatching ma c <- imods]
-            revealed' <- field LocationRevealed l
-            baseEnter <- mwhen (not revealed') <$> field LocationCostToEnterUnrevealed l -- Added for cards like Nimble
-            let extraCostsToEnter = baseEnter <> concatMap snd pcosts <> mconcat [c | AdditionalCostToEnter c <- mods']
-            andM
-              [ allM (sourceMatches (toSource source)) [sm | (l', sm) <- entryExceptions, l' == l]
-              , getCanAffordCost iid source [#move] [] (extraCostsToLeave <> extraCostsToEnter)
-              ]
+        Just lid -> filterM (getCanStepTo iid source) (filter (/= lid) ls)
     else pure []
+
+{- | Whether @iid@ can step from the location it is on into @l@: barricades, a
+'CannotEnterExcept' restriction, and the additional costs to move, to leave
+where it stands, and to enter @l@. 'getCanMoveToLocations_' is this plus the
+whole-mover checks, and a step along a path (MoveUntil, MoveToward) is a real
+move, so it has to clear this too. See #5894.
+-}
+getCanStepTo
+  :: (Sourceable source, HasGame m) => InvestigatorId -> source -> LocationId -> m Bool
+getCanStepTo iid source l = do
+  getLocationOf iid >>= \case
+    Nothing -> pure False
+    Just lid -> do
+      imods <- getModifiers iid
+      mods <- getModifiers lid
+      let extraCostsToLeave = mconcat [c | AdditionalCostToLeave c <- mods]
+      let extraCostsToMove = mconcat [c | AdditionalCostToMove c <- imods]
+      let barricaded = if CanIgnoreBarriers `elem` imods then [] else concat [xs | Barricades xs <- mods]
+      -- "You cannot enter X except by <source>". This is the only move query that
+      -- knows the moving effect's source, so it is where CannotEnterExcept is honored.
+      let entryExceptions = [(l', sm) | CannotEnterExcept l' sm <- imods]
+      mods' <- getModifiers l
+      pcosts <- filterM ((l <=~>) . fst) [(ma, c) | AdditionalCostToEnterMatching ma c <- imods]
+      revealed' <- field LocationRevealed l
+      baseEnter <- mwhen (not revealed') <$> field LocationCostToEnterUnrevealed l -- Added for cards like Nimble
+      let extraCostsToEnter = baseEnter <> concatMap snd pcosts <> mconcat [c | AdditionalCostToEnter c <- mods']
+      andM
+        [ pure $ l `notElem` barricaded
+        , allM (sourceMatches (toSource source)) [sm | (l', sm) <- entryExceptions, l' == l]
+        , getCanAffordCost iid source [#move] [] (extraCostsToMove <> extraCostsToLeave <> extraCostsToEnter)
+        ]
 
 getCanMoveToMatchingLocations
   :: (HasGame m, Sourceable source)
