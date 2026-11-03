@@ -2228,6 +2228,19 @@ spec = describe "ArkhamDB campaign write-back" do
         readIORef h.calls `shouldReturn` []
         readIORef h.baseline `shouldReturn` 0
 
+  for_ [False, True] \partQualified ->
+    it ("fences an old base identity contradicted by its captured seat even without overlay proof, partQualified=" <> show partQualified) do
+      h <- newHarness
+      let key = UUID.toText UUID.nil <> "/01002" <> if partQualified then "/dreamQuest" else ""
+          payload = encodePushDeck $ withoutExportedOverlay currentDeck
+      modifyIORef' h.job \job -> job {arkhamDBPushCampaignKey = key, arkhamDBPushPayload = payload}
+      h.run False
+      assertState h "failed"
+      arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+      arkhamDBPushPayload <$> readIORef h.job `shouldReturn` payload
+      readIORef h.calls `shouldReturn` []
+      readIORef h.baseline `shouldReturn` 0
+
   for_ [False, True] \lostReply ->
     it ("refuses to save into a created/recovered target with the wrong investigator, lostReply=" <> show lostReply) do
       h <- newHarness

@@ -4,7 +4,7 @@
 module Arkham.ArkhamDB.WriteBack where
 
 import Arkham.ArkhamDB
-import Arkham.ArkhamDB.Campaign (CampaignGameIdentity, campaignAdmissionAllowed, campaignJobKeySafe)
+import Arkham.ArkhamDB.Campaign (CampaignGameIdentity, CampaignKeyIdentity (..), classifyCampaignKey, campaignAdmissionAllowed, campaignJobKeySafe)
 import Arkham.ArkhamDB.Service
 import Arkham.Decklist (ArkhamDBDecklist)
 import Arkham.Decklist qualified as Decklist
@@ -529,6 +529,14 @@ capturedPushInvestigatorConsistent deck =
         fromMaybe deck.investigator_code $ overlay >>= overlayInvestigator}
   in deck.investigator_code == effective.investigator
 
+-- The admitted key also captured the stable seat, even if an old payload has
+-- no overlay proof. Compare only; never repair/repoint a row from this evidence.
+-- Invalid keys are separately refused by persistent identity admission.
+campaignKeyContradictsPushInvestigator :: Text -> ArkhamDBDecklist -> Bool
+campaignKeyContradictsPushInvestigator key deck = case classifyCampaignKey key of
+  InvalidCampaignKey -> False
+  _ -> take 1 (drop 1 $ T.splitOn "/" key) /= [unCardCode $ unInvestigatorId deck.investigator_code]
+
 samePushedDeck :: ArkhamDBDecklist -> ArkhamDBRemoteDeck -> Bool
 samePushedDeck desired remote =
   desired.slots == remote.deck.slots && desired.sideSlots == remote.deck.sideSlots
@@ -725,7 +733,8 @@ runWriteBackWithClock clock store writes client settings now retry userId deckId
         processDeck entity link = do
           let job = entityVal entity
           (prepared, unmarked, fields) <- either (const $ throwError $ ArkhamDBError "storageFailure" "Invalid pending deck") pure $ decodePushPreparation $ arkhamDBPushPayload job
-          unless (capturedPushInvestigatorConsistent unmarked) $
+          when (not (capturedPushInvestigatorConsistent unmarked) ||
+              campaignKeyContradictsPushInvestigator (arkhamDBPushCampaignKey job) unmarked) $
             throwError $ ArkhamDBError "validationFailed" "Deck contains unsupported cards"
           desired <- either throwError pure $ markedDeck (entityKey entity) unmarked
           when (not prepared && (arkhamDBPushStage job /= "ready" || hasCreationIntent job)) $
