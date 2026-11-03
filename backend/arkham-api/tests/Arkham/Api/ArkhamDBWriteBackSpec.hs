@@ -983,7 +983,7 @@ spec = describe "ArkhamDB campaign write-back" do
       Right _ -> expectationFailure "Ambiguous upgrade must not persist"
 
   for_ ["unimplemented-card", "01007"] \target ->
-    it ("validates an overlay swap activated by the actual upgrade builder: " <> toString target) do
+    it ("validates an overlay swap activated by the actual upgrade builder: " <> show target) do
       h <- newHarness
       saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
       let overlay = DeckOverlay Nothing (Map.singleton "01016" target) mempty mempty
