@@ -1142,12 +1142,13 @@ once and competing claims, rollback of nonce consumption with account creation,
 refresh compare-and-update, the refresh lock held against a concurrent unlink,
 refresh lock contention returning `remoteUnavailable` only at the five-second
 lock deadline, failed, rejected and token-less refreshes that leave credentials,
-generation and mappings unchanged, callbacks during and after unlink, an import racing unlink/relink to a new
-generation, and competing imports converging on one deck and user/remote
-mapping. It also covers expiry cleanup: bounded batches that leave active
-authorizations and the account intact, an unrelated user's link start that does
-not purge the global backlog, deadline-bounded progress amid 200,000 active
-authorizations, and skipping a locked expired row until its transaction ends.
+generation and mappings unchanged, callbacks during and after unlink, an import
+racing unlink/relink to a new generation, and competing imports converging on
+one deck and user/remote mapping. It also covers expiry cleanup: bounded batches
+that leave active authorizations and the account intact, an unrelated user's
+link start that does not purge the global backlog, deadline-bounded progress
+amid 200,000 active authorizations, and skipping a locked expired row until its
+transaction ends.
 Deck sync coverage drops an unchanged 404 mapping and falls back to the public
 URL exactly once, refuses a delayed 404 or sync result once a write-back has
 retargeted or re-marked the mapping or the mapping row was replaced, refuses a

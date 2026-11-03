@@ -193,20 +193,39 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
     withConnection harness \holding -> withConnection harness \refreshing -> withConnection harness \observer -> do
       now <- getCurrentTime
       uid <- seedUser holding "refresh-deadline"
-      previous <- encryptedAccount settings now uid $
-        (tokens now) {tokenExpiresAt = Just $ addUTCTime (-60) now}
+      previous <- encryptedAccount settings now uid (tokens now)
       generation <- seedAccount app holding now uid "refresh-deadline" previous
+      -- Import a deck while the token is valid, then expire it: the snapshot
+      -- below must hold a real mapping for the timeout path to preserve.
+      let importer = hoistArkhamDBClient liftIO $ transport {loadDeck = \_ _ -> pure $ Right remote}
+      void $ either (fail . show) pure =<< runStoreActions app holding
+        (\store -> runExceptT $ importRemoteDeck store importer settings now uid "123" forbiddenPublic)
+      valid <- runStore app observer (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
+      runStore app holding (\store -> store.updateAccount valid valid {arkhamDBAccountExpiresAt = Just $ addUTCTime (-60) now})
+        `shouldReturn` True
       stored <- runStore app observer (\store -> store.findAccount uid) >>= maybe (fail "Expected linked account") pure
+      arkhamDBAccountExpiresAt stored `shouldBe` Just (addUTCTime (-60) now)
       persisted <- linkedRows observer uid
+      bimap length length persisted `shouldBe` (1, 1)
+      transaction observer (rawSql "SELECT remote_deck_id FROM arkhamdb_deck_links WHERE user_id = ?" [toPersistValue uid])
+        `shouldReturn` [Single ("123" :: Text)]
       barrier <- newBarrier
       calls <- newIORef (0 :: Int)
       let client = hoistArkhamDBClient liftIO $ transport
             { refreshTokens = \_ -> do
                 modifyIORef' calls (+ 1)
-                fail "Refresh reached ArkhamDB without the refresh lock" }
+                fail "Refresh acquired the held refresh lock instead of timing out" }
       holdingPid <- backendPid holding
       refreshingPid <- backendPid refreshing
-      withAsync (runStore app holding \store -> withRefreshLock store uid \_ -> liftIO $ pauseAt barrier) \holder -> do
+      -- `holding` is one libpq connection from withPostgresqlConn (not a pool),
+      -- so these reads and the holder's transaction share one session; the PID
+      -- check after commit confirms it.
+      sessionTimeout <- lockTimeout holding
+      sessionTimeout `shouldNotBe` "5s"
+      withAsync (runStore app holding \store -> withRefreshLock store uid \_ -> liftIO do
+          -- Inside the lock's transaction: the deadline is exactly 5s.
+          runReaderT currentLockTimeout holding `shouldReturn` "5s"
+          pauseAt barrier) \holder -> do
         link holder
         awaitBarrier barrier
         started <- getMonotonicTime
@@ -224,6 +243,9 @@ spec harness app = describe "ArkhamDB production PostgreSQL stores" do
             elapsed `shouldSatisfy` (>= 4.5)
         releaseBarrier barrier
         within "refresh lock holder commits" $ wait holder
+      -- SET LOCAL: the 5s deadline ended with the holder's transaction.
+      backendPid holding `shouldReturn` holdingPid
+      lockTimeout holding `shouldReturn` sessionTimeout
       readIORef calls `shouldReturn` 0
       linkedRows observer uid `shouldReturn` persisted
       runStore app observer (\store -> store.findAccountGeneration uid) `shouldReturn` Just generation
@@ -864,6 +886,15 @@ refreshResponse app connection client now previous = do
   result <- runHandlerResponseBody app $ runArkhamDB $
     refreshAccount (persistentStoreWith (const $ pure ()) (`runSqlConn` connection)) client settings now previous
   pure $ either (\(status, body) -> Left (status, Map.lookup "code" =<< (decode body :: Maybe (Map Text Text)))) Right result
+
+-- The session's effective lock_timeout, read in its own transaction.
+lockTimeout :: SqlBackend -> IO Text
+lockTimeout connection = transaction connection currentLockTimeout
+
+currentLockTimeout :: ReaderT SqlBackend IO Text
+currentLockTimeout = rawSql "SELECT current_setting('lock_timeout')" [] >>= \case
+  [Single value] -> pure value
+  _ -> liftIO $ fail "Expected one lock_timeout setting"
 
 -- Exact persisted rows: credentials and generation id, and every deck mapping.
 linkedRows :: SqlBackend -> UserId -> IO ([Text], [Text])
