@@ -194,6 +194,22 @@ cancelUndoneCampaignPushes rows withUserLocks cancel restoredStep = do
 
 -- Resolve upgrade persistence independently of the live investigator's URL:
 -- save-as-new can move this campaign to a copy without changing that URL.
+-- This is the handler's complete key/association selection: unrelated history
+-- is never consulted and an unavailable write-back key still permits the
+-- ordinary URL-based saved upgrade.
+selectSavedDeckUpgradeTargets
+  :: Monad m
+  => (Text -> m (Maybe ArkhamDBCampaignDeck))
+  -> (ArkhamDeckId -> m (Maybe ArkhamDeck))
+  -> (Text -> m [Entity ArkhamDeck])
+  -> UserId
+  -> Maybe Text
+  -> Maybe Text
+  -> m [ArkhamDeckId]
+selectSavedDeckUpgradeTargets getAssociation getDeck findByUrl uid key oldUrl = do
+  association <- maybe (pure Nothing) getAssociation key
+  savedDeckUpgradeTargets getDeck findByUrl uid association oldUrl
+
 savedDeckUpgradeTargets
   :: Monad m
   => (ArkhamDeckId -> m (Maybe ArkhamDeck))

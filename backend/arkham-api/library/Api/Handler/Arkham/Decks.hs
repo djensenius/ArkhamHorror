@@ -28,7 +28,7 @@ import Api.Handler.Arkham.CustomCards (registerUserCustomCards)
 import Api.Handler.Arkham.Games.Shared (publishToRoom, requireGameAccess)
 import Arkham.Campaign.Types (campaignLog)
 import Arkham.ArkhamDB.Campaign (withCampaignWriteBackBoundary, campaignWriteBackKey)
-import Arkham.ArkhamDB.WriteBack (savedDeckUpgradeTargets, savedDeckUpgradeUpdates)
+import Arkham.ArkhamDB.WriteBack (selectSavedDeckUpgradeTargets, savedDeckUpgradeUpdates)
 import Arkham.ArkhamDB.Service (ArkhamDBError (..), adoptDecklist, arkhamDBErrorStatus)
 import Entity.Arkham.ArkhamDBAccount
 import Arkham.CampaignLog (CampaignLog, campaignLogRecordedSets)
@@ -222,6 +222,9 @@ putApiV1ArkhamGameDecksR gameId = do
     (isJust <$> runDB (getBy $ UniquePlayer userId gameId))
     notFound
   postData <- requireCheckJsonBody
+  -- A retained overlay can contain owned custom cards not present in the
+  -- incoming base list. Restore the owner's definitions before either check.
+  registerUserCustomCards userId
   now <- liftIO getCurrentTime
 
   -- Resolve the deck before opening the game transaction. Fetching inside it held the
@@ -296,15 +299,16 @@ putApiV1ArkhamGameDecksR gameId = do
                   -- unconsumed incorporated overlay from subsequent sync.
                   prepared <- case mDecklist of
                     Just decklist
-                      | sameInvestigator investigatorId decklist
-                      , Just campaignKey <- campaignWriteBackKey gameId arkhamGameCurrentData investigatorId -> do
-                      association <- fmap entityVal <$> getBy (UniqueArkhamDBCampaignDeck campaignKey)
+                      | sameInvestigator investigatorId decklist -> do
                       -- Write-back history must never suppress ordinary saved
                       -- upgrades. The part-aware key cannot select a legacy
                       -- full-DE association; optional enqueue has its own fence.
-                      targets <- savedDeckUpgradeTargets Persist.get
+                      targets <- selectSavedDeckUpgradeTargets
+                        (\key -> fmap entityVal <$> getBy (UniqueArkhamDBCampaignDeck key))
+                        Persist.get
                         (\url -> P.selectList [ArkhamDeckUserId P.==. userId, ArkhamDeckUrl P.==. Just url] [])
-                        userId association (attr investigatorDeckUrl investigatorEntity)
+                        userId (campaignWriteBackKey gameId arkhamGameCurrentData investigatorId)
+                        (attr investigatorDeckUrl investigatorEntity)
                       fmap sequence $ for (sort targets) \deckId -> do
                         -- Overlay editing writes this row too. Read under its
                         -- lock so consumption cannot erase a concurrent edit.

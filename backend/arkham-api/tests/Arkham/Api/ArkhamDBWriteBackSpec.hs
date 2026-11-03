@@ -1036,17 +1036,47 @@ spec = describe "ArkhamDB campaign write-back" do
     -- The orphan's own legacy job is unprovable, but is not a deck-wide fence.
     admitCampaignPush games [] job {arkhamDBPushCampaignKey = legacyIdentityKey} `shouldSatisfy` isLeft
 
-  it "does not gate ordinary saved upgrades on even an existing unrelated full-DE write-back fence" do
-    h <- newHarness
-    saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
-    let currentId = ArkhamGameKey $ UUID.fromWords 0 0 0 989
-        currentKey = UUID.toText (coerce currentId) <> "/01001"
-        games = Map.fromList [(currentId, OrdinaryCampaignGame), (identityGameId, FullDreamEatersGame Dream.TheDreamQuest)]
-        association = ArkhamDBCampaignDeck currentKey Linking.deckId Linking.userId 3
-    campaignAdmissionAllowed games [legacyIdentityKey] currentKey `shouldBe` False
-    savedDeckUpgradeTargets (const $ pure $ Just saved) (const $ fail "Wrong URL fallback")
-      Linking.userId (Just association) Nothing `shouldReturn` [Linking.deckId]
-    isRight (savedDeckUpgradeUpdates validateDeckUpgrade Linking.now saved currentDeck) `shouldBe` True
+  for_ [FullDreamEatersGame Dream.TheDreamQuest, MissingCampaignGame] \historyIdentity ->
+    it ("selects the ordinary upgrade through the handler's complete selector despite history: " <> show historyIdentity) do
+      h <- newHarness
+      saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+      lookedUp <- newIORef ([] :: [Text])
+      let currentId = ArkhamGameKey $ UUID.fromWords 0 0 0 989
+          currentKey = UUID.toText (coerce currentId) <> "/01001"
+          games = Map.fromList [(currentId, OrdinaryCampaignGame), (identityGameId, historyIdentity)]
+          history = Map.singleton legacyIdentityKey $ ArkhamDBCampaignDeck legacyIdentityKey Linking.deckId Linking.userId 3
+          getAssociation key = modifyIORef' lookedUp (<> [key]) >> pure (Map.lookup key history)
+          byUrl url = do
+            url `shouldBe` "ordinary-url"
+            pure [Entity Linking.deckId saved]
+      campaignAdmissionAllowed games [legacyIdentityKey] currentKey `shouldBe` (historyIdentity == MissingCampaignGame)
+      -- Production uses this selector for the whole optional-key decision, not
+      -- just savedDeckUpgradeTargets after a separate identity/history fence.
+      selectSavedDeckUpgradeTargets getAssociation (const $ fail "Selected unrelated history") byUrl
+        Linking.userId (Just currentKey) (Just "ordinary-url") `shouldReturn` [Linking.deckId]
+      readIORef lookedUp `shouldReturn` [currentKey]
+
+  for_ ["missing seat", "colliding seat", "malformed Dream-Eaters"] \kind ->
+    it ("falls back to ordinary saved upgrades when the write-back key is unavailable: " <> kind) do
+      h <- newHarness
+      saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+      let game = dreamIdentityGame Dream.FullMode $ Just Dream.TheDreamQuest
+          campaign = fromMaybe (error "Missing campaign") $ modeCampaign game.gameMode
+          changed = game {Game.gameMode = This $ overAttrs (\attrs -> case kind of
+            "missing seat" -> attrs {campaignDecks = mempty}
+            "colliding seat" -> attrs
+              { campaignDecks = Map.fromList [("01001", Deck []), ("11068b", Deck [])]
+              , campaignStore = Map.singleton (campaignDeckIdentityKey "11068b") $ toJSON ("01001" :: InvestigatorId)
+              }
+            _ -> attrs {campaignMeta = Null}) campaign}
+          key = campaignWriteBackKey identityGameId changed "01001"
+          byUrl url = do
+            url `shouldBe` "ordinary-url"
+            pure [Entity Linking.deckId saved]
+      key `shouldBe` Nothing
+      selectSavedDeckUpgradeTargets (const $ fail "No association lookup without an identity")
+        (const $ fail "No associated target without an identity") byUrl
+        Linking.userId key (Just "ordinary-url") `shouldReturn` [Linking.deckId]
 
   it "refuses unknown or colliding transformed write-back identities without guessing a fresh lineage" do
     campaignWriteBackIdentity mempty ["11068b"] "11068b" True `shouldBe` Nothing
@@ -1255,6 +1285,23 @@ spec = describe "ArkhamDB campaign write-back" do
     arkhamDeckOverlay adopted `shouldBe` Nothing
     arkhamDeckOverlayAttachmentId adopted `shouldBe` Nothing
     Decklist.slots (arkhamDeckPlayList adopted) `shouldBe` Map.singleton "01016" 1
+
+  it "validates a retained owned custom overlay after restoring the owner's cold registry" do
+    h <- newHarness
+    saved <- Map.lookup Linking.deckId . (.storedDecks) <$> readIORef h.linked >>= maybe (fail "Missing saved deck") pure
+    let code = "*upgrade-owned-cold-registry"
+        cards = Map.singleton code $ CustomCard (missingCustomCardDef AssetType code) Nothing
+        overlay = DeckOverlay Nothing mempty (Map.singleton code 1) mempty
+        locked = attachDeckOverlay UUID.nil overlay saved
+        incoming = Linking.remote.deck
+    isLeft (savedDeckUpgradeUpdates validateDeckUpgrade Linking.now locked incoming) `shouldBe` True
+    -- registerUserCustomCards uses this same registration operation before
+    -- resolving the incoming list or validating the locked effective list.
+    registerCustomCards cards
+    updates <- either (fail . show) pure $ savedDeckUpgradeUpdates validateDeckUpgrade Linking.now locked incoming
+    let adopted = applyDeckUpdates updates locked
+    Map.lookup code (Decklist.slots $ arkhamDeckPlayList adopted) `shouldBe` Just 1
+    arkhamDeckOverlay adopted `shouldBe` Just overlay
 
   for_ [("single-step", 5), ("multi-step", 2)] \(kind, restoredStep) -> do
     for_ [False, True] \configured -> do
