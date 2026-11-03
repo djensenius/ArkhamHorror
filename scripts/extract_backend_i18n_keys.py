@@ -110,6 +110,8 @@ EMITTERS = {
     "i18nEntry": {"arg": 0, "suffixes": [""]},
     "storyI": {"arg": 0, "suffixes": [""]},
     "i18nWithTitle": {"arg": 0, "suffixes": [".title", ".body"]},
+    # i18nWithTitle with the title repeated as a body heading (Arkham/Text.hs).
+    "i18nWithHeading": {"arg": 0, "suffixes": [".title", ".body"]},
     "resolution": {"arg": 0, "suffixes": [".title", ".body"]},
     "resolutionWithXp": {"arg": 0, "suffixes": [".title", ".body"], "vars": {"xp": "integer"}},
     "p": {"arg": 0, "suffixes": [""]},
@@ -119,6 +121,8 @@ EMITTERS = {
     "h3": {"arg": 0, "suffixes": [""]},
     "h_": {"arg": 0, "suffixes": [""]},
     "setTitle": {"arg": 0, "suffixes": [""]},
+    # withHeading t = h (t <> ".title") >> p (t <> ".body") (Arkham/Helpers/FlavorText.hs).
+    "withHeading": {"arg": 0, "suffixes": [".title", ".body"]},
     "labeled": {"arg": 0, "suffixes": [""], "label": True},
     "labeled'": {"arg": 0, "suffixes": [""], "label": True},
     "labeledI": {"arg": 0, "suffixes": [""], "label": True, "reset": True},
