@@ -92,6 +92,12 @@ currentDeck = Linking.remote.deck
   , Decklist.taboo_id = Just 10
   }
 
+parallelDeck :: Decklist.ArkhamDBDecklist
+parallelDeck = currentDeck
+  { Decklist.investigator_code = "01001"
+  , Decklist.meta = Just "{\"alternate_front\":\"90024\",\"alternate_back\":\"90024\",\"campaign\":\"kept\"}"
+  }
+
 sourceWithNotes :: ArkhamDBRemoteDeck
 sourceWithNotes = Linking.remote
   { descriptionMd = "Source guide", tags = "solo campaign"
@@ -2259,6 +2265,87 @@ spec = describe "ArkhamDB campaign write-back" do
       filter (== "new") <$> readIORef h.calls `shouldReturn` ["new"]
       readIORef h.baseline `shouldReturn` 0
 
+  it "sends the original base code when saving an unoverlaid parallel front as new" do
+    h <- newHarness
+    created <- newIORef ([] :: [Decklist.ArkhamDBDecklist])
+    let stableIid = parallelDeck.investigator
+        key = UUID.toText UUID.nil <> "/90024"
+        snapshot = campaignWriteBackSnapshot mempty stableIid stableIid parallelDeck [] [] [] Nothing Nothing
+        client = h.client {createDeck = \token deck -> do
+          modifyIORef' created (<> [deck])
+          h.client.createDeck token deck}
+    stableIid `shouldBe` "90024"
+    modifyIORef' h.remotes $ Map.insert "123" sourceWithNotes {deck = parallelDeck}
+    modifyIORef' h.job \job -> job
+      {arkhamDBPushCampaignKey = key, arkhamDBPushPayload = encodePushDeck snapshot, arkhamDBPushMode = "new"}
+    runWith h client False
+    assertState h "succeeded"
+    map (.investigator_code) <$> readIORef created `shouldReturn` ["01001"]
+    snapshot.investigator_code `shouldBe` "01001"
+    pushDeckMetadata snapshot `shouldBe` pushDeckMetadata parallelDeck
+    target <- Map.lookup "125" <$> readIORef h.remotes >>= maybe (fail "Missing independent target") pure
+    target.deck.investigator_code `shouldBe` "01001"
+    target.deck.investigator `shouldBe` "90024"
+    metadata <- either (fail . show) pure $ pushDeckMetadata target.deck
+    KM.lookup "alternate_front" metadata `shouldBe` Just (String "90024")
+    KM.lookup "alternate_back" metadata `shouldBe` Just (String "90024")
+    pushRemoteFields target `shouldBe` pushRemoteFields sourceWithNotes
+
+  it "drops both old alternate faces when the captured overlay investigator differs from the saved base" do
+    (gameRef, pid, drain) <- newCampaignMessages
+    let overlay = DeckOverlay (Just "01002") mempty mempty mempty
+        atSeating = parallelDeck {Decklist.meta = Just "{\"alternate_back\":\"90024\"}"}
+        saved = attachDeckOverlay UUID.nil overlay $
+          ArkhamDeck Linking.userId Nothing "Deck" "Roland" atSeating Nothing Nothing Nothing
+    initial <- readIORef gameRef
+    drain $ deckChosenWithAttachment initial pid (Just UUID.nil) (Just overlay) $ arkhamDeckPlayList saved
+    game <- readIORef gameRef
+    Map.keys (gameInvestigators game) `shouldBe` ["01002"]
+    (deckIid, stableIid) <- maybe (fail "Missing captured identity") pure $ campaignWriteBackSeatIdentity game "01002"
+    let attrs = maybe (error "Missing campaign") toAttrs $ modeCampaign game.gameMode
+        cards = maybe [] unDeck $ Map.lookup deckIid $ campaignDecks attrs
+        -- A later saved-base sync may add its parallel front too. Neither old
+        -- face belongs to the independently materialized overlay investigator.
+        snapshot = campaignWriteBackSnapshot (campaignStore attrs) deckIid stableIid parallelDeck cards [] [] Nothing Nothing
+    snapshot.investigator_code `shouldBe` "01002"
+    snapshot.investigator `shouldBe` "01002"
+    metadata <- either (fail . show) pure $ pushDeckMetadata snapshot
+    KM.lookup "alternate_front" metadata `shouldBe` Nothing
+    KM.lookup "alternate_back" metadata `shouldBe` Nothing
+    KM.lookup "campaign" metadata `shouldBe` Just (String "kept")
+    capturedPushInvestigatorConsistent snapshot `shouldBe` True
+
+  for_ ["normal", "overwrite"] \mode ->
+    it ("admits a base-plus-parallel-front payload to its matching remote lineage: " <> toString mode) do
+      h <- newHarness
+      let queued = withExportedOverlay Nothing parallelDeck
+          key = UUID.toText UUID.nil <> "/90024"
+      modifyIORef' h.remotes $ Map.insert "123" sourceWithNotes {deck = parallelDeck}
+      modifyIORef' h.job \job -> job
+        {arkhamDBPushCampaignKey = key, arkhamDBPushPayload = encodePushDeck queued, arkhamDBPushMode = mode}
+      h.run False
+      assertState h "succeeded"
+      filter (T.isPrefixOf "upgrade/") <$> readIORef h.calls `shouldReturn` ["upgrade/123/5"]
+      target <- Map.lookup "124" <$> readIORef h.remotes >>= maybe (fail "Missing upgraded target") pure
+      target.deck.investigator_code `shouldBe` "01001"
+      target.deck.investigator `shouldBe` "90024"
+      samePushInvestigator queued target `shouldBe` True
+      pushRemoteFields target `shouldBe` pushRemoteFields sourceWithNotes
+
+  it "admits a valid parallel payload locally but refuses a different resolved remote investigator" do
+    h <- newHarness
+    let queued = withExportedOverlay Nothing parallelDeck
+        key = UUID.toText UUID.nil <> "/90024"
+    modifyIORef' h.job \job -> job {arkhamDBPushCampaignKey = key, arkhamDBPushPayload = encodePushDeck queued}
+    h.run False
+    assertState h "failed"
+    arkhamDBPushError <$> readIORef h.job `shouldReturn` Just "validationFailed"
+    -- This must be the remote mismatch, not premature refusal of the valid
+    -- base-plus-front encoding before the remote investigator is even read.
+    readIORef h.calls `shouldReturn` ["load/123"]
+    assertNoPush h
+    readIORef h.baseline `shouldReturn` 0
+
   for_ [False, True] \viaImport ->
     it ("records actual alternate-front seating identity before export and " <> if viaImport then "re-import" else "sync") do
       h <- newHarness
@@ -2279,7 +2366,8 @@ spec = describe "ArkhamDB campaign write-back" do
       Map.lookup (campaignDeckOverlayKey "01001") (campaignStore attrs) `shouldBe` Nothing
       Map.lookup (campaignDeckOverlayKey "01002") (campaignStore attrs) `shouldBe` Just (overlayAttachmentProvenance (Just UUID.nil) $ Just overlay)
       exportedOverlay snapshot `shouldBe` Just (overlayAttachmentProvenance (Just UUID.nil) $ Just overlay)
-      snapshot.investigator_code `shouldBe` "01002"
+      snapshot.investigator_code `shouldBe` "01001"
+      snapshot.investigator `shouldBe` "01002"
       -- A base code with this same alternate front is the same investigator,
       -- even though ArkhamDB cannot rewrite the immutable base code on save.
       modifyIORef' h.remotes $ Map.adjust (\remote -> remote {deck = base}) "123"
